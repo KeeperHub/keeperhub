@@ -3,7 +3,7 @@
 -- _protocolMeta.protocolSlug, and event trigger _eventProtocolSlug / _eventProtocolIconPath.
 
 -- 1. Update actionType in action nodes from "safe-wallet/*" to "safe/*"
-UPDATE "workflow"
+UPDATE "workflows"
 SET "nodes" = (
   SELECT jsonb_agg(
     CASE
@@ -22,7 +22,7 @@ SET "nodes" = (
 WHERE "nodes"::text LIKE '%safe-wallet/%';
 
 -- 2. Update _protocolMeta.protocolSlug from "safe-wallet" to "safe" in action node data
-UPDATE "workflow"
+UPDATE "workflows"
 SET "nodes" = (
   SELECT jsonb_agg(
     CASE
@@ -41,7 +41,7 @@ WHERE "nodes"::text LIKE '%"protocolSlug":"safe-wallet"%'
    OR "nodes"::text LIKE '%"protocolSlug": "safe-wallet"%';
 
 -- 3. Update _eventProtocolSlug in trigger node data from "safe-wallet" to "safe"
-UPDATE "workflow"
+UPDATE "workflows"
 SET "nodes" = (
   SELECT jsonb_agg(
     CASE
@@ -64,6 +64,6 @@ WHERE "nodes"::text LIKE '%"_eventProtocolSlug":"safe-wallet"%'
    OR "nodes"::text LIKE '%"_eventProtocolSlug": "safe-wallet"%';
 
 -- 4. Update featured_protocol column from "safe-wallet" to "safe"
-UPDATE "workflow"
+UPDATE "workflows"
 SET "featured_protocol" = 'safe'
 WHERE "featured_protocol" = 'safe-wallet';
