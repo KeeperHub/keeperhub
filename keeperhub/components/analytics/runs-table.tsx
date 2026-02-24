@@ -4,7 +4,7 @@ import { useAtom, useAtomValue } from "jotai";
 import { ChevronDown, ChevronRight, ExternalLink, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,6 +17,7 @@ import {
   analyticsLoadingAtom,
   analyticsRangeAtom,
   analyticsRunsAtom,
+  analyticsSearchAtom,
   analyticsSourceFilterAtom,
   analyticsStatusFilterAtom,
 } from "@/keeperhub/lib/atoms/analytics";
@@ -118,7 +119,7 @@ type StepLogRowProps = {
 function StepLogRow({ step }: StepLogRowProps): ReactNode {
   return (
     <tr className="border-t border-dashed border-muted">
-      <td colSpan={8}>
+      <td colSpan={4}>
         <div className="flex items-center gap-3 py-1.5 pl-10 pr-3">
           <span
             className={cn(
@@ -132,16 +133,20 @@ function StepLogRow({ step }: StepLogRowProps): ReactNode {
               ({step.nodeType})
             </span>
           </span>
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-            {formatDuration(step.durationMs)}
-          </span>
           {step.error ? (
-            <span className="shrink-0 text-xs text-red-600 dark:text-red-400">
+            <span
+              className="max-w-[40%] truncate rounded bg-red-500/10 px-1.5 py-0.5 text-[11px] leading-tight text-red-700 dark:text-red-400"
+              title={step.error}
+            >
               {step.error}
             </span>
           ) : null}
         </div>
       </td>
+      <td className="whitespace-nowrap py-1.5 pr-3 text-xs text-muted-foreground">
+        {formatDuration(step.durationMs)}
+      </td>
+      <td colSpan={3} />
     </tr>
   );
 }
@@ -212,7 +217,7 @@ function ExpandableRunRow({ run }: ExpandableRunRowProps): ReactNode {
 
   const handleNavigate = useCallback((): void => {
     if (run.source === "workflow" && run.workflowId) {
-      router.push(`/${run.workflowId}`);
+      router.push(`/workflows/${run.workflowId}`);
     }
   }, [run.source, run.workflowId, router]);
 
@@ -385,6 +390,7 @@ export function RunsTable(): ReactNode {
   const range = useAtomValue(analyticsRangeAtom);
   const statusFilter = useAtomValue(analyticsStatusFilterAtom);
   const sourceFilter = useAtomValue(analyticsSourceFilterAtom);
+  const search = useAtomValue(analyticsSearchAtom);
   const [loadingMore, setLoadingMore] = useState(false);
 
   const handleLoadMore = useCallback(async (): Promise<void> => {
@@ -423,7 +429,24 @@ export function RunsTable(): ReactNode {
     }
   }, [runsData, range, statusFilter, sourceFilter, setRunsData]);
 
-  const runs = runsData?.runs ?? [];
+  const allRuns = runsData?.runs ?? [];
+
+  const runs = useMemo((): UnifiedRun[] => {
+    const query = search.trim().toLowerCase();
+    if (!query) {
+      return allRuns;
+    }
+    return allRuns.filter((run) => {
+      const name = run.workflowName ?? run.directType ?? "";
+      const network = run.network ?? "";
+      return (
+        name.toLowerCase().includes(query) ||
+        network.toLowerCase().includes(query) ||
+        run.status.includes(query)
+      );
+    });
+  }, [allRuns, search]);
+
   const isEmpty = runs.length === 0;
 
   return (

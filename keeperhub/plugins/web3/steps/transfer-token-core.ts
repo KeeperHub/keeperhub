@@ -52,6 +52,7 @@ export type TransferTokenResult =
       success: true;
       transactionHash: string;
       transactionLink: string;
+      gasUsed: string;
       amount: string;
       symbol: string;
       recipient: string;
@@ -414,6 +415,7 @@ export async function transferTokenCore(
         success: true,
         transactionHash: receipt.hash,
         transactionLink,
+        gasUsed: receipt.gasUsed.toString(),
         amount,
         symbol,
         recipient: recipientAddress,

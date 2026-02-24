@@ -22,6 +22,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { registerSidebarRefetch } from "@/keeperhub/lib/refetch-sidebar";
 import type { Project, SavedWorkflow, Tag } from "@/lib/api-client";
 import { api } from "@/lib/api-client";
+import { useSession } from "@/lib/auth-client";
 import { cn } from "@/lib/utils";
 import type { NavPanelStates } from "../lib/hooks/use-persisted-nav-state";
 import { usePersistedNavState } from "../lib/hooks/use-persisted-nav-state";
@@ -325,8 +326,31 @@ function WorkflowsPanel({
   );
 }
 
+const NAV_ITEMS = [
+  {
+    id: "new",
+    icon: Plus,
+    label: "New Workflow",
+    href: "/" as string | null,
+  },
+  {
+    id: "workflows",
+    icon: List,
+    label: "All Workflows",
+    href: null as string | null,
+  },
+  { id: "hub", icon: Globe, label: "Hub", href: "/hub" as string | null },
+  {
+    id: "analytics",
+    icon: BarChart3,
+    label: "Analytics",
+    href: "/analytics" as string | null,
+  },
+];
+
 export function NavigationSidebar(): React.ReactNode {
   const isMobile = useIsMobile();
+  const { data: session } = useSession();
   const router = useRouter();
   const pathname = usePathname();
   const params = useParams();
@@ -389,6 +413,7 @@ export function NavigationSidebar(): React.ReactNode {
   const workflowId =
     typeof params.workflowId === "string" ? params.workflowId : undefined;
   const isHubPage = pathname === "/hub";
+  const isAnalyticsPage = pathname === "/analytics";
 
   const expanded = navState.state.sidebar;
   const setExpanded = navState.setSidebar;
@@ -500,13 +525,16 @@ export function NavigationSidebar(): React.ReactNode {
 
   function isActive(id: string): boolean {
     if (id === "new") {
-      return !(workflowId || isHubPage);
+      return !(workflowId || isHubPage || isAnalyticsPage);
     }
     if (id === "workflows") {
       return navState.state.panels.projects !== "closed";
     }
     if (id === "hub") {
       return isHubPage;
+    }
+    if (id === "analytics") {
+      return isAnalyticsPage;
     }
     return false;
   }
@@ -624,27 +652,9 @@ export function NavigationSidebar(): React.ReactNode {
     );
   }
 
-  const navItems = [
-    {
-      id: "new",
-      icon: Plus,
-      label: "New Workflow",
-      href: "/" as string | null,
-    },
-    {
-      id: "workflows",
-      icon: List,
-      label: "All Workflows",
-      href: null,
-    },
-    { id: "hub", icon: Globe, label: "Hub", href: "/hub" as string | null },
-    {
-      id: "analytics",
-      icon: BarChart3,
-      label: "Analytics",
-      href: "/analytics" as string | null,
-    },
-  ];
+  const navItems = NAV_ITEMS.filter(
+    (item) => item.id !== "analytics" || session
+  );
 
   return (
     <>

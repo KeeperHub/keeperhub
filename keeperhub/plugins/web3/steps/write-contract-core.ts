@@ -47,6 +47,7 @@ export type WriteContractResult =
       success: true;
       transactionHash: string;
       transactionLink: string;
+      gasUsed: string;
       result?: unknown;
     }
   | { success: false; error: string };
@@ -339,6 +340,7 @@ export async function writeContractCore(
         success: true,
         transactionHash: receipt.hash,
         transactionLink,
+        gasUsed: receipt.gasUsed.toString(),
         result: undefined,
       };
     } catch (error) {

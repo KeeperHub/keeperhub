@@ -107,11 +107,10 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // 9. Handle result
   if (result.success) {
-    // MVP: gasUsedWei requires receipt lookup; set to "0" for now. Upgrade in HARD-03.
     await completeExecution(executionId, {
       transactionHash: result.transactionHash,
       transactionLink: result.transactionLink,
-      gasUsedWei: "0",
+      gasUsedWei: result.gasUsed,
       output: result as unknown as Record<string, unknown>,
     });
   } else {

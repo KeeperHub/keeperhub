@@ -41,7 +41,12 @@ export type TransferFundsCoreInput = {
 };
 
 export type TransferFundsResult =
-  | { success: true; transactionHash: string; transactionLink: string }
+  | {
+      success: true;
+      transactionHash: string;
+      transactionLink: string;
+      gasUsed: string;
+    }
   | { success: false; error: string };
 
 /**
@@ -245,6 +250,7 @@ export async function transferFundsCore(
         success: true,
         transactionHash: receipt.hash,
         transactionLink,
+        gasUsed: receipt.gasUsed.toString(),
       };
     } catch (error) {
       logUserError(

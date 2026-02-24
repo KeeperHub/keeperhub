@@ -40,6 +40,32 @@ function buildQuery(params: Record<string, string | undefined>): string {
   return new URLSearchParams(entries).toString();
 }
 
+function validateResponses(
+  responses: [Response, Response, Response, Response]
+): void {
+  const authError = responses.find((r) => r.status === 401 || r.status === 403);
+  if (authError) {
+    throw new Error(
+      authError.status === 401 ? "AUTH_REQUIRED" : "ORG_REQUIRED"
+    );
+  }
+
+  const labels = ["Summary", "Time series", "Networks", "Runs"] as const;
+  for (const [i, res] of responses.entries()) {
+    if (!res.ok) {
+      throw new Error(`${labels[i]} fetch failed: ${res.status}`);
+    }
+  }
+}
+
+function isAuthError(message: string): boolean {
+  return message === "AUTH_REQUIRED" || message === "ORG_REQUIRED";
+}
+
+function toErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : "Failed to fetch analytics";
+}
+
 export function useAnalytics(): UseAnalyticsReturn {
   const range = useAtomValue(analyticsRangeAtom);
   const statusFilter = useAtomValue(analyticsStatusFilterAtom);
@@ -77,18 +103,7 @@ export function useAnalytics(): UseAnalyticsReturn {
           fetch(`/api/analytics/runs?${runsQuery}`),
         ]);
 
-      if (!summaryRes.ok) {
-        throw new Error(`Summary fetch failed: ${summaryRes.status}`);
-      }
-      if (!timeSeriesRes.ok) {
-        throw new Error(`Time series fetch failed: ${timeSeriesRes.status}`);
-      }
-      if (!networksRes.ok) {
-        throw new Error(`Networks fetch failed: ${networksRes.status}`);
-      }
-      if (!runsRes.ok) {
-        throw new Error(`Runs fetch failed: ${runsRes.status}`);
-      }
+      validateResponses([summaryRes, timeSeriesRes, networksRes, runsRes]);
 
       const [summary, timeSeriesData, networksData, runs] = (await Promise.all([
         summaryRes.json(),
@@ -108,9 +123,15 @@ export function useAnalytics(): UseAnalyticsReturn {
       setRuns(runs);
       setLastUpdated(new Date());
     } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Failed to fetch analytics";
+      const message = toErrorMessage(err);
       setError(message);
+      if (!isAuthError(message)) {
+        return;
+      }
+      clearInterval(pollIntervalRef.current ?? undefined);
+      pollIntervalRef.current = null;
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
     } finally {
       setLoading(false);
     }

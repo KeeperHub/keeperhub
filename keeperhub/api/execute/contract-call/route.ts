@@ -132,7 +132,7 @@ async function handleWriteCall(
     await completeExecution(executionId, {
       transactionHash: result.transactionHash,
       transactionLink: result.transactionLink,
-      gasUsedWei: "0",
+      gasUsedWei: result.gasUsed,
       output: result as unknown as Record<string, unknown>,
     });
   } else {

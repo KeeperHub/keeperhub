@@ -27,5 +27,7 @@ export const analyticsStatusFilterAtom = atom<NormalizedStatus | undefined>(
 );
 export const analyticsSourceFilterAtom = atom<RunSource | undefined>(undefined);
 
+export const analyticsSearchAtom = atom("");
+
 export const analyticsLiveAtom = atom(true);
 export const analyticsLastUpdatedAtom = atom<Date | null>(null);
