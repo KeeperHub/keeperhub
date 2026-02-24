@@ -14,8 +14,7 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [Web3](/plugins/web3) | Blockchain | Balance checks, contract reads/writes, transfers, calldata decoding, risk assessment | Wallet (for writes) |
 | [Code](/plugins/code) | Code | Execute custom JavaScript in a sandboxed VM | None |
 | [Math](/plugins/math) | Math | Aggregation operations (sum, count, average, median, min, max, product) | None |
-| [Safe](/plugins/safe) | Security | Monitor pending Safe multisig transactions | API key |
-| [Safe Wallet](/plugins/safe-wallet) | Protocol | Safe multisig owners, threshold, nonce, module status | None |
+| [Safe](/plugins/safe) | Protocol | Safe multisig owners, threshold, nonce, module status, pending transactions | API key (for pending txs) |
 | [Ajna](/plugins/ajna) | Protocol | Liquidation keeper operations, vault rebalancing, buffer management | Wallet (for writes) |
 | [Sky](/plugins/sky) | Protocol | USDS savings, token balances, approvals, DAI/MKR converters | Wallet (for writes) |
 | [Discord](/plugins/discord) | Notifications | Send messages to channels | Webhook URL |

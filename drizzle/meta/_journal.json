@@ -169,6 +169,13 @@
       "when": 1771831464086,
       "tag": "0023_public_stick",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1772006400000,
+      "tag": "0024_rename-safe-wallet-to-safe",
+      "breakpoints": true
     }
   ]
 }

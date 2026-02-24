@@ -1024,8 +1024,13 @@ async function generateStepRegistry(): Promise<void> {
     .flatMap(({ actionId, integration, stepImportPath, stepFunction }) => {
       // Protocol plugins are virtual -- step files live in keeperhub/plugins/protocol/steps/
       // regardless of which protocol they serve (e.g. weth, aave, etc.)
+      // Actions injected from non-protocol plugins (e.g. safe/get-pending-transactions)
+      // use their own step files, detected by stepImportPath not starting with "protocol-".
       let importPath: string;
-      if (protocolSlugSet.has(integration)) {
+      const isProtocolStep =
+        protocolSlugSet.has(integration) &&
+        stepImportPath.startsWith("protocol-");
+      if (isProtocolStep) {
         importPath = `@/keeperhub/plugins/protocol/steps/${stepImportPath}`;
       } else {
         const importBase = keeperhubPluginSet.has(integration)
@@ -1255,15 +1260,18 @@ async function main(): Promise<void> {
   console.log("Generating keeperhub/plugins/index.ts...");
   generateKeeperHubIndexFile(keeperhub.enabled); // Only import enabled KeeperHub plugins
 
-  console.log("Updating README.md...");
-  await updateReadme();
-
+  // Register protocols BEFORE importing plugins so that plugins that inject
+  // actions into protocol integrations (e.g. safe plugin -> safe protocol)
+  // can find the integration in the registry at import time.
   console.log("Registering protocol plugins...");
   const protocolSlugs = await registerProtocolPlugins();
   console.log(`Registered ${protocolSlugs.length} protocol(s)`);
 
   console.log("Generating keeperhub/protocols/index.ts...");
   generateProtocolsIndexFile();
+
+  console.log("Updating README.md...");
+  await updateReadme();
 
   console.log("\nGenerating lib/types/integration.ts...");
   // Use all plugins for types (both base, keeperhub, and protocol slugs)

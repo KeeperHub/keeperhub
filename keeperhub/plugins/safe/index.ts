@@ -1,7 +1,5 @@
 import type { IntegrationType } from "@/lib/types/integration";
-import type { IntegrationPlugin } from "@/plugins/registry";
-import { getIntegration, registerIntegration } from "@/plugins/registry";
-import { SafeIcon } from "./icon";
+import { getIntegration } from "@/plugins/registry";
 
 const getPendingTransactionsAction = {
   slug: "get-pending-transactions",
@@ -58,26 +56,14 @@ const getPendingTransactionsAction = {
   ],
 };
 
-// Inject get-pending-transactions into the safe-wallet protocol plugin
+// Inject get-pending-transactions into the protocol-registered "safe" integration
 // so both on-chain reads and off-chain API actions appear under one "Safe" entry.
-const safeWallet = getIntegration("safe-wallet" as IntegrationType);
-if (safeWallet) {
-  safeWallet.actions.push(getPendingTransactionsAction);
-}
-
-// Safe keeps its action for step registry generation (safe/get-pending-transactions).
-// A legacy mapping alias creates the safe-wallet/get-pending-transactions entry.
-// formFields/testConfig remain so the connection management UI can create credentials.
-const safePlugin: IntegrationPlugin = {
-  type: "safe",
-  label: "Safe",
-  description: "Monitor and verify pending Safe multisig transactions",
-
-  icon: SafeIcon,
-
-  requiresCredentials: true,
-
-  formFields: [
+// Also attach credential fields so the connection management UI can create Safe API keys.
+const safeProtocol = getIntegration("safe" as IntegrationType);
+if (safeProtocol) {
+  safeProtocol.actions.push(getPendingTransactionsAction);
+  safeProtocol.requiresCredentials = true;
+  safeProtocol.formFields = [
     {
       id: "apiKey",
       label: "API Key",
@@ -92,18 +78,17 @@ const safePlugin: IntegrationPlugin = {
         url: "https://developer.safe.global/",
       },
     },
-  ],
-
-  testConfig: {
+  ];
+  safeProtocol.testConfig = {
     getTestFunction: async () => {
       const { testSafe } = await import("./test");
       return testSafe;
     },
-  },
+  };
+}
 
-  actions: [getPendingTransactionsAction],
-};
-
-registerIntegration(safePlugin);
-
-export default safePlugin;
+// Export the enriched protocol integration for use by other modules.
+// No separate registerIntegration call -- the protocol-registered "safe"
+// integration already has everything (protocol actions + injected action +
+// credential config).
+export default safeProtocol;

@@ -582,8 +582,7 @@ function useCategoryData() {
     for (const [category, actions] of Object.entries(pluginCategories)) {
       // start custom keeperhub code //
       // Deduplicate by slug within each category. When the same action is
-      // registered under two integrations (e.g. safe and safe-wallet both
-      // contribute "get-pending-transactions"), keep the first occurrence.
+      // registered under two integrations, keep the first occurrence.
       const seen = new Set<string>();
       allCategories[category] = actions
         .filter((a) => {
@@ -650,9 +649,8 @@ export function ActionConfig({
   const categories = useCategoryData();
   // start custom keeperhub code //
   // Deduplicate integrations by label for the Service dropdown.
-  // When two integrations share a label (e.g. "safe" and "safe-wallet" both
-  // labelled "Safe"), keep the one with more actions to avoid Radix Select
-  // duplicate-value collisions and present a single unified entry.
+  // When two integrations share a label, keep the one with more actions
+  // to avoid Radix Select duplicate-value collisions.
   const integrations = useMemo(() => {
     const all = getAllIntegrations();
     const byLabel = new Map<string, (typeof all)[number]>();

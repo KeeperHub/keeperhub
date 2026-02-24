@@ -111,7 +111,7 @@ USER-SPECIFIED ADDRESS CONTRACTS:
 - Address format validation is skipped for these contracts (the reference addresses are informational)
 - At build time, `buildConfigFieldsFromAction()` automatically inserts a `contractAddress` template-input field at the top of the action config
 - At runtime, `protocol-read.ts` and `protocol-write.ts` read `input.contractAddress` instead of looking up from the fixed addresses map
-- Reference: `keeperhub/protocols/safe-wallet.ts` (canonical example)
+- Reference: `keeperhub/protocols/safe.ts` (canonical example)
 
 ICON HANDLING:
 - Icon is fully optional -- if omitted, a default square protocol icon (`ProtocolIcon`) is displayed everywhere (Hub, workflow builder, etc.)

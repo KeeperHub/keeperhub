@@ -31,9 +31,14 @@ export const LEGACY_ACTION_MAPPINGS: Record<string, string> = {
   "Create Chat": "v0/create-chat",
   "Send Message": "v0/send-message",
 
-  // Safe: the get-pending-transactions action lives in the safe plugin but is
-  // injected into safe-wallet at runtime. This alias ensures the step registry
-  // has an entry for safe-wallet/get-pending-transactions.
+  // Safe: backward compatibility for workflows created before the safe-wallet
+  // protocol was renamed to safe.
+  "safe-wallet/get-owners": "safe/get-owners",
+  "safe-wallet/get-threshold": "safe/get-threshold",
+  "safe-wallet/is-owner": "safe/is-owner",
+  "safe-wallet/get-nonce": "safe/get-nonce",
+  "safe-wallet/is-module-enabled": "safe/is-module-enabled",
+  "safe-wallet/get-modules-paginated": "safe/get-modules-paginated",
   "safe-wallet/get-pending-transactions": "safe/get-pending-transactions",
 
   // Web3

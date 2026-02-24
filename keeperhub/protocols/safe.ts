@@ -2,11 +2,11 @@ import { defineProtocol } from "@/keeperhub/lib/protocol-registry";
 
 export default defineProtocol({
   name: "Safe",
-  slug: "safe-wallet",
+  slug: "safe",
   description:
     "Safe multisig wallet -- read owners, threshold, nonce, and module status for any Safe address",
   website: "https://safe.global",
-  icon: "/protocols/safe-wallet.png",
+  icon: "/protocols/safe.png",
 
   contracts: {
     safe: {

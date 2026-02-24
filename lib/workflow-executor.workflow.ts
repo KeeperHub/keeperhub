@@ -366,7 +366,7 @@ async function executeActionStep(input: {
   // Look up plugin action from the generated step registry
   let stepImporter = getStepImporter(actionType);
 
-  // Fallback: check legacy action mappings (e.g. "safe/get-pending-transactions" -> "safe-wallet/get-pending-transactions")
+  // Fallback: check legacy action mappings (e.g. "safe-wallet/get-owners" -> "safe/get-owners")
   if (!stepImporter) {
     const mapped = LEGACY_ACTION_MAPPINGS[actionType];
     if (mapped) {
