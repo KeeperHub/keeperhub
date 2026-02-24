@@ -31,6 +31,11 @@ export const LEGACY_ACTION_MAPPINGS: Record<string, string> = {
   "Create Chat": "v0/create-chat",
   "Send Message": "v0/send-message",
 
+  // Safe: the get-pending-transactions action lives in the safe plugin but is
+  // injected into safe-wallet at runtime. This alias ensures the step registry
+  // has an entry for safe-wallet/get-pending-transactions.
+  "safe-wallet/get-pending-transactions": "safe/get-pending-transactions",
+
   // Web3
   "Check Balance": "web3/check-balance",
   "Transfer Funds": "web3/transfer-funds",

@@ -580,10 +580,24 @@ function useCategoryData() {
     };
 
     for (const [category, actions] of Object.entries(pluginCategories)) {
-      allCategories[category] = actions.map((a) => ({
-        id: a.id,
-        label: a.label,
-      }));
+      // start custom keeperhub code //
+      // Deduplicate by slug within each category. When the same action is
+      // registered under two integrations (e.g. safe and safe-wallet both
+      // contribute "get-pending-transactions"), keep the first occurrence.
+      const seen = new Set<string>();
+      allCategories[category] = actions
+        .filter((a) => {
+          if (seen.has(a.slug)) {
+            return false;
+          }
+          seen.add(a.slug);
+          return true;
+        })
+        .map((a) => ({
+          id: a.id,
+          label: a.label,
+        }));
+      // end keeperhub code //
     }
 
     return allCategories;
@@ -634,7 +648,23 @@ export function ActionConfig({
 }: ActionConfigProps) {
   const actionType = (config?.actionType as string) || "";
   const categories = useCategoryData();
-  const integrations = useMemo(() => getAllIntegrations(), []);
+  // start custom keeperhub code //
+  // Deduplicate integrations by label for the Service dropdown.
+  // When two integrations share a label (e.g. "safe" and "safe-wallet" both
+  // labelled "Safe"), keep the one with more actions to avoid Radix Select
+  // duplicate-value collisions and present a single unified entry.
+  const integrations = useMemo(() => {
+    const all = getAllIntegrations();
+    const byLabel = new Map<string, (typeof all)[number]>();
+    for (const i of all) {
+      const existing = byLabel.get(i.label);
+      if (!existing || i.actions.length > existing.actions.length) {
+        byLabel.set(i.label, i);
+      }
+    }
+    return Array.from(byLabel.values());
+  }, []);
+  // end keeperhub code //
 
   const selectedCategory = actionType ? getCategoryForAction(actionType) : null;
   const [category, setCategory] = useState<string>(selectedCategory || "");
