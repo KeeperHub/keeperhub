@@ -214,6 +214,22 @@ jobs:
             exit 1
           }
 
+      - name: Deploy Redis
+        run: |
+          envsubst '$PR_NUMBER' < deploy/pr-environment/redis.template.yaml | kubectl apply -f -
+
+      - name: Wait for Redis to be ready
+        run: |
+          echo "Waiting for Redis to be ready..."
+          kubectl wait --for=condition=ready pod -l app=redis,pr=pr-${{ env.PR_NUMBER }} \
+            -n ${{ env.NAMESPACE }} \
+            --timeout=3m || {
+            echo "Redis failed to become ready. Checking status:"
+            kubectl get pods -l app=redis -n ${{ env.NAMESPACE }}
+            kubectl logs -l app=redis -n ${{ env.NAMESPACE }} --tail=50
+            exit 1
+          }
+
       - name: Prepare Helm values
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -222,8 +238,17 @@ jobs:
           SERVICE_ACCOUNT_ROLE_ARN: ${{ vars.KEEPERHUB_STAGING_SERVICE_ACCOUNT_ROLE_ARN }}
         run: |
           envsubst < deploy/pr-environment/values.template.yaml > ${{ github.workspace }}/values-pr-${{ env.PR_NUMBER }}.yaml
-          echo "Generated Helm values:"
-          cat ${{ github.workspace }}/values-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/scheduler-dispatcher.template.yaml > ${{ github.workspace }}/scheduler-dispatcher-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/scheduler-executor.template.yaml > ${{ github.workspace }}/scheduler-executor-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/sc-event-tracker.template.yaml > ${{ github.workspace }}/sc-event-tracker-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/sc-event-worker.template.yaml > ${{ github.workspace }}/sc-event-worker-pr-${{ env.PR_NUMBER }}.yaml
+
+      - name: Clean up stale Helm releases
+        run: |
+          for release in $(helm list -n ${{ env.NAMESPACE }} --pending --failed -q 2>/dev/null); do
+            echo "Cleaning up stale release: $release"
+            helm uninstall "$release" -n ${{ env.NAMESPACE }} --no-hooks 2>/dev/null || true
+          done
 
       - name: Deploy Keeperhub application with Helm
         uses: bitovi/github-actions-deploy-eks-helm@v1.2.10
@@ -238,11 +263,66 @@ jobs:
           version: 0.2.1
           atomic: true
 
+      - name: Deploy Scheduler Dispatcher with Helm
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.10
+        with:
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          config-files: ${{ github.workspace }}/scheduler-dispatcher-pr-${{ env.PR_NUMBER }}.yaml
+          chart-path: techops-services/common
+          namespace: ${{ env.NAMESPACE }}
+          timeout: 5m0s
+          name: scheduler-dispatcher-pr-${{ env.PR_NUMBER }}
+          chart-repository: https://techops-services.github.io/helm-charts
+          version: 0.2.1
+          atomic: true
+
+      - name: Deploy Scheduler Executor with Helm
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.10
+        with:
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          config-files: ${{ github.workspace }}/scheduler-executor-pr-${{ env.PR_NUMBER }}.yaml
+          chart-path: techops-services/common
+          namespace: ${{ env.NAMESPACE }}
+          timeout: 5m0s
+          name: scheduler-executor-pr-${{ env.PR_NUMBER }}
+          chart-repository: https://techops-services.github.io/helm-charts
+          version: 0.2.1
+          atomic: true
+
+      - name: Deploy SC Event Worker with Helm
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.10
+        with:
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          config-files: ${{ github.workspace }}/sc-event-worker-pr-${{ env.PR_NUMBER }}.yaml
+          chart-path: techops-services/common
+          namespace: ${{ env.NAMESPACE }}
+          timeout: 5m0s
+          name: events-worker-pr-${{ env.PR_NUMBER }}
+          chart-repository: https://techops-services.github.io/helm-charts
+          version: 0.2.1
+          atomic: true
+
+      - name: Deploy SC Event Tracker with Helm
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.10
+        with:
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          config-files: ${{ github.workspace }}/sc-event-tracker-pr-${{ env.PR_NUMBER }}.yaml
+          chart-path: techops-services/common
+          namespace: ${{ env.NAMESPACE }}
+          timeout: 5m0s
+          name: events-tracker-pr-${{ env.PR_NUMBER }}
+          chart-repository: https://techops-services.github.io/helm-charts
+          version: 0.2.1
+          atomic: true
+
       - name: Get deployment status
         if: always()
         run: |
           echo "=== Deployment Status ==="
           kubectl get all -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "=== Helm Releases ==="
+          helm list -n ${{ env.NAMESPACE }}
           echo ""
           echo "=== Ingress ==="
           kubectl get ingress -n ${{ env.NAMESPACE }}
@@ -267,9 +347,14 @@ jobs:
             - 🔢 Commit: \`${{ github.event.pull_request.head.sha }}\`
 
             **Components:**
-            - ✅ Keeperhub Application
-            - ✅ PostgreSQL Database (isolated instance)
-            - ✅ LocalStack (SQS emulation)
+            - Keeperhub Application
+            - PostgreSQL Database (isolated instance)
+            - LocalStack (SQS emulation)
+            - Redis (isolated instance)
+            - Scheduler Dispatcher (staging image)
+            - Scheduler Executor (staging image)
+            - SC Event Tracker (staging image)
+            - SC Event Worker (staging image)
 
             The environment will be automatically cleaned up when this PR is closed or merged.
             `;

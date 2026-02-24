@@ -567,6 +567,24 @@ export async function GET(request: Request) {
       },
     },
 
+    // Tags - workflow labeling
+    tags: {
+      description:
+        "Workflows can be labeled with a single tag per workflow. Tags are organization-scoped and have a name and color. Use tagId when creating or updating workflows to assign a tag.",
+      endpoints: {
+        list: "GET /api/tags - List all tags for the org (includes workflowCount)",
+        create:
+          "POST /api/tags - Create tag with { name, color } (color is required, e.g. '#4A90D9')",
+        update: "PATCH /api/tags/:id - Update tag name/color",
+        delete:
+          "DELETE /api/tags/:id - Delete tag (workflows lose their tag assignment)",
+      },
+      workflowFields: {
+        tagId:
+          "string | null - Optional tag ID to assign to the workflow. Pass null to unassign. Each workflow can have at most one tag.",
+      },
+    },
+
     // Tips for AI workflow generation
     tips: [
       "actionType must match exactly (e.g., 'web3/check-balance', not 'Get Wallet Balance')",
@@ -580,6 +598,7 @@ export async function GET(request: Request) {
       "web3 write actions (transfer-funds, write-contract) require wallet integration",
       'tokenConfig must be a JSON string with format: {"mode":"custom","customToken":{"address":"0x...","symbol":"USDC"}} -- do NOT use a flat {address, symbol, decimals} object',
       "Use projectId to organize related workflows into a project (e.g., all Sky ESM workflows in one project)",
+      "Use tagId to label a workflow with a single tag (e.g., 'production', 'monitoring'). Each workflow supports one tag. Fetch available tags from GET /api/tags first.",
       `Use {{@${BUILTIN_NODE_ID}:${BUILTIN_NODE_LABEL}.unixTimestamp}} for current time comparisons in conditions (e.g., checking if a contract timestamp has passed)`,
       "All trigger types expose a 'triggeredAt' output field (ISO timestamp). Reference it with {{@triggerId:TriggerLabel.data.triggeredAt}} to include when the workflow fired.",
     ],

@@ -786,6 +786,7 @@ export type Tag = {
   color: string;
   workflowCount: number;
   organizationId: string;
+  userId: string;
   createdAt: string;
   updatedAt: string;
 };

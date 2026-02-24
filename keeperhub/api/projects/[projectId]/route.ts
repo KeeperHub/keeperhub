@@ -1,7 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { getOrgContext } from "@/keeperhub/lib/middleware/org-context";
-import { auth } from "@/lib/auth";
+import { resolveOrganizationId } from "@/keeperhub/lib/middleware/auth-helpers";
 import { db } from "@/lib/db";
 import { projects } from "@/lib/db/schema";
 
@@ -12,23 +11,15 @@ export async function PATCH(
   try {
     const { projectId } = await context.params;
 
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
-
-    if (!session?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const orgContext = await getOrgContext();
-    const organizationId = orgContext.organization?.id;
-
-    if (!organizationId) {
+    const authResult = await resolveOrganizationId(request);
+    if ("error" in authResult) {
       return NextResponse.json(
-        { error: "No active organization" },
-        { status: 400 }
+        { error: authResult.error },
+        { status: authResult.status }
       );
     }
+
+    const { organizationId } = authResult;
 
     const body = await request.json().catch(() => ({}));
 
@@ -94,23 +85,15 @@ export async function DELETE(
   try {
     const { projectId } = await context.params;
 
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
-
-    if (!session?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const orgContext = await getOrgContext();
-    const organizationId = orgContext.organization?.id;
-
-    if (!organizationId) {
+    const authResult = await resolveOrganizationId(request);
+    if ("error" in authResult) {
       return NextResponse.json(
-        { error: "No active organization" },
-        { status: 400 }
+        { error: authResult.error },
+        { status: authResult.status }
       );
     }
+
+    const { organizationId } = authResult;
 
     const result = await db
       .delete(projects)

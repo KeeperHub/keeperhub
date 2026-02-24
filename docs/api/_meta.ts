@@ -3,6 +3,8 @@ export default {
   authentication: "Authentication",
   workflows: "Workflows",
   executions: "Executions",
+  "direct-execution": "Direct Execution",
+  analytics: "Analytics",
   integrations: "Integrations",
   projects: "Projects",
   tags: "Tags",

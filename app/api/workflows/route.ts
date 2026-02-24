@@ -40,6 +40,7 @@ export async function GET(request: Request) {
     // Optional projectId filter
     const { searchParams } = new URL(request.url);
     const projectIdFilter = searchParams.get("projectId");
+    const tagIdFilter = searchParams.get("tagId");
 
     const conditions =
       !organizationId && userId
@@ -51,6 +52,9 @@ export async function GET(request: Request) {
 
     if (projectIdFilter) {
       conditions.push(eq(workflows.projectId, projectIdFilter));
+    }
+    if (tagIdFilter) {
+      conditions.push(eq(workflows.tagId, tagIdFilter));
     }
 
     const userWorkflows = await db

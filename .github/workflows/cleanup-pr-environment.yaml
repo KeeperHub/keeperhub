@@ -79,18 +79,17 @@ jobs:
           echo "=== PostgreSQL Clusters ==="
           kubectl get clusters -n ${{ env.NAMESPACE }} || true
 
-      - name: Delete Helm release
+      - name: Delete all Helm releases
         if: steps.check-namespace.outputs.exists == 'true'
         run: |
-          # Check if Helm release exists
-          if helm list -n ${{ env.NAMESPACE }} | grep -q "keeperhub-pr-${{ env.PR_NUMBER }}"; then
-            echo "Deleting Helm release keeperhub-pr-${{ env.PR_NUMBER }}"
-            helm uninstall keeperhub-pr-${{ env.PR_NUMBER }} -n ${{ env.NAMESPACE }} --wait --timeout 5m || {
-              echo "Warning: Helm uninstall failed or timed out, proceeding with namespace deletion"
+          echo "Listing Helm releases in namespace ${{ env.NAMESPACE }}:"
+          helm list -n ${{ env.NAMESPACE }}
+          for release in $(helm list -n ${{ env.NAMESPACE }} -q 2>/dev/null); do
+            echo "Uninstalling Helm release: $release"
+            helm uninstall "$release" -n ${{ env.NAMESPACE }} --wait --timeout 5m || {
+              echo "Warning: Failed to uninstall $release, continuing with cleanup..."
             }
-          else
-            echo "No Helm release found for keeperhub-pr-${{ env.PR_NUMBER }}"
-          fi
+          done
 
       - name: Delete PostgreSQL cluster
         if: steps.check-namespace.outputs.exists == 'true'
@@ -144,11 +143,11 @@ jobs:
             The PR environment has been successfully deleted.
 
             **Deleted Resources:**
-            - 🗑️ Namespace: \`${namespace}\`
-            - 🗑️ Keeperhub Application
-            - 🗑️ PostgreSQL Database (including data)
-            - 🗑️ LocalStack
-            - 🗑️ All associated secrets and configs
+            - Namespace: \`${namespace}\`
+            - All Helm releases (Keeperhub, Scheduler, Event services)
+            - PostgreSQL Database (including data)
+            - LocalStack, Redis
+            - All associated secrets and configs
 
             All resources have been cleaned up and will no longer incur costs.
             `;

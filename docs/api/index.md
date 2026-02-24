@@ -52,8 +52,11 @@ API requests are subject to rate limiting. Current limits:
 |----------|-------------|
 | [Workflows](/api/workflows) | Create, read, update, delete workflows |
 | [Executions](/api/executions) | Monitor workflow execution status and logs |
+| [Direct Execution](/api/direct-execution) | Execute blockchain transactions without workflows |
+| [Analytics](/api/analytics) | Workflow performance metrics and gas usage tracking |
 | [Integrations](/api/integrations) | Manage notification and service integrations |
 | [Projects](/api/projects) | Organize workflows into projects |
+| [Tags](/api/tags) | Label and categorize workflows |
 | [Chains](/api/chains) | List supported blockchain networks |
 | [User](/api/user) | User profile, preferences, and address book |
 | [Organizations](/api/organizations) | Organization membership management |

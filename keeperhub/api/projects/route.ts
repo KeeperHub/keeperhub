@@ -1,6 +1,7 @@
 import { count, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { authenticateApiKey } from "@/keeperhub/lib/api-key-auth";
+import { resolveCreatorContext } from "@/keeperhub/lib/middleware/auth-helpers";
 import { getOrgContext } from "@/keeperhub/lib/middleware/org-context";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -82,23 +83,14 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
-
-    if (!session?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const context = await getOrgContext();
-    const organizationId = context.organization?.id;
-
-    if (!organizationId) {
+    const resolved = await resolveCreatorContext(request);
+    if ("error" in resolved) {
       return NextResponse.json(
-        { error: "No active organization" },
-        { status: 400 }
+        { error: resolved.error },
+        { status: resolved.status }
       );
     }
+    const { organizationId, userId: creatorUserId } = resolved;
 
     const body = await request.json().catch(() => ({}));
     const name = body.name?.trim();
@@ -122,7 +114,7 @@ export async function POST(request: Request) {
         description: body.description?.trim() || null,
         color,
         organizationId,
-        userId: session.user.id,
+        userId: creatorUserId,
       })
       .returning();
 

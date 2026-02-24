@@ -1,0 +1,86 @@
+# SC Event Worker for PR environments
+# Uses pre-built staging image (from keeperhub-events submodule)
+# Variables to be replaced: ${PR_NUMBER}, ${ECR_REGISTRY}
+
+replicaCount: 1
+
+service:
+  enabled: true
+  name: sc-event-worker-pr-${PR_NUMBER}
+  port: 3010
+  type: ClusterIP
+  containerPort: 3010
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/sc-event-worker-staging
+  tag: app-latest
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+
+serviceAccount:
+  create: false
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+serviceMonitors:
+  enabled: false
+
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+env:
+  NODE_ENV:
+    type: kv
+    value: "production"
+  LOG_LEVEL:
+    type: kv
+    value: "info"
+  PORT:
+    type: parameterStore
+    name: worker-port
+    parameter_name: /eks/maker-staging/keeperhub-events/worker-port
+  KEEPERHUB_API_URL:
+    type: kv
+    value: "http://keeperhub-pr-${PR_NUMBER}-common:3000"
+  KEEPERHUB_API_KEY:
+    type: parameterStore
+    name: keeperhub-api-key
+    parameter_name: /eks/maker-staging/keeperhub-events/keeperhub-api-key
+  TIMEOUT_BETWEEN_SYNC:
+    type: parameterStore
+    name: timeout-between-sync
+    parameter_name: /eks/maker-staging/keeperhub-events/timeout-between-sync
+  JWT_TOKEN_USERNAME:
+    type: parameterStore
+    name: jwt-token-username
+    parameter_name: /eks/maker-staging/keeperhub-events/jwt-token-username
+  JWT_TOKEN_PASSWORD:
+    type: parameterStore
+    name: jwt-token-password
+    parameter_name: /eks/maker-staging/keeperhub-events/jwt-token-password
+
+externalSecrets:
+  clusterSecretStoreName: maker-staging
+
+livenessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 30
+  tcpSocket:
+    port: 3010
+readinessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 30
+  tcpSocket:
+    port: 3010

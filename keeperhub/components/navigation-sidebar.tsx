@@ -638,7 +638,12 @@ export function NavigationSidebar(): React.ReactNode {
       href: null,
     },
     { id: "hub", icon: Globe, label: "Hub", href: "/hub" as string | null },
-    { id: "analytics", icon: BarChart3, label: "Analytics", href: null },
+    {
+      id: "analytics",
+      icon: BarChart3,
+      label: "Analytics",
+      href: "/analytics" as string | null,
+    },
   ];
 
   return (

@@ -8,7 +8,7 @@ import { getOrgContext } from "@/keeperhub/lib/middleware/org-context";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { validateWorkflowIntegrations } from "@/lib/db/integrations";
-import { workflows } from "@/lib/db/schema";
+import { projects, tags, workflows } from "@/lib/db/schema";
 import { generateId } from "@/lib/utils/id";
 
 // end keeperhub code //
@@ -175,6 +175,52 @@ export async function POST(request: Request) {
       userId,
       organizationId
     );
+
+    // Validate projectId/tagId ownership when provided
+    if (body.projectId !== undefined || body.tagId !== undefined) {
+      if (isAnonymous) {
+        return NextResponse.json(
+          { error: "Cannot assign project or tag without an organization" },
+          { status: 400 }
+        );
+      }
+
+      if (body.projectId) {
+        const projRows = await db
+          .select({ id: projects.id })
+          .from(projects)
+          .where(
+            and(
+              eq(projects.id, body.projectId),
+              eq(projects.organizationId, organizationId ?? "")
+            )
+          );
+        if (projRows.length === 0) {
+          return NextResponse.json(
+            { error: "Project not found in this organization" },
+            { status: 404 }
+          );
+        }
+      }
+
+      if (body.tagId) {
+        const tagRows = await db
+          .select({ id: tags.id })
+          .from(tags)
+          .where(
+            and(
+              eq(tags.id, body.tagId),
+              eq(tags.organizationId, organizationId ?? "")
+            )
+          );
+        if (tagRows.length === 0) {
+          return NextResponse.json(
+            { error: "Tag not found in this organization" },
+            { status: 404 }
+          );
+        }
+      }
+    }
     // end keeperhub code //
 
     // Generate workflow ID first
@@ -193,6 +239,7 @@ export async function POST(request: Request) {
         organizationId,
         isAnonymous,
         projectId: body.projectId || null,
+        tagId: body.tagId || null,
         // end keeperhub code //
       })
       .returning();

@@ -13,37 +13,36 @@ Manage workflows programmatically.
 GET /api/workflows
 ```
 
-Returns all workflows for the authenticated user.
+Returns all workflows for the authenticated user (session) or organization (API key).
 
 ### Query Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `projectId` | string | Optional. Filter workflows by project ID |
+| `tagId` | string | Optional. Filter workflows by tag ID |
 
 ### Example
 
 ```http
-GET /api/workflows?projectId=proj_123
+GET /api/workflows?projectId=proj_123&tagId=tag_456
 ```
 
 ### Response
 
 ```json
-{
-  "data": [
-    {
-      "id": "wf_123",
-      "name": "My Workflow",
-      "description": "Monitors ETH balance",
-      "visibility": "private",
-      "nodes": [...],
-      "edges": [...],
-      "createdAt": "2024-01-01T00:00:00Z",
-      "updatedAt": "2024-01-01T00:00:00Z"
-    }
-  ]
-}
+[
+  {
+    "id": "wf_123",
+    "name": "My Workflow",
+    "description": "Monitors ETH balance",
+    "visibility": "private",
+    "nodes": [],
+    "edges": [],
+    "createdAt": "2024-01-01T00:00:00Z",
+    "updatedAt": "2024-01-01T00:00:00Z"
+  }
+]
 ```
 
 ## Get Workflow
@@ -82,7 +81,7 @@ Public workflows include a `publicTags` array showing all assigned tags.
 ## Create Workflow
 
 ```http
-POST /api/workflows
+POST /api/workflows/create
 ```
 
 ### Request Body
@@ -214,12 +213,14 @@ The `name` is required. `publicTagIds` is an array of public tag IDs to associat
 GET /api/workflows/public
 ```
 
-Returns all public workflows with optional tag filtering.
+Returns all public workflows with optional filtering.
 
 ### Query Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `featured` | boolean | Optional. Filter for featured workflows (`?featured=true`) |
+| `featuredProtocol` | string | Optional. Filter for protocol-featured workflows (e.g., `?featuredProtocol=sky`) |
 | `tag` | string | Optional. Filter by public tag slug (e.g., "defi", "nft") |
 
 ### Response

@@ -102,17 +102,11 @@ podAnnotations:
   reloader.stakater.com/auto: "true"
 
 serviceMonitors:
-  enabled: true
-  monitors:
-    - name: keeperhub-metrics
-      port: http
-      path: /api/metrics
-      interval: 30s
-      scrapeTimeout: 10s
+  enabled: false
 
 resources:
   limits:
-    memory: 1Gi
+    memory: 2Gi
   requests:
     cpu: 1m
     memory: 256Mi
@@ -127,7 +121,10 @@ env:
     value: "prometheus"
   NODE_OPTIONS:
     type: kv
-    value: "--enable-source-maps --trace-warnings"
+    value: "--enable-source-maps --trace-warnings --trace-uncaught --trace-exit"
+  NODE_ENV:
+    type: kv
+    value: "development"
   HOSTNAME:
     type: kv
     value: "0.0.0.0"
@@ -244,6 +241,10 @@ env:
     type: parameterStore
     name: scheduler-service-api-key
     parameter_name: /eks/maker-staging/keeperhub-scheduler/keeperhub-api-key
+  HUB_SERVICE_API_KEY:
+    type: parameterStore
+    name: hub-service-api-key
+    parameter_name: /eks/maker-staging/keeperhub-hub/keeperhub-api-key
   # PR-specific SQS configuration (using LocalStack)
   AWS_REGION:
     type: kv

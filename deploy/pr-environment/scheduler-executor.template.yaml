@@ -1,0 +1,89 @@
+# Scheduler Executor for PR environments
+# Uses pre-built staging image (from keeperhub-scheduler submodule)
+# Variables to be replaced: ${PR_NUMBER}, ${ECR_REGISTRY}
+
+replicaCount: 1
+
+service:
+  enabled: true
+  name: scheduler-executor-pr-${PR_NUMBER}
+  type: ClusterIP
+  port: 3000
+  containerPort: 3000
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-scheduler-staging
+  tag: executor-latest
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+
+serviceAccount:
+  create: false
+  name: keeperhub-pr-${PR_NUMBER}
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+serviceMonitors:
+  enabled: false
+
+resources:
+  limits:
+    memory: 512Mi
+    cpu: 500m
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+command: ["/bin/sh"]
+args:
+  - "-c"
+  - |
+    echo "$(date) - [Executor] Starting..."
+    tsx schedule-executor/index.ts
+
+env:
+  KEEPERHUB_API_URL:
+    type: kv
+    value: "http://keeperhub-pr-${PR_NUMBER}-common:3000"
+  KEEPERHUB_API_KEY:
+    type: parameterStore
+    name: scheduler-service-api-key
+    parameter_name: /eks/maker-staging/keeperhub-scheduler/keeperhub-api-key
+  AWS_REGION:
+    type: kv
+    value: "us-east-1"
+  AWS_ENDPOINT_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566"
+  SQS_QUEUE_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566/000000000000/keeperhub-workflow-queue"
+  HEALTH_PORT:
+    type: kv
+    value: "3000"
+
+externalSecrets:
+  clusterSecretStoreName: maker-staging
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 10
+  periodSeconds: 10

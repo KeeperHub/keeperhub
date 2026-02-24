@@ -98,6 +98,7 @@
     "react": "19.2.1",
     "react-dom": "19.2.1",
     "react-resizable-panels": "^3.0.6",
+    "recharts": "^3.7.0",
     "require-in-the-middle": "^8.0.1",
     "resend": "^6.4.1",
     "server-only": "^0.0.1",

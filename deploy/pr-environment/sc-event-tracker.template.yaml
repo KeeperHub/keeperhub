@@ -1,0 +1,96 @@
+# SC Event Tracker for PR environments
+# Uses pre-built staging image (from keeperhub-events submodule)
+# Variables to be replaced: ${PR_NUMBER}, ${ECR_REGISTRY}
+
+replicaCount: 1
+
+service:
+  enabled: true
+  name: sc-event-tracker-pr-${PR_NUMBER}
+  port: 3000
+  type: ClusterIP
+  containerPort: 3000
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/sc-event-tracker-staging
+  tag: app-latest
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+
+serviceAccount:
+  create: false
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+serviceMonitors:
+  enabled: false
+
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+env:
+  NODE_ENV:
+    type: kv
+    value: "production"
+  LOG_LEVEL:
+    type: kv
+    value: "info"
+  KEEPERHUB_API_URL:
+    type: kv
+    value: "http://keeperhub-pr-${PR_NUMBER}-common:3000"
+  WORKER_URL:
+    type: kv
+    value: "http://events-worker-pr-${PR_NUMBER}-common:3010"
+  REDIS_HOST:
+    type: kv
+    value: "redis.pr-${PR_NUMBER}.svc.cluster.local"
+  REDIS_PORT:
+    type: kv
+    value: "6379"
+  REDIS_PASSWORD:
+    type: kv
+    value: ""
+  JWT_TOKEN_USERNAME:
+    type: parameterStore
+    name: jwt-token-username
+    parameter_name: /eks/maker-staging/keeperhub-events/jwt-token-username
+  JWT_TOKEN_PASSWORD:
+    type: parameterStore
+    name: jwt-token-password
+    parameter_name: /eks/maker-staging/keeperhub-events/jwt-token-password
+  ETHERSCAN_API_KEY:
+    type: parameterStore
+    name: etherscan-api-key
+    parameter_name: /eks/maker-staging/keeper-app/etherscan-api-key
+
+externalSecrets:
+  clusterSecretStoreName: maker-staging
+
+livenessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  exec:
+    command:
+      - node
+      - -e
+      - "process.exit(0)"
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  exec:
+    command:
+      - node
+      - -e
+      - "process.exit(0)"

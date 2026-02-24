@@ -1233,7 +1233,12 @@ export function WorkflowRuns({
 
               <button
                 className="min-w-0 flex-1 text-left transition-colors hover:opacity-80"
-                onClick={() => selectRun(execution.id)}
+                // start custom keeperhub code //
+                onClick={() => {
+                  selectRun(execution.id);
+                  toggleRun(execution.id);
+                }}
+                // end keeperhub code //
                 type="button"
               >
                 <div className="mb-1 flex items-center gap-2">
