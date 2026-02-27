@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   collapseRetries,
   type RetryLogFields,
@@ -10,16 +10,23 @@ import {
 
 let logCounter = 0;
 
+const BASE_TIME = new Date("2025-01-01T00:00:00Z");
+
 function makeLog(overrides: Partial<RetryLogFields> = {}): RetryLogFields {
   logCounter += 1;
   return {
     nodeId: `node-${logCounter}`,
     status: "success",
+    startedAt: new Date(BASE_TIME.getTime() + logCounter * 1000),
     iterationIndex: null,
     forEachNodeId: null,
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  logCounter = 0;
+});
 
 // ---------------------------------------------------------------------------
 // collapseRetries
@@ -49,8 +56,16 @@ describe("collapseRetries", () => {
 
   it("collapses two logs with the same nodeId into one with retryCount=1", () => {
     const logs = [
-      makeLog({ nodeId: "write-1", status: "error" }),
-      makeLog({ nodeId: "write-1", status: "success" }),
+      makeLog({
+        nodeId: "write-1",
+        status: "error",
+        startedAt: new Date("2025-01-01T00:00:01Z"),
+      }),
+      makeLog({
+        nodeId: "write-1",
+        status: "success",
+        startedAt: new Date("2025-01-01T00:00:02Z"),
+      }),
     ];
 
     const result = collapseRetries(logs);
@@ -65,9 +80,21 @@ describe("collapseRetries", () => {
 
   it("collapses three logs (2 failures + 1 success) into retryCount=2", () => {
     const logs = [
-      makeLog({ nodeId: "write-1", status: "error" }),
-      makeLog({ nodeId: "write-1", status: "error" }),
-      makeLog({ nodeId: "write-1", status: "success" }),
+      makeLog({
+        nodeId: "write-1",
+        status: "error",
+        startedAt: new Date("2025-01-01T00:00:01Z"),
+      }),
+      makeLog({
+        nodeId: "write-1",
+        status: "error",
+        startedAt: new Date("2025-01-01T00:00:02Z"),
+      }),
+      makeLog({
+        nodeId: "write-1",
+        status: "success",
+        startedAt: new Date("2025-01-01T00:00:03Z"),
+      }),
     ];
 
     const result = collapseRetries(logs);
@@ -78,11 +105,23 @@ describe("collapseRetries", () => {
     expect(result[0].retryLogs).toHaveLength(2);
   });
 
-  it("collapses all-failed retries using last attempt as display entry", () => {
+  it("collapses all-failed retries using latest attempt as display entry", () => {
     const logs = [
-      makeLog({ nodeId: "write-1", status: "error" }),
-      makeLog({ nodeId: "write-1", status: "error" }),
-      makeLog({ nodeId: "write-1", status: "error" }),
+      makeLog({
+        nodeId: "write-1",
+        status: "error",
+        startedAt: new Date("2025-01-01T00:00:01Z"),
+      }),
+      makeLog({
+        nodeId: "write-1",
+        status: "error",
+        startedAt: new Date("2025-01-01T00:00:02Z"),
+      }),
+      makeLog({
+        nodeId: "write-1",
+        status: "error",
+        startedAt: new Date("2025-01-01T00:00:03Z"),
+      }),
     ];
 
     const result = collapseRetries(logs);
@@ -197,5 +236,37 @@ describe("collapseRetries", () => {
     const result = collapseRetries(logs);
 
     expect(result.map((r) => r.nodeId)).toEqual(["a", "b", "c"]);
+  });
+
+  it("selects the latest attempt when logs arrive in reverse chronological order", () => {
+    const logs = [
+      makeLog({
+        nodeId: "write-1",
+        status: "success",
+        startedAt: new Date("2025-01-01T00:00:03Z"),
+      }),
+      makeLog({
+        nodeId: "write-1",
+        status: "error",
+        startedAt: new Date("2025-01-01T00:00:02Z"),
+      }),
+      makeLog({
+        nodeId: "write-1",
+        status: "error",
+        startedAt: new Date("2025-01-01T00:00:01Z"),
+      }),
+    ];
+
+    const result = collapseRetries(logs);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].status).toBe("success");
+    expect(result[0].retryCount).toBe(2);
+    expect(result[0].retryLogs?.[0].startedAt).toEqual(
+      new Date("2025-01-01T00:00:01Z")
+    );
+    expect(result[0].retryLogs?.[1].startedAt).toEqual(
+      new Date("2025-01-01T00:00:02Z")
+    );
   });
 });

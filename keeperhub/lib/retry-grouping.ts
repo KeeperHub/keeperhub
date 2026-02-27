@@ -15,6 +15,7 @@
 export type RetryLogFields = {
   nodeId: string;
   status: string;
+  startedAt: Date;
   iterationIndex: number | null;
   forEachNodeId: string | null;
 };
@@ -43,8 +44,9 @@ function retryKey(log: RetryLogFields): string {
  *
  * Groups logs by (nodeId, forEachNodeId, iterationIndex). When multiple
  * logs share the same key, they represent retry attempts of the same step.
- * The **last** entry (final attempt) becomes the display entry. Earlier
- * entries are stored in `retryLogs` for optional expansion.
+ * Each group is sorted by `startedAt` ascending so the latest attempt
+ * becomes the display entry regardless of the input order (the API may
+ * return logs newest-first). Earlier attempts are stored in `retryLogs`.
  *
  * Preserves original ordering based on the first occurrence of each group.
  */
@@ -76,9 +78,12 @@ export function collapseRetries<T extends RetryLogFields>(
     if (group.length === 1) {
       result.push({ ...group[0], retryCount: 0 });
     } else {
-      // group.length >= 2 guaranteed by the if/else above
-      const finalAttempt = group.at(-1) as T;
-      const failedAttempts = group.slice(0, -1);
+      const sorted = group.toSorted(
+        (a, b) =>
+          new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
+      );
+      const finalAttempt = sorted.at(-1) as T;
+      const failedAttempts = sorted.slice(0, -1);
       result.push({
         ...finalAttempt,
         retryCount: failedAttempts.length,
