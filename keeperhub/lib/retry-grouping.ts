@@ -26,14 +26,45 @@ function retryKey(log: RetryLogFields): string {
   return `${log.nodeId}::${forEach}::${iteration}`;
 }
 
+function collapseGroup<T extends RetryLogFields>(
+  group: T[]
+): RetryCollapsedLog<T>[] {
+  if (group.length === 1) {
+    return [{ ...group[0], retryCount: 0 }];
+  }
+
+  const sorted = [...group].sort(
+    (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
+  );
+
+  const hasFailedPrecursors = sorted
+    .slice(0, -1)
+    .some((log) => log.status === "error");
+
+  if (!hasFailedPrecursors) {
+    return sorted.map((log) => ({ ...log, retryCount: 0 }));
+  }
+
+  const finalAttempt = sorted.at(-1);
+  if (!finalAttempt) {
+    return [];
+  }
+  const failedAttempts = sorted.slice(0, -1);
+  return [
+    {
+      ...finalAttempt,
+      retryCount: failedAttempts.length,
+      retryLogs: failedAttempts,
+    },
+  ];
+}
+
 /**
  * Collapse retry entries in a flat log array.
  *
  * Groups logs by (nodeId, forEachNodeId, iterationIndex). When multiple
- * logs share the same key, they represent retry attempts of the same step.
- * Each group is sorted by `startedAt` ascending so the latest attempt
- * becomes the display entry regardless of the input order (the API may
- * return logs newest-first). Earlier attempts are stored in `retryLogs`.
+ * logs share the same key and earlier attempts have error status, they
+ * are collapsed into a single entry showing the final result.
  *
  * Preserves original ordering based on the first occurrence of each group.
  */
@@ -61,35 +92,7 @@ export function collapseRetries<T extends RetryLogFields>(
     if (!group) {
       continue;
     }
-
-    if (group.length === 1) {
-      result.push({ ...group[0], retryCount: 0 });
-      continue;
-    }
-
-    const sorted = [...group].sort(
-      (a, b) =>
-        new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
-    );
-
-    const hasFailedPrecursors = sorted
-      .slice(0, -1)
-      .some((log) => log.status === "error");
-
-    if (!hasFailedPrecursors) {
-      for (const log of sorted) {
-        result.push({ ...log, retryCount: 0 });
-      }
-      continue;
-    }
-
-    const finalAttempt = sorted[sorted.length - 1];
-    const failedAttempts = sorted.slice(0, -1);
-    result.push({
-      ...finalAttempt,
-      retryCount: failedAttempts.length,
-      retryLogs: failedAttempts,
-    });
+    result.push(...collapseGroup(group));
   }
 
   return result;
