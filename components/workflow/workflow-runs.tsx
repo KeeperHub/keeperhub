@@ -1215,6 +1215,9 @@ export function WorkflowRuns({
             new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
           );
         });
+        // start custom keeperhub code //
+        const collapsedLogs = collapseRetries(executionLogs);
+        // end keeperhub code //
 
         return (
           <div
@@ -1268,15 +1271,17 @@ export function WorkflowRuns({
                       </span>
                     </>
                   )}
-                  {executionLogs.length > 0 && (
+                  {/* start custom keeperhub code */}
+                  {collapsedLogs.length > 0 && (
                     <>
                       <span>•</span>
                       <span>
-                        {executionLogs.length}{" "}
-                        {executionLogs.length === 1 ? "step" : "steps"}
+                        {collapsedLogs.length}{" "}
+                        {collapsedLogs.length === 1 ? "step" : "steps"}
                       </span>
                     </>
                   )}
+                  {/* end keeperhub code */}
                 </div>
               </button>
 
@@ -1311,7 +1316,6 @@ export function WorkflowRuns({
                   <div className="p-4">
                     {/* start custom keeperhub code */}
                     {(() => {
-                      const collapsedLogs = collapseRetries(executionLogs);
                       const lookup = buildChildLogsLookup(collapsedLogs);
                       const grouped = groupLogsByIteration(collapsedLogs, lookup);
                       return grouped.map(
