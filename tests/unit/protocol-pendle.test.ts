@@ -128,6 +128,46 @@ describe("Pendle Finance Protocol Definition", () => {
     }
   });
 
+  it("all event slugs are valid kebab-case", () => {
+    for (const event of pendleDef.events) {
+      expect(event.slug, `event slug "${event.slug}"`).toMatch(KEBAB_CASE_REGEX);
+    }
+  });
+
+  it("has no duplicate event slugs", () => {
+    const slugs = pendleDef.events.map((e) => e.slug);
+    const uniqueSlugs = new Set(slugs);
+    expect(slugs.length).toBe(uniqueSlugs.size);
+  });
+
+  it("every event references an existing contract", () => {
+    const contractKeys = new Set(Object.keys(pendleDef.contracts));
+    for (const event of pendleDef.events) {
+      expect(
+        contractKeys.has(event.contract),
+        `event "${event.slug}" references unknown contract "${event.contract}"`
+      ).toBe(true);
+    }
+  });
+
+  it("all events have at least one input", () => {
+    for (const event of pendleDef.events) {
+      expect(
+        event.inputs.length,
+        `event "${event.slug}" must have at least one input`
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("all event inputs have name and type", () => {
+    for (const event of pendleDef.events) {
+      for (const input of event.inputs) {
+        expect(input.name, `event "${event.slug}" input missing name`).toBeTruthy();
+        expect(input.type, `event "${event.slug}" input "${input.name}" missing type`).toBeTruthy();
+      }
+    }
+  });
+
   it("registers in the protocol registry and is retrievable", () => {
     registerProtocol(pendleDef);
     const retrieved = getProtocol("pendle");
