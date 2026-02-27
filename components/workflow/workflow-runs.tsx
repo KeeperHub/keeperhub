@@ -24,6 +24,7 @@ import {
   type ChildLogsLookup,
   type IterationGroup,
 } from "@/keeperhub/lib/iteration-grouping";
+import { collapseRetries } from "@/keeperhub/lib/retry-grouping";
 // end keeperhub code //
 import { api } from "@/lib/api-client";
 import {
@@ -55,6 +56,8 @@ type ExecutionLog = {
   // start custom keeperhub code //
   iterationIndex: number | null;
   forEachNodeId: string | null;
+  retryCount?: number;
+  retryLogs?: ExecutionLog[];
   // end keeperhub code //
 };
 
@@ -843,6 +846,13 @@ function ExecutionLogEntry({
                 <span className="truncate font-medium text-sm transition-colors group-hover:text-foreground">
                   {log.nodeName || log.nodeType}
                 </span>
+                {/* start custom keeperhub code */}
+                {log.retryCount != null && log.retryCount > 0 && (
+                  <span className="shrink-0 rounded-sm bg-amber-500/10 px-1.5 py-0.5 font-mono text-amber-600 text-[10px]">
+                    retried {log.retryCount}x
+                  </span>
+                )}
+                {/* end keeperhub code */}
               </div>
             </div>
 
@@ -1301,8 +1311,9 @@ export function WorkflowRuns({
                   <div className="p-4">
                     {/* start custom keeperhub code */}
                     {(() => {
-                      const lookup = buildChildLogsLookup(executionLogs);
-                      const grouped = groupLogsByIteration(executionLogs, lookup);
+                      const collapsedLogs = collapseRetries(executionLogs);
+                      const lookup = buildChildLogsLookup(collapsedLogs);
+                      const grouped = groupLogsByIteration(collapsedLogs, lookup);
                       return grouped.map(
                         (entry, entryIndex, entries) => {
                           if (entry.type === FOR_EACH_GROUP_TYPE) {
