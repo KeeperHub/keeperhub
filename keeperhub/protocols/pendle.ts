@@ -258,7 +258,7 @@ export default defineProtocol({
       function: "positionData",
       inputs: [{ name: "user", type: "address", label: "Wallet Address" }],
       outputs: [
-        { name: "amount", type: "uint128", label: "Locked PENDLE Amount" },
+        { name: "amount", type: "uint128", label: "Locked PENDLE Amount", decimals: 18 },
         { name: "expiry", type: "uint128", label: "Lock Expiry Timestamp" },
       ],
     },
