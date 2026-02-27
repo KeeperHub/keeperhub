@@ -8,7 +8,7 @@
  *
  * Shared by:
  *   - components/workflow/workflow-runs.tsx (UI rendering)
- *   - keeperhub/lib/__tests__/retry-grouping.test.ts
+ *   - tests/unit/retry-grouping.test.ts
  */
 
 /** Minimal fields required from a log entry for retry detection. */
