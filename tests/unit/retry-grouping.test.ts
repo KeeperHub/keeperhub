@@ -238,6 +238,28 @@ describe("collapseRetries", () => {
     expect(result.map((r) => r.nodeId)).toEqual(["a", "b", "c"]);
   });
 
+  it("does not collapse multiple successful runs of the same node", () => {
+    const logs = [
+      makeLog({
+        nodeId: "write-1",
+        status: "success",
+        startedAt: new Date("2025-01-01T00:00:01Z"),
+      }),
+      makeLog({
+        nodeId: "write-1",
+        status: "success",
+        startedAt: new Date("2025-01-01T00:00:02Z"),
+      }),
+    ];
+
+    const result = collapseRetries(logs);
+
+    expect(result).toHaveLength(2);
+    for (const entry of result) {
+      expect(entry.retryCount).toBe(0);
+    }
+  });
+
   it("selects the latest attempt when logs arrive in reverse chronological order", () => {
     const logs = [
       makeLog({

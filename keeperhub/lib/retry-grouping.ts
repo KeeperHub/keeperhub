@@ -77,19 +77,32 @@ export function collapseRetries<T extends RetryLogFields>(
 
     if (group.length === 1) {
       result.push({ ...group[0], retryCount: 0 });
-    } else {
-      const sorted = group.toSorted(
-        (a, b) =>
-          new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
-      );
-      const finalAttempt = sorted.at(-1) as T;
-      const failedAttempts = sorted.slice(0, -1);
-      result.push({
-        ...finalAttempt,
-        retryCount: failedAttempts.length,
-        retryLogs: failedAttempts,
-      });
+      continue;
     }
+
+    const sorted = [...group].sort(
+      (a, b) =>
+        new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
+    );
+
+    const hasFailedPrecursors = sorted
+      .slice(0, -1)
+      .some((log) => log.status === "error");
+
+    if (!hasFailedPrecursors) {
+      for (const log of sorted) {
+        result.push({ ...log, retryCount: 0 });
+      }
+      continue;
+    }
+
+    const finalAttempt = sorted[sorted.length - 1];
+    const failedAttempts = sorted.slice(0, -1);
+    result.push({
+      ...finalAttempt,
+      retryCount: failedAttempts.length,
+      retryLogs: failedAttempts,
+    });
   }
 
   return result;
