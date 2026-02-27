@@ -847,7 +847,7 @@ function ExecutionLogEntry({
                   {log.nodeName || log.nodeType}
                 </span>
                 {/* start custom keeperhub code */}
-                {log.retryCount != null && log.retryCount > 0 && (
+                {(log.retryCount ?? 0) > 0 && (
                   <span className="shrink-0 rounded-sm bg-amber-500/10 px-1.5 py-0.5 font-mono text-amber-600 text-[10px]">
                     retried {log.retryCount}x
                   </span>
