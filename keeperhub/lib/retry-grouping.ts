@@ -1,16 +1,3 @@
-/**
- * Pure helper functions for collapsing retry logs in execution history.
- *
- * When the Workflow DevKit retries a failed step, each attempt creates a
- * separate workflowExecutionLogs row with the same nodeId. This module
- * collapses those duplicate entries into a single log showing the final
- * result with a retry count badge.
- *
- * Shared by:
- *   - components/workflow/workflow-runs.tsx (UI rendering)
- *   - tests/unit/retry-grouping.test.ts
- */
-
 /** Minimal fields required from a log entry for retry detection. */
 export type RetryLogFields = {
   nodeId: string;
