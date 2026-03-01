@@ -122,9 +122,10 @@ function isBase64ImageOutput(output: unknown): output is { base64: string } {
 }
 
 // Helper to convert execution logs to a map by nodeId for the global atom.
-// For nodes that appear multiple times (e.g., For Each body nodes),
-// this intentionally keeps only the last entry -- used by template
-// autocomplete which only needs the most recent output.
+// For nodes that appear multiple times (e.g., For Each body nodes or
+// retry attempts), this intentionally keeps only the last entry -- used
+// by template autocomplete which only needs the most recent output.
+// Receives uncollapsed logs so retries are naturally overwritten.
 function createExecutionLogsMap(logs: ExecutionLog[]): Record<
   string,
   {
