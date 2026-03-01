@@ -33,7 +33,7 @@ function collapseGroup<T extends RetryLogFields>(
     return [{ ...group[0], retryCount: 0 }];
   }
 
-  const sorted = [...group].sort(
+  const sorted = group.toSorted(
     (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
   );
 
