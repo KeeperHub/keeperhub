@@ -24,7 +24,10 @@ import {
   type ChildLogsLookup,
   type IterationGroup,
 } from "@/keeperhub/lib/iteration-grouping";
-import { collapseRetries } from "@/keeperhub/lib/retry-grouping";
+import {
+  collapseRetries,
+  type RetryCollapsedLog,
+} from "@/keeperhub/lib/retry-grouping";
 // end keeperhub code //
 import { api } from "@/lib/api-client";
 import {
@@ -56,10 +59,12 @@ type ExecutionLog = {
   // start custom keeperhub code //
   iterationIndex: number | null;
   forEachNodeId: string | null;
-  retryCount?: number;
-  retryLogs?: ExecutionLog[];
   // end keeperhub code //
 };
+
+// start custom keeperhub code //
+type CollapsedLog = RetryCollapsedLog<ExecutionLog>;
+// end keeperhub code //
 
 type WorkflowExecution = {
   id: string;
@@ -660,10 +665,10 @@ function ForEachLogGroup({
   isFirst,
   isLast,
 }: {
-  forEachLog: ExecutionLog;
-  iterations: IterationGroup<ExecutionLog>[];
-  collectLog: ExecutionLog | null;
-  lookup: ChildLogsLookup<ExecutionLog>;
+  forEachLog: CollapsedLog;
+  iterations: IterationGroup<CollapsedLog>[];
+  collectLog: CollapsedLog | null;
+  lookup: ChildLogsLookup<CollapsedLog>;
   expandedLogs: Set<string>;
   onToggleLog: (id: string) => void;
   getStatusIcon: (status: string) => JSX.Element;
@@ -799,7 +804,7 @@ function ExecutionLogEntry({
   isFirst,
   isLast,
 }: {
-  log: ExecutionLog;
+  log: RetryCollapsedLog<ExecutionLog>;
   isExpanded: boolean;
   onToggle: () => void;
   getStatusIcon: (status: string) => JSX.Element;
