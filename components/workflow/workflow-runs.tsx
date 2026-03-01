@@ -592,9 +592,6 @@ function ExecutionProgress({ execution }: { execution: WorkflowExecution }) {
 }
 
 // start custom keeperhub code //
-// Types and functions (ExecutionLog, IterationGroup, GroupedLogEntry,
-// buildIterationGroups, groupLogsByIteration) imported from
-// @/keeperhub/lib/iteration-grouping
 
 /** Sum the duration (ms) of all logs in an iteration. */
 function computeIterationDuration(
