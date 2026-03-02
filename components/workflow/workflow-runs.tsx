@@ -13,6 +13,14 @@ import {
   X,
 } from "lucide-react";
 import Image from "next/image";
+// start custom keeperhub code //
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+// end keeperhub code //
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toChecksumAddress } from "@/keeperhub/lib/address-utils";
@@ -792,6 +800,82 @@ function ForEachLogGroup({
 
 // end keeperhub code //
 
+// start custom keeperhub code //
+function LogDataDisplay({
+  attempt,
+}: {
+  attempt: Pick<ExecutionLog, "input" | "output" | "error">;
+}) {
+  return (
+    <>
+      {attempt.input !== null && attempt.input !== undefined && (
+        <CollapsibleSection copyData={attempt.input} title="Input">
+          <pre className="overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs leading-relaxed">
+            <JsonWithLinks data={attempt.input} />
+          </pre>
+        </CollapsibleSection>
+      )}
+      {attempt.output !== null && attempt.output !== undefined && (
+        <OutputDisplay input={attempt.input} output={attempt.output} />
+      )}
+      {attempt.error && (
+        <CollapsibleSection
+          copyData={attempt.error}
+          defaultExpanded
+          isError
+          title="Error"
+        >
+          <pre className="overflow-auto rounded-lg border border-red-500/20 bg-red-500/5 p-3 font-mono text-red-600 text-xs leading-relaxed">
+            {attempt.error}
+          </pre>
+        </CollapsibleSection>
+      )}
+      {!(attempt.input || attempt.output || attempt.error) && (
+        <div className="rounded-lg border bg-muted/30 py-4 text-center text-muted-foreground text-xs">
+          No data recorded
+        </div>
+      )}
+    </>
+  );
+}
+
+function AttemptTabs({ log }: { log: CollapsedLog }) {
+  const allAttempts = [...(log.retryLogs ?? []), log];
+  const lastIndex = String(allAttempts.length - 1);
+
+  return (
+    <Tabs defaultValue={lastIndex}>
+      <TabsList className="h-7 w-full">
+        {allAttempts.map((attempt, i) => (
+          <TabsTrigger
+            className="h-5 gap-1 px-2 text-[11px]"
+            key={attempt.id ?? i}
+            value={String(i)}
+          >
+            <span
+              className={cn(
+                "inline-block h-1.5 w-1.5 rounded-full",
+                attempt.status === "error" ? "bg-red-500" : "bg-emerald-500"
+              )}
+            />
+            Attempt {i + 1}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      {allAttempts.map((attempt, i) => (
+        <TabsContent
+          className="space-y-3"
+          key={attempt.id ?? i}
+          value={String(i)}
+        >
+          <LogDataDisplay attempt={attempt} />
+        </TabsContent>
+      ))}
+    </Tabs>
+  );
+}
+// end keeperhub code //
+
 // Component for rendering individual execution log entries
 function ExecutionLogEntry({
   log,
@@ -871,33 +955,13 @@ function ExecutionLogEntry({
 
         {isExpanded && (
           <div className="mt-2 mb-2 space-y-3 px-3">
-            {log.input !== null && log.input !== undefined && (
-              <CollapsibleSection copyData={log.input} title="Input">
-                <pre className="overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs leading-relaxed">
-                  <JsonWithLinks data={log.input} />
-                </pre>
-              </CollapsibleSection>
+            {/* start custom keeperhub code */}
+            {log.retryCount > 0 ? (
+              <AttemptTabs log={log} />
+            ) : (
+              <LogDataDisplay attempt={log} />
             )}
-            {log.output !== null && log.output !== undefined && (
-              <OutputDisplay input={log.input} output={log.output} />
-            )}
-            {log.error && (
-              <CollapsibleSection
-                copyData={log.error}
-                defaultExpanded
-                isError
-                title="Error"
-              >
-                <pre className="overflow-auto rounded-lg border border-red-500/20 bg-red-500/5 p-3 font-mono text-red-600 text-xs leading-relaxed">
-                  {log.error}
-                </pre>
-              </CollapsibleSection>
-            )}
-            {!(log.input || log.output || log.error) && (
-              <div className="rounded-lg border bg-muted/30 py-4 text-center text-muted-foreground text-xs">
-                No data recorded
-              </div>
-            )}
+            {/* end keeperhub code */}
           </div>
         )}
       </div>
