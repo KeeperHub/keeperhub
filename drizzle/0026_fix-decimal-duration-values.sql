@@ -6,5 +6,6 @@
 
 UPDATE "workflow_executions"
 SET "duration" = ROUND(CAST("duration" AS NUMERIC))::TEXT
-WHERE "duration" IS NOT NULL
+WHERE "status" = 'cancelled'
+  AND "duration" IS NOT NULL
   AND "duration" ~ '\.';
