@@ -103,16 +103,16 @@ export async function getWorkflowStatsFromDb(): Promise<WorkflowStats> {
     const durationQuery = await db
       .select({
         totalCount: count(),
-        totalSum: sql<number>`COALESCE(SUM(CAST(${workflowExecutions.duration} AS INTEGER)), 0)`,
+        totalSum: sql<number>`COALESCE(SUM(CAST(${workflowExecutions.duration} AS NUMERIC))::INTEGER, 0)`,
         // Count executions in each bucket (cumulative)
-        bucket0: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS INTEGER) <= 100 THEN 1 ELSE 0 END)`,
-        bucket1: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS INTEGER) <= 250 THEN 1 ELSE 0 END)`,
-        bucket2: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS INTEGER) <= 500 THEN 1 ELSE 0 END)`,
-        bucket3: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS INTEGER) <= 1000 THEN 1 ELSE 0 END)`,
-        bucket4: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS INTEGER) <= 2000 THEN 1 ELSE 0 END)`,
-        bucket5: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS INTEGER) <= 5000 THEN 1 ELSE 0 END)`,
-        bucket6: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS INTEGER) <= 10000 THEN 1 ELSE 0 END)`,
-        bucket7: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS INTEGER) <= 30000 THEN 1 ELSE 0 END)`,
+        bucket0: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS NUMERIC) <= 100 THEN 1 ELSE 0 END)`,
+        bucket1: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS NUMERIC) <= 250 THEN 1 ELSE 0 END)`,
+        bucket2: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS NUMERIC) <= 500 THEN 1 ELSE 0 END)`,
+        bucket3: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS NUMERIC) <= 1000 THEN 1 ELSE 0 END)`,
+        bucket4: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS NUMERIC) <= 2000 THEN 1 ELSE 0 END)`,
+        bucket5: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS NUMERIC) <= 5000 THEN 1 ELSE 0 END)`,
+        bucket6: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS NUMERIC) <= 10000 THEN 1 ELSE 0 END)`,
+        bucket7: sql<number>`SUM(CASE WHEN CAST(${workflowExecutions.duration} AS NUMERIC) <= 30000 THEN 1 ELSE 0 END)`,
       })
       .from(workflowExecutions)
       .where(
@@ -236,15 +236,15 @@ export async function getStepStatsFromDb(): Promise<StepStats> {
     const durationQuery = await db
       .select({
         totalCount: count(),
-        totalSum: sql<number>`COALESCE(SUM(CAST(${workflowExecutionLogs.duration} AS INTEGER)), 0)`,
+        totalSum: sql<number>`COALESCE(SUM(CAST(${workflowExecutionLogs.duration} AS NUMERIC))::INTEGER, 0)`,
         // Count steps in each bucket (cumulative)
-        bucket0: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS INTEGER) <= 50 THEN 1 ELSE 0 END)`,
-        bucket1: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS INTEGER) <= 100 THEN 1 ELSE 0 END)`,
-        bucket2: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS INTEGER) <= 250 THEN 1 ELSE 0 END)`,
-        bucket3: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS INTEGER) <= 500 THEN 1 ELSE 0 END)`,
-        bucket4: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS INTEGER) <= 1000 THEN 1 ELSE 0 END)`,
-        bucket5: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS INTEGER) <= 2000 THEN 1 ELSE 0 END)`,
-        bucket6: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS INTEGER) <= 5000 THEN 1 ELSE 0 END)`,
+        bucket0: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS NUMERIC) <= 50 THEN 1 ELSE 0 END)`,
+        bucket1: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS NUMERIC) <= 100 THEN 1 ELSE 0 END)`,
+        bucket2: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS NUMERIC) <= 250 THEN 1 ELSE 0 END)`,
+        bucket3: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS NUMERIC) <= 500 THEN 1 ELSE 0 END)`,
+        bucket4: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS NUMERIC) <= 1000 THEN 1 ELSE 0 END)`,
+        bucket5: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS NUMERIC) <= 2000 THEN 1 ELSE 0 END)`,
+        bucket6: sql<number>`SUM(CASE WHEN CAST(${workflowExecutionLogs.duration} AS NUMERIC) <= 5000 THEN 1 ELSE 0 END)`,
       })
       .from(workflowExecutionLogs)
       .where(
