@@ -250,18 +250,13 @@ jobs:
             coverage/
           retention-days: 7
 
-  # Playwright E2E tests (browser-based, sharded)
+  # Playwright E2E tests (browser-based, single worker, serial execution)
   # Runs after Vitest to avoid conflicts on shared external test accounts
   e2e-playwright:
     needs: [should-run, e2e-vitest]
     if: needs.should-run.outputs.run-e2e == 'true'
     runs-on: ubuntu-latest
     environment: staging
-    strategy:
-      fail-fast: false
-      matrix:
-        # Increase shard count as the test suite grows
-        shard: [1, 2]
 
     services:
       postgres:
@@ -340,8 +335,8 @@ jobs:
           TEST_PARA_USER_SHARE: ${{ secrets.TEST_PARA_USER_SHARE }}
           WALLET_ENCRYPTION_KEY: ${{ secrets.TEST_WALLET_ENCRYPTION_KEY }}
 
-      - name: Run Playwright tests (shard ${{ matrix.shard }}/2)
-        run: pnpm test:e2e --shard=${{ matrix.shard }}/2
+      - name: Run Playwright tests
+        run: pnpm test:e2e
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/keeperhub_test
           PARA_API_KEY: ${{ secrets.TEST_PARA_API_KEY }}
@@ -358,7 +353,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report-shard-${{ matrix.shard }}
+          name: playwright-report
           path: |
             playwright-report/
             test-results/
@@ -368,7 +363,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-screenshots-shard-${{ matrix.shard }}
+          name: playwright-screenshots
           path: test-results/**/*.png
           retention-days: 7
 
