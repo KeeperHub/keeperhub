@@ -69,7 +69,7 @@ Use Playwright when the test **requires a browser** or validates **user-visible 
 
 Playwright tests live in `tests/e2e/playwright/`. They run against a live (or deployed) app with a real database. The test user authenticates through the actual sign-up/login UI or via the persistent test account.
 
-**Config:** `playwright.config.ts` -- single worker, chromium only, auto-starts `pnpm dev` locally.
+**Config:** `playwright.config.ts` -- single worker, serial execution (`fullyParallel: false`), chromium only, 2 retries, auto-starts `pnpm dev` locally. Reporter: `list` locally, `github` + `html` in CI.
 
 ### Vitest E2E (API/infrastructure)
 
@@ -90,6 +90,69 @@ Vitest E2E tests live in `tests/e2e/vitest/`. They connect directly to the datab
 
 If the assertion is about **what the user sees in the browser**, use Playwright.
 If the assertion is about **what happens in the database, queue, API, or chain**, use Vitest.
+
+---
+
+## CI Execution Model
+
+All E2E tests are managed by `.github/workflows/e2e-tests.yml`. The workflow has a `should-run` gate that determines which jobs execute based on the trigger event.
+
+### Trigger conditions
+
+| Event | Vitest E2E | Playwright (ephemeral) | Playwright (deployed) |
+|-------|-----------|----------------------|----------------------|
+| Push to `staging` or `prod` | Yes | Yes | No |
+| PR with `run-e2e-tests` label | Yes | Yes | No |
+| PR environment deploy completes | No | No | Yes |
+| `[skip e2e]` in commit message | Skipped | Skipped | Skipped |
+
+### Execution contexts
+
+**Ephemeral (CI runner)** -- Vitest and Playwright run against a fresh app built on the CI runner with its own PostgreSQL service container and LocalStack (SQS). No external environment needed. This runs on every push to `staging`/`prod` and on labeled PRs.
+
+| Property | Vitest E2E | Playwright |
+|----------|-----------|------------|
+| Infrastructure | PostgreSQL + LocalStack (SQS) | PostgreSQL |
+| App startup | `pnpm build && pnpm start` | `pnpm dev` (via webServer config) |
+| Execution order | Vitest runs first | Playwright runs after Vitest passes |
+| Workers | Default | 1 (serial) |
+| Retries | 0 | 2 |
+| Test scope | All vitest E2E tests | All playwright tests |
+
+**Deployed (PR environment)** -- Playwright runs against a live PR deployment at `app-pr-<number>.keeperhub.com`. Triggered automatically after the "Deploy PR Environment" workflow succeeds. Uses Cloudflare Access headers for authentication.
+
+| Property | Value |
+|----------|-------|
+| Trigger | After PR environment deploy succeeds |
+| Target | `https://app-pr-<number>.keeperhub.com` |
+| Test scope | All tests except `happy-paths/` (excluded via `--grep-invert`) |
+| Workers | 1 (serial) |
+| Retries | 2 |
+| Reporting | Comments results directly on the PR |
+
+### Execution order on push to staging
+
+```
+pr-checks (lint, build, unit, integration)
+    |
+e2e-tests.yml triggers:
+    |
+    +-- should-run (gate)
+         |
+         +-- e2e-vitest (DB + SQS + built app)
+         |        |
+         |        +-- e2e-playwright (DB + dev server, runs after vitest)
+         |
+         +-- e2e-playwright-deployed (only for PR deploys, independent)
+```
+
+### Playwright test stability decisions
+
+- **Serial execution** (`fullyParallel: false`, `workers: 1`): all tests share a single persistent test user session. Parallel execution caused shared-state conflicts (org mutations, workflow saves). Serial eliminates this class of flakiness.
+- **Retries: 2**: handles environmental flakiness (network jitter, slow container startup). A test that fails 3 times in a row is a real failure.
+- **No sharding**: removed 2-shard matrix in favour of single runner. Sharding added CI resource cost without meaningful speed gain given serial execution.
+- **Deterministic waits**: app components expose `data-ready`, `data-state`, and `data-page-state` attributes. Tests wait on these signals instead of `waitForTimeout()` or `networkidle`.
+- **Reporter**: `github` in CI (annotates failures on PRs), `list` locally (real-time terminal output).
 
 ---
 
