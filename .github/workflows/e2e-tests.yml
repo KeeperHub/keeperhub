@@ -11,12 +11,14 @@ on:
     types: [completed]
 
 jobs:
-  # Check if E2E tests should run
+  # Determine which test jobs should run based on the trigger event
   should-run:
     runs-on: ubuntu-latest
     outputs:
-      run-e2e: ${{ steps.check.outputs.run-e2e }}
-      run-deployed: ${{ steps.check.outputs.run-deployed }}
+      run-ephemeral: ${{ steps.check.outputs.run-ephemeral }}
+      run-staging: ${{ steps.check.outputs.run-staging }}
+      run-prod: ${{ steps.check.outputs.run-prod }}
+      run-pr-deployed: ${{ steps.check.outputs.run-pr-deployed }}
       pr-number: ${{ steps.check.outputs.pr-number }}
     steps:
       - name: Checkout code
@@ -28,9 +30,10 @@ jobs:
       - name: Check trigger conditions
         id: check
         run: |
-          # Default values
-          echo "run-e2e=false" >> $GITHUB_OUTPUT
-          echo "run-deployed=false" >> $GITHUB_OUTPUT
+          echo "run-ephemeral=false" >> $GITHUB_OUTPUT
+          echo "run-staging=false" >> $GITHUB_OUTPUT
+          echo "run-prod=false" >> $GITHUB_OUTPUT
+          echo "run-pr-deployed=false" >> $GITHUB_OUTPUT
           echo "pr-number=" >> $GITHUB_OUTPUT
 
           # Check for [skip e2e] flag in commit message (push events only)
@@ -43,10 +46,18 @@ jobs:
           fi
 
           if [[ "${{ github.event_name }}" == "push" ]]; then
-            echo "run-e2e=true" >> $GITHUB_OUTPUT
+            BRANCH="${{ github.ref_name }}"
+            if [[ "$BRANCH" == "staging" ]]; then
+              # Staging push: ephemeral vitest + playwright against deployed staging
+              echo "run-ephemeral=true" >> $GITHUB_OUTPUT
+              echo "run-staging=true" >> $GITHUB_OUTPUT
+            elif [[ "$BRANCH" == "prod" ]]; then
+              # Prod push: playwright against deployed production only
+              echo "run-prod=true" >> $GITHUB_OUTPUT
+            fi
           elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
             if [[ "${{ contains(github.event.pull_request.labels.*.name, 'run-e2e-tests') }}" == "true" ]]; then
-              echo "run-e2e=true" >> $GITHUB_OUTPUT
+              echo "run-ephemeral=true" >> $GITHUB_OUTPUT
             fi
           elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
             # Triggered by Deploy PR Environment workflow (skip staging/prod -- not PR deploys)
@@ -56,7 +67,7 @@ jobs:
               exit 0
             fi
             if [[ "${{ github.event.workflow_run.conclusion }}" == "success" ]]; then
-              echo "run-deployed=true" >> $GITHUB_OUTPUT
+              echo "run-pr-deployed=true" >> $GITHUB_OUTPUT
 
               # Try pull_requests array first (works for same-repo PRs)
               PR_NUMBER="${{ github.event.workflow_run.pull_requests[0].number }}"
@@ -74,10 +85,15 @@ jobs:
             fi
           fi
 
-  # Vitest E2E tests (schedule-pipeline, workflow-runner)
+  # ---------------------------------------------------------------------------
+  # Ephemeral tests: run against local infra on the CI runner
+  # Triggered by: push to staging, PR with run-e2e-tests label
+  # ---------------------------------------------------------------------------
+
+  # Vitest E2E tests (schedule-pipeline, workflow-runner, API/infra)
   e2e-vitest:
     needs: should-run
-    if: needs.should-run.outputs.run-e2e == 'true'
+    if: needs.should-run.outputs.run-ephemeral == 'true'
     runs-on: ubuntu-latest
     environment: staging
 
@@ -250,11 +266,11 @@ jobs:
             coverage/
           retention-days: 7
 
-  # Playwright E2E tests (browser-based, single worker, serial execution)
+  # Ephemeral Playwright E2E tests (browser-based, single worker, serial)
   # Runs after Vitest to avoid conflicts on shared external test accounts
   e2e-playwright:
     needs: [should-run, e2e-vitest]
-    if: needs.should-run.outputs.run-e2e == 'true'
+    if: needs.should-run.outputs.run-ephemeral == 'true'
     runs-on: ubuntu-latest
     environment: staging
 
@@ -353,7 +369,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-ephemeral
           path: |
             playwright-report/
             test-results/
@@ -363,14 +379,316 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-screenshots
+          name: playwright-screenshots-ephemeral
           path: test-results/**/*.png
           retention-days: 7
 
-  # Playwright E2E tests against deployed PR environment
-  e2e-playwright-deployed:
+  # ---------------------------------------------------------------------------
+  # Deployed environment tests: run against live staging/prod/PR URLs
+  # ---------------------------------------------------------------------------
+
+  # Vitest against deployed staging infrastructure (push to staging branch)
+  # Runs after ephemeral vitest passes -- validates that staging DB, SQS, and
+  # API are wired correctly with the same tests that passed locally.
+  e2e-vitest-staging:
+    needs: [should-run, e2e-vitest]
+    if: needs.should-run.outputs.run-staging == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ hashFiles('**/*.ts', '**/*.tsx') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-
+            ${{ runner.os }}-nextjs-
+
+      - name: Generate plugin registry
+        run: pnpm discover-plugins
+
+      - name: Seed test data
+        run: |
+          pnpm db:seed-test-wallet
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TEST_PARA_USER_SHARE: ${{ secrets.TEST_PARA_USER_SHARE }}
+          WALLET_ENCRYPTION_KEY: ${{ secrets.TEST_WALLET_ENCRYPTION_KEY }}
+
+      - name: Build application
+        run: pnpm build
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Run Vitest E2E against staging
+        run: pnpm test:e2e:vitest
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          KEEPERHUB_URL: https://app-staging.keeperhub.com
+          WALLET_ENCRYPTION_KEY: ${{ secrets.TEST_WALLET_ENCRYPTION_KEY }}
+          PARA_API_KEY: ${{ secrets.TEST_PARA_API_KEY }}
+          PARA_ENVIRONMENT: beta
+          WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
+          AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-e2e-staging-results
+          path: |
+            test-results/
+            coverage/
+          retention-days: 7
+
+  # Playwright against deployed staging (push to staging branch)
+  e2e-playwright-staging:
+    needs: [should-run, e2e-vitest-staging]
+    if: needs.should-run.outputs.run-staging == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      BASE_URL: https://app-staging.keeperhub.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Get Playwright version
+        run: echo "PW_VERSION=$(pnpm exec playwright --version | awk '{print $2}')" >> $GITHUB_ENV
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ env.PW_VERSION }}
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Playwright system deps
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Wait for staging to be ready
+        run: |
+          echo "Waiting for ${{ env.BASE_URL }}/api/health to return 200..."
+          CURL_ARGS=(-s -o /dev/null -w "%{http_code}")
+          if [[ -n "$CF_ACCESS_CLIENT_ID" && -n "$CF_ACCESS_CLIENT_SECRET" ]]; then
+            CURL_ARGS+=(-H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}")
+          fi
+          for i in {1..30}; do
+            STATUS=$(curl "${CURL_ARGS[@]}" "${{ env.BASE_URL }}/api/health" || echo "000")
+            if [[ "$STATUS" == "200" ]]; then
+              echo "Staging environment is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: got HTTP $STATUS, waiting 10s..."
+            sleep 10
+          done
+          echo "Staging environment did not become ready in time"
+          exit 1
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+
+      - name: Run Playwright tests against staging
+        run: pnpm test:e2e
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          CI: true
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-staging
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+      - name: Upload screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-screenshots-staging
+          path: test-results/**/*.png
+          retention-days: 7
+
+  # Playwright against deployed production (push to prod branch)
+  e2e-playwright-prod:
     needs: should-run
-    if: needs.should-run.outputs.run-deployed == 'true' && needs.should-run.outputs.pr-number != ''
+    if: needs.should-run.outputs.run-prod == 'true'
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      BASE_URL: https://app.keeperhub.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Get Playwright version
+        run: echo "PW_VERSION=$(pnpm exec playwright --version | awk '{print $2}')" >> $GITHUB_ENV
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ env.PW_VERSION }}
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Playwright system deps
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Wait for production to be ready
+        run: |
+          echo "Waiting for ${{ env.BASE_URL }}/api/health to return 200..."
+          CURL_ARGS=(-s -o /dev/null -w "%{http_code}")
+          if [[ -n "$CF_ACCESS_CLIENT_ID" && -n "$CF_ACCESS_CLIENT_SECRET" ]]; then
+            CURL_ARGS+=(-H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}")
+          fi
+          for i in {1..30}; do
+            STATUS=$(curl "${CURL_ARGS[@]}" "${{ env.BASE_URL }}/api/health" || echo "000")
+            if [[ "$STATUS" == "200" ]]; then
+              echo "Production environment is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: got HTTP $STATUS, waiting 10s..."
+            sleep 10
+          done
+          echo "Production environment did not become ready in time"
+          exit 1
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+
+      - name: Run Playwright tests against production
+        run: pnpm test:e2e --grep-invert "happy-paths"
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          CI: true
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-prod
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+      - name: Upload screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-screenshots-prod
+          path: test-results/**/*.png
+          retention-days: 7
+
+  # Playwright against deployed PR environment
+  e2e-playwright-pr:
+    needs: should-run
+    if: needs.should-run.outputs.run-pr-deployed == 'true' && needs.should-run.outputs.pr-number != ''
     runs-on: ubuntu-latest
     env:
       PR_NUMBER: ${{ needs.should-run.outputs.pr-number }}
@@ -427,7 +745,6 @@ jobs:
         run: pnpm exec playwright install-deps chromium
 
       - name: Wait for PR environment to be ready
-        id: health-check
         run: |
           echo "Waiting for ${{ env.BASE_URL }}/api/health to return 200..."
           CURL_ARGS=(-s -o /dev/null -w "%{http_code}")
@@ -449,7 +766,7 @@ jobs:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
 
-      - name: Run Playwright tests against deployed environment
+      - name: Run Playwright tests against PR environment
         run: pnpm exec playwright test --grep-invert "happy-paths"
         env:
           BASE_URL: ${{ env.BASE_URL }}
@@ -461,14 +778,14 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-deployed-report-pr-${{ env.PR_NUMBER }}
+          name: playwright-report-pr-${{ env.PR_NUMBER }}
           path: |
             playwright-report/
             test-results/
           retention-days: 7
 
       - name: Comment test results on PR
-        if: success()
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |

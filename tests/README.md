@@ -99,16 +99,17 @@ All E2E tests are managed by `.github/workflows/e2e-tests.yml`. The workflow has
 
 ### Trigger conditions
 
-| Event | Vitest E2E | Playwright (ephemeral) | Playwright (deployed) |
-|-------|-----------|----------------------|----------------------|
-| Push to `staging` or `prod` | Yes | Yes | No |
-| PR with `run-e2e-tests` label | Yes | Yes | No |
-| PR environment deploy completes | No | No | Yes |
-| `[skip e2e]` in commit message | Skipped | Skipped | Skipped |
+| Event | Vitest (ephemeral) | Playwright (ephemeral) | Vitest (staging) | Playwright (staging) | Playwright (prod) | Playwright (PR) |
+|-------|--------------------|----------------------|-----------------|---------------------|-------------------|----------------|
+| Push to `staging` | Yes | Yes | Yes | Yes | No | No |
+| Push to `prod` | No | No | No | No | Yes | No |
+| PR with `run-e2e-tests` label | Yes | Yes | No | No | No | No |
+| PR environment deploy completes | No | No | No | No | No | Yes |
+| `[skip e2e]` in commit message | Skipped | Skipped | Skipped | Skipped | Skipped | Skipped |
 
 ### Execution contexts
 
-**Ephemeral (CI runner)** -- Vitest and Playwright run against a fresh app built on the CI runner with its own PostgreSQL service container and LocalStack (SQS). No external environment needed. This runs on every push to `staging`/`prod` and on labeled PRs.
+**Ephemeral (CI runner)** -- Vitest and Playwright run against a fresh app built on the CI runner with its own PostgreSQL service container and LocalStack (SQS). No external environment needed. Triggered by push to `staging` and labeled PRs.
 
 | Property | Vitest E2E | Playwright |
 |----------|-----------|------------|
@@ -119,11 +120,28 @@ All E2E tests are managed by `.github/workflows/e2e-tests.yml`. The workflow has
 | Retries | 0 | 2 |
 | Test scope | All vitest E2E tests | All playwright tests |
 
-**Deployed (PR environment)** -- Playwright runs against a live PR deployment at `app-pr-<number>.keeperhub.com`. Triggered automatically after the "Deploy PR Environment" workflow succeeds. Uses Cloudflare Access headers for authentication.
+**Staging (deployed)** -- Vitest connects to staging's real PostgreSQL and SQS. Playwright hits the live staging app at `app-staging.keeperhub.com`. Both run after ephemeral vitest passes (if tests fail against clean local infra, no point running against staging). Triggered on push to `staging`.
+
+| Property | Vitest E2E | Playwright |
+|----------|-----------|------------|
+| Infrastructure | Staging DB + staging SQS (via GitHub `staging` environment secrets) |  Staging app URL |
+| App startup | Built locally (for tests that spawn child processes) | No local app -- hits deployed staging |
+| Execution order | After ephemeral vitest | After staging vitest |
+| Test scope | All vitest E2E tests | All playwright tests |
+
+**Production (deployed)** -- Playwright only. Vitest is excluded because it does direct DB mutations. Triggered on push to `prod`.
 
 | Property | Value |
 |----------|-------|
-| Trigger | After PR environment deploy succeeds |
+| Target | `https://app.keeperhub.com` |
+| Test scope | All tests except `happy-paths/` (excluded via `--grep-invert`) |
+| Workers | 1 (serial) |
+| Retries | 2 |
+
+**PR (deployed)** -- Playwright runs against a live PR deployment. Triggered automatically after the "Deploy PR Environment" workflow succeeds. Uses Cloudflare Access headers.
+
+| Property | Value |
+|----------|-------|
 | Target | `https://app-pr-<number>.keeperhub.com` |
 | Test scope | All tests except `happy-paths/` (excluded via `--grep-invert`) |
 | Workers | 1 (serial) |
@@ -133,17 +151,27 @@ All E2E tests are managed by `.github/workflows/e2e-tests.yml`. The workflow has
 ### Execution order on push to staging
 
 ```
-pr-checks (lint, build, unit, integration)
-    |
 e2e-tests.yml triggers:
     |
     +-- should-run (gate)
          |
-         +-- e2e-vitest (DB + SQS + built app)
+         +-- e2e-vitest (ephemeral: local DB + LocalStack)
          |        |
-         |        +-- e2e-playwright (DB + dev server, runs after vitest)
+         |        +-- e2e-playwright (ephemeral: local DB + dev server)
+         |        |
+         |        +-- e2e-vitest-staging (staging DB + SQS)
+         |                 |
+         |                 +-- e2e-playwright-staging (staging app URL)
+```
+
+### Execution order on push to prod
+
+```
+e2e-tests.yml triggers:
+    |
+    +-- should-run (gate)
          |
-         +-- e2e-playwright-deployed (only for PR deploys, independent)
+         +-- e2e-playwright-prod (prod app URL, excludes happy-paths)
 ```
 
 ### Playwright test stability decisions
