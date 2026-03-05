@@ -69,7 +69,13 @@ export function OrgSwitcher() {
   // Show loading state while auto-switching
   if (autoSwitching) {
     return (
-      <Button className="w-[200px]" disabled size="sm" variant="outline">
+      <Button
+        className="w-[200px]"
+        data-state="switching"
+        disabled
+        size="sm"
+        variant="outline"
+      >
         <Users className="mr-2 h-4 w-4" />
         Switching...
       </Button>
@@ -100,7 +106,13 @@ export function OrgSwitcher() {
   // Still loading or waiting for auto-switch
   if (!organization) {
     return (
-      <Button className="w-[200px]" disabled size="sm" variant="outline">
+      <Button
+        className="w-[200px]"
+        data-state="loading"
+        disabled
+        size="sm"
+        variant="outline"
+      >
         <Users className="mr-2 h-4 w-4" />
         Loading...
       </Button>
@@ -115,6 +127,7 @@ export function OrgSwitcher() {
             aria-expanded={open}
             aria-label="Switch organization"
             className="w-[200px] justify-between"
+            data-state="ready"
             data-testid="org-switcher"
             role="combobox"
             variant="outline"

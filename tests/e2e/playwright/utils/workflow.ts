@@ -10,10 +10,13 @@ const WEBHOOK_OPTION_REGEX = /webhook/i;
  * Wait for workflow canvas to be ready.
  */
 export async function waitForCanvas(page: Page): Promise<void> {
-  await page.waitForSelector('[data-testid="workflow-canvas"]', {
-    state: "visible",
-    timeout: 60_000,
-  });
+  await page.waitForSelector(
+    '[data-testid="workflow-canvas"][data-ready="true"]',
+    {
+      state: "visible",
+      timeout: 60_000,
+    }
+  );
 }
 
 /**
@@ -42,8 +45,6 @@ export async function createWorkflow(
     // Need to click "Start building" to enter edit mode
     const startButton = page.getByRole("button", { name: "Start building" });
     await expect(startButton).toBeVisible({ timeout: 10_000 });
-    // Wait for any animations and ensure button is stable
-    await page.waitForTimeout(500);
     await startButton.click({ force: true });
     // Wait for trigger node to appear after clicking
     await expect(triggerNode).toBeVisible({ timeout: 20_000 });
@@ -126,7 +127,6 @@ export async function addActionNode(
   const searchInput = page.locator('[data-testid="action-search-input"]');
   await expect(searchInput).toBeVisible({ timeout: 5000 });
   await searchInput.fill(actionLabel);
-  await page.waitForTimeout(300);
 
   // Convert label to data-testid format (e.g., "Send Webhook" -> "send-webhook")
   const actionSlug = actionLabel.toLowerCase().replace(/\s+/g, "-");
@@ -193,11 +193,13 @@ export async function saveWorkflow(page: Page): Promise<void> {
   await expect(toast)
     .toBeVisible({ timeout: 10_000 })
     .catch(() => {
-      // Toast may not appear, that's OK - just wait a bit
+      // Toast may not appear, that's OK
     });
 
-  // Give time for any redirects/state updates
-  await page.waitForTimeout(500);
+  // Wait for post-save redirect (new workflows get assigned an ID in the URL)
+  await page.waitForURL(/workflow/, { timeout: 10_000 }).catch(() => {
+    // URL may already contain workflow ID, that's OK
+  });
 }
 
 /**
@@ -213,12 +215,9 @@ export async function triggerWorkflowManually(page: Page): Promise<void> {
   await expect(triggerButton).toBeVisible({ timeout: 5000 });
   await triggerButton.click();
 
-  // Wait for execution to start - check for toast or network activity
-  const toast = page.locator("[data-sonner-toast]").first();
   // Toast is optional - some workflows may not show it
+  const toast = page.locator("[data-sonner-toast]").first();
   await toast.isVisible({ timeout: 5000 }).catch(() => false);
-  // Give time for execution to register
-  await page.waitForTimeout(1000);
 }
 
 /**
@@ -273,7 +272,8 @@ export async function configureWebhookTrigger(page: Page): Promise<void> {
   await webhookOption.click();
 
   // Wait for webhook config to appear
-  await page.waitForTimeout(500);
+  const webhookUrlField = page.locator("text=Webhook URL");
+  await expect(webhookUrlField).toBeVisible({ timeout: 5000 });
 }
 
 /**
@@ -283,15 +283,11 @@ export async function configureWebhookTrigger(page: Page): Promise<void> {
 export async function getWebhookUrl(page: Page): Promise<string> {
   // Press Escape to deselect any selected nodes
   await page.keyboard.press("Escape");
-  await page.waitForTimeout(300);
 
   // Now click on trigger node - use force to avoid interception by overlapping nodes
   const triggerNode = page.locator(".react-flow__node-trigger").first();
   await expect(triggerNode).toBeVisible({ timeout: 5000 });
   await triggerNode.click({ force: true });
-
-  // Wait for trigger properties to load
-  await page.waitForTimeout(500);
 
   // Find the webhook URL input near the "Webhook URL" label
   const webhookSection = page

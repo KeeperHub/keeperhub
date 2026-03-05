@@ -141,8 +141,10 @@ export async function signIn(
   // Wait for dialog to close (successful sign in)
   await expect(dialog).not.toBeVisible({ timeout: 15_000 });
 
-  // Wait for post-auth redirects to settle
-  await page.waitForLoadState("networkidle");
+  // Wait for org switcher to appear (indicates session and org are resolved)
+  await expect(page.locator('[data-testid="org-switcher"]')).toBeVisible({
+    timeout: 15_000,
+  });
 }
 
 /**

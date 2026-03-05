@@ -3,30 +3,19 @@ import { expect } from "@playwright/test";
 import { getDbConnection } from "./connection";
 
 /**
- * Navigate to accept-invite page with retry.
- * Next.js 16 has a hydration race condition that can occasionally redirect
- * away from the accept-invite page during initial load when a session is
- * active. Waiting for network idle and retrying resolves this reliably.
+ * Navigate to accept-invite page and wait for it to render.
+ * Uses the data-page-state attribute to deterministically wait for the page
+ * to hydrate and compute its state, replacing the previous retry loop.
  */
 export async function gotoAcceptInvite(
   page: Page,
   invitationId: string
 ): Promise<void> {
   const url = `/accept-invite/${invitationId}`;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    await page.goto(url, { waitUntil: "networkidle" });
-    const is404 = await page
-      .locator("text=This page could not be found")
-      .isVisible()
-      .catch(() => false);
-    if (page.url().includes("accept-invite") && !is404) {
-      return;
-    }
-    await page.waitForTimeout(1000);
-  }
-  throw new Error(
-    `Failed to navigate to ${url} after 5 attempts (kept redirecting to ${page.url()} or got 404)`
-  );
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await expect(page.locator("[data-page-state]")).toBeAttached({
+    timeout: 15_000,
+  });
 }
 
 /**

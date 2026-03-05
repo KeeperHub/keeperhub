@@ -625,6 +625,9 @@ export function WorkflowCanvas() {
     <div
       className="relative h-full bg-background"
       data-testid="workflow-canvas"
+      // start custom keeperhub code //
+      data-ready={isCanvasReady}
+      // end keeperhub code //
       style={{
         opacity: isCanvasReady ? 1 : 0,
         width: rightPanelWidth ? `calc(100% - ${rightPanelWidth})` : "100%",

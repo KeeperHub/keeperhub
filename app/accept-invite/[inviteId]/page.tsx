@@ -814,27 +814,51 @@ export default function AcceptInvitePage() {
   // unmount the form and reset its local state (OTP field, submitting flag).
   if (verificationData.showVerification && invitation) {
     return (
-      <VerificationFormState
-        invitation={invitation}
-        onBack={() =>
-          setVerificationData({ showVerification: false, storedPassword: "" })
-        }
-        onSuccess={handleSuccess}
-        storedPassword={verificationData.storedPassword}
-      />
+      // start custom keeperhub code //
+      <div data-page-state={pageState}>
+        {/* end keeperhub code */}
+        <VerificationFormState
+          invitation={invitation}
+          onBack={() =>
+            setVerificationData({ showVerification: false, storedPassword: "" })
+          }
+          onSuccess={handleSuccess}
+          storedPassword={verificationData.storedPassword}
+        />
+        {/* start custom keeperhub code */}
+      </div>
+      // end keeperhub code //
     );
   }
 
   if (pageState === "loading") {
-    return <LoadingState />;
+    // start custom keeperhub code //
+    return (
+      <div data-page-state={pageState}>
+        <LoadingState />
+      </div>
+    );
+    // end keeperhub code //
   }
 
   if (pageState === "error" && inviteError) {
-    return <ErrorState inviteError={inviteError} />;
+    // start custom keeperhub code //
+    return (
+      <div data-page-state={pageState}>
+        <ErrorState inviteError={inviteError} />
+      </div>
+    );
+    // end keeperhub code //
   }
 
   if (pageState === "not-found" || !invitation) {
-    return <NotFoundState />;
+    // start custom keeperhub code //
+    return (
+      <div data-page-state={pageState}>
+        <NotFoundState />
+      </div>
+    );
+    // end keeperhub code //
   }
 
   if (pageState === "logged-in-match") {
@@ -844,47 +868,71 @@ export default function AcceptInvitePage() {
     // button that would flash and auto-resolve.
     if (isAcceptingViaAuth) {
       return (
-        <div className="flex min-h-screen items-center justify-center p-4">
-          <div className="w-full max-w-md space-y-6 rounded-lg border bg-card p-8 text-center">
-            <Spinner className="mx-auto size-8" />
-            <div className="space-y-2">
-              <h1 className="font-semibold text-xl">
-                Joining {invitation.organizationName}
-              </h1>
-              <p className="text-muted-foreground text-sm">
-                Setting up your account...
-              </p>
+        // start custom keeperhub code //
+        <div data-page-state={pageState}>
+          {/* end keeperhub code */}
+          <div className="flex min-h-screen items-center justify-center p-4">
+            <div className="w-full max-w-md space-y-6 rounded-lg border bg-card p-8 text-center">
+              <Spinner className="mx-auto size-8" />
+              <div className="space-y-2">
+                <h1 className="font-semibold text-xl">
+                  Joining {invitation.organizationName}
+                </h1>
+                <p className="text-muted-foreground text-sm">
+                  Setting up your account...
+                </p>
+              </div>
             </div>
           </div>
+          {/* start custom keeperhub code */}
         </div>
+        // end keeperhub code //
       );
     }
 
     return (
-      <AcceptDirectState invitation={invitation} onSuccess={handleSuccess} />
+      // start custom keeperhub code //
+      <div data-page-state={pageState}>
+        {/* end keeperhub code */}
+        <AcceptDirectState invitation={invitation} onSuccess={handleSuccess} />
+        {/* start custom keeperhub code */}
+      </div>
+      // end keeperhub code //
     );
   }
 
   if (pageState === "logged-in-mismatch" && session?.user?.email) {
     return (
-      <EmailMismatchState
-        currentEmail={session.user.email}
-        invitation={invitation}
-      />
+      // start custom keeperhub code //
+      <div data-page-state={pageState}>
+        {/* end keeperhub code */}
+        <EmailMismatchState
+          currentEmail={session.user.email}
+          invitation={invitation}
+        />
+        {/* start custom keeperhub code */}
+      </div>
+      // end keeperhub code //
     );
   }
 
   return (
-    <AuthFormState
-      invitation={invitation}
-      onAccepting={() => setIsAcceptingViaAuth(true)}
-      onShowVerification={(password) =>
-        setVerificationData({
-          showVerification: true,
-          storedPassword: password,
-        })
-      }
-      onSuccess={handleSuccess}
-    />
+    // start custom keeperhub code //
+    <div data-page-state={pageState}>
+      {/* end keeperhub code */}
+      <AuthFormState
+        invitation={invitation}
+        onAccepting={() => setIsAcceptingViaAuth(true)}
+        onShowVerification={(password) =>
+          setVerificationData({
+            showVerification: true,
+            storedPassword: password,
+          })
+        }
+        onSuccess={handleSuccess}
+      />
+      {/* start custom keeperhub code */}
+    </div>
+    // end keeperhub code //
   );
 }

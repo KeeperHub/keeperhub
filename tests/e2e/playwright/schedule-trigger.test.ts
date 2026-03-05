@@ -8,23 +8,22 @@ test.describe("Schedule Trigger", () => {
   test.beforeEach(async ({ page }) => {
     // Navigate to the homepage with the workflow canvas
     await page.goto("/", { waitUntil: "domcontentloaded" });
-    // Wait for the canvas to be ready
-    await page.waitForSelector('[data-testid="workflow-canvas"]', {
-      state: "visible",
-      timeout: 60_000,
-    });
+    // Wait for the canvas to be fully ready (data-ready="true" set after fitView)
+    await page.waitForSelector(
+      '[data-testid="workflow-canvas"][data-ready="true"]',
+      {
+        state: "visible",
+        timeout: 60_000,
+      }
+    );
   });
 
   test("can access trigger node configuration", async ({ page }) => {
-    // Wait for nodes to be visible
-    await page.waitForTimeout(1000);
-
     // Find and click the trigger node
     const triggerNode = page.locator(".react-flow__node-trigger").first();
 
     if (await triggerNode.isVisible()) {
       await triggerNode.click();
-      await page.waitForTimeout(300);
 
       // Verify trigger node is selected
       await expect(triggerNode).toHaveClass(SELECTED_CLASS_REGEX);
@@ -37,16 +36,15 @@ test.describe("Schedule Trigger", () => {
   });
 
   test("trigger node shows trigger type options", async ({ page }) => {
-    await page.waitForTimeout(1000);
-
     const triggerNode = page.locator(".react-flow__node-trigger").first();
 
     if (await triggerNode.isVisible()) {
       await triggerNode.click();
-      await page.waitForTimeout(500);
+
+      // Verify trigger is selected before checking for config
+      await expect(triggerNode).toHaveClass(SELECTED_CLASS_REGEX);
 
       // Look for trigger type selector/dropdown
-      // The exact testid depends on the UI implementation
       const triggerTypeSelector = page.locator(
         '[data-testid="trigger-type-selector"], [data-testid="trigger-config"]'
       );
@@ -85,7 +83,10 @@ test.describe("Schedule Trigger", () => {
       if (canvasBox) {
         await page.mouse.click(canvasBox.x + 50, canvasBox.y + 50);
         // Wait for deselection
-        await page.waitForLoadState("networkidle");
+        await expect(triggerNode).not.toHaveAttribute(
+          "data-selected",
+          DATA_SELECTED_REGEX
+        );
       }
     }
 
@@ -97,8 +98,6 @@ test.describe("Schedule Trigger", () => {
   test("can create workflow with action node after trigger", async ({
     page,
   }) => {
-    await page.waitForTimeout(1000);
-
     // Find the trigger node's source handle
     const triggerHandle = page.locator(
       ".react-flow__node-trigger .react-flow__handle-source"
@@ -116,8 +115,6 @@ test.describe("Schedule Trigger", () => {
         await page.mouse.move(handleBox.x + 300, handleBox.y);
         await page.mouse.up();
 
-        await page.waitForTimeout(500);
-
         // Verify action grid appears
         const actionGrid = page.locator('[data-testid="action-grid"]');
         await expect(actionGrid).toBeVisible({ timeout: 5000 });
@@ -129,7 +126,6 @@ test.describe("Schedule Trigger", () => {
 
         if (await httpRequestAction.isVisible()) {
           await httpRequestAction.click();
-          await page.waitForTimeout(500);
 
           // Verify action node exists
           const actionNode = page.locator(".react-flow__node-action");
@@ -142,8 +138,6 @@ test.describe("Schedule Trigger", () => {
   test("workflow has visible edge between trigger and action", async ({
     page,
   }) => {
-    await page.waitForTimeout(1000);
-
     // Create an action node from trigger
     const triggerHandle = page.locator(
       ".react-flow__node-trigger .react-flow__handle-source"
@@ -160,7 +154,9 @@ test.describe("Schedule Trigger", () => {
         await page.mouse.move(handleBox.x + 300, handleBox.y);
         await page.mouse.up();
 
-        await page.waitForTimeout(500);
+        // Wait for action grid
+        const actionGrid = page.locator('[data-testid="action-grid"]');
+        await expect(actionGrid).toBeVisible({ timeout: 5000 });
 
         // Select an action
         const httpRequestAction = page.locator(
@@ -169,7 +165,9 @@ test.describe("Schedule Trigger", () => {
 
         if (await httpRequestAction.isVisible()) {
           await httpRequestAction.click();
-          await page.waitForTimeout(500);
+
+          // Verify action grid closes (action configured)
+          await expect(actionGrid).not.toBeVisible({ timeout: 5000 });
 
           // Verify edge exists
           const edges = page.locator(".react-flow__edge");
@@ -181,8 +179,6 @@ test.describe("Schedule Trigger", () => {
   });
 
   test("trigger node displays label", async ({ page }) => {
-    await page.waitForTimeout(1000);
-
     const triggerNode = page.locator(".react-flow__node-trigger").first();
 
     if (await triggerNode.isVisible()) {

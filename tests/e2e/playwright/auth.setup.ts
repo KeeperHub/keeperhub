@@ -11,9 +11,7 @@ const authDir = "tests/e2e/playwright/.auth";
 
 setup("authenticate as persistent test user", async ({ page }) => {
   await signIn(page, PERSISTENT_TEST_USER_EMAIL, PERSISTENT_TEST_PASSWORD);
-  // Wait for server-side session hook to set the active org before reloading
-  await page.waitForTimeout(2000);
-  await page.goto("/", { waitUntil: "networkidle" });
+  await page.goto("/", { waitUntil: "load" });
   await expect(page.locator('button[role="combobox"]')).toBeVisible({
     timeout: 15_000,
   });
@@ -22,9 +20,7 @@ setup("authenticate as persistent test user", async ({ page }) => {
 
 setup("authenticate as inviter", async ({ page }) => {
   await signIn(page, PERSISTENT_INVITER_EMAIL, PERSISTENT_TEST_PASSWORD);
-  // Wait for server-side session hook to set the active org before reloading
-  await page.waitForTimeout(2000);
-  await page.goto("/", { waitUntil: "networkidle" });
+  await page.goto("/", { waitUntil: "load" });
   await expect(page.locator('button[role="combobox"]')).toBeVisible({
     timeout: 15_000,
   });
@@ -33,9 +29,7 @@ setup("authenticate as inviter", async ({ page }) => {
 
 setup("authenticate as bystander", async ({ page }) => {
   await signIn(page, PERSISTENT_BYSTANDER_EMAIL, PERSISTENT_TEST_PASSWORD);
-  // Wait for server-side session hook to set the active org before reloading
-  await page.waitForTimeout(2000);
-  await page.goto("/", { waitUntil: "networkidle" });
+  await page.goto("/", { waitUntil: "load" });
   await expect(page.locator('button[role="combobox"]')).toBeVisible({
     timeout: 15_000,
   });
