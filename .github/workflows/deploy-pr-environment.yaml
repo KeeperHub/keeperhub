@@ -5,6 +5,8 @@ on:
     types: [opened, synchronize, reopened, labeled]
     branches:
       - production
+      - staging
+      - KEEP-1188-Deploy-to-our-own-K8s
 
 jobs:
   check-labels:
@@ -82,11 +84,6 @@ jobs:
             tag_prefix: migrator
             build_args: false
             cache_key: cache-migrator
-          - name: scheduler
-            target: scheduler
-            tag_prefix: scheduler
-            build_args: false
-            cache_key: cache-scheduler
           - name: workflow-runner
             target: workflow-runner
             tag_prefix: workflow-runner
@@ -105,8 +102,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ secrets.TECHOPS_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TECHOPS_AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.REGION }}
 
       - name: Login to AWS ECR
@@ -157,7 +154,7 @@ jobs:
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       REGION: us-east-2
-      CLUSTER_NAME: maker-staging
+      CLUSTER_NAME: techops-prod
       NAMESPACE: pr-${{ github.event.pull_request.number }}
       AWS_ECR_NAME: keeperhub-staging
       PG_VERSION: "16"
@@ -171,8 +168,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ secrets.TECHOPS_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TECHOPS_AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.REGION }}
 
       - name: Login to AWS ECR
@@ -282,7 +279,7 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
           DB_PASSWORD: ${{ steps.db-password.outputs.password }}
-          SERVICE_ACCOUNT_ROLE_ARN: ${{ vars.KEEPERHUB_STAGING_SERVICE_ACCOUNT_ROLE_ARN }}
+          SERVICE_ACCOUNT_ROLE_ARN: ${{ vars.TECHOPS_SERVICE_ACCOUNT_ROLE_ARN }}
           TEST_PARA_USER_SHARE: ${{ secrets.TEST_PARA_USER_SHARE }}
         run: |
           envsubst < deploy/pr-environment/values.template.yaml > ${{ github.workspace }}/values-pr-${{ env.PR_NUMBER }}.yaml
@@ -389,15 +386,16 @@ jobs:
             const namespace = 'pr-' + prNumber;
             const url = `https://app-pr-${prNumber}.keeperhub.com`;
 
-            const comment = `## 🚀 PR Environment Deployed
+            const comment = `## PR Environment Deployed (TechOps)
 
-            Your PR environment has been successfully deployed!
+            Your PR environment has been deployed to the TechOps cluster!
 
             **Environment Details:**
-            - 🌐 URL: [${url}](${url})
-            - 📦 Namespace: \`${namespace}\`
-            - 🏷️ Image Tag: \`${{ steps.vars.outputs.sha_short }}\`
-            - 🔢 Commit: \`${{ github.event.pull_request.head.sha }}\`
+            - URL: [${url}](${url})
+            - Namespace: \`${namespace}\`
+            - Cluster: \`techops-prod\`
+            - Image Tag: \`${{ steps.vars.outputs.sha_short }}\`
+            - Commit: \`${{ github.event.pull_request.head.sha }}\`
 
             **Components:**
             - Keeperhub Application
@@ -461,7 +459,7 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       NAMESPACE: pr-${{ github.event.pull_request.number }}
       REGION: us-east-2
-      CLUSTER_NAME: maker-staging
+      CLUSTER_NAME: techops-prod
       KEEPERHUB_URL: https://app-pr-${{ github.event.pull_request.number }}.keeperhub.com
 
     steps:
@@ -478,8 +476,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ secrets.TECHOPS_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TECHOPS_AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.REGION }}
 
       - name: Configure kubectl
@@ -591,7 +589,7 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       NAMESPACE: pr-${{ github.event.pull_request.number }}
       REGION: us-east-2
-      CLUSTER_NAME: maker-staging
+      CLUSTER_NAME: techops-prod
       BASE_URL: https://app-pr-${{ github.event.pull_request.number }}.keeperhub.com
 
     steps:
@@ -608,8 +606,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ secrets.TECHOPS_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TECHOPS_AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.REGION }}
 
       - name: Configure kubectl

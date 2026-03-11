@@ -56,7 +56,7 @@ env:
   KEEPERHUB_API_KEY:
     type: parameterStore
     name: scheduler-service-api-key
-    parameter_name: /eks/techops-prod/keeperhub-scheduler/keeperhub-api-key
+    parameter_name: /eks/techops-staging/keeperhub-scheduler/keeperhub-api-key
   AWS_REGION:
     type: kv
     value: "us-east-1"
@@ -71,7 +71,7 @@ env:
     value: "3000"
 
 externalSecrets:
-  clusterSecretStoreName: techops-prod
+  clusterSecretStoreName: techops-staging
 
 livenessProbe:
   httpGet:

@@ -65,18 +65,18 @@ env:
   JWT_TOKEN_USERNAME:
     type: parameterStore
     name: jwt-token-username
-    parameter_name: /eks/techops-prod/keeperhub-events/jwt-token-username
+    parameter_name: /eks/techops-staging/keeperhub-events/jwt-token-username
   JWT_TOKEN_PASSWORD:
     type: parameterStore
     name: jwt-token-password
-    parameter_name: /eks/techops-prod/keeperhub-events/jwt-token-password
+    parameter_name: /eks/techops-staging/keeperhub-events/jwt-token-password
   ETHERSCAN_API_KEY:
     type: parameterStore
     name: etherscan-api-key
-    parameter_name: /eks/techops-prod/keeperhub-staging/etherscan-api-key
+    parameter_name: /eks/techops-staging/keeperhub/etherscan-api-key
 
 externalSecrets:
-  clusterSecretStoreName: techops-prod
+  clusterSecretStoreName: techops-staging
 
 livenessProbe:
   initialDelaySeconds: 10

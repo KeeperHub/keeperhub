@@ -5,6 +5,8 @@ on:
     types: [closed, unlabeled]
     branches:
       - production
+      - staging
+      - KEEP-1188-Deploy-to-our-own-K8s
 
 jobs:
   check-cleanup:
@@ -40,15 +42,15 @@ jobs:
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       REGION: us-east-2
-      CLUSTER_NAME: maker-staging
+      CLUSTER_NAME: techops-prod
       NAMESPACE: pr-${{ github.event.pull_request.number }}
 
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ secrets.TECHOPS_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TECHOPS_AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.REGION }}
 
       - name: Configure kubectl

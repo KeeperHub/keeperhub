@@ -50,29 +50,29 @@ env:
   PORT:
     type: parameterStore
     name: worker-port
-    parameter_name: /eks/techops-prod/keeperhub-events/worker-port
+    parameter_name: /eks/techops-staging/keeperhub-events/worker-port
   KEEPERHUB_API_URL:
     type: kv
     value: "http://keeperhub-pr-${PR_NUMBER}-common:3000"
   KEEPERHUB_API_KEY:
     type: parameterStore
     name: keeperhub-api-key
-    parameter_name: /eks/techops-prod/keeperhub-events/keeperhub-api-key
+    parameter_name: /eks/techops-staging/keeperhub-events/keeperhub-api-key
   TIMEOUT_BETWEEN_SYNC:
     type: parameterStore
     name: timeout-between-sync
-    parameter_name: /eks/techops-prod/keeperhub-events/timeout-between-sync
+    parameter_name: /eks/techops-staging/keeperhub-events/timeout-between-sync
   JWT_TOKEN_USERNAME:
     type: parameterStore
     name: jwt-token-username
-    parameter_name: /eks/techops-prod/keeperhub-events/jwt-token-username
+    parameter_name: /eks/techops-staging/keeperhub-events/jwt-token-username
   JWT_TOKEN_PASSWORD:
     type: parameterStore
     name: jwt-token-password
-    parameter_name: /eks/techops-prod/keeperhub-events/jwt-token-password
+    parameter_name: /eks/techops-staging/keeperhub-events/jwt-token-password
 
 externalSecrets:
-  clusterSecretStoreName: techops-prod
+  clusterSecretStoreName: techops-staging
 
 livenessProbe:
   initialDelaySeconds: 5
