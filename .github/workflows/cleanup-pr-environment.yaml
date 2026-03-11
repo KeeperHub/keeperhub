@@ -41,8 +41,8 @@ jobs:
     environment: staging
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      REGION: us-east-2
-      CLUSTER_NAME: techops-prod
+      REGION: us-east-1
+      CLUSTER_NAME: techops-staging
       NAMESPACE: pr-${{ github.event.pull_request.number }}
 
     steps:

@@ -96,7 +96,7 @@ jobs:
             cache_key: cache-workflow-runner
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      REGION: us-east-2
+      REGION: us-east-1
       AWS_ECR_NAME: keeperhub-staging
     steps:
       - name: Checkout code
@@ -158,8 +158,8 @@ jobs:
     environment: staging
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      REGION: us-east-2
-      CLUSTER_NAME: techops-prod
+      REGION: us-east-1
+      CLUSTER_NAME: techops-staging
       NAMESPACE: pr-${{ github.event.pull_request.number }}
       AWS_ECR_NAME: keeperhub-staging
       PG_VERSION: "16"
@@ -398,7 +398,7 @@ jobs:
             **Environment Details:**
             - URL: [${url}](${url})
             - Namespace: \`${namespace}\`
-            - Cluster: \`techops-prod\`
+            - Cluster: \`techops-staging\`
             - Image Tag: \`${{ steps.vars.outputs.sha_short }}\`
             - Commit: \`${{ github.event.pull_request.head.sha }}\`
 
@@ -463,8 +463,8 @@ jobs:
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       NAMESPACE: pr-${{ github.event.pull_request.number }}
-      REGION: us-east-2
-      CLUSTER_NAME: techops-prod
+      REGION: us-east-1
+      CLUSTER_NAME: techops-staging
       KEEPERHUB_URL: https://app-pr-${{ github.event.pull_request.number }}.keeperhub.com
 
     steps:
@@ -593,8 +593,8 @@ jobs:
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       NAMESPACE: pr-${{ github.event.pull_request.number }}
-      REGION: us-east-2
-      CLUSTER_NAME: techops-prod
+      REGION: us-east-1
+      CLUSTER_NAME: techops-staging
       BASE_URL: https://app-pr-${{ github.event.pull_request.number }}.keeperhub.com
 
     steps:
