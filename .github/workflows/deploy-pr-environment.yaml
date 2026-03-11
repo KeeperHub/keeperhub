@@ -143,6 +143,7 @@ jobs:
           file: ./Dockerfile
           target: ${{ matrix.image.target }}
           push: true
+          provenance: false
           build-args: ${{ matrix.image.build_args == true && format('NEXT_PUBLIC_AUTH_PROVIDERS={0}\nNEXT_PUBLIC_GITHUB_CLIENT_ID={1}\nNEXT_PUBLIC_GOOGLE_CLIENT_ID={2}', vars.NEXT_PUBLIC_AUTH_PROVIDERS, vars.NEXT_PUBLIC_GITHUB_CLIENT_ID, vars.NEXT_PUBLIC_GOOGLE_CLIENT_ID) || '' }}
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:${{ matrix.image.tag_prefix }}-${{ steps.vars.outputs.sha_short }}
