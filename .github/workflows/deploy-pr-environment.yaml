@@ -84,6 +84,11 @@ jobs:
             tag_prefix: migrator
             build_args: false
             cache_key: cache-migrator
+          - name: scheduler
+            target: scheduler
+            tag_prefix: scheduler
+            build_args: false
+            cache_key: cache-scheduler
           - name: workflow-runner
             target: workflow-runner
             tag_prefix: workflow-runner
