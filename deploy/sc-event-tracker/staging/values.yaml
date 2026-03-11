@@ -49,30 +49,30 @@ env:
   REDIS_HOST:
     type: parameterStore
     name: redis-host
-    parameter_name: /eks/maker-staging/keeperhub-events/redis-host
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-host
   REDIS_PORT:
     type: parameterStore
     name: redis-port
-    parameter_name: /eks/maker-staging/keeperhub-events/redis-port
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-port
   REDIS_PASSWORD:
     type: parameterStore
     name: redis-password
-    parameter_name: /eks/maker-staging/keeperhub-events/redis-password
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-password
   JWT_TOKEN_USERNAME:
     type: parameterStore
     name: jwt-token-username
-    parameter_name: /eks/maker-staging/keeperhub-events/jwt-token-username
+    parameter_name: /eks/techops-staging/keeperhub-events/jwt-token-username
   JWT_TOKEN_PASSWORD:
     type: parameterStore
     name: jwt-token-password
-    parameter_name: /eks/maker-staging/keeperhub-events/jwt-token-password
+    parameter_name: /eks/techops-staging/keeperhub-events/jwt-token-password
   ETHERSCAN_API_KEY:
     type: parameterStore
     name: etherscan-api-key
-    parameter_name: /eks/maker-staging/keeper-app/etherscan-api-key
+    parameter_name: /eks/techops-staging/keeperhub/etherscan-api-key
 
 externalSecrets:
-  clusterSecretStoreName: maker-staging
+  clusterSecretStoreName: techops-staging
 
 livenessProbe:
   initialDelaySeconds: 10

@@ -5,15 +5,15 @@ shared_env: &shared_env
   DATABASE_URL:
     type: parameterStore
     name: db-url
-    parameter_name: /eks/maker-staging/keeperhub/db-url
+    parameter_name: /eks/techops-staging/keeperhub/db-url
   WORKFLOW_POSTGRES_URL:
     type: parameterStore
     name: workflow-postgres-url
-    parameter_name: /eks/maker-staging/keeperhub/db-url
+    parameter_name: /eks/techops-staging/keeperhub/db-url
   CHAIN_RPC_CONFIG:
     type: parameterStore
     name: chain-rpc-config
-    parameter_name: /eks/maker-staging/keeperhub/chain-rpc-config
+    parameter_name: /eks/techops-staging/keeperhub/chain-rpc-config
 
 replicaCount: 1
 
@@ -140,7 +140,7 @@ env:
   BETTER_AUTH_SECRET:
     type: parameterStore
     name: better-auth-secret
-    parameter_name: /eks/maker-staging/keeperhub/better-auth-secret
+    parameter_name: /eks/techops-staging/keeperhub/better-auth-secret
   # Auth and social providers (GitHub, Google)
   NEXT_PUBLIC_AUTH_PROVIDERS:
     type: kv
@@ -148,31 +148,31 @@ env:
   GITHUB_CLIENT_ID:
     type: parameterStore
     name: github-client-id
-    parameter_name: /eks/maker-staging/keeperhub/github-client-id
+    parameter_name: /eks/techops-staging/keeperhub/github-client-id
   GITHUB_CLIENT_SECRET:
     type: parameterStore
     name: github-client-secret
-    parameter_name: /eks/maker-staging/keeperhub/github-client-secret
+    parameter_name: /eks/techops-staging/keeperhub/github-client-secret
   NEXT_PUBLIC_GITHUB_CLIENT_ID:
     type: parameterStore
     name: next-public-github-client-id
-    parameter_name: /eks/maker-staging/keeperhub/github-client-id
+    parameter_name: /eks/techops-staging/keeperhub/github-client-id
   GOOGLE_CLIENT_ID:
     type: parameterStore
     name: google-client-id
-    parameter_name: /eks/maker-staging/keeperhub/google-client-id
+    parameter_name: /eks/techops-staging/keeperhub/google-client-id
   GOOGLE_CLIENT_SECRET:
     type: parameterStore
     name: google-client-secret
-    parameter_name: /eks/maker-staging/keeperhub/google-client-secret
+    parameter_name: /eks/techops-staging/keeperhub/google-client-secret
   NEXT_PUBLIC_GOOGLE_CLIENT_ID:
     type: parameterStore
     name: next-public-google-client-id
-    parameter_name: /eks/maker-staging/keeperhub/google-client-id
+    parameter_name: /eks/techops-staging/keeperhub/google-client-id
   OPENAI_API_KEY:
     type: parameterStore
     name: openai-api-key
-    parameter_name: /eks/maker-staging/keeperhub/openai-api-key
+    parameter_name: /eks/techops-staging/keeperhub/openai-api-key
   # Examples: "gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet-20241022", "openai/gpt-4" (gateway)
   AI_MODEL:
     type: kv
@@ -180,25 +180,23 @@ env:
   PARA_API_KEY:
     type: parameterStore
     name: para-api-key
-    parameter_name: /eks/maker-staging/keeperhub/para-api-key
+    parameter_name: /eks/techops-staging/keeperhub/para-api-key
   WALLET_ENCRYPTION_KEY:
     type: parameterStore
     name: wallet-encryption-key
-    parameter_name: /eks/maker-staging/keeperhub/wallet-encryption-key
+    parameter_name: /eks/techops-staging/keeperhub/wallet-encryption-key
   INTEGRATION_ENCRYPTION_KEY:
     type: parameterStore
     name: integration-encryption-key
-    parameter_name: /eks/maker-staging/keeperhub/integration-encryption-key
-  # TODO rename the path
+    parameter_name: /eks/techops-staging/keeperhub/integration-encryption-key
   ETHERSCAN_API_KEY:
     type: parameterStore
     name: etherscan-api-key
-    parameter_name: /eks/maker-staging/keeper-app/etherscan-api-key
-  # TODO rename the path
+    parameter_name: /eks/techops-staging/keeperhub/etherscan-api-key
   SENDGRID_API_KEY:
     type: parameterStore
     name: sendgrid-api-key
-    parameter_name: /eks/maker-staging/keeper-app/sendgrid-api-key
+    parameter_name: /eks/techops-staging/keeperhub/sendgrid-api-key
   FROM_ADDRESS:
     type: kv
     value: "noreply@keeperhub.com"
@@ -206,23 +204,23 @@ env:
   SENTRY_DSN:
     type: parameterStore
     name: sentry-dsn
-    parameter_name: /eks/maker-staging/keeperhub/sentry-dsn
+    parameter_name: /eks/techops-staging/keeperhub/sentry-dsn
   NEXT_PUBLIC_SENTRY_DSN:
     type: parameterStore
     name: next-public-sentry-dsn
-    parameter_name: /eks/maker-staging/keeperhub/next-public-sentry-dsn
+    parameter_name: /eks/techops-staging/keeperhub/next-public-sentry-dsn
   SENTRY_ORG:
     type: parameterStore
     name: sentry-org
-    parameter_name: /eks/maker-staging/keeperhub/sentry-org
+    parameter_name: /eks/techops-staging/keeperhub/sentry-org
   SENTRY_PROJECT:
     type: parameterStore
     name: sentry-project
-    parameter_name: /eks/maker-staging/keeperhub/sentry-project
+    parameter_name: /eks/techops-staging/keeperhub/sentry-project
   SENTRY_AUTH_TOKEN:
     type: parameterStore
     name: sentry-auth-token
-    parameter_name: /eks/maker-staging/keeperhub/sentry-auth-token
+    parameter_name: /eks/techops-staging/keeperhub/sentry-auth-token
   # Feedback service (internal cluster communication)
   FEEDBACK_SERVICE_URL:
     type: kv
@@ -230,7 +228,7 @@ env:
   FEEDBACK_API_KEY:
     type: parameterStore
     name: feedback-api-key
-    parameter_name: /eks/maker-staging/keeperhub-feedback/feedback-api-key
+    parameter_name: /eks/techops-staging/keeperhub-feedback/feedback-api-key
   # Billing (Stripe)
   NEXT_PUBLIC_BILLING_ENABLED:
     type: kv
@@ -238,91 +236,91 @@ env:
   STRIPE_SECRET_KEY:
     type: parameterStore
     name: stripe-secret-key
-    parameter_name: /eks/maker-staging/keeperhub/stripe-secret-key
+    parameter_name: /eks/techops-staging/keeperhub/stripe-secret-key
   STRIPE_WEBHOOK_SECRET:
     type: parameterStore
     name: stripe-webhook-secret
-    parameter_name: /eks/maker-staging/keeperhub/stripe-webhook-secret
+    parameter_name: /eks/techops-staging/keeperhub/stripe-webhook-secret
   STRIPE_PRICE_PRO_25K_MONTHLY:
     type: parameterStore
     name: stripe-price-pro-25k-monthly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-pro-25k-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-25k-monthly
   STRIPE_PRICE_PRO_25K_YEARLY:
     type: parameterStore
     name: stripe-price-pro-25k-yearly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-pro-25k-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-25k-yearly
   STRIPE_PRICE_PRO_50K_MONTHLY:
     type: parameterStore
     name: stripe-price-pro-50k-monthly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-pro-50k-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-50k-monthly
   STRIPE_PRICE_PRO_50K_YEARLY:
     type: parameterStore
     name: stripe-price-pro-50k-yearly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-pro-50k-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-50k-yearly
   STRIPE_PRICE_PRO_100K_MONTHLY:
     type: parameterStore
     name: stripe-price-pro-100k-monthly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-pro-100k-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-100k-monthly
   STRIPE_PRICE_PRO_100K_YEARLY:
     type: parameterStore
     name: stripe-price-pro-100k-yearly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-pro-100k-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-100k-yearly
   STRIPE_PRICE_BUSINESS_250K_MONTHLY:
     type: parameterStore
     name: stripe-price-business-250k-monthly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-business-250k-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-250k-monthly
   STRIPE_PRICE_BUSINESS_250K_YEARLY:
     type: parameterStore
     name: stripe-price-business-250k-yearly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-business-250k-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-250k-yearly
   STRIPE_PRICE_BUSINESS_500K_MONTHLY:
     type: parameterStore
     name: stripe-price-business-500k-monthly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-business-500k-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-500k-monthly
   STRIPE_PRICE_BUSINESS_500K_YEARLY:
     type: parameterStore
     name: stripe-price-business-500k-yearly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-business-500k-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-500k-yearly
   STRIPE_PRICE_BUSINESS_1M_MONTHLY:
     type: parameterStore
     name: stripe-price-business-1m-monthly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-business-1m-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-1m-monthly
   STRIPE_PRICE_BUSINESS_1M_YEARLY:
     type: parameterStore
     name: stripe-price-business-1m-yearly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-business-1m-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-1m-yearly
   STRIPE_PRICE_ENTERPRISE_MONTHLY:
     type: parameterStore
     name: stripe-price-enterprise-monthly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-enterprise-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-enterprise-monthly
   STRIPE_PRICE_ENTERPRISE_YEARLY:
     type: parameterStore
     name: stripe-price-enterprise-yearly
-    parameter_name: /eks/maker-staging/keeperhub/stripe-price-enterprise-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-enterprise-yearly
   # Internal service API keys for service-to-service auth
   MCP_SERVICE_API_KEY:
     type: parameterStore
     name: mcp-service-api-key
-    parameter_name: /eks/maker-staging/keeperhub-mcp/keeperhub-api-key
+    parameter_name: /eks/techops-staging/keeperhub-mcp/keeperhub-api-key
   EVENTS_SERVICE_API_KEY:
     type: parameterStore
     name: events-service-api-key
-    parameter_name: /eks/maker-staging/keeperhub-events/keeperhub-api-key
+    parameter_name: /eks/techops-staging/keeperhub-events/keeperhub-api-key
   SCHEDULER_SERVICE_API_KEY:
     type: parameterStore
     name: scheduler-service-api-key
-    parameter_name: /eks/maker-staging/keeperhub-scheduler/keeperhub-api-key
+    parameter_name: /eks/techops-staging/keeperhub-scheduler/keeperhub-api-key
   HUB_SERVICE_API_KEY:
     type: parameterStore
     name: hub-service-api-key
-    parameter_name: /eks/maker-staging/keeperhub-hub/keeperhub-api-key
+    parameter_name: /eks/techops-staging/keeperhub-hub/keeperhub-api-key
   TEST_API_KEY:
     type: parameterStore
     name: test-api-key
-    parameter_name: /eks/maker-staging/keeperhub/test-api-key
+    parameter_name: /eks/techops-staging/keeperhub/test-api-key
 
 externalSecrets:
-  clusterSecretStoreName: maker-staging
+  clusterSecretStoreName: techops-staging
 
 livenessProbe:
   initialDelaySeconds: 5
@@ -352,7 +350,7 @@ cronjob:
         SCHEDULER_SERVICE_API_KEY:
           type: parameterStore
           name: scheduler-service-api-key
-          parameter_name: /eks/maker-staging/keeperhub-scheduler/keeperhub-api-key
+          parameter_name: /eks/techops-staging/keeperhub-scheduler/keeperhub-api-key
       resources:
         requests:
           memory: "32Mi"
