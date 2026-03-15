@@ -1,0 +1,250 @@
+{
+  "protocol": "metamorpho",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "Protocol Test: MetaMorpho Read Actions",
+  "description": "Tests all MetaMorpho ERC-4626 read actions on Ethereum mainnet using Steakhouse USDC vault (0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB)",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 600 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "mm-vault-asset",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Vault Asset",
+        "description": "Get the underlying asset address (should be USDC)",
+        "type": "action",
+        "config": {
+          "actionType": "metamorpho/vault-asset",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "mm-vault-total-assets",
+      "type": "action",
+      "position": { "x": 450, "y": 150 },
+      "data": {
+        "label": "Vault Total Assets",
+        "description": "Get total USDC held by the vault",
+        "type": "action",
+        "config": {
+          "actionType": "metamorpho/vault-total-assets",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "mm-vault-total-supply",
+      "type": "action",
+      "position": { "x": 450, "y": 300 },
+      "data": {
+        "label": "Vault Total Supply",
+        "description": "Get total vault shares",
+        "type": "action",
+        "config": {
+          "actionType": "metamorpho/vault-total-supply",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "mm-vault-balance",
+      "type": "action",
+      "position": { "x": 450, "y": 450 },
+      "data": {
+        "label": "Vault Share Balance",
+        "description": "Get vault shares held by address 0x1",
+        "type": "action",
+        "config": {
+          "actionType": "metamorpho/vault-balance",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB",
+          "account": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "mm-vault-convert-to-assets",
+      "type": "action",
+      "position": { "x": 450, "y": 600 },
+      "data": {
+        "label": "Convert Shares to Assets",
+        "description": "Convert 1 USDC worth of shares to asset value",
+        "type": "action",
+        "config": {
+          "actionType": "metamorpho/vault-convert-to-assets",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB",
+          "shares": "1000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "mm-vault-convert-to-shares",
+      "type": "action",
+      "position": { "x": 450, "y": 750 },
+      "data": {
+        "label": "Convert Assets to Shares",
+        "description": "Convert 1 USDC to equivalent shares",
+        "type": "action",
+        "config": {
+          "actionType": "metamorpho/vault-convert-to-shares",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB",
+          "assets": "1000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "mm-vault-preview-deposit",
+      "type": "action",
+      "position": { "x": 450, "y": 900 },
+      "data": {
+        "label": "Preview Deposit",
+        "description": "Preview shares for depositing 1 USDC",
+        "type": "action",
+        "config": {
+          "actionType": "metamorpho/vault-preview-deposit",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB",
+          "assets": "1000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "mm-vault-preview-redeem",
+      "type": "action",
+      "position": { "x": 450, "y": 1050 },
+      "data": {
+        "label": "Preview Redeem",
+        "description": "Preview USDC for redeeming 1 USDC worth of shares",
+        "type": "action",
+        "config": {
+          "actionType": "metamorpho/vault-preview-redeem",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB",
+          "shares": "1000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "mm-vault-max-deposit",
+      "type": "action",
+      "position": { "x": 450, "y": 1200 },
+      "data": {
+        "label": "Max Deposit",
+        "description": "Max deposit for address 0x1",
+        "type": "action",
+        "config": {
+          "actionType": "metamorpho/vault-max-deposit",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB",
+          "receiver": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "mm-vault-max-withdraw",
+      "type": "action",
+      "position": { "x": 450, "y": 1350 },
+      "data": {
+        "label": "Max Withdraw",
+        "description": "Max withdraw for address 0x1",
+        "type": "action",
+        "config": {
+          "actionType": "metamorpho/vault-max-withdraw",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB",
+          "owner": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-to-mm-vault-asset",
+      "source": "node-1",
+      "target": "mm-vault-asset",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-mm-vault-total-assets",
+      "source": "node-1",
+      "target": "mm-vault-total-assets",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-mm-vault-total-supply",
+      "source": "node-1",
+      "target": "mm-vault-total-supply",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-mm-vault-balance",
+      "source": "node-1",
+      "target": "mm-vault-balance",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-mm-vault-convert-to-assets",
+      "source": "node-1",
+      "target": "mm-vault-convert-to-assets",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-mm-vault-convert-to-shares",
+      "source": "node-1",
+      "target": "mm-vault-convert-to-shares",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-mm-vault-preview-deposit",
+      "source": "node-1",
+      "target": "mm-vault-preview-deposit",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-mm-vault-preview-redeem",
+      "source": "node-1",
+      "target": "mm-vault-preview-redeem",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-mm-vault-max-deposit",
+      "source": "node-1",
+      "target": "mm-vault-max-deposit",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-mm-vault-max-withdraw",
+      "source": "node-1",
+      "target": "mm-vault-max-withdraw",
+      "type": "animated"
+    }
+  ]
+}
