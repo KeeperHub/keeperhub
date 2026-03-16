@@ -16,11 +16,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HELM_FILE: deploy/keeperhub/${{ github.ref_name == 'prod' && 'prod' || 'staging' }}/values.yaml
-      REGION: ${{ github.ref_name == 'prod' && 'us-east-1' || 'us-east-2' }}
-      CLUSTER_NAME: ${{ github.ref_name == 'prod' && 'maker-prod' || 'maker-staging' }}
+      REGION: ${{ github.ref_name == 'prod' && 'us-east-1' || vars.TO_REGION }}
+      CLUSTER_NAME: ${{ github.ref_name == 'prod' && 'maker-prod' || vars.TO_CLUSTER_NAME }}
       NAMESPACE: keeperhub
       SERVICE_NAME: keeperhub
-      SERVICE_ACCOUNT_ROLE_ARN: ${{ vars.SERVICE_ACCOUNT_ROLE_ARN }}
+      SERVICE_ACCOUNT_ROLE_ARN: ${{ github.ref_name == 'prod' && vars.SERVICE_ACCOUNT_ROLE_ARN || vars.TO_SERVICE_ACCOUNT_ROLE_ARN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -37,8 +37,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ github.ref_name == 'prod' && secrets.AWS_ACCESS_KEY_ID || secrets.TO_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ github.ref_name == 'prod' && secrets.AWS_SECRET_ACCESS_KEY || secrets.TO_AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.REGION }}
 
       - name: Login to AWS ECR
@@ -64,7 +64,7 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
           SERVICE_ACCOUNT_ROLE_ARN: ${{ env.SERVICE_ACCOUNT_ROLE_ARN }}
-          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          AWS_ACCOUNT_ID: ${{ github.ref_name == 'prod' && vars.AWS_ACCOUNT_ID || vars.TO_AWS_ACCOUNT_ID }}
         run: |
           sed -i "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g" "$HELM_FILE"
           sed -i "s|\${IMAGE_TAG}|${IMAGE_TAG}|g" "$HELM_FILE"
@@ -76,10 +76,10 @@ jobs:
         run: |
           aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.REGION }}
 
-      - name: Apply RBAC for Job Spawner
+      - name: Ensure namespace exists
         if: steps.skip.outputs.skip_deploy != 'true'
         run: |
-          kubectl apply -f deploy/keeperhub/${{ github.ref_name == 'prod' && 'prod' || 'staging' }}/rbac.yaml
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploying Service to Kubernetes with Helm
         id: deploy
@@ -95,6 +95,34 @@ jobs:
           chart-repository: https://techops-services.github.io/helm-charts
           version: 0.2.1
           atomic: true
+
+      - name: Apply RBAC for Job Spawner
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          kubectl apply -f deploy/keeperhub/${{ github.ref_name == 'prod' && 'prod' || 'staging' }}/rbac.yaml
+
+      - name: Wait for deployment health check
+        if: steps.skip.outputs.skip_deploy != 'true' && github.ref_name != 'prod'
+        run: |
+          echo "Waiting for https://app-staging.keeperhub.com/api/health to return 200..."
+          CURL_ARGS=(-s -o /dev/null -w "%{http_code}" -L)
+          if [[ -n "$CF_ACCESS_CLIENT_ID" && -n "$CF_ACCESS_CLIENT_SECRET" ]]; then
+            CURL_ARGS+=(-H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}")
+          fi
+          for i in {1..30}; do
+            STATUS=$(curl "${CURL_ARGS[@]}" "https://app-staging.keeperhub.com/api/health" || echo "000")
+            if [[ "$STATUS" == "200" ]]; then
+              echo "Deployment is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: got HTTP $STATUS, waiting 10s..."
+            sleep 10
+          done
+          echo "Deployment did not become ready in time"
+          exit 1
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.TECHOPS_CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.TECHOPS_CF_ACCESS_CLIENT_SECRET }}
 
   # DISABLED: remote E2E tests temporarily disabled while KEEP-1351 stabilises auth/rate-limit infrastructure
   e2e-playwright-remote:

@@ -29,7 +29,7 @@ jobs:
       ecr_repo: ${{ steps.vars.outputs.ecr_repo }}
       ecr_region: ${{ steps.vars.outputs.ecr_region }}
     env:
-      REGION: ${{ github.ref_name == 'prod' && 'us-east-1' || 'us-east-2' }}
+      REGION: ${{ github.ref_name == 'prod' && 'us-east-1' || vars.TO_REGION }}
       AWS_ECR_NAME: keeperhub-${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
       ENVIRONMENT_TAG: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
       NEXT_PUBLIC_AUTH_PROVIDERS: ${{ github.ref_name == 'prod' && vars.NEXT_PUBLIC_AUTH_PROVIDERS_PROD || vars.NEXT_PUBLIC_AUTH_PROVIDERS_STAGING }}
@@ -52,8 +52,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ github.ref_name == 'prod' && secrets.AWS_ACCESS_KEY_ID || secrets.TO_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ github.ref_name == 'prod' && secrets.AWS_SECRET_ACCESS_KEY || secrets.TO_AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.REGION }}
 
       - name: Login to AWS ECR
