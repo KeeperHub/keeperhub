@@ -1,7 +1,6 @@
 "use client";
 
 import { AlertTriangleIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { Overlay } from "./overlay";
 import { useOverlay } from "./overlay-provider";
 import type { OverlayAction, OverlayActionVariant } from "./types";
@@ -90,7 +89,7 @@ export function ConfirmOverlay({
           </div>
         )}
         <p
-          className={cn("text-muted-foreground text-sm", destructive && "pt-2")}
+          className="text-muted-foreground text-sm"
         >
           {message}
         </p>

@@ -1732,7 +1732,7 @@ export const WorkflowToolbar = ({
   if (persistent) {
     return (
       <div className={containerClassName}>
-        {/* Left side: Logo + Menu */}
+        {/* Left side: Logo + Menu + Org Switcher */}
         <div className={leftSectionClassName}>
           {(() => {
             const CustomLogo = getCustomLogo();
@@ -1742,6 +1742,9 @@ export const WorkflowToolbar = ({
               </a>
             ) : null;
           })()}
+          <div className="hidden ml-2 lg:block">
+            <OrgSwitcher />
+          </div>
           <WorkflowMenuComponent
             actions={actions}
             state={state}
@@ -1769,9 +1772,6 @@ export const WorkflowToolbar = ({
                   onDuplicate={actions.handleDuplicate}
                 />
               )}
-              <div className="hidden lg:block">
-                <OrgSwitcher />
-              </div>
               <UserMenu />
             </div>
           </div>
@@ -1796,6 +1796,9 @@ export const WorkflowToolbar = ({
               </a>
             ) : null;
           })()}
+          <div className="hidden ml-2 lg:block">
+            <OrgSwitcher />
+          </div>
           <WorkflowMenuComponent
             actions={actions}
             state={state}
@@ -1823,9 +1826,6 @@ export const WorkflowToolbar = ({
                 onDuplicate={actions.handleDuplicate}
               />
             )}
-            <div className="hidden lg:block">
-              <OrgSwitcher />
-            </div>
             <UserMenu />
           </div>
         </div>
