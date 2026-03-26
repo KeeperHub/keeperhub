@@ -8,6 +8,23 @@
       "command": "npx",
       "args": ["@playwright/mcp@latest"]
     },
+    "discord": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "DISCORD_TOKEN",
+        "-e",
+        "DISCORD_GUILD_ID",
+        "saseq/discord-mcp:latest"
+      ],
+      "env": {
+        "DISCORD_TOKEN": "${DISCORD_TOKEN}",
+        "DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}"
+      }
+    },
     "memory": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-memory"],
