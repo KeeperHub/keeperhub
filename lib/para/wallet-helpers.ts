@@ -7,7 +7,7 @@ import type { ethers } from "ethers";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { db } from "@/lib/db";
 import { type OrganizationWallet, organizationWallets } from "@/lib/db/schema";
-import { decryptUserShare } from "@/lib/encryption";
+import { decryptUserShare, encryptUserShare } from "@/lib/encryption";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import { getTurnkeySignerConfig } from "@/lib/turnkey/turnkey-client";
@@ -91,7 +91,11 @@ function initializeTurnkeySigner(
 }
 
 async function initializeParaMpcSigner(
-  wallet: { userShare: string | null },
+  wallet: {
+    organizationId: string | null;
+    userShare: string | null;
+    paraSession: string | null;
+  },
   provider: ethers.Provider
 ): Promise<ethers.Signer> {
   const PARA_API_KEY = process.env.PARA_API_KEY;
@@ -107,17 +111,43 @@ async function initializeParaMpcSigner(
     throw new Error("PARA_API_KEY not configured");
   }
 
-  if (!wallet.userShare) {
-    throw new Error("Para wallet missing user share");
-  }
-
   const paraClient = new ParaServer(
     PARA_ENV === "prod" ? Environment.PROD : Environment.BETA,
     PARA_API_KEY
   );
 
-  const decryptedShare = decryptUserShare(wallet.userShare);
-  await paraClient.setUserShare(decryptedShare);
+  if (wallet.paraSession) {
+    // Post-claim: import session for signing (session includes auth + signers)
+    const decryptedSession = decryptUserShare(wallet.paraSession);
+    await paraClient.importSession(decryptedSession);
+
+    const isActive: boolean = await paraClient.keepSessionAlive();
+    if (!isActive) {
+      throw new Error(
+        "Para session expired. User must re-export from wallet settings."
+      );
+    }
+
+    // Re-export the session blob after keepSessionAlive extends the server-side TTL.
+    // The old blob is stale -- waitAndExportSession produces a new one with refreshed state.
+    const refreshedBlob: string = await paraClient.waitAndExportSession();
+    const encryptedRefreshed = encryptUserShare(refreshedBlob);
+
+    const orgId = wallet.organizationId;
+
+    if (orgId) {
+      await db
+        .update(organizationWallets)
+        .set({ paraSession: encryptedRefreshed })
+        .where(eq(organizationWallets.organizationId, orgId));
+    }
+  } else if (wallet.userShare) {
+    // Pre-claim: use stored userShare
+    const decryptedShare = decryptUserShare(wallet.userShare);
+    await paraClient.setUserShare(decryptedShare);
+  } else {
+    throw new Error("Para wallet missing both session and user share");
+  }
 
   const signer = new ParaEthersSigner(
     // biome-ignore lint/suspicious/noExplicitAny: Para server-sdk type incompatibility with core-sdk ParaCore

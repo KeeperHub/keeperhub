@@ -58,7 +58,8 @@ export const organizationWallets = pgTable(
     walletAddress: text("wallet_address").notNull(),
     // Para-specific fields
     paraWalletId: text("para_wallet_id"),
-    userShare: text("user_share"), // Encrypted MPC keyshare (Para only)
+    userShare: text("user_share"), // Encrypted MPC keyshare (Para only, pre-claim)
+    paraSession: text("para_session"), // Encrypted Para session (post-claim signing)
     // Turnkey-specific fields
     turnkeySubOrgId: text("turnkey_sub_org_id"),
     turnkeyWalletId: text("turnkey_wallet_id"),

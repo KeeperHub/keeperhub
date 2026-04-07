@@ -271,6 +271,32 @@ services:
       - minikube
 
   # ===========================================================================
+  # Para Session Refresh
+  # Runs daily to refresh Para MPC session blobs before expiry
+  # ===========================================================================
+  para-session-refresh:
+    image: curlimages/curl:latest
+    container_name: keeperhub-para-session-refresh
+    restart: unless-stopped
+    environment:
+      SCHEDULER_SERVICE_API_KEY: ${KEEPERHUB_API_KEY:-local-scheduler-key-for-dev}
+    depends_on:
+      app-dev:
+        condition: service_started
+    command: |
+      sh -c 'while true; do
+        echo "[Para Session Refresh] Running at $$(date)"
+        curl -sS -f -H "X-Service-Key: $$SCHEDULER_SERVICE_API_KEY" \
+          http://app-dev:3000/api/internal/para-session-refresh || echo "[Para Session Refresh] Failed"
+        echo ""
+        echo "[Para Session Refresh] Sleeping 86400s..."
+        sleep 86400
+      done'
+    profiles:
+      - dev
+      - minikube
+
+  # ===========================================================================
   # Event Tracker (keeperhub-events)
   # Monitors blockchain events and routes to SQS for unified executor
   # ===========================================================================
