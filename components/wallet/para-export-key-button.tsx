@@ -91,8 +91,8 @@ const SESSION_EXPORT_RETRY_DELAY_MS = 500;
 
 async function transferSessionToServer(para: ParaWeb): Promise<void> {
   for (let attempt = 1; attempt <= SESSION_EXPORT_MAX_ATTEMPTS; attempt++) {
-    // biome-ignore lint/suspicious/noExplicitAny: exportSession is on ParaCore but not in SDK types
-    const sessionString: string = await (para as any).exportSession();
+    // biome-ignore lint/suspicious/noExplicitAny: waitAndExportSession is on ParaCore but not in SDK types
+    const sessionString: string = await (para as any).waitAndExportSession();
 
     if (!sessionString) {
       throw new Error("Para returned an empty session");
