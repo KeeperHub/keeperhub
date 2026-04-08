@@ -1,1 +1,0 @@
-ALTER TABLE "para_wallets" ADD COLUMN "para_session" text;
