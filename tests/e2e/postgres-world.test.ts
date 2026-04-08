@@ -176,84 +176,81 @@ describe.skipIf(shouldSkip || !hasPgboss)("Postgres World E2E", () => {
   describe.skipIf(!process.env.RUN_APP_TESTS)(
     "Workflow Execution via Postgres World",
     () => {
-      it(
-        "should execute a workflow and persist run in workflow schema",
-        { timeout: 35_000 },
-        async () => {
-          const response = await fetch(
-            `${KEEPERHUB_URL}/api/workflow/${testWorkflowId}/execute`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-Service-Key": SERVICE_KEY,
-              },
-              body: JSON.stringify({ input: {} }),
-            }
-          );
+      it("should execute a workflow and persist run in workflow schema", {
+        timeout: 35_000,
+      }, async () => {
+        const response = await fetch(
+          `${KEEPERHUB_URL}/api/workflow/${testWorkflowId}/execute`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Service-Key": SERVICE_KEY,
+            },
+            body: JSON.stringify({ input: {} }),
+          }
+        );
 
-          expect(response.status).toBe(200);
-          const body = (await response.json()) as {
-            executionId: string;
-            status: string;
-          };
-          expect(body.executionId).toBeDefined();
-          expect(body.status).toBe("running");
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as {
+          executionId: string;
+          status: string;
+        };
+        expect(body.executionId).toBeDefined();
+        expect(body.status).toBe("running");
 
-          // Poll workflow.workflow_runs until the run reaches a terminal state
-          type RunRow = {
-            id: string;
-            status: string;
-            completed_at: string | null;
-          };
-          const run = await poll(
-            async (): Promise<RunRow | null> => {
-              const rows = await client<RunRow[]>`
+        // Poll workflow.workflow_runs until the run reaches a terminal state
+        type RunRow = {
+          id: string;
+          status: string;
+          completed_at: string | null;
+        };
+        const run = await poll(
+          async (): Promise<RunRow | null> => {
+            const rows = await client<RunRow[]>`
               SELECT id, status, completed_at
               FROM workflow.workflow_runs
               ORDER BY created_at DESC
               LIMIT 1
             `;
-              return rows[0] ?? null;
-            },
-            (row): row is RunRow =>
-              row !== null &&
-              (row.status === "completed" || row.status === "failed"),
-            500,
-            30_000
-          );
+            return rows[0] ?? null;
+          },
+          (row): row is RunRow =>
+            row !== null &&
+            (row.status === "completed" || row.status === "failed"),
+          500,
+          30_000
+        );
 
-          if (!run) {
-            throw new Error("Expected workflow run to exist");
-          }
-          expect(run.status).toBe("completed");
-          expect(run.completed_at).not.toBeNull();
+        if (!run) {
+          throw new Error("Expected workflow run to exist");
         }
-      );
+        expect(run.status).toBe("completed");
+        expect(run.completed_at).not.toBeNull();
+      });
 
-      it(
-        "should record steps in workflow.workflow_steps",
-        { timeout: 35_000 },
-        async () => {
-          const response = await fetch(
-            `${KEEPERHUB_URL}/api/workflow/${testWorkflowId}/execute`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-Service-Key": SERVICE_KEY,
-              },
-              body: JSON.stringify({ input: {} }),
-            }
-          );
+      it("should record steps in workflow.workflow_steps", {
+        timeout: 35_000,
+      }, async () => {
+        const response = await fetch(
+          `${KEEPERHUB_URL}/api/workflow/${testWorkflowId}/execute`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Service-Key": SERVICE_KEY,
+            },
+            body: JSON.stringify({ input: {} }),
+          }
+        );
 
-          expect(response.status).toBe(200);
+        expect(response.status).toBe(200);
 
-          // Poll until steps appear for the latest run
-          type StepRow = { step_name: string; status: string };
-          const steps = await poll(
-            async () => {
-              const rows = await client<StepRow[]>`
+        // Poll until steps appear for the latest run
+        type StepRow = { step_name: string; status: string };
+        const steps = await poll(
+          async () => {
+            const rows = await client<StepRow[]>`
               SELECT ws.step_name, ws.status
               FROM workflow.workflow_steps ws
               JOIN workflow.workflow_runs wr ON ws.run_id = wr.id
@@ -261,38 +258,35 @@ describe.skipIf(shouldSkip || !hasPgboss)("Postgres World E2E", () => {
               ORDER BY wr.created_at DESC, ws.created_at ASC
               LIMIT 10
             `;
-              return [...rows];
-            },
-            (rows) => rows.length > 0,
-            500,
-            30_000
-          );
+            return [...rows];
+          },
+          (rows) => rows.length > 0,
+          500,
+          30_000
+        );
 
-          expect(steps.length).toBeGreaterThan(0);
+        expect(steps.length).toBeGreaterThan(0);
 
-          for (const step of steps) {
-            expect(step.status).toBe("completed");
-          }
+        for (const step of steps) {
+          expect(step.status).toBe("completed");
         }
-      );
+      });
 
-      it(
-        "should process jobs through pg-boss",
-        { timeout: 10_000 },
-        async () => {
-          type JobStateRow = { state: string; count: number };
-          const result = await client<JobStateRow[]>`
+      it("should process jobs through pg-boss", {
+        timeout: 10_000,
+      }, async () => {
+        type JobStateRow = { state: string; count: number };
+        const result = await client<JobStateRow[]>`
         SELECT state, count(*)::int as count
         FROM pgboss.job
         GROUP BY state
       `;
 
-          const states = new Map(result.map((row) => [row.state, row.count]));
+        const states = new Map(result.map((row) => [row.state, row.count]));
 
-          // There should be completed jobs from the executions above
-          expect(states.get("completed")).toBeGreaterThan(0);
-        }
-      );
+        // There should be completed jobs from the executions above
+        expect(states.get("completed")).toBeGreaterThan(0);
+      });
     }
   );
 });

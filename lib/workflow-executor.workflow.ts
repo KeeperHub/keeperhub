@@ -13,6 +13,7 @@ import {
   logSystemError,
   logUserError,
 } from "@/lib/logging";
+import { enterWorkflowErrorContext } from "@/lib/workflow-error-context";
 import { getMetricsCollector } from "@/lib/metrics";
 import { LabelKeys, MetricNames } from "@/lib/metrics/types";
 import {
@@ -111,6 +112,9 @@ export type WorkflowExecutionInput = {
   workflowId?: string; // Used by steps to fetch credentials
   organizationId?: string;
   organizationName?: string; // Used for log filtering by org name
+  // Identifiers attached to every workflow error log line
+  organizationSlug?: string;
+  ownerId?: string;
 };
 
 /**
@@ -1027,6 +1031,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     workflowId,
     organizationId,
     organizationName,
+    organizationSlug,
+    ownerId,
   } = input;
 
   console.log("[Workflow Executor] Input:", {
@@ -1037,12 +1043,28 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     organizationId: organizationId || "none",
   });
 
-  // Common labels for error logging — includes org name for log filtering
+  // Common labels for error logging. Org/owner identifiers are also pushed
+  // into AsyncLocalStorage below so plugin steps inherit them without each
+  // call site having to thread labels manually.
   const baseLogLabels: Record<string, string> = {
     ...(workflowId ? { workflow_id: workflowId } : {}),
     ...(executionId ? { execution_id: executionId } : {}),
+    ...(organizationId ? { org_id: organizationId } : {}),
+    ...(organizationSlug ? { org_slug: organizationSlug } : {}),
     ...(organizationName ? { org_name: organizationName } : {}),
+    ...(ownerId ? { owner_id: ownerId } : {}),
   };
+
+  // Enter async-local context so any logUserError/logSystemError called from
+  // this point on (including inside plugin steps) automatically includes
+  // org/owner/workflow identifiers without manual threading.
+  enterWorkflowErrorContext({
+    workflow_id: workflowId,
+    execution_id: executionId,
+    org_id: organizationId,
+    org_slug: organizationSlug,
+    owner_id: ownerId,
+  });
 
   const outputs: NodeOutputs = {};
   const results: Record<string, ExecutionResult> = {};
@@ -1255,6 +1277,9 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         iterationIndex: iterationMeta?.iterationIndex,
         forEachNodeId: iterationMeta?.forEachNodeId,
         organizationId,
+        orgSlug: organizationSlug,
+        ownerId,
+        workflowId,
       };
 
       const stepResult = await executeActionStep({
@@ -1563,6 +1588,9 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
             nodeType: "Collect",
             forEachNodeId,
             organizationId,
+            orgSlug: organizationSlug,
+            ownerId,
+            workflowId,
           } satisfies StepContext,
         });
       }
@@ -1756,6 +1784,9 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           nodeName: getNodeName(node),
           nodeType: node.data.type,
           organizationId,
+          orgSlug: organizationSlug,
+          ownerId,
+          workflowId,
         };
 
         // Execute trigger step (handles logging internally)
@@ -1800,6 +1831,9 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           nodeType: actionType,
           triggerType: workflowTriggerType,
           organizationId,
+          orgSlug: organizationSlug,
+          ownerId,
+          workflowId,
         };
 
         // Execute the action step with stepHandler (logging is handled inside)

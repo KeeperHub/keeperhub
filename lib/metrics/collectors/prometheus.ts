@@ -481,6 +481,30 @@ const aiDuration = getOrCreateHistogram(
   [500, 1000, 2000, 5000, 10_000, 20_000]
 );
 
+// Sponsorship counters
+const SPONSORSHIP_LABELS = ["chain_id", "organization_id"];
+
+const sponsorshipTransactions = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_sponsorship_transactions_total",
+  "Total sponsored transactions",
+  SPONSORSHIP_LABELS
+);
+
+const sponsorshipGasUsed = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_sponsorship_gas_used_total",
+  "Total gas units consumed by sponsored transactions",
+  SPONSORSHIP_LABELS
+);
+
+const sponsorshipGasCostUsdMicro = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_sponsorship_gas_cost_usd_micro_total",
+  "Total gas cost in micro-USD for sponsored transactions",
+  SPONSORSHIP_LABELS
+);
+
 // Traffic counters
 const pluginInvocations = getOrCreateCounter(
   apiRegistry,
@@ -657,6 +681,9 @@ const histogramMap: Record<string, Histogram> = {
 const counterMap: Record<string, Counter> = {
   "plugin.invocations.total": pluginInvocations,
   "db.query.slow_count": slowQueries,
+  "sponsorship.transactions.total": sponsorshipTransactions,
+  "sponsorship.gas_used.total": sponsorshipGasUsed,
+  "sponsorship.gas_cost_usd_micro.total": sponsorshipGasCostUsdMicro,
 };
 
 const errorCounterMap: Record<string, Counter> = {

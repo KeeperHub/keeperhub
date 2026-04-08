@@ -24,6 +24,67 @@
 import { captureException } from "@sentry/nextjs";
 import { getMetricsCollector } from "@/lib/metrics";
 import { LabelKeys, MetricNames } from "@/lib/metrics/types";
+import { getWorkflowErrorContext } from "@/lib/workflow-error-context";
+
+/**
+ * Labels that have unbounded cardinality and must NEVER be sent to Prometheus. They are kept in console output and Sentry extras for debugging.
+ * Note: workflow_id is intentionally NOT in this set because the existing
+ * keeperhub-errors-dashboard groups by it. workflow_id cardinality is bounded
+ * by active workflows, which is acceptable.
+ */
+const HIGH_CARDINALITY_LABELS = new Set<string>([
+  "execution_id",
+  "org_id",
+  "owner_id",
+]);
+
+function mergeLabels(
+  labels: Record<string, string> | undefined
+): Record<string, string> {
+  const ctx = getWorkflowErrorContext();
+  if (!ctx) {
+    return { ...labels };
+  }
+  // Caller-provided labels win over ALS context.
+  const merged: Record<string, string> = {};
+  for (const [k, v] of Object.entries(ctx)) {
+    if (v !== undefined) {
+      merged[k] = v;
+    }
+  }
+  return { ...merged, ...labels };
+}
+
+function stripHighCardinality(
+  labels: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(labels)) {
+    if (!HIGH_CARDINALITY_LABELS.has(k)) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function buildLogTag(labels: Record<string, string>): string {
+  const parts: string[] = [];
+  if (labels.org_slug) {
+    parts.push(`org:${labels.org_slug}`);
+  } else if (labels.org_id) {
+    parts.push(`org:${labels.org_id}`);
+  }
+  if (labels.owner_id) {
+    parts.push(`owner:${labels.owner_id}`);
+  }
+  if (labels.workflow_id) {
+    parts.push(`wf:${labels.workflow_id}`);
+  }
+  if (labels.execution_id) {
+    parts.push(`exec:${labels.execution_id}`);
+  }
+  return parts.length > 0 ? ` [${parts.join("][")}]` : "";
+}
 
 /**
  * Error/warning categories for metrics classification
@@ -113,16 +174,20 @@ export function logUserError(
   const metrics = getMetricsCollector();
   const context = extractContext(message);
 
-  // Log as warning (user errors don't wake up DevOps)
-  const orgTag = labels?.org_name ? ` [org:${labels.org_name}]` : "";
-  console.warn(`${message}${orgTag}`, error ?? "");
+  // Merge async-local workflow context (org/owner/workflow ids).
+  const fullLabels = mergeLabels(labels);
 
-  // Emit metric
+  // Log as warning (user errors don't wake up DevOps)
+  const tag = buildLogTag(fullLabels);
+  console.warn(`${message}${tag}`, error ?? "");
+
+  // Emit metric (high-cardinality labels stripped to protect Prometheus)
+  const metricLabels = stripHighCardinality(fullLabels);
   metrics.recordError(
     getMetricName(category),
     error instanceof Error ? error : { message },
     {
-      ...labels,
+      ...metricLabels,
       [LabelKeys.ERROR_CATEGORY]: category,
       [LabelKeys.ERROR_CONTEXT]: context,
       [LabelKeys.IS_USER_ERROR]: "true",
@@ -140,7 +205,7 @@ export function logUserError(
         error_context: context,
         is_user_error: "true",
       },
-      extra: labels,
+      extra: fullLabels,
     });
   }
 }
@@ -171,16 +236,20 @@ export function logSystemError(
   const metrics = getMetricsCollector();
   const context = extractContext(message);
 
-  // Log as error (system failures are critical)
-  const orgTag = labels?.org_name ? ` [org:${labels.org_name}]` : "";
-  console.error(`${message}${orgTag}`, error);
+  // Merge async-local workflow context (org/owner/workflow ids).
+  const fullLabels = mergeLabels(labels);
 
-  // Emit metric
+  // Log as error (system failures are critical)
+  const tag = buildLogTag(fullLabels);
+  console.error(`${message}${tag}`, error);
+
+  // Emit metric (high-cardinality labels stripped to protect Prometheus)
+  const metricLabels = stripHighCardinality(fullLabels);
   metrics.recordError(
     getMetricName(category),
     error instanceof Error ? error : { message: String(error) },
     {
-      ...labels,
+      ...metricLabels,
       [LabelKeys.ERROR_CATEGORY]: category,
       [LabelKeys.ERROR_CONTEXT]: context,
       [LabelKeys.IS_USER_ERROR]: "false",
@@ -194,6 +263,6 @@ export function logSystemError(
       error_category: category,
       error_context: context,
     },
-    extra: labels,
+    extra: fullLabels,
   });
 }

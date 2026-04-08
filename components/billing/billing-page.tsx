@@ -15,6 +15,7 @@ import { useOrganization } from "@/lib/hooks/use-organization";
 import { BillingHistory } from "./billing-history";
 import { BillingStatus } from "./billing-status";
 import { PricingTable } from "./pricing-table";
+import type { GasCreditCapsMap } from "./pricing-table/types";
 
 type SubscriptionResponse = {
   subscription: {
@@ -22,6 +23,7 @@ type SubscriptionResponse = {
     tier: string | null;
     interval: string | null;
   };
+  gasCreditCaps?: GasCreditCapsMap;
 };
 
 export function BillingPage(): React.ReactElement {
@@ -32,6 +34,9 @@ export function BillingPage(): React.ReactElement {
   const [currentTier, setCurrentTier] = useState<TierKey | null>(null);
   const [currentInterval, setCurrentInterval] =
     useState<BillingInterval | null>(null);
+  const [gasCreditCaps, setGasCreditCaps] = useState<
+    GasCreditCapsMap | undefined
+  >(undefined);
   const [refreshKey, setRefreshKey] = useState(0);
   const [planLoaded, setPlanLoaded] = useState(false);
 
@@ -59,6 +64,7 @@ export function BillingPage(): React.ReactElement {
             ? data.subscription.interval
             : null
         );
+        setGasCreditCaps(data.gasCreditCaps);
       }
     } catch (error) {
       console.error("[Billing] Failed to fetch plan:", error);
@@ -109,6 +115,7 @@ export function BillingPage(): React.ReactElement {
               currentInterval={currentInterval}
               currentPlan={currentPlan}
               currentTier={currentTier}
+              gasCreditCaps={gasCreditCaps}
               key={`${currentPlan}-${currentTier ?? "none"}-${currentInterval ?? "none"}-${String(refreshKey)}`}
               onPlanUpdated={handlePlanUpdated}
             />

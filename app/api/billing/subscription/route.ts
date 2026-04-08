@@ -4,6 +4,10 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import {
+  getGasCreditBalance,
+  getGasCreditCaps,
+} from "@/lib/billing/gas-credits";
+import {
   getPlanLimits,
   parsePlanName,
   parseTierKey,
@@ -73,11 +77,20 @@ export async function GET(): Promise<NextResponse> {
       .orderBy(desc(overageBillingRecords.createdAt))
       .limit(5);
 
+    const gasBalance = await getGasCreditBalance(activeOrgId);
+    const gasCreditCaps = getGasCreditCaps();
+
     return NextResponse.json({
       usage: {
         executionsUsed,
         executionLimit: limits.maxExecutionsPerMonth,
       },
+      gasCredits: {
+        totalCents: gasBalance.totalCents,
+        usedCents: gasBalance.usedCents,
+        remainingCents: gasBalance.remainingCents,
+      },
+      gasCreditCaps,
       overageCharges: recentOverage,
       subscription: sub
         ? {

@@ -131,9 +131,9 @@ export async function PUT(
     // Fetch existing integration so updateIntegration can merge database
     // secrets without an extra DB round-trip.
     const existing =
-      body.config !== undefined
-        ? await getIntegration(integrationId, userId ?? "", organizationId)
-        : null;
+      body.config === undefined
+        ? null
+        : await getIntegration(integrationId, userId ?? "", organizationId);
 
     if (body.config !== undefined && !existing) {
       return NextResponse.json(

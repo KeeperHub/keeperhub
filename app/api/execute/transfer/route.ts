@@ -1,6 +1,7 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
+import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { transferFundsCore } from "@/plugins/web3/steps/transfer-funds-core";
 import { transferTokenCore } from "@/plugins/web3/steps/transfer-token-core";
 import { validateApiKey } from "../_lib/auth";
@@ -21,6 +22,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!apiKeyCtx) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // Enter ALS error context so plugin step errors carry org labels
+  await enterApiExecuteErrorContext(apiKeyCtx.organizationId);
 
   // 2. Rate limit
   const rateLimit = checkRateLimit(apiKeyCtx.apiKeyId);

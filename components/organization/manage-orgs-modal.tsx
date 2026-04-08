@@ -363,7 +363,7 @@ export function ManageOrgsModal({
   const [internalOpen, setInternalOpen] = useState(false);
 
   // Use external state if provided, otherwise use internal state
-  const open = externalOpen !== undefined ? externalOpen : internalOpen;
+  const open = externalOpen === undefined ? internalOpen : externalOpen;
   const setOpen = externalOnOpenChange || setInternalOpen;
   const [showCreateForm, setShowCreateForm] = useState(defaultShowCreateForm);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);

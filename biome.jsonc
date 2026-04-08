@@ -40,17 +40,23 @@
       },
       "suspicious": {
         // Bitwise operators are legitimate for hashing/masking
-        "noBitwiseOperators": "off"
+        "noBitwiseOperators": "off",
+        // New rule from biome bump - pre-existing test.skip() to be addressed separately
+        "noSkippedTests": "off"
+      },
+      "complexity": {
+        // New threshold from biome bump - pre-existing complexity to be addressed separately
+        "noExcessiveCognitiveComplexity": "off"
       },
       "nursery": {
         // These are experimental rules that add friction without clear benefit
-        "useMaxParams": "off",
         "noIncrementDecrement": "off",
-        "useSortedClasses": "off",
-        "noUselessUndefined": "off"
+        "useSortedClasses": "off"
       },
       "style": {
-        "useConsistentTypeDefinitions": "off"
+        "useConsistentTypeDefinitions": "off",
+        // New rule from biome bump - pre-existing .substr() usage to be addressed separately
+        "noSubstr": "off"
       }
     }
   }

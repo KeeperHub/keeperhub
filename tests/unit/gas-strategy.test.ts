@@ -189,23 +189,22 @@ describe("AdaptiveGasStrategy", () => {
       "manual",
     ];
 
-    it.each(triggerTypes)(
-      "should handle %s trigger type",
-      async (triggerType) => {
-        const strategy = new AdaptiveGasStrategy();
-        const provider = createMockProvider();
+    it.each(
+      triggerTypes
+    )("should handle %s trigger type", async (triggerType) => {
+      const strategy = new AdaptiveGasStrategy();
+      const provider = createMockProvider();
 
-        const config = await strategy.getGasConfig(
-          provider as unknown as import("ethers").Provider,
-          triggerType,
-          BigInt(21_000),
-          1
-        );
+      const config = await strategy.getGasConfig(
+        provider as unknown as import("ethers").Provider,
+        triggerType,
+        BigInt(21_000),
+        1
+      );
 
-        expect(config.gasLimit).toBeGreaterThan(BigInt(0));
-        expect(config.maxFeePerGas).toBeGreaterThan(BigInt(0));
-      }
-    );
+      expect(config.gasLimit).toBeGreaterThan(BigInt(0));
+      expect(config.maxFeePerGas).toBeGreaterThan(BigInt(0));
+    });
 
     it("should use conservative fees for event triggers", async () => {
       const strategy = new AdaptiveGasStrategy();

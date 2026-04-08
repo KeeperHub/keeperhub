@@ -3,6 +3,7 @@ import "@/protocols";
 
 import { NextResponse } from "next/server";
 import { resolveAbi } from "@/lib/abi-cache";
+import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { getProtocol } from "@/lib/protocol-registry";
 import { PLUGIN_STEP_IMPORTERS } from "@/lib/step-registry";
 import { resolveProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
@@ -38,7 +39,7 @@ function buildFunctionArgs(
 
   const args = protocolAction.inputs.map((inp) => {
     const value = input[inp.name];
-    return value !== undefined ? String(value) : "";
+    return value === undefined ? "" : String(value);
   });
 
   return JSON.stringify(args);
@@ -181,6 +182,9 @@ export async function POST(
   if (!apiKeyCtx) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // Enter ALS error context so plugin step errors carry org labels
+  await enterApiExecuteErrorContext(apiKeyCtx.organizationId);
 
   const rateLimit = checkRateLimit(apiKeyCtx.apiKeyId);
   if (!rateLimit.allowed) {

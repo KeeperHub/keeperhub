@@ -143,13 +143,13 @@ export async function GET(request: Request) {
         .from(supportedTokens)
         .where(eq(supportedTokens.chainId, MAINNET_CHAIN_ID))
         .orderBy(supportedTokens.sortOrder),
-      chainId !== MAINNET_CHAIN_ID
-        ? db
+      chainId === MAINNET_CHAIN_ID
+        ? Promise.resolve([])
+        : db
             .select()
             .from(supportedTokens)
             .where(eq(supportedTokens.chainId, chainId))
-            .orderBy(supportedTokens.sortOrder)
-        : Promise.resolve([]),
+            .orderBy(supportedTokens.sortOrder),
     ]);
 
     // If requesting mainnet, just return mainnet tokens (all available)

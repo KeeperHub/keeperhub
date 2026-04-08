@@ -69,11 +69,21 @@ export type ActionConfigFieldBase = {
   // Whether this field is required (defaults to false)
   required?: boolean;
 
-  // Conditional rendering: only show if another field has a specific value
-  // Use `equals` for single value match, `oneOf` for multiple value match
+  // Conditional rendering: only show if another field has a specific value.
+  // Use `equals` for single value match, `oneOf` for multiple value match.
+  // Use `computed` to gate on a value derived from other config fields at
+  // render time (no persistence). Currently supported computations:
+  //   - "abiFunctionMutability": parses `abiField` (ABI JSON) and looks up
+  //     the stateMutability of the function named by `functionField`.
   showWhen?:
     | { field: string; equals: string }
-    | { field: string; oneOf: string[] };
+    | { field: string; oneOf: string[] }
+    | {
+        computed: "abiFunctionMutability";
+        abiField: string;
+        functionField: string;
+        equals: string;
+      };
 
   // For abi-function-select and abi-event-select: which field contains the ABI JSON
   abiField?: string;

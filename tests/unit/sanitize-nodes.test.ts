@@ -123,7 +123,11 @@ describe("sanitizeWorkflowData", () => {
           {
             id: "t1",
             type: "Schedule",
-            data: { type: "action", timezone: "UTC", cronExpression: "0 * * * *" },
+            data: {
+              type: "action",
+              timezone: "UTC",
+              cronExpression: "0 * * * *",
+            },
           },
         ],
         []
@@ -139,7 +143,13 @@ describe("sanitizeWorkflowData", () => {
 
     it("detects system:schedule as trigger node", () => {
       const { nodes } = sanitizeWorkflowData(
-        [{ id: "t1", type: "system:schedule", data: { schedule: "0 * * * *" } }],
+        [
+          {
+            id: "t1",
+            type: "system:schedule",
+            data: { schedule: "0 * * * *" },
+          },
+        ],
         []
       );
 
@@ -204,7 +214,13 @@ describe("sanitizeWorkflowData", () => {
                 actionType: "Condition",
                 conditionConfig: {
                   group: {
-                    rules: [{ leftOperand: "{{@a:B.x}}", operator: "===", rightOperand: "1" }],
+                    rules: [
+                      {
+                        leftOperand: "{{@a:B.x}}",
+                        operator: "===",
+                        rightOperand: "1",
+                      },
+                    ],
                     logic: "AND",
                   },
                 },
@@ -240,10 +256,26 @@ describe("sanitizeWorkflowData", () => {
                 conditionConfig: {
                   group: {
                     rules: [
-                      { leftOperand: "a", operator: "equals", rightOperand: "1" },
-                      { leftOperand: "b", operator: "less_than", rightOperand: "2" },
-                      { leftOperand: "c", operator: "greater_than", rightOperand: "3" },
-                      { leftOperand: "d", operator: "not_equals", rightOperand: "4" },
+                      {
+                        leftOperand: "a",
+                        operator: "equals",
+                        rightOperand: "1",
+                      },
+                      {
+                        leftOperand: "b",
+                        operator: "less_than",
+                        rightOperand: "2",
+                      },
+                      {
+                        leftOperand: "c",
+                        operator: "greater_than",
+                        rightOperand: "3",
+                      },
+                      {
+                        leftOperand: "d",
+                        operator: "not_equals",
+                        rightOperand: "4",
+                      },
                     ],
                     logic: "AND",
                   },
@@ -279,7 +311,13 @@ describe("sanitizeWorkflowData", () => {
                 actionType: "Condition",
                 conditionConfig: {
                   group: {
-                    rules: [{ field: "{{@a:B.balance}}", operator: "===", value: "100" }],
+                    rules: [
+                      {
+                        field: "{{@a:B.balance}}",
+                        operator: "===",
+                        value: "100",
+                      },
+                    ],
                     logic: "AND",
                   },
                 },
@@ -348,8 +386,16 @@ describe("sanitizeWorkflowData", () => {
                 conditionConfig: {
                   group: {
                     rules: [
-                      { leftOperand: "a", operator: { key: "equals", label: "Equals" }, rightOperand: "1" },
-                      { leftOperand: "b", operator: { key: "less_than", label: "Less Than" }, rightOperand: "2" },
+                      {
+                        leftOperand: "a",
+                        operator: { key: "equals", label: "Equals" },
+                        rightOperand: "1",
+                      },
+                      {
+                        leftOperand: "b",
+                        operator: { key: "less_than", label: "Less Than" },
+                        rightOperand: "2",
+                      },
                     ],
                     logic: "AND",
                   },
@@ -385,8 +431,18 @@ describe("sanitizeWorkflowData", () => {
                   group: {
                     id: "existing-id",
                     rules: [
-                      { id: "rule-1", leftOperand: "a", operator: "===", rightOperand: "b" },
-                      { id: "rule-2", leftOperand: "c", operator: ">=", rightOperand: "d" },
+                      {
+                        id: "rule-1",
+                        leftOperand: "a",
+                        operator: "===",
+                        rightOperand: "b",
+                      },
+                      {
+                        id: "rule-2",
+                        leftOperand: "c",
+                        operator: ">=",
+                        rightOperand: "d",
+                      },
                     ],
                     logic: "AND",
                   },
@@ -414,8 +470,24 @@ describe("sanitizeWorkflowData", () => {
     it("applies auto-layout when all nodes are at the same position", () => {
       const { nodes } = sanitizeWorkflowData(
         [
-          { id: "t1", type: "trigger", data: { label: "Trigger", type: "trigger", config: { triggerType: "Manual" } } },
-          { id: "a1", type: "action", data: { label: "Action", type: "action", config: { actionType: "web3/check-balance" } } },
+          {
+            id: "t1",
+            type: "trigger",
+            data: {
+              label: "Trigger",
+              type: "trigger",
+              config: { triggerType: "Manual" },
+            },
+          },
+          {
+            id: "a1",
+            type: "action",
+            data: {
+              label: "Action",
+              type: "action",
+              config: { actionType: "web3/check-balance" },
+            },
+          },
         ],
         [{ id: "e1", source: "t1", target: "a1" }]
       );
@@ -428,8 +500,18 @@ describe("sanitizeWorkflowData", () => {
     it("does not override existing different positions", () => {
       const { nodes } = sanitizeWorkflowData(
         [
-          { id: "t1", type: "trigger", position: { x: 0, y: 0 }, data: { label: "Trigger", type: "trigger", config: {} } },
-          { id: "a1", type: "action", position: { x: 500, y: 100 }, data: { label: "Action", type: "action", config: {} } },
+          {
+            id: "t1",
+            type: "trigger",
+            position: { x: 0, y: 0 },
+            data: { label: "Trigger", type: "trigger", config: {} },
+          },
+          {
+            id: "a1",
+            type: "action",
+            position: { x: 500, y: 100 },
+            data: { label: "Action", type: "action", config: {} },
+          },
         ],
         []
       );
@@ -441,7 +523,13 @@ describe("sanitizeWorkflowData", () => {
 
     it("skips auto-layout for single node", () => {
       const { nodes } = sanitizeWorkflowData(
-        [{ id: "t1", type: "trigger", data: { label: "Trigger", type: "trigger", config: {} } }],
+        [
+          {
+            id: "t1",
+            type: "trigger",
+            data: { label: "Trigger", type: "trigger", config: {} },
+          },
+        ],
         []
       );
 
@@ -454,7 +542,13 @@ describe("sanitizeWorkflowData", () => {
   describe("Defaults", () => {
     it("defaults position to {0, 0} when not provided", () => {
       const { nodes } = sanitizeWorkflowData(
-        [{ id: "n1", type: "action", data: { label: "Test", type: "action", config: {} } }],
+        [
+          {
+            id: "n1",
+            type: "action",
+            data: { label: "Test", type: "action", config: {} },
+          },
+        ],
         []
       );
 
@@ -463,7 +557,13 @@ describe("sanitizeWorkflowData", () => {
 
     it("defaults status to idle when not provided", () => {
       const { nodes } = sanitizeWorkflowData(
-        [{ id: "n1", type: "action", data: { label: "Test", type: "action", config: {} } }],
+        [
+          {
+            id: "n1",
+            type: "action",
+            data: { label: "Test", type: "action", config: {} },
+          },
+        ],
         []
       );
 

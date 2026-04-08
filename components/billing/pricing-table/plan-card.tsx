@@ -25,6 +25,7 @@ import {
   PlanCardFooter,
   PriceDisplay,
 } from "./plan-card-parts";
+import type { GasCreditCapsMap } from "./types";
 import {
   cancelSubscription,
   computeDisplayPrice,
@@ -42,6 +43,7 @@ export function PlanCard({
   currentPlan,
   currentTier,
   currentInterval,
+  gasCreditCaps,
   isPopular = false,
   onPlanUpdated,
 }: {
@@ -51,6 +53,7 @@ export function PlanCard({
   currentPlan?: PlanName;
   currentTier?: TierKey | null;
   currentInterval?: BillingInterval | null;
+  gasCreditCaps?: GasCreditCapsMap;
   isPopular?: boolean;
   onPlanUpdated?: () => Promise<void>;
 }): React.ReactElement {
@@ -163,6 +166,7 @@ export function PlanCard({
       <ConfirmPlanChangeDialog
         currentExecutions={currentExecutions}
         currentPlanName={currentPlan ?? "free"}
+        gasCreditCaps={gasCreditCaps}
         interval={interval}
         newExecutions={newExecutions}
         newPlanName={planName}
@@ -222,6 +226,7 @@ export function PlanCard({
 
           <PlanCardFeatures
             activeTier={activeTier}
+            gasCreditCentsCap={gasCreditCaps?.[planName]}
             plan={plan}
             planName={planName}
           />

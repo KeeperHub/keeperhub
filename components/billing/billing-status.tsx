@@ -19,6 +19,12 @@ type OverageCharge = {
   providerInvoiceId: string | null;
 };
 
+type GasCreditsData = {
+  totalCents: number;
+  usedCents: number;
+  remainingCents: number;
+};
+
 type SubscriptionData = {
   subscription: {
     plan: string;
@@ -34,6 +40,7 @@ type SubscriptionData = {
     executionsUsed: number;
     executionLimit: number;
   };
+  gasCredits?: GasCreditsData;
   overageCharges: OverageCharge[];
 };
 
@@ -409,7 +416,7 @@ function ExecutionUsageBar({
       {isOverLimit && hasOverage && (
         <p className="text-xs text-muted-foreground">
           {overageCount.toLocaleString()} overage execution
-          {overageCount !== 1 ? "s" : ""} at{" "}
+          {overageCount === 1 ? "" : "s"} at{" "}
           <span className="font-semibold">
             ${(overageRate / 1000).toFixed(4)}/execution
           </span>{" "}
@@ -420,6 +427,58 @@ function ExecutionUsageBar({
         <p className="text-xs text-destructive">
           You have reached your monthly execution limit. Upgrade your plan to
           continue.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function GasCreditsBar({
+  gasCredits,
+}: {
+  gasCredits: GasCreditsData;
+}): React.ReactElement | null {
+  if (gasCredits.totalCents <= 0) {
+    return null;
+  }
+
+  const percent = Math.min(
+    (gasCredits.usedCents / gasCredits.totalCents) * 100,
+    100
+  );
+  const isExhausted = gasCredits.remainingCents <= 0;
+  const isNearLimit = percent >= 80;
+
+  function resolveBarColor(): string {
+    if (isExhausted) {
+      return "bg-destructive";
+    }
+    if (isNearLimit) {
+      return "bg-yellow-500";
+    }
+    return "bg-keeperhub-green";
+  }
+  const barColor = resolveBarColor();
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between text-sm">
+        <span className="text-muted-foreground">Gas sponsorship credits</span>
+        <span className="font-medium">
+          ${(gasCredits.usedCents / 100).toFixed(2)} / $
+          {(gasCredits.totalCents / 100).toFixed(2)}
+        </span>
+      </div>
+      <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+        <div
+          className={`h-full rounded-full transition-all ${barColor}`}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      {isExhausted && (
+        <p className="text-xs text-muted-foreground">
+          Gas credits exhausted. Transactions will use your wallet's ETH for
+          gas.
         </p>
       )}
     </div>
@@ -507,6 +566,7 @@ function OverageChargesSection({
 function BillingStatusContent({
   sub,
   usage,
+  gasCredits,
   overageCharges,
   suggestion,
   portalLoading,
@@ -514,6 +574,7 @@ function BillingStatusContent({
 }: {
   sub: SubscriptionData["subscription"] | undefined;
   usage: SubscriptionData["usage"] | undefined;
+  gasCredits: GasCreditsData | undefined;
   overageCharges: OverageCharge[];
   suggestion: SuggestionData | null;
   portalLoading: boolean;
@@ -563,6 +624,8 @@ function BillingStatusContent({
           used={usage.executionsUsed}
         />
       )}
+
+      {gasCredits && <GasCreditsBar gasCredits={gasCredits} />}
 
       <OverageChargesSection charges={overageCharges} />
 
@@ -619,6 +682,7 @@ export function BillingStatus(): React.ReactElement {
         </div>
       </CardHeader>
       <BillingStatusContent
+        gasCredits={data?.gasCredits}
         onManageBilling={handleManageBilling}
         overageCharges={data?.overageCharges ?? []}
         portalLoading={portalLoading}

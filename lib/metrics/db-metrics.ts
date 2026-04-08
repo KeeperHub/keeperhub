@@ -328,9 +328,7 @@ export async function getUserStatsFromDb(): Promise<UserStats> {
       withIntegrationsResult,
     ] = await Promise.all([
       // Total users
-      db
-        .select({ count: count() })
-        .from(users),
+      db.select({ count: count() }).from(users),
       // Verified users
       db
         .select({ count: count() })
@@ -342,9 +340,7 @@ export async function getUserStatsFromDb(): Promise<UserStats> {
         .from(users)
         .where(eq(users.isAnonymous, true)),
       // Users with at least one workflow
-      db
-        .select({ count: countDistinct(workflows.userId) })
-        .from(workflows),
+      db.select({ count: countDistinct(workflows.userId) }).from(workflows),
       // Users with at least one integration
       db
         .select({ count: countDistinct(integrations.userId) })
@@ -393,13 +389,9 @@ export async function getOrgStatsFromDb(): Promise<OrgStats> {
       withWorkflowsResult,
     ] = await Promise.all([
       // Total organizations
-      db
-        .select({ count: count() })
-        .from(organization),
+      db.select({ count: count() }).from(organization),
       // Total members across all orgs
-      db
-        .select({ count: count() })
-        .from(member),
+      db.select({ count: count() }).from(member),
       // Members grouped by role
       db
         .select({

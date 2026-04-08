@@ -10,6 +10,7 @@ import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { checkConcurrencyLimit } from "@/app/api/execute/_lib/concurrency-limit";
 import { db } from "@/lib/db";
 import { validateWorkflowIntegrations } from "@/lib/db/integrations";
+import { getOrgSlug } from "@/lib/db/org-helpers";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
 import { executeWorkflow } from "@/lib/workflow-executor.workflow";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
@@ -20,7 +21,9 @@ async function executeWorkflowBackground(
   nodes: WorkflowNode[],
   edges: WorkflowEdge[],
   input: Record<string, unknown>,
-  organizationId?: string | null
+  organizationId?: string | null,
+  ownerId?: string,
+  organizationSlug?: string
 ) {
   try {
     console.log("[Workflow Execute] Starting execution:", executionId);
@@ -44,6 +47,8 @@ async function executeWorkflowBackground(
         executionId,
         workflowId,
         organizationId: organizationId ?? undefined,
+        ownerId,
+        organizationSlug,
       },
     ]);
 
@@ -217,6 +222,9 @@ export async function POST(
       [LabelKeys.WORKFLOW_ID]: workflowId,
     });
 
+    // Resolve org slug for log labels (cached per request)
+    const organizationSlug = await getOrgSlug(workflow.organizationId);
+
     // Execute the workflow in the background (don't await)
     executeWorkflowBackground(
       executionId,
@@ -224,7 +232,9 @@ export async function POST(
       workflow.nodes as WorkflowNode[],
       workflow.edges as WorkflowEdge[],
       input,
-      workflow.organizationId
+      workflow.organizationId,
+      workflow.userId,
+      organizationSlug
     );
 
     // Return immediately with the execution ID

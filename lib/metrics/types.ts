@@ -120,6 +120,11 @@ export const MetricNames = {
   SYSTEM_INFRASTRUCTURE_ERRORS: "errors.system.infrastructure.total",
   SYSTEM_WORKFLOW_ENGINE_ERRORS: "errors.system.workflow_engine.total",
 
+  // Sponsorship metrics
+  SPONSORSHIP_TRANSACTIONS_TOTAL: "sponsorship.transactions.total",
+  SPONSORSHIP_GAS_USED_TOTAL: "sponsorship.gas_used.total",
+  SPONSORSHIP_GAS_COST_USD_MICRO_TOTAL: "sponsorship.gas_cost_usd_micro.total",
+
   // Saturation metrics
   DB_POOL_UTILIZATION: "db.pool.utilization",
   DB_QUERY_SLOW_COUNT: "db.query.slow_count",
@@ -133,6 +138,11 @@ export const MetricNames = {
 export const LabelKeys = {
   WORKFLOW_ID: "workflow_id",
   EXECUTION_ID: "execution_id",
+  ORG_ID: "org_id",
+  ORG_SLUG: "org_slug",
+  OWNER_ID: "owner_id",
+  PLUGIN_ID: "plugin_id",
+  INTEGRATION_ID: "integration_id",
   STEP_TYPE: "step_type",
   PLUGIN_NAME: "plugin_name",
   ACTION_NAME: "action_name",

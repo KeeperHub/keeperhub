@@ -7,6 +7,7 @@ import "server-only";
 import { and, eq, ne } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
+import { ErrorCategory, logSystemError } from "@/lib/logging";
 
 const TERMINAL_STATUSES = new Set(["cancelled"]);
 
@@ -127,12 +128,12 @@ export async function logWorkflowCompleteDb(
   let resolvedError: string | undefined = params.error;
 
   if (params.status === "error") {
-    console.warn(
-      "[Workflow Logging] Execution completed with error, checking node logs for reconciliation:",
-      {
-        executionId: params.executionId,
-        originalError: params.error,
-      }
+    // Route through unified logger so org/owner ALS context is attached.
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[Workflow Logging] Execution completed with error, checking node logs for reconciliation",
+      params.error ?? "unknown",
+      { execution_id: params.executionId }
     );
 
     try {
@@ -146,27 +147,22 @@ export async function logWorkflowCompleteDb(
       });
 
       if (errorLogs.length === 0) {
-        console.warn(
-          "[Workflow Logging] No node-level errors found, overriding spurious SDK error to success:",
-          {
-            executionId: params.executionId,
-            originalError: params.error,
-          }
+        logSystemError(
+          ErrorCategory.WORKFLOW_ENGINE,
+          "[Workflow Logging] No node-level errors found, overriding spurious SDK error to success",
+          params.error ?? "unknown",
+          { execution_id: params.executionId }
         );
         resolvedStatus = "success";
         resolvedError = undefined;
-      } else {
-        console.warn(
-          "[Workflow Logging] Node-level errors confirmed, keeping error status:",
-          {
-            executionId: params.executionId,
-          }
-        );
       }
+      // Confirmed-error path is not itself an error event - skip logging.
     } catch (queryError) {
-      console.error(
-        "[Workflow Logging] Failed to query node logs for reconciliation, keeping original error status:",
-        queryError
+      logSystemError(
+        ErrorCategory.WORKFLOW_ENGINE,
+        "[Workflow Logging] Failed to query node logs for reconciliation, keeping original error status",
+        queryError,
+        { execution_id: params.executionId }
       );
     }
   }

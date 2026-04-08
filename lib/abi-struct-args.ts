@@ -30,6 +30,10 @@ function isTupleInput(input: AbiInput): boolean {
   );
 }
 
+function isPreStructuredObject(arg: unknown): boolean {
+  return arg !== null && typeof arg === "object" && !Array.isArray(arg);
+}
+
 function buildTupleArg(
   components: AbiComponent[],
   args: unknown[],
@@ -70,12 +74,14 @@ export function reshapeArgsForAbi(
   let cursor = 0;
 
   for (const input of functionAbi.inputs ?? []) {
-    if (isTupleInput(input)) {
+    const currentArg = cursor < args.length ? args[cursor] : undefined;
+
+    if (isTupleInput(input) && !isPreStructuredObject(currentArg)) {
       const result = buildTupleArg(input.components ?? [], args, cursor);
       reshaped.push(result.value);
       cursor = result.nextCursor;
     } else {
-      reshaped.push(cursor < args.length ? args[cursor] : undefined);
+      reshaped.push(currentArg);
       cursor++;
     }
   }

@@ -3,6 +3,7 @@ import "server-only";
 import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { integrations } from "@/lib/db/schema";
 import { getErrorMessage } from "@/lib/utils";
 import type { ResolvedAction } from "../_lib/action-resolver";
@@ -368,6 +369,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!apiKeyCtx) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // Enter ALS error context so plugin step errors carry org labels
+  await enterApiExecuteErrorContext(apiKeyCtx.organizationId);
 
   const rateLimit = checkRateLimit(apiKeyCtx.apiKeyId);
   if (!rateLimit.allowed) {

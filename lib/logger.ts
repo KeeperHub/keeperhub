@@ -27,7 +27,7 @@ const PATH_STRIP_PATTERN = /^.*\//;
 
 function getLogLevel(): LogLevel {
   const level = (process.env.LOG_LEVEL || "info").toLowerCase() as LogLevel;
-  return LOG_LEVELS[level] !== undefined ? level : "info";
+  return LOG_LEVELS[level] === undefined ? "info" : level;
 }
 
 function shouldLog(level: LogLevel): boolean {

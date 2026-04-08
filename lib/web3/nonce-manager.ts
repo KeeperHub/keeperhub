@@ -111,9 +111,9 @@ export class NonceManager {
         );
       const maxPendingNonce: number | null = maxDbPending[0]?.maxNonce ?? null;
       const safeNonce =
-        maxPendingNonce !== null
-          ? Math.max(chainNonce, maxPendingNonce + 1)
-          : chainNonce;
+        maxPendingNonce === null
+          ? chainNonce
+          : Math.max(chainNonce, maxPendingNonce + 1);
 
       // Step 3: Validate and reconcile pending transactions
       const validation = await this.validateAndReconcile(

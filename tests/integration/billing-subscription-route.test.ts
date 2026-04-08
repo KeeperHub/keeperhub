@@ -55,6 +55,21 @@ vi.mock("@/lib/billing/execution-debt", () => ({
   getActiveDebtExecutions: vi.fn().mockResolvedValue(0),
 }));
 
+vi.mock("@/lib/billing/gas-credits", () => ({
+  getGasCreditBalance: vi.fn().mockResolvedValue({
+    totalCents: 500,
+    usedCents: 0,
+    remainingCents: 500,
+    plan: "free",
+  }),
+  getGasCreditCaps: vi.fn().mockReturnValue({
+    free: 500,
+    pro: 2000,
+    business: 10_000,
+    enterprise: 50_000,
+  }),
+}));
+
 import { GET } from "@/app/api/billing/subscription/route";
 
 function mockSession(): void {

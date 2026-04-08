@@ -48,7 +48,7 @@ function processNewFormatReference(
   const nodeId = withoutAt.substring(0, colonIndex);
   const rest = withoutAt.substring(colonIndex + 1);
   const dotIndex = rest.indexOf(".");
-  const fieldPath = dotIndex !== -1 ? rest.substring(dotIndex + 1) : "";
+  const fieldPath = dotIndex === -1 ? "" : rest.substring(dotIndex + 1);
 
   if (!fieldPath) {
     const nodeOutput = nodeOutputs[nodeId];

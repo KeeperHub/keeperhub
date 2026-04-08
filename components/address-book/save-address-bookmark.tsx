@@ -128,7 +128,7 @@ export function SaveAddressBookmark({
 
   useEffect(() => {
     const childValue = children.props.value;
-    const raw = childValue !== undefined ? childValue : addressProp;
+    const raw = childValue === undefined ? addressProp : childValue;
     if (raw !== undefined) {
       const stored = ethers.isAddress(raw)
         ? normalizeAddressForStorage(raw)

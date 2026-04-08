@@ -5,10 +5,13 @@ import type {
   TierKey,
 } from "@/lib/billing/plans";
 
+export type GasCreditCapsMap = Record<PlanName, number>;
+
 export type PricingTableProps = {
   currentPlan?: PlanName;
   currentTier?: TierKey | null;
   currentInterval?: BillingInterval | null;
+  gasCreditCaps?: GasCreditCapsMap;
   onPlanUpdated?: () => Promise<void>;
 };
 

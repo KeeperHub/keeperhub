@@ -342,7 +342,7 @@ export const AuthDialog = ({ children }: AuthDialogProps) => {
   // Use lazy initialization to check for pending verification on mount/remount
   const [open, setOpen] = useState(() => pendingVerifyEmail !== null);
   const [view, setView] = useState<ModalView>(() =>
-    pendingVerifyEmail !== null ? "verify" : "signin"
+    pendingVerifyEmail === null ? "signin" : "verify"
   );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

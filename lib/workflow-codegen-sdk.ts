@@ -76,7 +76,7 @@ function processNewFormatID(trimmed: string, match: string): string {
   const nodeId = withoutAt.substring(0, colonIndex);
   const rest = withoutAt.substring(colonIndex + 1);
   const dotIndex = rest.indexOf(".");
-  const fieldPath = dotIndex !== -1 ? rest.substring(dotIndex + 1) : "";
+  const fieldPath = dotIndex === -1 ? "" : rest.substring(dotIndex + 1);
 
   const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
 

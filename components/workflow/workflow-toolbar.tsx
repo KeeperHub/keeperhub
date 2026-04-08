@@ -42,6 +42,7 @@ import { getCustomLogo } from "@/lib/extension-registry";
 import { integrationsAtom } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
 import { cn } from "@/lib/utils";
+import { evaluateShowWhen, type ShowWhen } from "@/lib/workflow/show-when";
 import {
   addNodeAtom,
   canRedoAtom,
@@ -264,21 +265,10 @@ function isFieldEmpty(value: unknown): boolean {
 
 // Check if a conditional field should be shown based on current config
 function shouldShowField(
-  field: {
-    showWhen?:
-      | { field: string; equals: string }
-      | { field: string; oneOf: string[] };
-  },
+  field: { showWhen?: ShowWhen },
   config: Record<string, unknown>
 ): boolean {
-  if (!field.showWhen) {
-    return true;
-  }
-  const dependentValue = config[field.showWhen.field];
-  if ("oneOf" in field.showWhen) {
-    return field.showWhen.oneOf.includes(dependentValue as string);
-  }
-  return dependentValue === field.showWhen.equals;
+  return evaluateShowWhen(field.showWhen, config);
 }
 
 // Get missing required fields for a single node

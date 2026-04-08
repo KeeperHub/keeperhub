@@ -160,6 +160,15 @@ vi.mock("@/lib/web3/transaction-manager", () => ({
   },
 }));
 
+// Mock sponsorship (disabled by default so tests exercise the direct signing path)
+vi.mock("@/lib/web3/pimlico-config", () => ({
+  isSponsorshipSupported: () => false,
+}));
+
+vi.mock("@/lib/web3/sponsored-transaction-manager", () => ({
+  executeSponsoredContractTransaction: vi.fn().mockResolvedValue(null),
+}));
+
 // Mock ethers
 const mockDecimals = vi.fn();
 const mockSymbol = vi.fn();

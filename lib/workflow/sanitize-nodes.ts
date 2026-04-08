@@ -11,10 +11,10 @@
  *   { id, type: "trigger"|"action", position: {x,y}, data: { label, description, type, config: { actionType, ...params }, status, enabled? } }
  */
 
-import { computeAutoLayout } from "@/lib/auto-layout";
-import type { ConditionOperator } from "@/lib/condition-builder-types";
 import type { Edge, Node } from "@xyflow/react";
 import { nanoid } from "nanoid";
+import { computeAutoLayout } from "@/lib/auto-layout";
+import type { ConditionOperator } from "@/lib/condition-builder-types";
 
 /** Map common MCP/AI operator aliases to canonical ConditionOperator values */
 const OPERATOR_ALIASES: Record<string, ConditionOperator> = {
@@ -55,9 +55,22 @@ const KNOWN_DATA_FIELDS = new Set([
 
 /** The set of valid canonical operators for fast lookup */
 const VALID_OPERATORS = new Set<string>([
-  "==", "===", "!=", "!==", ">", ">=", "<", "<=",
-  "contains", "startsWith", "endsWith",
-  "isEmpty", "isNotEmpty", "exists", "doesNotExist", "matchesRegex",
+  "==",
+  "===",
+  "!=",
+  "!==",
+  ">",
+  ">=",
+  "<",
+  "<=",
+  "contains",
+  "startsWith",
+  "endsWith",
+  "isEmpty",
+  "isNotEmpty",
+  "exists",
+  "doesNotExist",
+  "matchesRegex",
 ]);
 
 /** Normalize a condition operator string to a canonical ConditionOperator value */
@@ -77,7 +90,9 @@ function normalizeOperator(op: unknown): ConditionOperator {
 }
 
 /** Normalize a single condition rule to the canonical format */
-function normalizeConditionRule(raw: Record<string, unknown>): Record<string, unknown> {
+function normalizeConditionRule(
+  raw: Record<string, unknown>
+): Record<string, unknown> {
   return {
     id: (raw.id as string) || nanoid(),
     leftOperand: String(raw.leftOperand ?? raw.field ?? ""),
@@ -87,7 +102,9 @@ function normalizeConditionRule(raw: Record<string, unknown>): Record<string, un
 }
 
 /** Normalize a condition group, recursively handling nested groups */
-function normalizeConditionGroup(raw: Record<string, unknown>): Record<string, unknown> {
+function normalizeConditionGroup(
+  raw: Record<string, unknown>
+): Record<string, unknown> {
   const rules = Array.isArray(raw.rules) ? raw.rules : [];
   return {
     id: (raw.id as string) || nanoid(),
@@ -105,13 +122,17 @@ function normalizeConditionGroup(raw: Record<string, unknown>): Record<string, u
  * Normalize conditionConfig inside a Condition node's config.
  * Fixes: missing ids, wrong operator formats, field name aliases, array-shaped groups.
  */
-function normalizeConditionConfig(config: Record<string, unknown>): Record<string, unknown> {
+function normalizeConditionConfig(
+  config: Record<string, unknown>
+): Record<string, unknown> {
   if (config.actionType !== "Condition" || !config.conditionConfig) {
     return config;
   }
 
   const conditionConfig = config.conditionConfig as Record<string, unknown>;
-  let group = conditionConfig.group as Record<string, unknown> | Record<string, unknown>[];
+  let group = conditionConfig.group as
+    | Record<string, unknown>
+    | Record<string, unknown>[];
 
   // Handle group as array (broken format from some MCP outputs)
   if (Array.isArray(group)) {

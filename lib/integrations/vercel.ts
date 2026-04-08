@@ -59,7 +59,7 @@ type VercelEnvVariable = {
   id: string;
   key: string;
   value?: string;
-  type: "plain" | "secret" | "encrypted" | "system";
+  type: "plain" | "sensitive" | "encrypted" | "system";
   target: Array<"production" | "preview" | "development">;
 };
 
@@ -383,7 +383,7 @@ export async function getDecryptedEnvironmentVariable(
     id: string;
     key: string;
     value: string;
-    type: "plain" | "secret" | "encrypted" | "system";
+    type: "plain" | "sensitive" | "encrypted" | "system";
     target: Array<"production" | "preview" | "development">;
   };
   error?: string;
@@ -411,7 +411,8 @@ export async function getDecryptedEnvironmentVariable(
         key: env.key || "",
         value: env.value || "",
         type:
-          (env.type as "plain" | "secret" | "encrypted" | "system") || "plain",
+          (env.type as "plain" | "sensitive" | "encrypted" | "system") ||
+          "plain",
         target:
           (env.target as Array<"production" | "preview" | "development">) || [],
       },
@@ -435,7 +436,7 @@ export async function getEnvironmentVariables(
     id: string;
     key: string;
     value: string;
-    type: "plain" | "secret" | "encrypted" | "system";
+    type: "plain" | "sensitive" | "encrypted" | "system";
     target: Array<"production" | "preview" | "development">;
   }>;
   error?: string;
@@ -501,7 +502,8 @@ export async function getEnvironmentVariables(
         key: env.key || "",
         value: env.value || "",
         type:
-          (env.type as "plain" | "secret" | "encrypted" | "system") || "plain",
+          (env.type as "plain" | "sensitive" | "encrypted" | "system") ||
+          "plain",
         target:
           (env.target as Array<"production" | "preview" | "development">) || [],
       })),
@@ -521,7 +523,7 @@ export type CreateEnvironmentVariableParams = {
   key: string;
   value: string;
   target?: Array<"production" | "preview" | "development">;
-  type?: "plain" | "secret" | "encrypted";
+  type?: "plain" | "sensitive" | "encrypted";
 };
 
 /**
@@ -535,7 +537,7 @@ export async function setEnvironmentVariable(
     id: string;
     key: string;
     value: string;
-    type: "plain" | "secret" | "encrypted" | "system";
+    type: "plain" | "sensitive" | "encrypted" | "system";
     target: Array<"production" | "preview" | "development">;
   };
   error?: string;
@@ -620,7 +622,7 @@ function formatEnvResponse(created: unknown) {
       id: typedEnv.id || "",
       key: typedEnv.key || "",
       value: typedEnv.value || "",
-      type: typedEnv.type || "secret",
+      type: typedEnv.type || "sensitive",
       target: typedEnv.target || [],
     },
   };

@@ -5,8 +5,13 @@
  */
 import "server-only";
 
+import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { recordStepMetrics } from "@/lib/metrics/instrumentation/workflow";
 import { recordStepSuccess } from "@/lib/step-success-tracker";
+import {
+  runWithWorkflowErrorContext,
+  type WorkflowErrorContext,
+} from "@/lib/workflow-error-context";
 import { redactSensitiveData } from "../utils/redact";
 import {
   incrementCompletedSteps,
@@ -25,7 +30,34 @@ export type StepContext = {
   iterationIndex?: number;
   forEachNodeId?: string;
   organizationId?: string;
+  // Identifiers attached to every workflow error log line
+  orgSlug?: string;
+  ownerId?: string;
+  workflowId?: string;
 };
+
+/**
+ * Build the async-local error context for a step. plugin_id is
+ * derived from nodeType: plugin actions use "<plugin>/<action>" form, system
+ * actions are bare names like "Condition" or "Database Query".
+ */
+function errorContextFromStep(
+  ctx: StepContext,
+  integrationId?: unknown
+): WorkflowErrorContext {
+  const slashIdx = ctx.nodeType.indexOf("/");
+  const pluginId = slashIdx > 0 ? ctx.nodeType.slice(0, slashIdx) : undefined;
+  return {
+    workflow_id: ctx.workflowId,
+    execution_id: ctx.executionId,
+    org_id: ctx.organizationId,
+    org_slug: ctx.orgSlug,
+    owner_id: ctx.ownerId,
+    plugin_id: pluginId,
+    integration_id:
+      typeof integrationId === "string" ? integrationId : undefined,
+  };
+}
 
 /**
  * Base input type that all steps should extend
@@ -66,7 +98,11 @@ async function logStepStart(
 
     return result;
   } catch (error) {
-    console.error("[stepHandler] Failed to log start:", error);
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[stepHandler] Failed to log start",
+      error
+    );
     return { logId: "", startTime: Date.now() };
   }
 }
@@ -97,7 +133,11 @@ async function logStepComplete(
       executionId,
     });
   } catch (err) {
-    console.error("[stepHandler] Failed to log completion:", err);
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[stepHandler] Failed to log completion",
+      err
+    );
   }
 }
 
@@ -131,7 +171,11 @@ export async function logWorkflowComplete(options: {
       startTime: options.startTime,
     });
   } catch (err) {
-    console.error("[stepHandler] Failed to log workflow completion:", err);
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[stepHandler] Failed to log workflow completion",
+      err
+    );
   }
 }
 
@@ -168,8 +212,7 @@ export type StepInputWithWorkflow = {
  *   });
  * }
  */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Step logging requires comprehensive error handling and progress tracking
-export async function withStepLogging<TInput extends StepInput, TOutput>(
+export function withStepLogging<TInput extends StepInput, TOutput>(
   input: TInput,
   stepLogic: () => Promise<TOutput>
 ): Promise<TOutput> {
@@ -177,6 +220,23 @@ export async function withStepLogging<TInput extends StepInput, TOutput>(
   const context = input._context as StepContextWithWorkflow | undefined;
   const loggedInput = stripContext(input);
 
+  // Enter ALS scope so any logUserError/logSystemError inside the plugin
+  // step automatically picks up org/owner/workflow/plugin labels.
+  if (context) {
+    const integrationId = (input as Record<string, unknown>).integrationId;
+    return runWithWorkflowErrorContext(
+      errorContextFromStep(context, integrationId),
+      () => withStepLoggingInner(loggedInput, context, stepLogic)
+    );
+  }
+  return withStepLoggingInner(loggedInput, context, stepLogic);
+}
+
+async function withStepLoggingInner<TInput extends StepInput, TOutput>(
+  loggedInput: Omit<TInput, "_context">,
+  context: StepContextWithWorkflow | undefined,
+  stepLogic: () => Promise<TOutput>
+): Promise<TOutput> {
   // Update progress: mark this step as currently running
   if (context?.executionId && context.nodeId) {
     try {
@@ -186,7 +246,11 @@ export async function withStepLogging<TInput extends StepInput, TOutput>(
         currentNodeName: context.nodeName,
       });
     } catch (err) {
-      console.error("[stepHandler] Failed to update current step:", err);
+      logSystemError(
+        ErrorCategory.WORKFLOW_ENGINE,
+        "[stepHandler] Failed to update current step",
+        err
+      );
     }
   }
 
@@ -254,8 +318,9 @@ export async function withStepLogging<TInput extends StepInput, TOutput>(
           success: !isErrorResult,
         });
       } catch (err) {
-        console.error(
-          "[stepHandler] Failed to increment completed steps:",
+        logSystemError(
+          ErrorCategory.WORKFLOW_ENGINE,
+          "[stepHandler] Failed to increment completed steps",
           err
         );
       }
@@ -301,8 +366,9 @@ export async function withStepLogging<TInput extends StepInput, TOutput>(
           success: false,
         });
       } catch (err) {
-        console.error(
-          "[stepHandler] Failed to increment completed steps:",
+        logSystemError(
+          ErrorCategory.WORKFLOW_ENGINE,
+          "[stepHandler] Failed to increment completed steps",
           err
         );
       }

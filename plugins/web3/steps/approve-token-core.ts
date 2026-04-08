@@ -11,7 +11,8 @@ import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
 import { db } from "@/lib/db";
-import { workflowExecutions } from "@/lib/db/schema";
+import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
+import { getTransactionUrl } from "@/lib/explorer";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import {
   getOrganizationWalletAddress,
@@ -24,7 +25,9 @@ import { generateId } from "@/lib/utils/id";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import { formatContractError } from "@/lib/web3/decode-revert-error";
 import { resolveGasLimitOverrides } from "@/lib/web3/gas-defaults";
+import { isSponsorshipSupported } from "@/lib/web3/pimlico-config";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
+import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import {
   type TransactionContext,
   withNonceSession,
@@ -192,9 +195,86 @@ export async function approveTokenCore(
     rpcManager,
   };
 
+  // Try gas-sponsored execution first (ERC-4337 via Pimlico)
+  if (isSponsorshipSupported(chainId)) {
+    try {
+      const signer = await initializeWalletSigner(organizationId, rpcUrl);
+      const readContract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
+      const [decimals, symbol] = await Promise.all([
+        readContract.decimals() as Promise<bigint>,
+        readContract.symbol() as Promise<string>,
+      ]);
+
+      let amountRaw: bigint;
+      let approvedAmountDisplay: string;
+      if (amount.trim().toLowerCase() === "max") {
+        amountRaw = ethers.MaxUint256;
+        approvedAmountDisplay = "unlimited";
+      } else {
+        amountRaw = ethers.parseUnits(amount, Number(decimals));
+        approvedAmountDisplay = amount;
+      }
+
+      const sponsoredResult = await executeSponsoredContractTransaction({
+        organizationId,
+        executionId: _context.executionId ?? "direct-execution",
+        chainId,
+        rpcUrl,
+        walletAddress,
+        to: tokenAddress,
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [spenderAddress, amountRaw],
+      });
+
+      if (sponsoredResult !== null) {
+        const explorerConfig = await db.query.explorerConfigs.findFirst({
+          where: eq(explorerConfigs.chainId, chainId),
+        });
+        const transactionLink = explorerConfig
+          ? getTransactionUrl(explorerConfig, sponsoredResult.transactionHash)
+          : "";
+
+        return {
+          success: true,
+          transactionHash: sponsoredResult.transactionHash,
+          transactionLink,
+          gasUsed: sponsoredResult.gasUsed,
+          gasUsedUnits: sponsoredResult.gasUsedUnits,
+          effectiveGasPrice: sponsoredResult.effectiveGasPrice,
+          approvedAmount: approvedAmountDisplay,
+          spender: spenderAddress,
+          symbol,
+        };
+      }
+
+      logUserError(
+        ErrorCategory.TRANSACTION,
+        "[Approve Token] Sponsorship skipped (credits exhausted, chain unsupported, or client creation failed), falling back to direct signing",
+        undefined,
+        {
+          plugin_name: "web3",
+          action_name: "approve-token",
+          chain_id: String(chainId),
+        }
+      );
+    } catch (error) {
+      logUserError(
+        ErrorCategory.TRANSACTION,
+        "[Approve Token] Sponsorship attempted but failed, falling back to direct signing",
+        error,
+        {
+          plugin_name: "web3",
+          action_name: "approve-token",
+          chain_id: String(chainId),
+        }
+      );
+    }
+  }
+
+  // Fall back to direct signing with nonce management and RPC failover
   const adapter = getChainAdapter(chainId);
 
-  // Execute transaction with nonce management
   return withNonceSession(txContext, walletAddress, async (session) => {
     // Initialize Para signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;

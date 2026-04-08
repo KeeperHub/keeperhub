@@ -24,7 +24,7 @@ function encodePostgresPassword(url: string): string {
     const atIdx = url.lastIndexOf("@");
     const credentialRange = url.slice(schemeEnd, atIdx);
     const colonOffset = credentialRange.indexOf(":");
-    const colonIdx = colonOffset !== -1 ? schemeEnd + colonOffset : -1;
+    const colonIdx = colonOffset === -1 ? -1 : schemeEnd + colonOffset;
     if (schemeEnd > 3 && atIdx > schemeEnd && colonIdx > schemeEnd) {
       const user = url.slice(schemeEnd, colonIdx);
       const pass = url.slice(colonIdx + 1, atIdx);
@@ -44,6 +44,16 @@ export async function register() {
 
   // Only register process handlers in Node.js runtime (not Edge)
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    // Register AsyncLocalStorage for the workflow error context. The context
+    // module avoids any static `node:async_hooks` import so it can be safely
+    // pulled into the workflow runtime bundle; the storage is only available
+    // in Node.js (API routes / server actions).
+    const { AsyncLocalStorage } = await import("node:async_hooks");
+    const { setWorkflowErrorContextStorage } = await import(
+      "@/lib/workflow-error-context"
+    );
+    setWorkflowErrorContextStorage(new AsyncLocalStorage());
+
     // Dynamically import Sentry to ensure it's available
     const Sentry = await import("@sentry/nextjs");
 

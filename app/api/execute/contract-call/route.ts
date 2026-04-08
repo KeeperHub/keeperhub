@@ -2,6 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { resolveAbi } from "@/lib/abi-cache";
+import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { getErrorMessage } from "@/lib/utils";
 import { readContractCore } from "@/plugins/web3/steps/read-contract-core";
 import { writeContractCore } from "@/plugins/web3/steps/write-contract-core";
@@ -122,6 +123,7 @@ async function handleWriteCall(
     abi: resolvedAbi,
     abiFunction: body.functionName as string,
     functionArgs: body.functionArgs as string | undefined,
+    ethValue: body.ethValue as string | undefined,
     gasLimitMultiplier: body.gasLimitMultiplier as string | undefined,
     _context: { organizationId },
   });
@@ -149,6 +151,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!apiKeyCtx) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // Enter ALS error context so plugin step errors carry org labels
+  await enterApiExecuteErrorContext(apiKeyCtx.organizationId);
 
   const rateLimit = checkRateLimit(apiKeyCtx.apiKeyId);
   if (!rateLimit.allowed) {

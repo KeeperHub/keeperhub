@@ -23,9 +23,9 @@ interface WindowWithEnv extends Window {
 export function getEnabledAuthProviders(): EnabledProviders {
   const providersEnv =
     process.env.NEXT_PUBLIC_AUTH_PROVIDERS ||
-    (typeof window !== "undefined"
-      ? (window as WindowWithEnv).ENV?.NEXT_PUBLIC_AUTH_PROVIDERS
-      : undefined) ||
+    (typeof window === "undefined"
+      ? undefined
+      : (window as WindowWithEnv).ENV?.NEXT_PUBLIC_AUTH_PROVIDERS) ||
     "email";
 
   const enabledProviders = providersEnv

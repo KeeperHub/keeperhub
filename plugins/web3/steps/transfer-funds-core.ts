@@ -10,7 +10,8 @@ import "server-only";
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { db } from "@/lib/db";
-import { workflowExecutions } from "@/lib/db/schema";
+import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
+import { getTransactionUrl } from "@/lib/explorer";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import {
   getOrganizationWalletAddress,
@@ -24,6 +25,7 @@ import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import { formatContractError } from "@/lib/web3/decode-revert-error";
 import { resolveGasLimitOverrides } from "@/lib/web3/gas-defaults";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
+import { executeSponsoredTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import {
   type TransactionContext,
   withNonceSession,
@@ -58,6 +60,7 @@ export type TransferFundsResult =
  * Shared between the web3 transfer-funds step and the direct execution API.
  * When _context.organizationId is provided, skips workflowExecutions lookup.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Transfer handler with sponsorship attempt + fallback + validation
 export async function transferFundsCore(
   input: TransferFundsCoreInput
 ): Promise<TransferFundsResult> {
@@ -165,9 +168,62 @@ export async function transferFundsCore(
     rpcManager,
   };
 
+  // Try gas-sponsored execution first (ERC-4337 via Pimlico)
+  try {
+    const sponsoredResult = await executeSponsoredTransaction({
+      organizationId,
+      executionId: _context.executionId ?? "direct-execution",
+      chainId,
+      rpcUrl,
+      walletAddress,
+      to: recipientAddress,
+      value: amountInWei,
+    });
+
+    if (sponsoredResult !== null) {
+      const explorerConfig = await db.query.explorerConfigs.findFirst({
+        where: eq(explorerConfigs.chainId, chainId),
+      });
+      const transactionLink = explorerConfig
+        ? getTransactionUrl(explorerConfig, sponsoredResult.transactionHash)
+        : "";
+
+      return {
+        success: true,
+        transactionHash: sponsoredResult.transactionHash,
+        transactionLink,
+        gasUsed: sponsoredResult.gasUsed,
+        gasUsedUnits: sponsoredResult.gasUsedUnits,
+        effectiveGasPrice: sponsoredResult.effectiveGasPrice,
+      };
+    }
+
+    logUserError(
+      ErrorCategory.TRANSACTION,
+      "[Transfer Funds] Sponsorship skipped (credits exhausted, chain unsupported, or client creation failed), falling back to direct signing",
+      undefined,
+      {
+        plugin_name: "web3",
+        action_name: "transfer-funds",
+        chain_id: String(chainId),
+      }
+    );
+  } catch (error) {
+    logUserError(
+      ErrorCategory.TRANSACTION,
+      "[Transfer Funds] Sponsorship attempted but failed, falling back to direct signing",
+      error,
+      {
+        plugin_name: "web3",
+        action_name: "transfer-funds",
+        chain_id: String(chainId),
+      }
+    );
+  }
+
+  // Fall back to direct signing with nonce management and RPC failover
   const adapter = getChainAdapter(chainId);
 
-  // Execute transaction with nonce management
   return withNonceSession(txContext, walletAddress, async (session) => {
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     try {

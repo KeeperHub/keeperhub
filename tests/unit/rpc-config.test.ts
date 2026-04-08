@@ -257,41 +257,43 @@ describe("RPC Config Resolution", () => {
       { json: "solana-testnet", public: PUBLIC_RPCS.SOLANA_DEVNET },
     ];
 
-    it.each(chainKeys)(
-      "should resolve $json from JSON config",
-      ({ json, public: publicDefault }) => {
-        const rpcConfig: RpcConfig = {
-          [json]: { primaryRpcUrl: `https://${json}.json.example.com` },
-        };
+    it.each(chainKeys)("should resolve $json from JSON config", ({
+      json,
+      public: publicDefault,
+    }) => {
+      const rpcConfig: RpcConfig = {
+        [json]: { primaryRpcUrl: `https://${json}.json.example.com` },
+      };
 
-        const result = getRpcUrl({
-          rpcConfig,
-          jsonKey: json,
-          envValue: undefined,
-          publicDefault,
-          type: "primary",
-        });
+      const result = getRpcUrl({
+        rpcConfig,
+        jsonKey: json,
+        envValue: undefined,
+        publicDefault,
+        type: "primary",
+      });
 
-        expect(result).toBe(`https://${json}.json.example.com`);
-      }
-    );
+      expect(result).toBe(`https://${json}.json.example.com`);
+    });
 
-    it.each(chainKeys)(
-      "should fall back to public default for $json when no config",
-      ({ json, public: publicDefault }) => {
-        const rpcConfig: RpcConfig = {};
+    it.each(
+      chainKeys
+    )("should fall back to public default for $json when no config", ({
+      json,
+      public: publicDefault,
+    }) => {
+      const rpcConfig: RpcConfig = {};
 
-        const result = getRpcUrl({
-          rpcConfig,
-          jsonKey: json,
-          envValue: undefined,
-          publicDefault,
-          type: "primary",
-        });
+      const result = getRpcUrl({
+        rpcConfig,
+        jsonKey: json,
+        envValue: undefined,
+        publicDefault,
+        type: "primary",
+      });
 
-        expect(result).toBe(publicDefault);
-      }
-    );
+      expect(result).toBe(publicDefault);
+    });
   });
 
   describe("edge cases", () => {

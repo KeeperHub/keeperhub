@@ -11,6 +11,7 @@ export function PricingTable({
   currentPlan = "free",
   currentTier,
   currentInterval,
+  gasCreditCaps,
   onPlanUpdated,
 }: PricingTableProps): React.ReactElement {
   const [interval, setInterval] = useState<BillingInterval>("monthly");
@@ -53,6 +54,7 @@ export function PricingTable({
           currentInterval={currentInterval}
           currentPlan={currentPlan}
           currentTier={currentTier}
+          gasCreditCaps={gasCreditCaps}
           interval={interval}
           onPlanUpdated={onPlanUpdated}
           plan={PLANS.free}
@@ -62,6 +64,7 @@ export function PricingTable({
           currentInterval={currentInterval}
           currentPlan={currentPlan}
           currentTier={currentTier}
+          gasCreditCaps={gasCreditCaps}
           interval={interval}
           isPopular
           onPlanUpdated={onPlanUpdated}
@@ -72,6 +75,7 @@ export function PricingTable({
           currentInterval={currentInterval}
           currentPlan={currentPlan}
           currentTier={currentTier}
+          gasCreditCaps={gasCreditCaps}
           interval={interval}
           onPlanUpdated={onPlanUpdated}
           plan={PLANS.business}
@@ -81,6 +85,7 @@ export function PricingTable({
           currentInterval={currentInterval}
           currentPlan={currentPlan}
           currentTier={currentTier}
+          gasCreditCaps={gasCreditCaps}
           interval={interval}
           onPlanUpdated={onPlanUpdated}
           plan={PLANS.enterprise}

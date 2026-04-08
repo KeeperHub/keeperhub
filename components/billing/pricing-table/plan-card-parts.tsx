@@ -60,17 +60,20 @@ export function PlanCardFeatures({
   plan,
   planName,
   activeTier,
+  gasCreditCentsCap,
 }: {
   plan: (typeof PLANS)[PlanName];
   planName: PlanName;
   activeTier: PlanTierItem | undefined;
+  gasCreditCentsCap?: number;
 }): React.ReactElement {
   const isEnterprise = planName === "enterprise";
   const executionsDisplay = getExecutionsDisplay(planName, activeTier);
 
+  const capCents = gasCreditCentsCap ?? plan.features.gasCreditsCents;
   const gasCredits = isEnterprise
-    ? "$100+/mo"
-    : `$${(plan.features.gasCreditsCents / 100).toFixed(0)}/mo`;
+    ? `$${(capCents / 100).toFixed(0)}+/mo`
+    : `$${(capCents / 100).toFixed(0)}/mo`;
 
   const logRetention =
     plan.features.logRetentionDays >= 365
