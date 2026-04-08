@@ -288,6 +288,13 @@
       "when": 1774900505462,
       "tag": "0040_large_ben_urich",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1775655194558,
+      "tag": "0041_wakeful_grey_gargoyle",
+      "breakpoints": true
     }
   ]
 }
