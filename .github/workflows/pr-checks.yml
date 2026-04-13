@@ -66,7 +66,7 @@ jobs:
 
       - name: Upload migration logs on failure
         if: failure() && steps.changes.outputs.relevant == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: migrate-check-logs
           path: /tmp/migrate*.txt
@@ -74,7 +74,7 @@ jobs:
 
       - name: Upload drizzle drift output on failure
         if: failure() && steps.changes.outputs.relevant == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: drizzle-generate-output
           path: /tmp/drizzle-generate-output.txt
@@ -92,7 +92,7 @@ jobs:
           node-version: '22'
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 
@@ -142,7 +142,7 @@ jobs:
           node-version: '22'
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 

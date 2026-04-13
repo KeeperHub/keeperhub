@@ -50,7 +50,7 @@ jobs:
 
       - name: Build, tag, and push docs image to ECR
         id: build-docs-image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docs-site/Dockerfile
