@@ -133,9 +133,9 @@ jobs:
       - name: Run execution load test
         if: inputs.test_mode == 'execution'
         run: |
-          K6_CLOUD_ARGS=""
-          if [ -n "${K6_CLOUD_TOKEN:-}" ]; then
-            K6_CLOUD_ARGS="--out cloud"
+          K6_OUT_ARGS=""
+          if [ -n "${K6_PROMETHEUS_RW_SERVER_URL:-}" ]; then
+            K6_OUT_ARGS="--out experimental-prometheus-rw"
           fi
           k6 run tests/k6/execution-load-test.js \
             -e BASE_URL="${BASE_URL}" \
@@ -149,13 +149,15 @@ jobs:
             -e RAMP_INTERVAL="${{ inputs.ramp_interval }}" \
             --summary-export /tmp/k6-results/summary.json \
             --no-usage-report \
-            $K6_CLOUD_ARGS
+            $K6_OUT_ARGS
         env:
           TEST_API_KEY: ${{ secrets.TEST_API_KEY }}
           SERVICE_KEY: ${{ secrets.SCHEDULER_SERVICE_API_KEY }}
           CF_ACCESS_CLIENT_ID: ${{ secrets.TO_CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.TO_CF_ACCESS_CLIENT_SECRET }}
-          K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+          K6_PROMETHEUS_RW_SERVER_URL: ${{ secrets.K6_PROMETHEUS_RW_SERVER_URL }}
+          K6_PROMETHEUS_RW_USERNAME: ${{ secrets.K6_PROMETHEUS_RW_USERNAME }}
+          K6_PROMETHEUS_RW_PASSWORD: ${{ secrets.K6_PROMETHEUS_RW_PASSWORD }}
 
       # ── HTTP ramp mode: VU ramp-until-breach ──
       - name: Run HTTP ramp load test
