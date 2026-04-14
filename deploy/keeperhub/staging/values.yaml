@@ -392,6 +392,9 @@ env:
     type: parameterStore
     name: test-api-key
     parameter_name: /eks/techops-staging/keeperhub/test-api-key
+  ALLOW_TEST_ENDPOINTS:
+    type: kv
+    value: "true"
 
 externalSecrets:
   clusterSecretStoreName: techops-staging
