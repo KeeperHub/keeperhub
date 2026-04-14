@@ -50,7 +50,7 @@ on:
         description: '[execution] Seconds between each new VU during ramp-up'
         required: false
         type: string
-        default: '5'
+        default: '16'
       observe_seconds:
         description: '[execution] Observation window per tier in seconds'
         required: false
