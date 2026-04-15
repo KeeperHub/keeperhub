@@ -39,6 +39,10 @@ inputs:
     description: 'TEST_API_KEY for rate limit bypass via X-Test-API-Key header'
     required: false
     default: ''
+  chain_rpc_config:
+    description: 'CHAIN_RPC_CONFIG JSON for reliable RPC endpoints (avoids flaky public RPCs)'
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -66,6 +70,7 @@ runs:
         IMAGE_TAG: ${{ inputs.image_tag }}
         DATABASE_URL: ${{ inputs.database_url }}
         TEST_API_KEY: ${{ inputs.test_api_key }}
+        CHAIN_RPC_CONFIG: ${{ inputs.chain_rpc_config }}
       run: |
         IMAGE="${ECR_REGISTRY}/${ECR_REPO}:app-${IMAGE_TAG}"
         echo "Pulling ${IMAGE}..."
@@ -79,6 +84,7 @@ runs:
           "CI=true" \
           "TEST_API_KEY=${TEST_API_KEY}" \
           "WORKFLOW_TARGET_WORLD=@workflow/world-postgres" \
+          "CHAIN_RPC_CONFIG=${CHAIN_RPC_CONFIG}" \
           > /tmp/keeperhub-app.env
 
         docker run -d --name keeperhub-app --network host \
@@ -142,3 +148,4 @@ runs:
         CI: true
         TEST_API_KEY: ${{ inputs.test_api_key }}
         WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
+        CHAIN_RPC_CONFIG: ${{ inputs.chain_rpc_config }}

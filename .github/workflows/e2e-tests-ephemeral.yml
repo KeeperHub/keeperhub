@@ -201,6 +201,7 @@ jobs:
           database_url: postgresql://postgres:postgres@localhost:5432/keeperhub_test
           better_auth_secret: ${{ secrets.BETTER_AUTH_SECRET }}
           test_api_key: ${{ secrets.TEST_API_KEY }}
+          chain_rpc_config: ${{ secrets.CHAIN_RPC_CONFIG }}
 
       - name: Run E2E Vitest tests
         run: pnpm test:e2e:vitest
@@ -296,6 +297,7 @@ jobs:
           database_url: postgresql://postgres:postgres@localhost:5432/keeperhub_test
           better_auth_secret: ${{ secrets.BETTER_AUTH_SECRET }}
           test_api_key: ${{ secrets.TEST_API_KEY }}
+          chain_rpc_config: ${{ secrets.CHAIN_RPC_CONFIG }}
 
       - name: Run Playwright tests
         run: pnpm test:e2e
