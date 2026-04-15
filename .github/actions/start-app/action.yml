@@ -84,11 +84,11 @@ runs:
           "CI=true" \
           "TEST_API_KEY=${TEST_API_KEY}" \
           "WORKFLOW_TARGET_WORLD=@workflow/world-postgres" \
-          "CHAIN_RPC_CONFIG=${CHAIN_RPC_CONFIG}" \
           > /tmp/keeperhub-app.env
 
         docker run -d --name keeperhub-app --network host \
           --env-file /tmp/keeperhub-app.env \
+          -e "CHAIN_RPC_CONFIG=${CHAIN_RPC_CONFIG}" \
           "${IMAGE}"
 
         for i in $(seq 1 30); do
