@@ -15,7 +15,7 @@
 
 import http from "k6/http";
 import { sleep } from "k6";
-import { Counter, Rate } from "k6/metrics";
+import { Counter, Gauge } from "k6/metrics";
 import exec from "k6/execution";
 
 const BASE_URL = __ENV.BASE_URL || "http://localhost:3000";
@@ -33,6 +33,14 @@ const manualTriggerOk = new Counter("manual_trigger_ok");
 const manualTriggerFail = new Counter("manual_trigger_fail");
 const workflowsCreated = new Counter("workflows_created");
 const usersCreated = new Counter("users_created");
+
+// Live gauges — polled from DB every 10s by VU1 during observation
+const gaugeWorkflowsActive = new Gauge("live_workflows_active");
+const gaugeExecTotal = new Gauge("live_executions_total");
+const gaugeExecSuccess = new Gauge("live_executions_success");
+const gaugeExecError = new Gauge("live_executions_error");
+const gaugeExecRunning = new Gauge("live_executions_running");
+const gaugeExecSuccessRate = new Gauge("live_exec_success_rate");
 
 // Scenario — duration calculated from actual inputs
 const RAMP_INTERVAL = parseInt(__ENV.RAMP_INTERVAL || "5", 10);
@@ -220,13 +228,40 @@ export default function () {
 
   console.log(`VU${exec.vu.idInTest}: TIER ${tierTarget} | observing ${OBSERVE_SECONDS}s | ${allWfIds.length} total | ${manualWfIds.length} manual`);
 
-  // Observe: trigger manuals every 60s, scheduler handles schedules
+  // Observe: VU1 polls live stats every 10s, all VUs trigger manuals every 60s
+  const isVU1 = exec.vu.idInTest === 1;
   const startTime = Date.now();
+  let lastManualTrigger = 0;
+  let lastStatsPoll = 0;
+
   while ((Date.now() - startTime) / 1000 < OBSERVE_SECONDS) {
-    triggerManuals();
-    const elapsed = (Date.now() - startTime) / 1000;
-    const waitTime = Math.min(60, OBSERVE_SECONDS - elapsed);
-    if (waitTime > 0) sleep(waitTime);
+    const now = Date.now();
+
+    // Trigger manuals every 60s (all VUs)
+    if (now - lastManualTrigger >= 60000) {
+      triggerManuals();
+      lastManualTrigger = now;
+    }
+
+    // Poll live stats every 10s (VU1 only)
+    if (isVU1 && now - lastStatsPoll >= 10000) {
+      const r = http.post(`${BASE_URL}/api/admin/test/cleanup`,
+        JSON.stringify({ dryRun: true }), { headers: adminH() });
+      if (r.status === 200) {
+        try {
+          const s = JSON.parse(r.body);
+          gaugeWorkflowsActive.add(s.workflows?.enabled ?? 0);
+          gaugeExecTotal.add(s.executions?.total ?? 0);
+          gaugeExecSuccess.add(s.executions?.success ?? 0);
+          gaugeExecError.add(s.executions?.error ?? 0);
+          gaugeExecRunning.add(s.executions?.running ?? 0);
+          gaugeExecSuccessRate.add(s.executions?.successRate ?? 0);
+        } catch { /* ignore parse errors */ }
+      }
+      lastStatsPoll = now;
+    }
+
+    sleep(5);
   }
 
   // Wait for in-flight executions to complete
