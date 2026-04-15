@@ -151,12 +151,31 @@ export async function POST(request: Request): Promise<NextResponse> {
       });
     }
 
-    // Count workflows before deleting.
+    // Count workflows and executions before deleting.
     const wfCount = await db.execute<{ count: string }>(sql`
       SELECT count(*)::text as count FROM workflows
       WHERE user_id IN (SELECT id FROM users WHERE email LIKE ${K6_EMAIL_PATTERN})
     `);
     const deletedWorkflows = Number(wfCount[0]?.count ?? 0);
+
+    const execCount = await db.execute<{
+      total: string;
+      success: string;
+      error: string;
+    }>(sql`
+      SELECT
+        count(*)::text as total,
+        count(*) FILTER (WHERE status = 'success')::text as success,
+        count(*) FILTER (WHERE status = 'error')::text as error
+      FROM workflow_executions
+      WHERE workflow_id IN (
+        SELECT id FROM workflows
+        WHERE user_id IN (SELECT id FROM users WHERE email LIKE ${K6_EMAIL_PATTERN})
+      )
+    `);
+    const execTotal = Number(execCount[0]?.total ?? 0);
+    const execSuccess = Number(execCount[0]?.success ?? 0);
+    const execError = Number(execCount[0]?.error ?? 0);
 
     // Run cleanup in a loop — each pass deletes what it can.
     // Locked rows (from in-flight executions) are skipped and caught next pass.
@@ -180,6 +199,15 @@ export async function POST(request: Request): Promise<NextResponse> {
         users: deletedUsers,
         organizations: deletedUsers,
         workflows: deletedWorkflows,
+      },
+      executions: {
+        total: execTotal,
+        success: execSuccess,
+        error: execError,
+        successRate:
+          execTotal > 0
+            ? Math.round((10000 * execSuccess) / execTotal) / 100
+            : 100,
       },
       emails,
       dryRun: false,

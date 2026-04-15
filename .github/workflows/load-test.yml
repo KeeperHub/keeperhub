@@ -209,9 +209,17 @@ jobs:
           DELETED_USERS=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('deleted',{}).get('users',0))" 2>/dev/null || echo "0")
           DELETED_WF=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('deleted',{}).get('workflows',0))" 2>/dev/null || echo "0")
           DELETED_ORGS=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('deleted',{}).get('organizations',0))" 2>/dev/null || echo "0")
+          EXEC_TOTAL=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('executions',{}).get('total',0))" 2>/dev/null || echo "0")
+          EXEC_SUCCESS=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('executions',{}).get('success',0))" 2>/dev/null || echo "0")
+          EXEC_ERROR=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('executions',{}).get('error',0))" 2>/dev/null || echo "0")
+          EXEC_RATE=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('executions',{}).get('successRate',0))" 2>/dev/null || echo "0")
           echo "DELETED_USERS=$DELETED_USERS" >> $GITHUB_ENV
           echo "DELETED_WORKFLOWS=$DELETED_WF" >> $GITHUB_ENV
           echo "DELETED_ORGS=$DELETED_ORGS" >> $GITHUB_ENV
+          echo "EXEC_TOTAL=$EXEC_TOTAL" >> $GITHUB_ENV
+          echo "EXEC_SUCCESS=$EXEC_SUCCESS" >> $GITHUB_ENV
+          echo "EXEC_ERROR=$EXEC_ERROR" >> $GITHUB_ENV
+          echo "EXEC_RATE=$EXEC_RATE" >> $GITHUB_ENV
         env:
           TEST_API_KEY: ${{ secrets.TEST_API_KEY }}
           CF_ACCESS_CLIENT_ID: ${{ secrets.TO_CF_ACCESS_CLIENT_ID }}
@@ -248,8 +256,23 @@ jobs:
               lines.append(f"| Tiers | ${{ inputs.tiers }} |")
               lines.append(f"| Observe per tier | ${{ inputs.observe_seconds }}s |")
               lines.append("")
-              lines.append("Execution metrics streamed to **Grafana Cloud Prometheus** (`k6_*` metrics).")
-              lines.append(f"View full results in Grafana or check the [workflow logs]({run_url}).")
+              exec_total = os.environ.get("EXEC_TOTAL", "0")
+              exec_success = os.environ.get("EXEC_SUCCESS", "0")
+              exec_error = os.environ.get("EXEC_ERROR", "0")
+              exec_rate = os.environ.get("EXEC_RATE", "0")
+              if int(exec_total) > 0:
+                  icon = ":white_check_mark:" if float(exec_rate) >= 95 else ":warning:" if float(exec_rate) >= 80 else ":x:"
+                  lines.append(f"### {icon} Execution Success Rate: {exec_rate}%")
+                  lines.append("")
+                  lines.append("| Metric | Value |")
+                  lines.append("|--------|-------|")
+                  lines.append(f"| Total Executions | {exec_total} |")
+                  lines.append(f"| Successful | {exec_success} |")
+                  lines.append(f"| Failed | {exec_error} |")
+                  lines.append(f"| Success Rate | {exec_rate}% |")
+              lines.append("")
+              lines.append("Metrics streamed to **Grafana Cloud Prometheus** (`k6_*` metrics).")
+              lines.append(f"[View Grafana Dashboard](https://techopsservices.grafana.net/d/7214dad4-a90e-4f82-8d31-8278a1011a08/keeperhub-load-test-results) | [Workflow Logs]({run_url})")
 
           elif test_mode == "http-ramp":
               results_file = "/tmp/k6-results/all-tiers.json"

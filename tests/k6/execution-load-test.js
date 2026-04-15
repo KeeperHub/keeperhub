@@ -28,9 +28,11 @@ const OBSERVE_SECONDS = parseInt(__ENV.OBSERVE_SECONDS || "180", 10);
 const PASSWORD = "K6LoadTest!2024";
 const TIERS = (__ENV.TIERS || "10,12,14,16,18,20,25,30,40,50").split(",").map(Number);
 
-// Metrics (for k6 summary only — real numbers come from stats endpoint)
+// Metrics — pushed to Prometheus via --out experimental-prometheus-rw
 const manualTriggerOk = new Counter("manual_trigger_ok");
 const manualTriggerFail = new Counter("manual_trigger_fail");
+const workflowsCreated = new Counter("workflows_created");
+const usersCreated = new Counter("users_created");
 
 // Scenario — duration calculated from actual inputs
 const RAMP_INTERVAL = parseInt(__ENV.RAMP_INTERVAL || "5", 10);
@@ -177,6 +179,7 @@ function createWorkflows(count) {
     }
 
     allWfIds.push({ id: wfId, type: p.type });
+    workflowsCreated.add(1);
     if (p.type === "Manual") manualWfIds.push(wfId);
     created++;
   }
@@ -198,6 +201,7 @@ export default function () {
     const ok = authenticate();
     if (!ok) { sleep(30); return; }
     if (completedTiers === 0) {
+      usersCreated.add(1);
       console.log(`VU${exec.vu.idInTest}: authenticated`);
     }
   }
