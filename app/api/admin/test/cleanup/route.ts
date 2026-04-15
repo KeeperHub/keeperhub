@@ -187,7 +187,7 @@ export async function POST(request: Request): Promise<NextResponse> {
           success: es,
           error: ee,
           running: er,
-          successRate: et > 0 ? Math.round((10000 * es) / et) / 100 : 100,
+          successRate: es + ee > 0 ? Math.round((10000 * es) / (es + ee)) / 100 : 100,
         },
         dryRun: true,
       });
@@ -247,8 +247,8 @@ export async function POST(request: Request): Promise<NextResponse> {
         success: execSuccess,
         error: execError,
         successRate:
-          execTotal > 0
-            ? Math.round((10000 * execSuccess) / execTotal) / 100
+          execSuccess + execError > 0
+            ? Math.round((10000 * execSuccess) / (execSuccess + execError)) / 100
             : 100,
       },
       emails,
