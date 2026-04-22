@@ -1,6 +1,12 @@
 name: k6 Load Test
 
 on:
+  # Weekly automated run against staging every Saturday 20:00 UTC.
+  # Uses input defaults below (environment=staging, 25 VUs, 65 wf/VU, 5 min observe, 16s ramp).
+  # Timing rationale: Sat evening covers all TZs (Sat 17:00 ART, Sat 21:00 CET, Sun 07:00 AEDT)
+  # — nobody working, results ready Sunday morning.
+  schedule:
+    - cron: '0 20 * * 6'
   workflow_dispatch:
     inputs:
       test_mode:
@@ -35,12 +41,12 @@ on:
         description: '[execution] Number of concurrent VUs'
         required: false
         type: string
-        default: '20'
+        default: '25'
       wf_per_vu:
         description: '[execution] Workflows created per VU'
         required: false
         type: string
-        default: '5'
+        default: '65'
       duration:
         description: '[execution] Sustained load duration (e.g. 60s, 5m)'
         required: false
@@ -55,12 +61,12 @@ on:
         description: '[execution] Observation window per tier in seconds'
         required: false
         type: string
-        default: '180'
+        default: '300'
       tiers:
         description: '[execution] Comma-separated workflow-per-VU tiers (e.g. 10,20,30)'
         required: false
         type: string
-        default: '10'
+        default: '65'
       # HTTP ramp mode parameters
       step_size:
         description: '[http-ramp] VU increment per step'
@@ -141,7 +147,7 @@ jobs:
 
       # ── Execution mode: pure k6 workflow execution load test ──
       - name: Run execution load test
-        if: inputs.test_mode == 'execution'
+        if: ${{ (inputs.test_mode || 'execution') == 'execution' }}
         run: |
           K6_OUT_ARGS=""
           if [ -n "${K6_PROMETHEUS_RW_SERVER_URL:-}" ]; then
@@ -154,11 +160,11 @@ jobs:
             -e SKIP_CLEANUP=true \
             -e CF_ACCESS_CLIENT_ID="${CF_ACCESS_CLIENT_ID}" \
             -e CF_ACCESS_CLIENT_SECRET="${CF_ACCESS_CLIENT_SECRET}" \
-            -e TARGET_VUS="${{ inputs.target_vus }}" \
-            -e WF_PER_VU="${{ inputs.wf_per_vu }}" \
-            -e OBSERVE_SECONDS="${{ inputs.observe_seconds }}" \
-            -e TIERS="${{ inputs.tiers }}" \
-            -e RAMP_INTERVAL="${{ inputs.ramp_interval }}" \
+            -e TARGET_VUS="${{ inputs.target_vus || '25' }}" \
+            -e WF_PER_VU="${{ inputs.wf_per_vu || '65' }}" \
+            -e OBSERVE_SECONDS="${{ inputs.observe_seconds || '300' }}" \
+            -e TIERS="${{ inputs.tiers || '65' }}" \
+            -e RAMP_INTERVAL="${{ inputs.ramp_interval || '16' }}" \
             --summary-export /tmp/k6-results/summary.json \
             --no-usage-report \
             $K6_OUT_ARGS 2>&1 | tee /tmp/k6-results/k6-output.log
@@ -231,9 +237,9 @@ jobs:
           python3 << 'PYSUMMARY'
           import json, os
 
-          test_mode = "${{ inputs.test_mode }}"
-          threshold = float("${{ inputs.threshold }}")
-          env_name = "${{ inputs.environment }}"
+          test_mode = "${{ inputs.test_mode || 'execution' }}"
+          threshold = float("${{ inputs.threshold || '95' }}")
+          env_name = "${{ inputs.environment || 'staging' }}"
           base_url = os.environ.get("BASE_URL", "")
           deleted_users = os.environ.get("DELETED_USERS", "unknown")
           run_url = "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -251,10 +257,10 @@ jobs:
               lines.append("")
               lines.append(f"| Parameter | Value |")
               lines.append(f"|-----------|-------|")
-              lines.append(f"| VUs | ${{ inputs.target_vus }} |")
-              lines.append(f"| Workflows/VU | ${{ inputs.wf_per_vu }} |")
-              lines.append(f"| Tiers | ${{ inputs.tiers }} |")
-              lines.append(f"| Observe per tier | ${{ inputs.observe_seconds }}s |")
+              lines.append(f"| VUs | ${{ inputs.target_vus || '25' }} |")
+              lines.append(f"| Workflows/VU | ${{ inputs.wf_per_vu || '65' }} |")
+              lines.append(f"| Tiers | ${{ inputs.tiers || '65' }} |")
+              lines.append(f"| Observe per tier | ${{ inputs.observe_seconds || '300' }}s |")
               lines.append("")
               exec_total = os.environ.get("EXEC_TOTAL", "0")
               exec_success = os.environ.get("EXEC_SUCCESS", "0")
@@ -327,7 +333,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: k6-load-test-${{ inputs.test_mode }}-${{ inputs.environment }}-${{ github.run_number }}
+          name: k6-load-test-${{ inputs.test_mode || 'execution' }}-${{ inputs.environment || 'staging' }}-${{ github.run_number }}
           path: |
             /tmp/k6-exec-load/
             /tmp/k6-results/
