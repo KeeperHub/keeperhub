@@ -139,11 +139,12 @@ export async function POST(request: Request) {
       chainId
     );
 
-    // Upper-bound on what the tx will actually burn: estimatedGas * maxFeePerGas.
-    // gasLimit is a consumption cap, not a prepay, so we do not multiply by it here
-    // or we would quote (and reserve) a fee that the tx cannot reach in practice.
-    // maxFeePerGas already encodes headroom for a baseFee spike.
-    const gasCostWei = estimatedGas * gasConfig.maxFeePerGas;
+    // Match what the withdraw route will actually prepay on-chain. EIP-1559
+    // rejects a tx when balance < value + gasLimit * maxFeePerGas, so the
+    // Max button must reserve that full amount, not just estimatedGas *
+    // maxFeePerGas. Any unused gas is refunded after the tx mines, but the
+    // node won't accept it otherwise.
+    const gasCostWei = gasConfig.gasLimit * gasConfig.maxFeePerGas;
 
     return NextResponse.json({
       gasCostWei: gasCostWei.toString(),
