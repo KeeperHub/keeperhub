@@ -161,6 +161,20 @@ class BlockMonitorService {
   }
 }
 
+// Ethers v6 WebSocketProvider teardown produces a detached eth_unsubscribe rejection when the socket dies mid-subscription; catch it here so Node does not exit the process.
+process.on("unhandledRejection", (reason: unknown) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  const stack = reason instanceof Error ? reason.stack : "";
+  console.error(`[BlockDispatcher] Unhandled rejection: ${message}`, stack);
+});
+
+process.on("uncaughtException", (error: Error) => {
+  console.error(
+    `[BlockDispatcher] Uncaught exception: ${error.message}`,
+    error.stack ?? ""
+  );
+});
+
 // Main entry point
 async function main(): Promise<void> {
   console.log("[BlockDispatcher] Starting block dispatcher...");
@@ -211,4 +225,8 @@ async function main(): Promise<void> {
   await service.start();
 }
 
-main();
+main().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[BlockDispatcher] Fatal startup error: ${message}`);
+  process.exit(1);
+});
