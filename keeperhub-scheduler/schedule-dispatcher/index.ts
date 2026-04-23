@@ -162,6 +162,24 @@ async function dispatch(): Promise<{
   };
 }
 
+// Log and swallow detached promise rejections so transient failures do not
+// crash the dispatcher (Node v15+ exits on unhandled rejection by default).
+process.on("unhandledRejection", (reason: unknown) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  const stack = reason instanceof Error ? reason.stack : "";
+  console.error(`[Dispatcher] Unhandled rejection: ${message}`, stack);
+});
+
+// Uncaught sync exceptions indicate corrupted state; log and exit so the
+// orchestrator restarts us cleanly rather than continuing in an unknown state.
+process.on("uncaughtException", (error: Error) => {
+  console.error(
+    `[Dispatcher] Uncaught exception: ${error.message}`,
+    error.stack ?? ""
+  );
+  process.exit(1);
+});
+
 // Main entry point
 async function main() {
   console.log("[Dispatcher] Starting schedule dispatcher...");
@@ -217,4 +235,8 @@ async function main() {
   }, 60_000); // 60 seconds
 }
 
-main();
+main().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[Dispatcher] Fatal startup error: ${message}`);
+  process.exit(1);
+});
