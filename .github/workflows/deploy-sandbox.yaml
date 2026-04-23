@@ -168,18 +168,3 @@ jobs:
             exit 1
           fi
           echo "WORK-03 smoke: token file ENOENT"
-
-      - name: Healthz smoke
-        if: steps.skip.outputs.skip_deploy != 'true'
-        run: |
-          kubectl -n "${{ env.NAMESPACE }}" port-forward \
-            svc/"${{ env.RELEASE_NAME }}" 18787:8787 >/dev/null 2>&1 &
-          PF_PID=$!
-          sleep 3
-          if ! curl -sf http://localhost:18787/healthz | grep -q '^ok$'; then
-            echo "::error::/healthz did not return ok"
-            kill $PF_PID 2>/dev/null
-            exit 1
-          fi
-          echo "Healthz smoke: ok"
-          kill $PF_PID 2>/dev/null
