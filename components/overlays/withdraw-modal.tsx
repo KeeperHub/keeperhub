@@ -247,6 +247,14 @@ export function WithdrawModal({
     setState("confirming");
     setErrorMessage(null);
 
+    // When Max was clicked for a native transfer, delegate the balance →
+    // reservation subtraction to the server so the final value and the gas
+    // reservation come from the same snapshot. This avoids "insufficient
+    // funds" when baseFee rises between the client's fee preview and tx
+    // submission.
+    const useServerMax =
+      maxReserveApplied && selectedAsset.type === "native";
+
     try {
       const response = await fetch("/api/user/wallet/withdraw", {
         method: "POST",
@@ -254,8 +262,9 @@ export function WithdrawModal({
         body: JSON.stringify({
           chainId: selectedAsset.chainId,
           tokenAddress: selectedAsset.tokenAddress,
-          amount,
+          amount: useServerMax ? undefined : amount,
           recipient,
+          fromMax: useServerMax,
         }),
       });
 

@@ -55,7 +55,7 @@ type TransferOptions = {
 async function executeERC20Transfer(
   signer: ethers.Signer,
   tokenAddress: string,
-  amount: string,
+  amountWei: bigint,
   recipient: string,
   options: TransferOptions
 ): Promise<string> {
@@ -64,8 +64,6 @@ async function executeERC20Transfer(
     ERC20_TRANSFER_ABI,
     signer
   );
-  const decimals = await contract.decimals();
-  const amountWei = ethers.parseUnits(amount, decimals);
   const tx = await contract.transfer(recipient, amountWei, {
     nonce: options.nonce,
     gasLimit: options.gasLimit,
@@ -79,11 +77,10 @@ async function executeERC20Transfer(
 
 async function executeNativeTransfer(
   signer: ethers.Signer,
-  amount: string,
+  amountWei: bigint,
   recipient: string,
   options: TransferOptions
 ): Promise<string> {
-  const amountWei = ethers.parseEther(amount);
   const tx = await signer.sendTransaction({
     to: recipient,
     value: amountWei,
@@ -152,11 +149,34 @@ export async function POST(request: Request) {
 
     // 2. Parse request body
     const body = await request.json();
-    const { chainId: rawChainId, tokenAddress, amount, recipient } = body;
+    const {
+      chainId: rawChainId,
+      tokenAddress,
+      amount,
+      recipient,
+      fromMax,
+    } = body;
 
-    if (!(rawChainId && amount && recipient)) {
+    if (!(rawChainId && recipient)) {
       return NextResponse.json(
-        { error: "Missing required fields: chainId, amount, recipient" },
+        { error: "Missing required fields: chainId, recipient" },
+        { status: 400 }
+      );
+    }
+
+    // fromMax is only valid for native transfers: for ERC20, token gas is
+    // paid in the native asset, so sending the full token balance has no
+    // reservation conflict and the client already sets amount = balance.
+    if (fromMax && tokenAddress) {
+      return NextResponse.json(
+        { error: "fromMax is only valid for native transfers" },
+        { status: 400 }
+      );
+    }
+
+    if (!(fromMax || amount)) {
+      return NextResponse.json(
+        { error: "Missing required field: amount" },
         { status: 400 }
       );
     }
@@ -177,10 +197,12 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validate amount
-    const parsedAmount = Number.parseFloat(amount);
-    if (Number.isNaN(parsedAmount) || parsedAmount <= 0) {
-      return NextResponse.json({ error: "Invalid amount" }, { status: 400 });
+    // Validate amount (skipped when fromMax: server computes the value)
+    if (!fromMax) {
+      const parsedAmount = Number.parseFloat(amount);
+      if (Number.isNaN(parsedAmount) || parsedAmount <= 0) {
+        return NextResponse.json({ error: "Invalid amount" }, { status: 400 });
+      }
     }
 
     // 3. Get chain info from database
@@ -237,7 +259,10 @@ export async function POST(request: Request) {
         // Get nonce from session
         const nonce = nonceManager.getNextNonce(session);
 
-        // Estimate gas based on transfer type
+        // Resolve amount in wei and estimate gas. For native fromMax the
+        // final value is computed after gasConfig is known (1 wei here is a
+        // placeholder; native-transfer gas does not depend on value).
+        let amountWei: bigint;
         let estimatedGas: bigint;
         if (tokenAddress) {
           const contract = new ethers.Contract(
@@ -245,14 +270,15 @@ export async function POST(request: Request) {
             ERC20_TRANSFER_ABI,
             signer
           );
-          const decimals = await contract.decimals();
-          const amountWei = ethers.parseUnits(amount, decimals);
+          const decimalsResult: bigint = await contract.decimals();
+          const decimals = Number(decimalsResult);
+          amountWei = ethers.parseUnits(amount, decimals);
           estimatedGas = await contract.transfer.estimateGas(
             recipient,
             amountWei
           );
         } else {
-          const amountWei = ethers.parseEther(amount);
+          amountWei = fromMax ? BigInt(1) : ethers.parseEther(amount);
           estimatedGas = await provider.estimateGas({
             from: walletAddress,
             to: recipient,
@@ -261,27 +287,66 @@ export async function POST(request: Request) {
         }
 
         // Get gas configuration from strategy
-        const gasConfig = await gasStrategy.getGasConfig(
+        const baseGasConfig = await gasStrategy.getGasConfig(
           provider,
           "manual",
           estimatedGas,
           chainId
         );
 
+        // For native fromMax, resolve the actual value now that gasConfig is
+        // known. This pins reservation and value to the same snapshot, so
+        // EIP-1559's `balance >= value + gasLimit*maxFeePerGas` check cannot
+        // fail due to fee drift between the client's fee preview and tx
+        // submission.
+        //
+        // We also tighten the reservation to drain closer to zero:
+        //  - gasLimit: estimatedGas * 1.1. EOA→EOA native transfer gasUsed
+        //    is deterministic at 21000, the 10% slack is only there for
+        //    contract recipients where estimateGas can vary slightly. The
+        //    default 2.0x multiplier would leave ~100 microETH of dust.
+        //  - maxFeePerGas: baseFee * 1.125 + priorityFee. EIP-1559 caps
+        //    baseFee growth at 12.5% per block, so this keeps the tx valid
+        //    for one block of delay while avoiding the full 2x baseFee
+        //    headroom that the default strategy applies.
+        let gasLimit = baseGasConfig.gasLimit;
+        let maxFeePerGas = baseGasConfig.maxFeePerGas;
+        const maxPriorityFeePerGas = baseGasConfig.maxPriorityFeePerGas;
+
+        if (fromMax && !tokenAddress) {
+          const latestBlock = await provider.getBlock("latest");
+          const baseFeePerGas = latestBlock?.baseFeePerGas ?? null;
+
+          gasLimit = (estimatedGas * BigInt(11)) / BigInt(10);
+          if (baseFeePerGas !== null) {
+            maxFeePerGas =
+              (baseFeePerGas * BigInt(9)) / BigInt(8) + maxPriorityFeePerGas;
+          }
+          // On legacy (non-EIP-1559) chains baseFeePerGas is null; keep the
+          // strategy's maxFeePerGas (gasPrice * 1.2) since we have no
+          // baseFee to bound against.
+
+          const liveBalance = await provider.getBalance(walletAddress);
+          const reservation = gasLimit * maxFeePerGas;
+          if (liveBalance <= reservation) {
+            throw new Error("Balance is too low to cover network fee");
+          }
+          amountWei = liveBalance - reservation;
+        }
+
         console.log("[Withdraw] Gas config:", {
           estimatedGas: estimatedGas.toString(),
-          gasLimit: gasConfig.gasLimit.toString(),
-          maxFeePerGas: `${ethers.formatUnits(gasConfig.maxFeePerGas, "gwei")} gwei`,
-          maxPriorityFeePerGas:
-            ethers.formatUnits(gasConfig.maxPriorityFeePerGas, "gwei") +
-            " gwei",
+          gasLimit: gasLimit.toString(),
+          maxFeePerGas: `${ethers.formatUnits(maxFeePerGas, "gwei")} gwei`,
+          maxPriorityFeePerGas: `${ethers.formatUnits(maxPriorityFeePerGas, "gwei")} gwei`,
+          fromMax: Boolean(fromMax),
         });
 
         const transferOptions: TransferOptions = {
           nonce,
-          gasLimit: gasConfig.gasLimit,
-          maxFeePerGas: gasConfig.maxFeePerGas,
-          maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
+          gasLimit,
+          maxFeePerGas,
+          maxPriorityFeePerGas,
         };
 
         // Execute transfer
@@ -289,13 +354,13 @@ export async function POST(request: Request) {
           ? await executeERC20Transfer(
               signer,
               tokenAddress,
-              amount,
+              amountWei,
               recipient,
               transferOptions
             )
           : await executeNativeTransfer(
               signer,
-              amount,
+              amountWei,
               recipient,
               transferOptions
             );
@@ -306,7 +371,7 @@ export async function POST(request: Request) {
           nonce,
           txHash,
           undefined,
-          gasConfig.maxFeePerGas.toString()
+          maxFeePerGas.toString()
         );
         await nonceManager.confirmTransaction(txHash);
 
