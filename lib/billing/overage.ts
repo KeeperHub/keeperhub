@@ -77,6 +77,7 @@ export async function billOverageForOrg(
              WHERE w.organization_id = ${organizationId}
                AND we.started_at >= ${periodStart.toISOString()}
                AND we.started_at <  ${periodEnd.toISOString()}
+               AND we.status <> 'blocked_billing'
           )
           +
           (
@@ -85,6 +86,7 @@ export async function billOverageForOrg(
              WHERE de.organization_id = ${organizationId}
                AND de.created_at >= ${periodStart.toISOString()}
                AND de.created_at <  ${periodEnd.toISOString()}
+               AND de.status <> 'blocked_billing'
           ) AS count`
   );
 

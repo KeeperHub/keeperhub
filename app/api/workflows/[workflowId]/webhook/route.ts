@@ -11,6 +11,7 @@ import {
   EXECUTION_LIMIT_ERROR,
   enforceExecutionLimit,
 } from "@/lib/billing/execution-guard";
+import { recordBlockedWorkflowExecution } from "@/lib/billing/record-blocked-execution";
 import { checkConcurrencyLimit } from "@/app/api/execute/_lib/concurrency-limit";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { recordWebhookMetrics } from "@/lib/metrics/instrumentation/api";
@@ -237,6 +238,12 @@ export async function POST(
         durationMs: timer(),
         statusCode: 429,
         error: EXECUTION_LIMIT_ERROR,
+      });
+      await recordBlockedWorkflowExecution({
+        workflowId,
+        userId: workflow.userId,
+        triggerType: "webhook",
+        limitResult: executionGuard.limitResult,
       });
       const body = await executionGuard.response.json();
       return NextResponse.json(body, {

@@ -923,6 +923,11 @@ describe("POST /api/mcp/workflows/[slug]/call: write workflow returns calldata",
     EXECUTION_LIMIT_ERROR: "Monthly execution limit exceeded",
   }));
 
+  vi.mock("@/lib/billing/record-blocked-execution", () => ({
+    recordBlockedWorkflowExecution: vi.fn().mockResolvedValue(undefined),
+    recordBlockedDirectExecution: vi.fn().mockResolvedValue(undefined),
+  }));
+
   vi.mock("@/app/api/execute/_lib/concurrency-limit", () => ({
     checkConcurrencyLimit: mockCheckConcurrencyLimit,
   }));

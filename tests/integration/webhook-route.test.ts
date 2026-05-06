@@ -102,6 +102,11 @@ vi.mock("@/lib/billing/execution-guard", () => ({
   enforceExecutionLimit: mockEnforceExecutionLimit,
 }));
 
+vi.mock("@/lib/billing/record-blocked-execution", () => ({
+  recordBlockedWorkflowExecution: vi.fn().mockResolvedValue(undefined),
+  recordBlockedDirectExecution: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/app/api/execute/_lib/concurrency-limit", () => ({
   checkConcurrencyLimit: mockCheckConcurrency,
 }));

@@ -3,6 +3,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { start } from "workflow/api";
 import { checkConcurrencyLimit } from "@/app/api/execute/_lib/concurrency-limit";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
+import { recordBlockedWorkflowExecution } from "@/lib/billing/record-blocked-execution";
 import { db } from "@/lib/db";
 import { getOrgPlanLabel, getOrgSlug } from "@/lib/db/org-helpers";
 import { tags, workflowExecutions, workflows } from "@/lib/db/schema";
@@ -83,6 +84,12 @@ async function prepareExecution(
 ): Promise<{ executionId: string } | { error: NextResponse }> {
   const executionGuard = await enforceExecutionLimit(workflow.organizationId);
   if (executionGuard.blocked) {
+    await recordBlockedWorkflowExecution({
+      workflowId: workflow.id,
+      userId: workflow.userId,
+      triggerType: "mcp",
+      limitResult: executionGuard.limitResult,
+    });
     const guardBody = await executionGuard.response.json();
     return {
       error: NextResponse.json(guardBody, {

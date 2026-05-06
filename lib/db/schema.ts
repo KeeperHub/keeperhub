@@ -301,7 +301,14 @@ export const workflowExecutions = pgTable(
       .references(() => users.id),
     status: text("status")
       .notNull()
-      .$type<"pending" | "running" | "success" | "error" | "cancelled">(),
+      .$type<
+        | "pending"
+        | "running"
+        | "success"
+        | "error"
+        | "cancelled"
+        | "blocked_billing"
+      >(),
     // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
     input: jsonb("input").$type<Record<string, any>>(),
     // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level

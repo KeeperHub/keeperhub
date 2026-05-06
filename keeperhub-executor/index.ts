@@ -39,7 +39,10 @@ import {
 import { generateId } from "../lib/utils/id";
 import type { WorkflowNode } from "../lib/workflow/store";
 import { executeViaApi } from "./api-execute";
-import { checkExecutionLimitForExecutor } from "./billing-guard";
+import {
+  checkExecutionLimitForExecutor,
+  recordBlockedWorkflowExecutionForExecutor,
+} from "./billing-guard";
 import { CONFIG } from "./config";
 import { resolveDispatchTarget } from "./execution-mode";
 import { executeInProcess } from "./in-process";
@@ -245,6 +248,26 @@ async function processExecutorMessage(message: ExecutorMessage): Promise<void> {
     console.warn(
       `[Executor] Billing guard blocked ${triggerType} trigger for workflow ${workflowId}: org=${workflow.organizationId} plan=${billingResult.plan} used=${billingResult.used} limit=${billingResult.limit} effectiveLimit=${billingResult.effectiveLimit} debt=${billingResult.debtExecutions} reason=${billingResult.reason}`
     );
+    const blockedInput = buildInput(message);
+    const blockedUserId =
+      "userId" in message ? message.userId : workflow.userId;
+    try {
+      await recordBlockedWorkflowExecutionForExecutor(db, {
+        workflowId,
+        userId: blockedUserId,
+        triggerType,
+        reason: billingResult.reason,
+        plan: billingResult.plan,
+        used: billingResult.used,
+        limit: billingResult.limit,
+        input: toJsonSafe(blockedInput) as Record<string, unknown>,
+      });
+    } catch (recordError) {
+      console.error(
+        "[Executor] Failed to record blocked execution:",
+        recordError
+      );
+    }
     return;
   }
 

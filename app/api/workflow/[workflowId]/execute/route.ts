@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { start } from "workflow/api";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
+import { recordBlockedWorkflowExecution } from "@/lib/billing/record-blocked-execution";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { getMetricsCollector } from "@/lib/metrics";
@@ -157,6 +158,12 @@ export async function POST(
 
     const executionGuard = await enforceExecutionLimit(workflow.organizationId);
     if (executionGuard.blocked) {
+      await recordBlockedWorkflowExecution({
+        workflowId,
+        userId,
+        triggerType: isInternalExecution ? "internal" : "manual",
+        limitResult: executionGuard.limitResult,
+      });
       return executionGuard.response;
     }
 

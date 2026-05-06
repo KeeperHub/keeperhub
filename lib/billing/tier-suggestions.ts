@@ -59,6 +59,7 @@ export async function getUpgradeSuggestion(
               JOIN workflows w ON we.workflow_id = w.id
              WHERE w.organization_id = ${organizationId}
                AND we.started_at >= ${startOfMonth.toISOString()}
+               AND we.status <> 'blocked_billing'
           )
           +
           (
@@ -66,6 +67,7 @@ export async function getUpgradeSuggestion(
               FROM direct_executions de
              WHERE de.organization_id = ${organizationId}
                AND de.created_at >= ${startOfMonth.toISOString()}
+               AND de.status <> 'blocked_billing'
           ) AS count`
   );
 

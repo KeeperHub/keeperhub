@@ -12,6 +12,12 @@ type GuardAllowed = {
 type GuardBlocked = {
   blocked: true;
   response: NextResponse;
+  /**
+   * The underlying limit-check result. Surfaced on the blocked variant so
+   * callers can record the attempt as a `blocked_billing` row in the
+   * appropriate execution table for user-facing visibility.
+   */
+  limitResult: Extract<ExecutionLimitResult, { allowed: false }>;
 };
 
 export type ExecutionGuardResult = GuardAllowed | GuardBlocked;
@@ -53,6 +59,7 @@ export async function enforceExecutionLimit(
 
   return {
     blocked: true,
+    limitResult: result,
     response: NextResponse.json(
       {
         error: hasDebt ? EXECUTION_DEBT_ERROR : EXECUTION_LIMIT_ERROR,

@@ -57,6 +57,7 @@ export async function GET(request: Request): Promise<NextResponse> {
                 JOIN workflows w ON we.workflow_id = w.id
                WHERE w.organization_id = ${activeOrgId}
                  AND we.started_at >= ${startOfMonth.toISOString()}
+                 AND we.status <> 'blocked_billing'
             )
             +
             (
@@ -64,6 +65,7 @@ export async function GET(request: Request): Promise<NextResponse> {
                 FROM direct_executions de
                WHERE de.organization_id = ${activeOrgId}
                  AND de.created_at >= ${startOfMonth.toISOString()}
+                 AND de.status <> 'blocked_billing'
             ) AS count`
     );
     const executionsUsed = usageResult[0]?.count ?? 0;

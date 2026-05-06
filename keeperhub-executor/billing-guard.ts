@@ -118,7 +118,8 @@ export async function checkExecutionLimitForExecutor(
     .where(
       and(
         eq(workflows.organizationId, organizationId),
-        sql`${workflowExecutions.startedAt} >= ${startOfMonth.toISOString()}`
+        sql`${workflowExecutions.startedAt} >= ${startOfMonth.toISOString()}`,
+        sql`${workflowExecutions.status} <> 'blocked_billing'`
       )
     );
 
@@ -128,7 +129,8 @@ export async function checkExecutionLimitForExecutor(
     .where(
       and(
         eq(directExecutions.organizationId, organizationId),
-        sql`${directExecutions.createdAt} >= ${startOfMonth.toISOString()}`
+        sql`${directExecutions.createdAt} >= ${startOfMonth.toISOString()}`,
+        sql`${directExecutions.status} <> 'blocked_billing'`
       )
     );
 
@@ -151,4 +153,38 @@ export async function checkExecutionLimitForExecutor(
     debtExecutions,
     effectiveLimit,
   };
+}
+
+/**
+ * Insert a workflow_executions row marking the SQS-triggered attempt as
+ * blocked by the billing guard so users can see why their schedule, block,
+ * or event trigger did not fire. Mirrors lib/billing/record-blocked-execution.ts
+ * but does not import "server-only" so it runs in the standalone executor.
+ *
+ * Count queries (in plans-server.ts and the four other read sites) exclude
+ * `status = 'blocked_billing'`, so these rows do NOT consume tier quota --
+ * otherwise they would self-multiply.
+ */
+export async function recordBlockedWorkflowExecutionForExecutor(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  params: {
+    workflowId: string;
+    userId: string;
+    triggerType: "schedule" | "block" | "event";
+    reason: string;
+    plan: string;
+    used: number;
+    limit: number;
+    input?: Record<string, unknown> | null;
+  }
+): Promise<void> {
+  const errorMessage = `Billing limit reached: ${params.reason} (used ${params.used}/${params.limit} on ${params.plan} plan)`;
+  await db.insert(workflowExecutions).values({
+    workflowId: params.workflowId,
+    userId: params.userId,
+    status: "blocked_billing",
+    error: errorMessage,
+    input: params.input ?? undefined,
+    completedAt: new Date(),
+  });
 }

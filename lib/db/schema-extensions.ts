@@ -360,7 +360,7 @@ export const directExecutions = pgTable(
     input: jsonb("input").$type<any>(),
     // biome-ignore lint/suspicious/noExplicitAny: JSONB type - execution result structure varies by execution type
     output: jsonb("output").$type<any>(),
-    status: text("status").notNull().default("pending"), // pending | running | completed | failed
+    status: text("status").notNull().default("pending"), // pending | running | completed | failed | blocked_billing
     transactionHash: text("transaction_hash"),
     network: text("network"),
     error: text("error"),
