@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -18,39 +18,72 @@ vi.mock("@/lib/metrics", () => ({
 }));
 
 // Hoisted schema stubs so the vi.mock factory can reference them.
-const { workflowExecutionsMock, workflowExecutionLogsMock } = vi.hoisted(
-  () => ({
-    workflowExecutionsMock: {
-      id: "id",
-      status: "status",
-      output: "output",
-      error: "error",
-      completedAt: "completed_at",
-      duration: "duration",
-      currentNodeId: "current_node_id",
-      currentNodeName: "current_node_name",
-      // KEEP-470: column referenced by terminal UPDATE SET clauses
-      transactionHashes: "transaction_hashes",
-    },
-    workflowExecutionLogsMock: {
-      id: "id",
-      executionId: "execution_id",
-      nodeId: "node_id",
-      nodeName: "node_name",
-      status: "status",
-      error: "error",
-      completedAt: "completed_at",
-      // KEEP-470: columns referenced by loadHashesFromLogs SELECT
-      iterationIndex: "iteration_index",
-      outputRaw: "output_raw",
-      startedAt: "started_at",
-    },
-  })
-);
+const {
+  workflowExecutionsMock,
+  workflowExecutionLogsMock,
+  workflowsMock,
+  organizationMock,
+} = vi.hoisted(() => ({
+  workflowExecutionsMock: {
+    id: "id",
+    workflowId: "workflow_id",
+    status: "status",
+    output: "output",
+    error: "error",
+    errorCategory: "error_category",
+    isUserError: "is_user_error",
+    completedAt: "completed_at",
+    duration: "duration",
+    currentNodeId: "current_node_id",
+    currentNodeName: "current_node_name",
+    // KEEP-470: column referenced by terminal UPDATE SET clauses
+    transactionHashes: "transaction_hashes",
+  },
+  workflowExecutionLogsMock: {
+    id: "id",
+    executionId: "execution_id",
+    nodeId: "node_id",
+    nodeName: "node_name",
+    status: "status",
+    error: "error",
+    completedAt: "completed_at",
+    // KEEP-470: columns referenced by loadHashesFromLogs SELECT
+    iterationIndex: "iteration_index",
+    outputRaw: "output_raw",
+    startedAt: "started_at",
+  },
+  // KEEP-545: org_slug resolution joins workflows -> organization for the
+  // per-execution-error counter
+  workflowsMock: {
+    id: "id",
+    organizationId: "organization_id",
+  },
+  organizationMock: {
+    id: "id",
+    slug: "slug",
+  },
+}));
 
 vi.mock("@/lib/db/schema", () => ({
   workflowExecutions: workflowExecutionsMock,
   workflowExecutionLogs: workflowExecutionLogsMock,
+  workflows: workflowsMock,
+  organization: organizationMock,
+}));
+
+// KEEP-545: stub classifier + counter so the test doesn't load the
+// server-only metric collector module.
+vi.mock("@/lib/errors/classify", () => ({
+  classifyExecutionError: (msg: string | null | undefined) => ({
+    errorCategory: msg ? "workflow_engine" : "workflow_engine",
+    isUserError: false,
+  }),
+}));
+vi.mock("@/lib/metrics/collectors/prometheus", () => ({
+  recordWorkflowExecutionError: vi.fn(),
+}));
+vi.mock("@/lib/metrics/db-metrics", () => ({
+  ANONYMOUS_ORG_SLUG: "_anonymous",
 }));
 
 // State the tests mutate between runs.
@@ -70,21 +103,47 @@ let updateCalls: UpdateCall[] = [];
 let updateShouldThrow = false;
 let mockExecution: ExecutionRow | null = null;
 
-type WhereChain = Promise<void>;
+// KEEP-545: the workflow_executions UPDATE in logWorkflowCompleteDb now chains
+// `.returning({workflowId})` on the where() result so the per-execution error
+// counter knows which org to scope the increment to. The where() return value
+// must be BOTH awaitable (for callers that don't care about returning rows)
+// AND expose a `.returning()` method. We model it as a custom thenable
+// (NOT a native Promise -- V8 disallows assigning extra properties on those)
+// so awaiting it resolves and the new code-path can call .returning(), which
+// resolves to []. The counter-increment path treats empty returning() as
+// "no rows actually flipped" and skips, which is the right behavior for tests
+// that don't seed mockExecution.
+type WhereChain = {
+  then: <T>(
+    onFulfilled?: ((value: void) => T | PromiseLike<T>) | null,
+    onRejected?: ((reason: unknown) => T | PromiseLike<T>) | null
+  ) => Promise<T>;
+  catch: <T>(
+    onRejected: (reason: unknown) => T | PromiseLike<T>
+  ) => Promise<T | void>;
+  returning: (..._args: unknown[]) => Promise<Array<{ workflowId?: string }>>;
+};
 type SetChain = { where: () => WhereChain };
 type UpdateChain = { set: (values: Record<string, unknown>) => SetChain };
+
+function makeWhereChain(failure: Error | null): WhereChain {
+  const promise: Promise<void> = failure
+    ? Promise.reject(failure)
+    : Promise.resolve();
+  return {
+    then: (onFulfilled, onRejected) => promise.then(onFulfilled, onRejected),
+    catch: (onRejected) => promise.catch(onRejected),
+    returning: () => Promise.resolve([]),
+  };
+}
 
 function buildUpdate(target: unknown): UpdateChain {
   return {
     set: (values: Record<string, unknown>): SetChain => {
       updateCalls.push({ target, set: values });
-      if (updateShouldThrow) {
-        return {
-          where: (): WhereChain => Promise.reject(new Error("db down")),
-        };
-      }
+      const failure = updateShouldThrow ? new Error("db down") : null;
       return {
-        where: (): WhereChain => Promise.resolve(),
+        where: (): WhereChain => makeWhereChain(failure),
       };
     },
   };
@@ -353,7 +412,9 @@ describe("logWorkflowCompleteDb", () => {
     updateShouldThrow = false;
 
     // Patch buildUpdate behavior per-call: first UPDATE (logs) throws,
-    // second UPDATE (executions) succeeds.
+    // second UPDATE (executions) succeeds. The where() return value must
+    // expose `.returning()` so the workflow_executions UPDATE chain works
+    // (KEEP-545 added a per-execution-error counter that reads it).
     const { db } = await import("@/lib/db");
     (
       db.update as unknown as {
@@ -367,12 +428,24 @@ describe("logWorkflowCompleteDb", () => {
         callIndex += 1;
         return {
           where: (): WhereChain =>
-            shouldThrow
-              ? Promise.reject(new Error("transient db failure"))
-              : Promise.resolve(),
+            makeWhereChain(
+              shouldThrow ? new Error("transient db failure") : null
+            ),
         };
       },
     }));
+
+    // Restore the base mock after this test so subsequent tests in the
+    // file (which rely on the base buildUpdate returning a chain with
+    // `.returning()`) aren't polluted by this inline override --
+    // vi.clearAllMocks() preserves implementations set via mockImplementation.
+    onTestFinished(() => {
+      (
+        db.update as unknown as {
+          mockImplementation: (fn: (t: unknown) => UpdateChain) => void;
+        }
+      ).mockImplementation((target: unknown) => buildUpdate(target));
+    });
 
     await logWorkflowCompleteDb({
       executionId: "exec_1",
