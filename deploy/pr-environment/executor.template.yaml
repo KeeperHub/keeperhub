@@ -1,0 +1,162 @@
+# Workflow Executor for PR environments
+#
+# Polls the PR's LocalStack SQS for all trigger types (schedule, block, event)
+# and dispatches workflows into the PR namespace. By default uses the
+# staging-baseline executor image (executor-latest), but when the PR carries
+# the deploy-pr-executor label the CI builds a PR-specific image and the
+# template is rendered with EXECUTOR_IMAGE_TAG=${sha_short} (see
+# .github/workflows/deploy-pr-environment.yaml).
+#
+# Variables substituted by envsubst at deploy time:
+#   ${PR_NUMBER}, ${ECR_REGISTRY}, ${IMAGE_TAG}, ${EXECUTOR_IMAGE_TAG}
+
+replicaCount: 1
+
+service:
+  enabled: true
+  name: keeperhub-executor-pr-${PR_NUMBER}
+  type: ClusterIP
+  port: 3080
+  containerPort: 3080
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-executor-staging
+  tag: executor-${EXECUTOR_IMAGE_TAG}
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+
+serviceAccount:
+  create: false
+  name: keeperhub-pr-${PR_NUMBER}
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+serviceMonitors:
+  enabled: false
+
+resources:
+  limits:
+    memory: 512Mi
+    cpu: 300m
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+command: ["/bin/sh"]
+args:
+  - "-c"
+  - |
+    echo "$(date) - [Executor] Starting..."
+    tsx keeperhub-executor/index.ts
+
+env:
+  DATABASE_URL:
+    type: kv
+    value: "postgresql://keeperhub:${ENCODED_DB_PASSWORD}@keeperhub-pr-${PR_NUMBER}-db-rw.pr-${PR_NUMBER}.svc.cluster.local:5432/keeperhub"
+  INTEGRATION_ENCRYPTION_KEY:
+    type: parameterStore
+    name: integration-encryption-key
+    parameter_name: /eks/techops-staging/keeperhub/integration-encryption-key
+  KEEPERHUB_API_URL:
+    type: kv
+    value: "http://keeperhub-pr-${PR_NUMBER}-common:3000"
+  KEEPERHUB_API_KEY:
+    type: parameterStore
+    name: scheduler-service-api-key
+    parameter_name: /eks/techops-staging/keeperhub-scheduler/keeperhub-api-key
+  AWS_REGION:
+    type: kv
+    value: "us-east-1"
+  AWS_ENDPOINT_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566"
+  SQS_QUEUE_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566/000000000000/keeperhub-workflow-queue"
+  RUNNER_IMAGE:
+    type: kv
+    value: "${ECR_REGISTRY}/keeperhub-staging:workflow-runner-${IMAGE_TAG}"
+  IMAGE_PULL_POLICY:
+    type: kv
+    value: "Always"
+  K8S_NAMESPACE:
+    type: kv
+    value: "pr-${PR_NUMBER}"
+  HEALTH_PORT:
+    type: kv
+    value: "3080"
+  JOB_TTL_SECONDS:
+    type: kv
+    value: "120"
+  JOB_ACTIVE_DEADLINE:
+    type: kv
+    value: "300"
+  EXECUTION_MODE:
+    type: kv
+    value: "isolated"
+  METRICS_COLLECTOR:
+    type: kv
+    value: "prometheus"
+  WORKFLOW_RUNNER_COLLECT_MONITORING:
+    type: kv
+    value: "false"
+  PARA_API_KEY:
+    type: parameterStore
+    name: para-api-key
+    parameter_name: /eks/techops-staging/keeperhub/para-api-key
+  PARA_ENVIRONMENT:
+    type: kv
+    value: "beta"
+  WALLET_ENCRYPTION_KEY:
+    type: parameterStore
+    name: wallet-encryption-key
+    parameter_name: /eks/techops-staging/keeperhub/wallet-encryption-key
+  CHAIN_RPC_CONFIG:
+    type: parameterStore
+    name: chain-rpc-config
+    parameter_name: /eks/techops-staging/keeperhub/chain-rpc-config
+  ETHERSCAN_API_KEY:
+    type: parameterStore
+    name: etherscan-api-key
+    parameter_name: /eks/techops-staging/keeperhub/etherscan-api-key
+  NEXT_PUBLIC_BILLING_ENABLED:
+    type: kv
+    value: "true"
+  GAS_CREDITS_FREE_CENTS:
+    type: kv
+    value: "100"
+  GAS_CREDITS_PRO_CENTS:
+    type: kv
+    value: "500"
+  GAS_CREDITS_BUSINESS_CENTS:
+    type: kv
+    value: "2500"
+  GAS_CREDITS_ENTERPRISE_CENTS:
+    type: kv
+    value: "10000"
+
+externalSecrets:
+  clusterSecretStoreName: techops-staging
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 3080
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 3080
+  initialDelaySeconds: 10
+  periodSeconds: 10

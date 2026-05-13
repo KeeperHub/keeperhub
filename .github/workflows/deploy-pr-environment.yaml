@@ -14,6 +14,7 @@ jobs:
       should-test: ${{ steps.check.outputs.should-test }}
       should-deploy-events: ${{ steps.check.outputs.should-deploy-events }}
       should-deploy-events-only: ${{ steps.check.outputs.should-deploy-events-only }}
+      should-build-executor: ${{ steps.check.outputs.should-build-executor }}
     steps:
       - name: Checkout code (for change detection)
         if: github.event.action == 'synchronize'
@@ -28,6 +29,7 @@ jobs:
           echo "should-test=false" >> $GITHUB_OUTPUT
           echo "should-deploy-events=false" >> $GITHUB_OUTPUT
           echo "should-deploy-events-only=false" >> $GITHUB_OUTPUT
+          echo "should-build-executor=false" >> $GITHUB_OUTPUT
 
           HAS_DEPLOY_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-pr-environment') }}"
           HAS_TEST_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'run-e2e-tests-pr-deploy') }}"
@@ -36,6 +38,12 @@ jobs:
           # namespace created by deploy-pr-environment, so it has no meaning
           # without that label. See KEEP-325.
           HAS_EVENTS_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-pr-events') }}"
+          # Executor PR build is opt-in alongside deploy-pr-environment, same
+          # pattern as deploy-pr-events. The PR env always deploys an executor
+          # (using executor-latest by default) so SQS messages from the PR's
+          # dispatchers are consumed; this label adds a PR-specific build for
+          # ticket-driven validation. See KEEP-556.
+          HAS_EXECUTOR_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-pr-executor') }}"
           ACTION="${{ github.event.action }}"
           ADDED_LABEL="${{ github.event.label.name }}"
 
@@ -48,8 +56,25 @@ jobs:
               if [[ "$HAS_EVENTS_LABEL" == "true" ]]; then
                 echo "should-deploy-events=true" >> $GITHUB_OUTPUT
               fi
+              if [[ "$HAS_EXECUTOR_LABEL" == "true" ]]; then
+                echo "should-build-executor=true" >> $GITHUB_OUTPUT
+              fi
             elif [[ "$ADDED_LABEL" == "run-e2e-tests-pr-deploy" ]]; then
               echo "should-test=true" >> $GITHUB_OUTPUT
+            elif [[ "$ADDED_LABEL" == "deploy-pr-executor" ]]; then
+              # Executor-only path: PR env is already deployed. Build a PR
+              # executor image and redeploy just that satellite. Cheaper than
+              # re-running the full app+migrator deploy.
+              if [[ "$HAS_DEPLOY_LABEL" == "true" ]]; then
+                echo "should-build-executor=true" >> $GITHUB_OUTPUT
+                echo "should-deploy=true" >> $GITHUB_OUTPUT
+                if [[ "$HAS_EVENTS_LABEL" == "true" ]]; then
+                  echo "should-deploy-events=true" >> $GITHUB_OUTPUT
+                fi
+                if [[ "$HAS_TEST_LABEL" == "true" ]]; then
+                  echo "should-test=true" >> $GITHUB_OUTPUT
+                fi
+              fi
             elif [[ "$ADDED_LABEL" == "deploy-pr-events" ]]; then
               # Events-only path: PR env is already deployed (HAS_DEPLOY_LABEL).
               # Build a PR-specific events image and only re-run the events
@@ -93,6 +118,9 @@ jobs:
               echo "should-deploy=true" >> $GITHUB_OUTPUT
               if [[ "$HAS_EVENTS_LABEL" == "true" ]]; then
                 echo "should-deploy-events=true" >> $GITHUB_OUTPUT
+              fi
+              if [[ "$HAS_EXECUTOR_LABEL" == "true" ]]; then
+                echo "should-build-executor=true" >> $GITHUB_OUTPUT
               fi
             fi
             # Run tests if both labels present (even without deploy)
@@ -247,8 +275,81 @@ jobs:
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EVENTS_ECR_NAME }}:cache-pr
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EVENTS_ECR_NAME }}:cache-pr,mode=max
 
+  # Builds a PR-specific executor image when the deploy-pr-executor label is
+  # present alongside deploy-pr-environment. Without it, the PR environment
+  # always deploys an executor anyway (using the executor-latest staging tag),
+  # so the PR's SQS messages get consumed; this job only builds a sha-tagged
+  # image so the executor running in the PR env is bit-identical to the PR
+  # commit (needed for end-to-end validation of executor-side changes, e.g.
+  # the KEEP-556 counter increment).
+  # Pushes only executor-${sha_short} - never executor-latest, so concurrent
+  # staging deploys are unaffected.
+  build-executor-image:
+    needs: check-labels
+    if: needs.check-labels.outputs.should-build-executor == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      EXECUTOR_ECR_NAME: keeperhub-executor-staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.TO_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TO_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract commit hash
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if executor image exists
+        id: check-image
+        run: |
+          IMAGE_TAG="${{ steps.vars.outputs.sha_short }}"
+          if aws ecr describe-images \
+            --repository-name ${{ env.EXECUTOR_ECR_NAME }} \
+            --image-ids imageTag=executor-${IMAGE_TAG} \
+            --region ${{ env.REGION }} >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push executor image
+        if: steps.check-image.outputs.exists != 'true'
+        # Read from staging cache (warm start) and PR cache, but only write to
+        # :cache-pr. Prevents PR builds from poisoning the staging :cache layer
+        # used by deploy-executor.yaml.
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: executor
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.EXECUTOR_ECR_NAME }}:executor-${{ steps.vars.outputs.sha_short }}
+          cache-from: |
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EXECUTOR_ECR_NAME }}:cache
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EXECUTOR_ECR_NAME }}:cache-pr
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EXECUTOR_ECR_NAME }}:cache-pr,mode=max
+
   deploy:
-    needs: [check-labels, build-images, build-events-image]
+    needs: [check-labels, build-images, build-events-image, build-executor-image]
     # Cannot use the `success()` shorthand here because GHA evaluates it
     # as false whenever ANY needed job is skipped. build-events-image is
     # skipped on purpose for PRs without the deploy-pr-events label, so
@@ -260,7 +361,8 @@ jobs:
       !cancelled() &&
       needs.check-labels.outputs.should-deploy == 'true' &&
       needs.build-images.result == 'success' &&
-      (needs.build-events-image.result == 'success' || needs.build-events-image.result == 'skipped')
+      (needs.build-events-image.result == 'success' || needs.build-events-image.result == 'skipped') &&
+      (needs.build-executor-image.result == 'success' || needs.build-executor-image.result == 'skipped')
     runs-on: ubuntu-latest
     environment: staging
     env:
@@ -398,6 +500,12 @@ jobs:
           # (build-events-image job ran). Otherwise stays on the staging
           # event-latest tag.
           EVENTS_IMAGE_TAG: ${{ needs.check-labels.outputs.should-deploy-events == 'true' && format('event-{0}', steps.vars.outputs.sha_short) || 'event-latest' }}
+          # PR-specific executor image tag if deploy-pr-executor label was set
+          # (build-executor-image job ran). Otherwise stays on executor-latest
+          # so the PR env still has a working SQS consumer for schedule / block
+          # / event triggers. The template prepends "executor-" itself, so we
+          # set only the bare tag here (matches the {{IMAGE_TAG}} pattern).
+          EXECUTOR_IMAGE_TAG: ${{ needs.check-labels.outputs.should-build-executor == 'true' && steps.vars.outputs.sha_short || 'latest' }}
         run: |
           # Percent-encode DB_PASSWORD so base64 characters (+/=) don't break URL parsing
           # in the pod. Init containers previously encoded at runtime but that path was
@@ -409,6 +517,7 @@ jobs:
           envsubst < deploy/pr-environment/scheduler-dispatcher.template.yaml > ${{ github.workspace }}/schedule-pr-${{ env.PR_NUMBER }}.yaml
           envsubst < deploy/pr-environment/block-dispatcher.template.yaml > ${{ github.workspace }}/block-pr-${{ env.PR_NUMBER }}.yaml
           envsubst < deploy/pr-environment/event-tracker.template.yaml > ${{ github.workspace }}/event-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/executor.template.yaml > ${{ github.workspace }}/executor-pr-${{ env.PR_NUMBER }}.yaml
 
       - name: Clean up stale Helm releases
         run: |
@@ -460,8 +569,16 @@ jobs:
           ) > "${LOGDIR}/event.log" 2>&1 &
           PID3=$!
 
+          (
+            helm upgrade --install executor-pr-${PR_NUMBER} \
+              techops-services/common \
+              -f ${GITHUB_WORKSPACE}/executor-pr-${PR_NUMBER}.yaml \
+              "${COMMON_ARGS[@]}"
+          ) > "${LOGDIR}/executor.log" 2>&1 &
+          PID4=$!
+
           FAILED=0
-          for COMPONENT in schedule:$PID1 block:$PID2 event:$PID3; do
+          for COMPONENT in schedule:$PID1 block:$PID2 event:$PID3 executor:$PID4; do
             NAME="${COMPONENT%%:*}"
             PID="${COMPONENT##*:}"
             if wait "$PID"; then
