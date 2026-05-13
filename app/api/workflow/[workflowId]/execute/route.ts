@@ -2,6 +2,8 @@ import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { start } from "workflow/api";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
+import { classifyExecutionError } from "@/lib/errors/classify";
+import { recordExecutionErrorFinalized } from "@/lib/errors/finalize-error";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { getMetricsCollector } from "@/lib/metrics";
@@ -63,15 +65,30 @@ async function executeWorkflowBackground(
   } catch (error) {
     logSystemError(ErrorCategory.WORKFLOW_ENGINE, "[Workflow Execute] Error during execution", error, { endpoint: "/api/workflow/[workflowId]/execute", operation: "executeWorkflow" });
 
-    // Update execution record with error
-    await db
+    // KEEP-545: classify the error so the row carries error_category and
+    // is_user_error and so the per-execution counter is incremented post-update.
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    const classification = classifyExecutionError(errorMessage);
+
+    const updated = await db
       .update(workflowExecutions)
       .set({
         status: "error",
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: errorMessage,
+        errorCategory: classification.errorCategory,
+        isUserError: classification.isUserError,
         completedAt: new Date(),
       })
-      .where(eq(workflowExecutions.id, executionId));
+      .where(eq(workflowExecutions.id, executionId))
+      .returning({ workflowId: workflowExecutions.workflowId });
+
+    if (updated.length > 0) {
+      await recordExecutionErrorFinalized({
+        workflowId: updated[0].workflowId,
+        errorMessage,
+      });
+    }
   }
 }
 

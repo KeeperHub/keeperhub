@@ -1,6 +1,20 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// KEEP-545: route imports lib/errors/finalize-error which pulls in server-only
+// via the metrics collector. Stubbing server-only as an empty module lets the
+// test load the route without a Next runtime.
+vi.mock("server-only", () => ({}));
+vi.mock("@/lib/errors/classify", () => ({
+  classifyExecutionError: () => ({
+    errorCategory: "workflow_engine",
+    isUserError: false,
+  }),
+}));
+vi.mock("@/lib/errors/finalize-error", () => ({
+  recordExecutionErrorFinalized: vi.fn().mockResolvedValue(undefined),
+}));
+
 const VALID_API_KEY = "wfb_test-key-abc123";
 const VALID_KEY_HASH = createHash("sha256").update(VALID_API_KEY).digest("hex");
 const OWNER_USER_ID = "user-owner-123";

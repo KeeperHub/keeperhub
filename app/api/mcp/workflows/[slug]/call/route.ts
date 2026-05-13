@@ -7,6 +7,8 @@ import { priceQualifiesForMarketplaceExemption } from "@/lib/billing/marketplace
 import { db } from "@/lib/db";
 import { getOrgPlanLabel, getOrgSlug } from "@/lib/db/org-helpers";
 import { tags, workflowExecutions, workflows } from "@/lib/db/schema";
+import { classifyExecutionError } from "@/lib/errors/classify";
+import { recordExecutionErrorFinalized } from "@/lib/errors/finalize-error";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { checkIpRateLimit, getClientIp } from "@/lib/mcp/rate-limit";
 import { hashMppCredential } from "@/lib/payments/mpp/server";
@@ -359,16 +361,30 @@ async function handlePaidWorkflow(
             }
           });
         } catch (err) {
-          await db
+          // KEEP-545: classify and record per-execution counter increment.
+          const errorMessage =
+            err instanceof Error
+              ? `recordPayment failed: ${err.message}`
+              : "recordPayment failed";
+          const classification = classifyExecutionError(errorMessage);
+
+          const updated = await db
             .update(workflowExecutions)
             .set({
               status: "error",
-              error:
-                err instanceof Error
-                  ? `recordPayment failed: ${err.message}`
-                  : "recordPayment failed",
+              error: errorMessage,
+              errorCategory: classification.errorCategory,
+              isUserError: classification.isUserError,
             })
-            .where(eq(workflowExecutions.id, executionId));
+            .where(eq(workflowExecutions.id, executionId))
+            .returning({ workflowId: workflowExecutions.workflowId });
+
+          if (updated.length > 0) {
+            await recordExecutionErrorFinalized({
+              workflowId: updated[0].workflowId,
+              errorMessage,
+            });
+          }
           throw err;
         }
 

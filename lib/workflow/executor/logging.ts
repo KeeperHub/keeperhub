@@ -7,12 +7,17 @@ import "server-only";
 import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
+  organization,
   type TransactionHashEntry,
   workflowExecutionLogs,
   workflowExecutions,
+  workflows,
 } from "@/lib/db/schema";
+import { classifyExecutionError } from "@/lib/errors/classify";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
+import { recordWorkflowExecutionError } from "@/lib/metrics/collectors/prometheus";
+import { ANONYMOUS_ORG_SLUG } from "@/lib/metrics/db-metrics";
 import {
   EXCEEDED_MAX_RETRIES_REGEX,
   FAILED_AFTER_RETRIES_REGEX,
@@ -334,7 +339,7 @@ async function selfHealWorkflowAfterLateStepCommit(
       { outcome: "flipped" }
     );
 
-    logSystemError(
+    logSystemWarn(
       ErrorCategory.WORKFLOW_ENGINE,
       "[Workflow Logging] Self-healed workflow status from spurious error to success after late step commit",
       execution.error ?? "unknown",
@@ -611,12 +616,19 @@ export async function logWorkflowCompleteDb(
       ? await resolveTransactionHashesForSuccess(params.executionId)
       : [];
 
-  await db
+  // KEEP-545: classify the error so the row carries error_category and
+  // is_user_error at write time. Success rows get null for both columns.
+  const classification =
+    resolvedStatus === "error" ? classifyExecutionError(resolvedError) : null;
+
+  const updated = await db
     .update(workflowExecutions)
     .set({
       status: resolvedStatus,
       output: params.output,
       error: resolvedError,
+      errorCategory: classification?.errorCategory ?? null,
+      isUserError: classification?.isUserError ?? null,
       completedAt: new Date(),
       duration: duration.toString(),
       // Clear current step on completion
@@ -636,7 +648,41 @@ export async function logWorkflowCompleteDb(
         // a no-op once self-heal has won the race.
         ne(workflowExecutions.status, "success")
       )
-    );
+    )
+    .returning({ workflowId: workflowExecutions.workflowId });
+
+  // KEEP-545: increment the per-execution-error counter only when this
+  // UPDATE actually flipped a row to 'error'. The WHERE clause excludes
+  // already-cancelled/healed rows, so `updated` is empty in those races
+  // and we correctly skip the counter increment for the lost write.
+  if (resolvedStatus === "error" && updated.length > 0 && classification) {
+    const workflowId = updated[0].workflowId;
+    try {
+      const orgSlug = await resolveOrgSlugForCounter(workflowId);
+      recordWorkflowExecutionError({
+        orgSlug,
+        errorCategory: classification.errorCategory,
+        isUserError: classification.isUserError,
+      });
+    } catch {
+      // Counter emission must never break finalization.
+    }
+  }
+}
+
+/**
+ * Resolve the org slug that owns the workflow behind an execution, falling
+ * back to ANONYMOUS_ORG_SLUG for personal/anonymous workflows so the
+ * counter always emits a series (the SLA alert filters by `org_slug=~`).
+ */
+async function resolveOrgSlugForCounter(workflowId: string): Promise<string> {
+  const row = await db
+    .select({ slug: organization.slug })
+    .from(workflows)
+    .leftJoin(organization, eq(workflows.organizationId, organization.id))
+    .where(eq(workflows.id, workflowId))
+    .limit(1);
+  return row[0]?.slug ?? ANONYMOUS_ORG_SLUG;
 }
 
 // ============================================================================

@@ -12,6 +12,8 @@ import {
   enforceExecutionLimit,
 } from "@/lib/billing/execution-guard";
 import { checkConcurrencyLimit } from "@/app/api/execute/_lib/concurrency-limit";
+import { classifyExecutionError } from "@/lib/errors/classify";
+import { recordExecutionErrorFinalized } from "@/lib/errors/finalize-error";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { recordWebhookMetrics } from "@/lib/metrics/instrumentation/api";
 import { db } from "@/lib/db";
@@ -182,14 +184,29 @@ async function executeWorkflowBackground(
   } catch (error) {
     logSystemError(ErrorCategory.WORKFLOW_ENGINE, "[Webhook] Error during execution", error, { endpoint: "/api/workflows/[workflowId]/webhook", operation: "executeWorkflow" });
 
-    await db
+    // KEEP-545: classify and increment per-execution counter.
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    const classification = classifyExecutionError(errorMessage);
+
+    const updated = await db
       .update(workflowExecutions)
       .set({
         status: "error",
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: errorMessage,
+        errorCategory: classification.errorCategory,
+        isUserError: classification.isUserError,
         completedAt: new Date(),
       })
-      .where(eq(workflowExecutions.id, executionId));
+      .where(eq(workflowExecutions.id, executionId))
+      .returning({ workflowId: workflowExecutions.workflowId });
+
+    if (updated.length > 0) {
+      await recordExecutionErrorFinalized({
+        workflowId: updated[0].workflowId,
+        errorMessage,
+      });
+    }
   }
 }
 

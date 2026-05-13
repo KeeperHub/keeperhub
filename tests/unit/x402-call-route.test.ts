@@ -119,6 +119,21 @@ vi.mock("@/lib/payments/x402/execution-wait", () => ({
   buildCallCompletionResponse: mockBuildCallCompletionResponse,
 }));
 
+// KEEP-545: route now classifies errors and increments a per-execution counter
+// after writing status='error'. The classifier is pure (safe to import) but
+// the finalize-error helper transitively imports server-only modules; mock
+// both so the test doesn't try to load them.
+vi.mock("@/lib/errors/classify", () => ({
+  classifyExecutionError: (msg: unknown) => ({
+    errorCategory: "workflow_engine",
+    isUserError: false,
+    _msg: msg,
+  }),
+}));
+vi.mock("@/lib/errors/finalize-error", () => ({
+  recordExecutionErrorFinalized: vi.fn().mockResolvedValue(undefined),
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

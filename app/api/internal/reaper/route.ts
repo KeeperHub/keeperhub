@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
 import { walletLocks } from "@/lib/db/schema-extensions";
+import { classifyExecutionError } from "@/lib/errors/classify";
+import { recordExecutionErrorFinalized } from "@/lib/errors/finalize-error";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 
@@ -87,18 +89,38 @@ export async function GET(request: Request): Promise<NextResponse> {
       )
     );
 
+    // KEEP-545: reaped executions are by definition stuck/timed-out, which
+    // classifies as WORKFLOW_ENGINE / system-side. Write the classification
+    // columns and increment the per-org counter per reaped row.
+    const reaperErrorMessage = `Execution timed out: no progress for ${thresholdMinutes} minutes`;
+    const reaperClassification = classifyExecutionError(reaperErrorMessage);
+
     const reaped = await db
       .update(workflowExecutions)
       .set({
         status: "error",
-        error: `Execution timed out: no progress for ${thresholdMinutes} minutes`,
+        error: reaperErrorMessage,
+        errorCategory: reaperClassification.errorCategory,
+        isUserError: reaperClassification.isUserError,
         completedAt: new Date(),
         duration: sql`ROUND(EXTRACT(EPOCH FROM (NOW() - ${workflowExecutions.startedAt})) * 1000)`,
       })
       .where(staleConditions)
-      .returning({ id: workflowExecutions.id });
+      .returning({
+        id: workflowExecutions.id,
+        workflowId: workflowExecutions.workflowId,
+      });
 
     const reapedIds = reaped.map((row) => row.id);
+
+    // KEEP-545: emit one counter increment per reaped row so the timeout
+    // family shows up in the new classified counter the SLA alert watches.
+    for (const row of reaped) {
+      await recordExecutionErrorFinalized({
+        workflowId: row.workflowId,
+        errorMessage: reaperErrorMessage,
+      });
+    }
 
     // KEEP-333: Close orphaned 'running' step logs for reaped executions so
     // the UI doesn't show stuck spinners after the workflow has been marked

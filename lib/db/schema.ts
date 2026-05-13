@@ -320,6 +320,19 @@ export const workflowExecutions = pgTable(
     // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
     output: jsonb("output").$type<any>(),
     error: text("error"),
+    errorCategory: text("error_category").$type<
+      | "validation"
+      | "configuration"
+      | "external_service"
+      | "network_rpc"
+      | "transaction"
+      | "database"
+      | "auth"
+      | "infrastructure"
+      | "workflow_engine"
+      | "unknown"
+    >(),
+    isUserError: boolean("is_user_error"),
     startedAt: timestamp("started_at").notNull().defaultNow(),
     completedAt: timestamp("completed_at"),
     duration: numeric("duration"), // Duration in milliseconds

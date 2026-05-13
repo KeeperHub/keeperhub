@@ -940,6 +940,16 @@ describe("POST /api/mcp/workflows/[slug]/call: write workflow returns calldata",
     generateCalldataForWorkflow: mockGenerateCalldata,
   }));
 
+  vi.mock("@/lib/errors/classify", () => ({
+    classifyExecutionError: () => ({
+      errorCategory: "workflow_engine",
+      isUserError: false,
+    }),
+  }));
+  vi.mock("@/lib/errors/finalize-error", () => ({
+    recordExecutionErrorFinalized: vi.fn().mockResolvedValue(undefined),
+  }));
+
   const WRITE_WORKFLOW = {
     id: "wf-write-1",
     name: "Write Workflow",

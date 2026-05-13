@@ -38,9 +38,11 @@ import {
 import type { BillingStatus } from "./types";
 
 // Label value used for workflow executions whose workflow has no organization
-// (personal/anonymous workflows). Keeps the per-org error gauge total equal
-// to the global error count instead of silently dropping these executions.
-const ANONYMOUS_ORG_SLUG = "_anonymous";
+// (personal/anonymous workflows). Keeps the per-(status, org_slug) execution
+// gauge total equal to the global total instead of silently dropping these
+// rows. Also re-exported for the runtime finalization counter so personal
+// workflows still produce a series rather than silently dropping increments.
+export const ANONYMOUS_ORG_SLUG = "_anonymous";
 
 // Histogram bucket boundaries in milliseconds (must match prometheus.ts)
 const WORKFLOW_DURATION_BUCKETS = [
@@ -55,10 +57,6 @@ export type WorkflowStats = {
   totalRunning: number;
   totalPending: number;
   totalCancelled: number;
-
-  // Error count per org slug. Personal/anonymous workflows are bucketed
-  // under ANONYMOUS_ORG_SLUG so the sum across this map matches totalError.
-  errorByOrgSlug: Record<string, number>;
 
   // Per-(status, org_slug) execution counts. Personal/anonymous workflows
   // are bucketed under ANONYMOUS_ORG_SLUG so the sum of counts for a given
@@ -89,7 +87,6 @@ export async function getWorkflowStatsFromDb(): Promise<WorkflowStats> {
       totalRunning: 0,
       totalPending: 0,
       totalCancelled: 0,
-      errorByOrgSlug: {},
       executionsByStatusAndOrgSlug: [],
       durationBuckets: new Array(WORKFLOW_DURATION_BUCKETS.length + 1).fill(0),
       durationSum: 0,
@@ -128,7 +125,6 @@ export async function getWorkflowStatsFromDb(): Promise<WorkflowStats> {
           break;
         case "error":
           stats.totalError += c;
-          stats.errorByOrgSlug[row.orgSlug] = c;
           break;
         case "running":
           stats.totalRunning += c;
@@ -196,7 +192,6 @@ export async function getWorkflowStatsFromDb(): Promise<WorkflowStats> {
       totalRunning: 0,
       totalPending: 0,
       totalCancelled: 0,
-      errorByOrgSlug: {},
       executionsByStatusAndOrgSlug: [],
       durationBuckets: new Array(WORKFLOW_DURATION_BUCKETS.length + 1).fill(0),
       durationSum: 0,

@@ -39,8 +39,21 @@ describe("Unified Logging Helpers", () => {
     resetMetricsCollector();
   });
 
+  // KEEP-545: log helpers now emit a single structured JSON line so Grafana
+  // Cloud Loki can index `is_user_error`, `error_category`, `execution_id`,
+  // and `org_slug` via `| json`. This helper parses the JSON arg and returns
+  // the payload so per-test assertions can check fields without coupling to
+  // the on-the-wire serialization order.
+  function lastJsonLine(spy: ReturnType<typeof vi.spyOn>): Record<string, unknown> {
+    const calls = spy.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const last = calls[calls.length - 1];
+    expect(last.length).toBe(1);
+    return JSON.parse(last[0] as string) as Record<string, unknown>;
+  }
+
   describe("logUserError", () => {
-    it("should log as warning and emit metric", () => {
+    it("should log as warning JSON and emit metric", () => {
       logUserError(
         ErrorCategory.VALIDATION,
         "[Test] Invalid input",
@@ -48,10 +61,14 @@ describe("Unified Logging Helpers", () => {
         { foo: "bar" }
       );
 
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
-        "[Test] Invalid input",
-        "details"
-      );
+      const line = lastJsonLine(consoleWarnSpy);
+      expect(line.level).toBe("warn");
+      expect(line.msg).toBe("[Test] Invalid input");
+      expect(line.is_user_error).toBe("true");
+      expect(line.error_category).toBe(ErrorCategory.VALIDATION);
+      expect(line.error_context).toBe("Test");
+      expect(line.foo).toBe("bar");
+      expect(line.err).toEqual({ message: "details" });
       expect(consoleErrorSpy).not.toHaveBeenCalled();
 
       expect(mockCollector.recordError).toHaveBeenCalledWith(
@@ -66,14 +83,13 @@ describe("Unified Logging Helpers", () => {
       );
     });
 
-    it("should handle Error objects", () => {
+    it("should serialize Error objects to err.message and stack", () => {
       const error = new Error("Test error");
       logUserError(ErrorCategory.VALIDATION, "[Context] Error occurred", error);
 
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
-        "[Context] Error occurred",
-        error
-      );
+      const line = lastJsonLine(consoleWarnSpy);
+      expect(line.msg).toBe("[Context] Error occurred");
+      expect(line.err).toMatchObject({ message: "Test error", name: "Error" });
       expect(mockCollector.recordError).toHaveBeenCalledWith(
         MetricNames.USER_VALIDATION_ERRORS,
         error,
@@ -85,10 +101,12 @@ describe("Unified Logging Helpers", () => {
       );
     });
 
-    it("should handle undefined error details", () => {
+    it("should omit `err` when no error detail is passed", () => {
       logUserError(ErrorCategory.VALIDATION, "[Test] Simple warning");
 
-      expect(consoleWarnSpy).toHaveBeenCalledWith("[Test] Simple warning", "");
+      const line = lastJsonLine(consoleWarnSpy);
+      expect(line.msg).toBe("[Test] Simple warning");
+      expect(line.err).toBeUndefined();
       expect(mockCollector.recordError).toHaveBeenCalledWith(
         MetricNames.USER_VALIDATION_ERRORS,
         { message: "[Test] Simple warning" },
@@ -160,16 +178,23 @@ describe("Unified Logging Helpers", () => {
   });
 
   describe("logSystemError", () => {
-    it("should log as error and emit metric", () => {
+    it("should log as structured error JSON and emit metric", () => {
       const error = new Error("System failure");
       logSystemError(ErrorCategory.DATABASE, "[DB] Connection failed", error, {
         table: "workflows",
       });
 
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        "[DB] Connection failed",
-        error
-      );
+      const line = lastJsonLine(consoleErrorSpy);
+      expect(line.level).toBe("error");
+      expect(line.msg).toBe("[DB] Connection failed");
+      expect(line.is_user_error).toBe("false");
+      expect(line.error_category).toBe(ErrorCategory.DATABASE);
+      expect(line.error_context).toBe("DB");
+      expect(line.table).toBe("workflows");
+      expect(line.err).toMatchObject({
+        message: "System failure",
+        name: "Error",
+      });
       expect(consoleWarnSpy).not.toHaveBeenCalled();
 
       expect(mockCollector.recordError).toHaveBeenCalledWith(
@@ -243,7 +268,7 @@ describe("Unified Logging Helpers", () => {
   });
 
   describe("logSystemWarn", () => {
-    it("should log as warn and NOT emit any metric", () => {
+    it("should log as warn JSON and NOT emit any metric", () => {
       const error = new Error("Spurious SDK error");
       logSystemWarn(
         ErrorCategory.WORKFLOW_ENGINE,
@@ -252,13 +277,20 @@ describe("Unified Logging Helpers", () => {
         { execution_id: "exec-123" }
       );
 
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("[Workflow Logging] Pre-reconciliation"),
-        error
+      const line = lastJsonLine(consoleWarnSpy);
+      expect(line.level).toBe("warn");
+      expect(line.msg).toBe(
+        "[Workflow Logging] Pre-reconciliation [exec:exec-123]"
       );
+      expect(line.error_category).toBe(ErrorCategory.WORKFLOW_ENGINE);
+      expect(line.error_context).toBe("Workflow Logging");
+      // is_user_error intentionally not set on logSystemWarn so alerts
+      // filtering on is_user_error="false" don't match these events.
+      expect(line.is_user_error).toBeUndefined();
+      expect(line.execution_id).toBe("exec-123");
       expect(consoleErrorSpy).not.toHaveBeenCalled();
 
-      // The key invariant: warn helper does not increment ANY metric counter,
+      // Key invariant: warn helper does not increment ANY metric counter,
       // so it cannot trip system-error or user-error dashboards.
       expect(mockCollector.recordError).not.toHaveBeenCalled();
     });
@@ -270,10 +302,9 @@ describe("Unified Logging Helpers", () => {
         "string detail"
       );
 
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("[Test] Warn"),
-        "string detail"
-      );
+      const line = lastJsonLine(consoleWarnSpy);
+      expect(line.msg).toBe("[Test] Warn");
+      expect(line.err).toEqual({ message: "string detail" });
       expect(mockCollector.recordError).not.toHaveBeenCalled();
     });
 
@@ -306,10 +337,11 @@ describe("Unified Logging Helpers", () => {
         }
       );
 
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
-        "[Check Balance] Invalid address:",
-        "0xINVALID"
-      );
+      const line = lastJsonLine(consoleWarnSpy);
+      expect(line.msg).toBe("[Check Balance] Invalid address:");
+      expect(line.err).toEqual({ message: "0xINVALID" });
+      expect(line.plugin_name).toBe("web3");
+      expect(line.action_name).toBe("check-balance");
 
       expect(mockCollector.recordError).toHaveBeenCalledWith(
         MetricNames.USER_VALIDATION_ERRORS,
