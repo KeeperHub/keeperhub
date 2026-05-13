@@ -5,7 +5,7 @@ import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { getMetricsCollector } from "@/lib/metrics";
-import { LabelKeys, MetricNames } from "@/lib/metrics/types";
+import { isTriggerType, LabelKeys, MetricNames, type TriggerType } from "@/lib/metrics/types";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { checkConcurrencyLimit } from "@/app/api/execute/_lib/concurrency-limit";
 import { db } from "@/lib/db";
@@ -216,12 +216,22 @@ export async function POST(
       console.log("[API] Created execution:", executionId);
     }
 
-    // Record workflow execution metric in API process (workflow runs in separate context)
-    const triggerType = isInternalExecution ? "scheduled" : "manual";
+    // Record per-(trigger_type, chain) start of a workflow execution. Drives the
+    // Grafana "zero executions in N min" alert family (see KEEP-556). The trigger
+    // type is carried by the caller via the X-Trigger-Type header so we can tell
+    // block vs schedule vs event apart on internal calls; we fall back to the
+    // legacy "scheduled" / "manual" defaults if the header is absent or invalid.
+    const headerTrigger = request.headers.get("x-trigger-type");
+    const triggerType: TriggerType = isTriggerType(headerTrigger)
+      ? headerTrigger
+      : isInternalExecution
+        ? "scheduled"
+        : "manual";
+    const chainLabel = workflow.chain ?? "_unknown";
     const metrics = getMetricsCollector();
-    metrics.incrementCounter(MetricNames.WORKFLOW_EXECUTIONS_TOTAL, {
+    metrics.incrementCounter(MetricNames.WORKFLOW_EXECUTIONS_STARTED_TOTAL, {
       [LabelKeys.TRIGGER_TYPE]: triggerType,
-      [LabelKeys.WORKFLOW_ID]: workflowId,
+      [LabelKeys.CHAIN]: chainLabel,
     });
 
     // Resolve org slug + plan for log labels (cached per request)

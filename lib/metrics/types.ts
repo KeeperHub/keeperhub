@@ -111,6 +111,7 @@ export const MetricNames = {
 
   // Traffic metrics
   WORKFLOW_EXECUTIONS_TOTAL: "workflow.executions.total",
+  WORKFLOW_EXECUTIONS_STARTED_TOTAL: "workflow.executions.started.total",
   WORKFLOW_EXPORTS_TOTAL: "workflow.exports.total",
   WORKFLOW_IMPORTS_TOTAL: "workflow.imports.total",
   PLUGIN_INVOCATIONS_TOTAL: "plugin.invocations.total",
@@ -173,6 +174,7 @@ export const LabelKeys = {
   PLUGIN_NAME: "plugin_name",
   ACTION_NAME: "action_name",
   TRIGGER_TYPE: "trigger_type",
+  CHAIN: "chain",
   STATUS: "status",
   STATUS_CODE: "status_code",
   ERROR_TYPE: "error_type",
@@ -186,9 +188,34 @@ export const LabelKeys = {
 } as const;
 
 /**
- * Trigger types for workflow executions
+ * Trigger types for workflow executions.
+ *
+ * "scheduled" is the legacy label used for any internal call before the per-source
+ * discriminator was introduced. New code should prefer the precise values
+ * "schedule" (cron-based), "block" (block-interval), or "event" (smart contract
+ * event). Both "scheduled" and "schedule" are kept here so historical metric
+ * series remain valid.
  */
-export type TriggerType = "manual" | "webhook" | "scheduled";
+export type TriggerType =
+  | "manual"
+  | "webhook"
+  | "scheduled"
+  | "schedule"
+  | "block"
+  | "event";
+
+const TRIGGER_TYPES: ReadonlySet<TriggerType> = new Set<TriggerType>([
+  "manual",
+  "webhook",
+  "scheduled",
+  "schedule",
+  "block",
+  "event",
+]);
+
+export function isTriggerType(value: unknown): value is TriggerType {
+  return typeof value === "string" && TRIGGER_TYPES.has(value as TriggerType);
+}
 
 /**
  * Execution status values

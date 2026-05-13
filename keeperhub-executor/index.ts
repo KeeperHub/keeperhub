@@ -38,7 +38,7 @@ import {
 } from "../lib/db/schema";
 import { generateId } from "../lib/utils/id";
 import type { WorkflowNode } from "../lib/workflow/store";
-import { executeViaApi } from "./api-execute";
+import { type ApiExecuteTriggerType, executeViaApi } from "./api-execute";
 import { checkExecutionLimitForExecutor } from "./billing-guard";
 import { CONFIG } from "./config";
 import { resolveDispatchTarget } from "./execution-mode";
@@ -149,7 +149,7 @@ async function dispatchExecution(params: {
   workflowId: string;
   executionId: string;
   input: Record<string, unknown>;
-  triggerType: string;
+  triggerType: ApiExecuteTriggerType;
   scheduleId?: string;
 }): Promise<void> {
   const { target, workflowId, executionId, input, triggerType, scheduleId } =
@@ -189,7 +189,7 @@ async function dispatchExecution(params: {
       break;
     }
     case "api": {
-      await executeViaApi({ workflowId, executionId, input });
+      await executeViaApi({ workflowId, executionId, input, triggerType });
       break;
     }
     case "in-process": {

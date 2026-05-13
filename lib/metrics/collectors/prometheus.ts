@@ -738,6 +738,21 @@ const pluginInvocations = getOrCreateCounter(
   ["plugin_name", "action_name", "org_slug", "plan"]
 );
 
+// Runtime counter incremented exactly once per workflow_executions row creation,
+// labelled by trigger_type (block | schedule | event | manual | webhook | scheduled)
+// and chain (the workflows.chain column; "_unknown" when null). Used by the
+// Grafana "zero executions in N min" alert family - increase()[window] == 0 with
+// no_data_state="Alerting" fires when a (trigger_type, chain) pair stalls.
+//
+// Distinct from "workflow.executions.total" (a DB-sourced gauge of all-time counts
+// by status+org_slug) - that metric is computed via SQL in updateDbMetrics().
+const workflowExecutionsStartedTotal = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_workflow_executions_started_total",
+  "Workflow executions started (counter), labelled by trigger_type and chain",
+  ["trigger_type", "chain"]
+);
+
 // Error counters
 const pluginErrors = getOrCreateCounter(
   apiRegistry,
@@ -940,6 +955,7 @@ const histogramMap: Record<string, Histogram> = {
 
 const counterMap: Record<string, Counter> = {
   "plugin.invocations.total": pluginInvocations,
+  "workflow.executions.started.total": workflowExecutionsStartedTotal,
   "db.query.slow_count": slowQueries,
   "sponsorship.transactions.total": sponsorshipTransactions,
   "sponsorship.gas_used.total": sponsorshipGasUsed,
@@ -1335,7 +1351,10 @@ export async function updateDbMetrics(): Promise<void> {
 
     mrrUsdCents.reset();
     for (const entry of billingStats.mrrCentsByPlan) {
-      mrrUsdCents.set({ plan: entry.plan, tier: entry.tier ?? "" }, entry.cents);
+      mrrUsdCents.set(
+        { plan: entry.plan, tier: entry.tier ?? "" },
+        entry.cents
+      );
     }
     mrrUsdCentsTotal.set(billingStats.mrrCentsTotal);
 

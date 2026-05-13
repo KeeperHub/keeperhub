@@ -317,11 +317,12 @@ export async function POST(
 
     console.log("[Webhook] Created execution:", execution.id);
 
-    // Record workflow execution metric in API process (workflow runs in separate context)
+    // Record per-(trigger_type, chain) start of a workflow execution. See KEEP-556.
+    const chainLabel = workflow.chain ?? "_unknown";
     const metrics = getMetricsCollector();
-    metrics.incrementCounter(MetricNames.WORKFLOW_EXECUTIONS_TOTAL, {
+    metrics.incrementCounter(MetricNames.WORKFLOW_EXECUTIONS_STARTED_TOTAL, {
       [LabelKeys.TRIGGER_TYPE]: "webhook",
-      [LabelKeys.WORKFLOW_ID]: workflowId,
+      [LabelKeys.CHAIN]: chainLabel,
     });
 
     // Resolve org slug + plan for log labels (cached per request)
