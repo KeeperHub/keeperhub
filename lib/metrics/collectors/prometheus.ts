@@ -767,8 +767,10 @@ const apiErrors = getOrCreateCounter(
   ["endpoint", "status_code", "error_type", "org_slug", "plan"]
 );
 
-// Common labels for all error counters (allows any subset to be used)
-const ERROR_LABELS = [
+// Common labels for all error counters (allows any subset to be used).
+// Exported so the KEEP-545 regression test can snapshot the canonical set
+// and prevent any panel-affecting label from being removed silently.
+export const ERROR_LABELS = [
   "error_category",
   "error_context",
   "is_user_error",
