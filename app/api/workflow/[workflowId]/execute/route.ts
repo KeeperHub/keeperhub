@@ -179,6 +179,11 @@ export async function POST(
     // Check if executionId was provided (for scheduled executions)
     // This allows the executor to pre-create the execution record
     let executionId = body.executionId;
+    // Whether this request created the workflow_executions row itself, vs.
+    // reusing one that the executor pre-created. The KEEP-556 counter only
+    // increments here when we created the row, so the executor-side increment
+    // and this one never double-count.
+    let createdHere = false;
 
     if (executionId) {
       // Verify execution exists and is in running state
@@ -199,6 +204,7 @@ export async function POST(
           input,
         });
         console.log("[API] Created execution with provided ID:", executionId);
+        createdHere = true;
       }
     } else {
       // Create new execution record
@@ -214,25 +220,30 @@ export async function POST(
 
       executionId = execution.id;
       console.log("[API] Created execution:", executionId);
+      createdHere = true;
     }
 
     // Record per-(trigger_type, chain) start of a workflow execution. Drives the
-    // Grafana "zero executions in N min" alert family (see KEEP-556). The trigger
-    // type is carried by the caller via the X-Trigger-Type header so we can tell
-    // block vs schedule vs event apart on internal calls; we fall back to the
-    // legacy "scheduled" / "manual" defaults if the header is absent or invalid.
-    const headerTrigger = request.headers.get("x-trigger-type");
-    const triggerType: TriggerType = isTriggerType(headerTrigger)
-      ? headerTrigger
-      : isInternalExecution
-        ? "scheduled"
-        : "manual";
-    const chainLabel = workflow.chain ?? "_unknown";
-    const metrics = getMetricsCollector();
-    metrics.incrementCounter(MetricNames.WORKFLOW_EXECUTIONS_STARTED_TOTAL, {
-      [LabelKeys.TRIGGER_TYPE]: triggerType,
-      [LabelKeys.CHAIN]: chainLabel,
-    });
+    // Grafana "zero executions in N min" alert family (see KEEP-556). The
+    // trigger type is carried by the caller via the X-Trigger-Type header so
+    // internal callers can mark precise sources (block / schedule / event); we
+    // fall back to the legacy "scheduled" / "manual" defaults if the header is
+    // absent or invalid. Skipped when the executor pre-created the row - it
+    // already incremented on its side in that case.
+    if (createdHere) {
+      const headerTrigger = request.headers.get("x-trigger-type");
+      const triggerType: TriggerType = isTriggerType(headerTrigger)
+        ? headerTrigger
+        : isInternalExecution
+          ? "scheduled"
+          : "manual";
+      const chainLabel = workflow.chain ?? "_unknown";
+      const metrics = getMetricsCollector();
+      metrics.incrementCounter(MetricNames.WORKFLOW_EXECUTIONS_STARTED_TOTAL, {
+        [LabelKeys.TRIGGER_TYPE]: triggerType,
+        [LabelKeys.CHAIN]: chainLabel,
+      });
+    }
 
     // Resolve org slug + plan for log labels (cached per request)
     const [organizationSlug, organizationPlan] = await Promise.all([

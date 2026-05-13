@@ -37,6 +37,8 @@ import {
   workflows,
 } from "../lib/db/schema";
 import { generateId } from "../lib/utils/id";
+import { getMetricsCollector } from "../lib/metrics";
+import { LabelKeys, MetricNames } from "../lib/metrics/types";
 import type { WorkflowNode } from "../lib/workflow/store";
 import { type ApiExecuteTriggerType, executeViaApi } from "./api-execute";
 import { checkExecutionLimitForExecutor } from "./billing-guard";
@@ -261,6 +263,20 @@ async function processExecutorMessage(message: ExecutorMessage): Promise<void> {
   });
 
   console.log(`[Executor] Created execution record: ${executionId}`);
+
+  // Counter for the "zero executions in N min" alert family (KEEP-556).
+  // Increments here for every SQS-triggered run regardless of dispatch target
+  // (k8s-job / in-process / api). The route.ts handler only increments when it
+  // creates the row itself - so manual and webhook flows go through there, and
+  // schedule / block / event go through here, with no double-count when the
+  // executor hands off via process mode and the API uses our pre-existing row.
+  getMetricsCollector().incrementCounter(
+    MetricNames.WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+    {
+      [LabelKeys.TRIGGER_TYPE]: triggerType,
+      [LabelKeys.CHAIN]: workflow.chain ?? "_unknown",
+    }
+  );
 
   const nodes = workflow.nodes as WorkflowNode[];
   const target = resolveDispatchTarget(nodes);
