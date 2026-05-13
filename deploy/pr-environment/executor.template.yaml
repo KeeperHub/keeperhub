@@ -119,6 +119,16 @@ env:
     type: parameterStore
     name: wallet-encryption-key
     parameter_name: /eks/techops-staging/keeperhub/wallet-encryption-key
+  # Required by assertTurnkeyEnvForActiveWallets at startup when the DB has
+  # any active turnkey wallets; missing these would crash-loop the executor.
+  TURNKEY_API_PUBLIC_KEY:
+    type: parameterStore
+    name: turnkey-api-public-key
+    parameter_name: /eks/techops-staging/keeperhub/turnkey-api-public-key
+  TURNKEY_API_PRIVATE_KEY:
+    type: parameterStore
+    name: turnkey-api-private-key
+    parameter_name: /eks/techops-staging/keeperhub/turnkey-api-private-key
   CHAIN_RPC_CONFIG:
     type: parameterStore
     name: chain-rpc-config
