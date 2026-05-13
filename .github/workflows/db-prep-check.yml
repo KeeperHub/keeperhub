@@ -1,0 +1,94 @@
+name: DB Prep Check
+
+# Blocks merge of PRs that introduce a migration containing the
+# `-- @requires-db-prep` directive until the matching
+# `db-prepped-<base-branch>` label is set.
+#
+# Use case: a migration whose SQL is safe to run on a fresh / small DB
+# (dev, PR environments, CI) but requires a manual pre-step on the real
+# target DB - typically `CREATE INDEX CONCURRENTLY` against a large hot
+# table, which drizzle-kit cannot run because it wraps each migration in
+# a transaction.
+#
+# Workflow:
+#   1. PR author writes the migration with plain CREATE INDEX IF NOT
+#      EXISTS and adds `-- @requires-db-prep` on line 1.
+#   2. This workflow detects the directive in any newly-added migration
+#      and fails until the right label is present.
+#   3. An operator (DBA / on-call) applies the CONCURRENTLY-equivalent
+#      statements to the target DB via psql, then adds the label.
+#   4. Merge unblocks. The deploy's drizzle-kit migrate runs the plain
+#      CREATE INDEX which becomes a no-op via IF NOT EXISTS.
+#
+# Triggers on `labeled` / `unlabeled` so the status check updates the
+# instant the operator flips the label.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches:
+      - staging
+      - prod
+      - main
+
+jobs:
+  db-prep-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect @requires-db-prep migrations added in this PR
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          REQUIRES_PREP=false
+          REPORTED_FILES=""
+
+          # Only inspect files added or modified in this PR under drizzle/
+          # whose name matches a migration (NNNN_*.sql).
+          while IFS= read -r f; do
+            if [ -z "$f" ]; then
+              continue
+            fi
+            if [ ! -f "$f" ]; then
+              continue
+            fi
+            # Match on the directive anywhere in the first 5 lines so the
+            # check survives a top-of-file comment block above it.
+            if head -n 5 "$f" | grep -qE '^[[:space:]]*--[[:space:]]*@requires-db-prep([[:space:]]|$)'; then
+              REQUIRES_PREP=true
+              REPORTED_FILES="$REPORTED_FILES $f"
+            fi
+          done < <(git diff --name-only --diff-filter=AM "$BASE_SHA...$HEAD_SHA" -- 'drizzle/*.sql')
+
+          echo "requires_prep=$REQUIRES_PREP" >> "$GITHUB_OUTPUT"
+          echo "files=$REPORTED_FILES" >> "$GITHUB_OUTPUT"
+
+      - name: Verify db-prepped-<branch> label is present
+        if: steps.detect.outputs.requires_prep == 'true'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          FILES: ${{ steps.detect.outputs.files }}
+        run: |
+          set -euo pipefail
+          REQUIRED_LABEL="db-prepped-$BASE_REF"
+          if printf '%s' "$LABELS_JSON" | jq -e --arg L "$REQUIRED_LABEL" 'any(. == $L)' >/dev/null; then
+            echo "Label '$REQUIRED_LABEL' is set. Migration prep confirmed."
+            exit 0
+          fi
+
+          echo "::error::Migration(s) with the '@requires-db-prep' directive are in this PR:$FILES"
+          echo "::error::Required label '$REQUIRED_LABEL' is NOT set."
+          echo "::error::Operator runbook: apply each statement in the affected migration(s) against the '$BASE_REF' database with CREATE INDEX CONCURRENTLY (or the equivalent lock-free form), verify no INVALID indexes were left behind, then add the '$REQUIRED_LABEL' label to this PR."
+          exit 1
+
+      - name: No DB prep required
+        if: steps.detect.outputs.requires_prep != 'true'
+        run: echo "No '@requires-db-prep' migrations in this PR; check passes."
