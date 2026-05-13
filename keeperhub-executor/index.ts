@@ -365,6 +365,26 @@ async function listen(): Promise<void> {
   console.log(`[Executor] Runner image: ${CONFIG.runnerImage}`);
   console.log(`[Executor] K8s namespace: ${CONFIG.namespace}`);
 
+  // Wire up Prometheus dual-write. The Next.js app does this in
+  // instrumentation.ts; the executor is a separate tsx-launched process and
+  // never runs Next.js's instrumentation hook, so without this its
+  // getMetricsCollector() calls would only hit the console collector and the
+  // executor's /metrics endpoint would never see the counter series. See
+  // KEEP-556 for the missing-counter symptom this fixes.
+  if (process.env.METRICS_COLLECTOR === "prometheus") {
+    const { prometheusMetricsCollector } = await import(
+      "../lib/metrics/collectors/prometheus"
+    );
+    const { createDualWriteCollector } = await import(
+      "../lib/metrics/collectors/dual"
+    );
+    const { setMetricsCollector } = await import("../lib/metrics");
+    setMetricsCollector(createDualWriteCollector(prometheusMetricsCollector));
+    console.log(
+      "[Executor] Prometheus dual-write metrics collector initialized"
+    );
+  }
+
   await assertTurnkeyEnvForActiveWallets(db);
 
   // Health check + metrics server
