@@ -48,7 +48,11 @@ export default async function McpReauthorizePage({
     <main className="flex min-h-screen items-center justify-center bg-background px-4 py-12">
       <Card className="w-full max-w-lg">
         <CardHeader>
-          <CardTitle>Reauthorize MCP access</CardTitle>
+          <CardTitle>
+            <h1 className="text-base leading-none font-semibold">
+              Reauthorize MCP access
+            </h1>
+          </CardTitle>
           <CardDescription>
             Your KeeperHub MCP connection has{" "}
             <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">

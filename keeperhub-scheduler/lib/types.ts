@@ -10,6 +10,11 @@ export type Schedule = {
   workflowId: string;
   cronExpression: string;
   timezone: string;
+  // KEEP-575: when intervalSeconds is set, the dispatcher fires on
+  // anchorAt + k * intervalSeconds instead of parsing cronExpression.
+  // Optional so legacy cron-only payloads stay valid.
+  intervalSeconds?: number | null;
+  anchorAt?: string | null;
 };
 
 export type ScheduleMessage = {

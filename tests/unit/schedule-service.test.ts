@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  computeNextIntervalRunTime,
   computeNextRunTime,
   extractScheduleConfig,
   validateCronExpression,
   validateTimezone,
 } from "@/lib/schedule-service";
+import type { WorkflowNode } from "@/lib/workflow/store";
 import {
   createManualTriggerNode,
   createScheduleTriggerNode,
@@ -212,7 +214,10 @@ describe("schedule-service", () => {
       const result = extractScheduleConfig([triggerNode]);
 
       expect(result).not.toBeNull();
-      expect(result?.cronExpression).toBe("0 9 * * *");
+      expect(result?.mode).toBe("cron");
+      if (result?.mode === "cron") {
+        expect(result.cronExpression).toBe("0 9 * * *");
+      }
       expect(result?.timezone).toBe("America/New_York");
     });
 
@@ -277,8 +282,180 @@ describe("schedule-service", () => {
       const result = extractScheduleConfig(nodes);
 
       expect(result).not.toBeNull();
-      expect(result?.cronExpression).toBe("*/5 * * * *");
+      expect(result?.mode).toBe("cron");
+      if (result?.mode === "cron") {
+        expect(result.cronExpression).toBe("*/5 * * * *");
+      }
       expect(result?.timezone).toBe("Europe/London");
+    });
+
+    // KEEP-575: interval mode. The trigger config can ship a numeric
+    // scheduleIntervalSeconds; when present it takes precedence over
+    // scheduleCron because the cron column gets a synthetic placeholder.
+    describe("interval mode (KEEP-575)", () => {
+      function makeIntervalTrigger(
+        intervalSeconds: number | string,
+        timezone = "UTC",
+        extras: Record<string, unknown> = {}
+      ): WorkflowNode {
+        return {
+          id: "trigger-1",
+          type: "trigger",
+          position: { x: 0, y: 0 },
+          data: {
+            type: "trigger",
+            label: "Schedule Trigger",
+            config: {
+              triggerType: "Schedule",
+              scheduleIntervalSeconds: intervalSeconds,
+              scheduleTimezone: timezone,
+              ...extras,
+            },
+          },
+        };
+      }
+
+      it("returns interval mode when scheduleIntervalSeconds is set", () => {
+        const result = extractScheduleConfig([makeIntervalTrigger(3300)]);
+
+        expect(result?.mode).toBe("interval");
+        if (result?.mode === "interval") {
+          expect(result.intervalSeconds).toBe(3300);
+        }
+      });
+
+      it("parses scheduleIntervalSeconds when stored as a numeric string", () => {
+        const result = extractScheduleConfig([makeIntervalTrigger("3300")]);
+
+        expect(result?.mode).toBe("interval");
+        if (result?.mode === "interval") {
+          expect(result.intervalSeconds).toBe(3300);
+        }
+      });
+
+      it("prefers interval over scheduleCron when both are present", () => {
+        const result = extractScheduleConfig([
+          makeIntervalTrigger(3300, "UTC", { scheduleCron: "0 9 * * *" }),
+        ]);
+
+        expect(result?.mode).toBe("interval");
+      });
+
+      it("falls back to cron when scheduleIntervalSeconds is empty string", () => {
+        const result = extractScheduleConfig([
+          makeIntervalTrigger("", "UTC", { scheduleCron: "0 9 * * *" }),
+        ]);
+
+        expect(result?.mode).toBe("cron");
+      });
+
+      it("falls back to cron when scheduleIntervalSeconds is zero", () => {
+        const result = extractScheduleConfig([
+          makeIntervalTrigger(0, "UTC", { scheduleCron: "0 9 * * *" }),
+        ]);
+
+        expect(result?.mode).toBe("cron");
+      });
+
+      it("falls back to cron when scheduleIntervalSeconds is negative", () => {
+        const result = extractScheduleConfig([
+          makeIntervalTrigger(-10, "UTC", { scheduleCron: "0 9 * * *" }),
+        ]);
+
+        expect(result?.mode).toBe("cron");
+      });
+    });
+  });
+
+  // KEEP-575: anchor-relative every-k*interval computation. The dispatcher
+  // and the executor's lastRunAt-update path both need to agree, so the
+  // formula is centralised in schedule-service.
+  describe("computeNextIntervalRunTime", () => {
+    it("returns anchor + interval when now is before the anchor", () => {
+      // KEEP-575: first fire is `anchor + 1 * interval`, never the anchor
+      // itself. A schedule scheduled in the future fires at its first
+      // proper occurrence.
+      const anchor = new Date("2026-05-18T10:00:00Z");
+      const now = new Date("2026-05-18T09:30:00Z");
+
+      const next = computeNextIntervalRunTime(3300, anchor, now);
+
+      expect(next.toISOString()).toBe("2026-05-18T10:55:00.000Z");
+    });
+
+    it("returns anchor + interval when called exactly at the anchor", () => {
+      // The "schedule was just saved" case. next_run_at should be the
+      // first real fire time, never the moment of save itself.
+      const anchor = new Date("2026-05-18T10:00:00Z");
+
+      const next = computeNextIntervalRunTime(3300, anchor, anchor);
+
+      // anchor + 3300s = anchor + 55min = 10:55:00
+      expect(next.toISOString()).toBe("2026-05-18T10:55:00.000Z");
+    });
+
+    it("returns anchor + interval when called mid-first-interval", () => {
+      // 30 minutes past anchor, well before the first fire at 10:55.
+      const anchor = new Date("2026-05-18T10:00:00Z");
+      const now = new Date("2026-05-18T10:30:00Z");
+
+      const next = computeNextIntervalRunTime(3300, anchor, now);
+
+      expect(next.toISOString()).toBe("2026-05-18T10:55:00.000Z");
+    });
+
+    it("computes the next 55-minute slot after an arbitrary now", () => {
+      const anchor = new Date("2026-05-18T10:00:00Z");
+      // 1h7m past anchor: most recent fire was 10:55, next is 11:50
+      const now = new Date("2026-05-18T11:07:00Z");
+
+      const next = computeNextIntervalRunTime(3300, anchor, now);
+
+      expect(next.toISOString()).toBe("2026-05-18T11:50:00.000Z");
+    });
+
+    it("never returns now itself when called mid-interval", () => {
+      const anchor = new Date("2026-05-18T10:00:00Z");
+      const now = new Date("2026-05-18T10:30:00Z");
+
+      const next = computeNextIntervalRunTime(3300, anchor, now);
+
+      expect(next.getTime()).toBeGreaterThan(now.getTime());
+    });
+
+    // KEEP-575: callers write the result straight to workflow_schedules.
+    // next_run_at. Returning Invalid Date silently would surface as a
+    // cryptic DB error far from the cause; throw with a clear message
+    // instead.
+    it("throws on Invalid Date anchor", () => {
+      const badAnchor = new Date("not-a-real-date");
+      const now = new Date("2026-05-18T10:30:00Z");
+
+      expect(() => computeNextIntervalRunTime(3300, badAnchor, now)).toThrow(
+        "invalid anchorAt"
+      );
+    });
+
+    it("throws on non-positive interval", () => {
+      const anchor = new Date("2026-05-18T10:00:00Z");
+
+      expect(() => computeNextIntervalRunTime(0, anchor)).toThrow(
+        "invalid intervalSeconds"
+      );
+      expect(() => computeNextIntervalRunTime(-10, anchor)).toThrow(
+        "invalid intervalSeconds"
+      );
+    });
+
+    it("throws on non-finite interval", () => {
+      const anchor = new Date("2026-05-18T10:00:00Z");
+
+      expect(() => computeNextIntervalRunTime(Number.NaN, anchor)).toThrow(
+        "invalid intervalSeconds"
+      );
+      expect(() =>
+        computeNextIntervalRunTime(Number.POSITIVE_INFINITY, anchor)
+      ).toThrow("invalid intervalSeconds");
     });
   });
 });

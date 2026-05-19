@@ -21,6 +21,7 @@ import type {
   ProtocolDefinition,
   ProtocolEvent,
 } from "@/lib/protocol-registry";
+import { parseIntervalSeconds } from "@/lib/cron-utils";
 import type { ActionConfigField } from "@/plugins/registry";
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { CronScheduleBuilder } from "./cron-schedule-builder";
@@ -188,8 +189,27 @@ export function TriggerConfig({
         <>
           <CronScheduleBuilder
             disabled={disabled}
-            onChange={(value) => onUpdateConfig("scheduleCron", value)}
-            value={(config?.scheduleCron as string) || ""}
+            onChange={(value) => {
+              // KEEP-575: schedule builder emits either a cron string or a
+              // true interval. Interval mode clears scheduleCron so legacy
+              // readers don't fall back to a stale cron value.
+              if (value.mode === "interval") {
+                onUpdateConfig(
+                  "scheduleIntervalSeconds",
+                  String(value.intervalSeconds)
+                );
+                onUpdateConfig("scheduleCron", "");
+              } else {
+                onUpdateConfig("scheduleCron", value.cron);
+                onUpdateConfig("scheduleIntervalSeconds", "");
+              }
+            }}
+            value={{
+              cron: (config?.scheduleCron as string) || "",
+              intervalSeconds: parseIntervalSeconds(
+                config?.scheduleIntervalSeconds
+              ),
+            }}
           />
           <div className="space-y-2">
             <Label className="ml-1" htmlFor="scheduleTimezone">

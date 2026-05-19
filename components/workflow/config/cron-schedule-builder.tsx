@@ -43,9 +43,18 @@ const DAYS = [
   { value: 0, label: "Sun" },
 ] as const;
 
+/**
+ * KEEP-575: a Schedule trigger stores either a cron expression OR a true
+ * "every N seconds" interval. The builder emits a discriminated value so
+ * the parent component knows which field to persist.
+ */
+export type ScheduleBuilderValue =
+  | { mode: "cron"; cron: string }
+  | { mode: "interval"; intervalSeconds: number };
+
 type CronScheduleBuilderProps = {
-  value: string;
-  onChange: (cron: string) => void;
+  value: { cron: string; intervalSeconds: number | null };
+  onChange: (value: ScheduleBuilderValue) => void;
   disabled: boolean;
 };
 
@@ -63,38 +72,69 @@ export function CronScheduleBuilder({
   onChange,
   disabled,
 }: CronScheduleBuilderProps): React.ReactNode {
-  // biome-ignore lint/correctness/useExhaustiveDependencies: only compute on mount
-  const initialSimple = useMemo(() => parseCronToSimple(value), []);
+  const { cron: cronValue, intervalSeconds: intervalValue } = value;
+  // KEEP-575: if the trigger config has an intervalSeconds stored, that's
+  // the source of truth — open the simple-mode every-n-minutes UI seeded
+  // from it, ignoring any stale synthetic cron stored alongside.
+  const initialSimple = useMemo(() => {
+    if (intervalValue !== null && intervalValue > 0) {
+      return {
+        frequency: "every-n-minutes" as const,
+        interval: Math.max(1, Math.round(intervalValue / 60)),
+      };
+    }
+    return parseCronToSimple(cronValue);
+    // biome-ignore lint/correctness/useExhaustiveDependencies: only compute on mount
+  }, []);
 
   const [tab, setTab] = useState<string>(
-    value && initialSimple === null ? "advanced" : "simple"
+    cronValue && initialSimple === null ? "advanced" : "simple"
   );
   const [schedule, setSchedule] = useState<SimpleSchedule>(
     initialSimple ?? { frequency: "daily", hour: 9, minute: 0 }
   );
-  const [advancedValue, setAdvancedValue] = useState(value);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: only compute on mount
+  const [advancedValue, setAdvancedValue] = useState(cronValue);
   const [isCustom, setIsCustom] = useState<boolean>(
-    () => initialSimple !== null && findPresetKey(value) === undefined
+    () =>
+      initialSimple !== null &&
+      (initialSimple.frequency === "every-n-minutes" ||
+        findPresetKey(cronValue) === undefined)
   );
 
   // Sync external value changes into advanced mode
   useEffect(() => {
-    setAdvancedValue(value);
-  }, [value]);
+    setAdvancedValue(cronValue);
+  }, [cronValue]);
 
   // Determine if current schedule matches a preset
-  const currentPresetKey = useMemo(() => findPresetKey(value), [value]);
+  const currentPresetKey = useMemo(
+    () => findPresetKey(cronValue),
+    [cronValue]
+  );
 
   // The select value: explicit custom flag takes priority over preset match
   const selectValue = isCustom ? CUSTOM_VALUE : (currentPresetKey ?? CUSTOM_VALUE);
+
+  const emitSchedule = useCallback(
+    (next: SimpleSchedule): void => {
+      // KEEP-575: "every N minutes" is the only frequency that can need
+      // interval mode — the others map cleanly to a cron expression.
+      if (next.frequency === "every-n-minutes") {
+        const interval = next.interval ?? 5;
+        onChange({ mode: "interval", intervalSeconds: interval * 60 });
+        return;
+      }
+      onChange({ mode: "cron", cron: buildCronFromSimple(next) });
+    },
+    [onChange]
+  );
 
   const handleSelectChange = useCallback(
     (selected: string) => {
       if (selected === CUSTOM_VALUE) {
         setIsCustom(true);
         // Parse current value into schedule fields for editing
-        const parsed = parseCronToSimple(value);
+        const parsed = parseCronToSimple(cronValue);
         if (parsed !== null) {
           setSchedule(parsed);
         }
@@ -107,32 +147,38 @@ export function CronScheduleBuilder({
         if (parsed !== null) {
           setSchedule(parsed);
         }
-        onChange(preset.cron);
+        onChange({ mode: "cron", cron: preset.cron });
       }
     },
-    [onChange, value]
+    [onChange, cronValue]
   );
 
   const updateSchedule = useCallback(
-    (updates: Partial<SimpleSchedule>) => {
+    (updates: Partial<SimpleSchedule>): void => {
       setSchedule((prev) => {
         const next = { ...prev, ...updates };
-        onChange(buildCronFromSimple(next));
+        emitSchedule(next);
         return next;
       });
     },
-    [onChange]
+    [emitSchedule]
   );
 
   const handleAdvancedChange = useCallback(
     (input: string) => {
       setAdvancedValue(input);
-      onChange(input);
+      onChange({ mode: "cron", cron: input });
     },
     [onChange]
   );
 
-  const description = describeCron(value);
+  // KEEP-575: when interval mode is active, the cron column holds a
+  // synthetic placeholder — show the user the true interval semantics
+  // instead of the misleading cron description.
+  const description =
+    intervalValue !== null && intervalValue > 0
+      ? `Every ${formatInterval(intervalValue)}`
+      : describeCron(cronValue);
   const advancedValidation =
     tab === "advanced" && advancedValue
       ? validateCronExpression(advancedValue)
@@ -308,7 +354,7 @@ export function CronScheduleBuilder({
                   next.frequency = "weekly";
                 }
                 setSchedule(next);
-                onChange(buildCronFromSimple(next));
+                emitSchedule(next);
               }}
             />
           )}
@@ -392,6 +438,21 @@ type TimeFieldsProps = {
   minute: number;
   onUpdate: (updates: Partial<SimpleSchedule>) => void;
 };
+
+// KEEP-575: format an interval (in seconds) as a human-readable string
+// for the "Runs: ..." hint. Replaces the misleading "Every 55 minutes"
+// description we used to show for the */55 cron.
+function formatInterval(intervalSeconds: number): string {
+  if (intervalSeconds < 60) {
+    return `${intervalSeconds} second${intervalSeconds === 1 ? "" : "s"}`;
+  }
+  if (intervalSeconds < 3600) {
+    const minutes = Math.round(intervalSeconds / 60);
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  const hours = Math.round(intervalSeconds / 3600);
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
+}
 
 function TimeFields({
   disabled,

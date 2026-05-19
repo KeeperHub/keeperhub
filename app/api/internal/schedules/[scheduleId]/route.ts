@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { workflowSchedules } from "@/lib/db/schema";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
+import { computeNextIntervalRunTime } from "@/lib/schedule-service";
 
 type RouteContext = {
   params: Promise<{ scheduleId: string }>;
@@ -75,10 +76,18 @@ export async function PATCH(request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Schedule not found" }, { status: 404 });
   }
 
-  const nextRunAt = computeNextRunTime(
-    schedule.cronExpression,
-    schedule.timezone
-  );
+  // KEEP-575: strict null/undefined checks so a stray zero in either
+  // column can't silently fall through to the cron path.
+  const intervalSeconds = schedule.intervalSeconds;
+  const anchorAt = schedule.anchorAt;
+  const isInterval =
+    intervalSeconds !== null &&
+    intervalSeconds > 0 &&
+    anchorAt !== null &&
+    anchorAt !== undefined;
+  const nextRunAt = isInterval
+    ? computeNextIntervalRunTime(intervalSeconds, anchorAt)
+    : computeNextRunTime(schedule.cronExpression, schedule.timezone);
 
   const runCount =
     status === "success"

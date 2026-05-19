@@ -27,6 +27,7 @@ import {
   dispatch,
   fetchSchedules,
   sendToQueue,
+  shouldTriggerInterval,
   shouldTriggerNow,
 } from "../../schedule-dispatcher/dispatch.js";
 
@@ -184,6 +185,109 @@ describe("shouldTriggerNow", () => {
     // :10 is mid-window -- prev() returns :00, diff is ~10min -> false.
     expect(
       shouldTriggerNow("*/15 * * * *", "UTC", new Date("2024-01-15T09:10:01Z")),
+    ).toBe(false);
+  });
+});
+
+// KEEP-575: interval mode lets us express "every N minutes" accurately
+// even when N doesn't divide 60. `*/55 * * * *` only fires at :00 and :55
+// of each hour (55-min then 5-min gap); the interval path fires every
+// 55 minutes from the anchor regardless of clock alignment.
+describe("shouldTriggerInterval", () => {
+  it("does NOT fire at the anchor itself (first fire is anchor + interval)", () => {
+    const anchor = new Date("2026-05-18T10:00:00Z");
+    expect(shouldTriggerInterval(3300, anchor, anchor)).toBe(false);
+  });
+
+  it("does NOT fire within the 60s window after the anchor", () => {
+    // KEEP-575: saving a schedule must not cause an immediate run. The
+    // first fire is `anchor + 1 * interval`, not the anchor itself.
+    const anchor = new Date("2026-05-18T10:00:00Z");
+    expect(
+      shouldTriggerInterval(3300, anchor, new Date("2026-05-18T10:00:30Z")),
+    ).toBe(false);
+  });
+
+  it("does not fire mid-interval", () => {
+    const anchor = new Date("2026-05-18T10:00:00Z");
+    // 30 minutes in -- nowhere near a 55-minute boundary.
+    expect(
+      shouldTriggerInterval(3300, anchor, new Date("2026-05-18T10:30:00Z")),
+    ).toBe(false);
+  });
+
+  it("fires at the first occurrence: anchor + 1 * interval (55 min later)", () => {
+    const anchor = new Date("2026-05-18T10:00:00Z");
+    expect(
+      shouldTriggerInterval(3300, anchor, new Date("2026-05-18T10:55:00Z")),
+    ).toBe(true);
+  });
+
+  it("fires within the 60s window of anchor + 1 * interval", () => {
+    const anchor = new Date("2026-05-18T10:00:00Z");
+    expect(
+      shouldTriggerInterval(3300, anchor, new Date("2026-05-18T10:55:30Z")),
+    ).toBe(true);
+  });
+
+  it("fires at anchor + 2 * interval (110 min later)", () => {
+    const anchor = new Date("2026-05-18T10:00:00Z");
+    // 110 min from 10:00 is 11:50 -- which `*/55` would NOT hit.
+    expect(
+      shouldTriggerInterval(3300, anchor, new Date("2026-05-18T11:50:00Z")),
+    ).toBe(true);
+  });
+
+  it("does not fire 5 minutes after the anchor (anti-cron regression)", () => {
+    const anchor = new Date("2026-05-18T10:00:00Z");
+    // This is the exact regression we're fixing: `*/55 * * * *` would
+    // double-fire here because it also matches the next hour's :05 etc.
+    // Interval mode must not.
+    expect(
+      shouldTriggerInterval(3300, anchor, new Date("2026-05-18T10:05:00Z")),
+    ).toBe(false);
+  });
+
+  it("does not fire 65 minutes after the anchor (anti-cron regression)", () => {
+    const anchor = new Date("2026-05-18T10:00:00Z");
+    // 65min mark = 11:05; `*/55` would match this and trigger a duplicate
+    // fire 5min after the legitimate 11:00 cron tick. Interval mode aligns
+    // to the anchor, not the wall clock.
+    expect(
+      shouldTriggerInterval(3300, anchor, new Date("2026-05-18T11:05:00Z")),
+    ).toBe(false);
+  });
+
+  it("does not fire before the anchor", () => {
+    const anchor = new Date("2026-05-18T10:00:00Z");
+    expect(
+      shouldTriggerInterval(3300, anchor, new Date("2026-05-18T09:30:00Z")),
+    ).toBe(false);
+  });
+
+  it("returns false for non-positive interval", () => {
+    const anchor = new Date("2026-05-18T10:00:00Z");
+    expect(shouldTriggerInterval(0, anchor, anchor)).toBe(false);
+    expect(shouldTriggerInterval(-10, anchor, anchor)).toBe(false);
+  });
+
+  it("returns false for non-finite interval", () => {
+    const anchor = new Date("2026-05-18T10:00:00Z");
+    expect(shouldTriggerInterval(Number.NaN, anchor, anchor)).toBe(false);
+    expect(
+      shouldTriggerInterval(Number.POSITIVE_INFINITY, anchor, anchor),
+    ).toBe(false);
+  });
+
+  it("returns false for an Invalid Date anchor (anchorAt.getTime() is NaN)", () => {
+    // KEEP-575: the dispatcher constructs anchor via `new Date(schedule.anchorAt)`
+    // where schedule.anchorAt is a string from the JSON API. A malformed
+    // string yields Invalid Date; without the guard, every comparison below
+    // is silently false and the schedule never fires.
+    const badAnchor = new Date("not-a-real-date");
+    expect(Number.isNaN(badAnchor.getTime())).toBe(true);
+    expect(
+      shouldTriggerInterval(3300, badAnchor, new Date("2026-05-18T11:00:00Z")),
     ).toBe(false);
   });
 });
@@ -545,5 +649,61 @@ describe("dispatch", () => {
 
     await expect(dispatch()).rejects.toThrow(/Failed to fetch schedules: 500/);
     expect(mockedSqsSend).not.toHaveBeenCalled();
+  });
+
+  // KEEP-575: when intervalSeconds is set, the dispatcher must take the
+  // interval path and ignore the (synthetic placeholder) cronExpression.
+  it("fires an interval schedule via the interval path, ignoring its synthetic cron", () => {
+    // Anchor is 10:00; with a 3300s (55min) interval, the next fire is
+    // exactly at 10:55. Pin the clock there and confirm dispatch enqueues.
+    vi.setSystemTime(new Date("2026-05-18T10:55:00Z"));
+
+    stubFetch([
+      {
+        id: "s-interval",
+        workflowId: "wf-interval",
+        // Synthetic placeholder cron. If the dispatcher accidentally used
+        // this it would NOT match the current time (`*/55` only fires at
+        // :00 and :55) -- which happens to be 10:55, so this test is a
+        // weak distinguisher. Use a cron that explicitly does NOT match
+        // 10:55:00 so any regression toward the cron path would skip the
+        // fire.
+        cronExpression: "0 0 1 1 *",
+        timezone: "UTC",
+        intervalSeconds: 3300,
+        anchorAt: "2026-05-18T10:00:00.000Z",
+      },
+    ]);
+    mockedSqsSend.mockResolvedValue(sqsOkResponse);
+
+    return dispatch().then((result) => {
+      expect(result).toEqual({ evaluated: 1, triggered: 1, errors: 0 });
+      expect(mockedSqsSend).toHaveBeenCalledOnce();
+    });
+  });
+
+  // KEEP-575: the regression case. With the old cron-only dispatch path,
+  // a `*/55` schedule fires at :05 in the next hour (because :05 ≡ 0 mod 5
+  // never -- but :60 % 55 = 5, so cron-parser counts H+1:05 as a hit).
+  // Interval mode must NOT fire there.
+  it("does not fire an interval schedule 5 min into the next hour (no */N double-fire)", () => {
+    vi.setSystemTime(new Date("2026-05-18T11:05:00Z"));
+
+    stubFetch([
+      {
+        id: "s-interval",
+        workflowId: "wf-interval",
+        cronExpression: "*/55 * * * *",
+        timezone: "UTC",
+        intervalSeconds: 3300,
+        anchorAt: "2026-05-18T10:00:00.000Z",
+      },
+    ]);
+    mockedSqsSend.mockResolvedValue(sqsOkResponse);
+
+    return dispatch().then((result) => {
+      expect(result).toEqual({ evaluated: 1, triggered: 0, errors: 0 });
+      expect(mockedSqsSend).not.toHaveBeenCalled();
+    });
   });
 });

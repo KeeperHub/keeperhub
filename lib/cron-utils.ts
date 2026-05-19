@@ -5,6 +5,26 @@ const CRON_FIELD_SPLITTER = /\s+/;
 const INTERVAL_PATTERN = /^\*\/(\d+)$/;
 const RANGE_PATTERN = /^(\d+)-(\d+)$/;
 
+/**
+ * KEEP-575: coerce a `scheduleIntervalSeconds` value (number or numeric
+ * string from the trigger config JSONB) into a positive integer, or null
+ * if the value is missing or unusable.
+ *
+ * Lives in cron-utils (not schedule-service) so client components can
+ * import it without dragging the server-only DB connection into the
+ * browser bundle.
+ */
+export function parseIntervalSeconds(raw: unknown): number | null {
+  if (raw === undefined || raw === null || raw === "") {
+    return null;
+  }
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    return null;
+  }
+  return Math.floor(n);
+}
+
 const DAY_NAMES = [
   "Sunday",
   "Monday",
@@ -261,8 +281,17 @@ function describeSimple(s: SimpleSchedule): string {
   switch (s.frequency) {
     case "every-minute":
       return "Every minute";
-    case "every-n-minutes":
-      return `Every ${s.interval} minutes`;
+    case "every-n-minutes": {
+      // KEEP-575: `*/N * * * *` in 5-field cron means "minutes divisible
+      // by N within each hour", which only equals "every N minutes" when
+      // N divides 60. For other N the cron fires twice per hour with
+      // uneven gaps — be honest about that here.
+      const n = s.interval ?? 0;
+      if (n > 0 && 60 % n === 0) {
+        return `Every ${n} minutes`;
+      }
+      return `At minute 0 and every ${n} minutes within each hour (uneven gaps)`;
+    }
     case "hourly":
       return s.minute === 0
         ? "Every hour on the hour"

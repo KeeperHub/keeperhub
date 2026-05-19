@@ -291,4 +291,147 @@ describe("Schedule Sync Integration Tests", () => {
       expect(second).toBeUndefined();
     });
   });
+
+  // KEEP-575: interval-mode sync. These call syncWorkflowSchedule directly
+  // and assert what gets written to the workflow_schedules row.
+  describe("Interval mode (KEEP-575)", () => {
+    type SyncFn = typeof import("@/lib/schedule-service").syncWorkflowSchedule;
+    type WorkflowNode = Parameters<SyncFn>[1][number];
+
+    // Earlier describes in this file set fake timers and queue
+    // mockResolvedValueOnce values without consuming them. Reset both so
+    // each interval-mode test sees a clean clock and a clean findFirst
+    // queue.
+    beforeEach(() => {
+      vi.useRealTimers();
+      mockDbQuery.workflowSchedules.findFirst.mockReset();
+    });
+
+    // Helper: spy on the .set() call inside the chained update mock.
+    function lastUpdateSetCall(): Record<string, unknown> | undefined {
+      const updateResult = mockDbUpdate.mock.results.at(-1)?.value as
+        | { set: ReturnType<typeof vi.fn> }
+        | undefined;
+      return updateResult?.set.mock.calls.at(-1)?.[0];
+    }
+
+    function lastInsertValuesCall(): Record<string, unknown> | undefined {
+      const insertResult = mockDbInsert.mock.results.at(-1)?.value as
+        | { values: ReturnType<typeof vi.fn> }
+        | undefined;
+      return insertResult?.values.mock.calls.at(-1)?.[0];
+    }
+
+    function makeIntervalTriggerNode(
+      intervalSeconds: number,
+      timezone = "UTC"
+    ): WorkflowNode {
+      return {
+        id: "trigger-1",
+        type: "trigger",
+        position: { x: 0, y: 0 },
+        data: {
+          type: "trigger",
+          label: "Schedule Trigger",
+          config: {
+            triggerType: "Schedule",
+            scheduleIntervalSeconds: intervalSeconds,
+            scheduleTimezone: timezone,
+          },
+        },
+      };
+    }
+
+    it("inserts an interval-mode row with interval_seconds, anchor_at, and synthetic cron when no row exists", async () => {
+      const { syncWorkflowSchedule } = await import("@/lib/schedule-service");
+      mockDbQuery.workflowSchedules.findFirst.mockResolvedValueOnce(undefined);
+
+      const before = Date.now();
+      const result = await syncWorkflowSchedule("wf_new", [
+        makeIntervalTriggerNode(3300),
+      ]);
+      const after = Date.now();
+
+      expect(result.synced).toBe(true);
+      expect(mockDbInsert).toHaveBeenCalledOnce();
+      const inserted = lastInsertValuesCall();
+      expect(inserted).toBeDefined();
+      expect(inserted?.workflowId).toBe("wf_new");
+      expect(inserted?.intervalSeconds).toBe(3300);
+      // anchor_at is set to the wall clock at sync time.
+      expect(inserted?.anchorAt).toBeInstanceOf(Date);
+      const anchorAt = inserted?.anchorAt as Date;
+      expect(anchorAt.getTime()).toBeGreaterThanOrEqual(before);
+      expect(anchorAt.getTime()).toBeLessThanOrEqual(after);
+      // Cron column carries a fixed non-match sentinel so legacy readers
+      // can land the row without it parsing to a schedule that resembles
+      // the real interval. The dispatcher switches on intervalSeconds and
+      // never reads this value in interval mode.
+      expect(inserted?.cronExpression).toBe("0 0 1 1 *");
+      // First fire = anchor + 1 * interval. KEEP-575: saving a schedule
+      // must not cause an immediate run, so next_run_at is at least one
+      // interval into the future.
+      const nextRunAt = inserted?.nextRunAt as Date;
+      expect(nextRunAt.getTime()).toBe(anchorAt.getTime() + 3300 * 1000);
+    });
+
+    it("re-anchors when the interval value changes", async () => {
+      const { syncWorkflowSchedule } = await import("@/lib/schedule-service");
+      const oldAnchor = new Date("2026-05-18T10:00:00Z");
+      mockDbQuery.workflowSchedules.findFirst.mockResolvedValueOnce({
+        ...mockSchedule,
+        cronExpression: "*/30 * * * *",
+        intervalSeconds: 1800,
+        anchorAt: oldAnchor,
+      });
+
+      await syncWorkflowSchedule("wf_change_interval", [
+        makeIntervalTriggerNode(3300),
+      ]);
+
+      const updated = lastUpdateSetCall();
+      expect(updated?.intervalSeconds).toBe(3300);
+      // Anchor is fresh, not the old one.
+      const newAnchor = updated?.anchorAt as Date;
+      expect(newAnchor.getTime()).toBeGreaterThan(oldAnchor.getTime());
+    });
+
+    it("preserves the existing anchor when the same interval is re-saved (idempotent autosave)", async () => {
+      const { syncWorkflowSchedule } = await import("@/lib/schedule-service");
+      const existingAnchor = new Date("2026-05-18T10:00:00Z");
+      mockDbQuery.workflowSchedules.findFirst.mockResolvedValueOnce({
+        ...mockSchedule,
+        cronExpression: "*/55 * * * *",
+        intervalSeconds: 3300,
+        anchorAt: existingAnchor,
+      });
+
+      await syncWorkflowSchedule("wf_same_interval", [
+        makeIntervalTriggerNode(3300),
+      ]);
+
+      const updated = lastUpdateSetCall();
+      // Anchor unchanged so fire-times stay stable across no-op autosaves.
+      expect(updated?.anchorAt).toEqual(existingAnchor);
+      expect(updated?.intervalSeconds).toBe(3300);
+    });
+
+    it("clears interval columns when switching back to cron mode", async () => {
+      const { syncWorkflowSchedule } = await import("@/lib/schedule-service");
+      mockDbQuery.workflowSchedules.findFirst.mockResolvedValueOnce({
+        ...mockSchedule,
+        intervalSeconds: 3300,
+        anchorAt: new Date("2026-05-18T10:00:00Z"),
+      });
+
+      await syncWorkflowSchedule("wf_switch_to_cron", [
+        createScheduleTriggerNode("0 9 * * *", "UTC"),
+      ]);
+
+      const updated = lastUpdateSetCall();
+      expect(updated?.cronExpression).toBe("0 9 * * *");
+      expect(updated?.intervalSeconds).toBeNull();
+      expect(updated?.anchorAt).toBeNull();
+    });
+  });
 });

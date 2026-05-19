@@ -75,6 +75,44 @@ export function computeNextRunTime(
   }
 }
 
+/**
+ * KEEP-575: next interval fire time = first `anchor + k * intervalSeconds`
+ * with k >= 1 and the value strictly greater than `now`. First fire is
+ * `anchor + 1 * interval` (not the anchor itself). Mirrors
+ * lib/schedule-service.ts so the executor's lastRunAt-update path stays
+ * consistent with the dispatcher.
+ */
+export function computeNextIntervalRunTime(
+  intervalSeconds: number,
+  anchorAt: Date,
+  now: Date = new Date()
+): Date {
+  // KEEP-575: throw on garbage inputs rather than silently writing
+  // Invalid Date to workflow_schedules.next_run_at. Mirrors the
+  // lib/schedule-service.ts guard so the executor and the app stay
+  // consistent.
+  if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) {
+    throw new Error(
+      `computeNextIntervalRunTime: invalid intervalSeconds ${String(intervalSeconds)}`
+    );
+  }
+  const anchorMs = anchorAt.getTime();
+  if (!Number.isFinite(anchorMs)) {
+    throw new Error(
+      "computeNextIntervalRunTime: invalid anchorAt (getTime returned NaN)"
+    );
+  }
+  const intervalMs = intervalSeconds * 1000;
+  const nowMs = now.getTime();
+  const firstFireMs = anchorMs + intervalMs;
+  if (nowMs < firstFireMs) {
+    return new Date(firstFireMs);
+  }
+  const elapsedMs = nowMs - anchorMs;
+  const kNext = Math.floor(elapsedMs / intervalMs) + 1;
+  return new Date(anchorMs + kNext * intervalMs);
+}
+
 export async function updateScheduleStatus(
   db: PostgresJsDatabase<DbSchema>,
   scheduleId: string,
@@ -89,10 +127,18 @@ export async function updateScheduleStatus(
     return;
   }
 
-  const nextRunAt = computeNextRunTime(
-    schedule.cronExpression,
-    schedule.timezone
-  );
+  // KEEP-575: strict !== checks so a stray zero/null in either column
+  // can't silently demote the row to the cron path.
+  const intervalSeconds = schedule.intervalSeconds;
+  const anchorAt = schedule.anchorAt;
+  const isInterval =
+    intervalSeconds !== null &&
+    intervalSeconds > 0 &&
+    anchorAt !== null &&
+    anchorAt !== undefined;
+  const nextRunAt = isInterval
+    ? computeNextIntervalRunTime(intervalSeconds, anchorAt)
+    : computeNextRunTime(schedule.cronExpression, schedule.timezone);
 
   const runCount =
     status === "success"

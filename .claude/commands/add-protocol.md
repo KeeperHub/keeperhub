@@ -12,8 +12,9 @@ Add a new KeeperHub protocol plugin and iterate until the on-chain integration t
 - Empty, or a version-ambiguous name (e.g. just `"Aave"`). Pipeline MUST ask the user which version before researching. Do not default to "the latest" - V3 and V4 of Aave are both in active production use today, and each has its own contracts, ABIs, and slug.
 
 DONE when ALL of the following pass:
+- `public/protocols/{slug}.png` exists at the path the plugin's `icon` field points to. Every protocol ships with a real logo; placeholders and default-icon fallbacks are not allowed.
 - `pnpm test tests/unit/protocol-{slug}.test.ts`
-- `pnpm test tests/integration/protocol-{slug}-onchain.test.ts` (against a real RPC for the test chain, OR via the public-RPC-fallback pattern, see `<process>` Phase 4)
+- `pnpm test tests/integration/protocol-{slug}-onchain.test.ts` against the test pattern selected in Phase 1 (a real testnet RPC, an anvil mainnet fork for mainnet-only protocols, or the public-RPC-fallback pattern; see `<process>` Phase 4).
 - `pnpm check` (Ultracite lint)
 - `pnpm type-check` (TypeScript)
 - `pnpm discover-plugins` (protocol is registered and `protocols/index.ts` + `lib/types/integration.ts` regenerate cleanly)
@@ -68,12 +69,15 @@ Use WebSearch and WebFetch to gather concrete facts. Cite URLs and addresses for
 - Slug convention: **the slug tracks the protocol's own version branding**. If the protocol team brands itself as V2 / V3 / V4 in their docs and product UI (Aave V4, Uniswap V3, Compound III, Frax Ether V2), the slug includes that version suffix: `aave-v4`, `uniswap-v3`, `frax-ether-v2`. If the protocol does not version itself externally (WETH, ENS, Disperse, Multicall3), the slug omits a version. This rule applies whether or not an earlier version is already present in keeperhub - we are following the protocol's branding, not disambiguating internal entries.
 - Pre-existing inconsistencies: a few protocols already in `protocols/` (`compound`, `uniswap`, `yearn`) use bare slugs even though the protocols they wrap brand themselves as V3, and their files are named `compound-v3.ts` / `uniswap-v3.ts` / `yearn-v3.ts`. These predate the rule above. Do not perpetuate them: new protocols MUST follow the protocol-version-branding rule, even when the result feels redundant.
 - Official website.
+- **Logo source (required, every protocol ships with one)**: identify a public URL for the protocol's official logo. Sources in order of preference: brand-assets page on the official site, `assets/` or `logos/` folder in the protocol's GitHub repo, `logo` field of the official npm package, the website favicon scraped at decent resolution. Note the URL and licensing in the Phase 2 report. The logo at `public/protocols/{slug}.png` is REQUIRED; placeholders and default-icon fallbacks are not acceptable. If no usable logo can be obtained from any of these sources, surface to the user (with the candidates) so they can drop the PNG in by hand before BUILD proceeds.
 - Confirm the chosen slug does not collide with any entry in `protocols/` or `lib/types/integration.ts`.
 
 1.2 Chains
 - Which chains is the protocol deployed on?
 - Intersect with KeeperHub's supported chains. Source of truth: existing protocols in `protocols/` and the chain entries in `chain-config/`. Any chain not in `chain-config/` will not have an explorer config and cannot be used.
 - Report the intersection. That is the candidate `addresses` map.
+- **HARD RULE: never fabricate a chain entry.** Do NOT add Sepolia (or any other chain) to the `addresses` map unless the protocol is genuinely deployed there at a real, verified contract address. Adding a chain to make local testing easier breaks workflows at runtime: the chain selector auto-exposes it to users and every call reverts because there is no contract code at the address.
+- **Testnet-contract status (this drives the Phase 3 test pattern)**: explicitly record whether the protocol has a real deployment on a chain we can hit cheaply (Sepolia, Base Sepolia, Arbitrum Sepolia, Holesky). Verify this against the protocol's own addresses page AND a block explorer query on the candidate testnet; do not infer from "X has a Sepolia testnet" generally. If yes, integration tests use that testnet directly (Phase 3, pattern A). If no, integration tests use an anvil mainnet fork (Phase 3, pattern B) - NOT a fabricated testnet chain entry.
 
 1.3 Contracts
 - For each contract the user will interact with: label, address per chain, and the curated function set to expose.
@@ -131,15 +135,16 @@ Once Phase 2 is confirmed, produce these files. For each, match the structure of
   - Per-action: function name, payable flag, input names/types/labels/helpTip/docUrl, output names/labels/decimals.
   - Chain coverage list - both inclusions AND explicit exclusions (e.g. `expect(chains).not.toContain("10")` for a gap).
   - Registry round-trip: `registerProtocol(def)` then `getProtocol(slug)`.
-- `tests/integration/protocol-{slug}-onchain.test.ts` - calldata validation. Model on whichever of these matches the protocol's deployment:
-  - Sepolia testnet deployment: `tests/integration/protocol-wrapped-onchain.test.ts` (gated on `INTEGRATION_TEST_RPC_URL`).
-  - Mainnet-only deployment: `tests/integration/protocol-aave-v4-onchain.test.ts` (gated on `INTEGRATION_TEST_MAINNET_RPC_URL`).
-  - Reliable public RPC available AND test should run in CI without secrets: `tests/integration/protocol-uniswap-onchain.test.ts` (ungated; uses `CHAIN_RPC_CONFIG` resolver with public-RPC fallback). Default to gated unless there is a specific reason.
-  - All three patterns require: `vi.mock("server-only", () => ({}));` at the top. RPC routed through `getRpcProviderFromUrls` + `executeWithFailover` (same failover the prod request path uses). One test per exposed action: reads decode the return type; writes call `estimateGas` or `provider.call` and accept `CALL_EXCEPTION` (business revert) while rejecting ABI errors (see Phase 4).
-- `docs/plugins/{slug}.md` - public docs page with actions table and per-action sections.
+- `tests/integration/protocol-{slug}-onchain.test.ts` - calldata validation. Pick the pattern by the testnet-contract status from Phase 1.2:
+  - **Pattern A - real testnet deployment** (Sepolia, Base Sepolia, etc.): model on `tests/integration/protocol-wrapped-onchain.test.ts`. Gate on `INTEGRATION_TEST_RPC_URL` set to a public testnet RPC. Prefer Sepolia when both Sepolia and another testnet are available.
+  - **Pattern B - no testnet contract, mainnet-only**: model on `tests/integration/protocol-aave-v4-onchain.test.ts` BUT point the RPC at a local anvil mainnet fork. Default URL `http://localhost:8545`; allow `INTEGRATION_TEST_MAINNET_RPC_URL` as an override. Do NOT default the test at a paid mainnet RPC: the anvil fork is free, deterministic, requires no secret, and is the supported substitute for the missing testnet. Pattern B is incomplete without the two extra artifacts listed below in this Phase 3 section (the fork-test script and the docs "Testing Without Risking Real ETH" section).
+  - **Pattern C - ungated public RPC**: model on `tests/integration/protocol-uniswap-onchain.test.ts`. Uses the `CHAIN_RPC_CONFIG` resolver with a public-RPC fallback. Use only when the protocol's chain has a free public RPC reliable enough for CI traffic.
+  - All patterns require: `vi.mock("server-only", () => ({}));` at the top. RPC routed through `getRpcProviderFromUrls` + `executeWithFailover` (same failover the prod request path uses). One test per exposed action: reads decode the return type; writes call `estimateGas` or `provider.call` and accept `CALL_EXCEPTION` (business revert) while rejecting ABI errors (see Phase 4).
+- `docs/plugins/{slug}.md` - public docs page with actions table and per-action sections. For **Pattern B (mainnet-only)** protocols, MUST also include a `## Testing Without Risking Real ETH` section that documents: (a) how to start anvil via the Foundry Docker image with `--fork-url <YOUR_MAINNET_RPC_URL>` on port 8545, (b) how to run the fork-test script with `pnpm tsx scripts/{slug}-fork-test.ts`, (c) how to point the local dev server at the fork via `CHAIN_ETH_MAINNET_PRIMARY_RPC=http://localhost:8545 pnpm dev`, (d) a `## Why no testnet entry in the plugin` subsection that names the testnets checked (with evidence the protocol is not on them) so future maintainers don't try to "add Sepolia" again. Model on the section in `docs/plugins/frax-ether-v2.md`.
 - `docs/plugins/_meta.ts` - add nav entry.
 - `docs/plugins/overview.md` - add to protocols table.
-- `public/protocols/{slug}.png` - icon. Skip if the user did not provide one; do not block on this.
+- `public/protocols/{slug}.png` - icon (REQUIRED). Pull the PNG from the source identified in Phase 1.1. Match the rough dimensions of existing icons in `public/protocols/` (typical: 256x256 or 512x512, transparent background, square). Placeholder, AI-generated, or default-icon fallbacks are not acceptable - if no real logo can be obtained from the protocol's official sources, treat as a bail-out and surface to the user.
+- **Pattern B only**: `scripts/{slug}-fork-test.ts` - TypeScript smoke test, run via `pnpm tsx`. Uses one of anvil's pre-funded test accounts to broadcast a real call against the forked bytecode (e.g. for Frax Ether V2 the smoke test calls `mintFrxEth()` with 1 ETH and asserts the 1:1 frxETH mint). Prints `PASS`/`FAIL` so the smoke test is runnable independently of vitest. Model on `scripts/frax-ether-v2-fork-test.ts`.
 
 Auto-generated (do NOT hand-edit):
 - `protocols/index.ts` - regenerated by `pnpm discover-plugins`.
@@ -153,15 +158,16 @@ PHASE 4 - VERIFY
 
 Run in order. Do NOT advance past a failing step. Re-run the FULL sequence after every fix (do not assume earlier passes still pass).
 
-4.1 `pnpm discover-plugins` exits 0 and registers the protocol (check stdout includes the new slug; check `protocols/index.ts` was regenerated).
-4.2 `pnpm check` passes.
-4.3 `pnpm type-check` passes.
-4.4 `pnpm test tests/unit/protocol-{slug}.test.ts` passes.
-4.5 `pnpm test tests/integration/protocol-{slug}-onchain.test.ts` passes against a real RPC. RPC selection by gating pattern:
-  - `INTEGRATION_TEST_RPC_URL` set to a Sepolia RPC (gated Sepolia tests).
-  - `INTEGRATION_TEST_MAINNET_RPC_URL` set to a mainnet RPC (gated mainnet tests).
-  - No env var needed for ungated tests; the public-RPC fallback will be used.
-  - If the required env var is unset, the test SKIPS, which counts as "did not pass". The Orchestrator must ask the user to provide the RPC URL (or accept the ungated pattern) before declaring DONE.
+4.1 `public/protocols/{slug}.png` exists at the path the plugin's `icon` field references. Visual sanity check: the file is a real protocol logo, not a placeholder or default-icon stand-in.
+4.2 `pnpm discover-plugins` exits 0 and registers the protocol (check stdout includes the new slug; check `protocols/index.ts` was regenerated).
+4.3 `pnpm check` passes.
+4.4 `pnpm type-check` passes.
+4.5 `pnpm test tests/unit/protocol-{slug}.test.ts` passes.
+4.6 `pnpm test tests/integration/protocol-{slug}-onchain.test.ts` passes against the test pattern selected in Phase 1.2 / Phase 3:
+  - Pattern A (real testnet): `INTEGRATION_TEST_RPC_URL` set to a public testnet RPC (Sepolia, etc.).
+  - **Pattern B (mainnet-only, anvil fork)**: `scripts/{slug}-fork-test.ts` runs cleanly AND the vitest integration test passes against `http://localhost:8545` (start anvil in another terminal via the Docker command documented in the docs page). `INTEGRATION_TEST_MAINNET_RPC_URL` may override the default URL but anvil is the supported default; do NOT verify against a paid mainnet RPC.
+  - Pattern C (ungated public-RPC fallback): no env var needed.
+  - If the test skips because the configured RPC is unreachable (env var unset, anvil not running, public RPC throttling), that counts as "did not pass". Surface the missing piece to the user before declaring DONE.
 
 When a check fails, classify and resolve:
 - Lint / type / shape failure -> patch the source file or the unit test, depending on which is wrong. Tests encode intent; if the intent was wrong, update both.
@@ -183,6 +189,8 @@ BAIL-OUT CONDITIONS (stop the loop and surface to user):
 - Research surfaces a chain / contract requirement that conflicts with the Phase 2 confirmation - re-confirm before proceeding.
 - No ABI source can be obtained from any explorer, npm package, GitHub repo, or official docs - escalate; do not invent ABI fragments.
 - **Version ambiguity**: $ARGUMENTS does not uniquely identify a version (e.g. just `"Aave"` when V3 and V4 are both live), OR research surfaces a candidate ABI / contract whose version cannot be confirmed. Surface the available versions to the user and wait for disambiguation. Do not pick a default.
+- **No real logo can be obtained** from the protocol's official sources (brand page, GitHub assets, npm package, scraped favicon). Do NOT generate a placeholder. Surface the candidate URLs to the user so they can drop a PNG at `public/protocols/{slug}.png` directly.
+- **Pattern B selected but anvil cannot be run** locally (Docker is unavailable, the Foundry image cannot be pulled, port 8545 is occupied). The integration test cannot be verified. Surface the failure to the user; do not silently switch to a paid mainnet RPC default.
 
 On bail-out, surface to the user:
 - Current state of all generated files.
@@ -194,10 +202,12 @@ The Orchestrator handles: web search, decomposing subtasks, delegating to Resear
 </process>
 
 <success_criteria>
-- Integration tests at `tests/integration/protocol-{slug}-onchain.test.ts` pass against the configured RPC (skipped is not pass).
+- Protocol logo committed at `public/protocols/{slug}.png` (real logo from an official source; no placeholders).
+- Integration tests at `tests/integration/protocol-{slug}-onchain.test.ts` pass against the configured RPC for the selected pattern (skipped is not pass).
+- For Pattern B (mainnet-only, anvil fork): `scripts/{slug}-fork-test.ts` exists and exits PASS. `docs/plugins/{slug}.md` includes a `## Testing Without Risking Real ETH` section and a `## Why no testnet entry in the plugin` subsection.
 - Unit tests at `tests/unit/protocol-{slug}.test.ts` pass.
 - `pnpm check`, `pnpm type-check`, `pnpm discover-plugins` all exit 0.
-- Chain and contract scope was explicitly confirmed by the user in Phase 2 before any code was written.
+- Chain and contract scope was explicitly confirmed by the user in Phase 2 before any code was written. No fabricated chain entries in `contract.addresses`.
 - Definition strategy is justified in the PR description (which of defineAbiProtocol / hybrid / fallback was used and why).
 - Input docUrls populated for every input where a canonical per-page docs URL exists; absences noted in the PR.
 - PR drafted but not created; user confirmation required to push and open.
