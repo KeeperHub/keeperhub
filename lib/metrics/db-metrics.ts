@@ -58,12 +58,26 @@ export type WorkflowStats = {
   totalPending: number;
   totalCancelled: number;
 
-  // Per-(status, org_slug) execution counts. Personal/anonymous workflows
-  // are bucketed under ANONYMOUS_ORG_SLUG so the sum of counts for a given
-  // status across all orgs matches the corresponding total* above.
+  // Per-(status, org_slug, error_type) execution counts. Personal/anonymous
+  // workflows are bucketed under ANONYMOUS_ORG_SLUG so the sum of counts for
+  // a given status across all orgs matches the corresponding total* above.
+  //
+  // errorType is projected from the existing workflow_executions.is_user_error
+  // boolean column. The column itself is not renamed by this change — the
+  // projection only changes how the value surfaces as a Prometheus label so
+  // the SLO panel can split system vs user failures without depending on
+  // counter increments (which can be lost when short-lived workflow runner
+  // processes exit before Prometheus scrape).
+  //
+  // errorType values:
+  //   "user"    - errored row with is_user_error = TRUE
+  //   "system"  - errored row with is_user_error = FALSE
+  //   "unknown" - errored row predating classification (NULL in DB)
+  //   "na"      - non-error status (success/running/pending/cancelled)
   executionsByStatusAndOrgSlug: Array<{
     status: string;
     orgSlug: string;
+    errorType: string;
     count: number;
   }>;
 
@@ -93,30 +107,46 @@ export async function getWorkflowStatsFromDb(): Promise<WorkflowStats> {
       durationCount: 0,
     };
 
-    // Per-(status, org_slug) execution breakdown: JOIN workflows + organization,
-    // LEFT JOIN so anonymous workflows still contribute (under ANONYMOUS_ORG_SLUG).
-    // GROUP BY uses the organization.slug column reference (not the COALESCE
-    // expression): Drizzle would otherwise bind ANONYMOUS_ORG_SLUG as separate
-    // parameters in SELECT and GROUP BY clauses, and Postgres rejects the query
-    // because the two COALESCE expressions are not textually identical. Postgres
-    // groups all NULL slugs into one group (NULLs are equal in GROUP BY), and
-    // the SELECT-side COALESCE renders that group as ANONYMOUS_ORG_SLUG.
+    // Per-(status, org_slug, error_type) execution breakdown: JOIN workflows +
+    // organization, LEFT JOIN so anonymous workflows still contribute (under
+    // ANONYMOUS_ORG_SLUG). GROUP BY uses the underlying columns (not the
+    // COALESCE/CASE expressions): Drizzle would otherwise bind constants as
+    // separate parameters in SELECT and GROUP BY clauses, and Postgres rejects
+    // the query because the two expressions are not textually identical.
+    // Postgres groups NULLs together (NULLs are equal in GROUP BY), and the
+    // SELECT-side expressions render those groups as ANONYMOUS_ORG_SLUG /
+    // "unknown" / "na" as appropriate.
+    //
+    // error_type is projected from the existing is_user_error column without
+    // a schema change so this metric addition can land independently of the
+    // team's planned column rename.
     const breakdown = await db
       .select({
         status: workflowExecutions.status,
         orgSlug: sql<string>`COALESCE(${organization.slug}, ${ANONYMOUS_ORG_SLUG})`,
+        errorType: sql<string>`CASE
+          WHEN ${workflowExecutions.status} <> 'error' THEN 'na'
+          WHEN ${workflowExecutions.isUserError} IS NULL THEN 'unknown'
+          WHEN ${workflowExecutions.isUserError} = TRUE THEN 'user'
+          ELSE 'system'
+        END`,
         count: count(),
       })
       .from(workflowExecutions)
       .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
       .leftJoin(organization, eq(workflows.organizationId, organization.id))
-      .groupBy(workflowExecutions.status, organization.slug);
+      .groupBy(
+        workflowExecutions.status,
+        organization.slug,
+        workflowExecutions.isUserError
+      );
 
     for (const row of breakdown) {
       const c = Number(row.count) || 0;
       stats.executionsByStatusAndOrgSlug.push({
         status: row.status,
         orgSlug: row.orgSlug,
+        errorType: row.errorType,
         count: c,
       });
       switch (row.status) {
