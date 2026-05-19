@@ -126,7 +126,7 @@ vi.mock("@/lib/payments/x402/execution-wait", () => ({
 vi.mock("@/lib/errors/classify", () => ({
   classifyExecutionError: (msg: unknown) => ({
     errorCategory: "workflow_engine",
-    isUserError: false,
+    errorType: "system",
     _msg: msg,
   }),
 }));

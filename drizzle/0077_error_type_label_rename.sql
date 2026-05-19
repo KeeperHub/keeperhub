@@ -10,8 +10,8 @@
 --   is_user_error IS NULL  -> NULL (stays unclassified)
 --
 -- Mapping NULL to 'system' (as the original spec suggested) would pull
--- ~10.7k historical pre-classification errors into the platform SLO
--- denominator. Keeping NULL as NULL lets the SLO query exclude them via
+-- ~10.7k historical pre-classification errors into the platform SLI
+-- denominator. Keeping NULL as NULL lets the SLI query exclude them via
 -- `error_type IN ('user', 'system')` until a separate backfill decision is
 -- made about that incident window.
 ALTER TABLE "workflow_executions" ADD COLUMN "error_type" text;--> statement-breakpoint

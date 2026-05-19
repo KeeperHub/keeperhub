@@ -40,7 +40,7 @@ describe("Unified Logging Helpers", () => {
   });
 
   // KEEP-545: log helpers now emit a single structured JSON line so Grafana
-  // Cloud Loki can index `is_user_error`, `error_category`, `execution_id`,
+  // Cloud Loki can index `error_type`, `error_category`, `execution_id`,
   // and `org_slug` via `| json`. This helper parses the JSON arg and returns
   // the payload so per-test assertions can check fields without coupling to
   // the on-the-wire serialization order.
@@ -64,7 +64,7 @@ describe("Unified Logging Helpers", () => {
       const line = lastJsonLine(consoleWarnSpy);
       expect(line.level).toBe("warn");
       expect(line.msg).toBe("[Test] Invalid input");
-      expect(line.is_user_error).toBe("true");
+      expect(line.error_type).toBe("user");
       expect(line.error_category).toBe(ErrorCategory.VALIDATION);
       expect(line.error_context).toBe("Test");
       expect(line.foo).toBe("bar");
@@ -77,7 +77,7 @@ describe("Unified Logging Helpers", () => {
         expect.objectContaining({
           [LabelKeys.ERROR_CATEGORY]: ErrorCategory.VALIDATION,
           [LabelKeys.ERROR_CONTEXT]: "Test",
-          [LabelKeys.IS_USER_ERROR]: "true",
+          [LabelKeys.ERROR_TYPE]: "true",
           foo: "bar",
         })
       );
@@ -96,7 +96,7 @@ describe("Unified Logging Helpers", () => {
         expect.objectContaining({
           [LabelKeys.ERROR_CATEGORY]: ErrorCategory.VALIDATION,
           [LabelKeys.ERROR_CONTEXT]: "Context",
-          [LabelKeys.IS_USER_ERROR]: "true",
+          [LabelKeys.ERROR_TYPE]: "true",
         })
       );
     });
@@ -111,7 +111,7 @@ describe("Unified Logging Helpers", () => {
         MetricNames.USER_VALIDATION_ERRORS,
         { message: "[Test] Simple warning" },
         expect.objectContaining({
-          [LabelKeys.IS_USER_ERROR]: "true",
+          [LabelKeys.ERROR_TYPE]: "true",
         })
       );
     });
@@ -187,7 +187,7 @@ describe("Unified Logging Helpers", () => {
       const line = lastJsonLine(consoleErrorSpy);
       expect(line.level).toBe("error");
       expect(line.msg).toBe("[DB] Connection failed");
-      expect(line.is_user_error).toBe("false");
+      expect(line.error_type).toBe("system");
       expect(line.error_category).toBe(ErrorCategory.DATABASE);
       expect(line.error_context).toBe("DB");
       expect(line.table).toBe("workflows");
@@ -203,7 +203,7 @@ describe("Unified Logging Helpers", () => {
         expect.objectContaining({
           [LabelKeys.ERROR_CATEGORY]: ErrorCategory.DATABASE,
           [LabelKeys.ERROR_CONTEXT]: "DB",
-          [LabelKeys.IS_USER_ERROR]: "false",
+          [LabelKeys.ERROR_TYPE]: "false",
           table: "workflows",
         })
       );
@@ -284,9 +284,9 @@ describe("Unified Logging Helpers", () => {
       );
       expect(line.error_category).toBe(ErrorCategory.WORKFLOW_ENGINE);
       expect(line.error_context).toBe("Workflow Logging");
-      // is_user_error intentionally not set on logSystemWarn so alerts
-      // filtering on is_user_error="false" don't match these events.
-      expect(line.is_user_error).toBeUndefined();
+      // error_type intentionally not set on logSystemWarn so alerts
+      // filtering on error_type="system" don't match these events.
+      expect(line.error_type).toBeUndefined();
       expect(line.execution_id).toBe("exec-123");
       expect(consoleErrorSpy).not.toHaveBeenCalled();
 
@@ -349,7 +349,7 @@ describe("Unified Logging Helpers", () => {
         expect.objectContaining({
           [LabelKeys.ERROR_CATEGORY]: ErrorCategory.VALIDATION,
           [LabelKeys.ERROR_CONTEXT]: "Check Balance",
-          [LabelKeys.IS_USER_ERROR]: "true",
+          [LabelKeys.ERROR_TYPE]: "true",
           plugin_name: "web3",
           action_name: "check-balance",
         })
@@ -466,7 +466,7 @@ describe("Unified Logging Helpers", () => {
         error,
         expect.objectContaining({
           [LabelKeys.ERROR_CATEGORY]: ErrorCategory.DATABASE,
-          [LabelKeys.IS_USER_ERROR]: "false",
+          [LabelKeys.ERROR_TYPE]: "false",
           table: "workflows",
         })
       );
@@ -486,7 +486,7 @@ describe("Unified Logging Helpers", () => {
         error,
         expect.objectContaining({
           [LabelKeys.ERROR_CATEGORY]: ErrorCategory.AUTH,
-          [LabelKeys.IS_USER_ERROR]: "false",
+          [LabelKeys.ERROR_TYPE]: "false",
         })
       );
     });
@@ -535,7 +535,7 @@ describe("Unified Logging Helpers", () => {
         error,
         expect.objectContaining({
           [LabelKeys.ERROR_CATEGORY]: ErrorCategory.WORKFLOW_ENGINE,
-          [LabelKeys.IS_USER_ERROR]: "false",
+          [LabelKeys.ERROR_TYPE]: "false",
           workflow_id: "abc123",
           step_id: "xyz789",
         })
@@ -606,7 +606,7 @@ describe("Unified Logging Helpers", () => {
         expect.objectContaining({
           [LabelKeys.ERROR_CATEGORY]: ErrorCategory.VALIDATION,
           [LabelKeys.ERROR_CONTEXT]: "Test",
-          [LabelKeys.IS_USER_ERROR]: "true",
+          [LabelKeys.ERROR_TYPE]: "true",
           custom_label: "value",
           another_label: "value2",
         })

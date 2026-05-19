@@ -31,7 +31,7 @@ const {
     output: "output",
     error: "error",
     errorCategory: "error_category",
-    isUserError: "is_user_error",
+    errorType: "error_type",
     completedAt: "completed_at",
     duration: "duration",
     currentNodeId: "current_node_id",
@@ -76,7 +76,7 @@ vi.mock("@/lib/db/schema", () => ({
 vi.mock("@/lib/errors/classify", () => ({
   classifyExecutionError: (msg: string | null | undefined) => ({
     errorCategory: msg ? "workflow_engine" : "workflow_engine",
-    isUserError: false,
+    errorType: "system",
   }),
 }));
 vi.mock("@/lib/metrics/collectors/prometheus", () => ({

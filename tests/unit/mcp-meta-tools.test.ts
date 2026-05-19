@@ -945,7 +945,7 @@ describe("POST /api/mcp/workflows/[slug]/call: write workflow returns calldata",
   vi.mock("@/lib/errors/classify", () => ({
     classifyExecutionError: () => ({
       errorCategory: "workflow_engine",
-      isUserError: false,
+      errorType: "system",
     }),
   }));
   vi.mock("@/lib/errors/finalize-error", () => ({

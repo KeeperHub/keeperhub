@@ -14,7 +14,7 @@
  * - Delegates the Turnkey + DB pipeline to provisionAgenticWallet()
  *   (Plan 33-01a).
  * - 200 response body: { subOrgId, walletAddress, hmacSecret }. The 10s
- *   wall-clock SLO is enforced by the integration test.
+ *   wall-clock SLI is enforced by the integration test.
  * - Error mapping: Turnkey errors (TurnkeyRequestError /
  *   TurnkeyActivityError / TurnkeyUpstreamError) -> 502 with
  *   code="TURNKEY_UPSTREAM"; any other failure -> 500 with

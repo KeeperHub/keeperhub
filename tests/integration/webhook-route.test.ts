@@ -8,7 +8,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/errors/classify", () => ({
   classifyExecutionError: () => ({
     errorCategory: "workflow_engine",
-    isUserError: false,
+    errorType: "system",
   }),
 }));
 vi.mock("@/lib/errors/finalize-error", () => ({

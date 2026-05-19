@@ -106,8 +106,8 @@ function getOrCreateGauge(
 //
 // PromQL queries that do not filter on error_type continue to work — Prometheus
 // auto-aggregates across all label values when a label is unconstrained. The
-// label unlocks platform-side SLO queries (filter error_type="system") and
-// managed-client end-to-end SLO panels that need to separate system vs user
+// label unlocks platform-side SLI queries (filter error_type="system") and
+// managed-client end-to-end SLI panels that need to separate system vs user
 // failures. Sourced from the DB scan via projection of the existing
 // `workflow_executions.error_type` column, so this metric stays
 // authoritative even when short-lived workflow runner processes exit before
