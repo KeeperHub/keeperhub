@@ -101,7 +101,7 @@ export async function GET(request: Request): Promise<NextResponse> {
         status: "error",
         error: reaperErrorMessage,
         errorCategory: reaperClassification.errorCategory,
-        isUserError: reaperClassification.isUserError,
+        errorType: reaperClassification.errorType,
         completedAt: new Date(),
         duration: sql`ROUND(EXTRACT(EPOCH FROM (NOW() - ${workflowExecutions.startedAt})) * 1000)`,
       })

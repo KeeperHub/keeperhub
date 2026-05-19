@@ -62,17 +62,16 @@ export type WorkflowStats = {
   // workflows are bucketed under ANONYMOUS_ORG_SLUG so the sum of counts for
   // a given status across all orgs matches the corresponding total* above.
   //
-  // errorType is projected from the existing workflow_executions.is_user_error
-  // boolean column. The column itself is not renamed by this change — the
-  // projection only changes how the value surfaces as a Prometheus label so
-  // the SLO panel can split system vs user failures without depending on
-  // counter increments (which can be lost when short-lived workflow runner
-  // processes exit before Prometheus scrape).
+  // errorType is read directly from the workflow_executions.error_type text
+  // column (KEEP-545 rename — see drizzle/0077_error_type_label_rename.sql).
+  // For non-error rows and for rows that predate classification, the column
+  // is NULL; both cases are projected to a sentinel string so every gauge
+  // series carries a populated label.
   //
   // errorType values:
-  //   "user"    - errored row with is_user_error = TRUE
-  //   "system"  - errored row with is_user_error = FALSE
-  //   "unknown" - errored row predating classification (NULL in DB)
+  //   "user"    - errored row with error_type = 'user'
+  //   "system"  - errored row with error_type = 'system'
+  //   "unknown" - errored row with error_type IS NULL (predates classification)
   //   "na"      - non-error status (success/running/pending/cancelled)
   executionsByStatusAndOrgSlug: Array<{
     status: string;
@@ -116,19 +115,14 @@ export async function getWorkflowStatsFromDb(): Promise<WorkflowStats> {
     // Postgres groups NULLs together (NULLs are equal in GROUP BY), and the
     // SELECT-side expressions render those groups as ANONYMOUS_ORG_SLUG /
     // "unknown" / "na" as appropriate.
-    //
-    // error_type is projected from the existing is_user_error column without
-    // a schema change so this metric addition can land independently of the
-    // team's planned column rename.
     const breakdown = await db
       .select({
         status: workflowExecutions.status,
         orgSlug: sql<string>`COALESCE(${organization.slug}, ${ANONYMOUS_ORG_SLUG})`,
         errorType: sql<string>`CASE
           WHEN ${workflowExecutions.status} <> 'error' THEN 'na'
-          WHEN ${workflowExecutions.isUserError} IS NULL THEN 'unknown'
-          WHEN ${workflowExecutions.isUserError} = TRUE THEN 'user'
-          ELSE 'system'
+          WHEN ${workflowExecutions.errorType} IS NULL THEN 'unknown'
+          ELSE ${workflowExecutions.errorType}
         END`,
         count: count(),
       })
@@ -138,7 +132,7 @@ export async function getWorkflowStatsFromDb(): Promise<WorkflowStats> {
       .groupBy(
         workflowExecutions.status,
         organization.slug,
-        workflowExecutions.isUserError
+        workflowExecutions.errorType
       );
 
     for (const row of breakdown) {

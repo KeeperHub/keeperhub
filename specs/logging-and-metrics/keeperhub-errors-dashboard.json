@@ -403,8 +403,8 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (error_category, is_user_error) (rate(keeperhub_errors_user_validation_total[5m]) + rate(keeperhub_errors_user_configuration_total[5m]) + rate(keeperhub_errors_external_service_total[5m]) + rate(keeperhub_errors_network_rpc_total[5m]) + rate(keeperhub_errors_transaction_blockchain_total[5m]) + rate(keeperhub_errors_system_database_total[5m]) + rate(keeperhub_errors_system_auth_total[5m]) + rate(keeperhub_errors_system_infrastructure_total[5m]) + rate(keeperhub_errors_system_workflow_engine_total[5m])) * 60",
-          "legendFormat": "{{error_category}} ({{is_user_error}})",
+          "expr": "sum by (error_category, error_type) (rate(keeperhub_errors_user_validation_total[5m]) + rate(keeperhub_errors_user_configuration_total[5m]) + rate(keeperhub_errors_external_service_total[5m]) + rate(keeperhub_errors_network_rpc_total[5m]) + rate(keeperhub_errors_transaction_blockchain_total[5m]) + rate(keeperhub_errors_system_database_total[5m]) + rate(keeperhub_errors_system_auth_total[5m]) + rate(keeperhub_errors_system_infrastructure_total[5m]) + rate(keeperhub_errors_system_workflow_engine_total[5m])) * 60",
+          "legendFormat": "{{error_category}} ({{error_type}})",
           "refId": "A"
         }
       ],

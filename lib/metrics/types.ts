@@ -182,7 +182,6 @@ export const LabelKeys = {
   SERVICE: "service",
   ERROR_CATEGORY: "error_category",
   ERROR_CONTEXT: "error_context",
-  IS_USER_ERROR: "is_user_error",
   BILLING_STATUS: "billing_status",
   TIER: "tier",
 } as const;

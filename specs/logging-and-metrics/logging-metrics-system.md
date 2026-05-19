@@ -28,7 +28,7 @@ Use for errors caused by user actions or external factors (not system failures).
 
 **Behavior:**
 - Logs to console using `console.warn` (user errors don't wake up DevOps)
-- Emits Prometheus metric with `is_user_error: "true"`
+- Emits Prometheus metric with `error_type: "user"`
 - Extracts context from message prefix (e.g., `"[Discord]"` becomes `"Discord"`)
 
 #### logSystemError
@@ -46,7 +46,7 @@ Use for errors caused by system failures (critical infrastructure issues).
 
 **Behavior:**
 - Logs to console using `console.error` (critical failures)
-- Emits Prometheus metric with `is_user_error: "false"`
+- Emits Prometheus metric with `error_type: "system"`
 - Extracts context from message prefix
 
 ## Usage Examples
@@ -163,7 +163,7 @@ Every logging call automatically includes these labels:
 
 - `error_category` - The ErrorCategory value (e.g., "validation", "database")
 - `error_context` - Extracted from message prefix (e.g., "Discord", "Etherscan")
-- `is_user_error` - "true" for logUserError, "false" for logSystemError
+- `error_type` - "user" for logUserError, "system" for logSystemError
 
 ## Prometheus Metrics
 
@@ -273,7 +273,7 @@ logSystemError(ErrorCategory.DATABASE, message, error, labels);
 **Internal Functions:**
 - `extractContext(message)` - Extracts `[Context]` from message prefix using regex
 - `getMetricName(category)` - Maps ErrorCategory to Prometheus metric name
-- `isUserError(category)` - Determines if category is user-caused
+- `errorTypeForCategory(category)` - Determines whether category is "user" or "system"
 
 ## Testing
 

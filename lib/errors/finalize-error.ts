@@ -23,7 +23,7 @@ export async function recordExecutionErrorFinalized(args: {
   errorMessage: string | null | undefined;
 }): Promise<void> {
   try {
-    const { errorCategory, isUserError } = classifyExecutionError(
+    const { errorCategory, errorType } = classifyExecutionError(
       args.errorMessage
     );
 
@@ -39,7 +39,7 @@ export async function recordExecutionErrorFinalized(args: {
     recordWorkflowExecutionError({
       orgSlug,
       errorCategory,
-      isUserError,
+      errorType,
     });
   } catch {
     // Counter emission must not break the execution finalize path.

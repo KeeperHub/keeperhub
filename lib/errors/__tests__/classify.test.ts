@@ -16,7 +16,7 @@ describe("classifyExecutionError", () => {
     ])("returns workflow_engine + system for %s", (_label, input) => {
       const r = classifyExecutionError(input);
       expect(r.errorCategory).toBe(ErrorCategory.WORKFLOW_ENGINE);
-      expect(r.isUserError).toBe(false);
+      expect(r.errorType).toBe("system");
     });
   });
 
@@ -28,7 +28,7 @@ describe("classifyExecutionError", () => {
     ])("classifies %s as configuration + user", (input) => {
       const r = classifyExecutionError(input);
       expect(r.errorCategory).toBe(ErrorCategory.CONFIGURATION);
-      expect(r.isUserError).toBe(true);
+      expect(r.errorType).toBe("user");
     });
   });
 
@@ -41,7 +41,7 @@ describe("classifyExecutionError", () => {
     ])("classifies %s as validation + user", (input) => {
       const r = classifyExecutionError(input);
       expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
-      expect(r.isUserError).toBe(true);
+      expect(r.errorType).toBe("user");
     });
   });
 
@@ -51,13 +51,13 @@ describe("classifyExecutionError", () => {
         "Code execution failed: require is not defined"
       );
       expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
-      expect(r.isUserError).toBe(true);
+      expect(r.errorType).toBe("user");
     });
 
     it("Invalid contract address: validation + user", () => {
       const r = classifyExecutionError("Invalid contract address: ");
       expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
-      expect(r.isUserError).toBe(true);
+      expect(r.errorType).toBe("user");
     });
 
     it("Invalid function arguments: validation + user", () => {
@@ -65,7 +65,7 @@ describe("classifyExecutionError", () => {
         "Invalid function arguments: _fee.nativeFee: uint256 cannot be empty"
       );
       expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
-      expect(r.isUserError).toBe(true);
+      expect(r.errorType).toBe("user");
     });
 
     it("For Each: arraySource is required: configuration + user", () => {
@@ -73,7 +73,7 @@ describe("classifyExecutionError", () => {
         "For Each: arraySource is required. Configure a template reference to an array"
       );
       expect(r.errorCategory).toBe(ErrorCategory.CONFIGURATION);
-      expect(r.isUserError).toBe(true);
+      expect(r.errorType).toBe("user");
     });
 
     it("Condition references field: configuration + user", () => {
@@ -81,13 +81,13 @@ describe("classifyExecutionError", () => {
         'Condition references field "logs" but "logs" does not exist on the data'
       );
       expect(r.errorCategory).toBe(ErrorCategory.CONFIGURATION);
-      expect(r.isUserError).toBe(true);
+      expect(r.errorType).toBe("user");
     });
 
     it("No token selected: configuration + user", () => {
       const r = classifyExecutionError("No token selected to check");
       expect(r.errorCategory).toBe(ErrorCategory.CONFIGURATION);
-      expect(r.isUserError).toBe(true);
+      expect(r.errorType).toBe("user");
     });
 
     it("Contract call failed: transaction + user", () => {
@@ -95,7 +95,7 @@ describe("classifyExecutionError", () => {
         "Contract call failed: Error(This spell has already been scheduled)"
       );
       expect(r.errorCategory).toBe(ErrorCategory.TRANSACTION);
-      expect(r.isUserError).toBe(true);
+      expect(r.errorType).toBe("user");
     });
   });
 
@@ -105,7 +105,7 @@ describe("classifyExecutionError", () => {
         "RPC failed on both endpoints. Primary: request timeout. Fallback: request timeout"
       );
       expect(r.errorCategory).toBe(ErrorCategory.NETWORK_RPC);
-      expect(r.isUserError).toBe(false);
+      expect(r.errorType).toBe("system");
     });
 
     it("Failed to check balance: RPC failed: network_rpc + system", () => {
@@ -113,7 +113,7 @@ describe("classifyExecutionError", () => {
         "Failed to check balance: RPC failed on both endpoints. Primary: request timeout"
       );
       expect(r.errorCategory).toBe(ErrorCategory.NETWORK_RPC);
-      expect(r.isUserError).toBe(false);
+      expect(r.errorType).toBe("system");
     });
 
     it("Failed to send webhook DNS failure: external_service + user (likely bad URL)", () => {
@@ -121,7 +121,7 @@ describe("classifyExecutionError", () => {
         "Failed to send webhook: fetch failed: getaddrinfo EAI_AGAIN events.pagerduty.com"
       );
       expect(r.errorCategory).toBe(ErrorCategory.EXTERNAL_SERVICE);
-      expect(r.isUserError).toBe(true);
+      expect(r.errorType).toBe("user");
     });
   });
 
@@ -133,7 +133,7 @@ describe("classifyExecutionError", () => {
     ])("classifies %s as database + system", (input) => {
       const r = classifyExecutionError(input);
       expect(r.errorCategory).toBe(ErrorCategory.DATABASE);
-      expect(r.isUserError).toBe(false);
+      expect(r.errorType).toBe("system");
     });
   });
 
@@ -143,7 +143,7 @@ describe("classifyExecutionError", () => {
         "Execution timed out: no progress for 30 minutes"
       );
       expect(r.errorCategory).toBe(ErrorCategory.WORKFLOW_ENGINE);
-      expect(r.isUserError).toBe(false);
+      expect(r.errorType).toBe("system");
     });
 
     it("Step exceeded max retries: workflow_engine + system", () => {
@@ -151,7 +151,7 @@ describe("classifyExecutionError", () => {
         'Step "step//./plugins/web3/steps/read-contract//readContractStep" exceeded max retries (1 retry)'
       );
       expect(r.errorCategory).toBe(ErrorCategory.WORKFLOW_ENGINE);
-      expect(r.isUserError).toBe(false);
+      expect(r.errorType).toBe("system");
     });
 
     it("Unknown action type: workflow_engine + system", () => {
@@ -159,7 +159,7 @@ describe("classifyExecutionError", () => {
         'Unknown action type: "condition". This action is not registered in the plugin system.'
       );
       expect(r.errorCategory).toBe(ErrorCategory.WORKFLOW_ENGINE);
-      expect(r.isUserError).toBe(false);
+      expect(r.errorType).toBe("system");
     });
 
     it("Failed to acquire nonce lock: workflow_engine + system", () => {
@@ -167,7 +167,7 @@ describe("classifyExecutionError", () => {
         "Failed to acquire nonce lock for 0xae36bc35098e24bbaed3dee86ec4653eb88a71a9:1 after 50 attempts"
       );
       expect(r.errorCategory).toBe(ErrorCategory.WORKFLOW_ENGINE);
-      expect(r.isUserError).toBe(false);
+      expect(r.errorType).toBe("system");
     });
   });
 
@@ -175,7 +175,7 @@ describe("classifyExecutionError", () => {
     it("Workflow terminated by SIGTERM: infrastructure + system", () => {
       const r = classifyExecutionError("Workflow terminated by SIGTERM signal");
       expect(r.errorCategory).toBe(ErrorCategory.INFRASTRUCTURE);
-      expect(r.isUserError).toBe(false);
+      expect(r.errorType).toBe("system");
     });
 
     it("Cannot find module: infrastructure + system", () => {
@@ -183,7 +183,7 @@ describe("classifyExecutionError", () => {
         "Cannot find module './credential-map'\nRequire stack:\n- /app/lib/credential-fetcher.ts"
       );
       expect(r.errorCategory).toBe(ErrorCategory.INFRASTRUCTURE);
-      expect(r.isUserError).toBe(false);
+      expect(r.errorType).toBe("system");
     });
 
     it("Failed to initialize organization wallet (missing Turnkey key): infrastructure + system", () => {
@@ -191,7 +191,7 @@ describe("classifyExecutionError", () => {
         "Failed to initialize organization wallet: TURNKEY_API_PUBLIC_KEY and TURNKEY_API_PRIVATE_KEY must be set"
       );
       expect(r.errorCategory).toBe(ErrorCategory.INFRASTRUCTURE);
-      expect(r.isUserError).toBe(false);
+      expect(r.errorType).toBe("system");
     });
   });
 
@@ -213,7 +213,7 @@ describe("classifyExecutionError", () => {
       for (const s of samples) {
         const r = classifyExecutionError(s);
         expect(allCategoryValues.has(r.errorCategory)).toBe(true);
-        expect(typeof r.isUserError).toBe("boolean");
+        expect(r.errorType === "user" || r.errorType === "system").toBe(true);
       }
     });
   });

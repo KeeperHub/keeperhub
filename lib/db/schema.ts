@@ -354,7 +354,7 @@ export const workflowExecutions = pgTable(
       | "workflow_engine"
       | "unknown"
     >(),
-    isUserError: boolean("is_user_error"),
+    errorType: text("error_type").$type<"user" | "system">(),
     startedAt: timestamp("started_at").notNull().defaultNow(),
     completedAt: timestamp("completed_at"),
     duration: numeric("duration"), // Duration in milliseconds

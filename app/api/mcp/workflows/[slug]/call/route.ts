@@ -381,7 +381,7 @@ async function handlePaidWorkflow(
               status: "error",
               error: errorMessage,
               errorCategory: classification.errorCategory,
-              isUserError: classification.isUserError,
+              errorType: classification.errorType,
             })
             .where(eq(workflowExecutions.id, executionId))
             .returning({ workflowId: workflowExecutions.workflowId });

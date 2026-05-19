@@ -109,7 +109,7 @@ function getOrCreateGauge(
 // label unlocks platform-side SLO queries (filter error_type="system") and
 // managed-client end-to-end SLO panels that need to separate system vs user
 // failures. Sourced from the DB scan via projection of the existing
-// `workflow_executions.is_user_error` column, so this metric stays
+// `workflow_executions.error_type` column, so this metric stays
 // authoritative even when short-lived workflow runner processes exit before
 // Prometheus can scrape their in-memory counters.
 const workflowExecutionsTotal = getOrCreateGauge(
@@ -788,7 +788,6 @@ const apiErrors = getOrCreateCounter(
 export const ERROR_LABELS = [
   "error_category",
   "error_context",
-  "is_user_error",
   "error_type",
   "plugin_name",
   "action_name",
@@ -879,7 +878,7 @@ const systemWorkflowEngineErrors = getOrCreateCounter(
 //   org_slug       per-organization slug (or ANONYMOUS_ORG_SLUG for personal)
 //   error_category one of the ErrorCategory enum values (validation,
 //                  configuration, database, workflow_engine, etc.)
-//   is_user_error  "true" for workflow-author bugs, "false" for engine/infra
+//   error_type     "user" for workflow-author bugs, "system" for engine/infra
 //
 // Cardinality: ~200 active orgs * 10 categories * 2 = 4k worst case;
 // realistic ~1k (most orgs hit 1-2 categories).
@@ -887,18 +886,18 @@ const workflowExecutionErrorsCreated = getOrCreateCounter(
   apiRegistry,
   "keeperhub_workflow_execution_errors_created_total",
   "Workflow execution errors observed since pod start, by classification",
-  ["org_slug", "error_category", "is_user_error"]
+  ["org_slug", "error_category", "error_type"]
 );
 
 export function recordWorkflowExecutionError(labels: {
   orgSlug: string;
   errorCategory: string;
-  isUserError: boolean;
+  errorType: "user" | "system";
 }): void {
   workflowExecutionErrorsCreated.inc({
     org_slug: labels.orgSlug,
     error_category: labels.errorCategory,
-    is_user_error: labels.isUserError ? "true" : "false",
+    error_type: labels.errorType,
   });
 }
 

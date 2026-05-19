@@ -67,7 +67,7 @@ async function executeWorkflowBackground(
     logSystemError(ErrorCategory.WORKFLOW_ENGINE, "[Workflow Execute] Error during execution", error, { endpoint: "/api/workflow/[workflowId]/execute", operation: "executeWorkflow" });
 
     // KEEP-545: classify the error so the row carries error_category and
-    // is_user_error and so the per-execution counter is incremented post-update.
+    // error_type and so the per-execution counter is incremented post-update.
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
     const classification = classifyExecutionError(errorMessage);
@@ -78,7 +78,7 @@ async function executeWorkflowBackground(
         status: "error",
         error: errorMessage,
         errorCategory: classification.errorCategory,
-        isUserError: classification.isUserError,
+        errorType: classification.errorType,
         completedAt: new Date(),
       })
       .where(eq(workflowExecutions.id, executionId))

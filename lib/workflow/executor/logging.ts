@@ -617,7 +617,7 @@ export async function logWorkflowCompleteDb(
       : [];
 
   // KEEP-545: classify the error so the row carries error_category and
-  // is_user_error at write time. Success rows get null for both columns.
+  // error_type at write time. Success rows get null for both columns.
   const classification =
     resolvedStatus === "error" ? classifyExecutionError(resolvedError) : null;
 
@@ -628,7 +628,7 @@ export async function logWorkflowCompleteDb(
       output: params.output,
       error: resolvedError,
       errorCategory: classification?.errorCategory ?? null,
-      isUserError: classification?.isUserError ?? null,
+      errorType: classification?.errorType ?? null,
       completedAt: new Date(),
       duration: duration.toString(),
       // Clear current step on completion
@@ -662,7 +662,7 @@ export async function logWorkflowCompleteDb(
       recordWorkflowExecutionError({
         orgSlug,
         errorCategory: classification.errorCategory,
-        isUserError: classification.isUserError,
+        errorType: classification.errorType,
       });
     } catch {
       // Counter emission must never break finalization.

@@ -1,5 +1,5 @@
 /**
- * KEEP-545: one-time backfill of `error_category` and `is_user_error`
+ * KEEP-545: one-time backfill of `error_category` and `error_type`
  * columns on `workflow_executions` rows for managed-client orgs (Sky and
  * Ajna) over the last 90 days.
  *
@@ -20,7 +20,7 @@
  *
  * Output:
  *   - Progress lines per batch (`processed=N updated=M skipped=K`)
- *   - Final summary table by (org_slug, error_category, is_user_error)
+ *   - Final summary table by (org_slug, error_category, error_type)
  */
 
 import { and, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
@@ -98,7 +98,7 @@ async function fetchUnclassifiedBatch(args: {
         inArray(organization.slug, args.orgs),
         or(
           isNull(workflowExecutions.errorCategory),
-          isNull(workflowExecutions.isUserError)
+          isNull(workflowExecutions.errorType)
         ),
         args.afterId ? sql`${workflowExecutions.id} > ${args.afterId}` : undefined
       )
@@ -113,7 +113,7 @@ function recordInSummary(
   summary: Summary,
   orgSlug: string,
   errorCategory: string,
-  isUserError: boolean
+  errorType: "user" | "system"
 ): void {
   if (!summary[orgSlug]) {
     summary[orgSlug] = {};
@@ -121,11 +121,7 @@ function recordInSummary(
   if (!summary[orgSlug][errorCategory]) {
     summary[orgSlug][errorCategory] = { user: 0, system: 0 };
   }
-  if (isUserError) {
-    summary[orgSlug][errorCategory].user += 1;
-  } else {
-    summary[orgSlug][errorCategory].system += 1;
-  }
+  summary[orgSlug][errorCategory][errorType] += 1;
 }
 
 function formatSummary(summary: Summary): string {
@@ -171,13 +167,13 @@ async function main(): Promise<void> {
     let updatedInBatch = 0;
     for (const row of rows) {
       const orgSlug = row.orgSlug ?? "_anonymous";
-      const { errorCategory, isUserError } = classifyExecutionError(row.error);
-      recordInSummary(summary, orgSlug, errorCategory, isUserError);
+      const { errorCategory, errorType } = classifyExecutionError(row.error);
+      recordInSummary(summary, orgSlug, errorCategory, errorType);
 
       if (!args.dryRun) {
         await db
           .update(workflowExecutions)
-          .set({ errorCategory, isUserError })
+          .set({ errorCategory, errorType })
           .where(eq(workflowExecutions.id, row.id));
         updatedInBatch += 1;
       }

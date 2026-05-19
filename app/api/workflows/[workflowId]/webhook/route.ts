@@ -197,7 +197,7 @@ async function executeWorkflowBackground(
         status: "error",
         error: errorMessage,
         errorCategory: classification.errorCategory,
-        isUserError: classification.isUserError,
+        errorType: classification.errorType,
         completedAt: new Date(),
       })
       .where(eq(workflowExecutions.id, executionId))
