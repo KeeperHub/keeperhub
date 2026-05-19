@@ -1,7 +1,7 @@
 -- Rename the `is_user_error` boolean column on `workflow_executions` to a
 -- text `error_type` column with values 'user' | 'system'. Aligns the column
 -- name with the new Prometheus label vocabulary used across the counter,
--- gauge, structured logs, Sentry tags, and SLA alert.
+-- gauge, structured logs, Sentry tags, and SLI alert.
 --
 -- Backfill uses a three-state CASE that preserves NULL for rows predating
 -- classification:

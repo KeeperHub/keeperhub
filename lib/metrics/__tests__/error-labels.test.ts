@@ -16,7 +16,7 @@ const { ERROR_LABELS } = await import("@/lib/metrics/collectors/prometheus");
  * alert without any test or type failure. This snapshot prevents that.
  */
 describe("ERROR_LABELS regression guard (KEEP-545 / closes KEEP-536)", () => {
-  it("includes the labels required by the errors dashboard and SLA alert", () => {
+  it("includes the labels required by the errors dashboard and SLI alert", () => {
     expect(ERROR_LABELS).toContain("error_category");
     expect(ERROR_LABELS).toContain("error_type");
     expect(ERROR_LABELS).toContain("error_context");

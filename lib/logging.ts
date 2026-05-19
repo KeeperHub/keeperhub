@@ -108,7 +108,7 @@ function buildErrPayload(
 /**
  * KEEP-545: serialize an error/log event as a single-line JSON object so
  * Grafana Cloud Loki can extract top-level keys via `| json`. Drilldown
- * from the managed-client SLA alert to the failing execution requires
+ * from the managed-client SLI alert to the failing execution requires
  * `execution_id`, `error_type`, and `error_category` to be available as
  * Loki labels, not just as text inside the message string.
  *

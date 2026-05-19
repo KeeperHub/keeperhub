@@ -11,7 +11,7 @@ import { ErrorCategory } from "@/lib/logging";
  *
  * The classifier is intentionally pattern-driven against real production
  * messages observed for managed clients (Sky/Ajna) so the resulting
- * `error_type` label on `workflow_executions` lets the SLA alert filter
+ * `error_type` label on `workflow_executions` lets the SLI alert filter
  * out user-config noise.
  *
  * Default for unmatched messages is WORKFLOW_ENGINE / errorType="system".
