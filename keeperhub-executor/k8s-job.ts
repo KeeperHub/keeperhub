@@ -138,8 +138,8 @@ export async function createWorkflowJob(params: {
               imagePullPolicy: CONFIG.imagePullPolicy,
               env: envVars,
               resources: {
-                requests: { memory: "128Mi", cpu: "100m" },
-                limits: { memory: "512Mi", cpu: "500m" },
+                requests: { memory: "160Mi", cpu: "200m" },
+                limits: { memory: "320Mi", cpu: "750m" },
               },
             },
           ],
