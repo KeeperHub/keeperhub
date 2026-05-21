@@ -575,6 +575,13 @@
       "when": 1778873393611,
       "tag": "0081_address_book_unique_address",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1779374522394,
+      "tag": "0082_security_2026_05_21_block_executions_for_deactivated_users",
+      "breakpoints": true
     }
   ]
 }
