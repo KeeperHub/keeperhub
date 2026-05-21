@@ -319,6 +319,12 @@ env:
   NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED:
     type: kv
     value: "false"
+  # AI Prompt feature flag - disabled
+  # (gates UI render in components/workflow/workflow-canvas.tsx
+  #  and /api/ai/generate route)
+  NEXT_PUBLIC_AI_PROMPT_ENABLED:
+    type: kv
+    value: "false"
   STRIPE_SECRET_KEY:
     type: parameterStore
     name: stripe-secret-key

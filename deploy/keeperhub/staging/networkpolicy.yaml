@@ -1,0 +1,34 @@
+# Defense-in-depth: even if the JS-level SSRF guard in lib/sandbox/child-source.ts
+# or lib/safe-fetch.ts is bypassed, workflow runner pods must not be able to
+# reach the EC2 instance metadata service (IMDS, 169.254.169.254). Selector
+# matches the `app: workflow-runner` label set by keeperhub-executor/k8s-job.ts.
+#
+# Egress allow rule uses 0.0.0.0/0 with an explicit `except` so we keep
+# legitimate outbound traffic working (RDS in 10.1/16, cluster DNS, public RPC
+# endpoints) while denying the link-local range. IPv6 link-local and ULA are
+# blocked too (AWS IMDSv6 is at fd00:ec2::254 inside fc00::/7).
+#
+# Enforced by the AWS VPC CNI Network Policy Agent on EKS (cluster runs
+# v1.21+ amazon-vpc-cni with NETWORK_POLICY_ENFORCING_MODE=standard).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: workflow-runner-block-imds
+  namespace: keeperhub
+spec:
+  podSelector:
+    matchLabels:
+      app: workflow-runner
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.0.0/16
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - fe80::/10
+              - fc00::/7

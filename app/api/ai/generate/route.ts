@@ -319,6 +319,16 @@ function getAIModel(
 }
 
 export async function POST(request: Request) {
+  // Feature flag gate. Defense-in-depth alongside the UI gate in
+  // components/workflow/workflow-canvas.tsx so direct API callers cannot
+  // bypass the disabled prompt.
+  if (process.env.NEXT_PUBLIC_AI_PROMPT_ENABLED !== "true") {
+    return NextResponse.json(
+      { error: "AI Prompt is disabled" },
+      { status: 503 }
+    );
+  }
+
   const timer = createTimer();
   const metrics = getMetricsCollector();
 

@@ -86,6 +86,11 @@ jobs:
         run: |
           kubectl apply -f deploy/keeperhub/${{ vars.TO_HELM_VALUES_DIR }}/rbac.yaml
 
+      - name: Apply NetworkPolicy for workflow runner egress hardening
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          kubectl apply -f deploy/keeperhub/${{ vars.TO_HELM_VALUES_DIR }}/networkpolicy.yaml
+
       - name: Deploying Service to Kubernetes with Helm
         id: deploy
         if: steps.skip.outputs.skip_deploy != 'true'

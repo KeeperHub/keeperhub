@@ -796,8 +796,11 @@ export function WorkflowCanvas() {
         )}
       </Canvas>
 
-      {/* AI Prompt */}
-      {currentWorkflowId && <AIPrompt workflowId={currentWorkflowId} />}
+      {/* AI Prompt - gated by NEXT_PUBLIC_AI_PROMPT_ENABLED feature flag */}
+      {currentWorkflowId &&
+        process.env.NEXT_PUBLIC_AI_PROMPT_ENABLED === "true" && (
+          <AIPrompt workflowId={currentWorkflowId} />
+        )}
 
       {/* Context Menu */}
       <WorkflowContextMenu
