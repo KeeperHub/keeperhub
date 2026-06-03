@@ -26,6 +26,8 @@ Metrics are collected from two sources depending on the collector type:
 
 > **Note:** Runtime code (executor, routes) also increments workflow metrics for console logging, but Prometheus relies solely on DB snapshots. This dual approach ensures complete data even when workflow runners exit before scrape.
 
+> **Note (TECH-6484):** The DB-sourced gauges are served by the dedicated single-replica `keeperhub-metrics-collector` service (`deploy/metrics-collector/`), not by the app pods. It reuses this module's `updateDbMetrics` / `getDbMetrics` and serves them on `/metrics`. Its ServiceMonitor scrapes the gauges deterministically from one pod. The app's `/api/metrics/db` route is gated off via `METRICS_DB_OFFLOADED` and its `db-metrics` ServiceMonitor removed, so the heavy aggregate scan no longer runs on the request-serving pods. `/api/metrics/api` (per-pod, in-memory) is unchanged.
+
 ---
 
 ## Architecture Context

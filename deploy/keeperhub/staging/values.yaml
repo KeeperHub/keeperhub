@@ -117,14 +117,9 @@ serviceMonitors:
       path: /api/metrics/api
       interval: 30s
       scrapeTimeout: 10s
-    - name: db-metrics
-      port: http
-      path: /api/metrics/db
-      interval: 30s
-      # 12s (not 10s): this endpoint blocks on the serialised db-metrics
-      # refresh. Staging refresh is well under this, but kept in parity with
-      # prod to avoid config drift. See KEEP-682.
-      scrapeTimeout: 12s
+    # db-metrics removed (TECH-6484): the DB-sourced gauges are now scraped from
+    # the dedicated keeperhub-metrics-collector single-replica service, not from
+    # the app pods. The app route is also gated off via METRICS_DB_OFFLOADED.
 
 resources:
   limits:
@@ -145,6 +140,11 @@ env:
   METRICS_COLLECTOR:
     type: kv
     value: "prometheus"
+  # TECH-6484: /api/metrics/db is served by keeperhub-metrics-collector now;
+  # gate the app route to 404 so the heavy scan never runs on these pods.
+  METRICS_DB_OFFLOADED:
+    type: kv
+    value: "true"
   RPC_PROBE_INTERVAL_MS:
     type: kv
     value: "30000"

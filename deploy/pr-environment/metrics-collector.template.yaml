@@ -1,0 +1,78 @@
+# Metrics Collector for PR environments (TECH-6484)
+#
+# Serves the DB-sourced Prometheus gauges from the PR's database, off the app
+# pods. Opt-in via the deploy-pr-metrics label: CI builds a PR-specific image
+# (collector-${sha_short}) and renders this template with
+# COLLECTOR_IMAGE_TAG=${sha_short}. ServiceMonitors are disabled in PR envs, so
+# verify by curling /metrics on the pod directly.
+#
+# Variables substituted by envsubst at deploy time:
+#   ${PR_NUMBER}, ${ECR_REGISTRY}, ${COLLECTOR_IMAGE_TAG}, ${ENCODED_DB_PASSWORD}
+
+replicaCount: 1
+
+service:
+  enabled: true
+  name: keeperhub-metrics-collector-pr-${PR_NUMBER}
+  type: ClusterIP
+  port: 9090
+  containerPort: 9090
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-metrics-collector-staging
+  tag: collector-${COLLECTOR_IMAGE_TAG}
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+
+serviceAccount:
+  create: false
+  name: keeperhub-pr-${PR_NUMBER}
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+serviceMonitors:
+  enabled: false
+
+resources:
+  limits:
+    memory: 512Mi
+    cpu: 300m
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+# Startup comes from the Dockerfile CMD; no helm command/args override.
+
+env:
+  DATABASE_URL:
+    type: kv
+    value: "postgresql://keeperhub:${ENCODED_DB_PASSWORD}@keeperhub-pr-${PR_NUMBER}-db-rw.pr-${PR_NUMBER}.svc.cluster.local:5432/keeperhub"
+  PORT:
+    type: kv
+    value: "9090"
+  METRICS_COLLECTOR:
+    type: kv
+    value: "prometheus"
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 9090
+  initialDelaySeconds: 20
+  periodSeconds: 30
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 9090
+  initialDelaySeconds: 10
+  periodSeconds: 10

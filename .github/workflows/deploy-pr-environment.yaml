@@ -15,6 +15,7 @@ jobs:
       should-deploy-events: ${{ steps.check.outputs.should-deploy-events }}
       should-deploy-events-only: ${{ steps.check.outputs.should-deploy-events-only }}
       should-build-executor: ${{ steps.check.outputs.should-build-executor }}
+      should-deploy-collector: ${{ steps.check.outputs.should-deploy-collector }}
     steps:
       - name: Checkout code (for change detection)
         if: github.event.action == 'synchronize'
@@ -30,6 +31,7 @@ jobs:
           echo "should-deploy-events=false" >> $GITHUB_OUTPUT
           echo "should-deploy-events-only=false" >> $GITHUB_OUTPUT
           echo "should-build-executor=false" >> $GITHUB_OUTPUT
+          echo "should-deploy-collector=false" >> $GITHUB_OUTPUT
 
           HAS_DEPLOY_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-pr-environment') }}"
           HAS_TEST_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'run-e2e-tests-pr-deploy') }}"
@@ -44,6 +46,12 @@ jobs:
           # dispatchers are consumed; this label adds a PR-specific build for
           # ticket-driven validation. See KEEP-556.
           HAS_EXECUTOR_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-pr-executor') }}"
+          # Metrics-collector PR deploy is opt-in alongside deploy-pr-environment
+          # (TECH-6484), same pattern as deploy-pr-executor. Default off; when
+          # set, CI builds a PR-specific collector image and deploys it as a
+          # satellite so the PR's collector code can be exercised against the
+          # PR's DB. ServiceMonitors are off in PR envs - verify via curl.
+          HAS_METRICS_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-pr-metrics') }}"
           ACTION="${{ github.event.action }}"
           ADDED_LABEL="${{ github.event.label.name }}"
 
@@ -58,6 +66,9 @@ jobs:
               fi
               if [[ "$HAS_EXECUTOR_LABEL" == "true" ]]; then
                 echo "should-build-executor=true" >> $GITHUB_OUTPUT
+              fi
+              if [[ "$HAS_METRICS_LABEL" == "true" ]]; then
+                echo "should-deploy-collector=true" >> $GITHUB_OUTPUT
               fi
             elif [[ "$ADDED_LABEL" == "run-e2e-tests-pr-deploy" ]]; then
               echo "should-test=true" >> $GITHUB_OUTPUT
@@ -85,6 +96,12 @@ jobs:
                 if [[ "$HAS_TEST_LABEL" == "true" ]]; then
                   echo "should-test=true" >> $GITHUB_OUTPUT
                 fi
+              fi
+            elif [[ "$ADDED_LABEL" == "deploy-pr-metrics" ]]; then
+              # Metrics-only path: PR env already deployed. Build a PR collector
+              # image and deploy just that satellite (TECH-6484).
+              if [[ "$HAS_DEPLOY_LABEL" == "true" ]]; then
+                echo "should-deploy-collector=true" >> $GITHUB_OUTPUT
               fi
             fi
           elif [[ "$ACTION" == "unlabeled" ]]; then
@@ -121,6 +138,9 @@ jobs:
               fi
               if [[ "$HAS_EXECUTOR_LABEL" == "true" ]]; then
                 echo "should-build-executor=true" >> $GITHUB_OUTPUT
+              fi
+              if [[ "$HAS_METRICS_LABEL" == "true" ]]; then
+                echo "should-deploy-collector=true" >> $GITHUB_OUTPUT
               fi
             fi
             # Run tests if both labels present (even without deploy)
@@ -217,6 +237,57 @@ jobs:
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:cache-app
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:${{ matrix.image.cache_key }}
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:${{ matrix.image.cache_key }},mode=max
+
+  # Builds a PR-specific metrics-collector image when the deploy-pr-metrics
+  # label is present alongside deploy-pr-environment (TECH-6484). Pushed to the
+  # staging collector ECR with a collector-${sha_short} tag; never pushes
+  # collector-latest so concurrent staging deploys are unaffected.
+  build-collector-image:
+    needs: check-labels
+    if: needs.check-labels.outputs.should-deploy-collector == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      COLLECTOR_ECR_NAME: keeperhub-metrics-collector-staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.TO_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TO_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract commit hash
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push collector image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: metrics-collector
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.COLLECTOR_ECR_NAME }}:collector-${{ steps.vars.outputs.sha_short }}
+          cache-from: |
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.COLLECTOR_ECR_NAME }}:cache
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.COLLECTOR_ECR_NAME }}:cache-pr
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.COLLECTOR_ECR_NAME }}:cache-pr,mode=max
 
   # Builds a PR-specific event-tracker image when the deploy-pr-events
   # label is present alongside deploy-pr-environment. Without it, the PR
@@ -361,7 +432,7 @@ jobs:
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EXECUTOR_ECR_NAME }}:cache-pr,mode=max
 
   deploy:
-    needs: [check-labels, build-images, build-events-image, build-executor-image]
+    needs: [check-labels, build-images, build-events-image, build-executor-image, build-collector-image]
     # Cannot use the `success()` shorthand here because GHA evaluates it
     # as false whenever ANY needed job is skipped. build-events-image is
     # skipped on purpose for PRs without the deploy-pr-events label, so
@@ -374,7 +445,8 @@ jobs:
       needs.check-labels.outputs.should-deploy == 'true' &&
       needs.build-images.result == 'success' &&
       (needs.build-events-image.result == 'success' || needs.build-events-image.result == 'skipped') &&
-      (needs.build-executor-image.result == 'success' || needs.build-executor-image.result == 'skipped')
+      (needs.build-executor-image.result == 'success' || needs.build-executor-image.result == 'skipped') &&
+      (needs.build-collector-image.result == 'success' || needs.build-collector-image.result == 'skipped')
     runs-on: ubuntu-latest
     environment: staging
     env:
@@ -530,6 +602,10 @@ jobs:
           # / event triggers. The template prepends "executor-" itself, so we
           # set only the bare tag here (matches the {{IMAGE_TAG}} pattern).
           EXECUTOR_IMAGE_TAG: ${{ needs.check-labels.outputs.should-build-executor == 'true' && steps.vars.outputs.sha_short || 'latest' }}
+          # PR-specific collector image tag when deploy-pr-metrics was set
+          # (build-collector-image ran); else the collector-latest baseline.
+          # Bare tag; the template prepends "collector-". (TECH-6484)
+          COLLECTOR_IMAGE_TAG: ${{ needs.check-labels.outputs.should-deploy-collector == 'true' && steps.vars.outputs.sha_short || 'latest' }}
         run: |
           # Percent-encode DB_PASSWORD so base64 characters (+/=) don't break URL parsing
           # in the pod. Init containers previously encoded at runtime but that path was
@@ -542,6 +618,7 @@ jobs:
           envsubst < deploy/pr-environment/block-dispatcher.template.yaml > ${{ github.workspace }}/block-pr-${{ env.PR_NUMBER }}.yaml
           envsubst < deploy/pr-environment/event-tracker.template.yaml > ${{ github.workspace }}/event-pr-${{ env.PR_NUMBER }}.yaml
           envsubst < deploy/pr-environment/executor.template.yaml > ${{ github.workspace }}/executor-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/metrics-collector.template.yaml > ${{ github.workspace }}/metrics-pr-${{ env.PR_NUMBER }}.yaml
           envsubst < deploy/pr-environment/sandbox.template.yaml > ${{ github.workspace }}/sandbox-pr-${{ env.PR_NUMBER }}.yaml
 
       - name: Clean up stale Helm releases
@@ -563,6 +640,18 @@ jobs:
             techops-services/common \
             -f ${GITHUB_WORKSPACE}/values-pr-${PR_NUMBER}.yaml \
             --namespace "${NAMESPACE}" --timeout 10m0s --atomic --version 0.2.1
+
+      # Opt-in (deploy-pr-metrics label). Deploys the metrics-collector
+      # satellite against the PR DB so its /metrics can be curled directly
+      # (ServiceMonitors are off in PR envs). TECH-6484.
+      - name: Deploy metrics collector (PR, opt-in)
+        if: needs.check-labels.outputs.should-deploy-collector == 'true'
+        run: |
+          set -euo pipefail
+          helm upgrade --install metrics-pr-${PR_NUMBER} \
+            techops-services/common \
+            -f ${GITHUB_WORKSPACE}/metrics-pr-${PR_NUMBER}.yaml \
+            --namespace "${NAMESPACE}" --timeout 5m0s --atomic --version 0.2.1
 
       - name: Deploy satellite services (parallel)
         run: |
