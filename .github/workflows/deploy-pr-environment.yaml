@@ -438,8 +438,44 @@ jobs:
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EXECUTOR_ECR_NAME }}:cache-pr
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EXECUTOR_ECR_NAME }}:cache-pr,mode=max
 
-  deploy:
+  # Guards against the post-merge namespace leak: image builds take ~15 min,
+  # so a PR can be merged while they run. The cleanup fires on merge (finding
+  # the OLD namespace) and deletes it; then the deploy job starts post-merge,
+  # re-creates the namespace, and leaves it stranded with no future cleanup.
+  # This job re-checks PR state right before the deploy job starts (after all
+  # image builds complete), so a merged PR is caught and the deploy is skipped.
+  check-pr-state:
     needs: [check-labels, build-images, build-events-image, build-executor-image, build-collector-image]
+    if: |
+      !cancelled() &&
+      needs.check-labels.outputs.should-deploy == 'true' &&
+      needs.build-images.result == 'success' &&
+      (needs.build-events-image.result == 'success' || needs.build-events-image.result == 'skipped') &&
+      (needs.build-executor-image.result == 'success' || needs.build-executor-image.result == 'skipped') &&
+      (needs.build-collector-image.result == 'success' || needs.build-collector-image.result == 'skipped')
+    runs-on: ubuntu-latest
+    outputs:
+      is-open: ${{ steps.check.outputs.is-open }}
+    steps:
+      - name: Verify PR is still open
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          STATE=$(gh pr view ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} --json state --jq '.state')
+          echo "PR #${{ github.event.pull_request.number }} state: $STATE"
+          if [[ "$STATE" == "OPEN" ]]; then
+            echo "is-open=true" >> $GITHUB_OUTPUT
+          else
+            echo "is-open=false" >> $GITHUB_OUTPUT
+            echo "Skipping deploy — PR was $STATE before the deploy job could start."
+            echo "The cleanup-pr-environment workflow already ran on merge."
+            echo "Deploying now would re-create the namespace with no future cleanup."
+          fi
+
+  deploy:
+    needs: [check-labels, build-images, build-events-image, build-executor-image, build-collector-image, check-pr-state]
     # Cannot use the `success()` shorthand here because GHA evaluates it
     # as false whenever ANY needed job is skipped. build-events-image is
     # skipped on purpose for PRs without the deploy-pr-events label, so
@@ -453,7 +489,9 @@ jobs:
       needs.build-images.result == 'success' &&
       (needs.build-events-image.result == 'success' || needs.build-events-image.result == 'skipped') &&
       (needs.build-executor-image.result == 'success' || needs.build-executor-image.result == 'skipped') &&
-      (needs.build-collector-image.result == 'success' || needs.build-collector-image.result == 'skipped')
+      (needs.build-collector-image.result == 'success' || needs.build-collector-image.result == 'skipped') &&
+      needs.check-pr-state.result == 'success' &&
+      needs.check-pr-state.outputs.is-open == 'true'
     runs-on: ubuntu-latest
     environment: staging
     env:

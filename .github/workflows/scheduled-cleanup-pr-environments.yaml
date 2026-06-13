@@ -1,0 +1,131 @@
+name: Scheduled PR Environment Cleanup
+
+on:
+  schedule:
+    # Runs at 03:00 UTC every day
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (list orphaned namespaces without deleting)"
+        required: false
+        default: "false"
+        type: boolean
+
+jobs:
+  cleanup-orphaned-pr-envs:
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.TO_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TO_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.REGION }}
+
+      - name: Find and clean up orphaned PR namespaces
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          echo "Scanning for pr-* namespaces in cluster ${{ env.CLUSTER_NAME }}..."
+          PR_NAMESPACES=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' \
+            | tr ' ' '\n' | grep '^pr-[0-9]*$' || true)
+
+          if [[ -z "$PR_NAMESPACES" ]]; then
+            echo "No pr-* namespaces found."
+            exit 0
+          fi
+
+          echo "Found namespaces: $PR_NAMESPACES"
+          echo ""
+
+          CLEANED=0
+          SKIPPED=0
+          ERRORS=0
+
+          for NAMESPACE in $PR_NAMESPACES; do
+            PR_NUMBER="${NAMESPACE#pr-}"
+
+            # Skip non-numeric suffixes
+            if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+              echo "Skipping $NAMESPACE (not a PR namespace)"
+              continue
+            fi
+
+            # Check if the PR is still open
+            PR_STATE=$(gh pr view "$PR_NUMBER" \
+              --repo ${{ github.repository }} \
+              --json state \
+              --jq '.state' 2>/dev/null || echo "NOT_FOUND")
+
+            if [[ "$PR_STATE" == "OPEN" ]]; then
+              echo "$NAMESPACE: PR #$PR_NUMBER is OPEN — skipping"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            echo "$NAMESPACE: PR #$PR_NUMBER is $PR_STATE — orphaned namespace"
+
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "$NAMESPACE: dry-run, would delete"
+              continue
+            fi
+
+            echo "$NAMESPACE: deleting..."
+
+            # Uninstall Helm releases first so controllers can clean up owned resources
+            for release in $(helm list -n "$NAMESPACE" -q 2>/dev/null || true); do
+              echo "$NAMESPACE: uninstalling Helm release $release"
+              helm uninstall "$release" -n "$NAMESPACE" --wait --timeout 5m \
+                --no-hooks 2>/dev/null || echo "$NAMESPACE: warning — $release uninstall failed, continuing"
+            done
+
+            # Delete CNPG cluster (has a finalizer; must be deleted before namespace)
+            if kubectl get cluster "keeperhub-${NAMESPACE}-db" -n "$NAMESPACE" \
+                >/dev/null 2>&1; then
+              echo "$NAMESPACE: deleting CNPG cluster keeperhub-${NAMESPACE}-db"
+              kubectl delete cluster "keeperhub-${NAMESPACE}-db" \
+                -n "$NAMESPACE" --wait=false 2>/dev/null || true
+            fi
+
+            # Delete namespace (10 min timeout, then strip finalizers if stuck)
+            if kubectl delete namespace "$NAMESPACE" --timeout=10m 2>/dev/null; then
+              echo "$NAMESPACE: deleted"
+              CLEANED=$((CLEANED + 1))
+            else
+              echo "$NAMESPACE: deletion timed out, stripping finalizers..."
+              kubectl patch namespace "$NAMESPACE" \
+                -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
+              if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+                echo "$NAMESPACE: still exists after finalizer strip — manual intervention required"
+                ERRORS=$((ERRORS + 1))
+              else
+                echo "$NAMESPACE: deleted after finalizer strip"
+                CLEANED=$((CLEANED + 1))
+              fi
+            fi
+
+            echo ""
+          done
+
+          echo "=== Summary ==="
+          echo "Cleaned: $CLEANED"
+          echo "Skipped (open PRs): $SKIPPED"
+          echo "Errors (manual cleanup needed): $ERRORS"
+
+          if [[ $ERRORS -gt 0 ]]; then
+            echo "Some namespaces could not be deleted. See logs above."
+            exit 1
+          fi
