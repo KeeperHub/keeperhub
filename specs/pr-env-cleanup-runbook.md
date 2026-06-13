@@ -5,13 +5,9 @@
 `deploy-pr-environment.yaml` is triggered by `pull_request` events including `synchronize` (new push). Image builds take 10-15 minutes. During that window:
 
 1. Engineer pushes a commit → deploy workflow starts, begins building images.
-2. PR is merged → `cleanup-pr-environment.yaml` fires, finds the OLD namespace (from a prior successful deploy), and deletes it.
+2. PR is merged → `cleanup-pr-environment.yaml` fires, finds the existing namespace, and deletes it.
 3. The deploy job starts (after images finish) — now running post-merge. It re-creates the namespace, deploys infra, runs Helm.
 4. The deploy succeeds or fails. Either way, the namespace is now orphaned: the `closed` event already fired, so no future cleanup will ever trigger.
-
-This race occurred for: pr-820, pr-846, pr-1001, pr-1157, pr-1349, pr-1405.
-
-**pr-1444** is currently open. Its namespace is expected.
 
 ## How to find orphaned namespaces
 
@@ -26,15 +22,14 @@ for ns in $(kubectl get namespaces -o name | grep 'namespace/pr-' | sed 's|names
 done
 ```
 
-Namespaces whose PR is MERGED or CLOSED are safe to delete.
+Namespaces whose PR is `MERGED` or `CLOSED` are orphaned and safe to delete. Namespaces whose PR is `OPEN` should be left alone.
 
 ## Manual cleanup procedure
 
-Run this for each stale namespace. Replace `$NS` with e.g. `pr-1001`.
+Run this for each stale namespace. Replace `$NS` with the namespace to clean (e.g. `pr-1234`).
 
 ```bash
-NS=pr-1001
-PR="${NS#pr-}"
+NS=pr-1234
 
 # 1. Uninstall Helm releases (lets controllers clean up owned CRDs/PVCs)
 for release in $(helm list -n "$NS" -q); do
@@ -51,10 +46,12 @@ kubectl delete namespace "$NS" --timeout=10m
 kubectl patch namespace "$NS" -p '{"metadata":{"finalizers":[]}}' --type=merge
 ```
 
-### Bulk cleanup of all known stale namespaces
+### Bulk cleanup of multiple stale namespaces
+
+Use the cross-reference loop above to identify orphaned namespaces, then run:
 
 ```bash
-for NS in pr-820 pr-846 pr-1001 pr-1157 pr-1349 pr-1405; do
+for NS in pr-111 pr-222 pr-333; do   # replace with actual orphaned namespaces
   echo "=== cleaning $NS ==="
   for release in $(helm list -n "$NS" -q 2>/dev/null || true); do
     helm uninstall "$release" -n "$NS" --wait --timeout 5m --no-hooks || true
@@ -65,15 +62,15 @@ for NS in pr-820 pr-846 pr-1001 pr-1157 pr-1349 pr-1405; do
 done
 ```
 
-Do NOT delete `pr-1444` — that PR is still open.
+Always verify each namespace's PR state before adding it to the list — never delete a namespace for an open PR.
 
-## Automated safeguards (as of the fix)
+## Automated safeguards
 
-Two safeguards were added to prevent future accumulation:
+Two safeguards prevent future accumulation:
 
 ### 1. `check-pr-state` gate in `deploy-pr-environment.yaml`
 
-A new `check-pr-state` job runs after all image builds complete. It calls `gh pr view` to get the current PR state. If the PR is no longer OPEN, the deploy job is skipped. The check runs at the last possible moment (after the 10-15 min image build window where the race occurs).
+A `check-pr-state` job runs after all image builds complete. It calls `gh pr view` to get the current PR state. If the PR is no longer `OPEN`, the deploy job is skipped. The check runs at the last possible moment (after the 10-15 min image build window where the race occurs).
 
 ### 2. `scheduled-cleanup-pr-environments.yaml`
 
