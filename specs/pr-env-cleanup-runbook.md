@@ -26,24 +26,16 @@ Namespaces whose PR is `MERGED` or `CLOSED` are orphaned and safe to delete. Nam
 
 ## Manual cleanup procedure
 
-Run this for each stale namespace. Replace `$NS` with the namespace to clean (e.g. `pr-1234`).
+Delete the namespace directly. The CNPG operator clears its own finalizers as part of the cascade.
 
 ```bash
-NS=pr-1234
+kubectl delete namespace pr-1234
+```
 
-# 1. Uninstall Helm releases (lets controllers clean up owned CRDs/PVCs)
-for release in $(helm list -n "$NS" -q); do
-  helm uninstall "$release" -n "$NS" --wait --timeout 5m --no-hooks || true
-done
+If the namespace gets stuck in `Terminating` (CNPG operator slow or backlogged), strip the finalizers:
 
-# 2. Delete the CNPG cluster (it holds a finalizer; must go before the namespace)
-kubectl delete cluster "keeperhub-${NS}-db" -n "$NS" --wait=false 2>/dev/null || true
-
-# 3. Delete the namespace
-kubectl delete namespace "$NS" --timeout=10m
-
-# If that times out (stuck finalizer from CNPG or another operator):
-kubectl patch namespace "$NS" -p '{"metadata":{"finalizers":[]}}' --type=merge
+```bash
+kubectl patch namespace pr-1234 -p '{"metadata":{"finalizers":[]}}' --type=merge
 ```
 
 ### Bulk cleanup of multiple stale namespaces
@@ -53,10 +45,6 @@ Use the cross-reference loop above to identify orphaned namespaces, then run:
 ```bash
 for NS in pr-111 pr-222 pr-333; do   # replace with actual orphaned namespaces
   echo "=== cleaning $NS ==="
-  for release in $(helm list -n "$NS" -q 2>/dev/null || true); do
-    helm uninstall "$release" -n "$NS" --wait --timeout 5m --no-hooks || true
-  done
-  kubectl delete cluster "keeperhub-${NS}-db" -n "$NS" --wait=false 2>/dev/null || true
   kubectl delete namespace "$NS" --timeout=10m || \
     kubectl patch namespace "$NS" -p '{"metadata":{"finalizers":[]}}' --type=merge
 done
