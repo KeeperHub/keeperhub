@@ -85,21 +85,6 @@ jobs:
 
             echo "$NAMESPACE: deleting..."
 
-            # Uninstall Helm releases first so controllers can clean up owned resources
-            for release in $(helm list -n "$NAMESPACE" -q 2>/dev/null || true); do
-              echo "$NAMESPACE: uninstalling Helm release $release"
-              helm uninstall "$release" -n "$NAMESPACE" --wait --timeout 5m \
-                --no-hooks 2>/dev/null || echo "$NAMESPACE: warning — $release uninstall failed, continuing"
-            done
-
-            # Delete CNPG cluster (has a finalizer; must be deleted before namespace)
-            if kubectl get cluster "keeperhub-${NAMESPACE}-db" -n "$NAMESPACE" \
-                >/dev/null 2>&1; then
-              echo "$NAMESPACE: deleting CNPG cluster keeperhub-${NAMESPACE}-db"
-              kubectl delete cluster "keeperhub-${NAMESPACE}-db" \
-                -n "$NAMESPACE" --wait=false 2>/dev/null || true
-            fi
-
             # Delete namespace (10 min timeout, then strip finalizers if stuck)
             if kubectl delete namespace "$NAMESPACE" --timeout=10m 2>/dev/null; then
               echo "$NAMESPACE: deleted"
