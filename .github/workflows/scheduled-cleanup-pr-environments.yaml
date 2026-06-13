@@ -1,5 +1,9 @@
 name: Scheduled PR Environment Cleanup
 
+permissions:
+  contents: read
+  pull-requests: read
+
 on:
   schedule:
     # Runs at 03:00 UTC every day
