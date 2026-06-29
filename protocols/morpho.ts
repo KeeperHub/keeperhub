@@ -115,6 +115,32 @@ export const TEST_DATA: ProtocolTestData = {
         onBehalf: wallet(),
         receiver: wallet(),
       },
+      // Vault actions: skipped at runtime (no vault address available), but
+      // build-workflow.test.ts still builds a workflow for every action that
+      // has TEST_DATA. Placeholder bindings satisfy the builder; the runner
+      // skips them via VAULT_SKIPS.
+      "vault-deposit": { assets: amount("USDC", "1"), receiver: wallet() },
+      "vault-mint": { shares: "1000000", receiver: wallet() },
+      "vault-withdraw": {
+        assets: amount("USDC", "1"),
+        receiver: wallet(),
+        owner: wallet(),
+      },
+      "vault-redeem": { shares: "1000000", receiver: wallet(), owner: wallet() },
+      "vault-asset": {},
+      "vault-total-assets": {},
+      "vault-total-supply": {},
+      "vault-balance": { owner: wallet() },
+      "vault-convert-to-assets": { shares: "1000000" },
+      "vault-convert-to-shares": { assets: amount("USDC", "1") },
+      "vault-preview-deposit": { assets: amount("USDC", "1") },
+      "vault-preview-mint": { shares: "1000000" },
+      "vault-preview-withdraw": { assets: amount("USDC", "1") },
+      "vault-preview-redeem": { shares: "1000000" },
+      "vault-max-deposit": { receiver: wallet() },
+      "vault-max-mint": { receiver: wallet() },
+      "vault-max-withdraw": { owner: wallet() },
+      "vault-max-redeem": { owner: wallet() },
     },
   },
 };
