@@ -1,5 +1,123 @@
 import { defineProtocol } from "@/lib/protocol-registry";
 import { erc4626VaultActions } from "@/lib/web3/standards/erc4626";
+import {
+  amount,
+  contract,
+  type ProtocolTestData,
+  wallet,
+} from "@/lib/test-data/types";
+
+// wstETH/USDC 86% LLTV market on Morpho Blue mainnet.
+// Params source: Morpho public analytics; verify via get-market-params on the fork.
+const WSTETH_USDC_MARKET = {
+  loanToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", // USDC
+  collateralToken: "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0", // wstETH
+  oracle: "0x48F7E36EB6B826B2dF4B2E630B62Cd25e89E40e2",
+  irm: "0x870aC11D48B15DB9a138Cf899d20F13F79Ba00BC", // AdaptiveCurveIrm
+  lltv: "860000000000000000", // 86%
+} as const;
+const MARKET_ID =
+  "0xb323495f7e4148be5643a4ea4a8221eef163e4bccfdedc2a6f4696baacbc86cc";
+
+// MetaMorpho vault actions (userSpecifiedAddress) are skipped: the vault
+// contract address is unknown at test time and must come from user input.
+const VAULT_SKIPS: Record<string, string> = {
+  "vault-deposit": "vault address required (userSpecifiedAddress)",
+  "vault-mint": "vault address required (userSpecifiedAddress)",
+  "vault-withdraw": "vault address required (userSpecifiedAddress)",
+  "vault-redeem": "vault address required (userSpecifiedAddress)",
+  "vault-asset": "vault address required (userSpecifiedAddress)",
+  "vault-total-assets": "vault address required (userSpecifiedAddress)",
+  "vault-total-supply": "vault address required (userSpecifiedAddress)",
+  "vault-balance": "vault address required (userSpecifiedAddress)",
+  "vault-convert-to-assets": "vault address required (userSpecifiedAddress)",
+  "vault-convert-to-shares": "vault address required (userSpecifiedAddress)",
+  "vault-preview-deposit": "vault address required (userSpecifiedAddress)",
+  "vault-preview-mint": "vault address required (userSpecifiedAddress)",
+  "vault-preview-withdraw": "vault address required (userSpecifiedAddress)",
+  "vault-preview-redeem": "vault address required (userSpecifiedAddress)",
+  "vault-max-deposit": "vault address required (userSpecifiedAddress)",
+  "vault-max-mint": "vault address required (userSpecifiedAddress)",
+  "vault-max-withdraw": "vault address required (userSpecifiedAddress)",
+  "vault-max-redeem": "vault address required (userSpecifiedAddress)",
+};
+
+export const TEST_DATA: ProtocolTestData = {
+  "1": {
+    setup: {
+      minNativeHuman: "0.01",
+      requiredTokens: [
+        { symbol: "WSTETH", human: "0.15" },
+        { symbol: "USDC", human: "150" },
+      ],
+      approvals: [
+        { token: "WSTETH", spender: contract("morpho"), human: "0.15" },
+        { token: "USDC", spender: contract("morpho"), human: "150" },
+      ],
+    },
+    skipped: {
+      ...VAULT_SKIPS,
+      liquidate: "requires undercollateralized position",
+      "flash-loan": "requires callback contract implementation",
+    },
+    actions: {
+      // Read actions
+      "get-market": { id: MARKET_ID },
+      "get-position": { id: MARKET_ID, user: wallet() },
+      "get-market-params": { id: MARKET_ID },
+      "is-authorized": { authorizer: wallet(), authorized: wallet() },
+      // Write actions ordered for sequential fork state dependency:
+      // accrue-interest and set-authorization have no prerequisites.
+      // supply-collateral before borrow; supply before borrow (liquidity needed);
+      // repay after borrow; withdraw after supply; withdraw-collateral after repay.
+      "accrue-interest": { ...WSTETH_USDC_MARKET },
+      "set-authorization": {
+        authorized: "0x000000000000000000000000000000000000dEaD",
+        newIsAuthorized: "false",
+      },
+      "supply-collateral": {
+        ...WSTETH_USDC_MARKET,
+        assets: amount("WSTETH", "0.1"),
+        onBehalf: wallet(),
+        data: "0x",
+      },
+      supply: {
+        ...WSTETH_USDC_MARKET,
+        assets: amount("USDC", "100"),
+        shares: "0",
+        onBehalf: wallet(),
+        data: "0x",
+      },
+      borrow: {
+        ...WSTETH_USDC_MARKET,
+        assets: amount("USDC", "20"),
+        shares: "0",
+        onBehalf: wallet(),
+        receiver: wallet(),
+      },
+      repay: {
+        ...WSTETH_USDC_MARKET,
+        assets: amount("USDC", "15"),
+        shares: "0",
+        onBehalf: wallet(),
+        data: "0x",
+      },
+      withdraw: {
+        ...WSTETH_USDC_MARKET,
+        assets: amount("USDC", "50"),
+        shares: "0",
+        onBehalf: wallet(),
+        receiver: wallet(),
+      },
+      "withdraw-collateral": {
+        ...WSTETH_USDC_MARKET,
+        assets: amount("WSTETH", "0.05"),
+        onBehalf: wallet(),
+        receiver: wallet(),
+      },
+    },
+  },
+};
 
 export default defineProtocol({
   name: "Morpho",
@@ -8,6 +126,7 @@ export default defineProtocol({
     "Trustless lending protocol: overcollateralized borrowing and lending of ERC-20 tokens via a singleton contract",
   website: "https://app.morpho.org",
   icon: "/protocols/morpho.png",
+  testData: TEST_DATA,
 
   contracts: {
     morpho: {
