@@ -1,7 +1,29 @@
 import { defineAbiProtocol } from "@/lib/protocol-registry";
+import { type ProtocolTestData, wallet } from "@/lib/test-data/types";
 import wethAbi from "./abis/weth.json";
 
 const WRAPPED_DOCS = "https://ethereum.org/en/wrapped-eth/";
+
+// Mainnet fork smoke test: wrap deposits 0.01 ETH, unwrap burns half.
+// No ERC20 prefunding needed (WETH is acquired by wrapping native).
+// Setup is a no-op: the TS preflight provisions native gas via anvil_setBalance.
+export const TEST_DATA: ProtocolTestData = {
+  "1": {
+    setup: {
+      minNativeHuman: "0.1",
+      requiredTokens: [],
+      approvals: [],
+    },
+    actions: {
+      // deposit() is payable with no calldata inputs; ethValue sets msg.value.
+      wrap: { ethValue: "0.01" },
+      // withdraw(wad uint256): burn 0.005 WETH and receive 0.005 ETH.
+      unwrap: { wad: "5000000000000000" },
+      // balanceOf: input is renamed to "account" via override, so binding key is "account".
+      "balance-of": { account: wallet() },
+    },
+  },
+};
 
 export default defineAbiProtocol({
   name: "Wrapped",
@@ -10,6 +32,7 @@ export default defineAbiProtocol({
     "Wrap a chain's native token into its wrapped ERC-20 form and unwrap back to the native token",
   website: "https://weth.io",
   icon: "/protocols/weth.png",
+  testData: TEST_DATA,
 
   contracts: {
     weth: {

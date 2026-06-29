@@ -675,6 +675,32 @@ services:
     profiles:
       - test
 
+  # Ethereum mainnet fork for protocol-coverage tests that require mainnet state
+  # (morpho, wrapped). Set ANVIL_FORK_MAINNET_URL to a private archive node
+  # for higher rate limits and consistent block pinning.
+  test-anvil-fork-mainnet:
+    image: ghcr.io/foundry-rs/foundry:latest
+    container_name: keeperhub-test-anvil-fork-mainnet
+    ports:
+      - "8548:8545"
+    entrypoint: anvil
+    command:
+      - --host
+      - 0.0.0.0
+      - --fork-url
+      - ${ANVIL_FORK_MAINNET_URL:-https://ethereum-rpc.publicnode.com}
+      - --chain-id
+      - "1"
+      - --block-time
+      - "1"
+    healthcheck:
+      test: ["CMD-SHELL", "cast block-number --rpc-url http://localhost:8545 > /dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    profiles:
+      - test
+
   test-redis:
     image: valkey/valkey:latest
     container_name: keeperhub-test-redis

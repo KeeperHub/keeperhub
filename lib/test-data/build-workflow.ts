@@ -295,16 +295,23 @@ function buildProtocolActionNode(
     _protocolMeta: buildProtocolMeta(action, protocol.slug),
   };
 
-  // `contractAddress` is the builder's reserved virtual hint for
-  // userSpecifiedAddress contracts (Superfluid SuperTokens). An action
-  // declaring a real input with the same name would silently share the
-  // binding -- catch it loudly here instead.
+  // `contractAddress` and `ethValue` are reserved virtual keys. Catch
+  // any real action input with those names before they collide with the
+  // builder's own virtual handling below.
   for (const input of action.inputs) {
     if (input.name === "contractAddress") {
       throw new Error(
         `${protocol.slug}/${action.slug} declares an input named "contractAddress", ` +
           "which the protocol-coverage builder reserves as a virtual hint for " +
           "userSpecifiedAddress contracts. Rename the input in protocols/" +
+          `${protocol.slug}.ts.`
+      );
+    }
+    if (input.name === "ethValue") {
+      throw new Error(
+        `${protocol.slug}/${action.slug} declares an input named "ethValue", ` +
+          "which the protocol-coverage builder reserves for the payable msg.value " +
+          "field. Rename the input in protocols/" +
           `${protocol.slug}.ts.`
       );
     }
@@ -320,6 +327,20 @@ function buildProtocolActionNode(
       chainId,
       walletAddress
     );
+  }
+
+  // Optional virtual `ethValue` for payable actions. The execution engine
+  // expects an ETH string (e.g. "0.01"), not wei. Provide a plain string
+  // binding in TEST_DATA actions: `{ ethValue: "0.01" }`.
+  if (bindings.ethValue !== undefined) {
+    const ev = bindings.ethValue;
+    if (typeof ev !== "string") {
+      throw new Error(
+        `${protocol.slug}/${action.slug}: ethValue binding must be a plain ETH ` +
+          `string (e.g. "0.01"), got ${JSON.stringify(ev)}.`
+      );
+    }
+    config.ethValue = ev;
   }
 
   for (const input of action.inputs) {
