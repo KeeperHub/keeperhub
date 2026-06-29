@@ -325,6 +325,7 @@ export type AbiDrivenProtocolInput = {
   description: string;
   website?: string;
   icon?: string;
+  testData?: import("../test-data/types").ProtocolTestData;
   contracts: Record<string, AbiDrivenContract>;
 };
 

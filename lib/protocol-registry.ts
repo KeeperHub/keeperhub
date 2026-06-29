@@ -259,6 +259,7 @@ export function defineAbiProtocol(
     description: input.description,
     website: input.website,
     icon: input.icon,
+    testData: input.testData,
     contracts,
     actions,
     events,
