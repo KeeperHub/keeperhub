@@ -53,10 +53,7 @@ export default defineAbiProtocol({
             { name: "account", type: "address" },
             { name: "asset", type: "address" },
           ],
-          outputs: [
-            { name: "balance", type: "uint128" },
-            { name: "_reserved", type: "uint128" },
-          ],
+          outputs: [{ name: "balance", type: "uint128" }],
         },
         {
           type: "function",
