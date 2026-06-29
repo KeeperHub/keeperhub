@@ -141,6 +141,15 @@ export const TEST_DATA: ProtocolTestData = {
       "vault-max-mint": { receiver: wallet() },
       "vault-max-withdraw": { owner: wallet() },
       "vault-max-redeem": { owner: wallet() },
+      // Skipped write actions: builder still requires bindings for all address inputs.
+      liquidate: {
+        ...WSTETH_USDC_MARKET,
+        borrower: wallet(),
+        seizedAssets: amount("WSTETH", "0.01"),
+        repaidShares: "0",
+        data: "0x",
+      },
+      "flash-loan": { token: "USDC", assets: amount("USDC", "1"), data: "0x" },
     },
   },
 };
