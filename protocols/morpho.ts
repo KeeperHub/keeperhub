@@ -130,7 +130,7 @@ export const TEST_DATA: ProtocolTestData = {
       "vault-asset": {},
       "vault-total-assets": {},
       "vault-total-supply": {},
-      "vault-balance": { owner: wallet() },
+      "vault-balance": { account: wallet() },
       "vault-convert-to-assets": { shares: "1000000" },
       "vault-convert-to-shares": { assets: amount("USDC", "1") },
       "vault-preview-deposit": { assets: amount("USDC", "1") },
