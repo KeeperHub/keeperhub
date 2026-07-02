@@ -15,7 +15,7 @@ import { ANONYMOUS_ORG_SLUG } from "@/lib/metrics/db-metrics";
  * `workflow_executions` row has been written with status='error'.
  *
  * Resolves the org slug for the workflow so the counter series is scoped
- * for the SLA alert (Sky/Ajna). Falls back to ANONYMOUS_ORG_SLUG for
+ * for the managed-client SLA alert. Falls back to ANONYMOUS_ORG_SLUG for
  * personal workflows so personal failures still emit a series.
  *
  * Safe to call after the DB write succeeded. Errors are caught and dropped

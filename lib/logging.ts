@@ -134,7 +134,7 @@ function buildErrPayload(
  * Loki labels, not just as text inside the message string.
  *
  * The human-readable `msg` field retains the original message and the
- * `[org:Sky][exec:xyz]` tag so `kubectl logs` greps still work.
+ * `[org:<slug>][exec:xyz]` tag so `kubectl logs` greps still work.
  */
 function buildStructuredPayload(args: {
   message: string;

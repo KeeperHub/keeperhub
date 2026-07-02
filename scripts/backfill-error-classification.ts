@@ -1,22 +1,24 @@
 /**
- * KEEP-545: one-time backfill of `error_category` and `error_type`
- * columns on `workflow_executions` rows for managed-client orgs (Sky and
- * Ajna) over the last 90 days.
+ * One-time backfill of `error_category` and `error_type` columns on
+ * `workflow_executions` rows for the managed-client orgs over the last 90 days.
  *
  * The DB schema migration that added these columns leaves them null on
- * historical rows. The SLA alert post-PR-2 watches the new counter, not
- * the historical column, so backfill is not required for the alert. The
- * reason to run this is to produce an immediate inventory of "real
- * engineering failures vs user-config noise" inside the managed-client
- * scope without writing one-off SQL.
+ * historical rows. The SLA alert watches the new counter, not the historical
+ * column, so backfill is not required for the alert. The reason to run this is
+ * to produce an immediate inventory of "real engineering failures vs
+ * user-config noise" inside the managed-client scope without writing one-off
+ * SQL.
  *
- * Idempotent: skips rows that already have both classification columns
- * set. Safe to re-run.
+ * Idempotent: skips rows that already have both classification columns set.
+ * Safe to re-run.
+ *
+ * Org scope defaults to the managed cohort (`getManagedOrgSlugs()`, sourced
+ * from MANAGED_ORGS_CONFIG); pass `--orgs` to override.
  *
  * Usage:
  *   pnpm tsx scripts/backfill-error-classification.ts --dry-run
  *   pnpm tsx scripts/backfill-error-classification.ts
- *   pnpm tsx scripts/backfill-error-classification.ts --orgs sky,ajna --days 30
+ *   pnpm tsx scripts/backfill-error-classification.ts --orgs slug-a,slug-b --days 30
  *
  * Output:
  *   - Progress lines per batch (`processed=N updated=M skipped=K`)
@@ -27,8 +29,9 @@ import { and, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { organization, workflowExecutions, workflows } from "@/lib/db/schema";
 import { classifyExecutionError } from "@/lib/errors/classify";
+import { getManagedOrgSlugs } from "@/lib/orgs/managed-clients";
 
-const DEFAULT_ORGS = ["techops-services", "ajna"];
+const DEFAULT_ORGS = getManagedOrgSlugs();
 const DEFAULT_DAYS = 90;
 const BATCH_SIZE = 500;
 

@@ -16,9 +16,8 @@ import { ErrorCategory } from "@/lib/logging";
  *                    null for user failures (which surface their raw message).
  *
  * The classifier is intentionally pattern-driven against real production
- * messages observed for managed clients (Sky/Ajna) so the resulting
- * `error_type` label on `workflow_executions` lets the SLI alert filter
- * out user-config noise.
+ * messages observed for managed clients so the resulting `error_type` label on
+ * `workflow_executions` lets the SLI alert filter out user-config noise.
  *
  * Default for unmatched messages is WORKFLOW_ENGINE / errorType="system" /
  * code=DEFAULT_SYSTEM_ERROR_CODE. That defaults to "treat unknown as system"

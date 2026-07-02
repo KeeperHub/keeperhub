@@ -84,7 +84,7 @@ Error metrics tracking failures and exceptions.
 | Metric Name | Description | Labels | Target | Source |
 |-------------|-------------|--------|--------|--------|
 | `workflow.execution.errors` | Failed workflow executions | - | < 5% | DB |
-| `workflow.errors.by_workflow` | Errored executions in the **last hour** (rolling 1h window), managed orgs only. Powers the Sky/Ajna managed-client error alerts; the alert reads it directly (no offset). Not cumulative. | `workflow_id`, `org_slug`, `error_type` | - | DB |
+| `workflow.errors.by_workflow` | Errored executions in the **last hour** (rolling 1h window), managed orgs only. Powers the managed-client error alerts; the alert reads it directly (no offset). Not cumulative. | `workflow_id`, `org_slug`, `error_type` | - | DB |
 | `workflow.step.errors` | Failed step executions | `step_type` | < 10% | DB |
 | `plugin.action.errors` | Failed plugin actions | `plugin_name`, `action_name`, `error_type` | < 20% | API |
 | `api.errors.total` | API errors (webhook failures) | `endpoint`, `status_code`, `error_type` | count | API |
@@ -374,7 +374,7 @@ max by (status) (keeperhub_workflow_executions_total{...})
 sum by (status) (keeperhub_workflow_executions_total{...})
 ```
 
-`keeperhub_workflow_executions_total` and `keeperhub_workflow_execution_errors_total` are labeled by `org_slug` so dashboards/alerts can scope to managed clients. Personal/anonymous workflows are emitted under `org_slug="_anonymous"` so the sum across `org_slug` for a given status equals the unfiltered per-status total. To filter to managed clients, add `org_slug=~"techops-services|ajna"` (or the inverse `!~` for user workflows).
+`keeperhub_workflow_executions_total` and `keeperhub_workflow_execution_errors_total` are labeled by `org_slug` so dashboards/alerts can scope to managed clients. Personal/anonymous workflows are emitted under `org_slug="_anonymous"` so the sum across `org_slug` for a given status equals the unfiltered per-status total. To filter to managed clients, add `org_slug=~"$managed_slugs"` (or the inverse `!~` for user workflows).
 
 **Metrics requiring `max()` aggregation:**
 
@@ -422,11 +422,11 @@ sum by (status) (
 
 # Error rate over last hour, scoped to managed orgs
 100 * sum(max by (org_slug) (
-        delta(keeperhub_workflow_execution_errors_total{org_slug=~"techops-services|ajna"}[1h])
+        delta(keeperhub_workflow_execution_errors_total{org_slug=~"$managed_slugs"}[1h])
       ))
     / clamp_min(
         sum(max by (status, org_slug) (
-          delta(keeperhub_workflow_executions_total{org_slug=~"techops-services|ajna"}[1h])
+          delta(keeperhub_workflow_executions_total{org_slug=~"$managed_slugs"}[1h])
         )),
         1
       )

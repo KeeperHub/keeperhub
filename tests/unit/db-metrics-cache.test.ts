@@ -141,10 +141,10 @@ const CACHE_LOOKUP_HIT_RE =
   /keeperhub_db_metrics_cache_lookups_total\{result="hit"\}\s+\d+/;
 const REFRESH_SUCCESS_RE =
   /keeperhub_db_metrics_refresh_total\{outcome="success"\}\s+\d+/;
-const ERRORS_BY_WORKFLOW_SKY_RE =
-  /keeperhub_workflow_errors_by_workflow\{[^}]*workflow_id="wf_sky_1"[^}]*org_slug="techops-services"[^}]*error_type="user"[^}]*\}\s+7/;
-const ERRORS_BY_WORKFLOW_AJNA_RE =
-  /keeperhub_workflow_errors_by_workflow\{[^}]*workflow_id="wf_ajna_1"[^}]*org_slug="ajna"[^}]*error_type="system"[^}]*\}\s+2/;
+const ERRORS_BY_WORKFLOW_A_RE =
+  /keeperhub_workflow_errors_by_workflow\{[^}]*workflow_id="wf_a_1"[^}]*org_slug="managed-a"[^}]*error_type="user"[^}]*\}\s+7/;
+const ERRORS_BY_WORKFLOW_B_RE =
+  /keeperhub_workflow_errors_by_workflow\{[^}]*workflow_id="wf_b_1"[^}]*org_slug="managed-b"[^}]*error_type="system"[^}]*\}\s+2/;
 const ERRORS_BY_CATEGORY_SYSTEM_RE =
   /keeperhub_system_errors_by_category\{[^}]*error_category="network_rpc"[^}]*error_type="system"[^}]*\}\s+5/;
 const ERRORS_BY_CATEGORY_UNKNOWN_RE =
@@ -400,14 +400,14 @@ describe("keeperhub_workflow_errors_by_workflow gauge", () => {
   it("emits one series per (workflow_id, org_slug, error_type) from the DB query", async () => {
     dbMocks.getWorkflowErrorsByWorkflowFromDb.mockResolvedValue([
       {
-        workflowId: "wf_sky_1",
-        orgSlug: "techops-services",
+        workflowId: "wf_a_1",
+        orgSlug: "managed-a",
         errorType: "user",
         count: 7,
       },
       {
-        workflowId: "wf_ajna_1",
-        orgSlug: "ajna",
+        workflowId: "wf_b_1",
+        orgSlug: "managed-b",
         errorType: "system",
         count: 2,
       },
@@ -416,13 +416,18 @@ describe("keeperhub_workflow_errors_by_workflow gauge", () => {
     await updateDbMetrics();
     const out = await getDbMetrics();
 
-    expect(out).toMatch(ERRORS_BY_WORKFLOW_SKY_RE);
-    expect(out).toMatch(ERRORS_BY_WORKFLOW_AJNA_RE);
+    expect(out).toMatch(ERRORS_BY_WORKFLOW_A_RE);
+    expect(out).toMatch(ERRORS_BY_WORKFLOW_B_RE);
   });
 
   it("clears stale series when a workflow stops appearing in the query", async () => {
     dbMocks.getWorkflowErrorsByWorkflowFromDb.mockResolvedValueOnce([
-      { workflowId: "wf_gone", orgSlug: "ajna", errorType: "user", count: 3 },
+      {
+        workflowId: "wf_gone",
+        orgSlug: "managed-b",
+        errorType: "user",
+        count: 3,
+      },
     ]);
     await updateDbMetrics();
     expect(await getDbMetrics()).toContain('workflow_id="wf_gone"');

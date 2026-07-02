@@ -50,6 +50,7 @@ import {
 } from "@/lib/db/schema";
 import { ERROR_STATUSES } from "@/lib/errors/execution-status";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
+import { getManagedOrgSlugs } from "@/lib/orgs/managed-clients";
 import type { BillingStatus } from "./types";
 
 // Label value used for workflow executions whose workflow has no organization
@@ -59,13 +60,10 @@ import type { BillingStatus } from "./types";
 // workflows still produce a series rather than silently dropping increments.
 export const ANONYMOUS_ORG_SLUG = "_anonymous";
 
-// Org slugs for the managed clients (Sky, Ajna) whose per-workflow error series
-// power the managed-client user-error alerts. The per-workflow gauge is scoped
-// to these slugs so `workflow_id` never becomes an unbounded label across the
-// whole user base — only managed workflows that have errored emit a series.
-// Mirrors `local.managed_org_slugs_regex` in the infra Grafana alert config;
-// adding a managed org requires updating both lists.
-export const MANAGED_ORG_SLUGS = ["techops-services", "ajna"] as const;
+// The per-workflow error gauge is scoped to the managed-client slugs (from
+// `getManagedOrgSlugs()`, env-sourced) so `workflow_id` never becomes an
+// unbounded label across the whole user base — only managed workflows that have
+// errored emit a series.
 
 // Histogram bucket boundaries in milliseconds (must match prometheus.ts)
 const WORKFLOW_DURATION_BUCKETS = [
@@ -160,9 +158,7 @@ export async function getWorkflowStatsFromDb(): Promise<WorkflowStats> {
       .from(workflowExecutions)
       .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
       .leftJoin(organization, eq(workflows.organizationId, organization.id))
-      .where(
-        gte(workflowExecutions.startedAt, sql`now() - interval '30 days'`)
-      )
+      .where(gte(workflowExecutions.startedAt, sql`now() - interval '30 days'`))
       .groupBy(
         workflowExecutions.status,
         organization.slug,
@@ -339,11 +335,18 @@ export type WorkflowErrorsByWorkflow = Array<{
  * last hour keeps the row set tiny so the query is an index range scan on
  * idx_workflow_executions_error_completed_at and finishes in milliseconds.
  *
- * Scoped to MANAGED_ORG_SLUGS to bound `workflow_id` cardinality. errorType is
- * the `workflow_executions.error_type` column, projected to "unknown" for
- * rows that predate classification so every series carries a populated label.
+ * Scoped to the managed-client slugs to bound `workflow_id` cardinality.
+ * errorType is the `workflow_executions.error_type` column, projected to
+ * "unknown" for rows that predate classification so every series carries a
+ * populated label.
  */
 export async function getWorkflowErrorsByWorkflowFromDb(): Promise<WorkflowErrorsByWorkflow> {
+  const managedSlugs = getManagedOrgSlugs();
+  if (managedSlugs.length === 0) {
+    // No managed cohort configured -> emit no managed series (keeps the gauge
+    // bounded and avoids a pointless query).
+    return [];
+  }
   try {
     const rows = await db
       .select({
@@ -359,7 +362,7 @@ export async function getWorkflowErrorsByWorkflowFromDb(): Promise<WorkflowError
         and(
           inArray(workflowExecutions.status, [...ERROR_STATUSES]),
           sql`${workflowExecutions.completedAt} >= now() - interval '1 hour'`,
-          inArray(organization.slug, [...MANAGED_ORG_SLUGS])
+          inArray(organization.slug, managedSlugs)
         )
       )
       .groupBy(

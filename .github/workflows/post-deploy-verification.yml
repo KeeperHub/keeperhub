@@ -1,0 +1,204 @@
+# Type: standalone | Triggered by the CI Pipeline finishing successfully.
+#
+# This is a SEPARATE pipeline from the deploy. It fires only after the entire
+# "CI Pipeline" run (build -> e2e -> deploy -> release -> docs-sync) completes
+# with conclusion == success on prod -- not after any single step. It then
+# verifies that managed + enterprise orgs are executing workflows correctly on
+# the just-shipped build.
+#
+# It runs INSIDE the cluster: the /api/internal/* routes are HMAC-authed and
+# WAF-blocked through the public hostname, so it signs the request the same way
+# deploy/scripts/digest-cron.sh does and curls the in-pod service URL via a
+# one-shot pod -- mirroring the deploy health check.
+name: post-deploy-verification
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types:
+      - completed
+
+permissions:
+  contents: read
+  id-token: write
+
+# One verification per target at a time. cancel-in-progress is false so a second
+# pipeline's verification queues rather than killing an in-flight check.
+concurrency:
+  group: post-deploy-verification-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # Only when the whole CI Pipeline went green on prod. A failed/cancelled CI
+    # run, or a successful run on any other branch, is skipped entirely.
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'prod'
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      NAMESPACE: keeperhub
+      SERVICE_NAME: keeperhub
+      SSM_ENV_PREFIX: techops-prod
+      # The job polls the stateless check endpoint once a minute for at most
+      # MONITOR_MINUTES, watching only executions on the new build (anchored at
+      # the loop start). It stops early the moment an org is flagged, so the
+      # common green path costs ~1 poll, and the worst case is capped at 5 min
+      # of runner time. An org is flagged when it has any system_error, or when
+      # it ran at least MIN_EXECUTIONS and its error rate exceeds MAX_ERROR_RATE.
+      MONITOR_MINUTES: "5"
+      POLL_INTERVAL_SECONDS: "60"
+      MIN_EXECUTIONS: "1"
+      MAX_ERROR_RATE: "0.5"
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${REGION}"
+
+      - name: Fetch internal-service HMAC secret
+        run: |
+          SECRET=$(aws ssm get-parameter \
+            --name "/eks/${SSM_ENV_PREFIX}/keeperhub/internal-service-hmac-secret" \
+            --with-decryption --query "Parameter.Value" --output text \
+            --region "${REGION}")
+          echo "::add-mask::$SECRET"
+          echo "INTERNAL_SERVICE_HMAC_SECRET=$SECRET" >> "$GITHUB_ENV"
+
+      - name: Monitor the new build (in-cluster, poll once a minute)
+        id: verify
+        env:
+          # Scopes the endpoint's PagerDuty dedup key so every poll of this
+          # deploy collapses into one incident per org.
+          DEPLOY_ID: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -uo pipefail
+
+          CALLER="scheduler"
+          METHOD="GET"
+          PATHNAME="/api/internal/post-deploy-verification"
+
+          # Anchor the window at the loop start so every poll counts only
+          # executions that began after the deploy -- i.e. runs on the new build.
+          SINCE=$(date +%s)
+          DEADLINE=$(( SINCE + MONITOR_MINUTES * 60 ))
+
+          ATTEMPT=0
+          PROBLEM_FOUND=0
+          GOT_SIGNAL=0
+          CHECKED="?"
+          PROBLEMS="?"
+
+          while true; do
+            ATTEMPT=$(( ATTEMPT + 1 ))
+
+            # Re-sign per poll: X-KH-Timestamp must be within the verifier's
+            # replay window. The verifier signs over url.pathname only, so the
+            # query (since/thresholds) does not affect the signature.
+            TIMESTAMP=$(date +%s)
+            BODY_DIGEST=$(printf '' | openssl dgst -sha256 | awk '{print $2}')
+            SIGNING_STRING=$(printf '%s\n%s\n%s\n%s\n%s' "$METHOD" "$PATHNAME" "$CALLER" "$BODY_DIGEST" "$TIMESTAMP")
+            SIGNATURE=$(printf '%s' "$SIGNING_STRING" | openssl dgst -sha256 -hmac "$INTERNAL_SERVICE_HMAC_SECRET" | awk '{print $2}')
+
+            # Mark the last poll: only then can the endpoint conclude "no
+            # executions in the window" (a due schedule may fire at the end).
+            if [ $(( $(date +%s) + POLL_INTERVAL_SECONDS )) -ge "$DEADLINE" ]; then
+              FINAL=1
+            else
+              FINAL=0
+            fi
+
+            URL="http://${SERVICE_NAME}-common.${NAMESPACE}.svc.cluster.local:3000${PATHNAME}?since=${SINCE}&until=${DEADLINE}&final=${FINAL}&deployId=${DEPLOY_ID}&minExecutions=${MIN_EXECUTIONS}&maxErrorRate=${MAX_ERROR_RATE}"
+
+            # The secret never enters the pod -- only the precomputed signature does.
+            RESPONSE=$(kubectl run "post-deploy-verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ATTEMPT}" \
+              --namespace "${NAMESPACE}" \
+              --restart=Never \
+              --attach \
+              --rm \
+              --quiet \
+              --image=curlimages/curl:8.11.0 \
+              --env="URL=${URL}" \
+              --env="CALLER=${CALLER}" \
+              --env="TIMESTAMP=${TIMESTAMP}" \
+              --env="SIGNATURE=${SIGNATURE}" \
+              --command -- sh -c '
+                curl -sS --max-time 30 \
+                  -H "X-KH-Caller: ${CALLER}" \
+                  -H "X-KH-Timestamp: ${TIMESTAMP}" \
+                  -H "X-KH-Signature: ${SIGNATURE}" \
+                  "$URL"
+              ' 2>/dev/null) || true
+
+            # PUBLIC repo: Actions logs are world-readable. Surface only
+            # non-identifying aggregates. Per-org slugs/names/error text stay in
+            # internal logs (Loki); the raw endpoint error is never echoed.
+            OK=$(printf '%s' "$RESPONSE" | jq -r '.ok // empty' 2>/dev/null)
+            PC=$(printf '%s' "$RESPONSE" | jq -r '.problemCount // empty' 2>/dev/null)
+            CO=$(printf '%s' "$RESPONSE" | jq -r '.checkedOrgs // empty' 2>/dev/null)
+            TE=$(printf '%s' "$RESPONSE" | jq -r '.totalExecutions // empty' 2>/dev/null)
+
+            if [ -n "$OK" ]; then
+              GOT_SIGNAL=1
+              CHECKED="$CO"
+              PROBLEMS="$PC"
+              echo "Attempt ${ATTEMPT}: ok=${OK}, checkedOrgs=${CO}, problemCount=${PC}, totalExecutions=${TE}"
+              if [ "$OK" != "true" ]; then
+                PROBLEM_FOUND=1
+                echo "Problem detected on the new build; stopping monitoring early."
+                break
+              fi
+            else
+              echo "Attempt ${ATTEMPT}: no valid response (transient); will retry."
+            fi
+
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "Monitored ${MONITOR_MINUTES}m with no problems."
+              break
+            fi
+            sleep "${POLL_INTERVAL_SECONDS}"
+          done
+
+          if [ "$PROBLEM_FOUND" -eq 1 ]; then
+            RESULT="false"
+          elif [ "$GOT_SIGNAL" -eq 1 ]; then
+            RESULT="true"
+          else
+            # Never got a parseable response in the whole window -- cannot
+            # confirm health, so do not greenlight.
+            RESULT="error"
+          fi
+
+          {
+            echo "ok=$RESULT"
+            echo "checked=$CHECKED"
+            echo "problems=$PROBLEMS"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fail on verification problems
+        if: always() && steps.verify.outputs.ok != 'true'
+        env:
+          CHECKED: ${{ steps.verify.outputs.checked }}
+          PROBLEMS: ${{ steps.verify.outputs.problems }}
+        run: |
+          # Paging is done server-side by the endpoint (per-client PagerDuty
+          # routing), so the CI job carries no slugs or routing keys. This step
+          # just surfaces a red job + aggregate counts; the per-org detail lives
+          # in PagerDuty and internal logs (Loki: "post-deploy verification
+          # flagged ...").
+          if [ -n "${PROBLEMS:-}" ] && [ "${PROBLEMS}" != "?" ]; then
+            echo "Flagged ${PROBLEMS} of ${CHECKED} managed/enterprise org(s) on the new build. Paged via PagerDuty; details in internal logs."
+          else
+            echo "Post-deploy verification could not complete. See the Actions run and internal logs."
+          fi
+
+          echo "::error::Post-deploy verification flagged managed/enterprise org problems (count only; PagerDuty + internal logs have specifics)."
+          exit 1

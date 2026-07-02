@@ -481,6 +481,19 @@ app:
       type: parameterStore
       name: kh-admin-secret
       parameter_name: /eks/techops-prod/keeperhub/kh-admin-secret
+    # Managed-client cohort + per-client PagerDuty routing. Single source of
+    # truth (JSON dict {"<slug>":{"pagerdutyRoutingKey":"..."}}) read by the
+    # post-deploy verification route; keeps client slugs out of the source.
+    MANAGED_ORGS_CONFIG:
+      type: parameterStore
+      name: managed-orgs
+      parameter_name: /eks/techops-prod/keeperhub/managed-orgs
+    # Fallback PagerDuty routing key for enterprise-plan orgs without a
+    # dedicated service entry in MANAGED_ORGS_CONFIG.
+    DEFAULT_PAGERDUTY_ROUTING_KEY:
+      type: parameterStore
+      name: default-pagerduty-routing-key
+      parameter_name: /eks/techops-prod/keeperhub/default-pagerduty-routing-key
 
   externalSecrets:
     clusterSecretStoreName: techops-prod
@@ -1074,6 +1087,13 @@ metricsCollector:
     NODE_ENV:
       type: kv
       value: "production"
+    # Managed-client slugs (same dict the app reads) so the per-workflow
+    # managed-client error gauge stays scoped. No PagerDuty key here -- the
+    # collector never pages.
+    MANAGED_ORGS_CONFIG:
+      type: parameterStore
+      name: managed-orgs
+      parameter_name: /eks/techops-prod/keeperhub/managed-orgs
 
   externalSecrets:
     clusterSecretStoreName: techops-prod
