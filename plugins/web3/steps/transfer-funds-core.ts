@@ -14,13 +14,17 @@ import { chains, explorerConfigs, workflowExecutions } from "@/lib/db/schema";
 import { getTransactionUrl } from "@/lib/explorer";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import {
+  getOrganizationWallet,
   getOrganizationWalletAddress,
+  initializeSolanaWalletSigner,
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
 import { getErrorMessage } from "@/lib/utils";
 import { generateId } from "@/lib/utils/id";
+import { PublicKey } from "@solana/web3.js";
+import type { SolanaTransactionSigner } from "@/lib/web3/chain-adapter/types";
 import {
   executeNativeTransferAsRole,
   executeNativeTransferAsSafe,
@@ -98,6 +102,25 @@ export async function transferFundsCore(
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
 
+  // Wrap network parsing to avoid throwing uncaught errors for invalid networks before branching
+  let chainId: number;
+  try {
+    chainId = getChainIdFromNetwork(network);
+  } catch (error) {
+    return { success: false, error: getErrorMessage(error) };
+  }
+
+  // Branch early to Solana-specific path
+  if (isSolanaTransferPath(chainId)) {
+    return transferFundsSolana({
+      chainId,
+      amount,
+      recipientAddress,
+      gasLimitMultiplier,
+      _context,
+    });
+  }
+
   // Validate recipient address
   if (!ethers.isAddress(recipientAddress)) {
     return {
@@ -140,13 +163,10 @@ export async function transferFundsCore(
 
   const { organizationId, userId } = orgCtx;
 
-  // Get chain ID and resolve RPC config (with failover)
-  let chainId: number;
+  // Resolve RPC config (with failover)
   let rpcUrl: string;
   let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
   try {
-    chainId = getChainIdFromNetwork(network);
-
     rpcManager = await getRpcProvider({
       chainId,
       userId,
@@ -409,4 +429,167 @@ export async function transferFundsCore(
       };
     }
   });
+}
+
+/**
+ * Pure helper for dispatch routing tests.
+ */
+export function isSolanaTransferPath(chainId: number): boolean {
+  return isSolanaChain(chainId);
+}
+
+/**
+ * String-based decimal parser to avoid floating point precision loss.
+ * Parses a decimal string representing SOL and returns value in lamports.
+ */
+function parseSolToLamports(solAmount: string): bigint {
+  const trimmed = solAmount.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new Error("Invalid SOL format");
+  }
+  const parts = trimmed.split(".");
+  const whole = parts[0] || "0";
+  const frac = parts[1] || "";
+  const paddedFrac = frac.padEnd(9, "0").slice(0, 9);
+  return BigInt(whole) * BigInt(1000000000) + BigInt(paddedFrac);
+}
+
+/**
+ * Early-branch Solana native transfer handler.
+ */
+async function transferFundsSolana(args: {
+  chainId: number;
+  amount: string;
+  recipientAddress: string;
+  gasLimitMultiplier?: string;
+  _context?: { executionId?: string; organizationId?: string };
+}): Promise<TransferFundsResult> {
+  const { chainId, amount, recipientAddress, gasLimitMultiplier, _context } = args;
+
+  // 1. Amount present check
+  if (!amount || amount.trim() === "") {
+    return { success: false, error: "Amount is required" };
+  }
+
+  // 2. Validate recipient address (must be valid Solana base58 address)
+  try {
+    new PublicKey(recipientAddress);
+  } catch {
+    return {
+      success: false,
+      error: `Invalid Solana recipient address: ${recipientAddress}`,
+    };
+  }
+
+  // 3. Parse amount to lamports
+  let lamports: bigint;
+  try {
+    lamports = parseSolToLamports(amount);
+  } catch (error) {
+    return { success: false, error: `Invalid SOL amount: ${amount}` };
+  }
+
+  // 4. Resolve organization context
+  if (!(_context?.executionId || _context?.organizationId)) {
+    return {
+      success: false,
+      error: "Execution ID or organization ID is required",
+    };
+  }
+
+  const orgCtx = await resolveOrganizationContext(
+    _context,
+    "[Transfer Funds - Solana]",
+    "transfer-funds"
+  );
+  if (!orgCtx.success) {
+    return orgCtx;
+  }
+  const { organizationId } = orgCtx;
+
+  // 5. Get signer and wallet row
+  let solanaSigner: SolanaTransactionSigner;
+  let orgSolanaAddress: string;
+  try {
+    const wallet = await getOrganizationWallet(organizationId);
+    if (!wallet.solanaAddress) {
+      return {
+        success: false,
+        error: "[Solana] Organization wallet has no provisioned Solana address. Contact support.",
+      };
+    }
+    orgSolanaAddress = wallet.solanaAddress;
+    solanaSigner = await initializeSolanaWalletSigner(organizationId);
+  } catch (error) {
+    return {
+      success: false,
+      error: `Failed to initialize Solana wallet: ${getErrorMessage(error)}`,
+    };
+  }
+
+  // 6. Get adapter (owns RPC resolution internally)
+  const adapter = getChainAdapter(chainId);
+
+  // 7. Balance preflight check
+  try {
+    const balance = await adapter.getBalance(null as any, orgSolanaAddress);
+    if (balance < lamports) {
+      return {
+        success: false,
+        error: `Insufficient SOL balance. Have: ${balance.toString()} lamports, Need: ${lamports.toString()} lamports`,
+      };
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: `Failed to check SOL balance: ${getErrorMessage(error)}`,
+    };
+  }
+
+  // 8. Resolve gas overrides (multiplierOverride is a no-op on Solana path)
+  const { gasLimitOverride } = resolveGasLimitOverrides(gasLimitMultiplier);
+
+  // 9. Call adapter.sendTransaction
+  try {
+    const receipt = await adapter.sendTransaction(
+      null as any, // ethers.Signer is unused on Solana path
+      {
+        to: recipientAddress,
+        value: lamports,
+      },
+      null as any, // NonceSession is unused on Solana path
+      {
+        solanaSigner,
+        gasOverrides: { gasLimitOverride },
+      }
+    );
+
+    const transactionLink = await adapter.getTransactionUrl(receipt.hash);
+
+    // 10. Map receipt to TransferFundsResult. 
+    // gasUsed = "0" as lamport fee is not computed in v1, but we return raw fields.
+    return {
+      success: true,
+      transactionHash: receipt.hash,
+      transactionLink,
+      gasUsed: "0",
+      gasUsedUnits: receipt.gasUsed.toString(),
+      effectiveGasPrice: receipt.effectiveGasPrice.toString(),
+    };
+  } catch (error) {
+    logUserError(
+      ErrorCategory.TRANSACTION,
+      "[Transfer Funds - Solana] Transaction failed",
+      error,
+      {
+        plugin_name: "web3",
+        action_name: "transfer-funds",
+        chain_id: String(chainId),
+      }
+    );
+    return {
+      success: false,
+      error: getErrorMessage(error),
+    };
+  }
 }

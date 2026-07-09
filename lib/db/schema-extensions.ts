@@ -59,6 +59,7 @@ export const organizationWallets = pgTable(
     turnkeySubOrgId: text("turnkey_sub_org_id"),
     turnkeyWalletId: text("turnkey_wallet_id"),
     turnkeyPrivateKeyId: text("turnkey_private_key_id"),
+    solanaAddress: text("solana_address"),
     isActive: boolean("is_active").notNull().default(true),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },

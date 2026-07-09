@@ -22,6 +22,7 @@ export type ProvisionWalletResult = {
   // already existed (idempotent no-op, including the lost side of a race).
   created: boolean;
   walletAddress: string;
+  solanaAddress: string | null;   // NEW
   walletId: string | null;
   subOrgId: string | null;
 };
@@ -63,6 +64,7 @@ function toResult(
   return {
     created,
     walletAddress: wallet.walletAddress,
+    solanaAddress: wallet.solanaAddress ?? null,
     walletId: wallet.turnkeyWalletId,
     subOrgId: wallet.turnkeySubOrgId,
   };
@@ -103,6 +105,7 @@ export async function provisionOrganizationWallet(
       organizationId,
       email,
       walletAddress: normalizedWalletAddress,
+      solanaAddress: turnkeyResult.solanaAddress ?? null,   // NEW — raw base58
       turnkeySubOrgId: turnkeyResult.subOrgId,
       turnkeyWalletId: turnkeyResult.walletId,
       turnkeyPrivateKeyId: turnkeyResult.privateKeyId,
@@ -143,6 +146,7 @@ export async function provisionOrganizationWallet(
   return {
     created: true,
     walletAddress: normalizedWalletAddress,
+    solanaAddress: turnkeyResult.solanaAddress ?? null,   // NEW
     walletId: turnkeyResult.walletId,
     subOrgId: turnkeyResult.subOrgId,
   };

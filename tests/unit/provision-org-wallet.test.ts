@@ -69,12 +69,14 @@ const TURNKEY_RESULT = {
   walletId: "tk-wallet",
   privateKeyId: "",
   walletAddress: "0x00000000000000000000000000000000000000aa",
+  solanaAddress: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
 };
 
 function existingRow(): Record<string, unknown> {
   return {
     id: "wallet-existing",
     walletAddress: "0x00000000000000000000000000000000000000bb",
+    solanaAddress: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
     turnkeyWalletId: "tk-wallet-existing",
     turnkeySubOrgId: "tk-sub-org-existing",
     isActive: true,
@@ -115,6 +117,7 @@ describe("provisionOrganizationWallet", () => {
     expect(result).toEqual({
       created: true,
       walletAddress: TURNKEY_RESULT.walletAddress,
+      solanaAddress: TURNKEY_RESULT.solanaAddress,
       walletId: TURNKEY_RESULT.walletId,
       subOrgId: TURNKEY_RESULT.subOrgId,
     });

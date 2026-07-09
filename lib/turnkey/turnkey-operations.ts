@@ -42,7 +42,8 @@ export type TurnkeyWalletResult = {
   subOrgId: string;
   walletId: string;
   privateKeyId: string;
-  walletAddress: string;
+  walletAddress: string;          // EVM
+  solanaAddress: string | null;   // NEW
 };
 
 export async function createTurnkeyWallet(
@@ -52,9 +53,13 @@ export async function createTurnkeyWallet(
   const turnkey = getTurnkeyClient();
   const client = turnkey.apiClient();
 
+  let subOrgId: string | undefined;
+  let walletId: string | undefined;
+
   try {
     const apiPublicKey = process.env.TURNKEY_API_PUBLIC_KEY ?? "";
 
+    // 1. Primary path: try creating both EVM and Solana accounts in createSubOrganization
     const subOrg = await client.createSubOrganization({
       organizationId: process.env.TURNKEY_ORGANIZATION_ID ?? "",
       subOrganizationName: `keeperhub-${organizationName}`,
@@ -83,17 +88,51 @@ export async function createTurnkeyWallet(
             path: "m/44'/60'/0'/0/0",
             addressFormat: "ADDRESS_FORMAT_ETHEREUM",
           },
+          {
+            curve: "CURVE_ED25519",
+            pathFormat: "PATH_FORMAT_BIP32",
+            path: "m/44'/501'/0'/0'",
+            addressFormat: "ADDRESS_FORMAT_SOLANA",
+          },
         ],
       },
     });
 
-    const walletId = subOrg.wallet?.walletId;
-    const walletAddress = subOrg.wallet?.addresses?.[0];
-    const subOrgId = subOrg.subOrganizationId;
+    walletId = subOrg.wallet?.walletId;
+    subOrgId = subOrg.subOrganizationId;
 
-    if (!(walletId && walletAddress && subOrgId)) {
+    if (!(walletId && subOrgId)) {
       throw new Error(
         "Turnkey sub-organization creation returned incomplete data"
+      );
+    }
+
+    // Query both accounts to identify which is EVM and which is Solana
+    const walletAccounts = await client.getWalletAccounts({
+      organizationId: subOrgId,
+      walletId,
+    });
+
+    const evmAccount = walletAccounts.accounts?.find(
+      (a) => a.addressFormat === "ADDRESS_FORMAT_ETHEREUM"
+    );
+    const solanaAccount = walletAccounts.accounts?.find(
+      (a) => a.addressFormat === "ADDRESS_FORMAT_SOLANA"
+    );
+
+    const walletAddress = evmAccount?.address ?? subOrg.wallet?.addresses?.[0];
+    const solanaAddress = solanaAccount?.address ?? null;
+
+    if (!walletAddress) {
+      throw new Error("EVM wallet address not found after sub-org creation");
+    }
+
+    if (!solanaAddress) {
+      logSystemError(
+        ErrorCategory.EXTERNAL_SERVICE,
+        "[Turnkey] Solana account not found in wallet after creation; solanaAddress will be null",
+        undefined,
+        { service: "turnkey", subOrgId }
       );
     }
 
@@ -102,15 +141,114 @@ export async function createTurnkeyWallet(
       walletId,
       privateKeyId: "",
       walletAddress,
+      solanaAddress,
     };
   } catch (error) {
+    // If the two-account creation failed, try to fallback safely.
+    // If subOrgId was already created/assigned, we shouldn't orphan it without logging.
+    if (subOrgId && walletId) {
+      logSystemError(
+        ErrorCategory.EXTERNAL_SERVICE,
+        "[Turnkey] Two-account sub-org creation partially succeeded but failed on post-creation check",
+        error,
+        { service: "turnkey", subOrgId, walletId }
+      );
+      throw error;
+    }
+
+    // 2. Fallback path: Try creating single EVM account first, then create Solana account separately
     logSystemError(
       ErrorCategory.EXTERNAL_SERVICE,
-      "[Turnkey] Failed to create wallet",
+      "[Turnkey] Two-account sub-org creation failed. Retrying with EVM-only, then createWalletAccounts",
       error,
       { service: "turnkey" }
     );
-    throw error;
+
+    try {
+      const apiPublicKey = process.env.TURNKEY_API_PUBLIC_KEY ?? "";
+      const subOrg = await client.createSubOrganization({
+        organizationId: process.env.TURNKEY_ORGANIZATION_ID ?? "",
+        subOrganizationName: `keeperhub-${organizationName}`,
+        rootQuorumThreshold: 1,
+        rootUsers: [
+          {
+            userName: "keeperhub-admin",
+            userEmail: email,
+            apiKeys: [
+              {
+                apiKeyName: "keeperhub-server",
+                publicKey: apiPublicKey,
+                curveType: "API_KEY_CURVE_P256" as const,
+              },
+            ],
+            authenticators: [],
+            oauthProviders: [],
+          },
+        ],
+        wallet: {
+          walletName: "Default Wallet",
+          accounts: [
+            {
+              curve: "CURVE_SECP256K1",
+              pathFormat: "PATH_FORMAT_BIP32",
+              path: "m/44'/60'/0'/0/0",
+              addressFormat: "ADDRESS_FORMAT_ETHEREUM",
+            },
+          ],
+        },
+      });
+
+      walletId = subOrg.wallet?.walletId;
+      subOrgId = subOrg.subOrganizationId;
+      const walletAddress = subOrg.wallet?.addresses?.[0];
+
+      if (!(walletId && subOrgId && walletAddress)) {
+        throw new Error(
+          "Fallback Turnkey sub-organization creation returned incomplete data"
+        );
+      }
+
+      // Try adding Solana account separately
+      let solanaAddress: string | null = null;
+      try {
+        const solanaAccountResult = await client.createWalletAccounts({
+          organizationId: subOrgId,
+          walletId,
+          accounts: [
+            {
+              curve: "CURVE_ED25519",
+              pathFormat: "PATH_FORMAT_BIP32",
+              path: "m/44'/501'/0'/0'",
+              addressFormat: "ADDRESS_FORMAT_SOLANA",
+            },
+          ],
+        });
+        solanaAddress = solanaAccountResult.addresses?.[0] ?? null;
+      } catch (solanaError) {
+        logSystemError(
+          ErrorCategory.EXTERNAL_SERVICE,
+          "[Turnkey] Fallback Solana account creation failed via createWalletAccounts",
+          solanaError,
+          { service: "turnkey", subOrgId }
+        );
+      }
+
+      return {
+        subOrgId,
+        walletId,
+        privateKeyId: "",
+        walletAddress,
+        solanaAddress,
+      };
+    } catch (fallbackError) {
+      logSystemError(
+        ErrorCategory.EXTERNAL_SERVICE,
+        "[Turnkey] Fallback EVM-only sub-org creation failed",
+        fallbackError,
+        { service: "turnkey" }
+      );
+      throw fallbackError;
+    }
   }
 }
 
