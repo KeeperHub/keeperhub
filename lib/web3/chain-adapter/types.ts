@@ -80,8 +80,14 @@ export interface ChainAdapter {
   getAddressUrl(address: string): Promise<string>;
 }
 
+export interface SolanaTransactionSigner {
+  getPublicKey(): Promise<{ toBase58(): string }>;
+  signTransaction(unsignedBytes: Uint8Array): Promise<Uint8Array>;
+}
+
 export type TransactionOptions = {
   gasOverrides: GasOverrides;
   workflowId?: string;
   rpcManager?: RpcProviderManager;
+  solanaSigner?: SolanaTransactionSigner;
 };
