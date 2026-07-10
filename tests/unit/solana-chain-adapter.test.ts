@@ -2,15 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
-vi.mock("@/lib/db", () => ({
-  db: { query: { explorerConfigs: { findFirst: vi.fn() } } },
+
+// Mock the shared explorer module instead of the raw DB/schema/explorer internals
+vi.mock("@/lib/web3/chain-adapter/explorer", () => ({
+  buildChainTransactionUrl: vi.fn(),
+  buildChainAddressUrl: vi.fn(),
+  clearExplorerConfigCache: vi.fn(),
 }));
-vi.mock("@/lib/db/schema", () => ({ explorerConfigs: {} }));
-vi.mock("drizzle-orm", () => ({ eq: () => ({}) }));
-vi.mock("@/lib/explorer", () => ({
-  getAddressUrl: vi.fn(),
-  getTransactionUrl: vi.fn(),
-}));
+
 vi.mock("@solana/web3.js", () => {
   class MockConnection {
     getBalance = vi.fn();
@@ -18,19 +17,26 @@ vi.mock("@solana/web3.js", () => {
   class MockPublicKey {
     readonly address: string;
     constructor(address: string) {
+      if (address === "not-base58!!!") {
+        throw new TypeError(`Invalid public key input: ${address}`);
+      }
       this.address = address;
     }
   }
   return { Connection: MockConnection, PublicKey: MockPublicKey };
 });
 
-import { db } from "@/lib/db";
-import { getAddressUrl, getTransactionUrl } from "@/lib/explorer";
+import {
+  buildChainAddressUrl,
+  buildChainTransactionUrl,
+  clearExplorerConfigCache,
+} from "@/lib/web3/chain-adapter/explorer";
 import { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
 
 const DEVNET_CHAIN_ID = 103;
 const SYSTEM_PROGRAM_ADDRESS = "11111111111111111111111111111111";
 const TEST_TX_HASH = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+const INVALID_ADDRESS = "not-base58!!!";
 
 function createMockFactory(getBalanceResult: number | Error = 5_000_000) {
   const mockGetBalance =
@@ -53,6 +59,7 @@ function createMockFactory(getBalanceResult: number | Error = 5_000_000) {
 describe("SolanaChainAdapter", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(clearExplorerConfigCache)();
   });
 
   describe("chainFamily", () => {
@@ -94,18 +101,23 @@ describe("SolanaChainAdapter", () => {
         adapter.getBalance(null as never, SYSTEM_PROGRAM_ADDRESS)
       ).rejects.toThrow("RPC error");
     });
+
+    it("throws before any RPC call when address is not valid base58", async () => {
+      const { factory, mockManager } = createMockFactory();
+      const adapter = new SolanaChainAdapter(DEVNET_CHAIN_ID, factory);
+
+      await expect(
+        adapter.getBalance(null as never, INVALID_ADDRESS)
+      ).rejects.toThrow(`Invalid public key input: ${INVALID_ADDRESS}`);
+
+      // The failover loop must never have been entered
+      expect(mockManager.executeWithFailover).not.toHaveBeenCalled();
+    });
   });
 
   describe("getTransactionUrl", () => {
-    it("returns URL from DB explorer config", async () => {
-      const mockConfig = {
-        explorerUrl: "https://solscan.io",
-        explorerTxPath: "/tx/{hash}",
-      };
-      vi.mocked(db.query.explorerConfigs.findFirst).mockResolvedValue(
-        mockConfig as never
-      );
-      vi.mocked(getTransactionUrl).mockReturnValue(
+    it("delegates to buildChainTransactionUrl with chainId and hash", async () => {
+      vi.mocked(buildChainTransactionUrl).mockResolvedValue(
         "https://solscan.io/tx/abc123"
       );
 
@@ -114,50 +126,26 @@ describe("SolanaChainAdapter", () => {
 
       const url = await adapter.getTransactionUrl("abc123");
       expect(url).toBe("https://solscan.io/tx/abc123");
-      expect(getTransactionUrl).toHaveBeenCalledWith(mockConfig, "abc123");
+      expect(buildChainTransactionUrl).toHaveBeenCalledWith(
+        DEVNET_CHAIN_ID,
+        "abc123"
+      );
     });
 
-    it("returns empty string when no explorer config in DB", async () => {
-      vi.mocked(db.query.explorerConfigs.findFirst).mockResolvedValue(
-        undefined
-      );
+    it("returns empty string when no explorer config", async () => {
+      vi.mocked(buildChainTransactionUrl).mockResolvedValue("");
+
       const { factory } = createMockFactory();
       const adapter = new SolanaChainAdapter(DEVNET_CHAIN_ID, factory);
 
       const url = await adapter.getTransactionUrl(TEST_TX_HASH);
       expect(url).toBe("");
     });
-
-    it("caches the explorer config on subsequent calls", async () => {
-      const mockConfig = {
-        explorerUrl: "https://solscan.io",
-        explorerTxPath: "/tx/{hash}",
-      };
-      vi.mocked(db.query.explorerConfigs.findFirst).mockResolvedValue(
-        mockConfig as never
-      );
-      vi.mocked(getTransactionUrl).mockReturnValue("https://solscan.io/tx/abc");
-
-      const { factory } = createMockFactory();
-      const adapter = new SolanaChainAdapter(DEVNET_CHAIN_ID, factory);
-
-      await adapter.getTransactionUrl("abc");
-      await adapter.getTransactionUrl("abc");
-
-      expect(db.query.explorerConfigs.findFirst).toHaveBeenCalledTimes(1);
-    });
   });
 
   describe("getAddressUrl", () => {
-    it("returns URL from DB explorer config", async () => {
-      const mockConfig = {
-        explorerUrl: "https://solscan.io",
-        explorerAddressPath: "/account/{address}",
-      };
-      vi.mocked(db.query.explorerConfigs.findFirst).mockResolvedValue(
-        mockConfig as never
-      );
-      vi.mocked(getAddressUrl).mockReturnValue(
+    it("delegates to buildChainAddressUrl with chainId and address", async () => {
+      vi.mocked(buildChainAddressUrl).mockResolvedValue(
         "https://solscan.io/account/So111..."
       );
 
@@ -166,18 +154,18 @@ describe("SolanaChainAdapter", () => {
 
       const url = await adapter.getAddressUrl(SYSTEM_PROGRAM_ADDRESS);
       expect(url).toBe("https://solscan.io/account/So111...");
-      expect(getAddressUrl).toHaveBeenCalledWith(
-        mockConfig,
+      expect(buildChainAddressUrl).toHaveBeenCalledWith(
+        DEVNET_CHAIN_ID,
         SYSTEM_PROGRAM_ADDRESS
       );
     });
 
-    it("returns empty string when no explorer config in DB", async () => {
-      vi.mocked(db.query.explorerConfigs.findFirst).mockResolvedValue(
-        undefined
-      );
+    it("returns empty string when no explorer config", async () => {
+      vi.mocked(buildChainAddressUrl).mockResolvedValue("");
+
       const { factory } = createMockFactory();
       const adapter = new SolanaChainAdapter(DEVNET_CHAIN_ID, factory);
+
       const url = await adapter.getAddressUrl(SYSTEM_PROGRAM_ADDRESS);
       expect(url).toBe("");
     });
@@ -254,9 +242,6 @@ describe("SolanaChainAdapter", () => {
       const factoryFn = vi.fn().mockResolvedValue({
         executeWithFailover: vi.fn().mockResolvedValue(BigInt(0)),
       });
-      vi.mocked(db.query.explorerConfigs.findFirst).mockResolvedValue(
-        undefined
-      );
 
       const adapter = new SolanaChainAdapter(DEVNET_CHAIN_ID, factoryFn);
       await adapter.getBalance(null as never, SYSTEM_PROGRAM_ADDRESS);

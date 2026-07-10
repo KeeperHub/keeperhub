@@ -1,15 +1,9 @@
-import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
-import { db } from "@/lib/db";
-import { explorerConfigs } from "@/lib/db/schema";
-import {
-  getAddressUrl as buildAddressUrl,
-  getTransactionUrl as buildTransactionUrl,
-} from "@/lib/explorer";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { submitSignedTransactionWithFailover } from "@/lib/web3/submit-signed";
 import type { AdaptiveGasStrategy, GasConfig } from "../gas-strategy";
 import type { NonceManager, NonceSession } from "../nonce-manager";
+import { buildChainAddressUrl, buildChainTransactionUrl } from "./explorer";
 import type {
   ChainAdapter,
   ContractCallRequest,
@@ -24,9 +18,6 @@ export class EvmChainAdapter implements ChainAdapter {
   private readonly chainId: number;
   private readonly gasStrategy: AdaptiveGasStrategy;
   private readonly nonceManager: NonceManager;
-  private explorerConfigCache: typeof explorerConfigs.$inferSelect | null =
-    null;
-  private explorerConfigLoaded = false;
 
   constructor(
     chainId: number,
@@ -272,19 +263,11 @@ export class EvmChainAdapter implements ChainAdapter {
   }
 
   async getTransactionUrl(txHash: string): Promise<string> {
-    const config = await this.getExplorerConfig();
-    if (!config) {
-      return "";
-    }
-    return buildTransactionUrl(config, txHash);
+    return buildChainTransactionUrl(this.chainId, txHash);
   }
 
   async getAddressUrl(address: string): Promise<string> {
-    const config = await this.getExplorerConfig();
-    if (!config) {
-      return "";
-    }
-    return buildAddressUrl(config, address);
+    return buildChainAddressUrl(this.chainId, address);
   }
 
   private async confirmTransaction(
@@ -324,21 +307,5 @@ export class EvmChainAdapter implements ChainAdapter {
       effectiveGasPrice: receipt.gasPrice,
       blockNumber: receipt.blockNumber,
     };
-  }
-
-  private async getExplorerConfig(): Promise<
-    typeof explorerConfigs.$inferSelect | undefined
-  > {
-    if (this.explorerConfigLoaded) {
-      return this.explorerConfigCache ?? undefined;
-    }
-
-    const config = await db.query.explorerConfigs.findFirst({
-      where: eq(explorerConfigs.chainId, this.chainId),
-    });
-
-    this.explorerConfigCache = config ?? null;
-    this.explorerConfigLoaded = true;
-    return config ?? undefined;
   }
 }
