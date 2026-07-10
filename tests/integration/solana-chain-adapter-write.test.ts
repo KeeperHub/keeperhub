@@ -16,13 +16,23 @@ describe.skipIf(!process.env.SOLANA_DEVNET_TEST_KEYPAIR)(
     it("performs a live native SOL transfer on devnet and maps TransactionReceipt fields", async () => {
       // Set up connection factory
       const adapter = new SolanaChainAdapter(103, () =>
-        getSolanaProviderFromUrls(PUBLIC_RPCS.SOLANA_DEVNET, "Solana Devnet")
+        getSolanaProviderFromUrls(
+          PUBLIC_RPCS.SOLANA_DEVNET,
+          undefined,
+          "Solana Devnet"
+        )
       );
 
       // Load test keypair from env
       let keypairBytes: number[];
       try {
-        keypairBytes = JSON.parse(process.env.SOLANA_DEVNET_TEST_KEYPAIR!);
+        const rawKeypair = process.env.SOLANA_DEVNET_TEST_KEYPAIR;
+        if (!rawKeypair) {
+          throw new Error(
+            "SOLANA_DEVNET_TEST_KEYPAIR environment variable is missing"
+          );
+        }
+        keypairBytes = JSON.parse(rawKeypair);
       } catch (err) {
         throw new Error(
           "Failed to parse SOLANA_DEVNET_TEST_KEYPAIR as JSON array: " +
@@ -46,12 +56,13 @@ describe.skipIf(!process.env.SOLANA_DEVNET_TEST_KEYPAIR)(
         recipient.toBase58()
       );
 
-      // Perform tiny transfer
+      // Perform tiny transfer — must exceed rent-exempt minimum (~890,880 lamports)
+      // for the freshly-generated recipient account to be created on-chain.
       const receipt = await adapter.sendTransaction(
         null as any,
         {
           to: recipient.toBase58(),
-          value: BigInt(1000),
+          value: BigInt(1_000_000),
         },
         null as any,
         {
@@ -80,7 +91,7 @@ describe.skipIf(!process.env.SOLANA_DEVNET_TEST_KEYPAIR)(
         recipient.toBase58()
       );
 
-      expect(recipientBalAfter).toBe(recipientBalBefore + BigInt(1000));
+      expect(recipientBalAfter).toBe(recipientBalBefore + BigInt(1_000_000));
       expect(senderBalAfter).toBeLessThan(senderBalBefore);
     }, 30_000);
   }

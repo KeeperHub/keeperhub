@@ -14,9 +14,9 @@ import { chains, explorerConfigs, workflowExecutions } from "@/lib/db/schema";
 import { getTransactionUrl } from "@/lib/explorer";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import {
+  buildSolanaSignerFromWallet,
   getOrganizationWallet,
   getOrganizationWalletAddress,
-  initializeSolanaWalletSigner,
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
@@ -25,6 +25,8 @@ import { getErrorMessage } from "@/lib/utils";
 import { generateId } from "@/lib/utils/id";
 import { PublicKey } from "@solana/web3.js";
 import type { SolanaTransactionSigner } from "@/lib/web3/chain-adapter/types";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
+import type { NonceSession } from "@/lib/web3/nonce-manager";
 import {
   executeNativeTransferAsRole,
   executeNativeTransferAsSafe,
@@ -438,21 +440,7 @@ export function isSolanaTransferPath(chainId: number): boolean {
   return isSolanaChain(chainId);
 }
 
-/**
- * String-based decimal parser to avoid floating point precision loss.
- * Parses a decimal string representing SOL and returns value in lamports.
- */
-function parseSolToLamports(solAmount: string): bigint {
-  const trimmed = solAmount.trim();
-  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
-    throw new Error("Invalid SOL format");
-  }
-  const parts = trimmed.split(".");
-  const whole = parts[0] || "0";
-  const frac = parts[1] || "";
-  const paddedFrac = frac.padEnd(9, "0").slice(0, 9);
-  return BigInt(whole) * BigInt(1000000000) + BigInt(paddedFrac);
-}
+
 
 /**
  * Early-branch Solana native transfer handler.
@@ -484,8 +472,11 @@ async function transferFundsSolana(args: {
   // 3. Parse amount to lamports
   let lamports: bigint;
   try {
-    lamports = parseSolToLamports(amount);
-  } catch (error) {
+    lamports = ethers.parseUnits(amount.trim(), 9); // 9 decimals = lamports
+    if (lamports < BigInt(0)) {
+      throw new Error("Negative amount");
+    }
+  } catch {
     return { success: false, error: `Invalid SOL amount: ${amount}` };
   }
 
@@ -507,19 +498,13 @@ async function transferFundsSolana(args: {
   }
   const { organizationId } = orgCtx;
 
-  // 5. Get signer and wallet row
+  // 5. Get signer and wallet row (one fetch, one validation check)
   let solanaSigner: SolanaTransactionSigner;
   let orgSolanaAddress: string;
   try {
     const wallet = await getOrganizationWallet(organizationId);
-    if (!wallet.solanaAddress) {
-      return {
-        success: false,
-        error: "[Solana] Organization wallet has no provisioned Solana address. Contact support.",
-      };
-    }
-    orgSolanaAddress = wallet.solanaAddress;
-    solanaSigner = await initializeSolanaWalletSigner(organizationId);
+    solanaSigner = buildSolanaSignerFromWallet(wallet);
+    orgSolanaAddress = wallet.solanaAddress!;
   } catch (error) {
     return {
       success: false,
@@ -532,7 +517,10 @@ async function transferFundsSolana(args: {
 
   // 7. Balance preflight check
   try {
-    const balance = await adapter.getBalance(null as any, orgSolanaAddress);
+    const balance = await adapter.getBalance(
+      undefined as unknown as RpcProviderManager, // unused by SolanaChainAdapter
+      orgSolanaAddress
+    );
     if (balance < lamports) {
       return {
         success: false,
@@ -552,12 +540,12 @@ async function transferFundsSolana(args: {
   // 9. Call adapter.sendTransaction
   try {
     const receipt = await adapter.sendTransaction(
-      null as any, // ethers.Signer is unused on Solana path
+      undefined as unknown as ethers.Signer, // unused by SolanaChainAdapter
       {
         to: recipientAddress,
         value: lamports,
       },
-      null as any, // NonceSession is unused on Solana path
+      undefined as unknown as NonceSession, // unused by SolanaChainAdapter
       {
         solanaSigner,
         gasOverrides: { gasLimitOverride },

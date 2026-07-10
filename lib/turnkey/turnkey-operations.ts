@@ -38,6 +38,79 @@ function getTurnkeyClient(): Turnkey {
   return turnkeyInstance;
 }
 
+const EVM_AND_SOLANA_ACCOUNTS = [
+  {
+    curve: "CURVE_SECP256K1" as const,
+    pathFormat: "PATH_FORMAT_BIP32" as const,
+    path: "m/44'/60'/0'/0/0",
+    addressFormat: "ADDRESS_FORMAT_ETHEREUM" as const,
+  },
+  {
+    curve: "CURVE_ED25519" as const,
+    pathFormat: "PATH_FORMAT_BIP32" as const,
+    path: "m/44'/501'/0'/0'",
+    addressFormat: "ADDRESS_FORMAT_SOLANA" as const,
+  },
+];
+
+const EVM_ONLY_ACCOUNTS = [
+  {
+    curve: "CURVE_SECP256K1" as const,
+    pathFormat: "PATH_FORMAT_BIP32" as const,
+    path: "m/44'/60'/0'/0/0",
+    addressFormat: "ADDRESS_FORMAT_ETHEREUM" as const,
+  },
+];
+
+// Single-element array reused by both EVM_AND_SOLANA_ACCOUNTS and the B5
+// reconciliation path — one source of truth for the ED25519 derivation shape.
+const SOLANA_ONLY_ACCOUNT = [
+  {
+    curve: "CURVE_ED25519" as const,
+    pathFormat: "PATH_FORMAT_BIP32" as const,
+    path: "m/44'/501'/0'/0'",
+    addressFormat: "ADDRESS_FORMAT_SOLANA" as const,
+  },
+];
+
+type SubOrgAccount =
+  | (typeof EVM_AND_SOLANA_ACCOUNTS)[number]
+  | (typeof EVM_ONLY_ACCOUNTS)[number]
+  | (typeof SOLANA_ONLY_ACCOUNT)[number];
+
+function buildSubOrgRequest(
+  organizationId: string,
+  organizationName: string,
+  email: string,
+  apiPublicKey: string,
+  accounts: readonly SubOrgAccount[]
+) {
+  return {
+    organizationId,
+    subOrganizationName: `keeperhub-${organizationName}`,
+    rootQuorumThreshold: 1,
+    rootUsers: [
+      {
+        userName: "keeperhub-admin",
+        userEmail: email,
+        apiKeys: [
+          {
+            apiKeyName: "keeperhub-server",
+            publicKey: apiPublicKey,
+            curveType: "API_KEY_CURVE_P256" as const,
+          },
+        ],
+        authenticators: [],
+        oauthProviders: [],
+      },
+    ],
+    wallet: {
+      walletName: "Default Wallet",
+      accounts,
+    },
+  };
+}
+
 export type TurnkeyWalletResult = {
   subOrgId: string;
   walletId: string;
@@ -60,43 +133,15 @@ export async function createTurnkeyWallet(
     const apiPublicKey = process.env.TURNKEY_API_PUBLIC_KEY ?? "";
 
     // 1. Primary path: try creating both EVM and Solana accounts in createSubOrganization
-    const subOrg = await client.createSubOrganization({
-      organizationId: process.env.TURNKEY_ORGANIZATION_ID ?? "",
-      subOrganizationName: `keeperhub-${organizationName}`,
-      rootQuorumThreshold: 1,
-      rootUsers: [
-        {
-          userName: "keeperhub-admin",
-          userEmail: email,
-          apiKeys: [
-            {
-              apiKeyName: "keeperhub-server",
-              publicKey: apiPublicKey,
-              curveType: "API_KEY_CURVE_P256" as const,
-            },
-          ],
-          authenticators: [],
-          oauthProviders: [],
-        },
-      ],
-      wallet: {
-        walletName: "Default Wallet",
-        accounts: [
-          {
-            curve: "CURVE_SECP256K1",
-            pathFormat: "PATH_FORMAT_BIP32",
-            path: "m/44'/60'/0'/0/0",
-            addressFormat: "ADDRESS_FORMAT_ETHEREUM",
-          },
-          {
-            curve: "CURVE_ED25519",
-            pathFormat: "PATH_FORMAT_BIP32",
-            path: "m/44'/501'/0'/0'",
-            addressFormat: "ADDRESS_FORMAT_SOLANA",
-          },
-        ],
-      },
-    });
+    const subOrg = await client.createSubOrganization(
+      buildSubOrgRequest(
+        process.env.TURNKEY_ORGANIZATION_ID ?? "",
+        organizationName,
+        email,
+        apiPublicKey,
+        EVM_AND_SOLANA_ACCOUNTS
+      )
+    );
 
     walletId = subOrg.wallet?.walletId;
     subOrgId = subOrg.subOrganizationId;
@@ -164,39 +209,95 @@ export async function createTurnkeyWallet(
       { service: "turnkey" }
     );
 
+    // B5: Before creating a new sub-org on the fallback path, check if the primary path
+    // partially succeeded server-side (leaving a sub-org with our name but no locally captured subOrgId).
+    const orgName = `keeperhub-${organizationName}`;
+    let existingSubOrgId: string | undefined;
+    let existingWalletId: string | undefined;
+
+    try {
+      const subOrgs = await client.getSubOrgIds({
+        organizationId: process.env.TURNKEY_ORGANIZATION_ID ?? "",
+        filterType: "NAME",
+        filterValue: orgName,
+      });
+      const match = subOrgs.organizationIds?.[0];
+      if (match) {
+        existingSubOrgId = match;
+        const wallets = await client.getWallets({ organizationId: match });
+        existingWalletId = wallets.wallets?.[0]?.walletId;
+      }
+    } catch (reconcileError) {
+      logSystemError(
+        ErrorCategory.EXTERNAL_SERVICE,
+        "[Turnkey] Failed to reconcile existing sub-org by name; proceeding with new sub-org creation",
+        reconcileError,
+        { service: "turnkey", orgName }
+      );
+    }
+
+    if (existingSubOrgId && existingWalletId) {
+      logSystemError(
+        ErrorCategory.EXTERNAL_SERVICE,
+        "[Turnkey] Reconciled existing sub-org by name after partial primary creation",
+        undefined,
+        { service: "turnkey", existingSubOrgId, orgName }
+      );
+
+      let solanaAddress: string | null = null;
+      try {
+        const result = await client.createWalletAccounts({
+          organizationId: existingSubOrgId,
+          walletId: existingWalletId,
+          accounts: SOLANA_ONLY_ACCOUNT,
+        });
+        solanaAddress = result.addresses?.[0] ?? null;
+      } catch (solanaError) {
+        logSystemError(
+          ErrorCategory.EXTERNAL_SERVICE,
+          "[Turnkey] Solana account add failed on reconciled sub-org",
+          solanaError,
+          { service: "turnkey", existingSubOrgId }
+        );
+      }
+
+      const walletAccounts = await client.getWalletAccounts({
+        organizationId: existingSubOrgId,
+        walletId: existingWalletId,
+      });
+      const evmAccount = walletAccounts.accounts?.find(
+        (a) => a.addressFormat === "ADDRESS_FORMAT_ETHEREUM"
+      );
+      const walletAddress = evmAccount?.address;
+      if (!walletAddress) {
+        throw new Error("EVM address not found in reconciled sub-org");
+      }
+
+      return {
+        subOrgId: existingSubOrgId,
+        walletId: existingWalletId,
+        // privateKeyId is hardcoded "" on ALL return paths of createTurnkeyWallet
+        // (both the primary and the original fallback path). The DB column
+        // turnkey_private_key_id is write-only — no signing code ever reads it back;
+        // signing uses turnkeySubOrgId + walletAddress via getTurnkeySignerConfig.
+        // Leaving it blank here is intentional, not a bug.
+        privateKeyId: "",
+        walletAddress,
+        solanaAddress,
+      };
+    }
+
     try {
       const apiPublicKey = process.env.TURNKEY_API_PUBLIC_KEY ?? "";
-      const subOrg = await client.createSubOrganization({
-        organizationId: process.env.TURNKEY_ORGANIZATION_ID ?? "",
-        subOrganizationName: `keeperhub-${organizationName}`,
-        rootQuorumThreshold: 1,
-        rootUsers: [
-          {
-            userName: "keeperhub-admin",
-            userEmail: email,
-            apiKeys: [
-              {
-                apiKeyName: "keeperhub-server",
-                publicKey: apiPublicKey,
-                curveType: "API_KEY_CURVE_P256" as const,
-              },
-            ],
-            authenticators: [],
-            oauthProviders: [],
-          },
-        ],
-        wallet: {
-          walletName: "Default Wallet",
-          accounts: [
-            {
-              curve: "CURVE_SECP256K1",
-              pathFormat: "PATH_FORMAT_BIP32",
-              path: "m/44'/60'/0'/0/0",
-              addressFormat: "ADDRESS_FORMAT_ETHEREUM",
-            },
-          ],
-        },
-      });
+      const subOrg = await client.createSubOrganization(
+        buildSubOrgRequest(
+          process.env.TURNKEY_ORGANIZATION_ID ?? "",
+          organizationName,
+          email,
+          apiPublicKey,
+          EVM_ONLY_ACCOUNTS
+        )
+      );
 
       walletId = subOrg.wallet?.walletId;
       subOrgId = subOrg.subOrganizationId;
@@ -214,14 +315,7 @@ export async function createTurnkeyWallet(
         const solanaAccountResult = await client.createWalletAccounts({
           organizationId: subOrgId,
           walletId,
-          accounts: [
-            {
-              curve: "CURVE_ED25519",
-              pathFormat: "PATH_FORMAT_BIP32",
-              path: "m/44'/501'/0'/0'",
-              addressFormat: "ADDRESS_FORMAT_SOLANA",
-            },
-          ],
+          accounts: SOLANA_ONLY_ACCOUNT,
         });
         solanaAddress = solanaAccountResult.addresses?.[0] ?? null;
       } catch (solanaError) {

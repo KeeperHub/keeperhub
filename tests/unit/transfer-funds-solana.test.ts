@@ -5,8 +5,8 @@ vi.mock("server-only", () => ({}));
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import {
+  buildSolanaSignerFromWallet,
   getOrganizationWallet,
-  initializeSolanaWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import {
   isSolanaTransferPath,
@@ -15,7 +15,7 @@ import {
 
 vi.mock("@/lib/web3/wallet-helpers", () => ({
   getOrganizationWallet: vi.fn(),
-  initializeSolanaWalletSigner: vi.fn(),
+  buildSolanaSignerFromWallet: vi.fn(),
   getOrganizationWalletAddress: vi.fn().mockResolvedValue("evm-wallet-address"),
 }));
 
@@ -64,7 +64,7 @@ describe("transferFundsCore - Solana early branch", () => {
     } as any);
 
     const mockSigner = { getPublicKey: vi.fn(), signTransaction: vi.fn() };
-    vi.mocked(initializeSolanaWalletSigner).mockResolvedValue(
+    vi.mocked(buildSolanaSignerFromWallet).mockReturnValue(
       mockSigner as any
     );
 
@@ -92,16 +92,16 @@ describe("transferFundsCore - Solana early branch", () => {
     });
 
     expect(mockAdapter.getBalance).toHaveBeenCalledWith(
-      null,
+      undefined,
       "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
     );
     expect(mockAdapter.sendTransaction).toHaveBeenCalledWith(
-      null,
+      undefined,
       {
         to: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
         value: BigInt(1_500_000_000),
       },
-      null,
+      undefined,
       expect.objectContaining({ solanaSigner: mockSigner })
     );
   });
@@ -166,7 +166,7 @@ describe("transferFundsCore - Solana early branch", () => {
       solanaAddress: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
     } as any);
 
-    vi.mocked(initializeSolanaWalletSigner).mockResolvedValue({} as any);
+    vi.mocked(buildSolanaSignerFromWallet).mockReturnValue({} as any);
 
     mockAdapter.getBalance.mockResolvedValue(BigInt(500_000_000)); // 0.5 SOL
 

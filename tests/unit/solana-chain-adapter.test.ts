@@ -180,19 +180,17 @@ describe("SolanaChainAdapter", () => {
       ).rejects.toThrow("[SolanaChainAdapter] readContract is not supported");
     });
 
-    it("sendTransaction throws standard Error", async () => {
+    it("sendTransaction throws if solanaSigner is missing from options", async () => {
       const { factory } = createMockFactory();
       const adapter = new SolanaChainAdapter(DEVNET_CHAIN_ID, factory);
       await expect(
         adapter.sendTransaction(
           null as never,
+          { to: "11111111111111111111111111111111" },
           null as never,
-          null as never,
-          null as never
+          { gasOverrides: {} } // solanaSigner intentionally absent
         )
-      ).rejects.toThrow(
-        "[SolanaChainAdapter] sendTransaction is not supported"
-      );
+      ).rejects.toThrow("[SolanaChainAdapter] Missing options.solanaSigner");
     });
 
     it("executeContractCall throws standard Error", async () => {

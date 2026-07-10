@@ -118,7 +118,11 @@ export async function provisionOrganizationWallet(
         ErrorCategory.EXTERNAL_SERVICE,
         "[Wallet] Provisioning race: another caller created the wallet first; orphaned Turnkey sub-org",
         error,
-        { organizationId, orphanedSubOrgId: turnkeyResult.subOrgId }
+        {
+          organizationId,
+          orphanedSubOrgId: turnkeyResult.subOrgId,
+          orphanedSolanaAddress: turnkeyResult.solanaAddress ?? "none",
+        }
       );
       const winner = await getActiveWallet(organizationId);
       if (winner) {

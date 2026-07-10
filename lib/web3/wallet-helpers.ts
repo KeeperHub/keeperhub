@@ -92,11 +92,9 @@ export async function organizationHasWallet(
   return wallet.length > 0;
 }
 
-export async function initializeSolanaWalletSigner(
-  organizationId: string
-): Promise<SolanaTransactionSigner> {
-  const wallet = await getOrganizationWallet(organizationId);
-
+export function buildSolanaSignerFromWallet(
+  wallet: OrganizationWallet
+): SolanaTransactionSigner {
   if (!wallet.turnkeySubOrgId) {
     throw new Error("[Solana] Turnkey wallet missing sub-organization ID");
   }
@@ -107,6 +105,12 @@ export async function initializeSolanaWalletSigner(
       "Contact support to add a Solana account to this wallet."
     );
   }
-
   return new TurnkeySolanaSigner(wallet.turnkeySubOrgId, wallet.solanaAddress);
+}
+
+export async function initializeSolanaWalletSigner(
+  organizationId: string
+): Promise<SolanaTransactionSigner> {
+  const wallet = await getOrganizationWallet(organizationId);
+  return buildSolanaSignerFromWallet(wallet);
 }
