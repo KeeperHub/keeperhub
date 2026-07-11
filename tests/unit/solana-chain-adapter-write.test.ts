@@ -356,5 +356,70 @@ describe("SolanaChainAdapter - sendTransaction", () => {
       // Verify that it preserves original priority fee (10)
       expect(receipt.effectiveGasPrice).toBe(BigInt(10));
     });
+
+    it("prevents double-spend by signing and broadcasting exactly once even when confirmation retries", async () => {
+      const { mockConnection } = createMockManager();
+
+      // Track arguments passed to signTransaction
+      const originalSignTransaction =
+        solanaSigner.signTransaction.bind(solanaSigner);
+      const signTransactionSpy = vi
+        .fn()
+        .mockImplementation(originalSignTransaction);
+      solanaSigner.signTransaction = signTransactionSpy;
+
+      // Mock confirmTransaction to fail first time, then succeed
+      let confirmCallCount = 0;
+      mockConnection.confirmTransaction = vi.fn().mockImplementation(() => {
+        confirmCallCount++;
+        if (confirmCallCount === 1) {
+          throw new Error("Transient read-side RPC connection timeout");
+        }
+        return Promise.resolve({ value: { err: null } });
+      });
+
+      // Implement a mock executeWithFailover that actually retries on error
+      const mockManager = {
+        executeWithFailover: vi.fn().mockImplementation(async (op) => {
+          try {
+            return await op(mockConnection as any);
+          } catch {
+            // Retry exactly once on error
+            return await op(mockConnection as any);
+          }
+        }),
+      };
+
+      const adapter = new SolanaChainAdapter(DEVNET_CHAIN_ID, () =>
+        Promise.resolve(mockManager as any)
+      );
+
+      const receipt = await adapter.sendTransaction(
+        null as any,
+        {
+          to: recipientKeypair.publicKey.toBase58(),
+          value: BigInt(5000),
+        },
+        null as any,
+        {
+          solanaSigner,
+          gasOverrides: {
+            priorityFeeOverride: BigInt(100),
+          },
+        } as any
+      );
+
+      // Assertions
+      expect(receipt.hash).toBe("signature123");
+
+      // confirmTransaction must be called twice (failed first, succeeded second)
+      expect(confirmCallCount).toBe(2);
+
+      // signTransaction must be called exactly once
+      expect(signTransactionSpy).toHaveBeenCalledTimes(1);
+
+      // sendRawTransaction must be called exactly once (no retry on broadcast side)
+      expect(mockConnection.sendRawTransaction).toHaveBeenCalledTimes(1);
+    });
   });
 });

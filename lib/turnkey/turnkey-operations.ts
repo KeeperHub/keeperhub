@@ -106,7 +106,7 @@ function buildSubOrgRequest(
     ],
     wallet: {
       walletName: "Default Wallet",
-      accounts,
+      accounts: [...accounts],
     },
   };
 }
@@ -115,8 +115,8 @@ export type TurnkeyWalletResult = {
   subOrgId: string;
   walletId: string;
   privateKeyId: string;
-  walletAddress: string;          // EVM
-  solanaAddress: string | null;   // NEW
+  walletAddress: string; // EVM
+  solanaAddress: string | null; // NEW
 };
 
 export async function createTurnkeyWallet(
@@ -271,6 +271,13 @@ export async function createTurnkeyWallet(
       const walletAddress = evmAccount?.address;
       if (!walletAddress) {
         throw new Error("EVM address not found in reconciled sub-org");
+      }
+
+      if (!solanaAddress) {
+        const solanaAccount = walletAccounts.accounts?.find(
+          (a) => a.addressFormat === "ADDRESS_FORMAT_SOLANA"
+        );
+        solanaAddress = solanaAccount?.address ?? null;
       }
 
       return {

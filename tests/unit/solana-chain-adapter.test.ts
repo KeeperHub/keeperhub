@@ -231,7 +231,10 @@ describe("SolanaChainAdapter", () => {
 
       expect(result).toBe(42);
       expect(factory).toHaveBeenCalledTimes(1);
-      expect(mockManager.executeWithFailover).toHaveBeenCalledWith(mockOp);
+      expect(mockManager.executeWithFailover).toHaveBeenCalledWith(
+        mockOp,
+        undefined
+      );
     });
   });
 

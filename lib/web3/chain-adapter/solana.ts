@@ -6,6 +6,7 @@ import {
 } from "@solana/web3.js";
 import type { ethers } from "ethers";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import type { RpcOperationType } from "@/lib/rpc/providers/index";
 import type { SolanaProviderManager } from "@/lib/rpc/providers/solana";
 import type { NonceSession } from "../nonce-manager";
 import {
@@ -64,56 +65,45 @@ export class SolanaChainAdapter implements ChainAdapter {
       (await solanaSigner.getPublicKey()).toBase58()
     );
 
-    const manager = await this.getManager();
-
-    return manager.executeWithFailover(async (connection) => {
-      // 1. Get recent blockhash
-      const { blockhash } = await connection.getLatestBlockhash("confirmed");
-
-      // 2. Normalize: builds the Transaction/VersionedTransaction from
-      //    request.data (Mode A) or request.to + request.value (Mode B)
-      const normalized = normalizeSolanaTransaction(
-        request.data,
-        request.to,
-        request.value,
-        signerPublicKey,
-        options.gasOverrides?.priorityFeeOverride,
-        options.gasOverrides?.gasLimitOverride
+    const { blockhash, lastValidBlockHeight } =
+      await this.executeWithSolanaFailover(
+        (connection) => connection.getLatestBlockhash("confirmed"),
+        "read"
       );
 
-      // Hoist the isVersioned flag to keep all serialization, simulation,
-      // and price parsing steps consistent.
-      const isVersioned =
-        normalized.mode === "A" && (normalized.isVersioned ?? false);
+    const normalized = normalizeSolanaTransaction(
+      request.data,
+      request.to,
+      request.value,
+      signerPublicKey,
+      options.gasOverrides?.priorityFeeOverride,
+      options.gasOverrides?.gasLimitOverride
+    );
 
-      // Ensure the transaction has the latest blockhash set before serializing/signing
-      if (isVersioned) {
-        (
-          normalized.transaction as VersionedTransaction
-        ).message.recentBlockhash = blockhash;
-      } else {
-        (normalized.transaction as Transaction).recentBlockhash = blockhash;
-      }
+    const isVersioned =
+      normalized.mode === "A" && (normalized.isVersioned ?? false);
 
-      // 3. Serialize for signing
-      const txToSign = normalized.transaction;
-      const serialized = isVersioned
-        ? (txToSign as VersionedTransaction).serialize()
-        : (txToSign as Transaction).serialize({ requireAllSignatures: false });
+    if (isVersioned) {
+      (normalized.transaction as VersionedTransaction).message.recentBlockhash =
+        blockhash;
+    } else {
+      (normalized.transaction as Transaction).recentBlockhash = blockhash;
+    }
 
-      // 4. Sign via solanaSigner (Turnkey or keypair)
-      const signedBytes = await solanaSigner.signTransaction(
-        new Uint8Array(serialized)
-      );
+    const txToSign = normalized.transaction;
+    const serialized = isVersioned
+      ? (txToSign as VersionedTransaction).serialize()
+      : (txToSign as Transaction).serialize({ requireAllSignatures: false });
 
-      // 5. Deserialize type-correctly according to isVersioned
-      const signedTx = isVersioned
-        ? VersionedTransaction.deserialize(signedBytes)
-        : Transaction.from(signedBytes);
+    const signedBytes = await solanaSigner.signTransaction(
+      new Uint8Array(serialized)
+    );
 
-      // 6. Simulate before broadcast
-      // Pass signature verification options to avoid redundant checking overhead
-      // and match the original PR 2a specification.
+    const signedTx = isVersioned
+      ? VersionedTransaction.deserialize(signedBytes)
+      : Transaction.from(signedBytes);
+
+    await this.executeWithSolanaFailover(async (connection) => {
       const simResult = isVersioned
         ? await connection.simulateTransaction(
             signedTx as VersionedTransaction,
@@ -133,50 +123,49 @@ export class SolanaChainAdapter implements ChainAdapter {
           `[SolanaChainAdapter] Simulation failed: ${JSON.stringify(simResult.value.err)}`
         );
       }
+    }, "preflight");
 
-      // 7. Broadcast with failover + duplicate reconciliation
-      const { signature } = await submitSignedSolanaTransactionWithFailover(
-        signedBytes,
-        manager
-      );
+    const manager = await this.getManager();
+    const { signature } = await submitSignedSolanaTransactionWithFailover(
+      signedBytes,
+      manager
+    );
 
-      // 8. Wait for on-chain confirmation, then fetch receipt fields.
-      // getTransaction without a prior confirm often returns null on devnet
-      // because the node hasn't yet processed the tx at confirmed commitment.
-      const { blockhash: latestBlockhash, lastValidBlockHeight } =
-        await connection.getLatestBlockhash("confirmed");
+    const txResult = await this.executeWithSolanaFailover(
+      async (connection) => {
+        await connection.confirmTransaction(
+          {
+            signature,
+            blockhash, // Original blockhash used for signing
+            lastValidBlockHeight,
+          },
+          "confirmed"
+        );
 
-      await connection.confirmTransaction(
-        {
-          signature,
-          blockhash: latestBlockhash,
-          lastValidBlockHeight,
-        },
-        "confirmed"
-      );
+        return connection.getTransaction(signature, {
+          commitment: "confirmed",
+          maxSupportedTransactionVersion: 0,
+        });
+      },
+      "read"
+    );
 
-      const txResult = await connection.getTransaction(signature, {
-        commitment: "confirmed",
-        maxSupportedTransactionVersion: 0,
-      });
+    const computeUnitsConsumed =
+      txResult?.meta?.computeUnitsConsumed == null
+        ? BigInt(0)
+        : BigInt(txResult.meta.computeUnitsConsumed);
 
-      const computeUnitsConsumed =
-        txResult?.meta?.computeUnitsConsumed == null
-          ? BigInt(0)
-          : BigInt(txResult.meta.computeUnitsConsumed);
+    const effectiveGasPrice = parseComputeUnitPrice(
+      normalized.transaction,
+      isVersioned
+    );
 
-      const effectiveGasPrice = parseComputeUnitPrice(
-        normalized.transaction,
-        isVersioned
-      );
-
-      return {
-        hash: signature,
-        gasUsed: computeUnitsConsumed,
-        effectiveGasPrice,
-        blockNumber: txResult?.slot ?? 0,
-      };
-    });
+    return {
+      hash: signature,
+      gasUsed: computeUnitsConsumed,
+      effectiveGasPrice,
+      blockNumber: txResult?.slot ?? 0,
+    };
   }
 
   executeContractCall(
@@ -229,10 +218,11 @@ export class SolanaChainAdapter implements ChainAdapter {
   }
 
   async executeWithSolanaFailover<T>(
-    operation: (connection: Connection) => Promise<T>
+    operation: (connection: Connection) => Promise<T>,
+    operationType?: RpcOperationType
   ): Promise<T> {
     const manager = await this.getManager();
-    return manager.executeWithFailover(operation);
+    return manager.executeWithFailover(operation, operationType);
   }
 
   getTransactionUrl(txHash: string): Promise<string> {
