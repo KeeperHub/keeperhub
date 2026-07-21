@@ -1,0 +1,22 @@
+{
+  "name": "keeperhub-starter",
+  "version": "1.0.0",
+  "description": "Zero to first onchain transaction in 5 minutes with KeeperHub",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "@types/node": "^22.15.3"
+  },
+  "keywords": ["keeperhub", "blockchain", "agent", "x402", "hackathon"],
+  "license": "MIT"
+}
