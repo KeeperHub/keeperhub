@@ -20,7 +20,7 @@
     "@aws-sdk/client-sqs": "^3.1005.0",
     "ethers": "^6.13.4",
     "ioredis": "^5.4.2",
-    "uuid": "^14.0.0",
+    "uuid": "^14.0.1",
     "ws": "^8.20.1"
   },
   "devDependencies": {
