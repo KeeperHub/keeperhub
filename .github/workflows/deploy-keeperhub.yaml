@@ -183,6 +183,65 @@ jobs:
             --filter "name=${SERVICE_NAME}-common-test-irsa-auth" \
             --logs
 
+      # The app resolves chains from the `chains` table (resolveRpcConfig queries
+      # `chains WHERE isEnabled`), NOT from CHAIN_RPC_CONFIG directly. That table
+      # is populated only by seed-chains, which nothing used to run - so a
+      # chain-config change reached Parameter Store and stopped there, and a
+      # newly enabled chain stayed invisible to the app. Seeding here closes that
+      # gap so chain-config remains the single source of truth.
+      #
+      # Runs before the onboarding seed because onboarding workflows reference
+      # chains. Idempotent (upsert), and CHAIN_RPC_CONFIG is read through the
+      # same parser the app uses, so the gzip-compressed KHGZ1 form is handled.
+      - name: Seed chains from chain-config
+        if: steps.skip.outputs.skip_deploy != 'true'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+          REGION: ${{ env.REGION }}
+          NAMESPACE: ${{ env.NAMESPACE }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.ref_name }}" == "prod" ]]; then
+            SSM_PREFIX="/eks/techops-prod/keeperhub"
+            MIGRATOR_IMAGE="${ECR_REGISTRY}/keeperhub-prod:migrator-${IMAGE_TAG}"
+          else
+            SSM_PREFIX="/eks/techops-staging/keeperhub"
+            MIGRATOR_IMAGE="${ECR_REGISTRY}/keeperhub-staging:migrator-${IMAGE_TAG}"
+          fi
+          DATABASE_URL=$(aws ssm get-parameter --name "${SSM_PREFIX}/db-url" --with-decryption --query "Parameter.Value" --output text --region "${REGION}")
+          CHAIN_RPC_CONFIG=$(aws ssm get-parameter --name "${SSM_PREFIX}/chain-rpc-config" --with-decryption --query "Parameter.Value" --output text --region "${REGION}")
+          kubectl delete job keeperhub-seed-chains -n "${NAMESPACE}" --ignore-not-found
+          kubectl create secret generic keeperhub-seed-chains-env -n "${NAMESPACE}" \
+            --from-literal=DATABASE_URL="${DATABASE_URL}" \
+            --from-literal=CHAIN_RPC_CONFIG="${CHAIN_RPC_CONFIG}" \
+            --dry-run=client -o yaml | kubectl apply -n "${NAMESPACE}" -f -
+          kubectl apply -n "${NAMESPACE}" -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keeperhub-seed-chains
+          spec:
+            backoffLimit: 2
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: seed-chains
+                    image: ${MIGRATOR_IMAGE}
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - 'pnpm tsx scripts/seed/seed-chains.ts'
+                    envFrom:
+                      - secretRef:
+                          name: keeperhub-seed-chains-env
+          EOF
+          kubectl wait --for=condition=complete job/keeperhub-seed-chains -n "${NAMESPACE}" --timeout=180s || true
+          echo "--- seed-chains job logs ---"
+          kubectl logs -n "${NAMESPACE}" job/keeperhub-seed-chains --tail=40 || true
+          kubectl delete secret keeperhub-seed-chains-env -n "${NAMESPACE}" --ignore-not-found
+
       - name: Seed onboarding workflows
         if: steps.skip.outputs.skip_deploy != 'true'
         env:
