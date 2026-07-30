@@ -232,6 +232,18 @@ const IDEMPOTENCY_KEY_ARG = z
     "Optional Idempotency-Key (e.g. an agent-side transaction id). Retrying with the same key and arguments returns the original result instead of executing again, within a 24h window. Reusing a key with different arguments returns a 409 conflict."
   );
 
+// Optional dry-run flag shared by the direct-execution tools. Forwarded to the
+// REST layer as `simulate`, which runs the call against current chain state
+// without signing or broadcasting. Must be a real boolean: parseSimulateFlag
+// in app/api/execute/_lib/simulate-flag.ts rejects strings and numbers rather
+// than risk coercing a mistyped "false" into a live broadcast.
+const SIMULATE_ARG = z
+  .boolean()
+  .optional()
+  .describe(
+    "When true, dry-run the call instead of broadcasting it: returns the gas the network would charge and the decoded revert reason if it would fail. Nothing is signed and no transaction is sent. Must be a boolean (true/false), not a string. Defaults to false."
+  );
+
 async function callApi(
   internalApiBaseUrl: string,
   authHeader: string,
@@ -1031,6 +1043,7 @@ export function registerTools(
         .describe(
           "ERC20 token contract address. Omit for native token transfers."
         ),
+      simulate: SIMULATE_ARG,
       idempotency_key: IDEMPOTENCY_KEY_ARG,
     },
     { title: "Transfer Funds", readOnlyHint: false, destructiveHint: true },
@@ -1046,6 +1059,7 @@ export function registerTools(
             recipientAddress: args.to_address,
             amount: args.amount,
             tokenAddress: args.token_address,
+            simulate: args.simulate,
           },
           args.idempotency_key
         );
@@ -1093,6 +1107,7 @@ export function registerTools(
         .describe(
           "Explicit maxPriorityFeePerGas in gwei (e.g., '2'). Bypasses the chain's default min/max priority-fee clamp. Use when the network's mempool requires a tip above the configured floor."
         ),
+      simulate: SIMULATE_ARG,
       idempotency_key: IDEMPOTENCY_KEY_ARG,
     },
     { title: "Contract Call", readOnlyHint: false, destructiveHint: false },
@@ -1112,6 +1127,7 @@ export function registerTools(
             value: args.value,
             gasLimitMultiplier: args.gas_limit_multiplier,
             priorityFeeGwei: args.priority_fee_gwei,
+            simulate: args.simulate,
           },
           args.idempotency_key
         );
@@ -1164,6 +1180,7 @@ export function registerTools(
           .optional()
           .describe("Gas limit multiplier for the action"),
       }),
+      simulate: SIMULATE_ARG,
       idempotency_key: IDEMPOTENCY_KEY_ARG,
     },
     { title: "Check and Execute", readOnlyHint: false, destructiveHint: true },
@@ -1188,6 +1205,7 @@ export function registerTools(
               abi: args.action.abi,
               gasLimitMultiplier: args.action.gas_limit_multiplier,
             },
+            simulate: args.simulate,
           },
           args.idempotency_key
         );
