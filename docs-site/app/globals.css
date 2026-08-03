@@ -204,6 +204,22 @@ html.dark nav a:hover {
   background-color: rgba(255, 255, 255, 0.05);
 }
 
+.docs-site-brand-logo {
+  color: #000000;
+}
+
+html.dark .docs-site-brand-logo {
+  color: #ffffff;
+}
+
+.docs-site-logo-text {
+  color: #000000;
+}
+
+html.dark .docs-site-logo-text {
+  color: var(--kh-text-muted);
+}
+
 /* ----------------------------------------------------------------
    Dark mode: Sidebar
    ---------------------------------------------------------------- */
@@ -396,6 +412,62 @@ html.dark table tr:nth-child(2n) {
 
 html.dark table tr:hover {
   background-color: rgba(9, 253, 103, 0.04);
+}
+
+/* Minimal styling for ThemeToggle placed next to GitHub icon */
+.kh-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+}
+
+.kh-theme-toggle .kh-theme-toggle-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.06);
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.dark .kh-theme-toggle .kh-theme-toggle-btn {
+  border-color: rgba(255,255,255,0.08);
+}
+
+/* Ensure GitHub icon visible in light mode */
+html:not(.dark) .nextra-navbar a[href*="github.com"] svg path {
+  fill: #0b1220 !important;
+}
+
+
+
+/* Make logo SVG white paths dark in light mode so text is visible */
+html:not(.dark) .kh-logo svg [fill="#fff"],
+html:not(.dark) .kh-logo svg path[fill="#fff"] {
+  fill: #0b1220 !important;
+}
+
+/* Ensure GitHub icon and other navbar action icons are visible in light mode */
+html:not(.dark) .nextra-navbar a[href*="github.com"],
+html:not(.dark) .nextra-navbar .nextra-search,
+html:not(.dark) .nextra-navbar .nextra-search * {
+  color: #0b1220 !important;
+}
+
+html:not(.dark) .nextra-navbar a[href*="github.com"] svg path {
+  fill: #0b1220 !important;
+}
+
+/* Toggle button icon color in light/dark modes */
+.nextra-navbar .kh-theme-toggle > button {
+  color: #0b1220;
+}
+.dark .nextra-navbar .kh-theme-toggle > button {
+  color: var(--kh-text);
 }
 
 /* ----------------------------------------------------------------

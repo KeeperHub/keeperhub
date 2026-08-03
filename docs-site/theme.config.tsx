@@ -9,10 +9,10 @@ const config = {
         gap: "10px",
       }}
     >
-      <KeeperHubLogo />
+      <KeeperHubLogo className="docs-site-brand-logo" />
       <span
+        className="docs-site-logo-text"
         style={{
-          color: "#7a9ca8",
           fontWeight: 400,
           fontSize: "13px",
         }}

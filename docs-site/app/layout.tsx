@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { Anek_Latin } from "next/font/google";
 import "nextra-theme-docs/style.css";
 import "./globals.css";
+import ThemeToggle from "../components/ThemeToggle";
 
 import themeConfig from "../theme.config";
 
@@ -60,9 +61,23 @@ export default async function RootLayout({
   const pageMap = filterPageMap(rawPageMap);
 
   return (
-    <html dir="ltr" lang="en" className={`dark ${anekLatin.variable}`} suppressHydrationWarning>
+    <html dir="ltr" lang="en" className={`${anekLatin.variable}`} suppressHydrationWarning>
       <Head>
         <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+        {/* Inline script to set initial theme before hydration */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(() => {
+              try {
+                const stored = localStorage.getItem('theme');
+                const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+                const theme = stored || (prefersDark ? 'dark' : 'light');
+                if (theme === 'dark') document.documentElement.classList.add('dark');
+                else document.documentElement.classList.remove('dark');
+              } catch (e) {}
+            })()`,
+          }}
+        />
       </Head>
       <body>
         <Layout
@@ -71,10 +86,14 @@ export default async function RootLayout({
           editLink={themeConfig.editLink?.content}
           footer={<Footer>{themeConfig.footer?.content}</Footer>}
           navbar={
-            <Navbar
-              logo={themeConfig.logo}
-              projectLink={themeConfig.project?.link}
-            />
+            <>
+              <Navbar
+                logo={themeConfig.logo}
+                projectLink={themeConfig.project?.link}
+              />
+              {/* ThemeToggle is injected into the navbar by the client component */}
+              <ThemeToggle />
+            </>
           }
           pageMap={pageMap}
           sidebar={{ defaultMenuCollapseLevel: 1 }}
