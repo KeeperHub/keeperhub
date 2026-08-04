@@ -30,7 +30,11 @@ import type { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
 import type { SolanaTransactionSigner } from "@/lib/web3/chain-adapter/types";
 import type { NonceSession } from "@/lib/web3/nonce-manager";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
-import { SOLANA_BASE_FEE_LAMPORTS } from "@/lib/web3/solana-fees";
+import {
+  computeSolanaLamportFee,
+  SOLANA_BASE_FEE_LAMPORTS,
+  SOLANA_SPL_MAX_FEE_LAMPORTS,
+} from "@/lib/web3/solana-fees";
 import { initializeSolanaWallet } from "@/lib/web3/wallet-helpers";
 
 /**
@@ -344,6 +348,16 @@ async function runPreflight(args: {
     return rent;
   }
 
+  // The daily Solana cap was charged a fixed worst case before this step ran,
+  // because the reservation happens without a chain read. The true rent is only
+  // knowable here, from the mint's own account layout, and a Token-2022 mint
+  // carrying enough extensions can need more than that fixed figure. Refuse
+  // rather than spend past what the ledger recorded.
+  const ceilingCheck = checkReservedSolCeiling(rent.lamports);
+  if (ceilingCheck) {
+    return { error: ceilingCheck };
+  }
+
   const solCheck = checkSolBalance({
     balanceLamports: BigInt(ownerInfo?.lamports ?? 0),
     rentLamports: rent.lamports,
@@ -396,6 +410,20 @@ async function resolveRentLamports(
   } catch (error) {
     return { error: `Failed to read rent exemption: ${getErrorMessage(error)}` };
   }
+}
+
+/**
+ * Returns an error message when the real SOL cost of the transfer exceeds what
+ * was reserved against the organization's daily Solana cap, or null when it
+ * fits. Keeps the reservation an enforced ceiling rather than an estimate the
+ * transfer is free to exceed.
+ */
+function checkReservedSolCeiling(rentLamports: bigint): string | null {
+  const required = SOLANA_BASE_FEE_LAMPORTS + rentLamports;
+  if (required <= SOLANA_SPL_MAX_FEE_LAMPORTS) {
+    return null;
+  }
+  return `This token's account requires ${required.toString()} lamports (fee plus rent), above the ${SOLANA_SPL_MAX_FEE_LAMPORTS.toString()} lamports reserved against the organization's daily Solana spending cap`;
 }
 
 /** Returns an error message, or null when the balance covers fee plus rent. */
@@ -498,13 +526,17 @@ async function executeTransfer(
 
     const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
+    // Prefer the fee the chain reported; the compute-budget reconstruction is
+    // only a fallback for a receipt that carries no fee.
+    const lamportFee =
+      receipt.feeLamports ??
+      computeSolanaLamportFee(receipt.gasUsed, receipt.effectiveGasPrice);
+
     return {
       success: true,
       transactionHash: receipt.hash,
       transactionLink,
-      // Mirrors the native Solana path: the lamport fee is not computed, and the
-      // raw compute-unit fields are returned instead.
-      gasUsed: "0",
+      gasUsed: lamportFee.toString(),
       gasUsedUnits: receipt.gasUsed.toString(),
       effectiveGasPrice: receipt.effectiveGasPrice.toString(),
       amount,

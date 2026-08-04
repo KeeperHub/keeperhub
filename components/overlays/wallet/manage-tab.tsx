@@ -11,6 +11,7 @@ export function ManageTab({
   isAdmin,
   isOwner,
   onOpenSafeView,
+  solanaAddress,
   walletAddress,
 }: {
   canExportKey: boolean;
@@ -18,13 +19,16 @@ export function ManageTab({
   isAdmin: boolean;
   isOwner: boolean;
   onOpenSafeView: () => void;
+  solanaAddress?: string | null;
   walletAddress: string;
 }): React.ReactElement {
   return (
     <>
       <WalletAddressCard walletAddress={walletAddress} />
       <RecoveryEmailCard email={email} />
-      {isOwner && canExportKey && <SecurityCard />}
+      {isOwner && canExportKey && (
+        <SecurityCard solanaAddress={solanaAddress} />
+      )}
       <SafeWalletsEntryCard isAdmin={isAdmin} onOpen={onOpenSafeView} />
     </>
   );

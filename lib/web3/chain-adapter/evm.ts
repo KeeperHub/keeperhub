@@ -2,6 +2,7 @@ import { ethers } from "ethers";
 import { logWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
+import { OnChainRevertError } from "@/lib/web3/onchain-revert";
 import { submitSignedTransactionWithFailover } from "@/lib/web3/submit-signed";
 import type { AdaptiveGasStrategy, GasConfig } from "../gas-strategy";
 import type { NonceManager, NonceSession } from "../nonce-manager";
@@ -374,9 +375,11 @@ export class EvmChainAdapter implements ChainAdapter {
     // preflight and reverted only at inclusion time can still resolve here.
     // status 0 is authoritative: never report a reverted tx as confirmed.
     if (receipt.status === 0) {
-      throw new Error(
-        `Transaction ${receipt.hash} reverted on-chain (status 0, block ${receipt.blockNumber})`
-      );
+      throw new OnChainRevertError({
+        message: `Transaction ${receipt.hash} reverted on-chain (status 0, block ${receipt.blockNumber})`,
+        transactionHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+      });
     }
 
     await this.nonceManager.confirmTransaction(tx.hash);

@@ -61,6 +61,9 @@ const VALID_TIER_KEYS: ReadonlySet<string> = new Set<TierKey>([
 // the tiers that value may select; anything else falls back to the default.
 // Every other plan and tier is pay-now.
 export const TRIAL_PLAN_NAME: PlanName = "pro";
+// Pay-as-you-go is offered on this plan only; every other plan either bills
+// overage past its included limit or is unlimited.
+export const PAYG_PLAN_NAME: PlanName = "free";
 export const DEFAULT_TRIAL_TIER_KEY: TierKey = "25k";
 export const TRIAL_ELIGIBLE_TIER_KEYS: readonly TierKey[] = [
   "25k",
@@ -189,6 +192,12 @@ export const PLANS: Record<PlanName, PlanDefinition> = {
     overage: { enabled: false, ratePerThousand: 0 },
   },
 } as const;
+
+// Whether the plan bills overage past its included limit. Overage and
+// pay-as-you-go are the two ways to run past the limit, and no plan has both.
+export function billsOverage(plan: PlanName): boolean {
+  return PLANS[plan].overage.enabled;
+}
 
 // Whether `value` is a Pro tier that may be configured as the trial tier.
 // Guards the TRIAL_TIER env against a plan/tier that does not exist.

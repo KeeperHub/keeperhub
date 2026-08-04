@@ -7,6 +7,7 @@ import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { integrationsVersionAtom } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
+import type { WorkflowValidationIssue } from "@/lib/workflow/editor/run-validation";
 import { ConfigureConnectionOverlay } from "./add-connection-overlay";
 import { ConfigurationOverlay } from "./configuration-overlay";
 import { Overlay } from "./overlay";
@@ -42,12 +43,14 @@ type WorkflowIssues = {
   brokenReferences: BrokenReference[];
   missingRequiredFields: MissingRequiredField[];
   missingIntegrations: MissingIntegration[];
+  validationErrors?: WorkflowValidationIssue[];
+  validationWarnings?: WorkflowValidationIssue[];
 };
 
 type WorkflowIssuesOverlayProps = OverlayComponentProps<{
   issues: WorkflowIssues;
   onGoToStep: (nodeId: string, fieldKey?: string) => void;
-  onRunAnyway: () => void;
+  onRunAnyway?: () => void;
   actionLabel?: string;
 }>;
 
@@ -62,13 +65,22 @@ export function WorkflowIssuesOverlay({
   const setIntegrationsVersion = useSetAtom(integrationsVersionAtom);
   const isMobile = useIsMobile();
 
-  const { brokenReferences, missingRequiredFields, missingIntegrations } =
-    issues;
+  const {
+    brokenReferences,
+    missingRequiredFields,
+    missingIntegrations,
+    validationErrors = [],
+    validationWarnings = [],
+  } = issues;
+
+  const hasBlockingIssues = validationErrors.length > 0;
 
   const totalIssues =
     brokenReferences.length +
     missingRequiredFields.length +
-    missingIntegrations.length;
+    missingIntegrations.length +
+    validationErrors.length +
+    validationWarnings.length;
 
   const handleGoToStep = (nodeId: string, fieldKey?: string) => {
     // Select the node and set tab (this is handled by onGoToStep)
@@ -93,15 +105,32 @@ export function WorkflowIssuesOverlay({
   };
 
   const handleRunAnyway = () => {
+    if (!onRunAnyway || hasBlockingIssues) {
+      return;
+    }
+
     closeAll();
     onRunAnyway();
   };
 
+
+
   return (
     <Overlay
       actions={[
-        { label: actionLabel, variant: "outline", onClick: handleRunAnyway },
-        { label: "Cancel", onClick: closeAll },
+        ...(hasBlockingIssues || !onRunAnyway
+          ? []
+          : [
+              {
+                label: actionLabel,
+                variant: "outline" as const,
+                onClick: handleRunAnyway,
+              },
+            ]),
+        {
+          label: hasBlockingIssues ? "Close" : "Cancel",
+          onClick: closeAll,
+        },
       ]}
       overlayId={overlayId}
       title={`Workflow Issues (${totalIssues})`}
@@ -109,11 +138,87 @@ export function WorkflowIssuesOverlay({
       <div className="flex items-center gap-2 text-orange-500">
         <AlertTriangle className="size-5" />
         <p className="text-muted-foreground text-sm">
-          This workflow has issues that may cause it to fail.
+          {hasBlockingIssues
+            ? "Fix the blocking errors before running this workflow."
+            : "This workflow has issues that may cause it to fail."}
         </p>
       </div>
 
       <div className="mt-4 space-y-4">
+        {/* Server Validation Errors */}
+        {validationErrors.length > 0 && (
+          <div className="space-y-2">
+            <h4 className="font-medium text-destructive text-xs uppercase tracking-wide">
+              Blocking Errors
+            </h4>
+            {validationErrors.map((issue, index) => {
+              const nodeId = issue.nodeId;
+
+              return (
+                <div
+                  className="flex items-center gap-3 py-1"
+                  key={`${issue.code}-${issue.parameterPath}-${index}`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm">{issue.message}</p>
+                    <p className="break-all font-mono text-muted-foreground text-xs">
+                      {issue.parameterPath}
+                    </p>
+                  </div>
+
+                  {nodeId && (
+                    <Button
+                      className="shrink-0"
+                      onClick={() => handleGoToStep(nodeId, issue.fieldKey)}
+                      size="sm"
+                      variant="outline"
+                    >
+                      Fix
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Server Validation Warnings */}
+        {validationWarnings.length > 0 && (
+          <div className="space-y-2">
+            <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+              Warnings
+            </h4>
+            {validationWarnings.map((issue, index) => {
+              const nodeId = issue.nodeId;
+
+              return (
+                <div
+                  className="flex items-center gap-3 py-1"
+                  key={`${issue.code}-${issue.parameterPath}-${index}`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm">{issue.message}</p>
+                    <p className="break-all font-mono text-muted-foreground text-xs">
+                      {issue.parameterPath}
+                    </p>
+                  </div>
+
+                  {nodeId && (
+                    <Button
+                      className="shrink-0"
+                      onClick={() => handleGoToStep(nodeId, issue.fieldKey)}
+                      size="sm"
+                      variant="outline"
+                    >
+                      Fix
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* Missing Connections Section */}
         {missingIntegrations.length > 0 && (
           <div className="space-y-1">

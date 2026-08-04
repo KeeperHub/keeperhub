@@ -65,7 +65,7 @@ const EVM_ONLY_ACCOUNTS = [
 
 // Single-element array reused by both EVM_AND_SOLANA_ACCOUNTS and the B5
 // reconciliation path — one source of truth for the ED25519 derivation shape.
-const SOLANA_ONLY_ACCOUNT = [
+export const SOLANA_ONLY_ACCOUNT = [
   {
     curve: "CURVE_ED25519" as const,
     pathFormat: "PATH_FORMAT_BIP32" as const,
@@ -256,12 +256,11 @@ export async function createTurnkeyWallet(
       let solanaAddress: string | null = null;
       if (solanaEnabled) {
         try {
-          const result = await client.createWalletAccounts({
-            organizationId: existingSubOrgId,
-            walletId: existingWalletId,
-            accounts: SOLANA_ONLY_ACCOUNT,
-          });
-          solanaAddress = result.addresses?.[0] ?? null;
+          solanaAddress = await fetchOrCreateSolanaWalletAddress(
+            client,
+            existingSubOrgId,
+            existingWalletId
+          );
         } catch (solanaError) {
           logSystemError(
             ErrorCategory.EXTERNAL_SERVICE,
@@ -285,10 +284,7 @@ export async function createTurnkeyWallet(
       }
 
       if (solanaEnabled && !solanaAddress) {
-        const solanaAccount = walletAccounts.accounts?.find(
-          (a) => a.addressFormat === "ADDRESS_FORMAT_SOLANA"
-        );
-        solanaAddress = solanaAccount?.address ?? null;
+        solanaAddress = findSolanaWalletAddress(walletAccounts.accounts);
       }
 
       return {
@@ -331,12 +327,11 @@ export async function createTurnkeyWallet(
       let solanaAddress: string | null = null;
       if (solanaEnabled) {
         try {
-          const solanaAccountResult = await client.createWalletAccounts({
-            organizationId: subOrgId,
-            walletId,
-            accounts: SOLANA_ONLY_ACCOUNT,
-          });
-          solanaAddress = solanaAccountResult.addresses?.[0] ?? null;
+          solanaAddress = await fetchOrCreateSolanaWalletAddress(
+            client,
+            subOrgId,
+            walletId
+          );
         } catch (solanaError) {
           logSystemError(
             ErrorCategory.EXTERNAL_SERVICE,
@@ -368,7 +363,8 @@ export async function createTurnkeyWallet(
 
 export async function exportTurnkeyPrivateKey(
   subOrgId: string,
-  walletAddress: string
+  address: string,
+  keyType: "evm" | "solana" = "evm"
 ): Promise<string> {
   const turnkey = getTurnkeyClient();
   const client = turnkey.apiClient();
@@ -378,7 +374,7 @@ export async function exportTurnkeyPrivateKey(
 
     const exportResult = await client.exportWalletAccount({
       organizationId: subOrgId,
-      address: walletAddress,
+      address,
       targetPublicKey: keyPair.publicKeyUncompressed,
     });
 
@@ -386,13 +382,21 @@ export async function exportTurnkeyPrivateKey(
       throw new Error("Turnkey returned empty export bundle");
     }
 
+    // Solana wallets import base58 in the ed25519 layout Turnkey's SOLANA
+    // format produces. Hex is what an EVM wallet wants, and handing it to
+    // Phantom or Solflare gives the user a key none of them will accept -
+    // which defeats the point of an export.
     const privateKey = await decryptExportBundle({
       exportBundle: exportResult.exportBundle,
       embeddedKey: keyPair.privateKey,
       organizationId: subOrgId,
-      keyFormat: "HEXADECIMAL",
+      keyFormat: keyType === "solana" ? "SOLANA" : "HEXADECIMAL",
       returnMnemonic: false,
     });
+
+    if (keyType === "solana") {
+      return privateKey;
+    }
 
     return privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
   } catch (error) {
@@ -400,7 +404,7 @@ export async function exportTurnkeyPrivateKey(
       ErrorCategory.EXTERNAL_SERVICE,
       "[Turnkey] Failed to export private key",
       error,
-      { service: "turnkey" }
+      { service: "turnkey", key_type: keyType }
     );
     throw error;
   }
@@ -435,4 +439,68 @@ export function getTurnkeySignerConfig(
     organizationId: subOrgId,
     signWith: walletAddress,
   };
+}
+
+type TurnkeyWalletAccount = {
+  address?: string;
+  addressFormat?: string;
+};
+
+export function findSolanaWalletAddress(
+  accounts: TurnkeyWalletAccount[] | undefined
+): string | null {
+  return (
+    accounts?.find((a) => a.addressFormat === "ADDRESS_FORMAT_SOLANA")
+      ?.address ?? null
+  );
+}
+
+export function getTurnkeyApiClient(): ReturnType<Turnkey["apiClient"]> {
+  return getTurnkeyClient().apiClient();
+}
+
+export async function fetchOrCreateSolanaWalletAddress(
+  client: ReturnType<Turnkey["apiClient"]>,
+  subOrgId: string,
+  walletId: string
+): Promise<string> {
+  const existing = await client.getWalletAccounts({
+    organizationId: subOrgId,
+    walletId,
+  });
+  const found = findSolanaWalletAddress(existing.accounts);
+  if (found) {
+    return found;
+  }
+
+  // Nothing serialises provisioning, so two steps for the same organization can
+  // reach this point together and both try to create. The account derives from
+  // a fixed path, so whoever wins produces the same address: treat a create
+  // failure as "another caller got there first" and settle it by re-reading,
+  // rather than failing a step for which a usable address now exists.
+  let createError: unknown;
+  try {
+    await client.createWalletAccounts({
+      organizationId: subOrgId,
+      walletId,
+      accounts: SOLANA_ONLY_ACCOUNT,
+    });
+  } catch (error) {
+    createError = error;
+  }
+
+  const refreshed = await client.getWalletAccounts({
+    organizationId: subOrgId,
+    walletId,
+  });
+  const created = findSolanaWalletAddress(refreshed.accounts);
+  if (created) {
+    return created;
+  }
+  if (createError) {
+    throw createError;
+  }
+  throw new Error(
+    "No Solana address available from Turnkey (create/getWalletAccounts)"
+  );
 }

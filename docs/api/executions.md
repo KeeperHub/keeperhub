@@ -107,6 +107,15 @@ Returns real-time execution status with progress tracking.
 | `chainId` | number (optional) | EIP-155 chain id, when emitted by the step |
 | `network` | string (optional) | Network slug (e.g. `mainnet`, `arbitrum`) |
 | `iterationIndex` | number (optional) | 0-based For-Each loop index; present only for entries produced inside a For-Each iteration |
+| `verified` | boolean (optional) | Whether this hash positively confirmed on-chain. An execution settles as `success` only when every entry is `true` |
+| `receiptStatus` | string (optional) | `success`, `reverted`, `safe_inner_failure`, `not_found`, or `timeout` |
+| `blockNumber` | number (optional) | Block the transaction was mined in, read from the fetched receipt |
+| `gasUsed` | string (optional) | Gas used, read from the fetched receipt |
+| `verifiedAt` | string (optional) | ISO timestamp of the verification |
+
+The verification fields are populated when the execution reaches a terminal state: every claimed hash is re-fetched from the chain before the run is allowed to settle as `success`. `not_found` and `timeout` mean verification could not reach a definitive answer within its budget, and fail the run closed rather than settling it optimistically — an execution that failed with `timeout` may describe a transaction that later lands.
+
+Prefer these entries over per-step output when you need to know what actually happened. A step's own `transactionHash` in the logs endpoint below is self-reported at the moment the step ran, before any independent check; only the entries here carry `verified` and `receiptStatus`.
 
 An empty array carries one of two meanings: the run produced no on-chain writes, or the execution row was finalized before this field began being populated. The two cases are not distinguished at the response level — if the distinction matters for a historical row, the underlying hashes are reconstructable from per-step logs via the endpoint below. For full per-step input, output, error, and timing detail, also use the logs endpoint below.
 

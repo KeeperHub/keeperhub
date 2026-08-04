@@ -85,6 +85,13 @@ type CountCacheEntry = {
 
 const countCache = new Map<string, CountCacheEntry>();
 
+type CountRead = {
+  count: number;
+  // True when this read started a scan or joined one already in flight, i.e.
+  // no fresher value is obtainable right now.
+  fresh: boolean;
+};
+
 /**
  * countMonthlyExecutions behind a per-process TTL cache with in-flight dedup.
  *
@@ -97,39 +104,34 @@ const countCache = new Map<string, CountCacheEntry>();
  * i.e. under DB stress) they share the same promise instead of each starting
  * their own scan.
  *
- * Tradeoff: the guard may act on a count up to TTL stale, so an org crossing
- * its limit can overshoot by roughly TTL x its throughput, once, in the
- * window that straddles the crossing. The next refresh blocks it.
+ * ttlMs 0 keeps the in-flight sharing but never serves a completed value, which
+ * is how admission re-reads at the limit without letting concurrent callers
+ * stack scans. BILLING_COUNT_CACHE_TTL_MS=0 puts every read on that footing.
  *
  * For admission control only. The paths that turn a count into money - overage
  * billing (lib/billing/overage.ts) and the invoice usage figures
- * (lib/billing/execution-usage.ts) - must keep reading the exact committed
- * count for their own billing period, so they do not use this.
- *
- * Set BILLING_COUNT_CACHE_TTL_MS=0 to disable (recompute on every call).
+ * (lib/billing/execution-usage.ts) - read the exact committed count for their
+ * own billing period with their own query, and never come through here.
  */
-export function countMonthlyExecutionsCached<
-  TSchema extends Record<string, unknown>,
->(
+async function readCount<TSchema extends Record<string, unknown>>(
   db: PostgresJsDatabase<TSchema>,
   organizationId: string,
-  since: Date = startOfCurrentMonthUtc()
-): Promise<number> {
-  const ttl = getCountCacheTtlMs();
-  if (ttl <= 0) {
-    return countMonthlyExecutions(db, organizationId, since);
-  }
-
+  since: Date,
+  ttlMs: number
+): Promise<CountRead> {
   // Keyed on the window start as well as the org so a month rollover starts a
   // fresh count instead of serving the old month's total.
   const key = `${organizationId}|${since.toISOString()}`;
   const existing = countCache.get(key);
   if (existing) {
+    // An in-flight scan is shared even at ttl 0: it is already as fresh as a
+    // new scan, and sharing is what keeps concurrent admissions from stacking
+    // duplicate scans over one org.
     if (existing.completedAt === null) {
-      return existing.promise;
+      return { count: await existing.promise, fresh: true };
     }
-    if (performance.now() - existing.completedAt < ttl) {
-      return existing.promise;
+    if (ttlMs > 0 && performance.now() - existing.completedAt < ttlMs) {
+      return { count: await existing.promise, fresh: false };
     }
   }
 
@@ -155,7 +157,49 @@ export function countMonthlyExecutionsCached<
       // settle callback threw; nothing actionable here
     });
 
-  return promise;
+  return { count: await promise, fresh: true };
+}
+
+/**
+ * How far from the limit admission stops trusting a cached count. Sized above
+ * the largest burst one org has fitted into a single TTL window, so a burst
+ * cannot jump the band from underneath it.
+ */
+export const ADMISSION_RECOUNT_MARGIN = 500;
+
+/**
+ * The count to admit or refuse an execution on.
+ *
+ * Plans that bill overage keep the cache: going over there is charged, so a
+ * stale count costs nothing. Without overage an over-limit run is admitted for
+ * free, so near the limit the count is re-read instead.
+ *
+ * The band closes above the limit too. A pay-as-you-go org runs well past its
+ * included executions, and once it is clearly over, a stale count gives the
+ * same answer, so it returns to the cache rather than re-reading forever.
+ *
+ * Simultaneous in-flight admissions still share one count and can each be
+ * admitted at the boundary. That is the check-then-act window; closing it needs
+ * an atomic count-and-reserve, not a fresher read.
+ */
+export async function countMonthlyExecutionsForAdmission<
+  TSchema extends Record<string, unknown>,
+>(
+  db: PostgresJsDatabase<TSchema>,
+  organizationId: string,
+  plan: { maxExecutionsPerMonth: number; overageEnabled: boolean },
+  since: Date = startOfCurrentMonthUtc()
+): Promise<number> {
+  const read = await readCount(db, organizationId, since, getCountCacheTtlMs());
+  if (
+    read.fresh ||
+    plan.overageEnabled ||
+    plan.maxExecutionsPerMonth < 0 ||
+    Math.abs(read.count - plan.maxExecutionsPerMonth) > ADMISSION_RECOUNT_MARGIN
+  ) {
+    return read.count;
+  }
+  return (await readCount(db, organizationId, since, 0)).count;
 }
 
 /**

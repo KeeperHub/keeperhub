@@ -5,7 +5,7 @@ description: "Blockchain operations including balance checks, contract interacti
 
 # Web3 Plugin
 
-Interact with EVM-compatible blockchain networks. Read-only actions work without credentials. Write actions require a connected Turnkey wallet.
+Interact with EVM-compatible blockchain networks and Solana. Read-only actions work without credentials. Write actions require a connected Turnkey wallet.
 
 ## Actions
 
@@ -17,8 +17,9 @@ Interact with EVM-compatible blockchain networks. Read-only actions work without
 | Batch Read Contract | Web3 | No | Batch multiple contract reads into one RPC call via Multicall3 |
 | Get Transaction | Web3 | No | Fetch full transaction details by hash |
 | Write Contract | Web3 | Wallet | Execute state-changing contract functions |
-| Transfer Native Token | Web3 | Wallet | Send ETH/MATIC/etc. to a recipient |
+| Transfer Native Token | Web3 | Wallet | Send native tokens (ETH/MATIC on EVM, SOL on Solana) to a recipient |
 | Transfer ERC20 Token | Web3 | Wallet | Send ERC20 tokens to a recipient |
+| Transfer SPL Token | Web3 | Wallet | Send SPL tokens on Solana to a recipient |
 | Approve ERC20 Token | Web3 | Wallet | Approve a spender contract to spend tokens on your behalf |
 | Check ERC20 Allowance | Web3 | No | Check the current token spending allowance granted to a spender |
 | Query Contract Events | Web3 | No | Query historical smart contract events across a block range |
@@ -464,21 +465,37 @@ Execute state-changing functions on smart contracts using your Turnkey wallet. R
 
 **Note:** The `gasUsed` output represents the total transaction cost in wei (gas units × effective gas price), not just the number of gas units consumed.
 
+### Direct-API field names
+
+If you're building this action via the [Workflows API](/api/workflows) rather than the editor, the UI labels above map to these `config` keys — the strict-mode validator will reject the natural-language versions (`function`, `method`, `contract`).
+
+`functionName` and `args` are a trap. The save-time validator accepts them so that workflows persisted before a field rename stay re-savable, but the runtime never translates them to `abiFunction` / `functionArgs`. A workflow built with them saves cleanly and then fails at execution with ``Missing `abiFunction` in the step config``. Send the canonical keys.
+
+| UI label | API `config` field | Shape |
+|---|---|---|
+| Function | `abiFunction` | plain function name string (e.g. `"release"`). Not `functionName` — see the note above. |
+| Function Arguments | `functionArgs` | **JSON-encoded array string** — e.g. `"[\"0xabc…\"]"`. Templates inside the string are resolved before `JSON.parse`, so wrap template tokens in the array's string quotes. |
+| Contract ABI | `abi` | JSON-encoded string (same convention as `functionArgs`) |
+| Web3 Connection | `web3Connection` | Sender routing: `"default"` (org policy), `"eoa"` (force the Turnkey EOA), or `"safe:<safeWalletId>"`. The signing wallet is your org's Turnkey wallet, resolved automatically. |
+| Network | `network` | numeric chain id as a string (e.g. `"11155111"`) |
+
+See the [generic web3 write-contract example](/api/workflows#generic-web3-write-contract-example-http-trigger) in the Workflows API docs for a full working request body.
+
 ---
 
 ## Transfer Native Token
 
-Send ETH, MATIC, or other native tokens from your Turnkey wallet to a recipient address.
+Send native tokens from your Turnkey wallet to a recipient address. On EVM networks this sends ETH, MATIC, or the chain's native asset. On Solana networks this sends SOL.
 
-**Inputs:** Network, Amount (ETH), Recipient Address, Gas Limit Multiplier (optional, in Advanced section)
+**Inputs:** Network, Amount, Recipient Address, Gas Limit Multiplier (optional, in Advanced section; EVM only)
 
-**Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `error`
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total fee in wei on EVM, lamports on Solana), `gasUsedUnits` and `effectiveGasPrice` on Solana (compute-unit metadata), `error`
 
 **When to use:** Refill bot wallets, distribute funds, automate payroll.
 
-**Gas Configuration:** Optionally set a custom Gas Limit Multiplier in the Advanced section to override the chain default. See [Gas Management](/wallet-management/gas) for details.
+**Gas Configuration:** On EVM networks you can optionally set a custom Gas Limit Multiplier in the Advanced section. See [Gas Management](/wallet-management/gas) for details. Solana uses lamport fees and compute units instead of EVM gas limits.
 
-**Note:** The `gasUsed` output represents the total transaction cost in wei (gas units × effective gas price), not just the number of gas units consumed.
+**Note:** On EVM, `gasUsed` is the total transaction cost in wei (gas units x effective gas price). On Solana, `gasUsed` is the total lamport fee (base signature fee plus priority fee from consumed compute units).
 
 ---
 
@@ -495,6 +512,18 @@ Send ERC20 tokens from your Turnkey wallet to a recipient address.
 **Gas Configuration:** Optionally set a custom Gas Limit Multiplier in the Advanced section to override the chain default. See [Gas Management](/wallet-management/gas) for details.
 
 **Note:** The `gasUsed` output represents the total transaction cost in wei (gas units × effective gas price), not just the number of gas units consumed.
+
+---
+
+## Transfer SPL Token
+
+Send SPL tokens on Solana from your Turnkey wallet to a recipient address. If the recipient does not yet have an associated token account for the mint, KeeperHub creates one and reserves the rent-exempt minimum from your SOL balance.
+
+**Inputs:** Network (Solana mainnet or devnet), Mint address, Amount, Recipient address
+
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total lamport fee), `gasUsedUnits`, `effectiveGasPrice`, `amount`, `mint`, `decimals`, `recipient`, `recipientTokenAccount`, `createdRecipientAccount`, `error`
+
+**When to use:** Distribute SPL tokens, automate treasury payouts on Solana, or move tokens between wallets on Solana networks.
 
 ---
 

@@ -14,6 +14,7 @@ import {
   usdcDecimalToRaw,
   usdcRawToDecimal,
 } from "@/lib/billing/payg/usdc";
+import { PAYG_PLAN_NAME } from "@/lib/billing/plans";
 import { getOrgPlan } from "@/lib/billing/plans-server";
 import { requireOrgOwner } from "@/lib/billing/require-org-owner";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
@@ -149,7 +150,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     // PAYG is a free-tier feature: it lets a free org keep running past its
     // included limit. Paid plans have their own executions/overage, so only
     // free-plan orgs may enable it.
-    if ((await getOrgPlan(orgId)) !== "free") {
+    if ((await getOrgPlan(orgId)) !== PAYG_PLAN_NAME) {
       return NextResponse.json(
         { error: "Pay-as-you-go is available on the free plan only" },
         { status: 409 }

@@ -174,6 +174,11 @@ const web3Plugin: IntegrationPlugin = {
           description: "The transaction hash of the successful transfer",
         },
         {
+          field: "chainId",
+          description:
+            "Chain the transaction was broadcast on. Required for on-chain receipt verification: a step that reports a transactionHash without a chainId fails the execution closed.",
+        },
+        {
           field: "error",
           description: "Error message if the transfer failed",
         },
@@ -238,6 +243,11 @@ const web3Plugin: IntegrationPlugin = {
         {
           field: "transactionHash",
           description: "The transaction hash of the successful transfer",
+        },
+        {
+          field: "chainId",
+          description:
+            "Chain the transaction was broadcast on. Required for on-chain receipt verification: a step that reports a transactionHash without a chainId fails the execution closed.",
         },
         {
           field: "transactionLink",
@@ -1281,6 +1291,11 @@ const web3Plugin: IntegrationPlugin = {
           description: "The transaction hash of the approval",
         },
         {
+          field: "chainId",
+          description:
+            "Chain the transaction was broadcast on. Required for on-chain receipt verification: a step that reports a transactionHash without a chainId fails the execution closed.",
+        },
+        {
           field: "transactionLink",
           description: "Explorer link to view the transaction",
         },
@@ -1458,6 +1473,11 @@ const web3Plugin: IntegrationPlugin = {
         {
           field: "transactionHash",
           description: "The transaction hash of the successful write",
+        },
+        {
+          field: "chainId",
+          description:
+            "Chain the transaction was broadcast on. Required for on-chain receipt verification: a step that reports a transactionHash without a chainId fails the execution closed.",
         },
         {
           field: "result",

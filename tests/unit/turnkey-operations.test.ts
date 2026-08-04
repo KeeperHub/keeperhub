@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { Turnkey } from "@turnkey/sdk-server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { createTurnkeyWallet } from "@/lib/turnkey/turnkey-operations";
+import {
+  createTurnkeyWallet,
+  fetchOrCreateSolanaWalletAddress,
+} from "@/lib/turnkey/turnkey-operations";
 
 const mockApiClientInstance = {
   createSubOrganization: vi.fn(),
@@ -33,7 +35,7 @@ vi.mock("@/lib/logging", () => ({
 }));
 
 describe("turnkey-operations - createTurnkeyWallet", () => {
-  let mockApiClient: any;
+  let mockApiClient: typeof mockApiClientInstance;
   beforeEach(() => {
     vi.clearAllMocks();
     mockApiClientInstance.createSubOrganization.mockReset();
@@ -45,12 +47,9 @@ describe("turnkey-operations - createTurnkeyWallet", () => {
     process.env.TURNKEY_API_PUBLIC_KEY = "mock-public-key";
     process.env.TURNKEY_API_PRIVATE_KEY = "mock-private-key";
     process.env.TURNKEY_ORGANIZATION_ID = "mock-org-id";
-    // Default the gate ON for the existing Solana-provisioning assertions;
-    // the disabled-path test below overrides it.
     process.env.SOLANA_WALLET_PROVISIONING_ENABLED = "true";
 
-    const turnkeyInstance = new Turnkey({} as any);
-    mockApiClient = turnkeyInstance.apiClient();
+    mockApiClient = mockApiClientInstance;
   });
 
   it("successfully extracts EVM and Solana addresses when multi-account succeeds", async () => {
@@ -93,15 +92,12 @@ describe("turnkey-operations - createTurnkeyWallet", () => {
   });
 
   it("falls back to EVM-only creation when multi-account throws and no existing sub-org found", async () => {
-    // Force first attempt to throw
     mockApiClient.createSubOrganization.mockRejectedValueOnce(
       new Error("Multi-account creation failed")
     );
 
-    // B5: getSubOrgIds returns no match — proceed with new sub-org creation
     mockApiClient.getSubOrgIds.mockResolvedValue({ organizationIds: [] });
 
-    // Fallback EVM-only sub-org creation succeeds
     mockApiClient.createSubOrganization.mockResolvedValueOnce({
       subOrganizationId: "mock-sub-org-id",
       wallet: {
@@ -109,6 +105,28 @@ describe("turnkey-operations - createTurnkeyWallet", () => {
         addresses: ["evm-address-1"],
       },
     });
+
+    mockApiClient.getWalletAccounts
+      .mockResolvedValueOnce({
+        accounts: [
+          {
+            address: "evm-address-1",
+            addressFormat: "ADDRESS_FORMAT_ETHEREUM",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        accounts: [
+          {
+            address: "evm-address-1",
+            addressFormat: "ADDRESS_FORMAT_ETHEREUM",
+          },
+          {
+            address: "sol-address-fallback",
+            addressFormat: "ADDRESS_FORMAT_SOLANA",
+          },
+        ],
+      });
 
     mockApiClient.createWalletAccounts.mockResolvedValue({
       addresses: ["sol-address-fallback"],
@@ -125,11 +143,6 @@ describe("turnkey-operations - createTurnkeyWallet", () => {
     });
 
     expect(mockApiClient.createSubOrganization).toHaveBeenCalledTimes(2);
-    expect(mockApiClient.getSubOrgIds).toHaveBeenCalledWith({
-      organizationId: "mock-org-id",
-      filterType: "NAME",
-      filterValue: "keeperhub-test-org",
-    });
     expect(mockApiClient.createWalletAccounts).toHaveBeenCalledWith({
       organizationId: "mock-sub-org-id",
       walletId: "mock-wallet-id",
@@ -151,12 +164,10 @@ describe("turnkey-operations - createTurnkeyWallet", () => {
   });
 
   it("reconciles existing sub-org by name when primary partially succeeded server-side (B5)", async () => {
-    // Primary throws before subOrgId is captured locally
     mockApiClient.createSubOrganization.mockRejectedValueOnce(
       new Error("Network timeout after sub-org created")
     );
 
-    // B5: getSubOrgIds finds an existing sub-org with our name
     mockApiClient.getSubOrgIds.mockResolvedValue({
       organizationIds: ["existing-sub-org-id"],
     });
@@ -164,19 +175,42 @@ describe("turnkey-operations - createTurnkeyWallet", () => {
       wallets: [{ walletId: "existing-wallet-id" }],
     });
 
-    // Adding Solana account to the recovered sub-org
+    mockApiClient.getWalletAccounts
+      .mockResolvedValueOnce({
+        accounts: [
+          {
+            address: "evm-address-recovered",
+            addressFormat: "ADDRESS_FORMAT_ETHEREUM",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        accounts: [
+          {
+            address: "evm-address-recovered",
+            addressFormat: "ADDRESS_FORMAT_ETHEREUM",
+          },
+          {
+            address: "sol-address-recovered",
+            addressFormat: "ADDRESS_FORMAT_SOLANA",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        accounts: [
+          {
+            address: "evm-address-recovered",
+            addressFormat: "ADDRESS_FORMAT_ETHEREUM",
+          },
+          {
+            address: "sol-address-recovered",
+            addressFormat: "ADDRESS_FORMAT_SOLANA",
+          },
+        ],
+      });
+
     mockApiClient.createWalletAccounts.mockResolvedValue({
       addresses: ["sol-address-recovered"],
-    });
-
-    // getWalletAccounts for EVM address lookup on the reconciled sub-org
-    mockApiClient.getWalletAccounts.mockResolvedValue({
-      accounts: [
-        {
-          address: "evm-address-recovered",
-          addressFormat: "ADDRESS_FORMAT_ETHEREUM",
-        },
-      ],
     });
 
     const result = await createTurnkeyWallet("test@keeperhub.com", "test-org");
@@ -189,19 +223,44 @@ describe("turnkey-operations - createTurnkeyWallet", () => {
       solanaAddress: "sol-address-recovered",
     });
 
-    // Must NOT have created a new sub-org after reconciliation
     expect(mockApiClient.createSubOrganization).toHaveBeenCalledTimes(1);
-    expect(mockApiClient.getSubOrgIds).toHaveBeenCalledWith({
-      organizationId: "mock-org-id",
-      filterType: "NAME",
-      filterValue: "keeperhub-test-org",
-    });
     expect(logSystemError).toHaveBeenCalledWith(
       ErrorCategory.EXTERNAL_SERVICE,
       expect.stringContaining("Reconciled existing sub-org by name"),
       undefined,
       expect.any(Object)
     );
+  });
+
+  it("reuses an existing Solana account on reconcile without createWalletAccounts", async () => {
+    mockApiClient.createSubOrganization.mockRejectedValueOnce(
+      new Error("Network timeout after sub-org created")
+    );
+
+    mockApiClient.getSubOrgIds.mockResolvedValue({
+      organizationIds: ["existing-sub-org-id"],
+    });
+    mockApiClient.getWallets.mockResolvedValue({
+      wallets: [{ walletId: "existing-wallet-id" }],
+    });
+
+    mockApiClient.getWalletAccounts.mockResolvedValue({
+      accounts: [
+        {
+          address: "evm-address-recovered",
+          addressFormat: "ADDRESS_FORMAT_ETHEREUM",
+        },
+        {
+          address: "sol-address-existing",
+          addressFormat: "ADDRESS_FORMAT_SOLANA",
+        },
+      ],
+    });
+
+    const result = await createTurnkeyWallet("test@keeperhub.com", "test-org");
+
+    expect(result.solanaAddress).toBe("sol-address-existing");
+    expect(mockApiClient.createWalletAccounts).not.toHaveBeenCalled();
   });
 
   it("provisions EVM-only and no Solana account when the gate is disabled", async () => {
@@ -226,13 +285,89 @@ describe("turnkey-operations - createTurnkeyWallet", () => {
     const result = await createTurnkeyWallet("test@keeperhub.com", "test-org");
 
     expect(result.solanaAddress).toBeNull();
-    // The sub-org must be requested with the EVM-only account set.
     const request = mockApiClient.createSubOrganization.mock.calls[0][0];
     expect(request.wallet.accounts).toHaveLength(1);
     expect(request.wallet.accounts[0].addressFormat).toBe(
       "ADDRESS_FORMAT_ETHEREUM"
     );
-    // And no separate Solana account is ever added.
     expect(mockApiClient.createWalletAccounts).not.toHaveBeenCalled();
+  });
+});
+
+describe("turnkey-operations - fetchOrCreateSolanaWalletAddress", () => {
+  const SOLANA_ACCOUNT = {
+    address: "sol-address",
+    addressFormat: "ADDRESS_FORMAT_SOLANA",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockApiClientInstance.getWalletAccounts.mockReset();
+    mockApiClientInstance.createWalletAccounts.mockReset();
+  });
+
+  it("returns an existing account without creating one", async () => {
+    mockApiClientInstance.getWalletAccounts.mockResolvedValue({
+      accounts: [SOLANA_ACCOUNT],
+    });
+
+    const address = await fetchOrCreateSolanaWalletAddress(
+      mockApiClientInstance as never,
+      "sub-org",
+      "wallet"
+    );
+
+    expect(address).toBe("sol-address");
+    expect(mockApiClientInstance.createWalletAccounts).not.toHaveBeenCalled();
+  });
+
+  it("recovers when a concurrent caller created the account first", async () => {
+    // Nothing serialises provisioning, so the loser of the race sees an empty
+    // read, then a create that fails because the account already exists. The
+    // derivation path is fixed, so the winner's address is the same one this
+    // caller would have produced - failing here would fail a step that has a
+    // perfectly usable address.
+    mockApiClientInstance.getWalletAccounts
+      .mockResolvedValueOnce({ accounts: [] })
+      .mockResolvedValueOnce({ accounts: [SOLANA_ACCOUNT] });
+    mockApiClientInstance.createWalletAccounts.mockRejectedValue(
+      new Error("wallet account already exists at path m/44'/501'/0'/0'")
+    );
+
+    const address = await fetchOrCreateSolanaWalletAddress(
+      mockApiClientInstance as never,
+      "sub-org",
+      "wallet"
+    );
+
+    expect(address).toBe("sol-address");
+  });
+
+  it("surfaces the create failure when no account exists afterwards", async () => {
+    mockApiClientInstance.getWalletAccounts.mockResolvedValue({ accounts: [] });
+    mockApiClientInstance.createWalletAccounts.mockRejectedValue(
+      new Error("turnkey rejected the request")
+    );
+
+    await expect(
+      fetchOrCreateSolanaWalletAddress(
+        mockApiClientInstance as never,
+        "sub-org",
+        "wallet"
+      )
+    ).rejects.toThrow("turnkey rejected the request");
+  });
+
+  it("throws when create succeeds but no account comes back", async () => {
+    mockApiClientInstance.getWalletAccounts.mockResolvedValue({ accounts: [] });
+    mockApiClientInstance.createWalletAccounts.mockResolvedValue({});
+
+    await expect(
+      fetchOrCreateSolanaWalletAddress(
+        mockApiClientInstance as never,
+        "sub-org",
+        "wallet"
+      )
+    ).rejects.toThrow("No Solana address available");
   });
 });

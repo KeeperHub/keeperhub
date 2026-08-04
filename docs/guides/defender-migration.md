@@ -33,7 +33,7 @@ Both are functional but require you to provision and operate the infrastructure 
 | **Alerting** | Slack, Discord, Email, Telegram, Webhook | Slack, Discord, Email, Webhook, Scripts |
 | **Transaction execution** | Gas optimization, retry with nonce management | Basic gas estimation, manual retry config |
 | **Key management** | Non-custodial Turnkey wallets (secure enclave) | Local keystore, AWS KMS, GCP KMS, Vault, Turnkey |
-| **Multi-chain** | EVM chains | EVM, Solana, Stellar |
+| **Multi-chain** | EVM and Solana | EVM, Solana, Stellar |
 | **SDK migration** | REST API + workflow builder | Replace `defender-sdk` with `relayer-sdk` |
 | **License** | Commercial (open-source core) | AGPL-3.0 |
 

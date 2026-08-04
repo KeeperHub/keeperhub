@@ -1,5 +1,6 @@
 import "server-only";
 
+import { withStepValueCap } from "@/lib/execute/value-ledger";
 import { withPluginMetrics } from "@/lib/metrics/instrumentation/plugin";
 import {
   type StepInput,
@@ -33,7 +34,19 @@ export async function transferSplTokenStep(
       actionName: "transfer-spl-token",
       executionId: input._context?.executionId,
     },
-    () => withStepLogging(input, () => transferSplTokenCore(input))
+    () =>
+      withStepLogging(input, () =>
+        withStepValueCap(
+          {
+            organizationId: input._context?.organizationId,
+            stepFunction: "transferSplTokenStep",
+            config: { network: input.network },
+            executionId: input._context?.executionId,
+            valueCapReserved: input._context?.valueCapReserved,
+          },
+          () => transferSplTokenCore(input)
+        )
+      )
   );
 }
 

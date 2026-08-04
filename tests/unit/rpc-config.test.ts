@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logSystemError } from "@/lib/logging";
 import {
   getConfigValue,
+  getPrivateRpcUrl,
   getRpcUrl,
+  getUsePrivateMempoolRpc,
   getWssUrl,
   PUBLIC_RPCS,
   parseRpcConfig,
@@ -332,44 +334,46 @@ describe("RPC Config Resolution", () => {
       { json: "tempo-testnet", public: PUBLIC_RPCS.TEMPO_TESTNET },
       { json: "tempo-mainnet", public: PUBLIC_RPCS.TEMPO_MAINNET },
       { json: "solana-mainnet", public: PUBLIC_RPCS.SOLANA_MAINNET },
-      { json: "solana-testnet", public: PUBLIC_RPCS.SOLANA_DEVNET },
+      { json: "solana-devnet", public: PUBLIC_RPCS.SOLANA_DEVNET },
     ];
 
-    it.each(chainKeys)(
-      "should resolve $json from JSON config",
-      ({ json, public: publicDefault }) => {
-        const rpcConfig: RpcConfig = {
-          [json]: { primaryRpcUrl: `https://${json}.json.example.com` },
-        };
+    it.each(chainKeys)("should resolve $json from JSON config", ({
+      json,
+      public: publicDefault,
+    }) => {
+      const rpcConfig: RpcConfig = {
+        [json]: { primaryRpcUrl: `https://${json}.json.example.com` },
+      };
 
-        const result = getRpcUrl({
-          rpcConfig,
-          jsonKey: json,
-          envValue: undefined,
-          publicDefault,
-          type: "primary",
-        });
+      const result = getRpcUrl({
+        rpcConfig,
+        jsonKey: json,
+        envValue: undefined,
+        publicDefault,
+        type: "primary",
+      });
 
-        expect(result).toBe(`https://${json}.json.example.com`);
-      }
-    );
+      expect(result).toBe(`https://${json}.json.example.com`);
+    });
 
-    it.each(chainKeys)(
-      "should fall back to public default for $json when no config",
-      ({ json, public: publicDefault }) => {
-        const rpcConfig: RpcConfig = {};
+    it.each(
+      chainKeys
+    )("should fall back to public default for $json when no config", ({
+      json,
+      public: publicDefault,
+    }) => {
+      const rpcConfig: RpcConfig = {};
 
-        const result = getRpcUrl({
-          rpcConfig,
-          jsonKey: json,
-          envValue: undefined,
-          publicDefault,
-          type: "primary",
-        });
+      const result = getRpcUrl({
+        rpcConfig,
+        jsonKey: json,
+        envValue: undefined,
+        publicDefault,
+        type: "primary",
+      });
 
-        expect(result).toBe(publicDefault);
-      }
-    );
+      expect(result).toBe(publicDefault);
+    });
   });
 
   describe("edge cases", () => {
@@ -489,6 +493,83 @@ describe("RPC Config Resolution", () => {
           type: "primary",
         })
       ).toBe("https://tempo-test.primary.com");
+    });
+
+    it("resolves legacy solana-testnet jsonKey alias to solana-devnet config", () => {
+      const rpcConfig: RpcConfig = {
+        "solana-devnet": {
+          primaryRpcUrl: "https://solana-dev.canonical.example.com",
+        },
+      };
+
+      expect(
+        getRpcUrl({
+          rpcConfig,
+          jsonKey: "solana-testnet",
+          envValue: undefined,
+          publicDefault: PUBLIC_RPCS.SOLANA_DEVNET,
+          type: "primary",
+        })
+      ).toBe("https://solana-dev.canonical.example.com");
+    });
+
+    it("resolves the alias for private-mempool and generic config reads too", () => {
+      // The alias has to hold everywhere a jsonKey is looked up, not just for
+      // RPC and WSS URLs. A getter reading the raw key silently loses the
+      // chain's config the moment operator JSON moves to the canonical name.
+      const legacyConfig: RpcConfig = {
+        "solana-testnet": {
+          privateMempoolRpcUrl: "https://solana-private.legacy.example.com",
+          isPrivateMempoolRpcEnabled: true,
+          symbol: "SOL",
+        },
+      };
+      const canonicalConfig: RpcConfig = {
+        "solana-devnet": {
+          privateMempoolRpcUrl: "https://solana-private.canonical.example.com",
+          isPrivateMempoolRpcEnabled: true,
+          symbol: "SOL",
+        },
+      };
+
+      expect(
+        getPrivateRpcUrl({ rpcConfig: legacyConfig, jsonKey: "solana-devnet" })
+      ).toBe("https://solana-private.legacy.example.com");
+      expect(
+        getPrivateRpcUrl({
+          rpcConfig: canonicalConfig,
+          jsonKey: "solana-testnet",
+        })
+      ).toBe("https://solana-private.canonical.example.com");
+
+      expect(
+        getUsePrivateMempoolRpc({
+          rpcConfig: canonicalConfig,
+          jsonKey: "solana-testnet",
+        })
+      ).toBe(true);
+
+      expect(
+        getConfigValue(canonicalConfig, "solana-testnet", "symbol", "UNKNOWN")
+      ).toBe("SOL");
+    });
+
+    it("resolves operator configs still keyed by solana-testnet", () => {
+      const rpcConfig: RpcConfig = {
+        "solana-testnet": {
+          primaryRpcUrl: "https://solana-dev.legacy.example.com",
+        },
+      };
+
+      expect(
+        getRpcUrl({
+          rpcConfig,
+          jsonKey: "solana-devnet",
+          envValue: undefined,
+          publicDefault: PUBLIC_RPCS.SOLANA_DEVNET,
+          type: "primary",
+        })
+      ).toBe("https://solana-dev.legacy.example.com");
     });
 
     it("should work with realistic JSON string parsing", () => {

@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { organizationSubscriptions } from "@/lib/db/schema";
 import { getActiveDebtExecutions } from "./execution-debt";
 import {
-  countMonthlyExecutionsCached,
+  countMonthlyExecutionsForAdmission,
   decideExecutionLimit,
   effectiveExecutionLimit,
 } from "./execution-limit-core";
@@ -251,8 +251,11 @@ export async function checkExecutionLimit(
     debtExecutions
   );
 
-  const used = await countMonthlyExecutionsCached(db, organizationId);
   const planDef = PLANS[plan];
+  const used = await countMonthlyExecutionsForAdmission(db, organizationId, {
+    maxExecutionsPerMonth: limits.maxExecutionsPerMonth,
+    overageEnabled: planDef.overage.enabled,
+  });
 
   const outcome = decideExecutionLimit({
     maxExecutionsPerMonth: limits.maxExecutionsPerMonth,

@@ -62,7 +62,8 @@ export async function transferFundsStep(
         withStepValueCap(
           {
             organizationId: input._context?.organizationId,
-            amountEth: input.amount,
+            stepFunction: "transferFundsStep",
+            config: { network: input.network, amount: input.amount },
             executionId: input._context?.executionId,
             valueCapReserved: input._context?.valueCapReserved,
           },

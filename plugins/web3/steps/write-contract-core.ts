@@ -45,6 +45,7 @@ import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
 import { traceExecutedCallWithFailover } from "@/lib/web3/trace-executed-call";
+import { revertedTransactionHash } from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
 import {
@@ -105,6 +106,14 @@ export type WriteContractResult =
       error: string;
       rejection?: RevertKind;
       errorClass?: ExecutionErrorType;
+      // Set only when a transaction reached the chain and failed
+      // there, so the finalizer can persist a receipt for the failure. Absent
+      // on pre-broadcast failures, where no transaction exists.
+      transactionHash?: string;
+      chainId?: number;
+      // True when the terminal failure came from the gas-sponsored path, so
+      // the finalizer can report the route accurately on a failed execution.
+      sponsored?: boolean;
     };
 
 /**
@@ -428,7 +437,14 @@ export async function writeContractCore(
         chainId,
       });
       if (!decision.fallback) {
-        return { success: false, error: decision.error };
+        return {
+          success: false,
+          error: decision.error,
+          sponsored: true,
+          ...(decision.transactionHash
+            ? { transactionHash: decision.transactionHash, chainId }
+            : {}),
+        };
       }
     }
   }
@@ -555,10 +571,14 @@ export async function writeContractCore(
         }
       );
       const rejection = classifyRevert(error, contractInterface);
+      const revertedHash = revertedTransactionHash(error);
       return {
         success: false,
         error: formatContractError(error, contractInterface),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
+        ...(revertedHash
+          ? { transactionHash: revertedHash, chainId }
+          : {}),
       };
     }
   });

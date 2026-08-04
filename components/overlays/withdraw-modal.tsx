@@ -630,7 +630,7 @@ export function WithdrawModal({
       title="Withdraw Funds"
     >
       <p className="-mt-2 mb-4 text-muted-foreground text-sm">
-        Send funds from your Para wallet to another address
+        Send funds from your wallet to another address
       </p>
 
       <div className="space-y-4">

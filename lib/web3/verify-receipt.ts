@@ -49,6 +49,22 @@ const VERIFY_CONCURRENCY_LIMIT = 20;
 // ExecutionFailure when the wrapped inner call reverted; Safe swallows that
 // as an event rather than reverting the whole transaction, so plain
 // receipt.status checks miss it entirely.
+//
+// Reachability, verified on Sepolia against a real owner-signed Safe: this
+// branch cannot fire for transactions KeeperHub itself builds.
+// buildExecTransactionCalldata in lib/safe/allowance-module.ts passes
+// safeTxGas=0, baseGas=0, gasPrice=0, and Safe's
+// `require(success || safeTxGas != 0 || gasPrice != 0)` therefore reverts the
+// whole outer transaction on inner failure -- receipt status 0, no logs,
+// caught by the plain status check above. With safeTxGas non-zero the same
+// call yields status 1 plus ExecutionFailure, which is what this decodes.
+//
+// It is kept because the cost is one topic comparison and the failure mode it
+// covers is silent: any future path that submits a Safe transaction it did not
+// construct (executing a queued transaction created in the Safe UI, say, where
+// safeTxGas is set by the proposer) reaches it immediately. Do not delete this
+// on the grounds that nothing currently triggers it -- delete it only if Safe
+// support itself is removed.
 const SAFE_EXECUTION_EVENTS_ABI = [
   "event ExecutionSuccess(bytes32 txHash, uint256 payment)",
   "event ExecutionFailure(bytes32 txHash, uint256 payment)",

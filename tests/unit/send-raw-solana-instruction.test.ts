@@ -55,6 +55,7 @@ describe("sendRawSolanaInstructionCore", () => {
   const validInput = {
     network: "solana-devnet",
     instructions: JSON.stringify([instruction()]),
+    maxSol: "1",
     _context: { organizationId: "mock-org-id" },
   };
 
@@ -113,6 +114,17 @@ describe("sendRawSolanaInstructionCore", () => {
 
     const options = mockAdapter.sendTransaction.mock.calls[0][3];
     expect(options.gasOverrides).toEqual({});
+  });
+
+  it("rejects when maxSol is missing", async () => {
+    const { maxSol: _maxSol, ...withoutMaxSol } = validInput;
+    const result = await sendRawSolanaInstructionCore(withoutMaxSol);
+
+    expect(result).toEqual({
+      success: false,
+      error: expect.stringContaining("maxSol is required"),
+    });
+    expect(mockAdapter.sendTransaction).not.toHaveBeenCalled();
   });
 
   it("accepts the org wallet as an isSigner account", async () => {

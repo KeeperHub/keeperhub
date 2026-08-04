@@ -40,6 +40,7 @@ type AccountDetailOverlayProps = {
   isOwner: boolean;
   isAdmin: boolean;
   canExportKey: boolean;
+  solanaAddress?: string | null;
   onAddToken: (chainId: number, tokenAddress: string) => Promise<void>;
   onRemoveToken: (tokenId: string, symbol: string) => void;
   /** Parent's withdraw handler. Used directly when account.kind === "turnkey";
@@ -82,6 +83,7 @@ export function AccountDetailOverlay({
   isOwner,
   isAdmin,
   canExportKey,
+  solanaAddress,
   onAddToken,
   onRemoveToken,
   onWithdraw,
@@ -313,6 +315,7 @@ export function AccountDetailOverlay({
             canExportKey={canExportKey}
             email={email}
             isOwner={isOwner}
+            solanaAddress={solanaAddress}
           />
         </TabsContent>
       </Tabs>

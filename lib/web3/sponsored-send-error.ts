@@ -7,7 +7,12 @@ import {
 } from "@/lib/web3/turnkey-revert";
 
 export type SponsoredSendDecision =
-  | { fallback: false; error: string }
+  // `transactionHash` is set only when the sponsored transaction
+  // reached the chain and failed there, so a caller can tell "this hash exists
+  // and reverted" (reconcilable) from "nothing was broadcast" (nothing to
+  // reconcile). Absent for the accepted-but-unconfirmed case, where no hash is
+  // known yet.
+  | { fallback: false; error: string; transactionHash?: string }
   | { fallback: true };
 
 /**
@@ -48,6 +53,7 @@ export function resolveSponsoredSendError(
     return {
       fallback: false,
       error: `Transaction reverted: ${error.message} (tx ${error.txHash})`,
+      transactionHash: error.txHash,
     };
   }
 

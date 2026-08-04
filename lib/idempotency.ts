@@ -338,7 +338,25 @@ export async function beginIdempotentFromRequest(args: {
   });
 }
 
-export type IdempotencyEarlyResponse = { status: number; body: unknown };
+export type IdempotencyEarlyResponse = {
+  status: number;
+  body: unknown;
+};
+
+// Marks a replayed body so the caller can tell a cached prior outcome apart
+// from a fresh one. A replayed failure is otherwise indistinguishable from a
+// live failure: it carries the original contract-shaped error and nothing else,
+// so a retry loop reads "still reverting" when in fact no transaction was sent.
+// The flag rides in the body rather than a header because the common consumer
+// is an agent reading a tool result, where response headers are not surfaced.
+// Only plain objects are annotated -- arrays and primitives are returned
+// untouched so a stored response shape is never corrupted.
+function annotateReplay(body: unknown): unknown {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return body;
+  }
+  return { ...(body as Record<string, unknown>), idempotentReplay: true };
+}
 
 // Maps a non-proceed outcome to the response the caller should return as-is.
 // Returns null for `proceed` (the caller does the work, then calls finalize).
@@ -347,7 +365,10 @@ export function idempotencyEarlyResponse(
 ): IdempotencyEarlyResponse | null {
   switch (outcome.kind) {
     case "replay":
-      return { status: outcome.responseStatus, body: outcome.responseBody };
+      return {
+        status: outcome.responseStatus,
+        body: annotateReplay(outcome.responseBody),
+      };
     case "conflict":
       return {
         status: 409,

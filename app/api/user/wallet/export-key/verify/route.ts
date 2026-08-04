@@ -109,13 +109,33 @@ export async function POST(request: Request): Promise<NextResponse> {
       );
     }
 
+    const keyType = body.keyType ?? "evm";
+
+    if (keyType === "solana" && !wallet.solanaAddress) {
+      return NextResponse.json(
+        { error: "No Solana account is configured for this wallet" },
+        { status: 400 }
+      );
+    }
+
+    const exportAddress =
+      keyType === "solana"
+        ? wallet.solanaAddress
+        : toChecksumAddress(wallet.walletAddress);
+
+    if (!exportAddress) {
+      return NextResponse.json(
+        { error: "Wallet address is not configured" },
+        { status: 500 }
+      );
+    }
+
     const privateKey = await exportTurnkeyPrivateKey(
       wallet.turnkeySubOrgId,
-      toChecksumAddress(wallet.walletAddress)
+      exportAddress,
+      keyType
     );
 
-    // Records only the wallet address; the exported private key is never
-    // passed into the audit before/after payload.
     await recordAuditEvent({
       actor: {
         userId: session.user.id,
@@ -124,12 +144,23 @@ export async function POST(request: Request): Promise<NextResponse> {
       },
       action: "wallet.private_key_exported",
       resourceType: "wallet",
-      resourceId: wallet.walletAddress,
-      after: { walletAddress: toChecksumAddress(wallet.walletAddress) },
+      resourceId:
+        keyType === "solana" ? wallet.solanaAddress : wallet.walletAddress,
+      after: {
+        keyType,
+        walletAddress:
+          keyType === "solana"
+            ? wallet.solanaAddress
+            : toChecksumAddress(wallet.walletAddress),
+      },
       metadata: buildAuditMetadata(request),
     });
 
-    return NextResponse.json({ privateKey });
+    return NextResponse.json({
+      privateKey,
+      keyType,
+      format: "hex",
+    });
   } catch (error) {
     logSystemError(
       ErrorCategory.EXTERNAL_SERVICE,

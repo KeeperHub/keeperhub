@@ -32,8 +32,13 @@ describe("getAgentFrameworks", () => {
   it("adds the Claude Code server over http with the MCP url", () => {
     const [claude] = getAgentFrameworks(MCP_URL);
     expect(claude.snippets[0].body).toBe(
-      `claude mcp add --transport http keeperhub ${MCP_URL}`
+      `claude mcp add --transport http --scope user keeperhub ${MCP_URL}`
     );
+  });
+
+  it("scopes the Claude Code server to the user, not the launch directory", () => {
+    const [claude] = getAgentFrameworks(MCP_URL);
+    expect(claude.snippets[0].body).toContain("--scope user");
   });
 
   it("interpolates the MCP url into the config-based frameworks", () => {
@@ -58,5 +63,16 @@ describe("getAgentFrameworks", () => {
     expect(byId.get("hermes")?.snippets[0].body).toContain(
       "hermes plugins install KeeperHub/hermes-plugin --enable"
     );
+  });
+
+  it("keeps the plugin sign-in out of the install snippet so a restart can sit between them", () => {
+    const plugin = new Map(
+      getAgentFrameworks(MCP_URL).map((f) => [f.id, f])
+    ).get("claude-plugin");
+    const [install, signIn] = plugin?.snippets ?? [];
+
+    expect(install.body).not.toContain("/keeperhub:login");
+    expect(signIn.body).toContain("/keeperhub:login");
+    expect(signIn.caption.toLowerCase()).toContain("restart");
   });
 });

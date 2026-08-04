@@ -192,7 +192,14 @@ async function executeConditionalWrite(
       output: result as unknown as Record<string, unknown>,
     });
   } else {
-    await failExecution(executionId, result.error);
+    // A failure that already reached the chain carries its hash,
+    // so the execution records which transaction failed and what the chain
+    // said about it, rather than leaving the hash only inside the message.
+    await failExecution(executionId, result.error, {
+      transactionHash: result.transactionHash,
+      chainId: result.chainId,
+      sponsored: result.sponsored,
+    });
   }
 
   return recordIdempotentResponse(

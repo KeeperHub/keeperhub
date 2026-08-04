@@ -33,7 +33,7 @@ Restart Claude Code after setup. [Plugin source code](https://github.com/KeeperH
 - **Visual Workflow Builder**: Drag-and-drop interface for building blockchain automations
 - **Smart Contract Interactions**: Read and write to smart contracts without writing code
 - **Multi-Chain Support**: Ethereum Mainnet, Sepolia, Base, Arbitrum, and more
-- **Secure Wallet Management**: Para-integrated MPC wallets with no private key exposure
+- **Secure Wallet Management**: Turnkey secure-enclave wallets with no private key exposure
 - **Notifications**: Email, Discord, Slack, and webhook integrations
 - **Scheduling**: Cron-based, event-driven, webhook, or manual triggers
 - **AI-Assisted Building**: Describe automations in plain language
@@ -87,7 +87,7 @@ BETTER_AUTH_URL=http://localhost:3000
 LOCALSTACK_AUTH_TOKEN=your-localstack-token
 ```
 
-Feature-specific keys (AI, Para wallets, encryption, OAuth providers, etc.) are listed in `.env.example` and only need values when you exercise that feature.
+Feature-specific keys (AI, wallets, encryption, OAuth providers, etc.) are listed in `.env.example` and only need values when you exercise that feature.
 
 ### Installation
 
@@ -238,7 +238,7 @@ All trigger services (schedule dispatcher, block dispatcher, event tracker) send
 - **Workflow Engine**: Workflow DevKit
 - **Authentication**: Better Auth
 - **AI**: Vercel AI SDK (OpenAI/Anthropic)
-- **Wallets**: Para MPC integration
+- **Wallets**: Turnkey secure-enclave integration
 
 ### Plugin System
 

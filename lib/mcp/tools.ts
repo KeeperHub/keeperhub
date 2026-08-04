@@ -1,5 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
+import { SUPPORTED_CHAIN_IDS } from "@/lib/rpc/types";
 import { withToolLogging } from "./logging";
 import { getRequiredScopeForTool, isToolAllowed } from "./oauth-scopes";
 
@@ -231,6 +233,165 @@ const IDEMPOTENCY_KEY_ARG = z
   .describe(
     "Optional Idempotency-Key (e.g. an agent-side transaction id). Retrying with the same key and arguments returns the original result instead of executing again, within a 24h window. Reusing a key with different arguments returns a 409 conflict."
   );
+
+// The direct-execution REST routes support a dry-run path that estimates gas
+// and catches reverts without signing or broadcasting. Expose the same safety
+// control to MCP clients so agents do not have to leave the agent-native
+// surface to preflight a write.
+const SIMULATE_ARG = z
+  .boolean()
+  .optional()
+  .describe(
+    "Set to true to simulate an EVM operation without signing or broadcasting. Solana networks (chain IDs 101/103 and their aliases) are not yet supported. Use the same arguments with simulate omitted or false only after a successful simulation."
+  );
+
+const SOLANA_DIRECT_EXECUTION_CHAIN_IDS = new Set<number>([
+  SUPPORTED_CHAIN_IDS.SOLANA_MAINNET,
+  SUPPORTED_CHAIN_IDS.SOLANA_DEVNET,
+]);
+
+function assertSimulationSupported(chainId: string, simulate?: boolean): void {
+  if (!simulate) {
+    return;
+  }
+
+  let normalizedChainId: number;
+  try {
+    normalizedChainId = getChainIdFromNetwork(chainId);
+  } catch {
+    // Keep network validation in the REST layer for identifiers that this
+    // compatibility helper does not know yet. The simulation route remains
+    // fail-closed (it returns before any broadcast), while future chains can
+    // be added there without requiring an MCP-only allowlist update first.
+    return;
+  }
+  if (SOLANA_DIRECT_EXECUTION_CHAIN_IDS.has(normalizedChainId)) {
+    throw new Error(
+      `Direct-execution simulation is currently EVM-only; Solana chain ${normalizedChainId} cannot be simulated. Do not broadcast unless you can preflight the transaction through a Solana-aware client.`
+    );
+  }
+}
+
+/**
+ * #1841: these fields take their values as decimal strings, which is right on
+ * the wire - chain ids and wei-scale amounts outlive Number's exact integer
+ * range - but it is not what a client emits on its first attempt. `preprocess`
+ * takes the natural guess and normalises it before the handler; `union` would
+ * emit `anyOf` and change what every existing client generates, so the
+ * published type stays `string` deliberately.
+ *
+ * The guess is only taken when it round-trips losslessly. `String()` is not a
+ * safe encoder across the double range: it drops the low digits of an integer
+ * past 2^53 and emits exponential notation outside a narrow band, and nothing
+ * downstream recovers either - `BigInt("1e+21")` throws, and a transfer amount
+ * that arrives 200 wei short is the wrong amount, on-chain. Those values keep
+ * the rejection they had before, because refusal is what pushes the client to
+ * the string encoding that preserves them. The message now says so.
+ */
+const PRECISION_HINT =
+  "pass this value as a string. A JSON number cannot carry it exactly: integers above 2^53 lose their low digits, and very large or very small values stringify in exponential notation.";
+
+/** Deepest JSON nesting walked before an argument is refused outright. */
+const MAX_JSON_DEPTH = 32;
+
+const EXPONENTIAL_NOTATION = /[eE]/;
+
+/** True when `String(value)` reproduces `value` exactly, as a plain decimal. */
+function isExactAsDecimalString(value: number): boolean {
+  if (!Number.isFinite(value)) {
+    return false;
+  }
+  // Already rounded by the client's own JSON.parse - the digits are gone.
+  if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    return false;
+  }
+  return !EXPONENTIAL_NOTATION.test(String(value));
+}
+
+/** Leaves the input untouched when it cannot be encoded, so `z.string()` rejects it. */
+function toDecimalString(value: unknown): unknown {
+  return typeof value === "number" && isExactAsDecimalString(value)
+    ? String(value)
+    : value;
+}
+
+/**
+ * ABI arguments nest - tuples, arrays of structs - so the walk is recursive
+ * rather than shallow, and one unrepresentable number anywhere fails the whole
+ * argument instead of encoding a wrong value into a call that moves funds.
+ */
+function hasInexactNumber(value: unknown, depth = 0): boolean {
+  if (typeof value === "number") {
+    return !isExactAsDecimalString(value);
+  }
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  if (depth >= MAX_JSON_DEPTH) {
+    return true;
+  }
+  const children = Array.isArray(value) ? value : Object.values(value);
+  return children.some((child) => hasInexactNumber(child, depth + 1));
+}
+
+function toJsonString(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || hasInexactNumber(value)) {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return value;
+  }
+}
+
+function precisionError(input: unknown): string | undefined {
+  if (typeof input !== "number") {
+    return;
+  }
+  return Number.isFinite(input)
+    ? PRECISION_HINT
+    : "expected a decimal string; NaN and Infinity are not values.";
+}
+
+/**
+ * `.nonoptional()` is load-bearing, not decoration: a bare `preprocess` accepts
+ * `unknown` as its input, so JSON Schema generation treats the field as
+ * omittable and drops it from the object's `required` list. Runtime validation
+ * is unaffected - a missing value still fails - but the published schema would
+ * stop advertising `chain_id` and `amount` as required, which is exactly the
+ * client-visible change this coercion is supposed to avoid.
+ */
+function looseString(description: string) {
+  return z
+    .preprocess(
+      toDecimalString,
+      z.string({ error: (issue) => precisionError(issue.input) })
+    )
+    .nonoptional()
+    .describe(description);
+}
+
+/**
+ * Same idea for the fields that want a stringified JSON value: accept the array
+ * or object itself and encode it. `[]` and `{...}` are what a model writes for
+ * something described as "JSON array of function arguments"; the `"[]"` form is
+ * rarely the first thing tried.
+ */
+function looseJsonString(description: string) {
+  return z
+    .preprocess(
+      toJsonString,
+      z.string({
+        error: (issue) =>
+          issue.input !== null && typeof issue.input === "object"
+            ? `a value inside this JSON argument cannot be encoded - ${PRECISION_HINT}`
+            : precisionError(issue.input),
+      })
+    )
+    .nonoptional()
+    .describe(description);
+}
 
 async function callApi(
   internalApiBaseUrl: string,
@@ -959,7 +1120,7 @@ export function registerTools(
 
   server.tool(
     "tools_documentation",
-    "Get documentation on how to use the KeeperHub MCP tools, including examples and best practices for workflow creation.",
+    "Get documentation on how to use the KeeperHub MCP tools, including workflow creation and safe direct execution.",
     {},
     {
       title: "Tools Documentation",
@@ -1000,6 +1161,16 @@ export function registerTools(
           "- get_template: Inspect a template's structure",
           "- deploy_template: Clone a template into your org",
           "",
+          "DIRECT EXECUTION (EVM WRITES)",
+          "1. Call execute_transfer, execute_contract_call, or execute_check_and_execute with simulate=true",
+          "2. Continue only after success=true and wouldRevert=false; any tool error is a hard stop",
+          "3. Repeat the same arguments with simulate omitted and a unique idempotency_key",
+          "4. Poll get_direct_execution_status with bounded backoff until completed or failed",
+          "5. Save the terminal transactionLink as the onchain proof",
+          "- simulate must be a JSON boolean, not a string",
+          "- simulation is EVM-only; Solana chain IDs 101/103 and their aliases are rejected before the API call",
+          "- view/pure calls and unmet conditions return their normal read/no-action result",
+          "",
           "TEMPLATE SYNTAX",
           "Reference outputs from previous nodes using: {{@nodeId:Label.field}}",
           "Example: {{@check-balance:Check Balance.balance}}",
@@ -1007,6 +1178,7 @@ export function registerTools(
           "CHAIN IDs",
           "- Ethereum Mainnet: 1",
           "- Base: 8453",
+          "- Base Sepolia Testnet: 84532",
           "- Sepolia Testnet: 11155111",
           "- Use list_action_schemas (with includeChains: true) for the full list",
         ].join("\n");
@@ -1026,24 +1198,28 @@ export function registerTools(
     "execute_transfer",
     "Transfer native tokens (ETH, MATIC) or ERC20 tokens from your wallet to a recipient address. Requires a wallet integration.",
     {
-      chain_id: z
+      chain_id: looseString(
+        "Chain ID (e.g., '1' for Ethereum, '8453' for Base, or '103' for Solana Devnet). Solana transfers can broadcast, but simulate is currently EVM-only."
+      ),
+      to_address: z
         .string()
-        .describe("Chain ID (e.g., '1' for Ethereum, '8453' for Base)"),
-      to_address: z.string().describe("Recipient wallet address (0x...)"),
-      amount: z
-        .string()
-        .describe("Amount to transfer in human-readable units (e.g., '0.1')"),
+        .describe("Recipient wallet address (EVM 0x or Solana base58)"),
+      amount: looseString(
+        "Amount to transfer in human-readable units (e.g., '0.1')"
+      ),
       token_address: z
         .string()
         .optional()
         .describe(
           "ERC20 token contract address. Omit for native token transfers."
         ),
+      simulate: SIMULATE_ARG,
       idempotency_key: IDEMPOTENCY_KEY_ARG,
     },
     { title: "Transfer Funds", readOnlyHint: false, destructiveHint: true },
     withScopeCheck("execute_transfer", scope, async (args) =>
       withToolLogging("execute_transfer", undefined, async () => {
+        assertSimulationSupported(args.chain_id, args.simulate);
         const data = await callApi(
           internalApiBaseUrl,
           authHeader,
@@ -1054,6 +1230,7 @@ export function registerTools(
             recipientAddress: args.to_address,
             amount: args.amount,
             tokenAddress: args.token_address,
+            simulate: args.simulate,
           },
           args.idempotency_key
         );
@@ -1066,46 +1243,35 @@ export function registerTools(
 
   server.tool(
     "execute_contract_call",
-    "Call a smart contract function. For view/pure functions, returns the result directly. For state-changing functions, submits a transaction and returns the execution ID. Requires a wallet integration for write calls.",
+    'Call a smart contract function. For view/pure functions, returns the result directly. For state-changing functions, submits a transaction and returns the execution ID. Requires a wallet integration for write calls. Full example: {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "chain_id": "11155111", "function_name": "transfer", "function_args": "[\\"0xRecipient...\\", \\"1000\\"]"} - note that function_args is a JSON array encoded as a string.',
     {
       contract_address: z.string().describe("Contract address (0x...)"),
-      chain_id: z.string().describe("Chain ID (e.g., '1' for Ethereum)"),
+      chain_id: looseString("Chain ID (e.g., '1' for Ethereum)"),
       function_name: z
         .string()
         .describe("Solidity function name (e.g., 'balanceOf', 'transfer')"),
-      function_args: z
-        .string()
-        .optional()
-        .describe(
-          'JSON array of function arguments (e.g., \'["0x...", "1000"]\')'
-        ),
-      abi: z
-        .string()
-        .optional()
-        .describe(
-          "Contract ABI as JSON string. Auto-fetched for verified contracts if omitted."
-        ),
-      value: z
-        .string()
-        .optional()
-        .describe(
-          "Native value to send with the call, as a decimal string in ether units (e.g. '0.1'). For payable functions."
-        ),
-      gas_limit_multiplier: z
-        .string()
-        .optional()
-        .describe("Gas limit multiplier (e.g., '1.5' for 50% buffer)"),
-      priority_fee_gwei: z
-        .string()
-        .optional()
-        .describe(
-          "Explicit maxPriorityFeePerGas in gwei (e.g., '2'). Bypasses the chain's default min/max priority-fee clamp. Use when the network's mempool requires a tip above the configured floor."
-        ),
+      function_args: looseJsonString(
+        'JSON array of function arguments (e.g., \'["0x...", "1000"]\')'
+      ).optional(),
+      abi: looseJsonString(
+        "Contract ABI as JSON string. Auto-fetched for verified contracts if omitted."
+      ).optional(),
+      value: looseString(
+        "Native value to send with the call, as a decimal string in ether units (e.g. '0.1'). For payable functions."
+      ).optional(),
+      gas_limit_multiplier: looseString(
+        "Gas limit multiplier (e.g., '1.5' for 50% buffer)"
+      ).optional(),
+      priority_fee_gwei: looseString(
+        "Explicit maxPriorityFeePerGas in gwei (e.g., '2'). Bypasses the chain's default min/max priority-fee clamp. Use when the network's mempool requires a tip above the configured floor."
+      ).optional(),
+      simulate: SIMULATE_ARG,
       idempotency_key: IDEMPOTENCY_KEY_ARG,
     },
-    { title: "Contract Call", readOnlyHint: false, destructiveHint: false },
+    { title: "Contract Call", readOnlyHint: false, destructiveHint: true },
     withScopeCheck("execute_contract_call", scope, async (args) =>
       withToolLogging("execute_contract_call", undefined, async () => {
+        assertSimulationSupported(args.chain_id, args.simulate);
         const data = await callApi(
           internalApiBaseUrl,
           authHeader,
@@ -1120,6 +1286,7 @@ export function registerTools(
             value: args.value,
             gasLimitMultiplier: args.gas_limit_multiplier,
             priorityFeeGwei: args.priority_fee_gwei,
+            simulate: args.simulate,
           },
           args.idempotency_key
         );
@@ -1132,28 +1299,26 @@ export function registerTools(
 
   server.tool(
     "execute_check_and_execute",
-    "Read a contract value, evaluate a condition, and execute an action if the condition is met. Useful for conditional on-chain operations (e.g., 'if balance > 1000, then transfer'). Requires a wallet integration.",
+    'Read a contract value, evaluate a condition, and execute an action if the condition is met. Useful for conditional on-chain operations (e.g., \'if balance > 1000, then transfer\'). Requires a wallet integration. Full example: {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "chain_id": "11155111", "function_name": "balanceOf", "function_args": "[\\"0xHolder...\\"]", "condition": {"operator": "gt", "value": "1000"}, "action": {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "function_name": "transfer", "function_args": "[\\"0xRecipient...\\", \\"1000\\"]"}} - note that function_args is a JSON array encoded as a string, on both the check and the action.',
     {
       contract_address: z
         .string()
         .describe("Contract address to read the check value from (0x...)"),
-      chain_id: z.string().describe("Chain ID (e.g., '1' for Ethereum)"),
+      chain_id: looseString("Chain ID (e.g., '1' for Ethereum)"),
       function_name: z
         .string()
         .describe("Function to call for the check (e.g., 'balanceOf')"),
-      function_args: z
-        .string()
-        .optional()
-        .describe("JSON array of function arguments for the check"),
-      abi: z
-        .string()
-        .optional()
-        .describe("ABI for the check contract (auto-fetched if omitted)"),
+      function_args: looseJsonString(
+        "JSON array of function arguments for the check"
+      ).optional(),
+      abi: looseJsonString(
+        "ABI for the check contract (auto-fetched if omitted)"
+      ).optional(),
       condition: z.object({
         operator: z
           .enum(["eq", "neq", "gt", "lt", "gte", "lte"])
           .describe("Comparison operator"),
-        value: z.string().describe("Target value to compare against"),
+        value: looseString("Target value to compare against"),
       }),
       action: z.object({
         contract_address: z
@@ -1162,21 +1327,21 @@ export function registerTools(
         function_name: z
           .string()
           .describe("Function to execute if condition met"),
-        function_args: z
-          .string()
-          .optional()
-          .describe("JSON array of function arguments for the action"),
-        abi: z.string().optional().describe("ABI for the action contract"),
-        gas_limit_multiplier: z
-          .string()
-          .optional()
-          .describe("Gas limit multiplier for the action"),
+        function_args: looseJsonString(
+          "JSON array of function arguments for the action"
+        ).optional(),
+        abi: looseJsonString("ABI for the action contract").optional(),
+        gas_limit_multiplier: looseString(
+          "Gas limit multiplier for the action"
+        ).optional(),
       }),
+      simulate: SIMULATE_ARG,
       idempotency_key: IDEMPOTENCY_KEY_ARG,
     },
     { title: "Check and Execute", readOnlyHint: false, destructiveHint: true },
     withScopeCheck("execute_check_and_execute", scope, async (args) =>
       withToolLogging("execute_check_and_execute", undefined, async () => {
+        assertSimulationSupported(args.chain_id, args.simulate);
         const data = await callApi(
           internalApiBaseUrl,
           authHeader,
@@ -1196,6 +1361,7 @@ export function registerTools(
               abi: args.action.abi,
               gasLimitMultiplier: args.action.gas_limit_multiplier,
             },
+            simulate: args.simulate,
           },
           args.idempotency_key
         );

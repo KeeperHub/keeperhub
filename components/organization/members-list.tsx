@@ -141,10 +141,10 @@ export function MembersList({
                 <SelectTrigger className="w-[120px]">
                   <SelectValue />
                 </SelectTrigger>
+                {/* One owner per org (DB-enforced), so becoming owner is a transfer, handled in the Leave Organization flow. */}
                 <SelectContent>
                   <SelectItem value="member">Member</SelectItem>
                   <SelectItem value="admin">Admin</SelectItem>
-                  <SelectItem value="owner">Owner</SelectItem>
                 </SelectContent>
               </Select>
             </TableCell>

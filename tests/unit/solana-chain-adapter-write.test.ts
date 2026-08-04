@@ -12,6 +12,7 @@ vi.mock("@/lib/logging", () => ({
 import {
   ComputeBudgetProgram,
   Keypair,
+  PublicKey,
   SystemProgram,
   Transaction,
   VersionedTransaction,
@@ -42,6 +43,7 @@ function createMockManager() {
         fee: 5000,
       },
     }),
+    getSignatureStatuses: vi.fn().mockResolvedValue({ value: [null] }),
   };
 
   const mockManager = {
@@ -401,6 +403,146 @@ describe("SolanaChainAdapter - sendTransaction", () => {
       expect(receipt.effectiveGasPrice).toBe(BigInt(10));
     });
 
+    it("retries once with a fresh blockhash when submit fails with blockhash expiry", async () => {
+      const { mockManager, mockConnection } = createMockManager();
+      let sendRawCallCount = 0;
+      mockConnection.sendRawTransaction = vi.fn().mockImplementation(() => {
+        sendRawCallCount++;
+        if (sendRawCallCount === 1) {
+          return Promise.reject(new Error("BlockhashNotFound"));
+        }
+        return Promise.resolve("signature123");
+      });
+      // The first attempt never landed and the chain has moved past the block
+      // height its blockhash was valid for, so it can never land: re-signing is
+      // safe only once that is established.
+      mockConnection.getSignatureStatuses = vi
+        .fn()
+        .mockResolvedValue({ value: [null] });
+      (mockConnection as any).getBlockHeight = vi
+        .fn()
+        .mockResolvedValue(200_000);
+
+      const originalSignTransaction =
+        solanaSigner.signTransaction.bind(solanaSigner);
+      const signTransactionSpy = vi
+        .fn()
+        .mockImplementation(originalSignTransaction);
+      solanaSigner.signTransaction = signTransactionSpy;
+
+      const adapter = new SolanaChainAdapter(
+        DEVNET_CHAIN_ID,
+        () => Promise.resolve(mockManager as any),
+        { timeoutMs: 500, pollMs: 10, reconcileDelayMs: 0 }
+      );
+
+      const receipt = await adapter.sendTransaction(
+        null as any,
+        {
+          to: recipientKeypair.publicKey.toBase58(),
+          value: BigInt(5000),
+        },
+        null as any,
+        {
+          solanaSigner,
+          gasOverrides: {},
+        } as any
+      );
+
+      expect(receipt.hash).toBe("signature123");
+      expect(signTransactionSpy).toHaveBeenCalledTimes(2);
+      expect(mockConnection.getLatestBlockhash).toHaveBeenCalledTimes(2);
+      expect(sendRawCallCount).toBe(2);
+    });
+
+    it("adopts the first transaction rather than re-signing when it confirms", async () => {
+      // The broadcast reported a blockhash error but the transaction was live
+      // and confirmed. Re-signing here would put a second transaction on chain
+      // with its own signature - Solana dedupes by signature, so both would
+      // execute and the transfer would happen twice.
+      const { mockManager, mockConnection } = createMockManager();
+      let sendRawCallCount = 0;
+      mockConnection.sendRawTransaction = vi.fn().mockImplementation(() => {
+        sendRawCallCount++;
+        return Promise.reject(new Error("BlockhashNotFound"));
+      });
+      // Invisible while submit reconciles, surfacing only once the expiry
+      // proof is waiting on it - the window in which the old code had already
+      // given up and re-signed.
+      let statusCalls = 0;
+      mockConnection.getSignatureStatuses = vi.fn().mockImplementation(() => {
+        statusCalls++;
+        return Promise.resolve({
+          value: [statusCalls > 5 ? { confirmationStatus: "confirmed" } : null],
+        });
+      });
+      // Still inside the blockhash's valid window, so nothing has expired.
+      (mockConnection as any).getBlockHeight = vi.fn().mockResolvedValue(1);
+
+      const signTransactionSpy = vi
+        .fn()
+        .mockImplementation(solanaSigner.signTransaction.bind(solanaSigner));
+      solanaSigner.signTransaction = signTransactionSpy;
+
+      const adapter = new SolanaChainAdapter(
+        DEVNET_CHAIN_ID,
+        () => Promise.resolve(mockManager as any),
+        { timeoutMs: 500, pollMs: 10, reconcileDelayMs: 0 }
+      );
+
+      const receipt = await adapter.sendTransaction(
+        null as any,
+        { to: recipientKeypair.publicKey.toBase58(), value: BigInt(5000) },
+        null as any,
+        { solanaSigner, gasOverrides: {} } as any
+      );
+
+      // Signed and broadcast exactly once; the confirmed signature is adopted.
+      expect(signTransactionSpy).toHaveBeenCalledTimes(1);
+      expect(sendRawCallCount).toBe(1);
+      expect(receipt.hash).toBeDefined();
+    });
+
+    it("refuses to re-sign while the first transaction may still land", async () => {
+      // Neither confirmed nor provably dead: the blockhash is still within its
+      // valid window, so the transaction could yet be included. Failing the
+      // execution is the conservative outcome - re-signing is the one that can
+      // spend twice.
+      const { mockManager, mockConnection } = createMockManager();
+      let sendRawCallCount = 0;
+      mockConnection.sendRawTransaction = vi.fn().mockImplementation(() => {
+        sendRawCallCount++;
+        return Promise.reject(new Error("BlockhashNotFound"));
+      });
+      mockConnection.getSignatureStatuses = vi
+        .fn()
+        .mockResolvedValue({ value: [null] });
+      (mockConnection as any).getBlockHeight = vi.fn().mockResolvedValue(1);
+
+      const signTransactionSpy = vi
+        .fn()
+        .mockImplementation(solanaSigner.signTransaction.bind(solanaSigner));
+      solanaSigner.signTransaction = signTransactionSpy;
+
+      const adapter = new SolanaChainAdapter(
+        DEVNET_CHAIN_ID,
+        () => Promise.resolve(mockManager as any),
+        { timeoutMs: 50, pollMs: 10, reconcileDelayMs: 0 }
+      );
+
+      await expect(
+        adapter.sendTransaction(
+          null as any,
+          { to: recipientKeypair.publicKey.toBase58(), value: BigInt(5000) },
+          null as any,
+          { solanaSigner, gasOverrides: {} } as any
+        )
+      ).rejects.toThrow(/refusing to re-sign/);
+
+      expect(signTransactionSpy).toHaveBeenCalledTimes(1);
+      expect(sendRawCallCount).toBe(1);
+    });
+
     it("prevents double-spend by signing and broadcasting exactly once even when confirmation retries", async () => {
       const { mockConnection } = createMockManager();
 
@@ -465,5 +607,155 @@ describe("SolanaChainAdapter - sendTransaction", () => {
       // sendRawTransaction must be called exactly once (no retry on broadcast side)
       expect(mockConnection.sendRawTransaction).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe("SolanaChainAdapter - maxSol enforcement", () => {
+  let signerKeypair: Keypair;
+  let solanaSigner: SolanaKeypairSigner;
+  let recipientKeypair: Keypair;
+
+  const PRE_BALANCE = 10_000_000;
+
+  /**
+   * Mirrors buildSerializedSolanaInstructionTx: the instruction-based Solana
+   * actions that require maxSol hand the adapter a serialized LEGACY
+   * transaction. Legacy bytes still deserialize into a VersionedTransaction
+   * (wrapping a legacy Message) rather than throwing, so these reach the
+   * adapter's versioned branch - which is why that branch has to be the one
+   * that requests the fee payer's simulated state.
+   */
+  function buildLegacySerializedTx(): string {
+    const transaction = new Transaction();
+    transaction.add(
+      SystemProgram.transfer({
+        fromPubkey: signerKeypair.publicKey,
+        toPubkey: recipientKeypair.publicKey,
+        lamports: 1000,
+      })
+    );
+    transaction.feePayer = signerKeypair.publicKey;
+    transaction.recentBlockhash = PublicKey.default.toBase58();
+    return transaction
+      .serialize({ requireAllSignatures: false, verifySignatures: false })
+      .toString("base64");
+  }
+
+  /**
+   * Models the RPC contract rather than returning account state
+   * unconditionally: simulateTransaction reports accounts only when the caller
+   * asked for them, and reports them in the order requested. A mock that hands
+   * back accounts regardless cannot distinguish a correct request from an
+   * omitted one, which is precisely the defect under test.
+   */
+  function createMaxSolManager(postLamports: number | null) {
+    const { mockManager, mockConnection } = createMockManager();
+    (mockConnection as any).getBalance = vi.fn().mockResolvedValue(PRE_BALANCE);
+    mockConnection.simulateTransaction = vi
+      .fn()
+      .mockImplementation(
+        (_tx: unknown, configOrSigners: any, includeAccounts?: unknown) => {
+          let requested: string[] | undefined;
+          if (configOrSigners?.accounts?.addresses) {
+            requested = configOrSigners.accounts.addresses;
+          } else if (Array.isArray(includeAccounts)) {
+            requested = (includeAccounts as PublicKey[]).map((key) =>
+              key.toBase58()
+            );
+          }
+
+          const accounts = requested?.map((address) =>
+            address === signerKeypair.publicKey.toBase58() &&
+            postLamports !== null
+              ? { lamports: postLamports }
+              : null
+          );
+
+          return Promise.resolve({ value: { err: null, logs: [], accounts } });
+        }
+      );
+    return { mockManager, mockConnection };
+  }
+
+  function send(mockManager: unknown, maxSolLamports: bigint) {
+    const adapter = new SolanaChainAdapter(DEVNET_CHAIN_ID, () =>
+      Promise.resolve(mockManager as any)
+    );
+    return adapter.sendTransaction(
+      null as any,
+      {
+        to: signerKeypair.publicKey.toBase58(),
+        data: buildLegacySerializedTx(),
+      },
+      null as any,
+      { solanaSigner, gasOverrides: {}, maxSolLamports } as any
+    );
+  }
+
+  beforeEach(() => {
+    signerKeypair = Keypair.generate();
+    solanaSigner = new SolanaKeypairSigner(signerKeypair);
+    recipientKeypair = Keypair.generate();
+    vi.clearAllMocks();
+  });
+
+  it("requests the fee payer's simulated state by address", async () => {
+    const { mockManager, mockConnection } = createMaxSolManager(
+      PRE_BALANCE - 500_000
+    );
+
+    await send(mockManager, BigInt(1_000_000));
+
+    // Without an explicit accounts request the simulation returns no account
+    // state at all and the check below can never run.
+    const config = mockConnection.simulateTransaction.mock.calls[0][1];
+    expect(config.accounts.addresses).toEqual([
+      signerKeypair.publicKey.toBase58(),
+    ]);
+  });
+
+  it("allows an outflow within the declared ceiling", async () => {
+    const { mockManager } = createMaxSolManager(PRE_BALANCE - 500_000);
+
+    const receipt = await send(mockManager, BigInt(1_000_000));
+
+    expect(receipt.hash).toBe("signature123");
+  });
+
+  it("rejects an outflow above the declared ceiling", async () => {
+    const { mockManager } = createMaxSolManager(PRE_BALANCE - 2_000_000);
+
+    await expect(send(mockManager, BigInt(1_000_000))).rejects.toThrow(
+      /exceeding declared maxSol ceiling/
+    );
+  });
+
+  it("fails closed when the simulation returns no fee payer state", async () => {
+    const { mockManager } = createMaxSolManager(null);
+
+    await expect(send(mockManager, BigInt(1_000_000))).rejects.toThrow(
+      /did not return fee payer account state/
+    );
+  });
+
+  it("does not request account state when no ceiling is declared", async () => {
+    const { mockManager, mockConnection } = createMaxSolManager(null);
+    const adapter = new SolanaChainAdapter(DEVNET_CHAIN_ID, () =>
+      Promise.resolve(mockManager as any)
+    );
+
+    await adapter.sendTransaction(
+      null as any,
+      {
+        to: signerKeypair.publicKey.toBase58(),
+        data: buildLegacySerializedTx(),
+      },
+      null as any,
+      { solanaSigner, gasOverrides: {} } as any
+    );
+
+    const config = mockConnection.simulateTransaction.mock.calls[0][1];
+    expect(config.accounts).toBeUndefined();
+    expect((mockConnection as any).getBalance).not.toHaveBeenCalled();
   });
 });

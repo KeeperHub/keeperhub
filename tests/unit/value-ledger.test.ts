@@ -5,12 +5,22 @@ vi.mock("@/lib/utils/id", () => ({ generateId: () => "res_gen" }));
 
 // Hoisted state the fake db reads from / writes to, set per test.
 const state = vi.hoisted(() => ({
-  caps: [] as Array<{ dailyValueCapWei: string | null }>,
+  caps: [] as Array<{
+    dailyValueCapWei: string | null;
+    dailySolanaValueCapLamports?: string | null;
+  }>,
   directSum: [{ totalWei: "0" }] as Array<{ totalWei: string }>,
   ledgerSum: [{ totalWei: "0" }] as Array<{ totalWei: string }>,
+  directLamportsSum: [{ totalLamports: "0" }] as Array<{
+    totalLamports: string;
+  }>,
+  ledgerLamportsSum: [{ totalLamports: "0" }] as Array<{
+    totalLamports: string;
+  }>,
   inserted: [] as Record<string, unknown>[],
   updates: [] as Record<string, unknown>[],
   returningId: "res_1",
+  reserveKind: "evm" as "evm" | "solana",
 }));
 
 // Fake db: transaction whose tx serves the cap FOR UPDATE lookup, then the two
@@ -35,7 +45,18 @@ vi.mock("@/lib/db", () => ({
               }),
             };
           }
-          const rows = selectCall === 2 ? state.directSum : state.ledgerSum;
+          let rows: Array<{ totalWei: string } | { totalLamports: string }>;
+          if (selectCall === 2) {
+            rows =
+              state.reserveKind === "solana"
+                ? state.directLamportsSum
+                : state.directSum;
+          } else {
+            rows =
+              state.reserveKind === "solana"
+                ? state.ledgerLamportsSum
+                : state.ledgerSum;
+          }
           return {
             from: () => ({ where: () => Promise.resolve(rows) }),
           };
@@ -63,20 +84,26 @@ vi.mock("@/lib/db", () => ({
 }));
 
 import {
+  reserveOrgSolanaValue,
   reserveOrgValue,
+  withSolanaValueCap,
   withStepValueCap,
   withValueCap,
 } from "@/lib/execute/value-ledger";
 
 const ONE_ETH_WEI = "1000000000000000000";
+const ONE_SOL_LAMPORTS = "1000000000";
 
 beforeEach(() => {
   state.caps = [];
   state.directSum = [{ totalWei: "0" }];
   state.ledgerSum = [{ totalWei: "0" }];
+  state.directLamportsSum = [{ totalLamports: "0" }];
+  state.ledgerLamportsSum = [{ totalLamports: "0" }];
   state.inserted = [];
   state.updates = [];
   state.returningId = "res_1";
+  state.reserveKind = "evm";
 });
 
 describe("reserveOrgValue", () => {
@@ -241,7 +268,13 @@ describe("withStepValueCap", () => {
   it("runs without a cap check when the workflow has no organization", async () => {
     const run = vi.fn().mockResolvedValue({ success: true });
 
-    const result = await withStepValueCap({ amountEth: "1" }, run);
+    const result = await withStepValueCap(
+      {
+        stepFunction: "transferFundsStep",
+        config: { amount: "1", network: "1" },
+      },
+      run
+    );
 
     expect(run).toHaveBeenCalledOnce();
     expect(result).toEqual({ success: true });
@@ -252,9 +285,20 @@ describe("withStepValueCap", () => {
     state.caps = [{ dailyValueCapWei: "1" }];
     const run = vi.fn().mockResolvedValue({ success: true });
 
-    await withStepValueCap({ organizationId: "org_1", amountEth: "0" }, run);
     await withStepValueCap(
-      { organizationId: "org_1", amountEth: undefined },
+      {
+        organizationId: "org_1",
+        stepFunction: "writeContractStep",
+        config: { ethValue: "0" },
+      },
+      run
+    );
+    await withStepValueCap(
+      {
+        organizationId: "org_1",
+        stepFunction: "writeContractStep",
+        config: {},
+      },
       run
     );
 
@@ -263,13 +307,16 @@ describe("withStepValueCap", () => {
   });
 
   it("blocks the value-moving core when a workflow step exceeds the cap", async () => {
-    // The KEEP-933 fix: a 5 ETH transfer triggered from a workflow (not the
-    // direct API) is now bounded by the same 1 ETH org cap. The core never runs.
     state.caps = [{ dailyValueCapWei: ONE_ETH_WEI }];
     const run = vi.fn().mockResolvedValue({ success: true });
 
     const result = await withStepValueCap(
-      { organizationId: "org_1", amountEth: "5", executionId: "exec_1" },
+      {
+        organizationId: "org_1",
+        stepFunction: "transferFundsStep",
+        config: { amount: "5", network: "1" },
+        executionId: "exec_1",
+      },
       run
     );
 
@@ -285,7 +332,12 @@ describe("withStepValueCap", () => {
     const run = vi.fn().mockResolvedValue({ success: true, hash: "0xabc" });
 
     const result = await withStepValueCap(
-      { organizationId: "org_1", amountEth: "0.5", executionId: "exec_1" },
+      {
+        organizationId: "org_1",
+        stepFunction: "transferFundsStep",
+        config: { amount: "0.5", network: "1" },
+        executionId: "exec_1",
+      },
       run
     );
 
@@ -302,16 +354,14 @@ describe("withStepValueCap", () => {
   });
 
   it("does not reserve when the caller already reserved (valueCapReserved)", async () => {
-    // /api/execute/node dispatches the step wrappers but has already reserved
-    // this execution's value via checkAndReserveExecution. The step must not
-    // reserve a second time, or a single node-route transfer double-charges.
     state.caps = [{ dailyValueCapWei: ONE_ETH_WEI }];
     const run = vi.fn().mockResolvedValue({ success: true });
 
     const result = await withStepValueCap(
       {
         organizationId: "org_1",
-        amountEth: "0.5",
+        stepFunction: "transferFundsStep",
+        config: { amount: "0.5", network: "1" },
         executionId: "exec_1",
         valueCapReserved: true,
       },
@@ -322,5 +372,179 @@ describe("withStepValueCap", () => {
     expect(result).toEqual({ success: true });
     expect(state.inserted).toHaveLength(0);
     expect(state.updates).toHaveLength(0);
+  });
+
+  it("charges Solana transferFundsStep against the lamports cap", async () => {
+    state.reserveKind = "solana";
+    state.caps = [
+      { dailyValueCapWei: null, dailySolanaValueCapLamports: "2000000000" },
+    ];
+    const run = vi.fn().mockResolvedValue({ success: true });
+
+    const result = await withStepValueCap(
+      {
+        organizationId: "org_1",
+        stepFunction: "transferFundsStep",
+        config: { amount: "1", network: "solana-devnet" },
+        executionId: "exec_sol",
+      },
+      run
+    );
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(result).toEqual({ success: true });
+    expect(state.inserted[0]).toMatchObject({
+      valueLamports: ONE_SOL_LAMPORTS,
+      source: "workflow",
+      ref: "exec_sol",
+    });
+  });
+
+  it("charges transferSplTokenStep against the lamports cap using worst-case fee", async () => {
+    state.reserveKind = "solana";
+    state.caps = [
+      { dailyValueCapWei: null, dailySolanaValueCapLamports: "5000000" },
+    ];
+    const run = vi.fn().mockResolvedValue({ success: true });
+
+    const result = await withStepValueCap(
+      {
+        organizationId: "org_1",
+        stepFunction: "transferSplTokenStep",
+        config: { network: "103" },
+        executionId: "exec_spl",
+      },
+      run
+    );
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(result).toEqual({ success: true });
+    expect(state.inserted[0]).toMatchObject({
+      valueLamports: "2105000",
+      source: "workflow",
+      ref: "exec_spl",
+    });
+  });
+
+  it("denies Solana sendRawSolanaInstructionStep when maxSol is missing", async () => {
+    const run = vi.fn().mockResolvedValue({ success: true });
+
+    const result = await withStepValueCap(
+      {
+        organizationId: "org_1",
+        stepFunction: "sendRawSolanaInstructionStep",
+        config: { network: "103" },
+      },
+      run
+    );
+
+    expect(run).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      success: false,
+      error: expect.stringContaining("maxSol is required"),
+    });
+  });
+
+  it("blocks Solana workflow step when lamports cap would be exceeded", async () => {
+    state.reserveKind = "solana";
+    state.caps = [
+      { dailyValueCapWei: null, dailySolanaValueCapLamports: "500000000" },
+    ];
+    state.directLamportsSum = [{ totalLamports: "400000000" }];
+    const run = vi.fn().mockResolvedValue({ success: true });
+
+    const result = await withStepValueCap(
+      {
+        organizationId: "org_1",
+        stepFunction: "transferFundsStep",
+        config: { amount: "0.2", network: "103" },
+      },
+      run
+    );
+
+    expect(run).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      success: false,
+      error: "Daily Solana spending cap exceeded",
+    });
+  });
+});
+
+describe("reserveOrgSolanaValue", () => {
+  beforeEach(() => {
+    state.reserveKind = "solana";
+  });
+
+  it("is unlimited when no Solana cap row exists", async () => {
+    state.caps = [];
+
+    const result = await reserveOrgSolanaValue({
+      organizationId: "org_1",
+      valueLamports: "500",
+    });
+
+    expect(result).toEqual({ allowed: true, reservationId: "" });
+    expect(state.inserted).toHaveLength(0);
+  });
+
+  it("allows and inserts a reserved lamports row within the cap", async () => {
+    state.caps = [
+      { dailyValueCapWei: null, dailySolanaValueCapLamports: "2000000000" },
+    ];
+
+    const result = await reserveOrgSolanaValue({
+      organizationId: "org_1",
+      valueLamports: "1000000000",
+      source: "workflow",
+      ref: "exec_1",
+    });
+
+    expect(result).toEqual({ allowed: true, reservationId: "res_1" });
+    expect(state.inserted[0]).toMatchObject({
+      valueLamports: "1000000000",
+      status: "reserved",
+    });
+  });
+
+  it("denies when the lamports reservation would exceed the cap", async () => {
+    state.caps = [
+      { dailyValueCapWei: null, dailySolanaValueCapLamports: "1000000000" },
+    ];
+    state.directLamportsSum = [{ totalLamports: "900000000" }];
+
+    const result = await reserveOrgSolanaValue({
+      organizationId: "org_1",
+      valueLamports: "200000000",
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      reason: "Daily Solana spending cap exceeded",
+    });
+    expect(state.inserted).toHaveLength(0);
+  });
+});
+
+describe("withSolanaValueCap", () => {
+  beforeEach(() => {
+    state.reserveKind = "solana";
+  });
+
+  it("reserves then settles on a successful result", async () => {
+    state.caps = [
+      { dailyValueCapWei: null, dailySolanaValueCapLamports: "2000000000" },
+    ];
+    const run = vi.fn().mockResolvedValue({ success: true });
+
+    const result = await withSolanaValueCap(
+      { organizationId: "org_1", valueLamports: "100000000" },
+      run
+    );
+
+    expect(result).toEqual({ success: true });
+    expect(state.inserted).toHaveLength(1);
+    expect(state.updates).toEqual([
+      expect.objectContaining({ status: "settled" }),
+    ]);
   });
 });

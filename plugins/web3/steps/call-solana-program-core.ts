@@ -17,6 +17,7 @@ import {
   buildSerializedSolanaInstructionTx,
   submitSolanaInstructionTx,
 } from "@/lib/web3/solana-instruction-tx";
+import { parseRequiredMaxSolLamports } from "@/lib/web3/solana-max-sol-guard";
 import { initializeSolanaWallet } from "@/lib/web3/wallet-helpers";
 
 const MAX_TX_SIZE_BYTES = 1232;
@@ -128,6 +129,11 @@ export async function callSolanaProgramCore(
     };
   }
 
+  const maxSolParsed = parseRequiredMaxSolLamports(input.maxSol);
+  if ("error" in maxSolParsed) {
+    return { success: false, error: maxSolParsed.error };
+  }
+
   const programId = parsePublicKey(input.programId);
   if (!programId) {
     return {
@@ -222,6 +228,7 @@ export async function callSolanaProgramCore(
       solanaSigner: wallet.signer,
       feePayer: walletPk,
       data,
+      maxSolLamports: maxSolParsed.lamports,
     });
 
     return {

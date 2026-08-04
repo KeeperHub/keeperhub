@@ -16,17 +16,31 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { useSession } from "@/lib/auth-client";
 import { handleGuardError } from "@/lib/client/handle-guard-error";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import { useDualFactorState } from "@/lib/mfa/use-dual-factor-state";
 
-type ExportStep = "idle" | "totp" | "verifying" | "done" | "needs-mfa";
+type ExportStep = "idle" | "select-key" | "totp" | "verifying" | "done" | "needs-mfa";
+type ExportKeyType = "evm" | "solana";
 
-export function ExportPrivateKeyButton(): React.ReactElement | null {
+export function ExportPrivateKeyButton({
+  solanaAddress,
+}: {
+  solanaAddress?: string | null;
+}): React.ReactElement | null {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<ExportStep>("idle");
+  const [keyType, setKeyType] = useState<ExportKeyType>("evm");
   const dual = useDualFactorState();
   const [privateKey, setPrivateKey] = useState<string | null>(null);
   const [revealed, setRevealed] = useState(false);
@@ -65,13 +79,24 @@ export function ExportPrivateKeyButton(): React.ReactElement | null {
     },
   };
 
+  const hasSolanaAccount = Boolean(solanaAddress);
+  const exportLabel =
+    keyType === "solana" ? "Export Solana Private Key" : "Export EVM Private Key";
+  const keyTypeLabel =
+    keyType === "solana" ? "Solana private key" : "EVM private key";
+
   const handleOpen = (): void => {
     setOpen(true);
     setError(null);
     dual.reset();
     setPrivateKey(null);
     setRevealed(false);
-    setStep(mfaEnrolled ? "totp" : "needs-mfa");
+    setKeyType("evm");
+    if (!mfaEnrolled) {
+      setStep("needs-mfa");
+      return;
+    }
+    setStep(hasSolanaAccount ? "select-key" : "totp");
   };
 
   const handleVerify = async (): Promise<void> => {
@@ -93,6 +118,7 @@ export function ExportPrivateKeyButton(): React.ReactElement | null {
         body: JSON.stringify({
           code: dual.totpCode,
           emailOtp: dual.emailOtp || undefined,
+          keyType,
         }),
       });
 
@@ -145,12 +171,15 @@ export function ExportPrivateKeyButton(): React.ReactElement | null {
 
   const description = (() => {
     if (step === "done") {
-      return "Your private key is shown below. Copy it and store it securely.";
+      return `Your ${keyTypeLabel} is shown below. Copy it and store it securely.`;
     }
     if (step === "needs-mfa") {
       return "Enable two-factor authentication on your account before exporting a private key.";
     }
-    return "Enter the current 6-digit code from your authenticator app to confirm.";
+    if (step === "select-key") {
+      return "Choose which account key to export, then confirm with your authenticator.";
+    }
+    return `Enter the current 6-digit code from your authenticator app to export your ${keyTypeLabel}.`;
   })();
 
   return (
@@ -175,9 +204,37 @@ export function ExportPrivateKeyButton(): React.ReactElement | null {
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Export Private Key</DialogTitle>
+            <DialogTitle>{exportLabel}</DialogTitle>
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
+
+          {step === "select-key" && (
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <Label htmlFor="export-key-type">Key type</Label>
+                <Select
+                  onValueChange={(value: ExportKeyType) => setKeyType(value)}
+                  value={keyType}
+                >
+                  <SelectTrigger id="export-key-type">
+                    <SelectValue placeholder="Select key type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="evm">EVM private key</SelectItem>
+                    <SelectItem value="solana">Solana private key</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <DialogFooter>
+                <Button onClick={handleClose} variant="outline">
+                  Cancel
+                </Button>
+                <Button onClick={() => setStep("totp")} variant="destructive">
+                  Continue
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
 
           {step === "needs-mfa" && (
             <div className="space-y-4 py-2">
@@ -233,7 +290,7 @@ export function ExportPrivateKeyButton(): React.ReactElement | null {
                   )
                 }
                 onSubmit={handleVerify}
-                submitLabel="Export private key"
+                submitLabel={`Export ${keyType === "solana" ? "Solana" : "EVM"} private key`}
                 submitVariant="destructive"
               />
               {error && <p className="text-destructive text-sm">{error}</p>}
@@ -245,7 +302,7 @@ export function ExportPrivateKeyButton(): React.ReactElement | null {
               <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="font-medium text-destructive text-sm">
-                    Private Key
+                    {keyType === "solana" ? "Solana Private Key" : "EVM Private Key"}
                   </span>
                   <div className="flex items-center gap-2">
                     <button

@@ -680,6 +680,8 @@ export function NavigationSidebar(): React.ReactNode {
 
   const workflowId =
     typeof params.workflowId === "string" ? params.workflowId : undefined;
+  const isWorkflowsPage =
+    pathname === "/workflows" || pathname.startsWith("/workflows/");
   const isHubPage = pathname === "/hub";
   const isAnalyticsPage = pathname === "/analytics";
   const isEarningsPage = pathname === "/earnings";
@@ -810,8 +812,9 @@ export function NavigationSidebar(): React.ReactNode {
   const offsets = computePanelOffsets(currentWidth, navState.state.panels);
 
   function isActive(id: string): boolean {
+    // Route-based like every other item; the flyout state is not "you are here".
     if (id === "workflows") {
-      return navState.state.panels.projects !== "closed";
+      return isWorkflowsPage;
     }
     if (id === "hub") {
       return isHubPage;
@@ -1092,7 +1095,7 @@ export function NavigationSidebar(): React.ReactNode {
         <Tooltip>
           <TooltipTrigger asChild>
             <button
-              className="pointer-events-auto fixed top-[62px] z-40 rounded-md p-1.5 text-muted-foreground transition-[left,colors] duration-200 ease-out hover:bg-muted hover:text-foreground"
+              className="pointer-events-auto fixed top-[calc(62px+var(--app-banner-height,0px))] z-40 rounded-md p-1.5 text-muted-foreground transition-[left,colors] duration-200 ease-out hover:bg-muted hover:text-foreground"
               data-flyout
               onClick={anyPanelExpanded ? navState.foldAll : navState.closeAll}
               style={{ left: offsets.rightEdge + 4 }}

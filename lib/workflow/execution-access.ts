@@ -3,8 +3,13 @@ import "server-only";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
-import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
+import {
+  type DualAuthContext,
+  getDualAuthContext,
+} from "@/lib/middleware/auth-helpers";
 import { getWorkflowAccess } from "@/lib/workflow/access";
+
+type AuthenticatedContext = Exclude<DualAuthContext, { error: string }>;
 
 function loadExecutionWithWorkflow(executionId: string) {
   return db.query.workflowExecutions.findFirst({
@@ -18,7 +23,7 @@ export type AuthorizedExecution = NonNullable<
 >;
 
 export type ExecutionAccessResult =
-  | { ok: true; execution: AuthorizedExecution }
+  | { ok: true; execution: AuthorizedExecution; auth: AuthenticatedContext }
   | { ok: false; status: number; error: string };
 
 /**
@@ -60,5 +65,5 @@ export async function resolveAuthorizedExecution(
     return { ok: false, status: 404, error: "Execution not found" };
   }
 
-  return { ok: true, execution };
+  return { ok: true, execution, auth: authContext };
 }

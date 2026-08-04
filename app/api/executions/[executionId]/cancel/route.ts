@@ -1,67 +1,37 @@
 import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import {
-  workflowExecutionLogs,
-  workflowExecutions,
-  workflows,
-} from "@/lib/db/schema";
+import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { getOrgContext } from "@/lib/middleware/org-context";
+import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
+import { requireScope } from "@/lib/middleware/require-scope";
+import { resolveAuthorizedExecution } from "@/lib/workflow/execution-access";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ executionId: string }> }
 ): Promise<NextResponse> {
   try {
     const { executionId } = await context.params;
 
-    const orgContext = await getOrgContext();
-
-    if (!orgContext.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    if (!orgContext.organization?.id) {
+    // Cancelling is organization-scoped, so it resolves auth the same way its
+    // sibling execution routes do (status, logs, wait) rather than reading the
+    // session directly. That admits `kh_` keys, and applies the shared
+    // org-membership and soft-delete rules in one place.
+    const resolved = await resolveAuthorizedExecution(request, executionId);
+    if (!resolved.ok) {
       return NextResponse.json(
-        { error: "No organization found" },
-        { status: 400 }
+        { error: resolved.error },
+        { status: resolved.status }
       );
     }
 
-    // Fetch execution and verify it belongs to the user's org via the workflow
-    const execution = await db.query.workflowExecutions.findFirst({
-      where: eq(workflowExecutions.id, executionId),
-      columns: {
-        id: true,
-        status: true,
-        workflowId: true,
-        startedAt: true,
-      },
-    });
-
-    if (!execution) {
-      return NextResponse.json(
-        { error: "Execution not found" },
-        { status: 404 }
-      );
+    const scopeError = requireScope(resolved.auth.scope, SCOPE_MCP_WRITE);
+    if (scopeError) {
+      return scopeError;
     }
 
-    // Verify the workflow belongs to the user's organization
-    const workflow = await db.query.workflows.findFirst({
-      where: and(
-        eq(workflows.id, execution.workflowId),
-        eq(workflows.organizationId, orgContext.organization.id)
-      ),
-      columns: { id: true },
-    });
-
-    if (!workflow) {
-      return NextResponse.json(
-        { error: "Execution not found" },
-        { status: 404 }
-      );
-    }
+    const { execution } = resolved;
 
     if (execution.status !== "running") {
       return NextResponse.json(

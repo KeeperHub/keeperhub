@@ -17,6 +17,7 @@ import {
   buildSerializedSolanaInstructionTx,
   submitSolanaInstructionTx,
 } from "@/lib/web3/solana-instruction-tx";
+import { parseRequiredMaxSolLamports } from "@/lib/web3/solana-max-sol-guard";
 import { initializeSolanaWallet } from "@/lib/web3/wallet-helpers";
 
 // Guardrails. The 1232-byte cap is Solana's single-packet transaction size
@@ -297,6 +298,11 @@ export async function sendRawSolanaInstructionCore(
     };
   }
 
+  const maxSolParsed = parseRequiredMaxSolLamports(input.maxSol);
+  if ("error" in maxSolParsed) {
+    return { success: false, error: maxSolParsed.error };
+  }
+
   const parsed = parseInstructionsInput(input.instructions);
   if ("error" in parsed) {
     return { success: false, error: parsed.error };
@@ -380,6 +386,7 @@ export async function sendRawSolanaInstructionCore(
       solanaSigner: wallet.signer,
       feePayer: walletPk,
       data,
+      maxSolLamports: maxSolParsed.lamports,
     });
 
     return {

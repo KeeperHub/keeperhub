@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
-  countMonthlyExecutionsCached,
+  countMonthlyExecutionsForAdmission,
   decideExecutionLimit,
   effectiveExecutionLimit,
 } from "../lib/billing/execution-limit-core";
@@ -97,7 +97,10 @@ export async function checkExecutionLimitForExecutor(
     debtExecutions
   );
 
-  const used = await countMonthlyExecutionsCached(db, organizationId);
+  const used = await countMonthlyExecutionsForAdmission(db, organizationId, {
+    maxExecutionsPerMonth: limits.maxExecutionsPerMonth,
+    overageEnabled: planDef.overage.enabled,
+  });
 
   const outcome = decideExecutionLimit({
     maxExecutionsPerMonth: limits.maxExecutionsPerMonth,

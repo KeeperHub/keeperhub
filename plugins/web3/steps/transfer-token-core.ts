@@ -40,6 +40,7 @@ import {
 import { resolveGasLimitOverrides } from "@/lib/web3/gas-defaults";
 import { isSponsorshipSupported } from "@/lib/web3/turnkey-sponsorship-config";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
+import { revertedTransactionHash } from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
@@ -92,7 +93,19 @@ export type TransferTokenResult =
       // ones. Omitted when the RPC cannot trace the transaction.
       executedCall?: ExecutedCall;
     }
-  | { success: false; error: string; rejection?: RevertKind };
+  | {
+      success: false;
+      error: string;
+      rejection?: RevertKind;
+      // Set only when a transaction reached the chain and failed
+      // there, so the finalizer can persist a receipt for the failure. Absent
+      // on pre-broadcast failures, where no transaction exists.
+      transactionHash?: string;
+      chainId?: number;
+      // True when the terminal failure came from the gas-sponsored path, so
+      // the finalizer can report the route accurately on a failed execution.
+      sponsored?: boolean;
+    };
 
 /**
  * Parse token config from input and return a single token address.
@@ -441,7 +454,14 @@ export async function transferTokenCore(
         chainId,
       });
       if (!decision.fallback) {
-        return { success: false, error: decision.error };
+        return {
+          success: false,
+          error: decision.error,
+          sponsored: true,
+          ...(decision.transactionHash
+            ? { transactionHash: decision.transactionHash, chainId }
+            : {}),
+        };
       }
     }
   }
@@ -605,6 +625,9 @@ export async function transferTokenCore(
           "Token transfer failed"
         ),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
+        ...(revertedTransactionHash(error)
+          ? { transactionHash: revertedTransactionHash(error), chainId }
+          : {}),
       };
     }
   });

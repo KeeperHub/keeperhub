@@ -36,7 +36,11 @@ import {
 } from "@/components/ui/tooltip";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { BILLING_API } from "@/lib/billing/constants";
-import { PLANS } from "@/lib/billing/plans";
+import {
+  PAYG_PLAN_NAME,
+  PLANS,
+  type PlanName,
+} from "@/lib/billing/plans";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import { useOrganization } from "@/lib/hooks/use-organization";
 import type { PageMeta } from "@/lib/pagination";
@@ -56,7 +60,7 @@ type PaygStatus = {
   } | null;
 };
 
-const FREE_LIMIT = PLANS.free.features.maxExecutionsPerMonth;
+const FREE_LIMIT = PLANS[PAYG_PLAN_NAME].features.maxExecutionsPerMonth;
 
 function formatUsdc(decimal: string): string {
   return `$${Number(decimal).toLocaleString(undefined, {
@@ -251,9 +255,16 @@ function PaygWalletFunding({
  * Pay-as-you-go controls for a free org, rendered inside the Current Plan card.
  * Caps show as read-only labels; enabling and editing them happen in a modal.
  */
-export function PaygSection(): React.ReactElement | null {
+export function PaygSection({
+  plan,
+}: {
+  plan: PlanName;
+}): React.ReactElement | null {
   const { organization } = useOrganization();
   const orgId = organization?.id;
+  // Only one plan can turn pay-as-you-go on. Others reach this component to
+  // read charges they settled while they were on it, and get history only.
+  const canUsePayg = plan === PAYG_PLAN_NAME;
 
   const [status, setStatus] = useState<PaygStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -345,6 +356,12 @@ export function PaygSection(): React.ReactElement | null {
 
   if (!status) {
     return null;
+  }
+
+  // Nothing here is actionable off the pay-as-you-go plan, so show the settled
+  // charges alone. The table renders nothing when there are none.
+  if (!canUsePayg) {
+    return <PaygChargesTable key={orgId} paygEnabled={false} standalone />;
   }
 
   const priceConfigured = Number(status.priceUsdc) > 0;
@@ -451,7 +468,9 @@ export function PaygSection(): React.ReactElement | null {
         </div>
       )}
 
-      {status.enabled && <PaygChargesTable key={orgId} />}
+      {/* Not gated on status.enabled: disabling deletes the config row, but the
+          settled charges are real transactions and stay visible. */}
+      <PaygChargesTable key={orgId} paygEnabled={status.enabled} />
 
       <PaygCapsDialog
         enabling={!status.enabled}
@@ -622,7 +641,14 @@ function formatDateTime(iso: string): string {
  * Server-side paginated charge history. Re-mounted (via key) on org switch so
  * paging resets to the first page for the new org.
  */
-function PaygChargesTable(): React.ReactElement | null {
+function PaygChargesTable({
+  paygEnabled,
+  standalone = false,
+}: {
+  paygEnabled: boolean;
+  /** Render as its own block rather than a continuation of the section above. */
+  standalone?: boolean;
+}): React.ReactElement | null {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search.trim(), 300);
@@ -676,7 +702,11 @@ function PaygChargesTable(): React.ReactElement | null {
 
   return (
     <>
-      <Separator />
+      {standalone ? (
+        <div className="border-border/40 border-t pt-4" />
+      ) : (
+        <Separator />
+      )}
       <div className="space-y-2">
         <button
           aria-expanded={open}
@@ -693,9 +723,15 @@ function PaygChargesTable(): React.ReactElement | null {
         </button>
         {open && (
           <>
-            <div className="flex justify-end">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              {!paygEnabled && (
+                <p className="text-muted-foreground text-xs">
+                  Pay-as-you-go is off. These are charges from when it was
+                  active.
+                </p>
+              )}
               <Input
-                className="h-8 w-full max-w-56"
+                className="ml-auto h-8 w-full max-w-56"
                 onChange={(e) => {
                   setSearch(e.target.value);
                   setPage(1);

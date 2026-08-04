@@ -78,6 +78,7 @@ export const exportKeyVerifySchema = z
     code: z.string().optional(),
     emailOtp: z.string().optional(),
     signature: z.string().optional(),
+    keyType: z.enum(["evm", "solana"]).optional(),
   })
   .strict();
 

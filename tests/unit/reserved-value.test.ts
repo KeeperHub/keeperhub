@@ -133,4 +133,20 @@ describe("parseNodeNativeValueWei Solana steps", () => {
       })
     ).toEqual({ ok: true, kind: "evm", valueWei: "2000000000000000000" });
   });
+
+  it("reserves worst-case SPL fee lamports for transferSplTokenStep", () => {
+    expect(
+      parseNodeNativeValueWei("transferSplTokenStep", {
+        network: "103",
+      })
+    ).toEqual({ ok: true, kind: "solana", valueLamports: "2105000" });
+  });
+
+  it("rejects transferSplTokenStep on a non-Solana network", () => {
+    expect(
+      parseNodeNativeValueWei("transferSplTokenStep", {
+        network: "1",
+      }).ok
+    ).toBe(false);
+  });
 });

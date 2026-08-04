@@ -16,6 +16,7 @@ import {
 import { BILLING_ALERTS, BILLING_API } from "@/lib/billing/constants";
 import {
   type BillingInterval,
+  billsOverage,
   PLANS,
   type PlanName,
   parsePlanName,
@@ -839,7 +840,9 @@ function BillingStatusContent({
 
       <OverageChargesSection charges={overageCharges} />
 
-      {plan === "free" && <PaygSection />}
+      {/* Overage plans never had pay-as-you-go, so they have no charges to show.
+          The rest keep the section, which self-hides when there is nothing. */}
+      {!billsOverage(plan) && <PaygSection plan={plan} />}
     </CardContent>
   );
 }

@@ -40,7 +40,8 @@ export async function callSolanaProgramStep(
         withStepValueCap(
           {
             organizationId: input._context?.organizationId,
-            amountEth: input.maxSol,
+            stepFunction: "callSolanaProgramStep",
+            config: { network: input.network, maxSol: input.maxSol },
             executionId: input._context?.executionId,
             valueCapReserved: input._context?.valueCapReserved,
           },

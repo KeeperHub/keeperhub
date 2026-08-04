@@ -1,8 +1,9 @@
 import "server-only";
 
-import { countMonthlyExecutionsCached } from "@/lib/billing/execution-limit-core";
+import { countMonthlyExecutionsForAdmission } from "@/lib/billing/execution-limit-core";
 import {
   getPlanLimits,
+  PLANS,
   parsePlanName,
   parseTierKey,
 } from "@/lib/billing/plans";
@@ -45,7 +46,14 @@ export async function chargePaygIfBillable(params: {
     parseTierKey(sub?.tier),
     sub?.planOverrides
   );
-  const used = await countMonthlyExecutionsCached(db, params.organizationId);
+  const used = await countMonthlyExecutionsForAdmission(
+    db,
+    params.organizationId,
+    {
+      maxExecutionsPerMonth: limits.maxExecutionsPerMonth,
+      overageEnabled: PLANS[plan].overage.enabled,
+    }
+  );
   if (used < limits.maxExecutionsPerMonth) {
     return { applicable: false };
   }

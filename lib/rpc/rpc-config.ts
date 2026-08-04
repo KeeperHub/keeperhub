@@ -258,12 +258,40 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
   },
   // Solana Devnet
   103: {
-    jsonKey: "solana-testnet",
+    jsonKey: "solana-devnet",
     envKey: "CHAIN_SOLANA_DEVNET_PRIMARY_RPC",
     fallbackEnvKey: "CHAIN_SOLANA_DEVNET_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.SOLANA_DEVNET,
   },
 };
+
+/** Legacy jsonKey aliases still accepted in operator CHAIN_RPC_CONFIG JSON. */
+const RPC_JSON_KEY_ALIASES: Record<string, string> = {
+  "solana-testnet": "solana-devnet",
+};
+
+function resolveRpcJsonKey(jsonKey: string): string {
+  return RPC_JSON_KEY_ALIASES[jsonKey] ?? jsonKey;
+}
+
+function findRpcConfigEntry(
+  rpcConfig: RpcConfig,
+  jsonKey: string
+): RpcConfigEntry | undefined {
+  const canonicalKey = resolveRpcJsonKey(jsonKey);
+  const direct = rpcConfig[canonicalKey] ?? rpcConfig[jsonKey];
+  if (direct) {
+    return direct;
+  }
+
+  for (const [alias, target] of Object.entries(RPC_JSON_KEY_ALIASES)) {
+    if (target === canonicalKey && rpcConfig[alias]) {
+      return rpcConfig[alias];
+    }
+  }
+
+  return undefined;
+}
 
 /**
  * Lazy-initialized RPC config singleton
@@ -457,7 +485,7 @@ export function parseRpcConfigWithDetails(
  */
 export function getRpcUrl(options: GetRpcUrlOptions): string {
   const { rpcConfig, jsonKey, envValue, publicDefault, type } = options;
-  const entry = rpcConfig[jsonKey];
+  const entry = findRpcConfigEntry(rpcConfig, jsonKey);
 
   if (!entry) {
     return envValue || publicDefault;
@@ -490,7 +518,7 @@ export type GetWssUrlOptions = {
  */
 export function getWssUrl(options: GetWssUrlOptions): string | undefined {
   const { rpcConfig, jsonKey, type } = options;
-  const entry = rpcConfig[jsonKey];
+  const entry = findRpcConfigEntry(rpcConfig, jsonKey);
 
   const fromJson =
     type === "primary" ? entry?.primaryWssUrl : entry?.fallbackWssUrl;
@@ -527,7 +555,8 @@ export type GetPrivateMempoolOptions = {
 export function getPrivateRpcUrl(
   options: GetPrivateMempoolOptions
 ): string | undefined {
-  return options.rpcConfig[options.jsonKey]?.privateMempoolRpcUrl;
+  return findRpcConfigEntry(options.rpcConfig, options.jsonKey)
+    ?.privateMempoolRpcUrl;
 }
 
 /**
@@ -539,7 +568,8 @@ export function getUsePrivateMempoolRpc(
   options: GetPrivateMempoolOptions
 ): boolean {
   return (
-    options.rpcConfig[options.jsonKey]?.isPrivateMempoolRpcEnabled ?? false
+    findRpcConfigEntry(options.rpcConfig, options.jsonKey)
+      ?.isPrivateMempoolRpcEnabled ?? false
   );
 }
 
@@ -558,7 +588,7 @@ export function getConfigValue<T>(
   field: keyof RpcConfigEntry,
   defaultValue: T
 ): T {
-  const entry = rpcConfig[jsonKey];
+  const entry = findRpcConfigEntry(rpcConfig, jsonKey);
   if (entry && field in entry && entry[field] !== undefined) {
     return entry[field] as T;
   }

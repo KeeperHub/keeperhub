@@ -263,6 +263,10 @@ export function runSimulation(opts: {
   }
   const provider = new JsonRpcProvider(opts.rpcUrl, undefined, {
     staticNetwork: true,
+    // See simulate-events.ts: this harness mutates chain state between
+    // reads, so ethers' 250ms same-request cache can serve a pre-mutation
+    // block to a post-mutation read.
+    cacheTimeout: -1,
   });
 
   // Populated by the provision step below and read by the action tests

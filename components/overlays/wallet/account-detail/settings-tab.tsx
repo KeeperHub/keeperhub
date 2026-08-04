@@ -10,6 +10,7 @@ type SettingsTabProps = {
   email?: string;
   isOwner: boolean;
   canExportKey: boolean;
+  solanaAddress?: string | null;
 };
 
 /**
@@ -27,6 +28,7 @@ export function SettingsTab({
   email,
   isOwner,
   canExportKey,
+  solanaAddress,
 }: SettingsTabProps): React.ReactElement {
   if (account.kind === "turnkey") {
     // The Solana account shares the same Turnkey wallet as the EVM EOA, so the
@@ -43,7 +45,9 @@ export function SettingsTab({
       <div className="space-y-4">
         <WalletAddressCard walletAddress={account.address} />
         {email && <RecoveryEmailCard email={email} />}
-        {isOwner && canExportKey && <SecurityCard />}
+        {isOwner && canExportKey && (
+          <SecurityCard solanaAddress={solanaAddress} />
+        )}
       </div>
     );
   }

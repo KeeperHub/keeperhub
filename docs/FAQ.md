@@ -158,7 +158,7 @@ The KeeperHub [MCP server](/ai-tools/mcp-server) lets AI agents (Claude, custom 
 The fastest way is to connect directly to KeeperHub's hosted MCP server:
 
 ```bash
-claude mcp add --transport http keeperhub https://app.keeperhub.com/mcp
+claude mcp add --transport http --scope user keeperhub https://app.keeperhub.com/mcp
 ```
 
 Then run `/mcp` inside Claude Code and authorize via browser. No CLI or plugin installation needed.
@@ -168,7 +168,7 @@ Then run `/mcp` inside Claude Code and authorize via browser. No CLI or plugin i
 **Option A (remote, no install):**
 
 ```bash
-claude mcp add --transport http keeperhub https://app.keeperhub.com/mcp
+claude mcp add --transport http --scope user keeperhub https://app.keeperhub.com/mcp
 ```
 
 Run `/mcp` in Claude Code to authorize via browser.
@@ -178,10 +178,21 @@ Run `/mcp` in Claude Code to authorize via browser.
 ```bash
 /plugin marketplace add KeeperHub/claude-plugins
 /plugin install keeperhub@keeperhub-plugins
+```
+
+Restart Claude Code so the plugin's commands register, then sign in:
+
+```bash
 /keeperhub:login
 ```
 
-Restart Claude Code after setup. Verify with `/keeperhub:status`.
+Verify with `/keeperhub:status`.
+
+### Claude Code says "Login expired, please run /login". Is my KeeperHub session expired?
+
+That message is about your Claude account, and `/login` is a Claude Code command. Run `/login` inside Claude Code to sign back in.
+
+Your KeeperHub connection is separate. Check it with `/keeperhub:status`, and re-authorize it with `/mcp` (remote MCP) or `/keeperhub:login` (plugin).
 
 ### What's the difference between `kh_` and `wfb_` API keys?
 

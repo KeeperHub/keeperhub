@@ -37,7 +37,7 @@ export function getAgentFrameworks(mcpUrl: string): AgentFramework[] {
       snippets: [
         {
           caption: "Add the server",
-          body: `claude mcp add --transport http keeperhub ${mcpUrl}`,
+          body: `claude mcp add --transport http --scope user keeperhub ${mcpUrl}`,
         },
       ],
       note: "Run /mcp in Claude Code and complete the browser sign-in when prompted.",
@@ -152,8 +152,13 @@ url = "${mcpUrl}"`,
         {
           caption: "Install the plugin",
           body: `/plugin marketplace add KeeperHub/claude-plugins
-/plugin install keeperhub@keeperhub-plugins
-/keeperhub:login`,
+/plugin install keeperhub@keeperhub-plugins`,
+        },
+        {
+          // The plugin's commands only register on restart, so /keeperhub:login
+          // is a separate snippet rather than a third line above.
+          caption: "Restart Claude Code, then sign in",
+          body: "/keeperhub:login",
         },
       ],
       note: "Run /keeperhub:status to verify the connection.",

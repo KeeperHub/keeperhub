@@ -230,7 +230,7 @@ describe("transferSplTokenCore", () => {
       decimals: 6,
       recipient: RECIPIENT.toBase58(),
       createdRecipientAccount: false,
-      gasUsed: "0",
+      gasUsed: "5000",
       gasUsedUnits: "4521",
       effectiveGasPrice: "10",
     });
@@ -521,6 +521,31 @@ describe("transferSplTokenCore", () => {
     // Fee alone would have passed; rent is what makes it fail.
     expect((result as { error: string }).error).toContain(
       String(BASE_FEE + RENT_LAMPORTS)
+    );
+  });
+
+  it("refuses a mint whose rent exceeds what the spend cap reserved", async () => {
+    // The daily Solana cap is charged a fixed worst case before the step runs,
+    // since the reservation makes no chain read. A mint whose token account is
+    // large enough - Token-2022 with several extensions - needs more rent than
+    // that. Spending it anyway would put real SOL outflow above what the ledger
+    // recorded, so the transfer has to stop here even though the wallet could
+    // afford it.
+    mockConnection.getMultipleAccountsInfo.mockResolvedValue([
+      tokenAccount(BigInt(10_000_000)),
+      null, // recipient ATA missing -> rent required
+      null,
+      systemAccount(100_000_000), // plenty of SOL
+    ]);
+    mockConnection.getMinimumBalanceForRentExemption.mockResolvedValue(
+      5_000_000
+    );
+
+    const result = await transferSplTokenCore(validInput);
+
+    expect(result).toMatchObject({ success: false });
+    expect((result as { error: string }).error).toContain(
+      "reserved against the organization's daily Solana spending cap"
     );
   });
 

@@ -67,12 +67,17 @@ export async function submitSolanaInstructionTx(args: {
   solanaSigner: SolanaTransactionSigner;
   feePayer: PublicKey;
   data: string;
+  maxSolLamports?: bigint;
 }): Promise<SolanaSubmitResult> {
   const receipt = await args.adapter.sendTransaction(
     undefined as unknown as ethers.Signer, // unused by SolanaChainAdapter
     { to: args.feePayer.toBase58(), data: args.data },
     undefined as unknown as NonceSession, // unused by SolanaChainAdapter
-    { solanaSigner: args.solanaSigner, gasOverrides: {} }
+    {
+      solanaSigner: args.solanaSigner,
+      gasOverrides: {},
+      maxSolLamports: args.maxSolLamports,
+    }
   );
 
   const transactionLink = await args.adapter.getTransactionUrl(receipt.hash);

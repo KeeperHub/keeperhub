@@ -2,7 +2,11 @@
 
 import { ExportPrivateKeyButton } from "./export-private-key-button";
 
-export function SecurityCard(): React.ReactElement {
+export function SecurityCard({
+  solanaAddress,
+}: {
+  solanaAddress?: string | null;
+}): React.ReactElement {
   return (
     <section>
       <div className="mb-1 font-medium text-sm">Security</div>
@@ -11,7 +15,7 @@ export function SecurityCard(): React.ReactElement {
         wallet outside KeeperHub. Keep it secret. Anyone with the key controls
         the wallet.
       </p>
-      <ExportPrivateKeyButton />
+      <ExportPrivateKeyButton solanaAddress={solanaAddress} />
     </section>
   );
 }

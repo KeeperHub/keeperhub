@@ -327,12 +327,10 @@ function MembersListContent({
                   <SelectTrigger className="h-8 w-[120px]">
                     <SelectValue />
                   </SelectTrigger>
+                  {/* One owner per org (DB-enforced), so becoming owner is a transfer, handled in the Leave Organization flow. */}
                   <SelectContent>
                     <SelectItem value={"member"}>Member</SelectItem>
                     <SelectItem value={"admin"}>Admin</SelectItem>
-                    {canChangeRole && (
-                      <SelectItem value={"owner"}>Owner</SelectItem>
-                    )}
                   </SelectContent>
                 </Select>
               )}

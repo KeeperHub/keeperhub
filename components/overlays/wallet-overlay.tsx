@@ -346,6 +346,7 @@ export function WalletOverlay({ overlayId }: WalletOverlayProps) {
       isAdmin,
       isLoadingBalances,
       isOwner: !!walletData.isOwner,
+      solanaAddress: walletData.solanaAddress,
       onAddToken: handleAddToken,
       onRemoveToken: handleRemoveToken,
       onSigningChange: () => {

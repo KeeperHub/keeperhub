@@ -1,8 +1,12 @@
 import "server-only";
+
 import { PublicKey } from "@solana/web3.js";
+import {
+  PolicyBlockedError,
+  TurnkeyUpstreamError,
+} from "@/lib/agentic-wallet/sign";
 import { getTurnkeyClientForOrg } from "@/lib/turnkey/agentic-wallet";
 import type { SolanaTransactionSigner } from "@/lib/web3/chain-adapter/types";
-import { PolicyBlockedError, TurnkeyUpstreamError } from "./sign";
 
 type TurnkeySignTransactionResult = {
   signedTransaction?: string;
@@ -17,7 +21,7 @@ type TurnkeyActivityResponse = {
 
 export class TurnkeySolanaSigner implements SolanaTransactionSigner {
   private readonly subOrgId: string;
-  private readonly solanaAddress: string; // base58 public key
+  private readonly solanaAddress: string;
 
   constructor(subOrgId: string, solanaAddress: string) {
     this.subOrgId = subOrgId;
@@ -29,9 +33,6 @@ export class TurnkeySolanaSigner implements SolanaTransactionSigner {
   }
 
   async signTransaction(unsignedBytes: Uint8Array): Promise<Uint8Array> {
-    // Turnkey's signTransaction expects the unsigned transaction as a hex
-    // string (all TRANSACTION_TYPE_* variants), not base64. Passing base64
-    // triggers "failed to decode Solana transaction: encoding/hex: invalid byte".
     const unsignedTransaction = Buffer.from(unsignedBytes).toString("hex");
     const client = getTurnkeyClientForOrg(this.subOrgId).apiClient();
 
@@ -63,7 +64,6 @@ export class TurnkeySolanaSigner implements SolanaTransactionSigner {
         "signedTransaction missing from Turnkey Solana response"
       );
     }
-    // Turnkey returns the signed transaction as hex; decode to Uint8Array
     return Uint8Array.from(Buffer.from(signed, "hex"));
   }
 }

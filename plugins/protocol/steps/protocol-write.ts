@@ -302,7 +302,8 @@ export async function protocolWriteStep(
     return await withStepValueCap(
       {
         organizationId: input._context?.organizationId,
-        amountEth: ethValue,
+        stepFunction: "protocolWriteStep",
+        config: { ethValue },
         executionId: input._context?.executionId,
         source: "protocol",
         valueCapReserved: input._context?.valueCapReserved,

@@ -724,6 +724,15 @@ export function runEventSimulation(opts: {
 
   const provider = new JsonRpcProvider(opts.rpcUrl, undefined, {
     staticNetwork: true,
+    // ethers shares the result of identical requests made within
+    // cacheTimeout ms (default 250). This harness mutates chain state
+    // between reads - a getBlock("latest") before a warp and one after it
+    // are an identical request, so the second read silently returns the
+    // pre-warp block and any before/after comparison compares a block to
+    // itself. Local anvil makes that round trip fast enough to always hit
+    // the cache. Disable it: a harness that mutates chain state must never
+    // read cached chain state.
+    cacheTimeout: -1,
   });
 
   let collected: Log[] = [];

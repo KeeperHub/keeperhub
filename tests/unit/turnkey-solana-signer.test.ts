@@ -6,8 +6,8 @@ import {
   PolicyBlockedError,
   TurnkeyUpstreamError,
 } from "@/lib/agentic-wallet/sign";
-import { TurnkeySolanaSigner } from "@/lib/agentic-wallet/solana-turnkey-signer";
 import { getTurnkeyClientForOrg } from "@/lib/turnkey/agentic-wallet";
+import { TurnkeySolanaSigner } from "@/lib/turnkey/solana-signer";
 
 vi.mock("@/lib/turnkey/agentic-wallet", () => ({
   getTurnkeyClientForOrg: vi.fn(),
@@ -16,7 +16,9 @@ vi.mock("@/lib/turnkey/agentic-wallet", () => ({
 describe("TurnkeySolanaSigner", () => {
   const mockSubOrgId = "mock-sub-org-id";
   const mockSolanaAddress = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
-  let mockApiClient: any;
+  let mockApiClient: {
+    signTransaction: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -25,7 +27,7 @@ describe("TurnkeySolanaSigner", () => {
     };
     vi.mocked(getTurnkeyClientForOrg).mockReturnValue({
       apiClient: () => mockApiClient,
-    } as any);
+    } as never);
   });
 
   it("getPublicKey returns correct PublicKey instance", async () => {
@@ -36,7 +38,6 @@ describe("TurnkeySolanaSigner", () => {
 
   it("signTransaction hex-encodes the request and hex-decodes the response", async () => {
     const mockUnsignedBytes = new Uint8Array([1, 2, 3]);
-    // Turnkey speaks hex for both the unsigned request and the signed result.
     const mockSignedHex = Buffer.from(new Uint8Array([4, 5, 6])).toString(
       "hex"
     );
@@ -62,9 +63,6 @@ describe("TurnkeySolanaSigner", () => {
       unsignedTransaction: Buffer.from(mockUnsignedBytes).toString("hex"),
     });
 
-    // Regression guard: Turnkey rejects non-hex payloads with
-    // "failed to decode Solana transaction: encoding/hex: invalid byte".
-    // A base64 payload would contain non-hex characters (e.g. uppercase, +, /, =).
     const sentPayload =
       mockApiClient.signTransaction.mock.calls[0][0].unsignedTransaction;
     expect(sentPayload).toMatch(/^[0-9a-f]*$/);

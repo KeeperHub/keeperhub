@@ -124,15 +124,56 @@ export async function completeExecution(
   return { status, error };
 }
 
+type FailParams = {
+  // Present when the write reached the chain and failed there.
+  // A failed execution that broadcast a real transaction must still record
+  // which transaction, and what the chain says about it -- that is the case
+  // an operator most needs the receipt for. Omitted for pre-broadcast
+  // failures (validation, policy, RPC), where there is nothing to reconcile.
+  transactionHash?: string;
+  chainId?: number;
+  // Whether the write was routed through the gas-sponsored path. Recorded
+  // separately because `output` is not written on the failure path, and the
+  // status route derives `sponsored` from it -- without this a sponsored
+  // failure reports sponsored: false.
+  sponsored?: boolean;
+};
+
 export async function failExecution(
   executionId: string,
-  error: string
+  error: string,
+  params: FailParams = {}
 ): Promise<void> {
+  let receipts: DirectExecutionReceiptEntry[] = [];
+
+  if (params.transactionHash && params.chainId !== undefined) {
+    const { results } = await verifyExecutionReceipts([
+      { hash: params.transactionHash, chainId: params.chainId },
+    ]);
+    receipts = results.map((r) => ({
+      hash: r.hash,
+      chainId: r.chainId,
+      verified: r.verified,
+      receiptStatus: r.status,
+      blockNumber: r.blockNumber,
+      gasUsed: r.gasUsed,
+      verifiedAt: r.verifiedAt,
+    }));
+  }
+
   await db
     .update(directExecutions)
     .set({
       status: "failed",
       error,
+      ...(params.transactionHash
+        ? { transactionHash: params.transactionHash }
+        : {}),
+      ...(receipts.length > 0 ? { receipts } : {}),
+      ...(params.sponsored === undefined
+        ? {}
+        : // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
+          { output: { sponsored: params.sponsored } as any }),
       completedAt: new Date(),
     })
     .where(eq(directExecutions.id, executionId));

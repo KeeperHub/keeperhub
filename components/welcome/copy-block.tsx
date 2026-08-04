@@ -36,8 +36,12 @@ export function CopyBlock({
           {caption}
         </div>
       ) : null}
-      <div className="relative">
-        <pre className="overflow-x-auto whitespace-pre px-4 py-4 pr-14 font-mono text-foreground text-xs leading-relaxed">
+      {/* The gutter is on the wrapper, not the pre: padding inside a scroll
+          container scrolls with the content, so a long command would pass under
+          the copy button instead of stopping short of it. The mask fades the
+          cut-off edge so a command that runs on does not look complete. */}
+      <div className="relative pr-16">
+        <pre className="overflow-x-auto whitespace-pre px-4 py-4 font-mono text-foreground text-xs leading-relaxed [mask-image:linear-gradient(to_right,black_calc(100%_-_1.5rem),transparent)]">
           {body}
         </pre>
         <Button

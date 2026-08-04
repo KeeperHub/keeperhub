@@ -80,7 +80,7 @@ describe("transferFundsCore - Solana early branch", () => {
       transactionHash: "mock-tx-hash",
       chainId: 103,
       transactionLink: "https://solscan.io/tx/mock-hash",
-      gasUsed: "0",
+      gasUsed: "5000",
       gasUsedUnits: "5000",
       effectiveGasPrice: "10",
     });
@@ -152,6 +152,21 @@ describe("transferFundsCore - Solana early branch", () => {
     if (!resultNegative.success) {
       expect(resultNegative.error).toBe("Invalid SOL amount: -1");
     }
+  });
+
+  it("rejects zero SOL amount before balance check", async () => {
+    const result = await transferFundsCore({
+      network: "solana-devnet",
+      amount: "0",
+      recipientAddress: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      _context: { organizationId: "mock-org-id" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe("SOL amount must be greater than zero");
+    }
+    expect(mockAdapter.getBalance).not.toHaveBeenCalled();
   });
 
   it("fails when balance is insufficient", async () => {

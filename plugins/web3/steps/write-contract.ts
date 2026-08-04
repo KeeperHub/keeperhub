@@ -57,7 +57,8 @@ export async function writeContractStep(
         withStepValueCap(
           {
             organizationId: input._context?.organizationId,
-            amountEth: input.ethValue,
+            stepFunction: "writeContractStep",
+            config: { ethValue: input.ethValue },
             executionId: input._context?.executionId,
             valueCapReserved: input._context?.valueCapReserved,
           },

@@ -7,7 +7,7 @@ import {
   organizationSpendCaps,
   orgValueReservations,
 } from "@/lib/db/schema-extensions";
-import { parseNativeValueWei } from "@/lib/execute/native-value";
+import { parseNodeNativeValueWei } from "@/lib/execute/reserved-value";
 
 // In-flight rows older than this are treated as stale (crashed pod / lost
 // process) and drop out of the cap SUM, matching the direct-execution
@@ -196,6 +196,69 @@ export async function reserveOrgValue(
   });
 }
 
+type ReserveSolanaParams = {
+  organizationId: string;
+  // Native value being moved, in lamports.
+  valueLamports: string;
+  source?: string;
+  ref?: string;
+};
+
+/**
+ * Atomically check the org's daily Solana value cap and reserve `valueLamports`
+ * against it, recording into the value ledger. Workflow twin of the lamports
+ * branch in checkAndReserveExecution.
+ */
+export async function reserveOrgSolanaValue(
+  params: ReserveSolanaParams
+): Promise<ReserveResult> {
+  return await db.transaction(async (tx) => {
+    const caps = await tx
+      .select({
+        dailySolanaValueCapLamports:
+          organizationSpendCaps.dailySolanaValueCapLamports,
+      })
+      .from(organizationSpendCaps)
+      .where(eq(organizationSpendCaps.organizationId, params.organizationId))
+      .for("update")
+      .limit(1);
+
+    const cap = caps[0];
+
+    if (!cap || cap.dailySolanaValueCapLamports === null) {
+      return { allowed: true, reservationId: "" } as const;
+    }
+
+    const totalLamports = await sumOrgSolanaValueTodayLamports(
+      tx,
+      params.organizationId
+    );
+    const reservedLamports = BigInt(params.valueLamports);
+    const dailyCap = BigInt(cap.dailySolanaValueCapLamports);
+
+    if (totalLamports + reservedLamports > dailyCap) {
+      return {
+        allowed: false,
+        reason: "Daily Solana spending cap exceeded",
+      } as const;
+    }
+
+    const [row] = await tx
+      .insert(orgValueReservations)
+      .values({
+        organizationId: params.organizationId,
+        valueWei: "0",
+        valueLamports: params.valueLamports,
+        status: "reserved",
+        source: params.source ?? null,
+        ref: params.ref ?? null,
+      })
+      .returning({ id: orgValueReservations.id });
+
+    return { allowed: true, reservationId: row.id } as const;
+  });
+}
+
 /** Mark a reservation as settled (broadcast succeeded); it counts all day. */
 export async function settleReservation(reservationId: string): Promise<void> {
   if (!reservationId) {
@@ -253,13 +316,50 @@ export async function withValueCap<T extends { success: boolean }>(
   return result;
 }
 
+/**
+ * Wrap a Solana value-moving execution so it is charged against the org's
+ * daily Solana cap. Mirrors withValueCap for lamports.
+ */
+export async function withSolanaValueCap<T extends { success: boolean }>(
+  params: ReserveSolanaParams,
+  run: () => Promise<T>
+): Promise<T | { success: false; error: string }> {
+  if (
+    params.valueLamports === "0" ||
+    BigInt(params.valueLamports) <= BigInt(0)
+  ) {
+    return await run();
+  }
+
+  const reservation = await reserveOrgSolanaValue(params);
+  if (!reservation.allowed) {
+    return { success: false, error: reservation.reason };
+  }
+
+  let result: T;
+  try {
+    result = await run();
+  } catch (error) {
+    await releaseReservation(reservation.reservationId);
+    throw error;
+  }
+
+  if (result.success) {
+    await settleReservation(reservation.reservationId);
+  } else {
+    await releaseReservation(reservation.reservationId);
+  }
+  return result;
+}
+
 type StepValueCapArgs = {
   // The workflow's owning org (the credential authority). Absent for
   // org-less workflows -> no org cap applies, so the run is not charged.
   organizationId?: string;
-  // Human-decimal native amount the step moves (e.g. "1.5"); undefined/"0"
-  // for token-only or off-chain steps.
-  amountEth?: string | null;
+  // Step function name (e.g. transferFundsStep) for chain-aware parsing.
+  stepFunction: string;
+  // Step config fields used to derive reserved native value.
+  config: Record<string, unknown>;
   // Correlation id for audit; the workflow execution id when available.
   executionId?: string;
   source?: string;
@@ -270,30 +370,47 @@ type StepValueCapArgs = {
 
 /**
  * Charge a workflow/protocol step's native value against the org's daily cap.
- * Thin front door over `withValueCap` for the step wrappers: parses the human
- * ETH amount, skips the cap when there is no org or no native value, and treats
- * an unparseable amount as 0 (the core's own validation surfaces the real
- * error; a parse quirk here must never block a valid call or bank negative
- * credit). Direct-execution API routes do NOT use this -- they reserve via
- * `checkAndReserveExecution`, and the cap SUM unions both stores.
+ * Routes Solana steps to the lamports cap and EVM steps to the wei cap via
+ * parseNodeNativeValueWei. Direct-execution API routes reserve via
+ * checkAndReserveExecution instead.
  */
 export function withStepValueCap<T extends { success: boolean }>(
   args: StepValueCapArgs,
   run: () => Promise<T>
 ): Promise<T | { success: false; error: string }> {
-  const parsed = parseNativeValueWei(args.amountEth);
-  const valueWei = parsed.ok ? parsed.valueWei : "0";
+  if (args.valueCapReserved || !args.organizationId) {
+    return run();
+  }
 
-  // Skip when the caller already reserved (direct-execution route), when there
-  // is no org to charge, or when no native value moves.
-  if (args.valueCapReserved || !args.organizationId || valueWei === "0") {
+  const parsed = parseNodeNativeValueWei(args.stepFunction, args.config);
+
+  if (!parsed.ok) {
+    return Promise.resolve({ success: false, error: parsed.error });
+  }
+
+  if (parsed.kind === "solana") {
+    if (parsed.valueLamports === "0") {
+      return run();
+    }
+    return withSolanaValueCap(
+      {
+        organizationId: args.organizationId,
+        valueLamports: parsed.valueLamports,
+        source: args.source ?? "workflow",
+        ref: args.executionId,
+      },
+      run
+    );
+  }
+
+  if (parsed.valueWei === "0") {
     return run();
   }
 
   return withValueCap(
     {
       organizationId: args.organizationId,
-      valueWei,
+      valueWei: parsed.valueWei,
       source: args.source ?? "workflow",
       ref: args.executionId,
     },

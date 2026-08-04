@@ -69,6 +69,8 @@ Setting a gas limit below the estimate will cause the transaction to revert with
 
 On supported networks, KeeperHub can sponsor the **gas fee** of a workflow transaction through Turnkey's Gas Station, so a workflow can run even when the sending wallet holds no native gas token. Sponsorship is enabled per organization and metered against a monthly gas credit allowance shown on your billing page.
 
+Sponsorship also changes how the transaction appears on a block explorer. See [What Your Transaction Looks Like On-Chain](/wallet-management/onchain-appearance).
+
 ### What sponsorship covers
 
 Sponsorship pays the **transaction fee only**. It does not provide the assets your transaction moves. The native value a transaction sends (for example, the ETH amount in a Transfer Native Token action) is always debited from your own wallet.
@@ -109,6 +111,20 @@ The transaction reserves more gas but only consumes what it needs. Unused gas is
 ### Does the gas limit affect gas price/fees?
 
 No. The gas limit only sets the maximum gas units. Gas pricing (base fee, priority fee) is handled separately by KeeperHub's adaptive fee strategy and is not configurable through this field.
+
+## Solana Fees
+
+Solana transactions do not use EVM-style gas limits or multipliers. Instead, fees are paid in lamports from your SOL balance.
+
+Every confirmed transaction includes a **base signature fee** of 5,000 lamports. If the transaction sets a compute-unit price, KeeperHub also reports the priority component derived from consumed compute units and the effective micro-lamport price.
+
+In workflow outputs for Solana transfers:
+
+- `gasUsed` is the total lamport fee paid
+- `gasUsedUnits` is the compute units consumed
+- `effectiveGasPrice` is the micro-lamports-per-compute-unit price used for the priority component
+
+There is no gas limit multiplier on Solana write actions. Ensure the wallet holds enough SOL to cover both the transfer amount (for native SOL sends) and the transaction fee, plus any rent required when creating a recipient associated token account during SPL transfers.
 
 ## Wallet Funding
 

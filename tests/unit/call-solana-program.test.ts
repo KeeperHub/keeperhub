@@ -301,6 +301,7 @@ describe("callSolanaProgramCore", () => {
       recipient: RECIPIENT,
     }),
     accounts: JSON.stringify({ target: TARGET }),
+    maxSol: "1",
     _context: { organizationId: "mock-org-id" },
   };
 
@@ -344,6 +345,17 @@ describe("callSolanaProgramCore", () => {
     expect(mockAdapter.sendTransaction).toHaveBeenCalledTimes(1);
     const options = mockAdapter.sendTransaction.mock.calls[0][3];
     expect(options.gasOverrides).toEqual({});
+  });
+
+  it("rejects when maxSol is missing", async () => {
+    const { maxSol: _maxSol, ...withoutMaxSol } = validInput;
+    const result = await callSolanaProgramCore(withoutMaxSol);
+
+    expect(result).toEqual({
+      success: false,
+      error: expect.stringContaining("maxSol is required"),
+    });
+    expect(mockAdapter.sendTransaction).not.toHaveBeenCalled();
   });
 
   it("rejects a non-Solana network without touching the adapter", async () => {

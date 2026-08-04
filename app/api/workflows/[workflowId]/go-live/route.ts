@@ -4,8 +4,14 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { publicTags, workflowPublicTags, workflows } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { getOrgContext } from "@/lib/middleware/org-context";
-import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
+import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
+import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
+import { requireScope } from "@/lib/middleware/require-scope";
+import {
+  buildActor,
+  buildAuditMetadata,
+  recordAuditEvent,
+} from "@/lib/security/audit-log";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 
 export async function PUT(
@@ -15,10 +21,20 @@ export async function PUT(
   try {
     const { workflowId } = await context.params;
 
-    const orgContext = await getOrgContext();
+    // Listing a workflow is organization-scoped, so it resolves auth the same
+    // way the other workflow mutation routes do rather than reading the
+    // session directly. That admits `kh_` keys.
+    const authContext = await getDualAuthContext(request);
+    if ("error" in authContext) {
+      return NextResponse.json(
+        { error: authContext.error },
+        { status: authContext.status }
+      );
+    }
 
-    if (!orgContext.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+    if (scopeError) {
+      return scopeError;
     }
 
     const workflow = await db.query.workflows.findFirst({
@@ -33,9 +49,9 @@ export async function PUT(
     }
 
     const access = await getWorkflowAccess(workflow, {
-      userId: orgContext.user.id,
-      organizationId: orgContext.organization?.id ?? null,
-      authMethod: "session",
+      userId: authContext.userId,
+      organizationId: authContext.organizationId,
+      authMethod: authContext.authMethod,
     });
 
     // KEEP-440: a soft-deleted workflow cannot be taken live.
@@ -137,11 +153,7 @@ export async function PUT(
           ).map((r) => r.name)
         : [];
     await recordAuditEvent({
-      actor: {
-        userId: orgContext.user.id,
-        organizationId: orgContext.organization?.id ?? null,
-        authMethod: "session",
-      },
+      actor: buildActor(authContext),
       action: mode === "public" ? "workflow.listed" : "workflow.listing_updated",
       resourceType: "workflow",
       resourceId: workflowId,

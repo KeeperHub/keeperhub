@@ -419,9 +419,41 @@ describe("Direct Execution API", () => {
       expect(data.status).toBe("failed");
       expect(data.transactionHash).toBeUndefined();
       expect(data.transactionLink).toBeUndefined();
+      // A pre-broadcast failure has no transaction to reconcile, so the
+      // finalizer is told there is no hash rather than being handed one.
       expect(mocks.failExecution).toHaveBeenCalledWith(
         "exec_1",
-        "Insufficient funds"
+        "Insufficient funds",
+        {
+          transactionHash: undefined,
+          chainId: undefined,
+          sponsored: undefined,
+        }
+      );
+    });
+
+    it("records the hash and route when a broadcast transaction reverts", async () => {
+      mocks.validateApiKey.mockResolvedValue(AUTH_CONTEXT);
+      mocks.checkRateLimit.mockReturnValue({ allowed: true });
+      mocks.transferFundsCore.mockResolvedValue({
+        success: false,
+        error: "Transaction reverted: execution reverted (tx 0xdead)",
+        transactionHash: "0xdead",
+        chainId: 11_155_111,
+        sponsored: true,
+      });
+
+      const response = await transferPOST(postRequest("/transfer", validBody));
+
+      expect(response.status).toBe(202);
+      expect(mocks.failExecution).toHaveBeenCalledWith(
+        "exec_1",
+        "Transaction reverted: execution reverted (tx 0xdead)",
+        {
+          transactionHash: "0xdead",
+          chainId: 11_155_111,
+          sponsored: true,
+        }
       );
     });
 
@@ -922,6 +954,106 @@ describe("Direct Execution API", () => {
       expect(response.status).toBe(200);
       const data = await response.json();
       expect(data.sponsored).toBe(true);
+    });
+
+    it("returns the per-hash on-chain verification receipts", async () => {
+      setupPassingGuards();
+      const now = new Date();
+      mocks.statusDbResult = [
+        {
+          id: "exec_3",
+          organizationId: "org_test",
+          apiKeyId: "key_test",
+          type: "contract-call",
+          network: "11155111",
+          status: "completed",
+          transactionHash: "0xabc",
+          receipts: [
+            {
+              hash: "0xabc",
+              chainId: 11_155_111,
+              verified: true,
+              receiptStatus: "success",
+              blockNumber: 11_413_447,
+              gasUsed: "68115",
+              verifiedAt: now.toISOString(),
+            },
+          ],
+          gasUsedWei: "68115",
+          gasPriceWei: "500000221",
+          estimatedCostUsd: null,
+          retryCount: 0,
+          input: {},
+          output: { transactionLink: "https://etherscan.io/tx/0xabc" },
+          error: null,
+          createdAt: now,
+          completedAt: now,
+        },
+      ];
+
+      const response = await statusGET(getRequest("/exec_3/status"), {
+        params: Promise.resolve({ executionId: "exec_3" }),
+      });
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.receipts).toHaveLength(1);
+      expect(data.receipts[0]).toMatchObject({
+        hash: "0xabc",
+        chainId: 11_155_111,
+        verified: true,
+        receiptStatus: "success",
+        blockNumber: 11_413_447,
+      });
+    });
+
+    it("exposes the failing receipt on an execution demoted by reconciliation", async () => {
+      // The demotion case is the one an operator actually needs: `status`
+      // alone says the run failed, `receipts` says which hash failed and why.
+      setupPassingGuards();
+      const now = new Date();
+      mocks.statusDbResult = [
+        {
+          id: "exec_4",
+          organizationId: "org_test",
+          apiKeyId: "key_test",
+          type: "contract-call",
+          network: "11155111",
+          status: "failed",
+          transactionHash: "0xdead",
+          receipts: [
+            {
+              hash: "0xdead",
+              chainId: 11_155_111,
+              verified: false,
+              receiptStatus: "reverted",
+              blockNumber: 11_413_412,
+              gasUsed: "43572",
+              verifiedAt: now.toISOString(),
+            },
+          ],
+          gasUsedWei: null,
+          gasPriceWei: null,
+          estimatedCostUsd: null,
+          retryCount: 0,
+          input: {},
+          output: {},
+          error:
+            "On-chain verification failed for 1 transaction: 0xdead (reverted on-chain)",
+          createdAt: now,
+          completedAt: now,
+        },
+      ];
+
+      const response = await statusGET(getRequest("/exec_4/status"), {
+        params: Promise.resolve({ executionId: "exec_4" }),
+      });
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.status).toBe("failed");
+      expect(data.receipts[0].verified).toBe(false);
+      expect(data.receipts[0].receiptStatus).toBe("reverted");
     });
 
     it("route exports GET only -- non-GET methods are intentionally 405 (Next.js auto-handler)", async () => {

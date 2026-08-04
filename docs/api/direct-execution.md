@@ -39,8 +39,11 @@ you inspected is the transaction you send:
 4. Save the returned `executionId`, then poll
    `GET /api/execute/{executionId}/status`. Honor the
    `X-Poll-Interval-Hint` response header between polls.
-5. Treat the status response's `transactionHash` and `transactionLink` as the
-   authoritative onchain proof.
+5. Treat the status response's `receipts` as the authoritative onchain proof:
+   each entry is a receipt re-fetched from the chain, so `verified` and
+   `receiptStatus` say what actually happened. `transactionHash` and
+   `transactionLink` identify the transaction but are self-reported by the
+   write path.
 
 This sequence catches bad addresses, ABI mistakes, insufficient balances, and
 reverts before broadcast, while idempotency makes an interrupted client safe to
@@ -51,11 +54,31 @@ a transaction.
 
 Send an `Idempotency-Key` header to safely retry a request without risking a double-execution. The key is any client-chosen string (for example an agent-side transaction id, ideally a UUID).
 
-- **Replay**: a retry with the same key and the same request body returns the original response (same `executionId`, same status) without executing again.
+- **Replay**: a retry with the same key and the same request body returns the original response (same `executionId`, same status) without executing again, plus an `idempotentReplay` marker described below.
 - **Conflict**: reusing a key with a different request body returns `409` with code `idempotency_conflict` and the `originalExecutionId` the key first produced. Use a new key for a different request.
 - **In progress**: a duplicate that arrives while the first request is still running returns `409` with code `idempotency_in_progress`; retry shortly.
 - **Scope**: keys are scoped per organization, so the same key is shared across an org's API keys.
 - **Window**: stored responses are replayable for 24 hours. After that the key is free to reuse.
+
+### Recognising a replay
+
+A replayed response is otherwise indistinguishable from a fresh one, which matters most when the stored outcome was a failure: the body carries the original error and nothing else, so a retry loop reads "still reverting" when in fact no transaction was sent. To make the difference visible, a replayed JSON-object body carries an extra top-level field:
+
+```json
+{
+  "success": false,
+  "error": "Contract call failed: Error(LK: not yet due)",
+  "idempotentReplay": true
+}
+```
+
+- `idempotentReplay` is present **only** on a replay, and is always `true`. A fresh response never carries it, so treat its absence as "this outcome just happened".
+- It is added to **every** replayed object body, successes as well as failures. A replayed `202` carries it alongside the original `executionId`.
+- It is added at read time only. The stored response is never modified, so replaying twice returns the same body both times.
+- Bodies that are not JSON objects (arrays, strings, `null`) are returned untouched, so a client that already parses those shapes is unaffected.
+- The marker rides in the body rather than a response header because the common consumer is an agent reading a tool result, where headers are not surfaced.
+
+Conflict and in-progress responses are not replays and never carry the field.
 
 Requests without an `Idempotency-Key` behave normally. Read-only and dry-run (`simulate: true`) requests are not affected.
 
@@ -92,12 +115,28 @@ Transfer native tokens (ETH, MATIC, etc.) or ERC-20 tokens directly.
 ```json
 {
   "chainId": 11155111,
-  "recipientAddress": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+  "recipientAddress": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
   "amount": "0.1",
   "tokenAddress": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
   "gasLimitMultiplier": "1.2"
 }
 ```
+
+### Recipient validation
+
+`recipientAddress` is validated with a strict **EIP-55 checksum** before the
+request is accepted. Pass either:
+
+- the exact checksummed form (mixed-case), or
+- an **all-lowercase** address (e.g. `0x742d35cc6634c0532925a3b844bc454e4438f44e`).
+
+A mixed-case address whose checksum does not match is rejected with
+`Invalid recipient address: <address>` — even if the lowercase hex is correct.
+Widely-copied example addresses often carry a mangled checksum or the wrong
+number of hex digits, so prefer copying from the address book or from a tool
+that computes EIP-55 rather than retyping. Add frequently-used recipients to the
+[address book](/wallet-management/address-book) first; address book entries are
+stored lowercase and displayed in checksummed form.
 
 **Parameters:**
 
@@ -140,7 +179,7 @@ Call any smart contract function. Automatically detects read vs write operations
   "contractAddress": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
   "chainId": 1,
   "functionName": "balanceOf",
-  "functionArgs": "[\"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb\"]",
+  "functionArgs": "[\"0x742d35Cc6634C0532925a3b844Bc454e4438f44e\"]",
   "abi": "[{...}]",
   "value": "0.1",
   "gasLimitMultiplier": "1.2"
@@ -196,7 +235,7 @@ Read a contract value, evaluate a condition, and conditionally execute a write o
   "contractAddress": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
   "chainId": 1,
   "functionName": "balanceOf",
-  "functionArgs": "[\"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb\"]",
+  "functionArgs": "[\"0x742d35Cc6634C0532925a3b844Bc454e4438f44e\"]",
   "abi": "[{...}]",
   "condition": {
     "operator": "gt",
@@ -362,6 +401,17 @@ Check the status of a direct execution.
   "transactionHash": "0x...",
   "transactionLink": "https://etherscan.io/tx/0x...",
   "sponsored": false,
+  "receipts": [
+    {
+      "hash": "0x...",
+      "chainId": 11155111,
+      "verified": true,
+      "receiptStatus": "success",
+      "blockNumber": 11413447,
+      "gasUsed": "68115",
+      "verifiedAt": "2024-01-01T00:00:15Z"
+    }
+  ],
   "gasUsedWei": "21000000000000",
   "result": {...},
   "error": null,
@@ -369,6 +419,26 @@ Check the status of a direct execution.
   "completedAt": "2024-01-01T00:00:15Z"
 }
 ```
+
+**Receipts:**
+
+`receipts` carries one entry per transaction hash this execution claimed, each
+independently re-fetched from the chain before the execution was allowed to
+settle. It is the evidence behind `status`, not a restatement of it:
+
+- `verified`: whether this hash positively confirmed on-chain. An execution
+  settles as `completed` only when every entry is `true`.
+- `receiptStatus`: `success`, `reverted`, `safe_inner_failure` (the outer
+  transaction succeeded but a wrapped inner call failed), `not_found`, or
+  `timeout`. The last two mean verification could not reach a definitive
+  answer within its budget; they fail the execution closed rather than
+  optimistically settling it, so a `failed` execution carrying `timeout` may
+  describe a transaction that later lands.
+- `blockNumber` / `gasUsed`: read from the fetched receipt, not self-reported
+  by the write path.
+
+The array is empty for executions that claimed no transaction hash, such as
+read calls and simulations.
 
 **Status Values:**
 

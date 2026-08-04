@@ -80,6 +80,7 @@ export async function GET(
     transactionHash: execution.transactionHash,
     transactionLink: (output?.transactionLink as string) ?? null,
     sponsored: Boolean(output?.sponsored),
+    receipts: execution.receipts,
     result: output ?? null,
     error: execution.error,
     gasUsedWei: execution.gasUsedWei,

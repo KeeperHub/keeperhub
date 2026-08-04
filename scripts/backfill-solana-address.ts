@@ -11,21 +11,24 @@
 import { isNull, and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { Turnkey } from "@turnkey/sdk-server";
 import * as schema from "../lib/db/schema";
+import { ensureOrganizationSolanaAddress } from "../lib/turnkey/ensure-solana-address";
 import { isSolanaWalletProvisioningEnabled } from "../lib/turnkey/solana-provisioning-flag";
 
 const connectionString = process.env.DATABASE_URL;
-const apiPublicKey = process.env.TURNKEY_API_PUBLIC_KEY;
-const apiPrivateKey = process.env.TURNKEY_API_PRIVATE_KEY;
-const turnkeyOrgId = process.env.TURNKEY_ORGANIZATION_ID;
 
 if (!connectionString) {
   console.error("DATABASE_URL is required");
   process.exit(1);
 }
 
-if (!(apiPublicKey && apiPrivateKey && turnkeyOrgId)) {
+if (
+  !(
+    process.env.TURNKEY_API_PUBLIC_KEY &&
+    process.env.TURNKEY_API_PRIVATE_KEY &&
+    process.env.TURNKEY_ORGANIZATION_ID
+  )
+) {
   console.error(
     "TURNKEY_API_PUBLIC_KEY, TURNKEY_API_PRIVATE_KEY, and TURNKEY_ORGANIZATION_ID must be set"
   );
@@ -36,17 +39,7 @@ const client = postgres(connectionString);
 const db = drizzle(client, { schema });
 const dryRun = !process.argv.includes("--apply");
 
-const turnkey = new Turnkey({
-  apiBaseUrl: "https://api.turnkey.com",
-  apiPublicKey,
-  apiPrivateKey,
-  defaultOrganizationId: turnkeyOrgId,
-});
-
 async function main(): Promise<void> {
-  // Gate: only backfill Solana accounts when provisioning is enabled, matching
-  // the live createTurnkeyWallet path. Prevents adding Solana accounts before a
-  // Solana RPC is configured (CHAIN_RPC_CONFIG).
   if (!isSolanaWalletProvisioningEnabled()) {
     console.log(
       'Solana wallet provisioning is disabled (SOLANA_WALLET_PROVISIONING_ENABLED != "true"). Nothing to do.'
@@ -59,7 +52,6 @@ async function main(): Promise<void> {
     console.log("[DRY RUN] No changes will be written.\n");
   }
 
-  // Find active wallets missing a Solana address that have valid Turnkey IDs
   const wallets = await db
     .select()
     .from(schema.organizationWallets)
@@ -81,82 +73,37 @@ async function main(): Promise<void> {
   let failed = 0;
 
   for (const w of wallets) {
-    const subOrgId = w.turnkeySubOrgId;
-    const walletId = w.turnkeyWalletId;
-
-    if (!subOrgId || !walletId) {
-      console.warn(`Skipping wallet ${w.id} (organization ${w.organizationId}): missing turnkeySubOrgId or turnkeyWalletId`);
+    if (!(w.turnkeySubOrgId && w.turnkeyWalletId)) {
+      console.warn(
+        `Skipping wallet ${w.id} (organization ${w.organizationId}): missing turnkeySubOrgId or turnkeyWalletId`
+      );
       failed++;
       continue;
     }
 
     if (dryRun) {
-      console.log(`[DRY RUN] Would provision Solana account for sub-org ${subOrgId}, wallet ${walletId} (DB Row ID: ${w.id})`);
+      console.log(
+        `[DRY RUN] Would provision Solana account for sub-org ${w.turnkeySubOrgId}, wallet ${w.turnkeyWalletId} (DB Row ID: ${w.id})`
+      );
       continue;
     }
 
     try {
-      const turnkeyClient = turnkey.apiClient();
-
-      // Idempotency: a prior run may have created the Turnkey Solana account but
-      // failed to write the DB row. Check for an existing account at the Solana
-      // derivation path before creating, so a re-run recovers that address
-      // instead of provisioning a duplicate / orphaned account.
-      const existingAccounts = await turnkeyClient.getWalletAccounts({
-        organizationId: subOrgId,
-        walletId,
-      });
-      let solanaAddress = existingAccounts.accounts?.find(
-        (a) => a.addressFormat === "ADDRESS_FORMAT_SOLANA"
-      )?.address;
-
-      if (solanaAddress) {
-        console.log(
-          `Existing Solana account found for sub-org ${subOrgId}: ${solanaAddress} (recovering, no new account created).`
-        );
-      } else {
-        console.log(`Provisioning Solana account for sub-org ${subOrgId}...`);
-        const result = await turnkeyClient.createWalletAccounts({
-          organizationId: subOrgId,
-          walletId,
-          accounts: [
-            {
-              curve: "CURVE_ED25519",
-              pathFormat: "PATH_FORMAT_BIP32",
-              path: "m/44'/501'/0'/0'",
-              addressFormat: "ADDRESS_FORMAT_SOLANA",
-            },
-          ],
-        });
-        solanaAddress = result.addresses?.[0];
-      }
-
-      if (!solanaAddress) {
-        throw new Error(
-          "No Solana address available from Turnkey (create/getWalletAccounts)"
-        );
-      }
-
+      const solanaAddress = await ensureOrganizationSolanaAddress(w);
       console.log(
-        `Updating DB row ${w.id} with Solana address ${solanaAddress}...`
+        `Updated DB row ${w.id} with Solana address ${solanaAddress}.`
       );
-
-      await db
-        .update(schema.organizationWallets)
-        .set({ solanaAddress })
-        .where(eq(schema.organizationWallets.id, w.id));
-
       applied++;
     } catch (error) {
       console.error(
-        `Failed to provision Solana account for wallet ${w.id} (subOrgId: ${subOrgId}):`,
+        `Failed to provision Solana account for wallet ${w.id} (subOrgId: ${w.turnkeySubOrgId}):`,
         error instanceof Error ? error.message : error
       );
       failed++;
     }
   }
 
-  console.log(`\nSummary:`);
+  console.log("\nSummary:");
   console.log(`- Applied: ${applied}`);
   console.log(`- Failed: ${failed}`);
   if (dryRun) {
@@ -166,7 +113,15 @@ async function main(): Promise<void> {
   await client.end();
 }
 
-main().catch((error) => {
-  console.error("Backfill script execution failed:", error);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // ensureOrganizationSolanaAddress pulls in @/lib/db, whose connection pools
+    // are module-scoped and never closed by this script - only the local client
+    // above is. Those pools hold open sockets with no idle timeout, so the
+    // process would otherwise sit there after the summary prints.
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error("Backfill script execution failed:", error);
+    process.exit(1);
+  });

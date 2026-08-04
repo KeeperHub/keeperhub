@@ -187,6 +187,68 @@ describe("verifyExecutionReceipts", () => {
   });
 });
 
+/**
+ * Gas-sponsored writes are a wrapped execution, not a direct send: Turnkey's
+ * Gas Station delegates the org wallet via EIP-7702, and a relayer EOA calls
+ * an executor contract which invokes the wallet. The hash an execution claims
+ * is therefore the outer relayer transaction, and everything this module
+ * concludes about a sponsored write is a statement about that outer receipt.
+ *
+ * That is safe only while the executor propagates an inner failure to the
+ * outer status, which was confirmed against Sepolia: a sponsored write whose
+ * inner call reverted produced an outer receipt with status 0. These tests pin
+ * the consequence of that assumption. If the executor ever starts absorbing
+ * inner failures and returning status 1 -- the shape Safe already has -- the
+ * first test here keeps passing while production silently settles failed
+ * writes as success, so treat it as a statement of what we rely on Turnkey
+ * for, and not as proof that sponsorship is safe by construction.
+ */
+describe("sponsored (wrapped) executions", () => {
+  beforeEach(() => {
+    executeWithFailover.mockReset();
+    resolveRpcConfig.mockReset();
+    resolveRpcConfig.mockResolvedValue({
+      chainId: CHAIN_ID,
+      chainName: "ethereum",
+      primaryRpcUrl: "https://primary.example",
+      fallbackRpcUrl: "https://fallback.example",
+    });
+  });
+
+  it("fails closed when the outer relayer transaction reverted", async () => {
+    executeWithFailover.mockResolvedValueOnce(makeReceipt(0));
+
+    const { allVerified, results } = await verifyExecutionReceipts([
+      { hash: HASH, chainId: CHAIN_ID },
+    ]);
+
+    expect(allVerified).toBe(false);
+    expect(results[0]).toMatchObject({ verified: false, status: "reverted" });
+  });
+
+  it("verifies a sponsored write whose outer transaction succeeded", async () => {
+    // Logs come from the target contract rather than the wallet, because the
+    // executor invokes the delegated wallet which then calls the target. None
+    // of them are Safe execution events, so nothing should be decoded here.
+    executeWithFailover.mockResolvedValueOnce(
+      makeReceipt(1, [
+        {
+          topics: [
+            "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
+          ],
+        },
+      ])
+    );
+
+    const { allVerified, results } = await verifyExecutionReceipts([
+      { hash: HASH, chainId: CHAIN_ID },
+    ]);
+
+    expect(allVerified).toBe(true);
+    expect(results[0]).toMatchObject({ verified: true, status: "success" });
+  });
+});
+
 describe("describeVerificationFailure", () => {
   it("summarizes failed entries with hash and human-readable status", () => {
     const message = describeVerificationFailure([

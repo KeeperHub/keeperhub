@@ -156,6 +156,16 @@ export type BuildExecTransactionOptions = {
  * Encode Safe.execTransaction() calldata for an owner-signed single-owner
  * Safe (threshold 1). Gas fields are zero so the Safe reads them from the
  * outer tx (standard "no refund" path).
+ *
+ * The zero safeTxGas/gasPrice below is also what makes an inner-call failure
+ * loud rather than silent. Safe ends execTransaction with
+ * `require(success || safeTxGas != 0 || gasPrice != 0)`, so with both zero a
+ * failing inner call reverts the entire outer transaction (receipt status 0).
+ * Set either non-zero and the same failure instead returns status 1 with an
+ * ExecutionFailure event, which every plain receipt.status check in this
+ * codebase would read as success -- only the finalize-time verifier decodes
+ * that event. Treat these zeros as load-bearing: making them configurable is a
+ * deliberate decision about swallowing failures, not a parameterisation.
  */
 export function buildExecTransactionCalldata(
   options: BuildExecTransactionOptions

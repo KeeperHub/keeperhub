@@ -159,14 +159,57 @@ describe("idempotencyEarlyResponse", () => {
     expect(idempotencyEarlyResponse(proceedFns())).toBeNull();
   });
 
-  it("maps replay to the stored status and body", () => {
+  it("maps replay to the stored status and body, marked as a replay", () => {
     expect(
       idempotencyEarlyResponse({
         kind: "replay",
         responseStatus: 202,
         responseBody: { executionId: "e1" },
       })
-    ).toEqual({ status: 202, body: { executionId: "e1" } });
+    ).toEqual({
+      status: 202,
+      body: { executionId: "e1", idempotentReplay: true },
+    });
+  });
+
+  // A replayed failure is the case that actually misleads a caller: without the
+  // marker it is indistinguishable from a fresh revert, so a retry loop keeps
+  // reading "still failing" while no transaction is being sent at all.
+  it("marks a replayed failure so it is distinguishable from a fresh one", () => {
+    const early = idempotencyEarlyResponse({
+      kind: "replay",
+      responseStatus: 200,
+      responseBody: {
+        success: false,
+        error: "Contract call failed: Error(LK: not yet due)",
+      },
+    });
+    const body = early?.body as Record<string, unknown>;
+    expect(body.idempotentReplay).toBe(true);
+    // The original payload is preserved untouched alongside the marker.
+    expect(body.error).toBe("Contract call failed: Error(LK: not yet due)");
+    expect(body.success).toBe(false);
+  });
+
+  it("leaves non-object replay bodies untouched", () => {
+    for (const stored of [null, "raw text", 42, [1, 2, 3]]) {
+      const early = idempotencyEarlyResponse({
+        kind: "replay",
+        responseStatus: 200,
+        responseBody: stored,
+      });
+      expect(early?.body).toEqual(stored);
+    }
+  });
+
+  it("does not mark a fresh conflict or in_progress response as a replay", () => {
+    const conflict = idempotencyEarlyResponse({
+      kind: "conflict",
+      originalResourceId: "e1",
+    });
+    const inProgress = idempotencyEarlyResponse({ kind: "in_progress" });
+    expect(conflict?.body).not.toHaveProperty("idempotentReplay");
+    expect(inProgress?.body).not.toHaveProperty("idempotentReplay");
   });
 
   it("maps conflict to 409 with the original execution id", () => {
