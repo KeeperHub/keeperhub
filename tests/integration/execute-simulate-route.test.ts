@@ -345,6 +345,53 @@ describe("/api/execute/transfer simulate", () => {
     expect(transferFundsCore).not.toHaveBeenCalled();
   });
 
+  it("carries the insufficient_balance fields across the HTTP boundary", async () => {
+    resetSpies();
+    // The route spreads the simulate result into NextResponse.json, so the
+    // machine-readable attribution fields have to survive serialisation —
+    // that is the whole point of a headless caller branching on `code`.
+    const undecodable = `0x1234abcd${"00".repeat(32)}`;
+    simulateNativeTransferMock.mockResolvedValueOnce({
+      success: false,
+      status: "simulated",
+      from: FROM_ADDRESS,
+      to: "0xcc0000000000000000000000000000000000cc00",
+      value: "100000000000000000",
+      wouldRevert: true,
+      revertReason: "Insufficient ETH balance. Have: 0.0, Need: 0.1.",
+      error: "Insufficient ETH balance. Have: 0.0, Need: 0.1.",
+      code: "insufficient_balance",
+      balanceWei: "0",
+      requiredWei: "100000000000000000",
+      shortfallWei: "100000000000000000",
+      nativeSymbol: "ETH",
+      originalError: "execution reverted (unknown custom error)",
+      undecodedRevertData: undecodable,
+    });
+
+    const res = await transferPOST(
+      jsonRequest("/api/execute/transfer", {
+        recipientAddress: "0xcc0000000000000000000000000000000000cc00",
+        amount: "0.1",
+        chainId: 1,
+        simulate: true,
+      })
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("insufficient_balance");
+    expect(body.balanceWei).toBe("0");
+    expect(body.requiredWei).toBe("100000000000000000");
+    expect(body.shortfallWei).toBe("100000000000000000");
+    expect(body.nativeSymbol).toBe("ETH");
+    expect(body.originalError).toBe(
+      "execution reverted (unknown custom error)"
+    );
+    expect(body.undecodedRevertData).toBe(undecodable);
+    expect(transferFundsCore).not.toHaveBeenCalled();
+  });
+
   it("simulate=true routes a token transfer to simulateTokenTransfer", async () => {
     resetSpies();
     simulateTokenTransferMock.mockResolvedValueOnce(HAPPY_SIMULATE);

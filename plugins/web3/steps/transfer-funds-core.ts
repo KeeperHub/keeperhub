@@ -10,7 +10,11 @@ import "server-only";
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { db } from "@/lib/db";
-import { chains, explorerConfigs, workflowExecutions } from "@/lib/db/schema";
+import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
+import {
+  describeNativeShortfall,
+  getNativeSymbol,
+} from "@/lib/execute/native-balance";
 import { getTransactionUrl } from "@/lib/explorer";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import {
@@ -369,21 +373,19 @@ export async function transferFundsCore(
       "preflight"
     );
     if (nativeBalance < amountInWei) {
-      const balanceFormatted = ethers.formatEther(nativeBalance);
-      const requestedFormatted = ethers.formatEther(amountInWei);
-      // Look up the chain's native symbol so the error reads "Insufficient
-      // ETH balance" / "Insufficient BNB balance" instead of the chain-
-      // agnostic "native". Looked up lazily because this branch only fires
-      // on the slow / unhappy path.
-      const chainRow = await db
-        .select({ symbol: chains.symbol })
-        .from(chains)
-        .where(eq(chains.chainId, chainId))
-        .limit(1);
-      const nativeSymbol = chainRow[0]?.symbol ?? "native";
+      // Wording (and the chain's native symbol, so the error reads
+      // "Insufficient ETH balance" rather than the chain-agnostic "native")
+      // comes from lib/execute/native-balance, shared with the dry-run
+      // simulator so the two paths cannot drift. Looked up lazily because
+      // this branch only fires on the slow / unhappy path.
+      const shortfall = describeNativeShortfall({
+        symbol: await getNativeSymbol(chainId),
+        balance: nativeBalance,
+        required: amountInWei,
+      });
       return {
         success: false,
-        error: `Insufficient ${nativeSymbol} balance. Have: ${balanceFormatted}, Need: ${requestedFormatted}`,
+        error: shortfall.message,
       };
     }
 

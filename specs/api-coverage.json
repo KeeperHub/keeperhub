@@ -146,7 +146,7 @@
       "path": "/api/execute/{executionId}/status",
       "route_file": "app/api/execute/[executionId]/status/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 389
+      "line": 424
     },
     {
       "method": "GET",

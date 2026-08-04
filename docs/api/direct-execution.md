@@ -314,7 +314,40 @@ When the chain would have rejected the transaction, the endpoint returns HTTP 40
 }
 ```
 
-Revert decoding tries (in order): the contract's own ABI custom errors, common OpenZeppelin / standard errors, then the standard `Error(string)` revert (which is surfaced as `Error(<message>)`). If none match, the raw RPC error message is surfaced.
+Revert decoding tries (in order): the contract's own ABI custom errors, common OpenZeppelin / standard errors, then the standard `Error(string)` revert (which is surfaced as `Error(<message>)`). If none match, the failure is either attributed to a funding shortfall (see below) or the raw RPC error message is surfaced.
+
+### Response — underfunded sender
+
+A node asked to estimate gas for a transfer the sender cannot pay for rejects it without revert data, and the resulting `CALL_EXCEPTION` names neither the balance nor the address. When the simulator can confirm that is what happened, the failure carries a machine-readable `code` and the numbers a caller needs to fix it:
+
+```json
+{
+  "success": false,
+  "status": "simulated",
+  "from": "0x...orgWallet",
+  "to": "0x...recipient",
+  "value": "1000000000000000000",
+  "wouldRevert": true,
+  "revertReason": "Insufficient ETH balance. Have: 0.25, Need: 1.0. Fund 0x...orgWallet with at least 0.75 ETH on this chain and retry.",
+  "error": "Insufficient ETH balance. Have: 0.25, Need: 1.0. Fund 0x...orgWallet with at least 0.75 ETH on this chain and retry.",
+  "code": "insufficient_balance",
+  "balanceWei": "250000000000000000",
+  "requiredWei": "1000000000000000000",
+  "shortfallWei": "750000000000000000",
+  "nativeSymbol": "ETH",
+  "originalError": "missing revert data (action=\"estimateGas\", ...)"
+}
+```
+
+- `code`: `"insufficient_balance"` — branch on this rather than string-matching `revertReason`. Absent when the simulator could not attribute the failure to anything more specific than "the call reverted"
+- `balanceWei` / `requiredWei` / `shortfallWei`: the sender's native balance, the native value the call would move, and the difference, all in wei
+- `nativeSymbol`: the chain's native currency symbol (`ETH`, `BNB`, `POL`); falls back to `native` if the chain is not seeded
+- `originalError`: the node's own message, kept verbatim. Attribution only ever adds — nothing the chain said is discarded
+- `undecodedRevertData`: present only when the node did return revert data that no ABI on the decode path matched. The first four bytes are the custom-error selector, which you can look up in a selector database. When this field is set, funding the wallet may not be enough on its own — the contract is also rejecting the call
+
+The comparison is against the transfer value only; gas is not included (the gas estimate is what failed, so there is no number to add). A wallet funded with exactly the transfer amount therefore still fails, carrying the node's own `insufficient funds for gas * price + value` message and no `code`.
+
+**Safe-routed organizations:** the balance is read from `from`, which is the org's EOA. If your organization routes writes through a Safe, the transfer is funded from the Safe instead, so these fields describe the wrong address — see [Known limitation](#known-limitation) below.
 
 ### Token-transfer specifics
 
@@ -342,7 +375,9 @@ For ERC-20 transfers, `decimals` is optional — when omitted, the simulator loo
 
 ### Known limitation
 
-The `from` address used during simulation is the org's wallet (`getOrganizationWalletAddress`). Organizations that route writes through a Safe will see a simulation that reflects the EOA sending the call, not the Safe. Most config-bug categories (bad ABI, bad args, insufficient balance, allowance mismatches) still surface; Safe-routed `msg.sender` semantics do not.
+The `from` address used during simulation is the org's wallet (`getOrganizationWalletAddress`). Organizations that route writes through a Safe will see a simulation that reflects the EOA sending the call, not the Safe. Most config-bug categories (bad ABI, bad args, allowance mismatches) still surface; Safe-routed `msg.sender` semantics do not.
+
+This also applies to the underfunded-sender response above. The balance is read from `from`, but a Safe-routed org funds the transfer from the Safe, so `code`, `balanceWei`, `shortfallWei` and the "Fund `<address>`" sentence describe the EOA rather than the address the broadcast actually spends from. If your organization routes writes through a Safe, do not act on those fields without resolving the signer mode first.
 
 ## Get Execution Status
 

@@ -9,6 +9,7 @@ import {
   type SignalId,
   type Step,
 } from "@/lib/onboarding/getting-started-config";
+import { gettingStartedSuppressed } from "@/lib/onboarding/tours-disabled";
 
 /**
  * Persisted UI state + completion for the getting-started launcher (KEEP-878).
@@ -86,8 +87,11 @@ function readPersisted(userId: string | undefined): Persisted {
       // visible by default. Once they collapse or dismiss it, that choice is
       // persisted and honored. Guard on userId so the pre-hydration render
       // (userId undefined) stays collapsed and existing users do not flash open
-      // before their stored collapsed state loads.
-      return userId ? { ...fallback, state: "expanded" } : fallback;
+      // before their stored collapsed state loads. Playwright suppresses the
+      // auto-expand by cookie so the card never covers the canvas.
+      return userId && !gettingStartedSuppressed()
+        ? { ...fallback, state: "expanded" }
+        : fallback;
     }
     const parsed = JSON.parse(raw) as Partial<Persisted>;
     return {

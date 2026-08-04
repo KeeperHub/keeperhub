@@ -131,7 +131,17 @@ export function formatContractError(
   return `${label}: ${message}`;
 }
 
-function extractRevertData(error: unknown): string | undefined {
+/**
+ * Pull the raw revert data out of an ethers.js error, wherever the provider
+ * nested it. Returns undefined when the node returned none at all.
+ *
+ * Exported so callers can tell apart the two cases `decodeRevertReason`
+ * collapses into `undefined`: "the node returned no revert data" (a rejected
+ * estimate, an underfunded sender) versus "revert data came back but no
+ * known ABI decodes it" (an unlisted custom error). The follow-up action
+ * differs, so the two must not be treated as the same answer.
+ */
+export function extractRevertData(error: unknown): string | undefined {
   if (!error || typeof error !== "object") {
     return;
   }

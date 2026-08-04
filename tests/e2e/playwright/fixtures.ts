@@ -60,6 +60,8 @@ export const test = base.extend<{
   apiRequest: AuthenticatedApiRequest;
   disableTours: boolean;
   _disableToursCookie: undefined;
+  disableGettingStarted: boolean;
+  _disableGettingStartedCookie: undefined;
 }>({
   _turnstileStub: [
     async ({ page }, use) => {
@@ -79,6 +81,28 @@ export const test = base.extend<{
         await context.addCookies([
           {
             name: "kh_disable_tours",
+            value: "1",
+            url: baseURL ?? "http://localhost:3000",
+          },
+        ]);
+      }
+      await use(undefined);
+    },
+    { auto: true },
+  ],
+  // The first-run "Get started" launcher auto-expands into a card wider than
+  // the sidebar, so it overhangs the canvas and intercepts clicks on workflow
+  // nodes. Every browser context is first-run, so it would expand in every
+  // test. Suppressed by default via a cookie the app checks
+  // (lib/onboarding/tours-disabled.ts); getting-started.test.ts opts back in
+  // with `test.use({ disableGettingStarted: false })`.
+  disableGettingStarted: [true, { option: true }],
+  _disableGettingStartedCookie: [
+    async ({ context, baseURL, disableGettingStarted }, use) => {
+      if (disableGettingStarted) {
+        await context.addCookies([
+          {
+            name: "kh_disable_gs",
             value: "1",
             url: baseURL ?? "http://localhost:3000",
           },

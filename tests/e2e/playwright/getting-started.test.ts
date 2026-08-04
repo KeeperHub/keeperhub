@@ -5,6 +5,10 @@ import { expect, test } from "./fixtures";
 // user (no persisted state) it auto-expands into a single-branch (agent)
 // checklist and persists its state per user.
 
+// The rest of the suite suppresses the first-run auto-expand (see fixtures.ts)
+// so the card never covers the canvas; this file exercises it, so opt back in.
+test.use({ disableGettingStarted: false });
+
 // Clear any persisted launcher state so each test starts from the default
 // (a fresh, never-seen user), regardless of what a prior run left behind.
 async function resetLauncher(

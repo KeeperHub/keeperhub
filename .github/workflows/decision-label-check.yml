@@ -1,0 +1,51 @@
+name: Decision Label Check
+
+# Blocks merge while the `decision` label is present.
+#
+# `decision` means the PR is waiting on a maintainer, not on the contributor:
+# an API shape that becomes a contract, a new dependency, a behaviour change to
+# an existing default, anything touching pricing, limits, auth or permissions,
+# or a product judgement the diff alone cannot settle.
+#
+# Why a merge gate rather than a convention: an open decision is easy to lose.
+# It lives in a review comment, the PR otherwise looks healthy, CI is green, and
+# it merges with the question never answered - the decision is then made by
+# default rather than on purpose. This turns that into a red check.
+#
+# Workflow:
+#   1. Reviewer raises a needs-decision finding and adds `decision`.
+#   2. This check fails, so the PR cannot merge.
+#   3. A maintainer answers the question in a comment on the PR, so the
+#      reasoning is on the record and not just in someone's head.
+#   4. They remove the label. The check re-runs and passes on `unlabeled`.
+#
+# Removing the label is the act of deciding. Do not remove it to unblock a
+# merge without answering - that is the failure mode this exists to prevent.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches:
+      - staging
+      - prod
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  decision-label-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail while the decision label is present
+        env:
+          LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          if printf '%s' "$LABELS_JSON" | jq -e 'any(. == "decision")' >/dev/null; then
+            echo "::error::This PR carries the 'decision' label: it is blocked on a maintainer decision, not on the contributor."
+            echo "::error::Answer the open question in a comment on this PR, then remove the 'decision' label. This check re-runs on unlabeled."
+            echo "::error::Removing the label without answering defeats the gate - the decision then gets made by default at merge time."
+            exit 1
+          fi
+          echo "No 'decision' label; nothing is blocked on a maintainer."

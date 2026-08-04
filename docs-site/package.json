@@ -10,15 +10,15 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "16.2.11",
+    "next": "16.2.12",
     "nextra": "^4.0.0",
     "nextra-theme-docs": "^4.0.0",
-    "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
-    "@types/node": "^22.19.17",
-    "@types/react": "^19.2.14",
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.18",
     "pagefind": "^1.5.2",
     "typescript": "^5.7.0"
   },
