@@ -13,6 +13,7 @@ export default {
   practices: "Best Practices",
   "ai-tools": "AI Tools",
   guides: "Guides",
+  "onboarding-troubleshooting": "Troubleshooting",
   FAQ: "FAQ",
   api: "API",
   cli: "CLI",
