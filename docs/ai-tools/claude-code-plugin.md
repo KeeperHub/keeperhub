@@ -18,7 +18,7 @@ There are two ways to connect Claude Code to KeeperHub:
 Connect directly to KeeperHub's hosted MCP server. No CLI or plugin installation required.
 
 ```bash
-claude mcp add --transport http keeperhub https://app.keeperhub.com/mcp
+claude mcp add --transport http --scope user keeperhub https://app.keeperhub.com/mcp
 ```
 
 Then run `/mcp` inside Claude Code to authorize via browser. That's it.
@@ -40,16 +40,35 @@ See [CLI installation options](https://github.com/KeeperHub/cli#install) for oth
 ```bash
 /plugin marketplace add KeeperHub/claude-plugins
 /plugin install keeperhub@keeperhub-plugins
+```
+
+**3. Restart Claude Code**
+
+The plugin's commands are registered on restart. Run them before that and Claude
+Code reports them as unknown commands.
+
+**4. Sign in**
+
+```bash
 /keeperhub:login
 ```
 
-Restart Claude Code after setup for MCP tools to become available.
+Run `/keeperhub:status` to confirm the connection.
 
 ### Requirements
 
 - KeeperHub account at [app.keeperhub.com](https://app.keeperhub.com)
 - Option A: just a browser (for OAuth)
 - Option B: the `kh` CLI ([install instructions](https://github.com/KeeperHub/cli#install))
+
+### Which login is which
+
+Claude Code shows "Login expired, please run /login" about your Claude account,
+and `/login` is one of its own commands. Run `/login` inside Claude Code to sign
+back in.
+
+Your KeeperHub connection is separate. Check it with `/keeperhub:status` and
+re-authorize it with `/mcp` or `/keeperhub:login`.
 
 ## Commands
 

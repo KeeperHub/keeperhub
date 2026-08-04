@@ -15,14 +15,14 @@ section links to its full reference page.
 The hosted MCP server is the fastest way to drive KeeperHub from an AI agent.
 
 ```bash
-claude mcp add --transport http keeperhub https://app.keeperhub.com/mcp
+claude mcp add --transport http --scope user keeperhub https://app.keeperhub.com/mcp
 ```
 
 Run `/mcp` in Claude Code to complete OAuth in the browser. For headless or CI
 environments, pass an organization API key instead:
 
 ```bash
-claude mcp add --transport http keeperhub https://app.keeperhub.com/mcp \
+claude mcp add --transport http --scope user keeperhub https://app.keeperhub.com/mcp \
   --header "Authorization: Bearer kh_your_key_here"
 ```
 
@@ -99,3 +99,39 @@ Rate-limited requests return `429` with a `Retry-After` header. See
 The Code action runs untrusted JavaScript in an isolated `node:vm` sandbox with
 outbound SSRF protection. See [Code Plugin](/plugins/code) for what is allowed
 and blocked.
+
+## 6. Send your first transaction safely
+
+The MCP direct execution tools let an agent preflight and broadcast without
+switching to a separate API client. Start with a testnet wallet funded from the
+faucets above, then use this sequence:
+
+1. Call `execute_transfer` with `simulate: true`.
+2. Continue only when the result has `success: true` and
+   `wouldRevert: false`.
+3. Repeat the same call with `simulate` omitted and a new
+   `idempotency_key`.
+4. Pass the returned `executionId` to `get_direct_execution_status` and poll
+   until the status is `completed` or `failed`.
+5. Save `transactionLink` from the terminal response as the onchain proof.
+
+Example simulation on Base Sepolia:
+
+```json
+{
+  "chain_id": "84532",
+  "to_address": "0xRecipient",
+  "amount": "0.01",
+  "simulate": true
+}
+```
+
+For an ERC-20 transfer, also pass the token's contract address as
+`token_address`. The Base Sepolia USDC address is listed in the table above.
+Any MCP tool error is a failed preflight and must stop the flow; revert details
+include the REST error JSON when available. Simulation is currently EVM-only,
+so `execute_transfer` rejects `simulate: true` for Solana chain IDs `101` and
+`103` and their aliases before making an API call.
+See [MCP Server](/ai-tools/mcp-server#safely-preflight-direct-writes) for the
+tool flow and [Direct Execution](/api/direct-execution) for complete response
+and error handling details.

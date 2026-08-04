@@ -67,7 +67,7 @@ KeeperHub exposes its actions as tools to AI assistants via the [Model Context P
 
 **Recommended: remote HTTP endpoint (no local server required):**
 ```
-claude mcp add --transport http keeperhub https://app.keeperhub.com/mcp
+claude mcp add --transport http --scope user keeperhub https://app.keeperhub.com/mcp
 ```
 
 **Add to Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):

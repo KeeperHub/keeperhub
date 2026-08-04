@@ -51,7 +51,17 @@ Session authentication is accepted everywhere. API keys (`kh_`) are accepted onl
 
 Endpoints whose semantics are organization-scoped accept `kh_` keys:
 
-- Workflow CRUD and execution: `/api/workflows`, `/api/executions`, `/api/execute`
+- Workflow CRUD and execution: `/api/workflows`, including
+  `POST /api/workflows/{workflowId}/execute` and execution history and status
+  (`GET /api/workflows/{workflowId}/executions` and
+  `GET /api/workflows/executions/{executionId}/{status,logs,wait}`), and
+  listing (`PUT /api/workflows/{workflowId}/go-live`).
+  A few sub-paths are session-only; see [Session-only](#session-only) below
+- Execution cancellation: `POST /api/executions/{executionId}/cancel`
+- Direct execution: everything under `/api/execute` - `/transfer`,
+  `/contract-call`, `/check-and-execute`, `/swap`, `/node`, protocol actions
+  (`/api/execute/{protocol}/{action}`), and
+  `GET /api/execute/{executionId}/status`
 - Integrations: `/api/integrations`
 - Projects, tags, public tags, supported chains
 - Organization-scoped billing and analytics

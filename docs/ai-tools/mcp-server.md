@@ -14,7 +14,7 @@ The KeeperHub MCP server exposes tools over the Model Context Protocol, enabling
 Connect directly to KeeperHub's hosted MCP server. No local process or CLI installation needed.
 
 ```bash
-claude mcp add --transport http keeperhub https://app.keeperhub.com/mcp
+claude mcp add --transport http --scope user keeperhub https://app.keeperhub.com/mcp
 ```
 
 Then run `/mcp` inside Claude Code to complete the OAuth authorization via browser. KeeperHub will ask you to approve access, and the token is stored automatically.
@@ -22,7 +22,7 @@ Then run `/mcp` inside Claude Code to complete the OAuth authorization via brows
 For headless or CI environments where browser auth is not available, pass an API key:
 
 ```bash
-claude mcp add --transport http keeperhub https://app.keeperhub.com/mcp \
+claude mcp add --transport http --scope user keeperhub https://app.keeperhub.com/mcp \
   --header "Authorization: Bearer kh_your_key_here"
 ```
 
@@ -43,7 +43,7 @@ This matters because LLMs select tools from `tools/list` in a single decision st
 ### Install
 
 ```bash
-claude mcp add --transport http my-workflow https://app.keeperhub.com/mcp/w/<slug> \
+claude mcp add --transport http --scope user my-workflow https://app.keeperhub.com/mcp/w/<slug> \
   --header "Authorization: Bearer kh_your_key_here"
 ```
 
@@ -103,7 +103,7 @@ To work with a different org, re-authenticate:
 
 ```bash
 claude mcp remove keeperhub
-claude mcp add --transport http keeperhub https://app.keeperhub.com/mcp
+claude mcp add --transport http --scope user keeperhub https://app.keeperhub.com/mcp
 ```
 
 Complete the OAuth flow again -- the new active org will be captured.
@@ -164,6 +164,40 @@ The server registers more than 30 tools. Call `tools_documentation` (or `list_ac
 | `execute_contract_call` | Call a smart contract function. Returns the result for view/pure calls, or an execution ID for state-changing calls. |
 | `execute_check_and_execute` | Read a contract value, evaluate a condition, and execute an action if it is met. |
 | `get_direct_execution_status` | Get the status of a direct execution (transfer or contract call), including the transaction hash and result. |
+
+### Safely preflight direct writes
+
+All three direct execution tools accept an optional `simulate` boolean. Set it
+to `true` first to estimate gas and catch a revert without signing or
+broadcasting. If the successful tool result has `success: true` and
+`wouldRevert: false`, repeat the tool call with the same transaction arguments,
+omit `simulate`, and add a unique `idempotency_key`. Then poll
+`get_direct_execution_status` with bounded backoff until it returns `completed`
+or `failed`.
+
+For example, preflight a Base Sepolia transfer:
+
+```json
+{
+  "chain_id": "84532",
+  "to_address": "0xRecipient",
+  "amount": "0.01",
+  "simulate": true
+}
+```
+
+`simulate` must be the JSON boolean `true`, not the string `"true"`. A
+simulation never returns a transaction hash because nothing is broadcast. A
+revert or invalid simulation is surfaced as an MCP tool error; the error text
+includes the REST error JSON when available. Treat any tool error as a hard
+stop. View/pure calls and a check whose condition is false return their normal
+read/no-action result instead of a simulation envelope.
+
+Simulation is currently EVM-only. Solana transfers on chain IDs `101` and
+`103` can still broadcast through `execute_transfer`, but the MCP tool rejects
+`simulate: true` for those IDs and their aliases before making an API call. See
+[Direct Execution](/api/direct-execution) for response shapes, retry semantics,
+and the authoritative safe first-write sequence.
 
 ### Protocol Actions (DeFi)
 

@@ -1,16 +1,3 @@
 packages:
   - "."
   - "sandbox"
-allowBuilds:
-  '@coinbase/x402': true
-  '@nestjs/core': true
-  '@prisma/engines': true
-  '@sentry/cli': true
-  '@swc/core': true
-  bigint-buffer: true
-  bufferutil: true
-  cbor-extract: true
-  esbuild: true
-  prisma: true
-  sharp: true
-  utf-8-validate: true

@@ -19,9 +19,15 @@ Turnkey generates and stores private keys inside secure hardware enclaves (TEEs)
 - **Private key export** -- export your key if you need to migrate to another solution
 - **Integrated operations** -- seamless signing for workflow transactions
 
+On networks where gas is sponsored, a workflow write is submitted on your
+wallet's behalf rather than directly by it, so on a block explorer it shows a
+sender and a contract you will not recognise and a value of `0`. See
+[What Your Transaction Looks Like On-Chain](/wallet-management/onchain-appearance)
+before concluding a run did not work.
+
 ## Wallet Funding
 
-Topping up your Turnkey EOA with native gas tokens (ETH on Ethereum, ETH on Base, MATIC on Polygon, etc.) is required for any workflow that broadcasts a transaction.
+Topping up your Turnkey EOA with native gas tokens (ETH on Ethereum, ETH on Base, MATIC on Polygon, SOL on Solana, etc.) is required for any workflow that broadcasts a transaction.
 
 **When funding is needed**:
 
@@ -55,11 +61,11 @@ Balance updates are reflected in the KeeperHub interface and displayed per netwo
 
 **Withdraw**: Use the Withdraw function in the UI to transfer wallet balance out of KeeperHub.
 
-**Export Key**: Use the key export feature to retrieve your private key if you need to migrate to another wallet solution.
+**Export Key**: Use the key export feature to retrieve your private key if you need to migrate to another wallet solution. When your organization has both EVM and Solana accounts provisioned, you can choose which key to export.
 
 ## Network Support
 
-Turnkey wallets work across all EVM chains KeeperHub supports, including Ethereum, Base, Arbitrum, Optimism, Polygon, BNB Chain, and Avalanche, plus their testnets. See the live [Chains](/api/chains) list for the current set.
+Turnkey wallets work across all EVM chains KeeperHub supports, including Ethereum, Base, Arbitrum, Optimism, Polygon, BNB Chain, and Avalanche, plus their testnets. Solana mainnet and devnet are also supported through the same Turnkey wallet: KeeperHub provisions a separate Solana address alongside your EVM address, and both share the same Turnkey sub-organization. See the live [Chains](/api/chains) list for the current set.
 
 ## Capabilities
 
