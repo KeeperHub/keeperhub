@@ -8,9 +8,6 @@ const withNextra = nextra({
 const nextConfig = {
   output: "standalone",
   reactStrictMode: true,
-  experimental: {
-    instrumentationHook: false,
-  },
 };
 
 export default withNextra(nextConfig);
