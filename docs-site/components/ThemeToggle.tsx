@@ -1,106 +1,118 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 const THEME_KEY = "theme";
 
 export default function ThemeToggle() {
-  const [theme, setTheme] = useState<string>(() => {
-    if (typeof window === "undefined") return "light";
-    try {
-      return (
-        localStorage.getItem(THEME_KEY) ||
-        (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
-      );
-    } catch (e) {
-      return "light";
-    }
-  });
-
-  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const [theme, setTheme] = useState("light");
+  const [portalRoot, setPortalRoot] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
+    setMounted(true);
+
+    try {
+      const storedTheme = localStorage.getItem(THEME_KEY);
+      if (storedTheme === "dark" || storedTheme === "light") {
+        setTheme(storedTheme);
+      } else if (window.matchMedia?.("(prefers-color-scheme: dark)")?.matches) {
+        setTheme("dark");
+      }
+    } catch {
+      setTheme("light");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+
     try {
       if (theme === "dark") document.documentElement.classList.add("dark");
       else document.documentElement.classList.remove("dark");
       localStorage.setItem(THEME_KEY, theme);
-    } catch (e) {
+    } catch {
       // ignore
     }
-  }, [theme]);
+  }, [mounted, theme]);
 
-  // On mount, attempt to insert the toggle button before the search element in the navbar
   useEffect(() => {
-    try {
-      const insertAfterGitHub = () => {
-        const btn = btnRef.current;
-        if (!btn) return false;
+    if (!mounted) return;
 
-        // Prefer explicit GitHub link in navbar
-        const github = document.querySelector('.nextra-navbar a[href*="github.com"]');
-        if (github && github.parentElement) {
-          let wrapper = github.parentElement.querySelector('.kh-theme-toggle');
-          if (!wrapper) {
-            wrapper = document.createElement('div');
-            wrapper.className = 'kh-theme-toggle';
-            // insert wrapper after the github element
-            if (github.nextSibling) github.parentElement.insertBefore(wrapper, github.nextSibling);
-            else github.parentElement.appendChild(wrapper);
-          }
-          if (btn.parentElement !== wrapper) wrapper.appendChild(btn);
-          return true;
+    const findPortalRoot = () => {
+      const githubLink = document.querySelector('.nextra-navbar a[href*="github.com"]');
+      const rightActions = document.querySelector(".nextra-navbar > div:last-child");
+      const anchor = githubLink?.parentElement ?? rightActions;
+
+      if (!anchor) return null;
+
+      let root = anchor.querySelector<HTMLElement>(".kh-theme-toggle");
+      if (!root) {
+        root = document.createElement("div");
+        root.className = "kh-theme-toggle";
+
+        if (githubLink?.nextSibling && githubLink.parentElement) {
+          githubLink.parentElement.insertBefore(root, githubLink.nextSibling);
+        } else if (anchor.firstChild) {
+          anchor.insertBefore(root, anchor.firstChild);
+        } else {
+          anchor.appendChild(root);
         }
-
-        // Fallback: append to right-side actions container (last child of navbar)
-        const right = document.querySelector('.nextra-navbar > div:last-child');
-        if (right) {
-          let wrapper = right.querySelector('.kh-theme-toggle');
-          if (!wrapper) {
-            wrapper = document.createElement('div');
-            wrapper.className = 'kh-theme-toggle';
-            right.insertBefore(wrapper, right.firstChild);
-          }
-          if (btn.parentElement !== wrapper) wrapper.appendChild(btn);
-          return true;
-        }
-
-        return false;
-      };
-
-      if (!insertAfterGitHub()) {
-        const observer = new MutationObserver(() => {
-          if (insertAfterGitHub()) observer.disconnect();
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
-        setTimeout(() => observer.disconnect(), 5000);
       }
-    } catch (e) {
-      // ignore
+
+      return root;
+    };
+
+    const root = findPortalRoot();
+    if (root) {
+      setPortalRoot(root);
+      return;
     }
-  }, []);
+
+    const observer = new MutationObserver(() => {
+      const nextRoot = findPortalRoot();
+      if (nextRoot) {
+        setPortalRoot(nextRoot);
+        observer.disconnect();
+      }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+    const timeout = window.setTimeout(() => observer.disconnect(), 5000);
+
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(timeout);
+    };
+  }, [mounted]);
 
   function toggle() {
-    setTheme((t) => (t === "dark" ? "light" : "dark"));
+    setTheme((value) => (value === "dark" ? "light" : "dark"));
   }
 
-  return (
+  if (!mounted || !portalRoot) {
+    return <span aria-hidden="true" className="kh-theme-toggle-placeholder" />;
+  }
+
+  return createPortal(
     <button
-      ref={btnRef}
-      onClick={toggle}
-      className="kh-theme-toggle-btn"
       aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      className="kh-theme-toggle-btn"
+      onClick={toggle}
       title={theme === "dark" ? "Light mode" : "Dark mode"}
       type="button"
     >
       {theme === "dark" ? (
-        <svg width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
           <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" fill="currentColor" />
         </svg>
       ) : (
-        <svg width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
           <path d="M6.76 4.84l-1.8-1.79L3.17 4.84l1.79 1.8 1.8-1.8zM1 13h3v-2H1v2zm10 9h2v-3h-2v3zm7.24-2.84l1.79 1.79 1.79-1.79-1.79-1.8-1.79 1.8zM20 11v2h3v-2h-3zM12 5a7 7 0 100 14 7 7 0 000-14z" fill="currentColor" />
         </svg>
       )}
-    </button>
+    </button>,
+    portalRoot
   );
 }

@@ -421,6 +421,12 @@ html.dark table tr:hover {
   margin-left: 8px;
 }
 
+.kh-theme-toggle-placeholder {
+  display: inline-flex;
+  width: 44px;
+  height: 36px;
+}
+
 .kh-theme-toggle .kh-theme-toggle-btn {
   width: 36px;
   height: 36px;
@@ -443,23 +449,11 @@ html:not(.dark) .nextra-navbar a[href*="github.com"] svg path {
   fill: #0b1220 !important;
 }
 
-
-
-/* Make logo SVG white paths dark in light mode so text is visible */
-html:not(.dark) .kh-logo svg [fill="#fff"],
-html:not(.dark) .kh-logo svg path[fill="#fff"] {
-  fill: #0b1220 !important;
-}
-
 /* Ensure GitHub icon and other navbar action icons are visible in light mode */
 html:not(.dark) .nextra-navbar a[href*="github.com"],
 html:not(.dark) .nextra-navbar .nextra-search,
 html:not(.dark) .nextra-navbar .nextra-search * {
   color: #0b1220 !important;
-}
-
-html:not(.dark) .nextra-navbar a[href*="github.com"] svg path {
-  fill: #0b1220 !important;
 }
 
 /* Toggle button icon color in light/dark modes */
