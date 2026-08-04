@@ -66,6 +66,20 @@ The hook reads only the payment-challenge fields `amount`, `unit`, and the asset
 >
 > If your agent should only pay a specific subset of workflows, or should hold to a budget you set, enforce that in your own `PreToolUse` hook or in a wrapper around `paymentSigner`. The tiers above will not do it for you.
 
+#### Where the tiers apply
+
+The tiers live in a `PreToolUse` hook, which is an **agent-framework** mechanism — `skill install` registers it in `~/.claude/settings.json`. Enforcement therefore depends on how the payment is initiated:
+
+| Entry point | auto / ask / block |
+|---|---|
+| A framework agent whose runtime fires `PreToolUse` (Claude Code, Cursor, Cline, Windsurf, OpenCode) | **Yes** — via the registered hook |
+| The KeeperHub MCP server | **`block_threshold_usd` only**, enforced inline before signing. The hook fires on the MCP tool call, where there is no payment shape yet, so it cannot see the 402 |
+| Your own code importing `@keeperhub/wallet` and calling `paymentSigner.fetch()` directly — a backend service, a scheduled job, a test harness, a non-Claude runtime | **No** — nothing reads `safety.json` on this path |
+
+The [server-side hard limits](#server-side-hard-limits) apply to all three and cannot be bypassed, so the last row is bounded rather than unbounded. But `~/.keeperhub/safety.json` does not read as framework-scoped — it is a user-level file, in a user-level directory, named after the package rather than after the agent. Someone who sets `block_threshold_usd: 10` and then writes a script against the package will reasonably expect that limit to hold, and it will not.
+
+If you pay from your own code and want the tiers, call the exported hook yourself before signing, or wrap `paymentSigner` so every payment passes the same check.
+
 ### Server-side hard limits
 
 Beyond the client-side hook, a set of Turnkey-enforced policies apply to every wallet and cannot be bypassed by editing `safety.json` or changing the agent's hook. They are created per sub-organisation at provision time and enforced by Turnkey itself on every signing activity:
