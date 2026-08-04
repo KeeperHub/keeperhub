@@ -19,8 +19,13 @@ concurrency:
   group: pr-docs-site-build-${{ github.ref }}
   cancel-in-progress: true
 
+# build-docs-image.yml declares id-token: write (it assumes an AWS role on the
+# push path). A called workflow cannot request more permissions than its caller,
+# so omitting it here makes the whole run fail at startup - which reports no
+# check at all, silently disabling this gate. The PR path never touches AWS.
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   build:
