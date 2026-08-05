@@ -2,63 +2,30 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-
-const THEME_KEY = "theme";
+import { useTheme } from "next-themes";
 
 export default function ThemeToggle() {
+  const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
-  const [theme, setTheme] = useState("light");
   const [portalRoot, setPortalRoot] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
     setMounted(true);
-
-    try {
-      const storedTheme = localStorage.getItem(THEME_KEY);
-      if (storedTheme === "dark" || storedTheme === "light") {
-        setTheme(storedTheme);
-      } else if (window.matchMedia?.("(prefers-color-scheme: dark)")?.matches) {
-        setTheme("dark");
-      }
-    } catch {
-      setTheme("light");
-    }
   }, []);
-
-  useEffect(() => {
-    if (!mounted) return;
-
-    try {
-      if (theme === "dark") document.documentElement.classList.add("dark");
-      else document.documentElement.classList.remove("dark");
-      localStorage.setItem(THEME_KEY, theme);
-    } catch {
-      // ignore
-    }
-  }, [mounted, theme]);
 
   useEffect(() => {
     if (!mounted) return;
 
     const findPortalRoot = () => {
       const githubLink = document.querySelector('.nextra-navbar a[href*="github.com"]');
-      const rightActions = document.querySelector(".nextra-navbar > div:last-child");
-      const anchor = githubLink?.parentElement ?? rightActions;
+      if (!githubLink?.parentElement) return null;
 
-      if (!anchor) return null;
-
+      const anchor = githubLink.parentElement;
       let root = anchor.querySelector<HTMLElement>(".kh-theme-toggle");
       if (!root) {
         root = document.createElement("div");
         root.className = "kh-theme-toggle";
-
-        if (githubLink?.nextSibling && githubLink.parentElement) {
-          githubLink.parentElement.insertBefore(root, githubLink.nextSibling);
-        } else if (anchor.firstChild) {
-          anchor.insertBefore(root, anchor.firstChild);
-        } else {
-          anchor.appendChild(root);
-        }
+        githubLink.parentElement.insertBefore(root, githubLink.nextSibling);
       }
 
       return root;
@@ -84,26 +51,30 @@ export default function ThemeToggle() {
     return () => {
       observer.disconnect();
       window.clearTimeout(timeout);
+      const existing = document.querySelector(".kh-theme-toggle");
+      existing?.remove();
     };
   }, [mounted]);
 
   function toggle() {
-    setTheme((value) => (value === "dark" ? "light" : "dark"));
+    setTheme(resolvedTheme === "dark" ? "light" : "dark");
   }
 
   if (!mounted || !portalRoot) {
-    return <span aria-hidden="true" className="kh-theme-toggle-placeholder" />;
+    return null;
   }
+
+  const isDark = resolvedTheme === "dark";
 
   return createPortal(
     <button
-      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
       className="kh-theme-toggle-btn"
       onClick={toggle}
-      title={theme === "dark" ? "Light mode" : "Dark mode"}
+      title={isDark ? "Switch to light mode" : "Switch to dark mode"}
       type="button"
     >
-      {theme === "dark" ? (
+      {isDark ? (
         <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
           <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" fill="currentColor" />
         </svg>

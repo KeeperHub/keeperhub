@@ -421,11 +421,6 @@ html.dark table tr:hover {
   margin-left: 8px;
 }
 
-.kh-theme-toggle-placeholder {
-  display: inline-flex;
-  width: 44px;
-  height: 36px;
-}
 
 .kh-theme-toggle .kh-theme-toggle-btn {
   width: 36px;
@@ -438,6 +433,11 @@ html.dark table tr:hover {
   justify-content: center;
   padding: 0;
   cursor: pointer;
+}
+
+.kh-theme-toggle .kh-theme-toggle-btn:focus-visible {
+  outline: 2px solid var(--kh-accent);
+  outline-offset: 2px;
 }
 
 .dark .kh-theme-toggle .kh-theme-toggle-btn {
