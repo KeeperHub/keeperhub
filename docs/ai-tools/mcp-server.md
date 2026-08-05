@@ -146,7 +146,7 @@ The server registers more than 30 tools. Call `tools_documentation` (or `list_ac
 | `create_workflow` | Create a workflow with nodes and edges. Created disabled by default; pass `enabled=true` to make schedule, event, block, or webhook triggers fire immediately. |
 | `update_workflow` | Update a workflow's name, description, nodes, edges, project/tag assignment, or enabled state. Set `enabled=false` to stop triggers without deleting the workflow. |
 | `delete_workflow` | Permanently delete a workflow. This action is irreversible. |
-| `validate_workflow` | Check a workflow's structural and Web3-specific correctness before creating or executing it. |
+| `validate_workflow` | Check an already-created workflow's structural and Web3-specific correctness before executing or listing it. Operates on a stored `workflowId`, not a candidate graph — see [Validate Workflow](./mcp-validate-workflow.md#limitations). |
 | `prepare_test_pin_data` | Return the JSON Schema each node expects as pin data, so an agent can construct valid test inputs. |
 
 ### Execution
