@@ -7,6 +7,8 @@ description: "Blockchain operations including balance checks, contract interacti
 
 Interact with EVM-compatible blockchain networks and Solana. Read-only actions work without credentials. Write actions require a connected Turnkey wallet.
 
+> **Address format.** EVM address parameters (Spender Address, Recipient Address, Contract Address, custom token addresses) are checked at execution time with strict EIP-55 rules (`ethers.isAddress`): all-lowercase passes, mixed-case must be a valid checksum. A mixed-case address that fails the checksum is rejected only when the run executes, with an action-specific error (for example `Invalid spender address: 0x…`) — not at workflow creation or validation. When in doubt, lowercase the address.
+
 ## Actions
 
 | Action | Category | Credentials | Description |

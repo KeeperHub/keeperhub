@@ -216,7 +216,7 @@ and the authoritative safe first-write sequence.
 
 | Tool | Description |
 |------|-------------|
-| `list_action_schemas` | List available action schemas, triggers, and supported chains. Each chain includes a `status` field (stable, experimental, deprecated). |
+| `list_action_schemas` | List available action schemas, triggers, and supported chains. Each chain includes a `status` field (stable, experimental, deprecated). The unfiltered response is large (~600 KB); pass `category` (e.g. `web3`) to keep it context-friendly for agents. |
 | `get_plugin` | Get schema details for a specific plugin or integration type. |
 | `search_plugins` | Deprecated. Use `list_action_schemas` instead. |
 
