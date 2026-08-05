@@ -88,6 +88,8 @@ function mapFieldType(field: ActionConfigFieldBase): string {
       return "string (event name from ABI)";
     case "select":
       return `string (${field.options?.map((o) => `"${o.value}"`).join(" | ") || "select"})`;
+    case "fail-on-error-switch":
+      return "boolean";
     case "template-input":
     case "template-textarea":
       return "string (supports {{@nodeId:Label.field}} templates)";

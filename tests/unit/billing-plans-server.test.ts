@@ -170,34 +170,55 @@ describe("checkExecutionLimit", () => {
     });
   });
 
-  it("blocks free plan when at limit", async () => {
+  // Pay-as-you-go covers every free org past its included limit, so admission
+  // allows the run and the per-execution charge is the gate.
+  it("allows free plan at limit for the pay-as-you-go charge to gate", async () => {
     mockSelectReturning([]);
     mockExecuteReturning([{ count: 5000 }]);
 
     const result = await checkExecutionLimit("org_1");
     expect(result).toEqual({
-      allowed: false,
-      limit: 5000,
-      used: 5000,
-      plan: "free",
+      allowed: true,
+      isOverage: false,
       debtExecutions: 0,
       effectiveLimit: 5000,
     });
   });
 
-  it("blocks free plan when over limit", async () => {
+  it("allows free plan over limit for the pay-as-you-go charge to gate", async () => {
     mockSelectReturning([]);
     mockExecuteReturning([{ count: 6000 }]);
 
     const result = await checkExecutionLimit("org_1");
     expect(result).toEqual({
-      allowed: false,
-      limit: 5000,
-      used: 6000,
-      plan: "free",
+      allowed: true,
+      isOverage: false,
       debtExecutions: 0,
       effectiveLimit: 5000,
     });
+  });
+
+  // Nothing downstream can charge with billing off, so the included limit has
+  // to block again rather than letting free executions run without end.
+  it("blocks free plan over limit when billing is disabled", async () => {
+    const original = process.env.NEXT_PUBLIC_BILLING_ENABLED;
+    process.env.NEXT_PUBLIC_BILLING_ENABLED = "false";
+    mockSelectReturning([]);
+    mockExecuteReturning([{ count: 6000 }]);
+
+    try {
+      const result = await checkExecutionLimit("org_1");
+      expect(result).toEqual({
+        allowed: false,
+        limit: 5000,
+        used: 6000,
+        plan: "free",
+        debtExecutions: 0,
+        effectiveLimit: 5000,
+      });
+    } finally {
+      process.env.NEXT_PUBLIC_BILLING_ENABLED = original;
+    }
   });
 
   it("blocks paid plan when canceled (overage disabled)", async () => {

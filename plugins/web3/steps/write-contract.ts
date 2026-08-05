@@ -9,12 +9,22 @@ import { withStepValueCap } from "@/lib/execute/value-ledger";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
 import {
+  applyFailOnError,
   type WriteContractCoreInput,
   type WriteContractResult,
   writeContractCore,
 } from "./write-contract-core";
 
-export type WriteContractInput = StepInput & WriteContractCoreInput;
+export type WriteContractInput = StepInput &
+  WriteContractCoreInput & {
+    // Mirrors HTTP Request's failOnError. Defaults to true. When false, a
+    // failure encountered while attempting the on-chain send (signer init,
+    // broadcast, revert) is softened into a success carrying `error` instead
+    // of failing the step, so the workflow continues. See
+    // applyFailOnError in write-contract-core.ts for exactly which failures
+    // qualify.
+    failOnError?: boolean;
+  };
 
 /**
  * Write Contract Step
@@ -53,8 +63,20 @@ export async function writeContractStep(
       executionId: input._context?.executionId,
     },
     () =>
-      withStepLogging(enrichedInput, () =>
-        withStepValueCap(
+      withStepLogging(enrichedInput, async () => {
+        // applyFailOnError must run here, after withStepValueCap resolves.
+        // The value-cap settle/release decision is keyed on the true
+        // success/failure of writeContractCore, so softening the result
+        // inside withStepValueCap's run() would settle a reservation for a
+        // transaction that actually reverted.
+        //
+        // withStepValueCap can itself deny the call (e.g. daily cap
+        // exceeded) before writeContractCore ever runs, and that denial
+        // carries no errorClass. coreResult tracks whether writeContractCore
+        // actually produced the returned value, so a cap denial is never
+        // passed to applyFailOnError and always hard-fails.
+        let coreResult: WriteContractResult | undefined;
+        const result = await withStepValueCap(
           {
             organizationId: input._context?.organizationId,
             stepFunction: "writeContractStep",
@@ -62,9 +84,15 @@ export async function writeContractStep(
             executionId: input._context?.executionId,
             valueCapReserved: input._context?.valueCapReserved,
           },
-          () => writeContractCore(input)
-        )
-      )
+          async () => {
+            coreResult = await writeContractCore(input);
+            return coreResult;
+          }
+        );
+        return result === coreResult
+          ? applyFailOnError(result, input.failOnError)
+          : result;
+      })
   );
 }
 

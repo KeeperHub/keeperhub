@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import {
-  deletePaygConfig,
-  getPaygConfig,
+  getPaygSettings,
   upsertPaygConfig,
 } from "@/lib/billing/payg/config-store";
 import { PAYG_DEFAULT_CHAIN_ID } from "@/lib/billing/payg/constants";
@@ -25,10 +24,10 @@ import {
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 
 type PaygStatus = {
-  enabled: boolean;
   priceUsdc: string;
   treasuryConfigured: boolean;
   chainId: number;
+  /** Decimal USDC. "0" blocks all spend rather than meaning "no cap". */
   caps: { dailyUsdc: string; periodUsdc: string };
   usage: {
     periodStart: string;
@@ -36,34 +35,30 @@ type PaygStatus = {
     periodExecutions: number;
     periodSpentUsdc: string;
     dailySpentUsdc: string;
-  } | null;
+  };
 };
 
 async function buildPaygStatus(organizationId: string): Promise<PaygStatus> {
-  const config = await getPaygConfig(organizationId);
-  const chainId = config?.chainId ?? PAYG_DEFAULT_CHAIN_ID;
+  const settings = await getPaygSettings(organizationId);
   const priceRaw = getPaygExecutionPriceRaw();
 
   const usage = await getCurrentPaygUsage(organizationId);
 
   return {
-    enabled: config !== null,
     priceUsdc: usdcRawToDecimal(priceRaw),
-    treasuryConfigured: getPaygTreasuryOrNull(chainId) !== null,
-    chainId,
+    treasuryConfigured: getPaygTreasuryOrNull(settings.chainId) !== null,
+    chainId: settings.chainId,
     caps: {
-      dailyUsdc: usdcRawToDecimal(BigInt(config?.dailyCapRaw ?? "0")),
-      periodUsdc: usdcRawToDecimal(BigInt(config?.periodCapRaw ?? "0")),
+      dailyUsdc: usdcRawToDecimal(BigInt(settings.dailyCapRaw)),
+      periodUsdc: usdcRawToDecimal(BigInt(settings.periodCapRaw)),
     },
-    usage: usage
-      ? {
-          periodStart: usage.periodStart.toISOString(),
-          periodEnd: usage.periodEnd.toISOString(),
-          periodExecutions: usage.periodExecutions,
-          periodSpentUsdc: usdcRawToDecimal(usage.periodSpentRaw),
-          dailySpentUsdc: usdcRawToDecimal(usage.dailySpentRaw),
-        }
-      : null,
+    usage: {
+      periodStart: usage.periodStart.toISOString(),
+      periodEnd: usage.periodEnd.toISOString(),
+      periodExecutions: usage.periodExecutions,
+      periodSpentUsdc: usdcRawToDecimal(usage.periodSpentRaw),
+      dailySpentUsdc: usdcRawToDecimal(usage.dailySpentRaw),
+    },
   };
 }
 
@@ -95,9 +90,10 @@ export async function GET(request: Request): Promise<NextResponse> {
 }
 
 /**
- * Parse a decimal USDC cap into a 6-dp raw string; "" / undefined -> "0" (no
- * cap). Throws on a malformed value so the caller returns 400 rather than
- * silently treating garbage as "0" (which would disable the spend cap).
+ * Parse a decimal USDC cap into a 6-dp raw string. A cap left blank is "0", and
+ * "0" blocks all spend, so an omitted cap is never read as unlimited. Throws on
+ * a malformed value so the caller returns 400 rather than silently treating
+ * garbage as a cap.
  */
 function parseCap(value: unknown): string {
   if (value === undefined || value === null || value === "") {
@@ -127,8 +123,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       chainId?: number;
     };
 
-    let dailyCapRaw: string;
-    let periodCapRaw: string;
+    let dailyCapRaw: string | null;
+    let periodCapRaw: string | null;
     try {
       dailyCapRaw = parseCap(body.dailyCapUsdc);
       periodCapRaw = parseCap(body.periodCapUsdc);
@@ -149,7 +145,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     // PAYG is a free-tier feature: it lets a free org keep running past its
     // included limit. Paid plans have their own executions/overage, so only
-    // free-plan orgs may enable it.
+    // free-plan orgs set caps here.
     if ((await getOrgPlan(orgId)) !== PAYG_PLAN_NAME) {
       return NextResponse.json(
         { error: "Pay-as-you-go is available on the free plan only" },
@@ -157,7 +153,6 @@ export async function POST(request: Request): Promise<NextResponse> {
       );
     }
 
-    const alreadyEnabled = (await getPaygConfig(orgId)) !== null;
     await upsertPaygConfig({
       organizationId: orgId,
       dailyCapRaw,
@@ -167,7 +162,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     await recordAuditEvent({
       actor: { userId, organizationId: orgId, authMethod: "session" },
-      action: alreadyEnabled ? "payg.caps_updated" : "payg.enabled",
+      action: "payg.caps_updated",
       resourceType: "subscription",
       resourceId: orgId,
       after: { dailyCapRaw, periodCapRaw, chainId },
@@ -176,47 +171,12 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     return NextResponse.json(await buildPaygStatus(orgId));
   } catch (error) {
-    logSystemError(ErrorCategory.BILLING, "[PAYG] Enable error", error, {
+    logSystemError(ErrorCategory.BILLING, "[PAYG] Caps update error", error, {
       endpoint: "/api/billing/payg",
       operation: "post",
     });
     return NextResponse.json(
       { error: "Failed to update pay-as-you-go settings" },
-      { status: 500 }
-    );
-  }
-}
-
-export async function DELETE(request: Request): Promise<NextResponse> {
-  if (!isBillingEnabled()) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-
-  const auth = await requireOrgOwner();
-  if ("error" in auth) {
-    return auth.error;
-  }
-  const { orgId, userId } = auth;
-
-  try {
-    await deletePaygConfig(orgId);
-
-    await recordAuditEvent({
-      actor: { userId, organizationId: orgId, authMethod: "session" },
-      action: "payg.disabled",
-      resourceType: "subscription",
-      resourceId: orgId,
-      metadata: buildAuditMetadata(request),
-    });
-
-    return NextResponse.json(await buildPaygStatus(orgId));
-  } catch (error) {
-    logSystemError(ErrorCategory.BILLING, "[PAYG] Disable error", error, {
-      endpoint: "/api/billing/payg",
-      operation: "delete",
-    });
-    return NextResponse.json(
-      { error: "Failed to disable pay-as-you-go" },
       { status: 500 }
     );
   }

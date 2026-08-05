@@ -113,6 +113,20 @@ describe("withStepLogging error redaction", () => {
     expect(persisted.error).not.toContain("lb.drpc.live");
   });
 
+  it("does not redact a success-carrying error (softened failOnError result)", async () => {
+    const rawError = `Contract call failed: could not coalesce error (info={ "requestUrl": "${KEYED_URL}" }, code=UNKNOWN_ERROR)`;
+
+    const result = await withStepLogging({ _context: web3Context }, () =>
+      Promise.resolve({ success: true, error: rawError })
+    );
+
+    // withStepLogging only redacts the success: false branch. A softened
+    // write-contract result (failOnError=false) is success: true, so it
+    // gets no redaction here; applyFailOnError in write-contract-core.ts
+    // must redact it before it ever reaches this point.
+    expect(result.error).toBe(rawError);
+  });
+
   it("survives frozen thrown errors without masking the failure", async () => {
     const frozen = Object.freeze(
       new Error(`fetch ${KEYED_URL} failed with 401`)

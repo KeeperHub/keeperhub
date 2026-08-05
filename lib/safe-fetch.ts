@@ -380,7 +380,7 @@ function blockedMessage(ctx: BlockContext): string {
   return `Outbound request to ${ctx.hostname}${ipPart} blocked by SSRF policy (${ctx.reason}).`;
 }
 
-function stripIpv6Brackets(hostname: string): string {
+export function stripIpv6Brackets(hostname: string): string {
   if (hostname.startsWith("[") && hostname.endsWith("]")) {
     return hostname.slice(1, -1);
   }

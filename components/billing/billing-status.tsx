@@ -1,6 +1,6 @@
 "use client";
 
-import { Info, Sparkles } from "lucide-react";
+import { Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useOverlay } from "@/components/overlays/overlay-provider";
@@ -17,6 +17,7 @@ import { BILLING_ALERTS, BILLING_API } from "@/lib/billing/constants";
 import {
   type BillingInterval,
   billsOverage,
+  PAYG_PLAN_NAME,
   PLANS,
   type PlanName,
   parsePlanName,
@@ -285,42 +286,18 @@ function UpgradeSuggestionBanner({
   );
 }
 
-// Compact "Start free trial" trigger shown beside the plan title for eligible
-// free orgs. Opens the trial offer modal (plan options + benefits).
-function StartTrialButton({
-  days,
-  tier,
-  usage,
-}: {
-  days: number;
-  tier: TierKey;
-  usage: SubscriptionData["usage"] | undefined;
-}): React.ReactElement {
-  const { open } = useOverlay();
-  return (
-    <button
-      className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-keeperhub-green-dark/30 bg-keeperhub-green-dark/10 px-3 py-1.5 font-medium text-keeperhub-green-dark text-xs transition-colors hover:bg-keeperhub-green-dark/20"
-      onClick={() =>
-        open(TrialUpsellModal, { days, tier, usage }, { size: "2xl" })
-      }
-      type="button"
-    >
-      <Sparkles className="size-3.5" />
-      Start free trial
-    </button>
-  );
-}
-
 // Shown in the Current Plan header while trialing. Opens the trial modal in
 // update mode so the user can change the interval without losing the trial.
 function ManageTrialButton({
   currentTier,
   currentInterval,
   days,
+  trialEndsAt,
 }: {
   currentTier: TierKey;
   currentInterval: BillingInterval;
   days: number;
+  trialEndsAt: string | null;
 }): React.ReactElement {
   const { open } = useOverlay();
   return (
@@ -328,7 +305,13 @@ function ManageTrialButton({
       onClick={() =>
         open(
           TrialUpsellModal,
-          { days, tier: currentTier, isUpdate: true, currentInterval },
+          {
+            days,
+            tier: currentTier,
+            isUpdate: true,
+            currentInterval,
+            trialEndsAt: trialEndsAt ?? undefined,
+          },
           { size: "2xl" }
         )
       }
@@ -448,12 +431,12 @@ function ExecutionUsageBar({
   used,
   limit,
   plan,
-  paygEnabled,
+  paygCovered,
 }: {
   used: number;
   limit: number;
   plan: PlanName;
-  paygEnabled: boolean;
+  paygCovered: boolean;
 }): React.ReactElement {
   const isUnlimited = limit === -1;
   const percent = isUnlimited ? 0 : Math.min((used / limit) * 100, 100);
@@ -461,9 +444,9 @@ function ExecutionUsageBar({
   const isNearLimit = !isUnlimited && percent >= 80;
   const hasOverage = PLANS[plan].overage.enabled;
   const overageRate = PLANS[plan].overage.ratePerThousand;
-  // Free orgs with PAYG on keep running past the limit (charged per execution),
-  // so treat it like overage: no hard block, no destructive styling.
-  const overflowCovered = hasOverage || paygEnabled;
+  // Free orgs keep running past the limit (charged per execution), so treat it
+  // like overage: no hard block, no destructive styling.
+  const overflowCovered = hasOverage || paygCovered;
 
   function resolveBarColor(): string {
     if (isOverLimit && !overflowCovered) {
@@ -540,12 +523,12 @@ function ExecutionUsageBar({
           will be added to your next invoice.
         </p>
       )}
-      {isOverLimit && !hasOverage && paygEnabled && (
+      {isOverLimit && !hasOverage && paygCovered && (
         <p className="text-muted-foreground text-xs">
           Beyond your free limit, each execution is charged via pay-as-you-go.
         </p>
       )}
-      {isOverLimit && !hasOverage && !paygEnabled && (
+      {isOverLimit && !(hasOverage || paygCovered) && (
         <p className="text-destructive text-xs">
           You have reached your monthly execution limit. Upgrade your plan to
           continue.
@@ -718,7 +701,6 @@ function BillingStatusContent({
   gasCredits,
   overageCharges,
   suggestion,
-  trial,
   portalLoading,
   onManageBilling,
 }: {
@@ -727,37 +709,15 @@ function BillingStatusContent({
   gasCredits: GasCreditsData | undefined;
   overageCharges: OverageCharge[];
   suggestion: SuggestionData | null;
-  trial: SubscriptionData["trial"] | undefined;
   portalLoading: boolean;
   onManageBilling: () => void;
 }): React.ReactElement {
   const plan = parsePlanName(sub?.plan);
   const planDef = PLANS[plan];
 
-  // Free orgs can enable pay-as-you-go to keep running past the free limit, so
-  // the over-limit message must not tell them to upgrade when PAYG is on.
-  const [paygEnabled, setPaygEnabled] = useState(false);
-  useEffect(() => {
-    if (plan !== "free") {
-      setPaygEnabled(false);
-      return;
-    }
-    let cancelled = false;
-    async function loadPaygEnabled(): Promise<void> {
-      const res = await fetch(BILLING_API.PAYG);
-      if (!res.ok) {
-        return;
-      }
-      const data = (await res.json()) as { enabled?: boolean };
-      if (!cancelled) {
-        setPaygEnabled(Boolean(data.enabled));
-      }
-    }
-    loadPaygEnabled().catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [plan]);
+  // Free orgs keep running past the free limit on pay-as-you-go, so the
+  // over-limit message must not tell them to upgrade.
+  const paygCovered = plan === PAYG_PLAN_NAME;
 
   const status = sub?.status ?? "active";
   const statusVariant = STATUS_VARIANT[status] ?? "outline";
@@ -778,14 +738,6 @@ function BillingStatusContent({
       "border-keeperhub-green-dark/40 bg-keeperhub-green-dark/10 text-keeperhub-green-dark";
   }
   const badgeVariant = isCanceling ? "outline" : statusVariant;
-  // Only offer the trial to engaged free orgs (>= 50% of the free cap used),
-  // matching the global upsell modal's threshold.
-  const usedRatio =
-    usage && usage.executionLimit > 0
-      ? usage.executionsUsed / usage.executionLimit
-      : 0;
-  const canStartTrial =
-    plan === "free" && trial?.eligible === true && usedRatio >= 0.5;
 
   const renewalMessage = getRenewalMessage(
     sub?.status ?? "active",
@@ -820,15 +772,12 @@ function BillingStatusContent({
             </p>
           )}
         </div>
-        {canStartTrial && trial && (
-          <StartTrialButton days={trial.days} tier={trial.tier} usage={usage} />
-        )}
       </div>
 
       {usage && (
         <ExecutionUsageBar
           limit={usage.executionLimit}
-          paygEnabled={paygEnabled}
+          paygCovered={paygCovered}
           plan={plan}
           used={usage.executionsUsed}
         />
@@ -888,6 +837,7 @@ export function BillingStatus(): React.ReactElement {
                 currentInterval={trialInterval}
                 currentTier={trialTier}
                 days={data?.trial?.days ?? 14}
+                trialEndsAt={sub?.currentPeriodEnd ?? null}
               />
             )}
             {plan !== "free" && (
@@ -910,7 +860,6 @@ export function BillingStatus(): React.ReactElement {
         portalLoading={portalLoading}
         sub={sub}
         suggestion={suggestion}
-        trial={data?.trial}
         usage={data?.usage}
       />
     </Card>

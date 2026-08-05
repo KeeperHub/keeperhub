@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getPaygConfig } from "./config-store";
+import { getPaygSettings } from "./config-store";
 import { getPaygSpentRaw, getPaygUsage } from "./payments";
 import { getPaygPeriod, startOfUtcDay } from "./period";
 
@@ -11,6 +11,7 @@ export type PaygCurrentUsage = {
   periodExecutions: number;
   periodSpentRaw: bigint;
   dailySpentRaw: bigint;
+  /** 0n blocks all spend rather than meaning "unset". */
   dailyCapRaw: bigint;
   periodCapRaw: bigint;
   chainId: number;
@@ -18,16 +19,13 @@ export type PaygCurrentUsage = {
 
 /**
  * Current-period PAYG usage for reporting + guard rails: executions charged and
- * USDC spent this period (window anchored to the enable date), today's spend,
- * and the configured caps. Null if the org has no PAYG config.
+ * USDC spent this period, today's spend, and the caps in force. Every free-tier
+ * org has usage to report, on its own caps or the defaults.
  */
 export async function getCurrentPaygUsage(
   organizationId: string
-): Promise<PaygCurrentUsage | null> {
-  const config = await getPaygConfig(organizationId);
-  if (!config) {
-    return null;
-  }
+): Promise<PaygCurrentUsage> {
+  const config = await getPaygSettings(organizationId);
   const period = getPaygPeriod(config.startedAt);
   const [usage, dailySpentRaw] = await Promise.all([
     getPaygUsage(organizationId, period.start, period.end),

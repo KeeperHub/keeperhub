@@ -212,8 +212,8 @@ importers:
         specifier: ^2.19.0
         version: 2.19.0(@babel/core@7.29.7)(@babel/template@7.29.7)(@types/react@19.2.14)(react@19.2.4)
       keeperhub-pricing-ui:
-        specifier: ^0.1.1
-        version: 0.1.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        specifier: ^0.1.2
+        version: 0.1.2(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       lucide-react:
         specifier: ^0.577.0
         version: 0.577.0(react@19.2.4)
@@ -7170,8 +7170,8 @@ packages:
     resolution: {integrity: sha512-+KJGIyHgkGuIq3IEBNftfhW/LfWhXUIY6OmyVWjliu5KH1y0fw7VQ8YndE2O4qZdMSd9SqbnC8GOcZEy0Om7sA==}
     engines: {node: '>=18'}
 
-  keeperhub-pricing-ui@0.1.1:
-    resolution: {integrity: sha512-E9PKIv23V8CUoUVxcVqoWKwpVwCqq2/r0RttE3MbZa5SHOjCcPNAt/gfLiaTn1BiPC5+CeRCZiM8vuqM5UlDOA==}
+  keeperhub-pricing-ui@0.1.2:
+    resolution: {integrity: sha512-LhGdxZ7VonCDPrOaPwo6mbhgIKUD79ybdHopUZNjd1M8jFcoUDIM3T1e1NjUBVSUemaK0EHH8R0M63teZcFvZw==}
     engines: {node: '>=18'}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
@@ -17381,7 +17381,7 @@ snapshots:
 
   jwt-decode@4.0.0: {}
 
-  keeperhub-pricing-ui@0.1.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
+  keeperhub-pricing-ui@0.1.2(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
     dependencies:
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)

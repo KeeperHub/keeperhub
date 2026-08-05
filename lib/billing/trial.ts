@@ -5,6 +5,7 @@ import {
   DEFAULT_TRIAL_TIER_KEY,
   isConfigurableTrialTier,
   type PlanName,
+  parsePlanName,
   type TierKey,
   TRIAL_PLAN_NAME,
 } from "./plans";
@@ -119,8 +120,14 @@ export function isTrialEligible(
   if (!sub) {
     return true;
   }
-  // Never while currently subscribed to a paid plan.
-  if (sub.providerSubscriptionId != null || sub.plan !== "free") {
+  // Never while currently subscribed to a paid plan. The plan column is free
+  // text and every other read path runs it through parsePlanName, so parse here
+  // too: a raw compare calls an org ineligible over a value the rest of the app
+  // already treats as free (pay-as-you-go orgs, legacy rows).
+  if (
+    sub.providerSubscriptionId != null ||
+    parsePlanName(sub.plan) !== "free"
+  ) {
     return false;
   }
   // First-timer: never trialed, and not a previously-subscribed-then-reset org.

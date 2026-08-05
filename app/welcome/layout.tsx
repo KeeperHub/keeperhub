@@ -4,13 +4,13 @@ import { AnimatePresence, motion } from "motion/react";
 import { LayoutRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { usePathname } from "next/navigation";
 import { type ReactNode, useContext, useEffect, useRef } from "react";
+import { WELCOME_STEPS } from "@/components/welcome/welcome-shell";
 
-// Order used to decide the transition direction between wizard steps.
-const STEP_ORDER = [
+// Order used to decide the transition direction between wizard steps. Derived
+// from the wizard itself so a new step cannot drift out of this list.
+const STEP_ORDER: string[] = [
   "/welcome",
-  "/welcome/create-org",
-  "/welcome/invite-members",
-  "/welcome/connect-agent",
+  ...WELCOME_STEPS.map((step) => step.path),
 ];
 
 const variants = {

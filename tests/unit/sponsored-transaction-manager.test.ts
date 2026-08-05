@@ -96,6 +96,14 @@ const baseContractParams = {
   args: [42],
 };
 
+const blockedRpcUrls: [string, string][] = [
+  ["loopback hostname", "http://localhost:8548"],
+  ["loopback IP literal", "http://127.0.0.1:8548"],
+  ["RFC1918 private range", "http://10.0.0.5:8545"],
+  ["IPv6 loopback", "http://[::1]:8548"],
+  ["IPv6 unique-local range", "http://[fc00::1]:8548"],
+];
+
 function setupSuccessfulSponsorship(): void {
   mockIsSponsorshipSupported.mockReturnValue(true);
   mockIsTestnetChain.mockReturnValue(false);
@@ -299,6 +307,33 @@ describe("executeSponsoredTransaction", () => {
       expect.anything()
     );
   });
+
+  it.each(blockedRpcUrls)(
+    "returns null without attempting sponsorship for a %s rpcUrl",
+    async (_label, rpcUrl) => {
+      setupSuccessfulSponsorship();
+
+      const result = await executeSponsoredTransaction({
+        ...baseTxParams,
+        rpcUrl,
+      });
+
+      expect(result).toBeNull();
+      expect(mockIsSponsorshipSupported).not.toHaveBeenCalled();
+      expect(mockCheckGasCredits).not.toHaveBeenCalled();
+      expect(mockCreateSponsoredClient).not.toHaveBeenCalled();
+      expect(mockSubmitTurnkeySponsoredTransaction).not.toHaveBeenCalled();
+    }
+  );
+
+  it("still attempts sponsorship for a public rpcUrl", async () => {
+    setupSuccessfulSponsorship();
+
+    const result = await executeSponsoredTransaction(baseTxParams);
+
+    expect(result).not.toBeNull();
+    expect(mockCreateSponsoredClient).toHaveBeenCalled();
+  });
 });
 
 describe("executeSponsoredContractTransaction", () => {
@@ -339,4 +374,22 @@ describe("executeSponsoredContractTransaction", () => {
       })
     );
   });
+
+  it.each(blockedRpcUrls)(
+    "returns null without attempting sponsorship for a %s rpcUrl",
+    async (_label, rpcUrl) => {
+      setupSuccessfulSponsorship();
+
+      const result = await executeSponsoredContractTransaction({
+        ...baseContractParams,
+        rpcUrl,
+      });
+
+      expect(result).toBeNull();
+      expect(mockIsSponsorshipSupported).not.toHaveBeenCalled();
+      expect(mockCheckGasCredits).not.toHaveBeenCalled();
+      expect(mockCreateSponsoredClient).not.toHaveBeenCalled();
+      expect(mockSubmitTurnkeySponsoredTransaction).not.toHaveBeenCalled();
+    }
+  );
 });

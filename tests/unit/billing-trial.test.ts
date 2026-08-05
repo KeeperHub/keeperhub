@@ -79,11 +79,11 @@ describe("getTrialTier", () => {
     expect(getTrialTier()).toBe("25k");
   });
 
-  it("reads a valid configured Pro tier", () => {
+  it("stays on 25k for the higher Pro tiers", () => {
     vi.stubEnv("TRIAL_TIER", "50k");
-    expect(getTrialTier()).toBe("50k");
+    expect(getTrialTier()).toBe("25k");
     vi.stubEnv("TRIAL_TIER", "100k");
-    expect(getTrialTier()).toBe("100k");
+    expect(getTrialTier()).toBe("25k");
   });
 
   it("falls back to the default for a non-Pro or unknown tier", () => {
@@ -99,20 +99,20 @@ describe("isTrialPlan", () => {
     vi.unstubAllEnvs();
   });
 
-  it("is true only for the configured trial tier (default 25k)", () => {
+  it("is true only for the trial tier (25k)", () => {
     expect(isTrialPlan("pro", "25k")).toBe(true);
   });
 
-  it("is false for Pro tiers other than the configured one", () => {
+  it("is false for the paid Pro tiers", () => {
     expect(isTrialPlan("pro", "50k")).toBe(false);
     expect(isTrialPlan("pro", "100k")).toBe(false);
     expect(isTrialPlan("pro", null)).toBe(false);
   });
 
-  it("follows the configured tier from env", () => {
+  it("stays on 25k even when env asks for another tier", () => {
     vi.stubEnv("TRIAL_TIER", "50k");
-    expect(isTrialPlan("pro", "50k")).toBe(true);
-    expect(isTrialPlan("pro", "25k")).toBe(false);
+    expect(isTrialPlan("pro", "25k")).toBe(true);
+    expect(isTrialPlan("pro", "50k")).toBe(false);
   });
 
   it("is false for other plans", () => {
@@ -132,6 +132,13 @@ describe("isTrialEligible", () => {
 
   it("is eligible for a fresh free org", () => {
     expect(isTrialEligible(makeSub(), "pro", "25k")).toBe(true);
+  });
+
+  // The plan column is free text and unknown values read as free everywhere
+  // else, so eligibility must not disagree with what the org is shown as.
+  it("is eligible for a row whose plan parses to free", () => {
+    expect(isTrialEligible(makeSub({ plan: "payg" }), "pro", "25k")).toBe(true);
+    expect(isTrialEligible(makeSub({ plan: "" }), "pro", "25k")).toBe(true);
   });
 
   it("is not eligible for non-Pro plans", () => {

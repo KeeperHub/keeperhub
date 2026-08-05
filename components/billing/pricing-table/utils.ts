@@ -5,8 +5,9 @@ import {
   PLANS,
   type PlanName,
   type TierKey,
+  TRIAL_PLAN_NAME,
 } from "@/lib/billing/plans";
-import type { PlanTierItem } from "./types";
+import type { PlanTierItem, TrialInfo } from "./types";
 
 export function formatPrice(price: number): string {
   return `$${price}`;
@@ -36,17 +37,42 @@ export function computeDisplayPrice(
   return getTierPrice(activeTier, interval);
 }
 
+/**
+ * Whether a plan/tier selection is the free-trial offer rather than a pay-now
+ * purchase. The trial rides on one plan and one tier only: Pro at the tier the
+ * server resolved (25k by default). Every other Pro tier, and every other plan,
+ * is paid. Display and checkout intent both read this; the checkout route
+ * re-checks eligibility server-side.
+ */
+export function isTrialSelection(
+  trial: TrialInfo | undefined,
+  planName: PlanName,
+  tierKey: TierKey | null
+): boolean {
+  return (
+    trial?.eligible === true &&
+    planName === TRIAL_PLAN_NAME &&
+    tierKey === trial.tier
+  );
+}
+
+// `trialDays` is set only when the card's current selection is the trial offer
+// (Pro at the server-resolved trial tier for an eligible org).
 export function getButtonLabel(
   planName: PlanName,
   isCurrent: boolean,
   loading: boolean,
-  hasSubscription: boolean
+  hasSubscription: boolean,
+  trialDays?: number | null
 ): string {
   if (loading) {
     return hasSubscription ? "Updating..." : "Redirecting...";
   }
   if (isCurrent) {
     return "Current Plan";
+  }
+  if (trialDays) {
+    return `Start ${trialDays}-day free trial`;
   }
   if (planName === "free") {
     return hasSubscription ? "Downgrade to Free" : "Free";

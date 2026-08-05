@@ -1,0 +1,21 @@
+-- Pay-as-you-go spend caps: "0" is a real zero, not "unlimited".
+--
+-- The guard skipped any cap of 0, so "0" was the encoding for no limit. An org
+-- that wanted to spend nothing had no way to say it: typing 0 read back as
+-- "No limit" and every charge went through. The guard now enforces 0 like any
+-- other cap, which blocks all pay-as-you-go spend.
+--
+-- Every existing "0" was written under the old meaning, so leaving it would
+-- silently switch those orgs from unlimited to blocked on deploy. They move to
+-- the standard defaults instead: $5 daily, $50 monthly (USDC 6-decimal raw).
+-- Caps that were set to a real amount are a deliberate choice and are left
+-- alone.
+--
+-- No client can persist a deliberate "0" until the code shipping with this
+-- migration is live, so this backfill cannot clobber an intentional zero.
+--
+-- payg_config holds one row per organization; the update is small and the lock
+-- is brief (no @requires-db-prep needed).
+UPDATE "payg_config" SET "daily_cap_raw" = '5000000' WHERE "daily_cap_raw" = '0';
+--> statement-breakpoint
+UPDATE "payg_config" SET "period_cap_raw" = '50000000' WHERE "period_cap_raw" = '0';

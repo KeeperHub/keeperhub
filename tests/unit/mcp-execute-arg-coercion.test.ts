@@ -258,20 +258,23 @@ describe("MCP execute tools accept the natural first-guess encoding (#1841)", ()
       "execute_check_and_execute",
       ["contract_address", "chain_id", "function_name", "condition", "action"],
     ],
-  ])("keeps every %s field in the published required list", async (toolName, required) => {
-    const { client, close } = await connectedClient();
-    try {
-      const listed = await client.listTools();
-      const tool = listed.tools.find((t) => t.name === toolName);
-      if (!tool) {
-        throw new Error(`${toolName} is not exposed`);
+  ])(
+    "keeps every %s field in the published required list",
+    async (toolName, required) => {
+      const { client, close } = await connectedClient();
+      try {
+        const listed = await client.listTools();
+        const tool = listed.tools.find((t) => t.name === toolName);
+        if (!tool) {
+          throw new Error(`${toolName} is not exposed`);
+        }
+        const schema = tool.inputSchema as { required?: string[] };
+        expect(schema.required).toEqual(required);
+      } finally {
+        await close();
       }
-      const schema = tool.inputSchema as { required?: string[] };
-      expect(schema.required).toEqual(required);
-    } finally {
-      await close();
     }
-  });
+  );
 
   it("keeps the nested condition value required", async () => {
     const { client, close } = await connectedClient();
@@ -280,11 +283,12 @@ describe("MCP execute tools accept the natural first-guess encoding (#1841)", ()
       const tool = listed.tools.find(
         (t) => t.name === "execute_check_and_execute"
       );
-      const properties = (
-        tool?.inputSchema as {
-          properties: Record<string, { required?: string[] }>;
-        }
-      ).properties;
+      if (!tool) {
+        throw new Error("execute_check_and_execute is not exposed");
+      }
+      const { properties } = tool.inputSchema as {
+        properties: Record<string, { required?: string[] }>;
+      };
 
       expect(properties.condition?.required).toEqual(["operator", "value"]);
     } finally {

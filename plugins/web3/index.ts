@@ -1468,11 +1468,13 @@ const web3Plugin: IntegrationPlugin = {
       outputFields: [
         {
           field: "success",
-          description: "Whether the contract call succeeded",
+          description:
+            "Whether the step completed. True for a real successful write. Also true when failOnError is off and an execution failure (signer/RPC/revert) was softened; check `error` to tell the two apart.",
         },
         {
           field: "transactionHash",
-          description: "The transaction hash of the successful write",
+          description:
+            "The transaction hash of the write. Present on a successful write, and also on a genuine (non-softened) on-chain revert, since the transaction still reached the chain. Absent on a soft-failed (failOnError=false) call and on a pre-broadcast failure (signer/RPC/config error).",
         },
         {
           field: "chainId",
@@ -1507,7 +1509,8 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           field: "error",
-          description: "Error message if the call failed",
+          description:
+            "Error message if the call failed. Also set when failOnError is off and an execution failure was softened into success=true, e.g. 'Contract call failed: Error(Splitter/kicked-too-soon)'. Match this string in a downstream Condition node (contains/matchesRegex) to filter known errors from ones that should alert.",
         },
       ],
       configFields: [
@@ -1567,6 +1570,14 @@ const web3Plugin: IntegrationPlugin = {
           type: "abi-function-args",
           abiField: "abi",
           abiFunctionField: "abiFunction",
+        },
+        {
+          key: "failOnError",
+          label: "Fail workflow on error",
+          type: "fail-on-error-switch",
+          defaultValue: "true",
+          helpTip:
+            "When off, a failed send (signer/RPC error or an on-chain revert) passes a soft error to the next node instead of failing the run. Config/validation problems (bad ABI, missing function, unresolved RPC) always fail the run regardless of this setting.",
         },
         {
           type: "group",

@@ -18,7 +18,7 @@ import {
   SsrfBlockedError,
   safeFetch,
 } from "@/lib/safe-fetch";
-import { getErrorMessage } from "@/lib/utils";
+import { getErrorMessage, resolveFailOnError } from "@/lib/utils";
 import { extractTemplateTokens } from "@/lib/utils/template";
 import type { StepInput } from "@/lib/workflow/executor/step-handler";
 import { DEFAULT_HTTP_METHOD } from "./constants";
@@ -69,14 +69,9 @@ export function resolveTimeoutMs(timeout: unknown): number {
   return seconds * 1000;
 }
 
-/**
- * Resolve the failOnError flag. Defaults to true (a failed request fails the
- * step); only an explicit `false` (boolean or the "false" string the visual
- * editor may persist) opts into soft-fail. Exported for tests.
- */
-export function resolveFailOnError(failOnError: unknown): boolean {
-  return failOnError !== false && failOnError !== "false";
-}
+// Re-exported for tests and existing call sites; canonical implementation
+// lives in lib/utils.ts so Write Contract's failOnError toggle shares it.
+export { resolveFailOnError } from "@/lib/utils";
 
 /**
  * Resolve the HTTP method. The visual editor only writes `httpMethod` to the

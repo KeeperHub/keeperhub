@@ -387,6 +387,34 @@ env:
   GAS_CREDITS_ENTERPRISE_CENTS:
     type: kv
     value: "10000"
+  # Pay As You Go: per-execution USDC price and per-chain treasury (8453 =
+  # Base). Empty price or unset treasury disables charging, which is what left
+  # the billing page showing "not available in this environment" with no
+  # per-execution price.
+  PAYG_EXECUTION_PRICE_USDC:
+    type: kv
+    value: "0.01"
+  PAYG_TREASURY_ADDRESS_8453:
+    type: parameterStore
+    name: payg-treasury-address-8453
+    parameter_name: /eks/techops-staging/keeperhub/payg-treasury-address-8453
+  # x402 settlement for the charges above. Without these the page reports
+  # pay-as-you-go as available and then every charge fails at settlement, so
+  # they belong with the two vars above rather than apart from them.
+  BASE_RPC_URL:
+    type: kv
+    value: "https://mainnet.base.org"
+  X402_FACILITATOR_URL:
+    type: kv
+    value: "https://api.cdp.coinbase.com/platform/v2/x402"
+  CDP_API_KEY_ID:
+    type: parameterStore
+    name: cdp-api-key-id
+    parameter_name: /eks/techops-staging/keeperhub/cdp-api-key-id
+  CDP_API_KEY_SECRET:
+    type: parameterStore
+    name: cdp-api-key-secret
+    parameter_name: /eks/techops-staging/keeperhub/cdp-api-key-secret
   SIMPLE_ACCOUNT_7702_ADDRESS:
     type: parameterStore
     name: simple-account-7702-address

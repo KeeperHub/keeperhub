@@ -18,20 +18,14 @@ const PROTOCOL = "morpho";
 const CHAIN_ID = "1";
 // morpho has the registry's longest setup write chain (two token
 // provisions, three approvals, vault interactions), so it only fits the
-// shard budget on the fast path: a warmed, pinned fork cache
-// (PROTOCOL_FORK_CACHED, so reads are served locally) AND the direct-signing
-// app path (PROTOCOL_DIRECT_SIGN, so writes mine fast instead of going
-// through slow/flaky Turnkey gas sponsorship). Both hold in the nightly
-// full sweep, where it runs; on the staging-push docker path writes are
-// sponsored (~10x slower) so it self-skips there rather than blowing the
-// shard timeout. The sibling chain-1 suites tolerate the slow path and gate
-// on ANVIL_FORK_MAINNET_URL alone.
+// shard budget against a warmed, pinned fork cache (PROTOCOL_FORK_CACHED,
+// so reads are served locally). The sibling chain-1 suites tolerate a cold
+// fork and gate on ANVIL_FORK_MAINNET_URL alone.
 const SKIP_INFRA_TESTS =
   !(
     process.env.DATABASE_URL &&
     process.env.ANVIL_FORK_MAINNET_URL &&
-    process.env.PROTOCOL_FORK_CACHED &&
-    process.env.PROTOCOL_DIRECT_SIGN
+    process.env.PROTOCOL_FORK_CACHED
   ) || process.env.SKIP_INFRA_TESTS === "true";
 
 describe.skipIf(SKIP_INFRA_TESTS)(`${PROTOCOL} (Ethereum)`, () => {

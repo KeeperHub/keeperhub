@@ -120,7 +120,7 @@
     "ioredis": "5.4.2",
     "jose": "^6.2.2",
     "jotai": "^2.19.0",
-    "keeperhub-pricing-ui": "^0.1.1",
+    "keeperhub-pricing-ui": "^0.1.2",
     "lucide-react": "^0.577.0",
     "motion": "^12.38.0",
     "mppx": "^0.5.12",

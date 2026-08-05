@@ -1,6 +1,14 @@
 /** Base mainnet chain id -- the only network PAYG settles on today. */
 export const PAYG_DEFAULT_CHAIN_ID = 8453;
 
+/**
+ * Spend caps every free-tier org starts with. Pay-as-you-go covers all of them,
+ * so these bound the spend of an org that has never opened Billing to set its
+ * own. Decimal USDC; the server converts to raw units.
+ */
+export const PAYG_DEFAULT_DAILY_CAP_USDC = "5";
+export const PAYG_DEFAULT_PERIOD_CAP_USDC = "50";
+
 /** `payg_payments.status` values. */
 export const PAYG_PAYMENT_STATUS = {
   settled: "settled",

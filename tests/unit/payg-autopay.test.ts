@@ -26,11 +26,11 @@ vi.mock("@/lib/address-utils", () => ({
 
 // --- Config / wallet / pricing / treasury, driven per test via state. ---
 const state = vi.hoisted(() => ({
-  config: null as null | {
-    chainId: number;
-    dailyCapRaw: string;
-    periodCapRaw: string;
-    startedAt: Date;
+  config: {
+    chainId: 8453,
+    dailyCapRaw: "1000000",
+    periodCapRaw: "1000000",
+    startedAt: new Date("2026-01-01T00:00:00Z"),
   },
   wallet: null as null | {
     turnkeySubOrgId: string | null;
@@ -40,7 +40,7 @@ const state = vi.hoisted(() => ({
   treasury: null as string | null,
 }));
 vi.mock("@/lib/billing/payg/config-store", () => ({
-  getPaygConfig: vi.fn(async () => state.config),
+  getPaygSettings: vi.fn(async () => state.config),
 }));
 vi.mock("@/lib/web3/wallet-helpers", () => ({
   getOrganizationWallet: vi.fn(async () => state.wallet),
@@ -72,10 +72,12 @@ const PARAMS = { organizationId: "org_1", executionId: "exec_1" };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Caps well above the per-execution price, so only the tests that set a
+  // tighter cap exercise the guard.
   state.config = {
     chainId: 8453,
-    dailyCapRaw: "0",
-    periodCapRaw: "0",
+    dailyCapRaw: "1000000",
+    periodCapRaw: "1000000",
     startedAt: new Date("2026-01-01T00:00:00Z"),
   };
   state.wallet = { turnkeySubOrgId: "sub_1", walletAddress: "0xabc" };
@@ -186,7 +188,7 @@ describe("autopayForExecution claim-before-settle", () => {
     state.config = {
       chainId: 8453,
       dailyCapRaw: "10000",
-      periodCapRaw: "0",
+      periodCapRaw: "1000000",
       startedAt: new Date("2026-01-01T00:00:00Z"),
     };
     getPaygSpentRaw.mockResolvedValue(BigInt(20_000)); // reserved (incl. claim) > cap
@@ -208,7 +210,7 @@ describe("autopayForExecution claim-before-settle", () => {
   it("releases the claim and returns period_cap when the reserved total exceeds the period cap", async () => {
     state.config = {
       chainId: 8453,
-      dailyCapRaw: "0",
+      dailyCapRaw: "1000000",
       periodCapRaw: "10000",
       startedAt: new Date("2026-01-01T00:00:00Z"),
     };
@@ -217,6 +219,42 @@ describe("autopayForExecution claim-before-settle", () => {
     const result = await autopayForExecution(PARAMS);
 
     expect(releasePaygClaim).toHaveBeenCalledWith("org_1", "exec_1");
+    expect(facilitatorSettle).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: false, reason: "period_cap" });
+  });
+
+  // A cap of 0 means spend nothing. It is refused before the claim, so it holds
+  // even when the reserved total reads as 0 (an empty window), which is what a
+  // "reserved > cap" comparison alone would let through.
+  it("blocks on a daily cap of 0 without claiming, even with zero reserved", async () => {
+    state.config = {
+      chainId: 8453,
+      dailyCapRaw: "0",
+      periodCapRaw: "1000000",
+      startedAt: new Date("2026-01-01T00:00:00Z"),
+    };
+    getPaygSpentRaw.mockResolvedValue(BigInt(0));
+
+    const result = await autopayForExecution(PARAMS);
+
+    expect(claimPaygPayment).not.toHaveBeenCalled();
+    expect(facilitatorSettle).not.toHaveBeenCalled();
+    expect(markPaygPaymentSettled).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: false, reason: "daily_cap" });
+  });
+
+  it("blocks on a period cap of 0 without claiming, even with zero reserved", async () => {
+    state.config = {
+      chainId: 8453,
+      dailyCapRaw: "1000000",
+      periodCapRaw: "0",
+      startedAt: new Date("2026-01-01T00:00:00Z"),
+    };
+    getPaygSpentRaw.mockResolvedValue(BigInt(0));
+
+    const result = await autopayForExecution(PARAMS);
+
+    expect(claimPaygPayment).not.toHaveBeenCalled();
     expect(facilitatorSettle).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: false, reason: "period_cap" });
   });

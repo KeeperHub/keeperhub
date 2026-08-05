@@ -21,6 +21,7 @@ export type PricingTableProps = {
   currentTier?: TierKey | null;
   currentInterval?: BillingInterval | null;
   gasCreditCaps?: GasCreditCapsMap;
+  trial?: TrialInfo;
   onPlanUpdated?: () => Promise<void>;
 };
 

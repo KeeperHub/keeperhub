@@ -27,18 +27,26 @@ vi.mock("@/lib/billing/payg/pricing", () => ({
 const upsertPaygConfig = vi.fn(async (..._a: unknown[]) => undefined);
 vi.mock("@/lib/billing/payg/config-store", () => ({
   upsertPaygConfig: (...a: unknown[]) => upsertPaygConfig(...a),
-  deletePaygConfig: vi.fn(async () => undefined),
-  getPaygConfig: vi.fn(async () => ({
-    id: "cfg_1",
-    organizationId: "org_1",
+  getPaygSettings: vi.fn(async () => ({
     chainId: 8453,
     dailyCapRaw: "0",
     periodCapRaw: "0",
     startedAt: new Date("2026-01-01T00:00:00Z"),
+    customized: true,
   })),
 }));
 vi.mock("@/lib/billing/payg/usage", () => ({
-  getCurrentPaygUsage: vi.fn(async () => null),
+  getCurrentPaygUsage: vi.fn(async () => ({
+    startedAt: new Date("2026-01-01T00:00:00Z"),
+    periodStart: new Date("2026-01-01T00:00:00Z"),
+    periodEnd: new Date("2026-02-01T00:00:00Z"),
+    periodExecutions: 0,
+    periodSpentRaw: BigInt(0),
+    dailySpentRaw: BigInt(0),
+    dailyCapRaw: BigInt(0),
+    periodCapRaw: BigInt(0),
+    chainId: 8453,
+  })),
 }));
 vi.mock("@/lib/middleware/auth-helpers", () => ({
   resolveOrganizationId: vi.fn(async () => ({ organizationId: "org_1" })),
@@ -66,7 +74,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("POST /api/billing/payg enable (spend caps)", () => {
+describe("POST /api/billing/payg (spend caps)", () => {
   it("accepts caps typed with a leading dot (.5) and persists the raw amounts", async () => {
     const res = await POST(
       postCaps({ dailyCapUsdc: ".5", periodCapUsdc: "1" })
@@ -82,7 +90,16 @@ describe("POST /api/billing/payg enable (spend caps)", () => {
     );
   });
 
-  it("treats an empty cap as no limit (raw 0) and still enables", async () => {
+  it("persists an explicit 0 cap as 0 rather than dropping it", async () => {
+    const res = await POST(postCaps({ dailyCapUsdc: "0", periodCapUsdc: "0" }));
+
+    expect(res.status).toBe(200);
+    expect(upsertPaygConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ dailyCapRaw: "0", periodCapRaw: "0" })
+    );
+  });
+
+  it("treats a cap left blank as 0", async () => {
     const res = await POST(postCaps({ dailyCapUsdc: "", periodCapUsdc: "" }));
 
     expect(res.status).toBe(200);

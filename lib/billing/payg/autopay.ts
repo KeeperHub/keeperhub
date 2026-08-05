@@ -11,7 +11,7 @@ import {
 } from "@/lib/agentic-wallet/sign-typed-data";
 import { facilitatorClient } from "@/lib/payments/x402/server";
 import { getOrganizationWallet } from "@/lib/web3/wallet-helpers";
-import { getPaygConfig } from "./config-store";
+import { getPaygSettings } from "./config-store";
 import {
   evmNetworkId,
   PAYG_PAYMENT_STATUS,
@@ -149,10 +149,7 @@ export async function autopayForExecution(params: {
 }): Promise<AutopayResult> {
   const { organizationId, executionId } = params;
 
-  const config = await getPaygConfig(organizationId);
-  if (!config) {
-    return { ok: false, reason: "not_eligible" };
-  }
+  const config = await getPaygSettings(organizationId);
 
   // Idempotency: never settle a second on-chain transfer for one execution.
   // A settled row returns its recorded tx; a pending row means another attempt
@@ -173,6 +170,16 @@ export async function autopayForExecution(params: {
   const wallet = await getOrganizationWallet(organizationId).catch(() => null);
   if (!wallet?.turnkeySubOrgId) {
     return { ok: false, reason: "not_eligible" };
+  }
+
+  // A cap of 0 can never accommodate a charge, so refuse before claiming. This
+  // keeps "spend nothing" independent of the window arithmetic below (a claim
+  // made just before UTC midnight falls outside the new day's window, which
+  // would otherwise let a single charge through) and saves an insert/delete on
+  // every execution.
+  const zeroCap = zeroCapBlock(config);
+  if (zeroCap) {
+    return { ok: false, reason: zeroCap };
   }
 
   // Claim the (org, execution) slot with a pending row before settling. The
@@ -239,37 +246,50 @@ function settledOrRefuse(existing: {
   return { ok: false, reason: "payment_failed" };
 }
 
-/** The daily/period cap breached by the reserved total (settled + pending),
- * or null when both are within their configured caps. */
+/** The cap set to 0, which no charge can ever fit under, or null. */
+function zeroCapBlock(config: {
+  dailyCapRaw: string;
+  periodCapRaw: string;
+}): PaygBlockReason | null {
+  if (BigInt(config.dailyCapRaw) === BigInt(0)) {
+    return "daily_cap";
+  }
+  if (BigInt(config.periodCapRaw) === BigInt(0)) {
+    return "period_cap";
+  }
+  return null;
+}
+
+/**
+ * The daily/period cap breached by the reserved total (settled + pending), or
+ * null when both are within their configured caps. Every cap is enforced; a
+ * cap of 0 is refused earlier, before the claim.
+ */
 async function checkCapsReserved(
   organizationId: string,
   config: { dailyCapRaw: string; periodCapRaw: string; startedAt: Date }
 ): Promise<PaygBlockReason | null> {
   const dailyCapRaw = BigInt(config.dailyCapRaw);
-  if (dailyCapRaw > BigInt(0)) {
-    const reservedToday = await getPaygSpentRaw(
-      organizationId,
-      startOfUtcDay(),
-      undefined,
-      { includePending: true }
-    );
-    if (reservedToday > dailyCapRaw) {
-      return "daily_cap";
-    }
+  const reservedToday = await getPaygSpentRaw(
+    organizationId,
+    startOfUtcDay(),
+    undefined,
+    { includePending: true }
+  );
+  if (reservedToday > dailyCapRaw) {
+    return "daily_cap";
   }
 
   const periodCapRaw = BigInt(config.periodCapRaw);
-  if (periodCapRaw > BigInt(0)) {
-    const period = getPaygPeriod(config.startedAt);
-    const reservedPeriod = await getPaygSpentRaw(
-      organizationId,
-      period.start,
-      period.end,
-      { includePending: true }
-    );
-    if (reservedPeriod > periodCapRaw) {
-      return "period_cap";
-    }
+  const period = getPaygPeriod(config.startedAt);
+  const reservedPeriod = await getPaygSpentRaw(
+    organizationId,
+    period.start,
+    period.end,
+    { includePending: true }
+  );
+  if (reservedPeriod > periodCapRaw) {
+    return "period_cap";
   }
 
   return null;

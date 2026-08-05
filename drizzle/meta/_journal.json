@@ -974,6 +974,13 @@
       "when": 1785711210006,
       "tag": "0138_keep_966_direct_execution_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 139,
+      "version": "7",
+      "when": 1785859810382,
+      "tag": "0139_payg_zero_spend_cap_means_zero",
+      "breakpoints": true
     }
   ]
 }

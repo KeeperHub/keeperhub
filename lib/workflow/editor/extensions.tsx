@@ -21,6 +21,7 @@ import {
   resolveSelectValue,
 } from "@/components/workflow/config/chain-select-field";
 import { CodeEditorField } from "@/components/workflow/config/code-editor-field";
+import { FailOnErrorSwitchField } from "@/components/workflow/config/fail-on-error-switch-field";
 import { GasLimitMultiplierField } from "@/components/workflow/config/gas-limit-multiplier-field";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
 import {
@@ -570,6 +571,30 @@ registerFieldRenderer(
       </div>
     );
   }
+);
+
+/**
+ * Fail-On-Error Switch Field
+ * Write Contract's declarative "Fail workflow on error" toggle. Shares
+ * FailOnErrorSwitchField with the HTTP Request node's hardcoded failOnError
+ * toggle so both nodes render and resolve it identically. This renderer is
+ * specific to that field: it resolves default-on through resolveFailOnError
+ * rather than reading field.defaultValue, so it is not a general-purpose
+ * boolean switch renderer.
+ */
+registerFieldRenderer(
+  "fail-on-error-switch",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <FailOnErrorSwitchField
+      description={field.helpTip}
+      disabled={disabled}
+      id={field.key}
+      key={field.key}
+      label={field.label}
+      onChange={(checked) => onUpdateConfig(field.key, checked)}
+      value={config[field.key]}
+    />
+  )
 );
 
 // ============================================================================

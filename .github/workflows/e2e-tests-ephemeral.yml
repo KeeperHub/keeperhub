@@ -401,6 +401,7 @@ jobs:
   # chains.test.ts executes exactly that chain and the executed-test floor is
   # per-chain. See specs/protocol-coverage-methodology.md.
   tier1-simulations-l2:
+    name: tier1-simulations-l2 (${{ matrix.name }})
     needs: should-run
     if: needs.should-run.outputs.run-e2e == 'true'
     runs-on: ubuntu-latest
@@ -818,15 +819,16 @@ jobs:
   # chain 1 since the chronicle/superfluid re-homing; ajna runs against
   # live Base, reads only).
   protocol-coverage-ephemeral:
+    name: protocol-coverage-ephemeral (shard ${{ matrix.shard }})
     needs: [should-run, build-app]
     # Same gate as e2e-vitest-ephemeral: build-app skipped (Docker path)
     # or succeeded admits this job; failed or cancelled blocks it.
     if: ${{ !cancelled() && needs.should-run.outputs.run-e2e == 'true' && (needs.build-app.result == 'success' || needs.build-app.result == 'skipped') }}
     # The suites share one anvil mainnet fork and one wallet, so they run
     # serially within a shard (vitest fileParallelism is off). The full sweep
-    # is ~50 min serial and does not fit one runner, so the protocols are
-    # split across shards balanced by measured runtime, keeping the two
-    # ~10-minute suites (pendle, superfluid) in different shards. The
+    # does not fit one runner, so the protocols are split across shards
+    # balanced by measured per-suite direct-sign runtime, keeping the three
+    # heaviest suites (sky, morpho, spark) in separate shards. The
     # protocol-coverage-floor job merges the shard results and enforces the
     # executed floor + suite completeness across the whole sweep. Adding a
     # protocol means adding it to a shard below; the completeness guard fails
@@ -839,13 +841,13 @@ jobs:
       matrix:
         include:
           - shard: 1
-            suites: superfluid/ethereum chronicle/ethereum rocket-pool/ethereum uniswap/ethereum
+            suites: sky/ethereum pendle/ethereum curve/ethereum rocket-pool/ethereum
           - shard: 2
-            suites: pendle/ethereum safe/ethereum chainlink/ethereum wrapped/ethereum
+            suites: morpho/ethereum ajna/base uniswap/ethereum lido/ethereum safe/ethereum
           - shard: 3
-            suites: ethena/ethereum curve/ethereum frax-ether-v2/ethereum spark/ethereum
+            suites: spark/ethereum superfluid/ethereum chainlink/ethereum chronicle/ethereum
           - shard: 4
-            suites: aave-v3/ethereum lido/ethereum sky/ethereum yearn/ethereum ajna/base morpho/ethereum
+            suites: ethena/ethereum yearn/ethereum aave-v3/ethereum frax-ether-v2/ethereum wrapped/ethereum
     runs-on: ${{ vars.USE_SELF_HOSTED_RUNNERS == 'true' && inputs.caller_event != 'pull_request' && 'arc-keeperhub-build' || 'ubuntu-latest' }}
     # Always staging: e2e validates against test credentials, never prod.
     environment: staging
@@ -1198,20 +1200,6 @@ jobs:
           # instead of blowing the shard timeout. The other chain-1 suites
           # run fine cold and stay gated on ANVIL_FORK_MAINNET_URL alone.
           PROTOCOL_FORK_CACHED: ${{ steps.fork-cache.outputs.dir != '' && '1' || '' }}
-          # Non-empty only on the direct-signing path (bare-metal app, i.e.
-          # image_tag empty: build-app builds with
-          # NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED=false, so fork writes sign
-          # directly and mine fast). The staging-push docker path runs the
-          # production image with gas sponsorship on, routing writes through
-          # Turnkey sponsorship - measured ~10x slower and flaky on a fork
-          # (aave-v3 18s -> 256s, lido 14s -> 204s, pre-flight-simulation
-          # failures). morpho's setup write chain is the longest in the
-          # registry and only fits the shard budget on the direct-sign path, so
-          # it also gates on this: it runs in the nightly full sweep and
-          # self-skips on the docker staging push until that path is moved to
-          # direct signing. Tracked separately; the other suites tolerate the
-          # slow path today.
-          PROTOCOL_DIRECT_SIGN: ${{ inputs.image_tag == '' && '1' || '' }}
           # PR-gate/nightly split: PR-triggered runs shrink each phase to
           # its first runnable action (run-fixture.ts) and the floor
           # derivation above switches to the representatives floor with

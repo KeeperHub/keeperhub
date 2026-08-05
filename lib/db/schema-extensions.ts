@@ -1354,9 +1354,13 @@ export type NewWorkflowHistory = typeof workflowHistory.$inferInsert;
  * Pay As You Go config table
  *
  * One row per org on the PAYG plan. Holds the user-set spend caps and the
- * enable anchor. The current billing period is the monthly window anchored to
+ * period anchor. The current billing period is the monthly window anchored to
  * `startedAt` that contains now (computed, not stored) and bounds the per-period
  * cap + usage reporting. Amounts are USDC 6-decimal raw units stored as text.
+ *
+ * Both caps always carry a value: "0" is a real zero that blocks all spend, not
+ * an "unset" that waves charges through. An org with no row at all runs on the
+ * PAYG_DEFAULT_* caps.
  */
 export const paygConfig = pgTable(
   "payg_config",

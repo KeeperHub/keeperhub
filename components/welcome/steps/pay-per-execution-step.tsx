@@ -8,18 +8,17 @@ import { PayPerExecutionPreview } from "@/components/welcome/previews";
 import { WelcomeShell } from "@/components/welcome/welcome-shell";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { BILLING_API } from "@/lib/billing/constants";
-import { PAYG_DEFAULT_CHAIN_ID } from "@/lib/billing/payg/constants";
+import {
+  PAYG_DEFAULT_CHAIN_ID,
+  PAYG_DEFAULT_DAILY_CAP_USDC,
+  PAYG_DEFAULT_PERIOD_CAP_USDC,
+} from "@/lib/billing/payg/constants";
 
 const NEXT_PATH = "/welcome/connect-agent";
 const BACK_PATH = "/welcome/invite-members";
 const BASE_CHAIN_ID = 8453;
-// Default spending caps applied when a user enables pay-as-you-go here; both are
-// editable later in Billing.
-const DEFAULT_DAILY_CAP_USDC = "5";
-const DEFAULT_PERIOD_CAP_USDC = "50";
 
 type PaygStatus = {
-  enabled: boolean;
   priceUsdc: string;
   treasuryConfigured: boolean;
   chainId: number;
@@ -139,7 +138,6 @@ export function PayPerExecutionStep(): React.ReactElement {
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [balances, setBalances] = useState<ChainBalance[]>([]);
   const [balanceLoading, setBalanceLoading] = useState(true);
-  const [enabling, setEnabling] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -215,50 +213,16 @@ export function PayPerExecutionStep(): React.ReactElement {
       .catch(() => undefined);
   };
 
-  const goNext = (): void => router.push(NEXT_PATH);
-
-  // Enable pay-as-you-go with default spending caps, then advance. On failure we
-  // stay on the step so the user can retry or skip.
-  const handleEnableAndContinue = (): void => {
-    setEnabling(true);
-    fetch(BILLING_API.PAYG, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        dailyCapUsdc: DEFAULT_DAILY_CAP_USDC,
-        periodCapUsdc: DEFAULT_PERIOD_CAP_USDC,
-      }),
-    })
-      .then(async (res) => {
-        if (!res.ok) {
-          const data = (await res.json().catch(() => ({}))) as {
-            error?: string;
-          };
-          toast.error(data.error ?? "Could not enable pay-as-you-go");
-          return;
-        }
-        toast.success("Pay-as-you-go enabled");
-        goNext();
-      })
-      .catch(() => {
-        toast.error("Could not enable pay-as-you-go");
-      })
-      .finally(() => setEnabling(false));
-  };
-
   return (
     <WelcomeShell
-      busy={enabling}
-      description="Every organization gets 5,000 free executions a month. Turn on pay-as-you-go to keep workflows running past the free tier."
-      nextLabel="Enable pay-as-you-go"
+      description="Every organization gets 5,000 free executions a month. Pay-as-you-go keeps your workflows running past the free tier."
+      nextLabel="Continue"
       onBack={() => router.push(BACK_PATH)}
-      onNext={handleEnableAndContinue}
-      onSkip={goNext}
+      onNext={() => router.push(NEXT_PATH)}
       preview={
         <PayPerExecutionPreview
-          dailyCap={`$${DEFAULT_DAILY_CAP_USDC}`}
-          enabled={payg?.enabled ?? false}
-          periodCap={`$${DEFAULT_PERIOD_CAP_USDC}`}
+          dailyCap={`$${PAYG_DEFAULT_DAILY_CAP_USDC}`}
+          periodCap={`$${PAYG_DEFAULT_PERIOD_CAP_USDC}`}
           priceLabel={priceLabel}
         />
       }
@@ -274,7 +238,7 @@ export function PayPerExecutionStep(): React.ReactElement {
             wallet. No credit card required.
           </li>
           <li>
-            Enabling sets a $5 daily and $50 monthly spending cap. Change or
+            You start with a $5 daily and $50 monthly spending cap. Change or
             remove them anytime in Billing.
           </li>
         </ul>
@@ -288,8 +252,8 @@ export function PayPerExecutionStep(): React.ReactElement {
         />
 
         <p className="text-muted-foreground text-xs">
-          Optional now. If you skip, you can enable pay-as-you-go anytime in
-          Billing.
+          You can fund the wallet later. Workflows run on the free tier until
+          you do.
         </p>
       </div>
     </WelcomeShell>

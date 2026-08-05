@@ -20,6 +20,7 @@ const WELCOME_ROOT = /\/welcome$/;
 const WELCOME_ANY = /\/welcome/;
 const CREATE_ORG = /\/welcome\/create-org/;
 const INVITE_MEMBERS = /\/welcome\/invite-members/;
+const PAY_PER_EXECUTION = /\/welcome\/pay-per-execution/;
 const CONNECT_AGENT = /\/welcome\/connect-agent/;
 
 test.describe("welcome gating: visitors", () => {
@@ -126,9 +127,12 @@ test.describe("onboarding wizard: new signup", () => {
       }).toPass({ timeout: 30_000 });
     };
 
-    // Skipping each step is enough to walk the wizard to the end.
+    // Walk one step per call. Only the first two steps are skippable; the
+    // pay-per-execution step has no skip because pay-as-you-go covers every
+    // free org, so it is advanced with its own control.
     await advance("Skip", INVITE_MEMBERS);
-    await advance("Skip", CONNECT_AGENT);
+    await advance("Skip", PAY_PER_EXECUTION);
+    await advance("Continue", CONNECT_AGENT);
 
     // Finish marks onboarding complete and lands the user on the canvas.
     const finishButton = page.getByRole("button", { name: "Finish" });

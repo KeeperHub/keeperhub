@@ -1249,12 +1249,10 @@ function DecorativeNodeCard({
 }
 
 export function PayPerExecutionPreview({
-  enabled,
   priceLabel,
   dailyCap,
   periodCap,
 }: {
-  enabled: boolean;
   priceLabel: string;
   dailyCap: string;
   periodCap: string;
@@ -1284,13 +1282,10 @@ export function PayPerExecutionPreview({
                 <h3 className="font-semibold text-lg">Aave collateral guard</h3>
               </div>
               <Badge
-                className={cn(
-                  "gap-1 border-keeperhub-green/30 text-keeperhub-green",
-                  enabled ? "bg-keeperhub-green/10" : "bg-muted"
-                )}
+                className="gap-1 border-keeperhub-green/30 bg-keeperhub-green/10 text-keeperhub-green"
                 variant="outline"
               >
-                {enabled ? "Live" : "Preview"}
+                Live
               </Badge>
             </div>
 

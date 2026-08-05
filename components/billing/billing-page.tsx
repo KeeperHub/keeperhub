@@ -20,7 +20,7 @@ import { BillingDetails } from "./billing-details";
 import { BillingHistory } from "./billing-history";
 import { BillingStatus } from "./billing-status";
 import { PricingTable } from "./pricing-table";
-import type { GasCreditCapsMap } from "./pricing-table/types";
+import type { GasCreditCapsMap, TrialInfo } from "./pricing-table/types";
 
 type SubscriptionResponse = {
   subscription: {
@@ -29,6 +29,7 @@ type SubscriptionResponse = {
     interval: string | null;
   };
   gasCreditCaps?: GasCreditCapsMap;
+  trial?: TrialInfo;
 };
 
 function AuthGate({
@@ -88,6 +89,7 @@ export function BillingPage(): React.ReactElement {
   const [gasCreditCaps, setGasCreditCaps] = useState<
     GasCreditCapsMap | undefined
   >(undefined);
+  const [trial, setTrial] = useState<TrialInfo | undefined>(undefined);
   const [refreshKey, setRefreshKey] = useState(0);
   const [planLoaded, setPlanLoaded] = useState(false);
   const isAnonymous = !session?.user || session.user.isAnonymous;
@@ -126,6 +128,7 @@ export function BillingPage(): React.ReactElement {
             : null
         );
         setGasCreditCaps(data.gasCreditCaps);
+        setTrial(data.trial);
       }
     } catch (error) {
       console.error("[Billing] Failed to fetch plan:", error);
@@ -139,6 +142,7 @@ export function BillingPage(): React.ReactElement {
     setCurrentPlan("free");
     setCurrentTier(null);
     setCurrentInterval(null);
+    setTrial(undefined);
     setPlanLoaded(false);
     setRefreshKey((k) => k + 1);
     fetchPlan().catch(() => undefined);
@@ -194,13 +198,16 @@ export function BillingPage(): React.ReactElement {
 
           <div className="border-t border-border/50 pt-8" id="plans-section">
             <h2 className="text-xl font-semibold mb-4">Plans</h2>
+            {/* The trial tier is part of the key: it decides the Pro card's
+                default selection, which is initial state inside the table. */}
             <PricingTable
               currentInterval={currentInterval}
               currentPlan={currentPlan}
               currentTier={currentTier}
               gasCreditCaps={gasCreditCaps}
-              key={`${currentPlan}-${currentTier ?? "none"}-${currentInterval ?? "none"}-${String(refreshKey)}`}
+              key={`${currentPlan}-${currentTier ?? "none"}-${currentInterval ?? "none"}-${trial?.eligible === true ? trial.tier : "no-trial"}-${String(refreshKey)}`}
               onPlanUpdated={handlePlanUpdated}
+              trial={trial}
             />
           </div>
 

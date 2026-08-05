@@ -9,7 +9,7 @@ import {
   decideExecutionLimit,
   effectiveExecutionLimit,
 } from "./execution-limit-core";
-import { getPaygConfig } from "./payg/config-store";
+import { isBillingEnabled } from "./feature-flag";
 import {
   type BillingInterval,
   getPlanLimits,
@@ -285,11 +285,12 @@ export async function checkExecutionLimit(
         debtExecutions,
         effectiveLimit,
       };
-    // Free plan at its included limit: if PAYG is enabled, allow the run so it
-    // can be charged per-execution via x402 downstream (the charge is the real
-    // gate); otherwise block. PAYG is a free-tier feature only.
+    // Free plan at its included limit: allow the run so it can be charged
+    // per-execution via x402 downstream. PAYG covers every free org, and the
+    // charge (wallet balance and spend caps) is the real gate. With billing off
+    // nothing downstream can charge, so the included limit is the gate again.
     case "blocked_limit":
-      if (plan === "free" && (await getPaygConfig(organizationId)) !== null) {
+      if (plan === "free" && isBillingEnabled()) {
         return {
           allowed: true,
           isOverage: false,

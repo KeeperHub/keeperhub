@@ -109,6 +109,17 @@ export function getErrorMessage(error: unknown): string {
 }
 
 /**
+ * Resolve a "fail workflow on error" config flag. Defaults to true (a failure
+ * fails the step); only an explicit `false` (boolean or the "false" string
+ * the visual editor may persist) opts into soft-fail. Shared by any step that
+ * offers this toggle (HTTP Request, Write Contract) so the default-on
+ * semantics stay identical everywhere it appears.
+ */
+export function resolveFailOnError(failOnError: unknown): boolean {
+  return failOnError !== false && failOnError !== "false";
+}
+
+/**
  * Async version that handles Promise errors by awaiting them first.
  * Use this in catch blocks where the error might be a Promise.
  */

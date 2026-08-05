@@ -8,6 +8,7 @@ vi.mock("@/lib/logging", () => ({
   logUserError: vi.fn(),
 }));
 
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 // Real error classes so the type guards inside the helper work.
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import {
@@ -31,7 +32,13 @@ describe("resolveSponsoredSendError", () => {
     expect(decision.fallback).toBe(false);
     expect(decision).toMatchObject({
       error: "Transaction reverted: Guard/not-allowed (tx 0xabc)",
+      transactionHash: "0xabc",
     });
+    // No errorClass: a clean, terminal revert stays eligible for
+    // applyFailOnError's softening, same as a direct-signing revert.
+    if (!decision.fallback) {
+      expect(decision.errorClass).toBeUndefined();
+    }
   });
 
   it("does not fall back when the sponsored send is submitted but unconfirmed", () => {
@@ -45,7 +52,12 @@ describe("resolveSponsoredSendError", () => {
     expect(decision.fallback).toBe(false);
     expect(decision).toMatchObject({
       error: expect.stringContaining("not confirmed"),
+      errorClass: ExecutionErrorType.SYSTEM,
     });
+    // No confirmed hash for an unresolved in-flight send.
+    if (!decision.fallback) {
+      expect(decision.transactionHash).toBeUndefined();
+    }
   });
 
   it("falls back to direct signing on a generic pre-broadcast error", () => {

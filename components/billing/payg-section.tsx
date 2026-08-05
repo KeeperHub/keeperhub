@@ -14,16 +14,7 @@ import { toast } from "sonner";
 import { Pager } from "@/components/activity/pager";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { WalletOverlay } from "@/components/overlays/wallet-overlay";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -36,17 +27,12 @@ import {
 } from "@/components/ui/tooltip";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { BILLING_API } from "@/lib/billing/constants";
-import {
-  PAYG_PLAN_NAME,
-  PLANS,
-  type PlanName,
-} from "@/lib/billing/plans";
+import { PAYG_PLAN_NAME, PLANS, type PlanName } from "@/lib/billing/plans";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import { useOrganization } from "@/lib/hooks/use-organization";
 import type { PageMeta } from "@/lib/pagination";
 
 type PaygStatus = {
-  enabled: boolean;
   priceUsdc: string;
   treasuryConfigured: boolean;
   chainId: number;
@@ -57,7 +43,7 @@ type PaygStatus = {
     periodExecutions: number;
     periodSpentUsdc: string;
     dailySpentUsdc: string;
-  } | null;
+  };
 };
 
 const FREE_LIMIT = PLANS[PAYG_PLAN_NAME].features.maxExecutionsPerMonth;
@@ -68,14 +54,18 @@ function formatUsdc(decimal: string): string {
   })}`;
 }
 
-/** Blank a "0" cap for the input; anything else round-trips as-is. */
-function capToInput(decimal: string): string {
-  return Number(decimal) === 0 ? "" : decimal;
-}
+const TRAILING_ZEROS_RE = /0+$/;
+const TRAILING_DOT_RE = /\.$/;
 
-/** A "0" cap reads as no limit; anything else shows the USDC value. */
-function capDisplay(decimal: string): string {
-  return Number(decimal) === 0 ? "No limit" : formatUsdc(decimal);
+/**
+ * A cap as the user typed it, dropping the API's zero padding: "5.000000" ->
+ * "5", "0.500000" -> "0.5", "0.000000" -> "0". A zero cap shows as 0 rather
+ * than an empty field, because it means spend nothing, not "unset".
+ */
+function capToInput(decimal: string): string {
+  return decimal.includes(".")
+    ? decimal.replace(TRAILING_ZEROS_RE, "").replace(TRAILING_DOT_RE, "")
+    : decimal;
 }
 
 function formatDate(iso: string): string {
@@ -217,7 +207,7 @@ function PaygWalletFunding({
       <div className="hidden self-stretch bg-border/60 sm:col-start-2 sm:row-span-2 sm:block" />
 
       <p className="text-foreground text-xs sm:col-start-3 sm:row-start-1">
-        Top up: send USDC on {chainName} to
+        To top up, send USDC on {chainName} to your organization wallet:
       </p>
 
       <div className="flex min-w-0 items-center gap-1.5 sm:col-start-3 sm:row-start-2">
@@ -253,7 +243,8 @@ function PaygWalletFunding({
 
 /**
  * Pay-as-you-go controls for a free org, rendered inside the Current Plan card.
- * Caps show as read-only labels; enabling and editing them happen in a modal.
+ * It is on for every free org, so the only setting is the spend caps, edited
+ * in place.
  */
 export function PaygSection({
   plan,
@@ -262,14 +253,23 @@ export function PaygSection({
 }): React.ReactElement | null {
   const { organization } = useOrganization();
   const orgId = organization?.id;
-  // Only one plan can turn pay-as-you-go on. Others reach this component to
-  // read charges they settled while they were on it, and get history only.
+  // Only one plan carries pay-as-you-go. Others reach this component to read
+  // charges they settled while they were on it, and get history only.
   const canUsePayg = plan === PAYG_PLAN_NAME;
 
   const [status, setStatus] = useState<PaygStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
+  const [daily, setDaily] = useState("");
+  const [period, setPeriod] = useState("");
+
+  // Saved caps are the source of truth for the fields, so applying a status
+  // (initial load, org switch, save response) resets any half-typed edit.
+  const applyStatus = useCallback((next: PaygStatus): void => {
+    setStatus(next);
+    setDaily(capToInput(next.caps.dailyUsdc));
+    setPeriod(capToInput(next.caps.periodUsdc));
+  }, []);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -282,64 +282,40 @@ export function PaygSection({
       if (!res.ok) {
         throw new Error(`status ${res.status}`);
       }
-      setStatus((await res.json()) as PaygStatus);
+      applyStatus((await res.json()) as PaygStatus);
     } catch (error) {
       console.error("[PaygSection] Failed to load status:", error);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyStatus]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: orgId re-triggers on org switch
   useEffect(() => {
     load().catch(() => undefined);
   }, [load, orgId]);
 
-  async function saveCaps(
-    dailyCap: string,
-    periodCap: string,
-    enabling: boolean
-  ): Promise<void> {
+  async function saveCaps(): Promise<void> {
     setSaving(true);
     try {
       const res = await fetch(BILLING_API.PAYG, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          dailyCapUsdc: dailyCap,
-          periodCapUsdc: periodCap,
+          dailyCapUsdc: daily,
+          periodCapUsdc: period,
         }),
       });
       const data = (await res.json()) as PaygStatus & { error?: string };
       if (!res.ok) {
-        toast.error(data.error ?? "Could not update pay-as-you-go");
+        toast.error(data.error ?? "Could not update your spend caps");
         return;
       }
-      setStatus(data);
-      setModalOpen(false);
-      toast.success(enabling ? "Pay-as-you-go enabled" : "Spending caps saved");
+      applyStatus(data);
+      toast.success("Spend caps saved");
     } catch (error) {
       console.error("[PaygSection] Save failed:", error);
-      toast.error("Could not update pay-as-you-go");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function disable(): Promise<void> {
-    setSaving(true);
-    try {
-      const res = await fetch(BILLING_API.PAYG, { method: "DELETE" });
-      const data = (await res.json()) as PaygStatus & { error?: string };
-      if (!res.ok) {
-        toast.error(data.error ?? "Could not disable pay-as-you-go");
-        return;
-      }
-      setStatus(data);
-      toast.success("Pay-as-you-go disabled");
-    } catch (error) {
-      console.error("[PaygSection] Disable failed:", error);
-      toast.error("Could not disable pay-as-you-go");
+      toast.error("Could not update your spend caps");
     } finally {
       setSaving(false);
     }
@@ -361,44 +337,20 @@ export function PaygSection({
   // Nothing here is actionable off the pay-as-you-go plan, so show the settled
   // charges alone. The table renders nothing when there are none.
   if (!canUsePayg) {
-    return <PaygChargesTable key={orgId} paygEnabled={false} standalone />;
+    return <PaygChargesTable key={orgId} standalone />;
   }
 
   const priceConfigured = Number(status.priceUsdc) > 0;
   const available = status.treasuryConfigured && priceConfigured;
+  const dirty =
+    daily !== capToInput(status.caps.dailyUsdc) ||
+    period !== capToInput(status.caps.periodUsdc);
 
   return (
     <div className="space-y-3 border-border/40 border-t pt-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Zap className="size-4 text-keeperhub-green-dark" />
-          <span className="font-medium text-sm">Pay per execution</span>
-          {status.enabled && (
-            <Badge className="border border-keeperhub-green-dark/20 bg-keeperhub-green-dark/10 text-keeperhub-green-dark">
-              Active
-            </Badge>
-          )}
-        </div>
-        {status.enabled ? (
-          <Button
-            disabled={saving}
-            onClick={disable}
-            size="sm"
-            type="button"
-            variant="ghost"
-          >
-            Disable
-          </Button>
-        ) : (
-          <Button
-            disabled={saving || !available}
-            onClick={() => setModalOpen(true)}
-            size="sm"
-            type="button"
-          >
-            Enable pay-as-you-go
-          </Button>
-        )}
+      <div className="flex items-center gap-2">
+        <Zap className="size-4 text-keeperhub-green-dark" />
+        <span className="font-medium text-sm">Pay per execution</span>
       </div>
 
       <p className="text-muted-foreground text-xs">
@@ -420,67 +372,63 @@ export function PaygSection({
         </p>
       )}
 
-      {status.enabled && status.usage && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Metric
-            label="This period"
-            value={`${status.usage.periodExecutions} runs`}
-          />
-          <Metric
-            label="Spent this period"
-            value={formatUsdc(status.usage.periodSpentUsdc)}
-          />
-          <Metric
-            label="Spent today"
-            value={formatUsdc(status.usage.dailySpentUsdc)}
-          />
-          <Metric
-            label="Period"
-            value={`${formatDate(status.usage.periodStart)} - ${formatDate(
-              status.usage.periodEnd
-            )}`}
-          />
-        </div>
-      )}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Metric
+          label="This month"
+          value={`${status.usage.periodExecutions} runs`}
+        />
+        <Metric
+          label="Spent this month"
+          value={formatUsdc(status.usage.periodSpentUsdc)}
+        />
+        <Metric
+          label="Spent today"
+          value={formatUsdc(status.usage.dailySpentUsdc)}
+        />
+        <Metric
+          label="Period"
+          value={`${formatDate(status.usage.periodStart)} - ${formatDate(
+            status.usage.periodEnd
+          )}`}
+        />
+      </div>
 
-      {status.enabled && (
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div className="flex flex-wrap gap-x-8 gap-y-2">
-            <CapLabel
-              hint="Resets daily at 00:00 UTC"
-              label="Daily spend cap"
-              value={capDisplay(status.caps.dailyUsdc)}
-            />
-            <CapLabel
-              label="Per-period spend cap"
-              value={capDisplay(status.caps.periodUsdc)}
-            />
-          </div>
-          <Button
-            disabled={saving}
-            onClick={() => setModalOpen(true)}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            Edit caps
-          </Button>
-        </div>
-      )}
+      <div className="flex flex-wrap items-end gap-3">
+        <CapField
+          hint="Resets daily at 00:00 UTC"
+          id="payg-daily-cap"
+          label="Daily spend cap"
+          onChange={setDaily}
+          value={daily}
+        />
+        <CapField
+          hint="Resets at the start of each billing month"
+          id="payg-period-cap"
+          label="Monthly spend cap"
+          onChange={setPeriod}
+          value={period}
+        />
+        <Button
+          disabled={saving || !(dirty && available)}
+          onClick={() => {
+            saveCaps().catch(() => undefined);
+          }}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          {saving && <Loader2 className="size-4 animate-spin" />}
+          Save caps
+        </Button>
+      </div>
 
-      {/* Not gated on status.enabled: disabling deletes the config row, but the
-          settled charges are real transactions and stay visible. */}
-      <PaygChargesTable key={orgId} paygEnabled={status.enabled} />
+      <p className="text-muted-foreground text-xs">
+        Amounts in USDC. A cap of 0 spends nothing. Executions that would exceed
+        a cap are blocked with a clear reason and recorded as a billing error on
+        the run.
+      </p>
 
-      <PaygCapsDialog
-        enabling={!status.enabled}
-        initialDaily={capToInput(status.caps.dailyUsdc)}
-        initialPeriod={capToInput(status.caps.periodUsdc)}
-        onConfirm={(daily, period) => saveCaps(daily, period, !status.enabled)}
-        onOpenChange={setModalOpen}
-        open={modalOpen}
-        saving={saving}
-      />
+      <PaygChargesTable key={orgId} />
     </div>
   );
 }
@@ -500,122 +448,50 @@ function Metric({
   );
 }
 
-function CapLabel({
+/** A spend cap, edited in place. Left blank it saves as 0, which spends nothing. */
+function CapField({
+  id,
   label,
   value,
   hint,
+  onChange,
 }: {
+  id: string;
   label: string;
   value: string;
-  hint?: string;
+  hint: string;
+  onChange: (next: string) => void;
 }): React.ReactElement {
   return (
-    <div className="space-y-0.5">
+    <div className="space-y-1.5">
       <div className="flex items-center gap-1">
-        <p className="text-muted-foreground text-xs">{label}</p>
-        {hint && (
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  aria-label={hint}
-                  className="inline-flex text-muted-foreground/70 transition-colors hover:text-foreground"
-                  type="button"
-                >
-                  <Info className="size-3" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>{hint}</TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )}
+        <Label className="text-muted-foreground text-xs" htmlFor={id}>
+          {label}
+        </Label>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                aria-label={hint}
+                className="inline-flex text-muted-foreground/70 transition-colors hover:text-foreground"
+                type="button"
+              >
+                <Info className="size-3" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{hint}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
-      <p className="font-medium text-sm">{value}</p>
+      <Input
+        className="h-8 w-32"
+        id={id}
+        inputMode="decimal"
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="0"
+        value={value}
+      />
     </div>
-  );
-}
-
-function PaygCapsDialog({
-  open,
-  onOpenChange,
-  enabling,
-  initialDaily,
-  initialPeriod,
-  saving,
-  onConfirm,
-}: {
-  open: boolean;
-  onOpenChange: (next: boolean) => void;
-  enabling: boolean;
-  initialDaily: string;
-  initialPeriod: string;
-  saving: boolean;
-  onConfirm: (daily: string, period: string) => void;
-}): React.ReactElement {
-  const [daily, setDaily] = useState(initialDaily);
-  const [period, setPeriod] = useState(initialPeriod);
-
-  useEffect(() => {
-    if (open) {
-      setDaily(initialDaily);
-      setPeriod(initialPeriod);
-    }
-  }, [open, initialDaily, initialPeriod]);
-
-  return (
-    <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>
-            {enabling ? "Enable pay-as-you-go" : "Edit spend caps"}
-          </DialogTitle>
-          <DialogDescription>
-            Set optional USDC spend caps. Executions that would exceed a cap are
-            blocked with a clear reason and recorded as a billing error on the
-            run. Leave a field empty for no limit.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="payg-daily-cap">Daily spend cap (USDC)</Label>
-            <Input
-              id="payg-daily-cap"
-              inputMode="decimal"
-              onChange={(e) => setDaily(e.target.value)}
-              placeholder="No limit"
-              value={daily}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="payg-period-cap">Per-period spend cap (USDC)</Label>
-            <Input
-              id="payg-period-cap"
-              inputMode="decimal"
-              onChange={(e) => setPeriod(e.target.value)}
-              placeholder="No limit"
-              value={period}
-            />
-          </div>
-        </div>
-        <DialogFooter>
-          <Button
-            onClick={() => onOpenChange(false)}
-            type="button"
-            variant="ghost"
-          >
-            Cancel
-          </Button>
-          <Button
-            disabled={saving}
-            onClick={() => onConfirm(daily, period)}
-            type="button"
-          >
-            {saving && <Loader2 className="size-4 animate-spin" />}
-            {enabling ? "Enable" : "Save caps"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -642,10 +518,8 @@ function formatDateTime(iso: string): string {
  * paging resets to the first page for the new org.
  */
 function PaygChargesTable({
-  paygEnabled,
   standalone = false,
 }: {
-  paygEnabled: boolean;
   /** Render as its own block rather than a continuation of the section above. */
   standalone?: boolean;
 }): React.ReactElement | null {
@@ -724,10 +598,10 @@ function PaygChargesTable({
         {open && (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">
-              {!paygEnabled && (
+              {standalone && (
                 <p className="text-muted-foreground text-xs">
-                  Pay-as-you-go is off. These are charges from when it was
-                  active.
+                  Pay-as-you-go covers the free plan. These are charges from
+                  when this organization was on it.
                 </p>
               )}
               <Input
