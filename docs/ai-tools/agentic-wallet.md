@@ -72,13 +72,27 @@ The tiers live in a `PreToolUse` hook, which is an **agent-framework** mechanism
 
 | Entry point | auto / ask / block |
 |---|---|
-| A framework agent whose runtime fires `PreToolUse` (Claude Code, Cursor, Cline, Windsurf, OpenCode) | **Yes** — via the registered hook |
-| The KeeperHub MCP server | **`block_threshold_usd` only**, enforced inline before signing. The hook fires on the MCP tool call, where there is no payment shape yet, so it cannot see the 402 |
-| Your own code importing `@keeperhub/wallet` and calling `paymentSigner.fetch()` directly — a backend service, a scheduled job, a test harness, a non-Claude runtime | **No** — nothing reads `safety.json` on this path |
+| **Claude Code** | **Yes** — `skill install` registers the hook in `~/.claude/settings.json` |
+| **Cursor, Cline, Windsurf, OpenCode** | **No.** `skill install` writes the skill file for these agents but does not register a hook — it prints a notice that the agent does not support auto-registered hooks. The skill is installed; the tiers are not enforced |
+| **`keeperhub-wallet-mcp`** (the wallet package's own stdio server) | **`block_threshold_usd` only, and only for x402.** Enforced inline before signing, because the hook fires on the MCP tool call where there is no payment shape yet. **MPP amounts are not checked** — the client never decodes the credential, so the cap check is skipped and the server-side limits are the only bound |
+| Your own code importing `@keeperhub/wallet` and calling `paymentSigner.fetch()` directly — a backend service, a scheduled job, a test harness | **No** — nothing reads `safety.json` on this path |
 
-The [server-side hard limits](#server-side-hard-limits) apply to all three and cannot be bypassed, so the last row is bounded rather than unbounded. But `~/.keeperhub/safety.json` does not read as framework-scoped — it is a user-level file, in a user-level directory, named after the package rather than after the agent. Someone who sets `block_threshold_usd: 10` and then writes a script against the package will reasonably expect that limit to hold, and it will not.
+The [server-side hard limits](#server-side-hard-limits) apply to every row and cannot be bypassed, so none of these is unbounded. But `~/.keeperhub/safety.json` does not read as framework-scoped — it is a user-level file, in a user-level directory, named after the package rather than after the agent. Someone who sets `block_threshold_usd: 10`, then runs their agent in Cursor or writes a script against the package, will reasonably expect that limit to hold. It will not.
 
-If you pay from your own code and want the tiers, call the exported hook yourself before signing, or wrap `paymentSigner` so every payment passes the same check.
+If you pay from your own code and want the tiers, call the exported hook before signing:
+
+```ts
+import { createPreToolUseHook, paymentSigner } from "@keeperhub/wallet";
+
+const hook = await createPreToolUseHook();
+const decision = await hook({
+  tool_name: "keeperhub_wallet_sign",
+  tool_input: { paymentChallenge: { amount: "10000", unit: "microUsdc", asset, payTo } },
+});
+if (decision.decision !== "allow") throw new Error(decision.reason ?? "refused");
+```
+
+Two things a non-interactive caller has to handle. The amount **must** carry an explicit `unit` — `"usd"` for a number, `"microUsdc"` for an integer string — and an untagged amount throws rather than being guessed at. And the hook can return `{decision: "ask"}`, which has no meaning without a runtime to render a prompt: a backend service has to decide for itself whether `ask` means proceed, refuse, or escalate.
 
 ### Server-side hard limits
 
