@@ -1,11 +1,11 @@
 ---
 title: "Validate Workflow"
-description: "Use the validate_workflow MCP tool to check a workflow's structural, listing-eligibility, and Web3-specific correctness before creation or publication."
+description: "Use the validate_workflow MCP tool to check a stored workflow's structural, listing-eligibility, and Web3-specific correctness before execution or publication."
 ---
 
 # validate_workflow
 
-`validate_workflow` checks a stored workflow for structural correctness, marketplace listing eligibility, and Web3-specific configuration problems before you call `create_workflow` or list the workflow on the marketplace. It returns typed error and warning items with precise parameter paths, designed for automated recovery loops.
+`validate_workflow` checks a stored workflow for structural correctness, marketplace listing eligibility, and Web3-specific configuration problems before you execute it or list it on the marketplace. It runs after `create_workflow`, not before: see [Limitations](#limitations). It returns typed error and warning items with precise parameter paths, designed for automated recovery loops.
 
 The tool runs two tiers of checks. The fast tier (default) makes zero network calls and finishes in under 300 ms. The deep tier (`deepCheck: true`) additionally resolves on-chain ABIs for every contract reference and compares them against the declared ABIs, adding up to 3 seconds of latency.
 
