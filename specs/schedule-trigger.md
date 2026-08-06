@@ -373,16 +373,19 @@ kubectl logs -n local -l app=schedule-dispatcher --tail=100
 
 ```bash
 # Check executor pod
-kubectl get pods -n local -l app=
+make executor-status
 
 # Check logs
-kubectl logs -n local -l app= -f
+make executor-logs
 
-# Verify SQS queue has messages
-kubectl exec -n local deploy/localstack -- awslocal sqs get-queue-attributes \
-  --queue-url http://localhost:4566/000000000000/keeperhub-workflow-queue \
-  --attribute-names ApproximateNumberOfMessages
+# Verify the queue has messages
+make queue-status
 ```
+
+If the executor logs show messages being rejected as `bad_signature`, the
+producer and the consumer disagree about the queue URL string, which is part of
+what the message signature covers. Compare `make queue-status` against
+`SQS_QUEUE_URL` in `deploy/local/lib/common.sh`.
 
 ### Image pull errors
 
@@ -469,8 +472,11 @@ For production, use the full K8s mode or hybrid mode with:
 | `deploy/local/hybrid/init-localstack.sh` | LocalStack SQS initialization |
 | `deploy/local/hybrid/README.md` | Hybrid mode documentation |
 | **Full K8s Mode** ||
-| `deploy/local/schedule-trigger.yaml` | K8s manifests for scheduler (full k8s mode) |
+| `deploy/keeperhub-stack/local/values.yaml` | Chart values for the whole pipeline (full k8s mode) |
 | `deploy/local/setup-local.sh` | Minikube infrastructure setup |
+| `deploy/local/deploy.sh` | Image build/load and chart install |
+| `deploy/local/lib/common.sh` | Shared values, including the queue URL |
+| `deploy/local/manifests/elasticmq.yaml` | Queue (ElasticMQ, not LocalStack) |
 | **Tests** ||
 | `tests/unit/schedule-*.test.ts` | Unit tests |
 | `tests/e2e/schedule-pipeline.test.ts` | E2E tests |

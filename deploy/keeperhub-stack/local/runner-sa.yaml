@@ -1,0 +1,34 @@
+# Dedicated ServiceAccount for workflow-runner Job pods (local minikube).
+#
+# The local counterpart of deploy/keeperhub-stack/staging/runner-sa.yaml, kept
+# deliberately identical in intent so the local stack exercises the same
+# isolation model production does.
+#
+# Why this is a raw manifest rather than part of the chart:
+# runner pods are not Helm-rendered. The executor submits each Job object via
+# the Kubernetes API (keeperhub-executor/k8s-job.ts), so this ServiceAccount has
+# to exist in the namespace independently. The executor stamps
+# serviceAccountName: keeperhub-workflow-runner into every Job it creates,
+# taking the name from RUNNER_SERVICE_ACCOUNT.
+#
+# Without this manifest the Job object is still admitted, but its pods are
+# rejected by the ServiceAccount admission controller, and because the Job is
+# created with backoffLimit 0 the execution dies immediately with no retry. That
+# was the state of the local stack before: nothing created this account in the
+# 'local' namespace, so isolated-mode execution could never have worked.
+#
+# Why no RoleBinding: the runner makes no Kubernetes API calls, so nothing binds
+# a Role to this account. Combined with automountServiceAccountToken: false, a
+# runner pod holds no cluster credentials at all, which is the point.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keeperhub-workflow-runner
+  namespace: local
+  labels:
+    app.kubernetes.io/name: keeperhub-workflow-runner
+    app.kubernetes.io/instance: keeperhub-workflow-runner
+    app.kubernetes.io/component: workflow-runner
+    app.kubernetes.io/part-of: keeperhub
+  # Intentionally no annotations.
+automountServiceAccountToken: false

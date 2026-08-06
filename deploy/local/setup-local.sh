@@ -1,566 +1,435 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+# Provisions the local minikube cluster and everything the KeeperHub Helm
+# release expects to already exist: the namespace, TLS issuer, PostgreSQL and
+# the queue.
+#
+# This script owns what staging gets from Terraform and EKS. The application
+# itself is deployed separately by deploy/local/deploy.sh from the same umbrella
+# chart staging and prod use.
+set -euo pipefail
 
-# Resource requirements (match deploy.sh)
-MIN_MEMORY_GB=4
-MIN_CPU_CORES=2
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=deploy/local/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
 
-# Parse arguments
 CHECK_ONLY=false
+RECREATE=false
+RESET_DB=false
+
+usage() {
+    cat <<EOF
+Usage: $0 [OPTIONS]
+
+  --check      Report whether the environment is ready to deploy, then exit
+  --recreate   Delete and recreate the minikube cluster. Required when the
+               existing cluster was built without the ${CNI} CNI, because a
+               cluster's CNI cannot be changed in place. DESTROYS all cluster
+               data, including the local PostgreSQL volume.
+  --reset-db   Drop and recreate the ${PG_DATABASE} database before setup. Use
+               when an older database was bootstrapped with 'db:push' and so
+               cannot accept file-based migrations.
+  --help       Show this message
+EOF
+}
+
 for arg in "$@"; do
     case $arg in
-        --check)
-            CHECK_ONLY=true
-            ;;
-        --help)
-            echo "Usage: $0 [OPTIONS]"
-            echo ""
-            echo "Options:"
-            echo "  --check   Quick check if environment is ready for deploy"
-            echo "  --help    Show this help message"
-            echo ""
-            echo "Without options, runs full setup (minikube, SSL, PostgreSQL, etc.)"
-            exit 0
-            ;;
-        *)
-            echo "Unknown option: $arg"
-            echo "Use --help for usage information"
-            exit 1
-            ;;
+        --check) CHECK_ONLY=true ;;
+        --recreate) RECREATE=true ;;
+        --reset-db) RESET_DB=true ;;
+        --help) usage; exit 0 ;;
+        *) echo "Unknown option: $arg" >&2; usage >&2; exit 1 ;;
     esac
 done
 
-# Quick check function - verifies environment is ready for deploy
+ok()   { echo "  ok    $1"; }
+warn() { echo "  warn  $1"; }
+bad()  { echo "  FAIL  $1"; }
+section() { echo; echo "== $1"; }
+
 quick_check() {
-    echo ""
-    echo "==================================="
-    echo "Checking local environment..."
-    echo "==================================="
-    echo ""
-
     local errors=0
+    section "Checking local environment"
 
-    # Check prerequisites
-    command -v minikube >/dev/null 2>&1 || { echo "✗ minikube not installed"; errors=$((errors + 1)); }
-    command -v kubectl >/dev/null 2>&1 || { echo "✗ kubectl not installed"; errors=$((errors + 1)); }
-    command -v helm >/dev/null 2>&1 || { echo "✗ helm not installed"; errors=$((errors + 1)); }
-    command -v docker >/dev/null 2>&1 || { echo "✗ docker not installed"; errors=$((errors + 1)); }
+    for tool in minikube kubectl helm docker; do
+        command -v "$tool" >/dev/null 2>&1 || { bad "$tool not installed"; errors=$((errors + 1)); }
+    done
 
-    # Check Docker daemon
-    if ! docker info &>/dev/null; then
-        echo "✗ Docker daemon is not running"
+    if ! docker info >/dev/null 2>&1; then
+        bad "docker daemon not running"; errors=$((errors + 1))
+    else
+        ok "docker daemon"
+    fi
+
+    if ! minikube -p "$MINIKUBE_PROFILE" status 2>/dev/null | grep -q "Running"; then
+        bad "minikube profile '$MINIKUBE_PROFILE' not running"; errors=$((errors + 1))
+    else
+        ok "minikube running"
+    fi
+
+    # A cluster without a NetworkPolicy-enforcing CNI silently accepts policies
+    # and enforces none, so this is an error rather than a warning.
+    if ! kube get daemonset -n kube-system calico-node >/dev/null 2>&1; then
+        bad "calico not installed - NetworkPolicy would not be enforced (re-run with --recreate)"
         errors=$((errors + 1))
     else
-        echo "✓ Docker daemon running"
+        ok "calico CNI"
     fi
 
-    # Check Minikube
-    if ! minikube status 2>/dev/null | grep -q "Running"; then
-        echo "✗ Minikube is not running"
-        errors=$((errors + 1))
-    else
-        echo "✓ Minikube running"
-    fi
+    kube get namespace "$NAMESPACE" >/dev/null 2>&1 \
+        && ok "namespace $NAMESPACE" \
+        || { bad "namespace $NAMESPACE missing"; errors=$((errors + 1)); }
 
-    # Check local namespace
-    if ! kubectl get namespace local &>/dev/null; then
-        echo "✗ Namespace 'local' does not exist"
-        errors=$((errors + 1))
-    else
-        echo "✓ Namespace 'local' exists"
-    fi
+    kube get pods -n ingress-nginx -l app.kubernetes.io/component=controller 2>/dev/null | grep -q "Running" \
+        && ok "ingress controller" \
+        || { bad "ingress controller not ready"; errors=$((errors + 1)); }
 
-    # Check ingress controller
-    if ! kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller 2>/dev/null | grep -q "Running"; then
-        echo "✗ Ingress controller not ready"
-        errors=$((errors + 1))
-    else
-        echo "✓ Ingress controller ready"
-    fi
+    kube_ns get pods -l app.kubernetes.io/name=postgresql 2>/dev/null | grep -q "Running" \
+        && ok "postgresql" \
+        || { bad "postgresql not running"; errors=$((errors + 1)); }
 
-    # Check PostgreSQL
-    if ! kubectl get pods -n local -l app.kubernetes.io/name=postgresql 2>/dev/null | grep -q "Running"; then
-        echo "✗ PostgreSQL not running"
-        errors=$((errors + 1))
-    else
-        echo "✓ PostgreSQL running"
-    fi
+    kube_ns get pods -l app=elasticmq 2>/dev/null | grep -q "Running" \
+        && ok "elasticmq (queue)" \
+        || { bad "elasticmq not running - no workflow trigger can be delivered"; errors=$((errors + 1)); }
 
-    # Check LocalStack (for SQS)
-    if ! kubectl get pods -n local -l app=localstack 2>/dev/null | grep -q "Running"; then
-        echo "⚠ LocalStack not running (schedule triggers will not work)"
-    else
-        echo "✓ LocalStack running"
-    fi
+    kube_ns get pods -l app.kubernetes.io/instance=cert-manager 2>/dev/null | grep -q "Running" \
+        && ok "cert-manager" \
+        || warn "cert-manager not running (HTTPS will not work)"
 
-    # Check cert-manager (optional, warn only)
-    if ! kubectl get pods -n local -l app.kubernetes.io/instance=cert-manager 2>/dev/null | grep -q "Running"; then
-        echo "⚠ cert-manager not running (HTTPS may not work)"
-    else
-        echo "✓ cert-manager running"
-    fi
-
-    echo ""
-
-    if [ $errors -gt 0 ]; then
-        echo "==================================="
-        echo "Environment NOT ready ($errors issue(s) found)"
-        echo "==================================="
-        echo ""
-        echo "Run 'make setup-local-kubernetes' to set up the environment"
+    echo
+    if [ "$errors" -gt 0 ]; then
+        echo "Environment not ready ($errors issue(s)). Run: make setup-local-kubernetes"
         exit 1
-    else
-        echo "==================================="
-        echo "Environment ready for deployment!"
-        echo "==================================="
-        exit 0
     fi
+    echo "Environment ready to deploy."
+    exit 0
 }
 
-# If --check flag, run quick check and exit
-if [ "$CHECK_ONLY" = true ]; then
-    quick_check
-fi
+[ "$CHECK_ONLY" = true ] && quick_check
 
-echo "Setting up local development environment for KeeperHub..."
-
-# Check prerequisites
 check_prerequisites() {
-    local missing_deps=0
-
-    echo ""
-    echo "==================================="
-    echo "Checking prerequisites..."
-    echo "==================================="
-    echo ""
-
-    command -v minikube >/dev/null 2>&1 || { echo "✗ minikube is required but not installed - brew install minikube" >&2; missing_deps=1; }
-    command -v kubectl >/dev/null 2>&1 || { echo "✗ kubectl is required but not installed - brew install kubectl" >&2; missing_deps=1; }
-    command -v helm >/dev/null 2>&1 || { echo "✗ helm is required but not installed - brew install helm" >&2; missing_deps=1; }
-    command -v docker >/dev/null 2>&1 || { echo "✗ docker is required but not installed" >&2; missing_deps=1; }
-
-    if [ $missing_deps -eq 1 ]; then
-        echo ""
-        echo "Please install missing dependencies and try again"
-        exit 1
-    fi
-
-    echo "✓ All prerequisites installed"
+    section "Checking prerequisites"
+    require_tools minikube kubectl helm docker mkcert
+    ok "all present"
 }
 
-# Check system resources (match deploy.sh)
 check_resources() {
-    echo ""
-    echo "==================================="
-    echo "Checking system resources..."
-    echo "==================================="
-    echo ""
-
-    local warnings=0
-
-    # Check available memory
-    local total_mem_kb
-    total_mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-    local avail_mem_kb
-    avail_mem_kb=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
-    local total_mem_gb=$((total_mem_kb / 1024 / 1024))
-    local avail_mem_gb=$((avail_mem_kb / 1024 / 1024))
-
-    echo "Memory: ${avail_mem_gb}GB available / ${total_mem_gb}GB total"
-
-    if [ "$avail_mem_gb" -lt "$MIN_MEMORY_GB" ]; then
-        echo "  Warning: Less than ${MIN_MEMORY_GB}GB available memory"
-        warnings=$((warnings + 1))
-    else
-        echo "  ✓ OK"
-    fi
-
-    # Check Docker daemon
-    if ! docker info &>/dev/null; then
-        echo "✗ Docker daemon is not running"
-        exit 1
-    else
-        echo "Docker daemon: ✓ OK"
-    fi
-
-    if [ $warnings -gt 0 ]; then
-        echo ""
-        echo "Found $warnings warning(s). Proceeding anyway..."
-        sleep 2
-    else
-        echo ""
-        echo "All resource checks passed!"
-    fi
+    section "Checking host resources"
+    check_host_resources
 }
 
-# Start minikube
-start_minikube() {
-    echo ""
-    echo "==================================="
-    echo "Starting minikube..."
-    echo "==================================="
-    echo ""
+# Must run only once the CNI is Ready. The ingress addon's admission Jobs make
+# API calls as soon as they start; on a cluster whose CNI is still initialising
+# they fail, never create the 'ingress-nginx-admission' Secret, and the
+# controller then hangs forever on MountVolume.SetUp for that Secret. This is
+# why the cluster is created without --addons=ingress and the addon is enabled
+# separately below.
+ensure_ingress_addon() {
+    if ! minikube -p "$MINIKUBE_PROFILE" addons list | grep -q "ingress.*enabled"; then
+        minikube -p "$MINIKUBE_PROFILE" addons enable ingress
+    fi
 
-    # Check if minikube is already running
-    if minikube status 2>/dev/null | grep -q "Running"; then
-        echo "Minikube is already running"
-        # Ensure ingress addon is enabled
-        if ! minikube addons list | grep -q "ingress.*enabled"; then
-            echo "Enabling ingress addon..."
-            minikube addons enable ingress
-            echo "Waiting for ingress controller to be ready..."
-            kubectl wait --for=condition=Ready pods -l app.kubernetes.io/component=controller -n ingress-nginx --timeout=120s
+    # Recover a cluster where those Jobs already failed for the reason above.
+    # They are one-shot, so a failed Job stays failed until it is recreated.
+    if kube get jobs -n ingress-nginx -o name 2>/dev/null | grep -q admission; then
+        local failed
+        failed=$(kube get jobs -n ingress-nginx \
+            -o jsonpath='{range .items[?(@.status.failed)]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+        if [ -n "$failed" ]; then
+            echo "  ingress admission jobs failed (CNI was not ready), re-running them"
+            kube delete jobs -n ingress-nginx --all --ignore-not-found >/dev/null
+            minikube -p "$MINIKUBE_PROFILE" addons disable ingress >/dev/null
+            minikube -p "$MINIKUBE_PROFILE" addons enable ingress
         fi
-        return 0
     fi
 
-    # Check if minikube exists but is stopped
-    if minikube status 2>/dev/null | grep -q "Stopped"; then
-        echo "Minikube exists but is stopped. Starting..."
-        minikube start
-        kubectl wait --for=condition=Ready nodes --all --timeout=300s
-        echo "Minikube is ready"
-        return 0
+    kube wait --for=condition=Ready pods \
+        -l app.kubernetes.io/component=controller -n ingress-nginx --timeout=300s
+}
+
+# A cluster's CNI is chosen at creation and cannot be changed in place, so an
+# existing non-calico cluster must be recreated or the whole NetworkPolicy story
+# is a lie. Detect via the daemonset rather than 'minikube profile list', which
+# does not reliably report the CNI.
+#
+# The check has to run against a RUNNING cluster, which means a stopped profile
+# must be started before it can be judged. Do not collapse this into the start
+# paths: a stopped non-calico cluster that is merely started would otherwise
+# pass through unverified.
+cni_present() {
+    kube get daemonset -n kube-system calico-node >/dev/null 2>&1
+}
+
+refuse_or_recreate() {
+    cat >&2 <<EOF
+
+The minikube profile "$MINIKUBE_PROFILE" was created without the $CNI CNI.
+
+A NetworkPolicy on this cluster is accepted by the API server and enforced by
+nothing, so any egress restriction would appear to work while blocking nothing.
+The CNI is fixed at creation time and cannot be changed in place.
+
+Recreate the cluster:
+
+    minikube delete -p $MINIKUBE_PROFILE
+    ./deploy/local/setup-local.sh
+
+or re-run with --recreate to do it automatically. Either way this DESTROYS the
+cluster, including the local PostgreSQL volume. 'pnpm dev:bootstrap' regenerates
+the seeded users and workflow fixtures afterwards.
+EOF
+    if [ "$RECREATE" != true ]; then
+        exit 1
     fi
+    echo "  --recreate given, deleting profile $MINIKUBE_PROFILE"
+    minikube delete -p "$MINIKUBE_PROFILE"
+    create_cluster
+}
 
-    echo "Creating a new minikube cluster..."
-
-    export KUBECONFIG=~/.kube/config
-    minikube start \
+create_cluster() {
+    echo "  creating cluster: ${MIN_MEMORY_GB}GB / ${MIN_CPU_CORES} CPU / ${MIN_DISK_GB}GB disk / $CNI"
+    # Deliberately no --addons=ingress here. See ensure_ingress_addon: the
+    # addon's admission Jobs race the CNI and fail if they start first, which
+    # leaves the ingress controller wedged. The addon is enabled after calico
+    # reports Ready instead.
+    minikube -p "$MINIKUBE_PROFILE" start \
         --driver=docker \
-        --memory=${MIN_MEMORY_GB}g \
-        --cpus=${MIN_CPU_CORES} \
-        --addons=ingress \
-        --kubernetes-version=stable \
-        --install-addons=true
+        --cni="$CNI" \
+        --memory="${MIN_MEMORY_GB}g" \
+        --cpus="$MIN_CPU_CORES" \
+        --disk-size="${MIN_DISK_GB}g" \
+        --kubernetes-version=stable
 
-    # Wait for minikube to be ready
-    echo "Waiting for minikube to be ready..."
-    kubectl wait --for=condition=Ready nodes --all --timeout=300s
-
-    # Wait for ingress controller to be ready
-    echo "Waiting for ingress controller to be ready..."
-    kubectl wait --for=condition=Ready pods -l app.kubernetes.io/component=controller -n ingress-nginx --timeout=120s
-
-    echo "Minikube is ready"
+    kube wait --for=condition=Ready nodes --all --timeout=300s
+    kube wait --for=condition=Ready pods -l k8s-app=calico-node -n kube-system --timeout=300s
 }
 
-# Apply Kubernetes resources
-apply_resources() {
-    echo ""
-    echo "==================================="
-    echo "Applying Kubernetes resources..."
-    echo "==================================="
-    echo ""
+start_minikube() {
+    section "Starting minikube"
 
-    kubectl apply -f deploy/local/kubernetes-resources.yaml
-    echo "✓ Kubernetes resources applied"
+    local state="absent"
+    if minikube -p "$MINIKUBE_PROFILE" status 2>/dev/null | grep -q "Running"; then
+        state="running"
+    elif minikube -p "$MINIKUBE_PROFILE" status 2>/dev/null | grep -q "Stopped"; then
+        state="stopped"
+    fi
+
+    case "$state" in
+        running)
+            echo "  cluster already running"
+            ;;
+        stopped)
+            # Reuses the profile's stored configuration, which is what we want.
+            echo "  cluster stopped, starting it"
+            if ! minikube -p "$MINIKUBE_PROFILE" start; then
+                echo "Failed to restart the stopped cluster." >&2
+                exit 1
+            fi
+            kube wait --for=condition=Ready nodes --all --timeout=300s
+            ;;
+        *)
+            create_cluster
+            ;;
+    esac
+
+    # Applies to every path above, including a cluster that was merely restarted.
+    if ! cni_present; then
+        refuse_or_recreate
+    fi
+
+    ensure_ingress_addon
+    ok "cluster ready with $CNI"
 }
 
-# Setup SSL certificates using mkcert
+apply_namespace() {
+    section "Applying namespace"
+    kube apply -f "$REPO_ROOT/deploy/local/manifests/namespace.yaml"
+}
+
+# cert-manager issues the app's certificate from the mkcert CA the developer's
+# browser already trusts. A ClusterIssuer rather than a namespaced Issuer,
+# because the common chart's certificate template emits issuerRef.kind:
+# ClusterIssuer unconditionally. clusterResourceNamespace points cert-manager at
+# the namespace holding the CA secret.
 setup_ssl() {
-    echo ""
-    echo "==================================="
-    echo "Setting up SSL certificates..."
-    echo "==================================="
-    echo ""
+    section "Setting up TLS"
 
-    # Check if mkcert is installed
-    if ! command -v mkcert &> /dev/null; then
-        echo "mkcert is not installed"
-        echo ""
-        echo "Please install mkcert first:"
-        echo ""
-        echo "  Linux:"
-        echo "    sudo apt install libnss3-tools"
-        echo "    curl -JLO 'https://dl.filippo.io/mkcert/latest?for=linux/amd64'"
-        echo "    chmod +x mkcert-v*-linux-amd64"
-        echo "    sudo mv mkcert-v*-linux-amd64 /usr/local/bin/mkcert"
-        echo ""
-        echo "  Mac:"
-        echo "    brew install mkcert"
-        echo ""
-        echo "After installing, run this script again."
+    local ca_root ca_cert ca_key
+    ca_root=$(mkcert -CAROOT)
+    ca_cert="$ca_root/rootCA.pem"
+    ca_key="$ca_root/rootCA-key.pem"
+
+    if [ ! -f "$ca_cert" ]; then
+        echo "  installing mkcert local CA (may prompt for your password)"
+        mkcert -install
+    fi
+    if [ ! -f "$ca_cert" ] || [ ! -f "$ca_key" ]; then
+        echo "mkcert CA files not found at $ca_root" >&2
         exit 1
     fi
 
-    # Install mkcert's local CA if not already installed
-    CA_ROOT=$(mkcert -CAROOT)
-    if [ ! -f "$CA_ROOT/rootCA.pem" ]; then
-        echo "Installing mkcert local CA (this will be trusted by your browser)..."
-        echo "You may be prompted for your password to install the CA certificate."
-        mkcert -install
-        echo "mkcert CA installed successfully!"
-    else
-        echo "mkcert local CA is already installed at: $CA_ROOT"
-    fi
+    helm repo add jetstack https://charts.jetstack.io >/dev/null
+    helm repo update jetstack >/dev/null
 
-    # Add and update cert-manager helm repo
-    helm repo add jetstack https://charts.jetstack.io
-    helm repo update
-
-    # Install cert-manager
     helm upgrade --install cert-manager jetstack/cert-manager \
-        --namespace local \
+        --kube-context "$MINIKUBE_PROFILE" \
+        --namespace "$NAMESPACE" \
+        --version "$CERT_MANAGER_VERSION" \
         --set crds.enabled=true \
+        --set "clusterResourceNamespace=$NAMESPACE" \
         --wait
 
-    # Wait for cert-manager to be ready
-    echo "Waiting for cert-manager pods to be ready..."
-    kubectl wait --for=condition=Ready pods -l app.kubernetes.io/instance=cert-manager -n local --timeout=60s
+    kube_ns create secret generic mkcert-ca \
+        --from-file=tls.crt="$ca_cert" \
+        --from-file=tls.key="$ca_key" \
+        --dry-run=client -o yaml | kube apply -f -
 
-    # Get mkcert CA certificate and key
-    CA_ROOT=$(mkcert -CAROOT)
-    CA_CERT="$CA_ROOT/rootCA.pem"
-    CA_KEY="$CA_ROOT/rootCA-key.pem"
-
-    if [ ! -f "$CA_CERT" ] || [ ! -f "$CA_KEY" ]; then
-        echo "Error: mkcert CA files not found"
-        echo "Expected CA certificate at: $CA_CERT"
-        echo "Expected CA key at: $CA_KEY"
-        exit 1
-    fi
-
-    # Create Kubernetes secret with mkcert CA certificate and key
-    echo "Creating Kubernetes secret with mkcert CA..."
-    kubectl create secret generic mkcert-ca \
-        --from-file=tls.crt="$CA_CERT" \
-        --from-file=tls.key="$CA_KEY" \
-        --namespace=local \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-    # Create a CA Issuer for cert-manager using mkcert CA
-    echo "Creating Issuer with mkcert CA..."
-    cat <<EOF | kubectl apply -f -
+    kube apply -f - <<EOF
 apiVersion: cert-manager.io/v1
-kind: Issuer
+kind: ClusterIssuer
 metadata:
   name: mkcert-ca-issuer
-  namespace: local
 spec:
   ca:
     secretName: mkcert-ca
 EOF
 
-    # Wait a moment for the Issuer to be ready
-    echo "Waiting for Issuer to be ready..."
-    sleep 3
-
-    # Delete existing certificate if it exists
-    echo "Setting up Certificate resource for *.keeperhub.local..."
-    kubectl delete certificate keeperhub-dev-cert -n local --ignore-not-found=true
-    sleep 2
-
-    # Create wildcard certificate for *.keeperhub.local
-    cat <<EOF | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: keeperhub-dev-cert
-  namespace: local
-spec:
-  secretName: keeperhub-dev-cert
-  commonName: "*.keeperhub.local"
-  dnsNames:
-    - "*.keeperhub.local"
-    - "keeperhub.local"
-  issuerRef:
-    name: mkcert-ca-issuer
-    kind: Issuer
-EOF
-
-    echo ""
-    echo "Certificate setup complete!"
-    echo ""
-    echo "The certificate is signed by mkcert's local CA, which your browser already trusts."
-    echo "No manual certificate import needed - browsers will accept it automatically!"
+    kube wait --for=condition=Ready clusterissuer/mkcert-ca-issuer --timeout=60s
+    ok "mkcert-ca-issuer ready"
 }
 
-# Setup Database
 setup_database() {
-    echo ""
-    echo "==================================="
-    echo "Setting up PostgreSQL..."
-    echo "==================================="
-    echo ""
-
-    # Add Bitnami repo
-    helm repo add bitnami https://charts.bitnami.com/bitnami
-    helm repo update
-
-    # Install PostgreSQL
-    echo "Installing PostgreSQL..."
-    helm upgrade --install -n local postgresql \
+    section "Setting up PostgreSQL"
+    helm upgrade --install "$PG_RELEASE" \
         oci://registry-1.docker.io/bitnamicharts/postgresql \
-        --set auth.username=local \
-        --set auth.password=local \
+        --kube-context "$MINIKUBE_PROFILE" \
+        --namespace "$NAMESPACE" \
+        --version "$POSTGRES_CHART_VERSION" \
+        --set "auth.username=$PG_USER" \
+        --set "auth.password=$PG_PASSWORD" \
         --set auth.database=local \
-        --set auth.postgresPassword=local \
+        --set "auth.postgresPassword=$PG_PASSWORD" \
         --set image.registry=docker.io \
-        --set image.repository=bitnamilegacy/postgresql \
-        --set image.tag=17.6.0-debian-12-r4
+        --set "image.repository=$POSTGRES_IMAGE_REPO" \
+        --set "image.tag=$POSTGRES_IMAGE_TAG" \
+        --wait
 
-    # Wait for PostgreSQL to be ready
-    echo "Waiting for PostgreSQL to be ready..."
-    kubectl wait --for=condition=Ready pods -l app.kubernetes.io/name=postgresql -n local --timeout=120s
+    kube wait --for=condition=Ready pods \
+        -l app.kubernetes.io/name=postgresql -n "$NAMESPACE" --timeout=300s
+    ok "postgresql ready"
 }
 
-# Setup LocalStack for SQS (schedule trigger)
-setup_localstack() {
-    echo ""
-    echo "==================================="
-    echo "Setting up LocalStack (SQS)..."
-    echo "==================================="
-    echo ""
+psql_admin() {
+    kube_ns exec "${PG_RELEASE}-0" -- \
+        env "PGPASSWORD=$PG_PASSWORD" psql -U postgres -tAc "$1"
+}
 
-    if [ -z "${LOCALSTACK_AUTH_TOKEN:-}" ]; then
-        echo "WARNING: LOCALSTACK_AUTH_TOKEN is not set. LocalStack may not work correctly."
-        echo "Set it in your .env file or export it: export LOCALSTACK_AUTH_TOKEN=your-token"
-        echo "Get a token from 1Password note called 'localstack.cloud'"
+psql_admin_db() {
+    kube_ns exec "${PG_RELEASE}-0" -- \
+        env "PGPASSWORD=$PG_PASSWORD" psql -U postgres -d "$PG_DATABASE" -tAc "$1"
+}
+
+# A database bootstrapped with 'db:push' has the full schema but an empty
+# drizzle journal, so 'db:migrate' replays migration 0000 and dies on "relation
+# already exists". Detect it and stop, rather than silently mutating a database
+# the developer may care about. Same signal queryJournalDriftState uses.
+check_migration_drift() {
+    local users_exists journal_count
+    users_exists=$(psql_admin_db "SELECT to_regclass('public.users') IS NOT NULL;" 2>/dev/null | tr -d '[:space:]')
+    if [ "$users_exists" != "t" ]; then
+        return 0
     fi
-
-    # Check if LocalStack is already running
-    if kubectl get pods -n local -l app=localstack 2>/dev/null | grep -q "Running"; then
-        echo "LocalStack is already running"
+    journal_count=$(psql_admin_db \
+        "SELECT COALESCE((SELECT count(*) FROM drizzle.__drizzle_migrations), 0);" 2>/dev/null | tr -d '[:space:]')
+    if [ "${journal_count:-0}" != "0" ]; then
         return 0
     fi
 
-    # Deploy LocalStack
-    echo "Deploying LocalStack..."
-    kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: localstack
-  namespace: local
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: localstack
-  template:
-    metadata:
-      labels:
-        app: localstack
-    spec:
-      containers:
-        - name: localstack
-          image: localstack/localstack:latest
-          ports:
-            - containerPort: 4566
-          env:
-            - name: LOCALSTACK_AUTH_TOKEN
-              value: "${LOCALSTACK_AUTH_TOKEN}"
-            - name: SERVICES
-              value: "sqs"
-            - name: DEBUG
-              value: "0"
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "100m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: localstack
-  namespace: local
-spec:
-  selector:
-    app: localstack
-  ports:
-    - port: 4566
-      targetPort: 4566
-  type: ClusterIP
+    cat >&2 <<EOF
+
+The '$PG_DATABASE' database has application tables but an empty drizzle journal.
+That is the signature of a database bootstrapped with 'pnpm db:push'. The local
+stack now applies file-based migrations, matching staging and prod, and
+'db:migrate' would fail on this database with "relation already exists".
+
+Pick one:
+
+  1. Start clean (recommended). A fresh database is the correct starting state,
+     and 'pnpm dev:bootstrap' regenerates the seeded users and fixtures:
+
+         ./deploy/local/setup-local.sh --reset-db
+
+  2. Keep the data and mark the existing migrations as applied:
+
+         make local-db-recover
+
 EOF
-
-    # Wait for LocalStack to be ready
-    echo "Waiting for LocalStack to be ready..."
-    kubectl wait --for=condition=Ready pods -l app=localstack -n local --timeout=120s
-
-    # Create SQS queue
-    echo "Creating SQS queue..."
-    sleep 5  # Give LocalStack a moment to fully initialize
-    kubectl exec -n local deploy/localstack -- \
-        awslocal sqs create-queue --queue-name keeperhub-workflow-queue || true
-
-    echo "LocalStack setup complete!"
+    exit 1
 }
 
-# Create keeperhub database
 create_keeperhub_db() {
-    echo ""
-    echo "==================================="
-    echo "Creating keeperhub database..."
-    echo "==================================="
-    echo ""
+    section "Preparing the $PG_DATABASE database"
 
-    # Wait a bit more for PostgreSQL to be fully ready
-    sleep 5
+    if [ "$RESET_DB" = true ]; then
+        echo "  --reset-db given, dropping $PG_DATABASE"
+        psql_admin "DROP DATABASE IF EXISTS $PG_DATABASE;" >/dev/null
+    fi
 
-    # Create the keeperhub database
-    kubectl exec -n local postgresql-0 -- bash -c 'PGPASSWORD=local psql -U postgres -c "CREATE DATABASE keeperhub;"' 2>/dev/null || echo "Database keeperhub already exists"
-    kubectl exec -n local postgresql-0 -- bash -c 'PGPASSWORD=local psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE keeperhub TO local;"' 2>/dev/null || true
+    if [ "$(psql_admin "SELECT 1 FROM pg_database WHERE datname='$PG_DATABASE';" | tr -d '[:space:]')" != "1" ]; then
+        psql_admin "CREATE DATABASE $PG_DATABASE;" >/dev/null
+        ok "created database $PG_DATABASE"
+    else
+        ok "database $PG_DATABASE exists"
+    fi
 
-    # Grant schema permissions for migrations
-    kubectl exec -n local postgresql-0 -- bash -c 'PGPASSWORD=local psql -U postgres -d keeperhub -c "GRANT ALL ON SCHEMA public TO local; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO local;"' 2>/dev/null || true
+    # drizzle-kit migrate creates its own 'drizzle' schema, so the app role needs
+    # CREATE on the database as well as rights inside public.
+    psql_admin "GRANT ALL PRIVILEGES ON DATABASE $PG_DATABASE TO $PG_USER;" >/dev/null
+    psql_admin_db "GRANT ALL ON SCHEMA public TO $PG_USER;" >/dev/null
+    psql_admin_db "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO $PG_USER;" >/dev/null
 
-    echo "Database keeperhub created successfully"
+    check_migration_drift
 }
 
-# Run database migrations
-run_migrations() {
-    echo ""
-    echo "==================================="
-    echo "Running database migrations..."
-    echo "==================================="
-    echo ""
-
-    # Start port-forward in background
-    kubectl port-forward -n local svc/postgresql 5433:5432 &
-    PF_PID=$!
-    sleep 3
-
-    # Run migrations
-    DATABASE_URL="postgresql://local:local@localhost:5433/keeperhub" pnpm db:push
-
-    # Kill port-forward
-    kill $PF_PID 2>/dev/null || true
-
-    echo "Migrations complete!"
+# Migrations are NOT run here. They run in the app's db-migration initContainer
+# from the migrator image, which is the same thing staging and prod do, so the
+# local stack exercises the real migration path rather than a host-side shortcut.
+setup_queue() {
+    section "Setting up the queue (ElasticMQ)"
+    kube apply -f "$REPO_ROOT/deploy/local/manifests/elasticmq.yaml"
+    kube wait --for=condition=Available deployment/elasticmq \
+        -n "$NAMESPACE" --timeout=180s
+    ok "elasticmq ready at $AWS_ENDPOINT_URL"
+    echo "  queue: $SQS_QUEUE_URL"
 }
 
-# Main setup process
 main() {
     check_prerequisites
     check_resources
     start_minikube
-    apply_resources
+    apply_namespace
     setup_ssl
     setup_database
-    setup_localstack
+    setup_queue
     create_keeperhub_db
-    run_migrations
 
-    echo ""
-    echo "==================================="
-    echo "Local environment setup complete!"
-    echo "==================================="
-    echo ""
-    echo "Infrastructure running:"
-    echo "  - PostgreSQL (keeperhub database)"
-    echo "  - LocalStack (SQS queue: keeperhub-workflow-queue)"
-    echo "  - cert-manager (SSL certificates)"
-    echo ""
-    echo "Next steps:"
-    echo "  1. Run 'minikube tunnel' in another terminal"
-    echo "  2. Add to /etc/hosts: $(minikube ip) workflow.keeperhub.local"
-    echo "  3. Run 'make deploy-to-local-kubernetes' to deploy KeeperHub"
-    echo ""
-    echo "KeeperHub will be available at: https://workflow.keeperhub.local/"
+    cat <<EOF
+
+== Local infrastructure ready
+
+  PostgreSQL   $PG_HOST (database: $PG_DATABASE)
+  Queue        $SQS_QUEUE_URL
+  TLS          ClusterIssuer mkcert-ca-issuer (browser-trusted)
+  CNI          $CNI (NetworkPolicy is enforced)
+
+Next:
+  1. minikube tunnel            # in another terminal
+  2. echo "\$(minikube -p $MINIKUBE_PROFILE ip) $APP_HOST" | sudo tee -a /etc/hosts
+  3. make deploy-to-local-kubernetes
+
+KeeperHub will be at https://$APP_HOST/
+EOF
 }
 
 main

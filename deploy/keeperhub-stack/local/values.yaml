@@ -1,0 +1,594 @@
+# keeperhub-stack umbrella values - local (minikube)
+#
+# A peer of staging/values.yaml and prod/values.yaml, deliberately the same
+# chart and the same structure. Diff this against staging/values.yaml whenever
+# you change either: the local stack is only useful as a development and
+# self-host environment while it stays structurally identical to what staging
+# and prod actually run.
+#
+# This is also the only AWS-free path in the repo. It has no parameterStore
+# entry, no role ARN, no ECR reference and no Cloudflare annotation, so it
+# renders on a stock cluster with no External Secrets Operator, no IRSA and no
+# Cloudflare. That property is load-bearing; keep it.
+#
+# Rendered by deploy/local/deploy.sh with envsubst over an explicit allowlist:
+#   ${IMAGE_TAG} ${APP_HOST} ${DATABASE_URL_IN_CLUSTER}
+#   ${AWS_ENDPOINT_URL} ${AWS_REGION} ${SQS_QUEUE_URL} ${SQS_DLQ_URL}
+# Nothing else is substituted, so shell-looking text such as $(date) below is
+# passed through untouched.
+#
+# No secret material appears in this file. Secrets are plain Kubernetes Secrets
+# created by deploy.sh from .env and referenced with `type: secret`. The common
+# chart supports kv | parameterStore | configmapRef | secret; without External
+# Secrets, `secret` is the mechanism a no-AWS install uses.
+
+app:
+  enabled: true
+
+  # Anchored here and reused by the db-migration initContainer below, mirroring
+  # the shape staging uses.
+  shared_env: &shared_env
+    DATABASE_URL:
+      type: kv
+      value: "${DATABASE_URL_IN_CLUSTER}"
+    # ensureExplicitSslMode deliberately no-ops for *.svc.cluster.local, so no
+    # sslmode and no NODE_EXTRA_CA_CERTS/RDS CA bundle are needed here. That is
+    # the one place local legitimately differs from staging.
+    WORKFLOW_POSTGRES_URL:
+      type: kv
+      value: "${DATABASE_URL_IN_CLUSTER}"
+    INTERNAL_SERVICE_HMAC_SECRET:
+      type: secret
+      name: keeperhub-local-shared
+      key: INTERNAL_SERVICE_HMAC_SECRET
+    AGENTIC_WALLET_HMAC_KMS_KEY:
+      type: secret
+      name: keeperhub-local-shared
+      key: AGENTIC_WALLET_HMAC_KMS_KEY
+    # Name and key match what the executor hands to runner Job pods via
+    # secretKeyRef, so the app and the runner decrypt with the same key.
+    INTEGRATION_ENCRYPTION_KEY:
+      type: secret
+      name: keeperhub-executor-integration-encryption-key
+      key: keeperhub-executor-integration-encryption-key
+    AWS_REGION:
+      type: kv
+      value: "${AWS_REGION}"
+    AWS_ENDPOINT_URL:
+      type: kv
+      value: "${AWS_ENDPOINT_URL}"
+    # ElasticMQ ignores the signature but the SDK still signs, and every client
+    # construction site sets endpoint and static credentials together.
+    AWS_ACCESS_KEY_ID:
+      type: kv
+      value: "test"
+    AWS_SECRET_ACCESS_KEY:
+      type: kv
+      value: "test"
+    # Byte-identical across app, executor and schedule. The queue URL is bound
+    # into the HMAC signing string and the executor verifies against its own
+    # copy, so any difference here rejects every message as bad_signature.
+    SQS_QUEUE_URL:
+      type: kv
+      value: "${SQS_QUEUE_URL}"
+    # Set for the same reason staging sets them. The Code plugin throws at
+    # module load when NODE_ENV is "production" unless both are present, and the
+    # plugin registry imports it eagerly. NODE_ENV is "development" here, so the
+    # guard cannot fire today, but leaving these unset would turn any future
+    # NODE_ENV change into a crash on import rather than a config error.
+    SANDBOX_BACKEND:
+      type: kv
+      value: "remote"
+    SANDBOX_URL:
+      type: kv
+      value: "http://keeperhub-sandbox.local.svc.cluster.local:8787"
+
+  replicaCount: 1
+
+  image:
+    repository: keeperhub-local
+    tag: app-${IMAGE_TAG}
+    # Images are built on the host and side-loaded with 'minikube image load';
+    # there is no registry to pull from.
+    pullPolicy: Never
+
+  service:
+    enabled: true
+    name: keeperhub-app
+    port: 3000
+    type: ClusterIP
+    containerPort: 3000
+    tls:
+      enabled: true
+      # A ClusterIssuer backed by the developer's mkcert CA, created by
+      # setup-local.sh. The common chart's certificate template emits
+      # issuerRef.kind: ClusterIssuer unconditionally, so a namespaced Issuer
+      # would not work here.
+      issuerName: mkcert-ca-issuer
+
+  # The chart owns the Ingress. It used to be defined twice as raw YAML, in
+  # kubernetes-resources.yaml and again inline in deploy.sh, which had to be
+  # kept in sync by hand and sat outside helm --atomic.
+  ingressClassName: nginx
+  ingress:
+    enabled: true
+    hosts:
+      - "${APP_HOST}"
+    annotations:
+      nginx.ingress.kubernetes.io/enable-cors: "true"
+      nginx.ingress.kubernetes.io/proxy-body-size: "16m"
+
+  httpWwwRedirect:
+    enabled: false
+  httpBasicAuth:
+    enabled: false
+
+  deployment:
+    enabled: true
+    initContainers:
+      # Mirrors staging's db-migration initContainer. No irsa-preflight: there
+      # is no AWS to preflight.
+      #
+      # This MUST run from the migrator image. The app image (Dockerfile stage
+      # "runner") carries no drizzle/, no drizzle.config.ts, no scripts/ and no
+      # pnpm, so migrations cannot run from it.
+      #
+      # The tag is deliberately not ":latest". The common chart does not render
+      # imagePullPolicy for initContainers, so kubelet applies its own default,
+      # which is Always for ":latest" and IfNotPresent otherwise. A ":latest"
+      # tag would make this try to pull a side-loaded image that exists only
+      # inside the node.
+      - name: db-migration
+        image: "keeperhub-local:migrator-${IMAGE_TAG}"
+        command:
+          - /bin/sh
+          - -c
+        args:
+          - |
+            set -e
+            echo "Setting up workflow postgres tables..."
+            pnpm exec workflow-postgres-setup
+            echo "Running database migrations..."
+            pnpm db:migrate
+            echo "Seeding chains..."
+            pnpm tsx scripts/seed/seed-chains.ts
+            # Only this line tolerates failure, and only because insertHmacSecret
+            # has no ON CONFLICT: re-deploying against an already-seeded database
+            # legitimately throws on the unique key. Everything above is under
+            # 'set -e' so a real migration failure aborts the pod and helm
+            # --atomic rolls the release back, rather than leaving a
+            # half-migrated database behind a healthy-looking pod.
+            #
+            # The message deliberately does not claim the row already exists.
+            # Any failure lands here, including a malformed secret, and a
+            # confident "already present" would send someone looking in the
+            # wrong place: the real symptom of a missing row is the schedule
+            # dispatcher getting 401 from /api/internal/schedules and scheduled
+            # triggers silently never firing.
+            echo "Seeding internal-service HMAC secret..."
+            printf '%s' "$INTERNAL_SERVICE_HMAC_SECRET" \
+              | ALLOW_REMOTE=1 pnpm tsx scripts/seed-internal-service-hmac.ts \
+              || echo "internal-service HMAC seed did not write a row (see error above); if this is not a redeploy, scheduled triggers will 401"
+            echo "Migrations and seeding completed successfully"
+        env: *shared_env
+
+  serviceAccount:
+    create: true
+    name: keeperhub-app
+    # requireRoleArn and irsaCheck both default to false in the common chart, so
+    # nothing IRSA-related is rendered and nothing needs disabling here.
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+  env:
+    <<: *shared_env
+    # Matches staging, which also runs the production image with this set.
+    #
+    # Be careful what you conclude from it. Next.js inlines process.env.NODE_ENV
+    # into the server bundle at build time, so for anything compiled into the
+    # app this reads "production" no matter what is set here - the value only
+    # affects code that reads the variable at runtime. Concretely: the container
+    # reports NODE_ENV=development while lib/auth.ts still takes its
+    # NODE_ENV === "production" branch. Anything gated that way must be
+    # satisfied with real configuration rather than by trying to declare the
+    # environment non-production.
+    NODE_ENV:
+      type: kv
+      value: "development"
+    # One such gate. lib/auth.ts throws at module load when the captcha is
+    # required and this is absent, and because the whole auth module fails to
+    # evaluate, every route that transitively imports it returns 500 - including
+    # /api/internal/schedules, which is what the schedule dispatcher polls. The
+    # symptom is a dispatcher that logs a 500 every minute and no workflow ever
+    # firing, with all pods green.
+    #
+    # These are Cloudflare's documented always-pass test keys, the same pair the
+    # PR-environment values use. They are dummy values, not credentials.
+    TURNSTILE_SECRET_KEY:
+      type: kv
+      value: "1x0000000000000000000000000000000AA"
+    NEXT_PUBLIC_TURNSTILE_SITE_KEY:
+      type: kv
+      value: "1x00000000000000000000AA"
+    LOG_LEVEL:
+      type: kv
+      value: "debug"
+    HOSTNAME:
+      type: kv
+      value: "0.0.0.0"
+    WORKFLOW_TARGET_WORLD:
+      type: kv
+      value: "@workflow/world-postgres"
+    NEXT_PUBLIC_APP_URL:
+      type: kv
+      value: "https://${APP_HOST}"
+    NEXT_PUBLIC_API_URL:
+      type: kv
+      value: "https://${APP_HOST}"
+    BETTER_AUTH_URL:
+      type: kv
+      value: "https://${APP_HOST}"
+    # Nothing is gated in a self-hosted install; this short-circuits both the
+    # execution guard and the feature route-guard.
+    NEXT_PUBLIC_BILLING_ENABLED:
+      type: kv
+      value: "false"
+    METRICS_COLLECTOR:
+      type: kv
+      value: "prometheus"
+    BETTER_AUTH_SECRET:
+      type: secret
+      name: keeperhub-local-shared
+      key: BETTER_AUTH_SECRET
+    OAUTH_JWT_SECRET:
+      type: secret
+      name: keeperhub-local-shared
+      key: OAUTH_JWT_SECRET
+    MCP_SESSION_SECRET:
+      type: secret
+      name: keeperhub-local-shared
+      key: MCP_SESSION_SECRET
+    TURNKEY_API_PUBLIC_KEY:
+      type: secret
+      name: keeperhub-local-shared
+      key: TURNKEY_API_PUBLIC_KEY
+    TURNKEY_API_PRIVATE_KEY:
+      type: secret
+      name: keeperhub-local-shared
+      key: TURNKEY_API_PRIVATE_KEY
+    TURNKEY_ORGANIZATION_ID:
+      type: secret
+      name: keeperhub-local-shared
+      key: TURNKEY_ORGANIZATION_ID
+
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    tcpSocket:
+      port: 3000
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    # A cold first boot waits behind the full migration set.
+    failureThreshold: 30
+    tcpSocket:
+      port: 3000
+
+  # Nothing scrapes locally, and rendering a ServiceMonitor without the
+  # Prometheus Operator CRDs would fail the render outright.
+  serviceMonitors:
+    enabled: false
+  cronjob:
+    enabled: false
+
+executor:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: keeperhub-local
+    tag: executor-${IMAGE_TAG}
+    pullPolicy: Never
+
+  service:
+    enabled: true
+    name: keeperhub-executor
+    type: ClusterIP
+    port: 3080
+    containerPort: 3080
+    tls:
+      enabled: false
+  ingress:
+    enabled: false
+
+  command: ["/bin/sh"]
+  args:
+    - "-c"
+    - |
+      echo "$(date) - [Executor] Starting..."
+      tsx keeperhub-executor/index.ts
+
+  serviceAccount:
+    create: true
+    name: keeperhub-executor
+    # EXECUTION_MODE=isolated means the executor creates one Job per execution.
+    # Without these it authenticates fine and gets 403 from the API server.
+    rules:
+      - apiGroups: ["batch"]
+        resources: ["jobs"]
+        verbs: ["create", "get", "list", "watch", "delete"]
+      - apiGroups: [""]
+        resources: ["pods"]
+        verbs: ["get", "list", "watch"]
+      - apiGroups: [""]
+        resources: ["pods/log"]
+        verbs: ["get"]
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+  env:
+    DATABASE_URL:
+      type: kv
+      value: "${DATABASE_URL_IN_CLUSTER}"
+    INTERNAL_SERVICE_HMAC_SECRET:
+      type: secret
+      name: keeperhub-local-shared
+      key: INTERNAL_SERVICE_HMAC_SECRET
+    INTEGRATION_ENCRYPTION_KEY:
+      type: secret
+      name: keeperhub-executor-integration-encryption-key
+      key: keeperhub-executor-integration-encryption-key
+
+    AWS_REGION:
+      type: kv
+      value: "${AWS_REGION}"
+    AWS_ENDPOINT_URL:
+      type: kv
+      value: "${AWS_ENDPOINT_URL}"
+    AWS_ACCESS_KEY_ID:
+      type: kv
+      value: "test"
+    AWS_SECRET_ACCESS_KEY:
+      type: kv
+      value: "test"
+    SQS_QUEUE_URL:
+      type: kv
+      value: "${SQS_QUEUE_URL}"
+    SQS_DLQ_URL:
+      type: kv
+      value: "${SQS_DLQ_URL}"
+    # enforce, not warn. Local must fail the same way production does when a
+    # producer and the consumer disagree about the queue URL, and the DLQ makes
+    # that failure visible instead of silent.
+    SQS_HMAC_MODE:
+      type: kv
+      value: "enforce"
+
+    # Per-execution Kubernetes Jobs, the same isolation model production uses.
+    # This is why the local cluster runs a NetworkPolicy-enforcing CNI: without
+    # a real runner pod there is nothing for an egress policy to apply to.
+    EXECUTION_MODE:
+      type: kv
+      value: "isolated"
+    RUNNER_IMAGE:
+      type: kv
+      value: "keeperhub-local:workflow-runner-${IMAGE_TAG}"
+    IMAGE_PULL_POLICY:
+      type: kv
+      value: "Never"
+    K8S_NAMESPACE:
+      type: kv
+      value: "local"
+    RUNNER_SERVICE_ACCOUNT:
+      type: kv
+      value: keeperhub-workflow-runner
+    # The executor builds runner Secret references as
+    # "<RUNNER_SECRET_PREFIX>-<slug>" with the key equal to the name, and
+    # DATABASE_URL and INTEGRATION_ENCRYPTION_KEY are marked optional: false.
+    # The default prefix is keeperhub-executor-common, which is the staging
+    # release fullname; here the fullname is keeperhub-executor. Without this
+    # override every runner pod fails with CreateContainerConfigError and, with
+    # backoffLimit 0, the execution dies immediately.
+    RUNNER_SECRET_PREFIX:
+      type: kv
+      value: keeperhub-executor
+    # A single-node minikube cannot usefully run many concurrent runner pods.
+    MAX_CONCURRENT_JOBS:
+      type: kv
+      value: "2"
+    # Longer than staging on purpose: finished runner pods stay around long
+    # enough to read their logs when debugging locally.
+    JOB_TTL_SECONDS:
+      type: kv
+      value: "600"
+    JOB_ACTIVE_DEADLINE:
+      type: kv
+      value: "300"
+
+    KEEPERHUB_API_URL:
+      type: kv
+      value: "http://keeperhub-app:3000"
+    HEALTH_PORT:
+      type: kv
+      value: "3080"
+    METRICS_COLLECTOR:
+      type: kv
+      value: "console"
+    WORKFLOW_RUNNER_COLLECT_MONITORING:
+      type: kv
+      value: "false"
+    NEXT_PUBLIC_BILLING_ENABLED:
+      type: kv
+      value: "false"
+
+    # Both the executor and workflow-runner images bake NODE_ENV=production, and
+    # the executor transitively module-loads the Code plugin, which throws at
+    # import time unless SANDBOX_BACKEND is "remote" and SANDBOX_URL is set. So
+    # these are required for the executor to start at all, not just to run Code
+    # nodes. No sandbox is deployed locally yet, so this address resolves to
+    # nothing and a Code node fails at runtime with a connection error;
+    # everything else works. Deploying deploy/keeperhub-sandbox locally is the
+    # follow-up.
+    SANDBOX_BACKEND:
+      type: kv
+      value: "remote"
+    SANDBOX_URL:
+      type: kv
+      value: "http://keeperhub-sandbox.local.svc.cluster.local:8787"
+
+    # assertTurnkeyEnvForActiveWallets hard-fails the pod when any organisation
+    # has an active Turnkey wallet and these are unset, and its ephemeral
+    # downgrade only applies to namespaces named pr-*. Empty values are fine
+    # until a wallet exists; deploy.sh copies real ones from .env when present.
+    TURNKEY_API_PUBLIC_KEY:
+      type: secret
+      name: keeperhub-local-shared
+      key: TURNKEY_API_PUBLIC_KEY
+    TURNKEY_API_PRIVATE_KEY:
+      type: secret
+      name: keeperhub-local-shared
+      key: TURNKEY_API_PRIVATE_KEY
+    TURNKEY_ORGANIZATION_ID:
+      type: secret
+      name: keeperhub-local-shared
+      key: TURNKEY_ORGANIZATION_ID
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 3080
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 3080
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+  serviceMonitors:
+    enabled: false
+  cronjob:
+    enabled: false
+
+schedule:
+  enabled: true
+  # Staging runs two replicas behind Lease leader election. One is enough
+  # locally, and leader election is left off so a single pod dispatches
+  # immediately rather than waiting to acquire a lease.
+  replicaCount: 1
+
+  image:
+    repository: keeperhub-local
+    tag: schedule-${IMAGE_TAG}
+    pullPolicy: Never
+
+  service:
+    enabled: true
+    name: keeperhub-schedule
+    type: ClusterIP
+    port: 3000
+    containerPort: 3000
+    tls:
+      enabled: false
+  ingress:
+    enabled: false
+
+  command: ["/bin/sh"]
+  args:
+    - "-c"
+    - |
+      echo "$(date) - [Dispatcher] Starting..."
+      tsx schedule-dispatcher/index.ts
+
+  serviceAccount:
+    create: true
+    name: keeperhub-schedule
+    # Kept even at one replica and with leader election off, so
+    # LEADER_ELECTION_ENABLED can be turned on without an RBAC change.
+    rules:
+      - apiGroups: ["coordination.k8s.io"]
+        resources: ["leases"]
+        verbs: ["get", "create", "update"]
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+  env:
+    KEEPERHUB_API_URL:
+      type: kv
+      value: "http://keeperhub-app:3000"
+    # Signs HTTP calls to /api/internal/schedules, which the app verifies
+    # against the database-backed internal_service_hmac_secrets store seeded by
+    # the app's db-migration initContainer. This is a different mechanism from
+    # the env-var-based SQS message HMAC above: if the row is missing, every
+    # call returns 401 and scheduled triggers silently never fire.
+    INTERNAL_SERVICE_HMAC_SECRET:
+      type: secret
+      name: keeperhub-local-shared
+      key: INTERNAL_SERVICE_HMAC_SECRET
+    AWS_REGION:
+      type: kv
+      value: "${AWS_REGION}"
+    AWS_ENDPOINT_URL:
+      type: kv
+      value: "${AWS_ENDPOINT_URL}"
+    AWS_ACCESS_KEY_ID:
+      type: kv
+      value: "test"
+    AWS_SECRET_ACCESS_KEY:
+      type: kv
+      value: "test"
+    SQS_QUEUE_URL:
+      type: kv
+      value: "${SQS_QUEUE_URL}"
+    LEADER_ELECTION_ENABLED:
+      type: kv
+      value: "false"
+    HEALTH_PORT:
+      type: kv
+      value: "3000"
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 3000
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 3000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+  serviceMonitors:
+    enabled: false
+  cronjob:
+    enabled: false
+
+# Off locally. The block dispatcher opens websocket subscriptions to public RPC
+# endpoints, which is a poor default on a laptop. Turn it on by enabling this
+# and adding block-dispatcher to the image build.
+block:
+  enabled: false
+
+# Off locally. It is purely a Prometheus scrape target and nothing scrapes it.
+metricsCollector:
+  enabled: false
