@@ -146,7 +146,8 @@ It also needs no auth token, which takes a paid third-party dependency off the
 critical path of setting up a development environment.
 
 Queues are declared statically in the ConfigMap in
-`manifests/elasticmq.yaml` rather than created by an API call after startup, so
+`../keeperhub-stack/self-hosted/elasticmq.yaml` rather than created by an API
+call after startup, so
 readiness means the queues already exist and there is no bootstrap race.
 
 One thing to know when debugging. The queue URL is part of what each message's
@@ -166,9 +167,8 @@ queue is live so a rejected message is visible rather than simply gone.
 | `lib/common.sh` | every value shared between the two scripts |
 | `setup-local.sh` | cluster, TLS, PostgreSQL, queue |
 | `deploy.sh` | image build and load, secrets, chart install |
-| `manifests/` | namespace and ElasticMQ |
 | `docker-bake.local.hcl` | bake overlay giving the images local tags |
-| `../keeperhub-stack/self-hosted/values.yaml` | the chart values, a peer of `staging/` and `prod/` |
+| `../keeperhub-stack/self-hosted/` | the profile: values plus namespace, ElasticMQ and the runner ServiceAccount, a peer of `staging/` and `prod/` |
 
 The values file lives beside the staging and production ones on purpose. Diff it
 against `staging/values.yaml` when you change either; this environment is only

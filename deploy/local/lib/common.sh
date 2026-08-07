@@ -49,7 +49,15 @@ CHART_REPO_NAME="techops-services"
 CHART_REPO_URL="https://techops-services.github.io/helm-charts"
 CHART_NAME="techops-services/keeperhub-stack"
 CHART_VERSION="0.3.0"
-VALUES_TEMPLATE="deploy/keeperhub-stack/self-hosted/values.yaml"
+# The self-hosted profile: a peer of staging/ and prod/, holding values.yaml plus
+# the raw manifests applied alongside the release, flat, the same shape staging
+# uses. Anything a self-hosted install needs lives here, not in deploy/local/,
+# which holds only the scripts that stand up minikube. The queue is the case that
+# makes the line concrete: a self-hosted install needs ElasticMQ, so it is part
+# of the profile, whereas PostgreSQL is bring-your-own and is installed by
+# setup-local.sh purely so the local cluster has one.
+PROFILE_DIR="deploy/keeperhub-stack/self-hosted"
+VALUES_TEMPLATE="$PROFILE_DIR/values.yaml"
 HELM_TIMEOUT="15m0s"
 
 # Single local image repository, one tag prefix per component. Mirrors the

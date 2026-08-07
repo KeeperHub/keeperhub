@@ -29,7 +29,7 @@
 
 variable "LOCAL_IMAGE_REPO" { default = "keeperhub-local" }
 
-# Only the components deploy/keeperhub-stack/local/values.yaml actually enables.
+# Only the components deploy/keeperhub-stack/self-hosted/values.yaml enables.
 # block-dispatcher and metricsCollector are off there, so building them would be
 # wasted time; 'local-block' exists for when the block dispatcher is turned on.
 group "local" {

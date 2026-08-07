@@ -244,7 +244,7 @@ start_minikube() {
 
 apply_namespace() {
     section "Applying namespace"
-    kube apply -f "$REPO_ROOT/deploy/local/manifests/namespace.yaml"
+    kube apply -f "$REPO_ROOT/$PROFILE_DIR/namespace.yaml"
 }
 
 # cert-manager issues the app's certificate from the mkcert CA the developer's
@@ -397,7 +397,7 @@ create_keeperhub_db() {
 # local stack exercises the real migration path rather than a host-side shortcut.
 setup_queue() {
     section "Setting up the queue (ElasticMQ)"
-    kube apply -f "$REPO_ROOT/deploy/local/manifests/elasticmq.yaml"
+    kube apply -f "$REPO_ROOT/$PROFILE_DIR/elasticmq.yaml"
     kube wait --for=condition=Available deployment/elasticmq \
         -n "$NAMESPACE" --timeout=180s
     ok "elasticmq ready at $AWS_ENDPOINT_URL"

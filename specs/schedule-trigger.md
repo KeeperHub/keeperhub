@@ -476,7 +476,7 @@ For production, use the full K8s mode or hybrid mode with:
 | `deploy/local/setup-local.sh` | Minikube infrastructure setup |
 | `deploy/local/deploy.sh` | Image build/load and chart install |
 | `deploy/local/lib/common.sh` | Shared values, including the queue URL |
-| `deploy/local/manifests/elasticmq.yaml` | Queue (ElasticMQ, not LocalStack) |
+| `deploy/keeperhub-stack/self-hosted/elasticmq.yaml` | Queue (ElasticMQ, not LocalStack) |
 | **Tests** ||
 | `tests/unit/schedule-*.test.ts` | Unit tests |
 | `tests/e2e/schedule-pipeline.test.ts` | E2E tests |
