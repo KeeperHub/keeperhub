@@ -59,6 +59,25 @@ IMAGE_REPO="keeperhub-local"
 
 APP_HOST="workflow.keeperhub.local"
 
+# Cloudflare's documented always-pass Turnstile test keys, the same pair the
+# PR-environment values use. Dummy values, not credentials.
+#
+# These two are NOT interchangeable in how they are delivered, and getting that
+# wrong produces a signup form that renders fine and then fails:
+#
+#   TURNSTILE_SECRET_KEY is read at runtime, so the values file supplies it.
+#     Without it lib/auth.ts throws at module load and every route importing the
+#     auth module returns 500.
+#   NEXT_PUBLIC_TURNSTILE_SITE_KEY is read by a client component
+#     (components/auth/connect-auth-panel.tsx), so Next.js inlines it into the
+#     browser bundle at BUILD time. Setting it in the values file does nothing.
+#     It has to be a build arg, which is why it is exported for the image build
+#     below rather than listed with the other app env.
+#     Symptom when missing: the captcha widget never renders, the browser sends
+#     no token, and signup fails with "Missing CAPTCHA response".
+TURNSTILE_TEST_SITE_KEY="1x00000000000000000000AA"
+TURNSTILE_TEST_SECRET_KEY="1x0000000000000000000000000000000AA"
+
 # --- Queue -------------------------------------------------------------------
 # ElasticMQ, not LocalStack. It speaks the SQS API, needs no auth token, and
 # declares its queues statically so readiness implies queue-ready.

@@ -91,6 +91,23 @@ your current context.
 
 Override with `MINIKUBE_PROFILE` if you want a different name.
 
+One consequence to know about, because it looks like a broken cluster when it
+is not. Creating a profile does not make it the *active* one, so a bare
+`minikube status` reports on whatever profile was active before, very likely
+showing `Stopped` while this stack is running perfectly well:
+
+```bash
+minikube status                 # the OTHER profile - probably "Stopped"
+minikube status -p keeperhub    # this stack
+minikube profile list           # ACTIVE PROFILE and ACTIVE KUBECONTEXT differ
+```
+
+`minikube profile list` shows the split directly: the `-p` flag drives every
+`minikube` subcommand, while `kubectl` follows its own current context. Pass
+`-p keeperhub` to `minikube` and `--context keeperhub` to `kubectl`, which is
+what every target in the Makefile does. To stop typing `-p`, make it the default
+with `minikube profile keeperhub`; switch back with `minikube profile minikube`.
+
 ## Why calico
 
 `setup-local-kubernetes` creates the cluster with `--cni=calico`. minikube's

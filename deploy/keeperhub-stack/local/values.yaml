@@ -207,14 +207,18 @@ app:
     # symptom is a dispatcher that logs a 500 every minute and no workflow ever
     # firing, with all pods green.
     #
-    # These are Cloudflare's documented always-pass test keys, the same pair the
-    # PR-environment values use. They are dummy values, not credentials.
+    # Cloudflare's documented always-pass test key. A dummy value, not a
+    # credential. Read at runtime, so supplying it here works.
+    #
+    # Its partner, NEXT_PUBLIC_TURNSTILE_SITE_KEY, is deliberately NOT here.
+    # A client component reads it, so Next.js inlines it into the browser bundle
+    # at build time and a value set here would be silently ignored: the widget
+    # would never render, the browser would send no token, and signup would fail
+    # with "Missing CAPTCHA response" while the server looked correctly
+    # configured. It is passed as a build arg by deploy/local/deploy.sh instead.
     TURNSTILE_SECRET_KEY:
       type: kv
       value: "1x0000000000000000000000000000000AA"
-    NEXT_PUBLIC_TURNSTILE_SITE_KEY:
-      type: kv
-      value: "1x00000000000000000000AA"
     LOG_LEVEL:
       type: kv
       value: "debug"

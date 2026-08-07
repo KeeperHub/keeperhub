@@ -79,6 +79,11 @@ preflight() {
 # Next.js build run once rather than once per image.
 build_images() {
     section "Building images"
+    # NEXT_PUBLIC_* values are inlined into the browser bundle by Next.js at
+    # build time, so the site key has to be present HERE. It cannot be supplied
+    # through the values file like the rest of the app config. docker-bake.hcl
+    # already declares it as a variable and passes it to the app target.
+    NEXT_PUBLIC_TURNSTILE_SITE_KEY="$TURNSTILE_TEST_SITE_KEY" \
     docker buildx bake \
         -f docker-bake.hcl \
         -f deploy/local/docker-bake.local.hcl \
