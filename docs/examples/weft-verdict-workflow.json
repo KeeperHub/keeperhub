@@ -1,0 +1,100 @@
+{
+  "name": "Weft — Submit Milestone Verdict",
+  "description": "Manual workflow for a verifier agent to call WeftMilestone.submitVerdict(bytes32,bool,bytes32) on 0G Galileo testnet after evidence collection. Import into KeeperHub via MCP create_workflow or paste nodes in the visual builder.",
+  "tags": ["weft", "milestone", "verifier", "0g"],
+  "enabled": false,
+  "nodes": [
+    {
+      "id": "trigger-manual",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Run after deadline",
+        "description": "Operator or agent triggers when milestone evidence is ready",
+        "type": "trigger",
+        "config": {
+          "triggerType": "Manual"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "submit-verdict",
+      "type": "action",
+      "position": { "x": 280, "y": 0 },
+      "data": {
+        "label": "submitVerdict",
+        "description": "Submit verifier ballot + evidence root to WeftMilestone",
+        "type": "action",
+        "config": {
+          "actionType": "web3/write-contract",
+          "network": "16602",
+          "contractAddress": "0x9f66158c560ce5c8b40820fdcd2874ff8d852192",
+          "abiFunction": "submitVerdict(bytes32,bool,bytes32)",
+          "args": [
+            "{{@trigger-manual:Run after deadline.milestoneHash}}",
+            "{{@trigger-manual:Run after deadline.verified}}",
+            "{{@trigger-manual:Run after deadline.evidenceRoot}}"
+          ]
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "release-escrow",
+      "type": "action",
+      "position": { "x": 560, "y": 0 },
+      "data": {
+        "label": "release (optional)",
+        "description": "Permissionless capital release after milestone finalizes verified=true",
+        "type": "action",
+        "config": {
+          "actionType": "web3/write-contract",
+          "network": "16602",
+          "contractAddress": "0x9f66158c560ce5c8b40820fdcd2874ff8d852192",
+          "abiFunction": "release(bytes32)",
+          "args": ["{{@trigger-manual:Run after deadline.milestoneHash}}"]
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-trigger-submit",
+      "source": "trigger-manual",
+      "target": "submit-verdict"
+    },
+    {
+      "id": "edge-submit-release",
+      "source": "submit-verdict",
+      "target": "release-escrow"
+    }
+  ],
+  "pinData": {
+    "trigger-manual": {
+      "milestoneHash": "0x516975afcb46acf3ea2265789ea0a64516db9f1d8e6cfb65737fc9cfafb1c16f",
+      "verified": true,
+      "evidenceRoot": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "weft": {
+    "contract": "WeftMilestone",
+    "chainId": 16602,
+    "chainName": "0G Galileo Testnet",
+    "explorer": "https://explorer-testnet.0g.ai",
+    "daemonEnv": {
+      "KEEPERHUB_TRANSPORT": "mcp",
+      "KEEPERHUB_API_KEY": "kh_...",
+      "WEFT_CONTRACT_ADDRESS": "0x9f66158c560ce5c8b40820fdcd2874ff8d852192",
+      "ETH_RPC_URL": "https://evmrpc-testnet.0g.ai",
+      "CHAIN_ID": "16602"
+    },
+    "mcpToolsUsed": [
+      "execute_contract_call",
+      "get_direct_execution_status",
+      "get_execution"
+    ],
+    "docs": "https://github.com/thisyearnofear/weft/blob/main/docs/keeperhub/starter-template.md"
+  }
+}
