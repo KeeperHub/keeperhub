@@ -1,7 +1,7 @@
 # Local overlay for docker-bake.hcl. Invoked by deploy/local/deploy.sh as:
 #
 #   IMAGE_TAG=<tag> docker buildx bake \
-#     -f docker-bake.hcl -f deploy/local/docker-bake.local.hcl \
+#     -f docker-bake.hcl -f deploy/keeperhub-stack/self-hosted/test-harness/docker-bake.hcl \
 #     --set "*.cache-from=" --set "*.cache-to=" local
 #
 # The root file is untouched, so nothing here can affect CI.

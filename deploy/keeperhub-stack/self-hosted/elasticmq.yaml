@@ -1,4 +1,4 @@
-# ElasticMQ - the SQS-compatible queue for the local stack.
+# ElasticMQ - the SQS-compatible queue for a self-hosted install.
 #
 # Replaces LocalStack, which needs a paid auth token on current images, is
 # ephemeral unless you pay for persistence, and whose free Community Edition is
@@ -15,7 +15,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: elasticmq-conf
-  namespace: local
+  namespace: ${NAMESPACE}
 data:
   elasticmq.conf: |
     include classpath("application.conf")
@@ -23,7 +23,7 @@ data:
     # Determines the URLs ElasticMQ RETURNS from CreateQueue, GetQueueUrl and
     # ListQueues. It is set to the in-cluster Service DNS so those responses are
     # byte-identical to the SQS_QUEUE_URL every component is configured with in
-    # deploy/local/lib/common.sh.
+    # config.sh.
     #
     # This matters more than it looks. The queue URL is bound into the HMAC
     # signing string (lib/sqs-message-auth.ts), and the executor verifies each
@@ -35,7 +35,7 @@ data:
     # exactly what makes the mismatch hard to spot.
     node-address {
       protocol = http
-      host = "elasticmq.local.svc.cluster.local"
+      host = "elasticmq.${NAMESPACE}.svc.cluster.local"
       port = 9324
       context-path = ""
     }
@@ -90,7 +90,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: elasticmq
-  namespace: local
+  namespace: ${NAMESPACE}
   labels:
     app: elasticmq
 spec:
@@ -152,7 +152,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: elasticmq
-  namespace: local
+  namespace: ${NAMESPACE}
   labels:
     app: elasticmq
 spec:

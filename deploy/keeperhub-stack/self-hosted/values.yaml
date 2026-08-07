@@ -2,24 +2,25 @@
 #
 # A peer of staging/values.yaml and prod/values.yaml, deliberately the same
 # chart and the same structure. Diff this against staging/values.yaml whenever
-# you change either: the local stack is only useful as a development and
-# self-host environment while it stays structurally identical to what staging
-# and prod actually run.
+# you change either: this profile is only trustworthy while it stays
+# structurally identical to what staging and prod actually run.
 #
-# This is also the only AWS-free path in the repo. It has no parameterStore
-# entry, no role ARN, no ECR reference and no Cloudflare annotation, so it
-# renders on a stock cluster with no External Secrets Operator, no IRSA and no
-# Cloudflare. That property is load-bearing; keep it.
+# This is the only AWS-free path in the repo. No parameterStore entry, no role
+# ARN, no ECR reference and no Cloudflare annotation, so it renders on a stock
+# cluster with no External Secrets Operator, no IRSA and no Cloudflare. That
+# property is load-bearing; keep it.
 #
-# Rendered by deploy/local/deploy.sh with envsubst over an explicit allowlist:
-#   ${IMAGE_TAG} ${APP_HOST} ${DATABASE_URL_IN_CLUSTER}
+# Rendered by install.sh with envsubst over an explicit allowlist:
+#   ${IMAGE_REPO} ${IMAGE_TAG} ${IMAGE_PULL_POLICY} ${APP_HOST}
+#   ${INGRESS_CLASS} ${TLS_ISSUER} ${NAMESPACE} ${DATABASE_URL_IN_CLUSTER}
 #   ${AWS_ENDPOINT_URL} ${AWS_REGION} ${SQS_QUEUE_URL} ${SQS_DLQ_URL}
+#   ${TURNSTILE_SECRET_KEY}
 # Nothing else is substituted, so shell-looking text such as $(date) below is
 # passed through untouched.
 #
 # No secret material appears in this file. Secrets are plain Kubernetes Secrets
-# created by deploy.sh from .env and referenced with `type: secret`. The common
-# chart supports kv | parameterStore | configmapRef | secret; without External
+# created by install.sh and referenced with `type: secret`. The common chart
+# supports kv | parameterStore | configmapRef | secret; without External
 # Secrets, `secret` is the mechanism a no-AWS install uses.
 
 app:
@@ -39,11 +40,11 @@ app:
       value: "${DATABASE_URL_IN_CLUSTER}"
     INTERNAL_SERVICE_HMAC_SECRET:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: INTERNAL_SERVICE_HMAC_SECRET
     AGENTIC_WALLET_HMAC_KMS_KEY:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: AGENTIC_WALLET_HMAC_KMS_KEY
     # Name and key match what the executor hands to runner Job pods via
     # secretKeyRef, so the app and the runner decrypt with the same key.
@@ -81,16 +82,14 @@ app:
       value: "remote"
     SANDBOX_URL:
       type: kv
-      value: "http://keeperhub-sandbox.local.svc.cluster.local:8787"
+      value: "http://keeperhub-sandbox.${NAMESPACE}.svc.cluster.local:8787"
 
   replicaCount: 1
 
   image:
-    repository: keeperhub-local
+    repository: ${IMAGE_REPO}
     tag: app-${IMAGE_TAG}
-    # Images are built on the host and side-loaded with 'minikube image load';
-    # there is no registry to pull from.
-    pullPolicy: Never
+    pullPolicy: ${IMAGE_PULL_POLICY}
 
   service:
     enabled: true
@@ -104,12 +103,12 @@ app:
       # setup-local.sh. The common chart's certificate template emits
       # issuerRef.kind: ClusterIssuer unconditionally, so a namespaced Issuer
       # would not work here.
-      issuerName: mkcert-ca-issuer
+      issuerName: ${TLS_ISSUER}
 
   # The chart owns the Ingress. It used to be defined twice as raw YAML, in
   # kubernetes-resources.yaml and again inline in deploy.sh, which had to be
   # kept in sync by hand and sat outside helm --atomic.
-  ingressClassName: nginx
+  ingressClassName: ${INGRESS_CLASS}
   ingress:
     enabled: true
     hosts:
@@ -139,7 +138,7 @@ app:
       # tag would make this try to pull a side-loaded image that exists only
       # inside the node.
       - name: db-migration
-        image: "keeperhub-local:migrator-${IMAGE_TAG}"
+        image: "${IMAGE_REPO}:migrator-${IMAGE_TAG}"
         command:
           - /bin/sh
           - -c
@@ -218,7 +217,7 @@ app:
     # configured. It is passed as a build arg by deploy/local/deploy.sh instead.
     TURNSTILE_SECRET_KEY:
       type: kv
-      value: "1x0000000000000000000000000000000AA"
+      value: "${TURNSTILE_SECRET_KEY}"
     LOG_LEVEL:
       type: kv
       value: "debug"
@@ -269,7 +268,7 @@ app:
     # in code by the executor rather than rendered by the chart.)
     SENDGRID_API_KEY:
       type: secret
-      name: keeperhub-local-email
+      name: keeperhub-email
       key: SENDGRID_API_KEY
     # Must be a sender identity verified in the SendGrid account, or every send
     # is rejected with 403.
@@ -278,27 +277,27 @@ app:
       value: "noreply@keeperhub.com"
     BETTER_AUTH_SECRET:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: BETTER_AUTH_SECRET
     OAUTH_JWT_SECRET:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: OAUTH_JWT_SECRET
     MCP_SESSION_SECRET:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: MCP_SESSION_SECRET
     TURNKEY_API_PUBLIC_KEY:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: TURNKEY_API_PUBLIC_KEY
     TURNKEY_API_PRIVATE_KEY:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: TURNKEY_API_PRIVATE_KEY
     TURNKEY_ORGANIZATION_ID:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: TURNKEY_ORGANIZATION_ID
 
   livenessProbe:
@@ -326,9 +325,9 @@ executor:
   replicaCount: 1
 
   image:
-    repository: keeperhub-local
+    repository: ${IMAGE_REPO}
     tag: executor-${IMAGE_TAG}
-    pullPolicy: Never
+    pullPolicy: ${IMAGE_PULL_POLICY}
 
   service:
     enabled: true
@@ -377,7 +376,7 @@ executor:
       value: "${DATABASE_URL_IN_CLUSTER}"
     INTERNAL_SERVICE_HMAC_SECRET:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: INTERNAL_SERVICE_HMAC_SECRET
     INTEGRATION_ENCRYPTION_KEY:
       type: secret
@@ -417,13 +416,13 @@ executor:
       value: "isolated"
     RUNNER_IMAGE:
       type: kv
-      value: "keeperhub-local:workflow-runner-${IMAGE_TAG}"
+      value: "${IMAGE_REPO}:workflow-runner-${IMAGE_TAG}"
     IMAGE_PULL_POLICY:
       type: kv
-      value: "Never"
+      value: "${IMAGE_PULL_POLICY}"
     K8S_NAMESPACE:
       type: kv
-      value: "local"
+      value: "${NAMESPACE}"
     RUNNER_SERVICE_ACCOUNT:
       type: kv
       value: keeperhub-workflow-runner
@@ -479,7 +478,7 @@ executor:
       value: "remote"
     SANDBOX_URL:
       type: kv
-      value: "http://keeperhub-sandbox.local.svc.cluster.local:8787"
+      value: "http://keeperhub-sandbox.${NAMESPACE}.svc.cluster.local:8787"
 
     # assertTurnkeyEnvForActiveWallets hard-fails the pod when any organisation
     # has an active Turnkey wallet and these are unset, and its ephemeral
@@ -487,15 +486,15 @@ executor:
     # until a wallet exists; deploy.sh copies real ones from .env when present.
     TURNKEY_API_PUBLIC_KEY:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: TURNKEY_API_PUBLIC_KEY
     TURNKEY_API_PRIVATE_KEY:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: TURNKEY_API_PRIVATE_KEY
     TURNKEY_ORGANIZATION_ID:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: TURNKEY_ORGANIZATION_ID
 
   livenessProbe:
@@ -525,9 +524,9 @@ schedule:
   replicaCount: 1
 
   image:
-    repository: keeperhub-local
+    repository: ${IMAGE_REPO}
     tag: schedule-${IMAGE_TAG}
-    pullPolicy: Never
+    pullPolicy: ${IMAGE_PULL_POLICY}
 
   service:
     enabled: true
@@ -575,7 +574,7 @@ schedule:
     # call returns 401 and scheduled triggers silently never fire.
     INTERNAL_SERVICE_HMAC_SECRET:
       type: secret
-      name: keeperhub-local-shared
+      name: keeperhub-shared
       key: INTERNAL_SERVICE_HMAC_SECRET
     AWS_REGION:
       type: kv

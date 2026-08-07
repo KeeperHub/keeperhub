@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install dev build type-check lint fix deploy-to-local-kubernetes setup-local-kubernetes check-local-kubernetes status logs restart teardown db-create local-db-migrate local-db-recover db-studio executor-status executor-logs schedule-logs runner-logs queue-status test test-unit test-integration test-e2e test-e2e-hybrid test-playwright test-playwright-report hybrid-setup hybrid-up hybrid-deploy hybrid-deploy-only hybrid-status hybrid-down hybrid-reset hybrid-logs dev-setup dev-up dev-down dev-logs dev-migrate
+.PHONY: help install dev build type-check lint fix deploy-to-local-kubernetes setup-local-kubernetes check-local-kubernetes status logs restart teardown db-create db-migrate db-studio build-images deploy-executor executor-status executor-logs runner-logs teardown-executor test test-unit test-integration test-e2e test-e2e-hybrid test-playwright test-playwright-report hybrid-setup hybrid-up hybrid-deploy hybrid-deploy-only hybrid-status hybrid-down hybrid-reset hybrid-logs dev-setup dev-up dev-down dev-logs dev-migrate
 
 # Development
 install:
@@ -37,100 +37,83 @@ deploy-to-local-kubernetes-skip-build: check-local-kubernetes
 	chmod +x ./deploy/local/deploy.sh
 	./deploy/local/deploy.sh --skip-build
 
-# Every target below pins --context. The local cluster runs in its own minikube
-# profile, and a bare kubectl would target whatever context happens to be
-# current, which on a machine with real cluster access is not the local one.
-KUBE_CONTEXT ?= keeperhub
-KUBECTL := kubectl --context $(KUBE_CONTEXT) -n local
-# Not 5433: docker-compose publishes its own postgres there, and a port-forward
-# that loses the bind race fails silently while anything connecting to
-# localhost:5433 quietly reaches the compose database instead of the cluster one.
-# Keep in sync with PG_LOCAL_PORT in deploy/local/lib/common.sh.
-PG_LOCAL_PORT ?= 5434
-LOCAL_DB_URL := postgresql://local:local@localhost:$(PG_LOCAL_PORT)/keeperhub
-
 status:
 	@echo "=== Pods ==="
-	@$(KUBECTL) get pods -l app.kubernetes.io/instance=keeperhub
-	@echo ""
-	@echo "=== Queue ==="
-	@$(KUBECTL) get pods -l app=elasticmq
+	@kubectl get pods -n local -l app.kubernetes.io/instance=keeperhub
 	@echo ""
 	@echo "=== Services ==="
-	@$(KUBECTL) get svc -l app.kubernetes.io/instance=keeperhub
+	@kubectl get svc -n local -l app.kubernetes.io/instance=keeperhub
 	@echo ""
 	@echo "=== Ingress ==="
-	@$(KUBECTL) get ingress
+	@kubectl get ingress -n local | grep keeperhub || true
 
 logs:
-	$(KUBECTL) logs -l app.kubernetes.io/instance=keeperhub -f
+	kubectl logs -n local -l app.kubernetes.io/instance=keeperhub -f
 
 restart:
-	$(KUBECTL) rollout restart deployment/keeperhub-app
+	kubectl rollout restart deployment/keeperhub-common -n local
 
 teardown:
-	helm uninstall keeperhub --kube-context $(KUBE_CONTEXT) -n local || true
+	helm uninstall keeperhub -n local || true
+	kubectl delete ingress keeperhub-ingress -n local || true
 
 # Database Operations
 db-create:
 	@echo "Creating keeperhub database..."
-	$(KUBECTL) exec postgresql-0 -- bash -c 'PGPASSWORD=local psql -U postgres -c "CREATE DATABASE keeperhub;"' 2>/dev/null || echo "Database keeperhub already exists"
-	$(KUBECTL) exec postgresql-0 -- bash -c 'PGPASSWORD=local psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE keeperhub TO local;"'
+	kubectl exec -n local postgresql-0 -- bash -c 'PGPASSWORD=local psql -U postgres -c "CREATE DATABASE keeperhub;"' 2>/dev/null || echo "Database keeperhub already exists"
+	kubectl exec -n local postgresql-0 -- bash -c 'PGPASSWORD=local psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE keeperhub TO local;"'
 
-# Migrations normally run in the app's db-migration initContainer on deploy, the
-# same way staging and prod apply them. This target is for applying them by hand
-# against the local database without a full redeploy.
-local-db-migrate:
-	@echo "Applying migrations over a port-forward..."
-	@$(KUBECTL) port-forward svc/postgresql $(PG_LOCAL_PORT):5432 & \
+db-migrate:
+	@echo "Running database migrations on local kubernetes..."
+	@kubectl port-forward -n local svc/postgresql 5433:5432 & \
 	PF_PID=$$!; \
 	sleep 3; \
-	DATABASE_URL="$(LOCAL_DB_URL)" pnpm db:migrate; \
+	DATABASE_URL="postgresql://local:local@localhost:5433/keeperhub" pnpm db:push; \
 	kill $$PF_PID 2>/dev/null || true
-	@echo "Migrations complete."
-
-# For a database originally bootstrapped with 'db:push', which has the schema but
-# an empty drizzle journal. Marks the existing migrations as applied without
-# re-running their SQL, so subsequent 'db:migrate' calls apply only new files.
-# Over the port-forward the host is localhost, so the script's own safety guard
-# passes without ALLOW_REMOTE.
-local-db-recover:
-	@echo "Backfilling the drizzle journal for an existing local database..."
-	@$(KUBECTL) port-forward svc/postgresql $(PG_LOCAL_PORT):5432 & \
-	PF_PID=$$!; \
-	sleep 3; \
-	DATABASE_URL="$(LOCAL_DB_URL)" pnpm tsx scripts/backfill-drizzle-migrations.ts; \
-	kill $$PF_PID 2>/dev/null || true
-	@echo "Journal backfilled. Re-run 'make deploy-to-local-kubernetes'."
+	@echo "Migrations complete!"
 
 db-studio:
 	@echo "Starting Drizzle Studio..."
 	pnpm db:studio
 
+# Executor Images (for K8s deployment)
+build-images:
+	@echo "Building executor image..."
+	docker build --target executor -t keeperhub-executor:latest .
+	@echo "Building workflow runner image..."
+	docker build --target workflow-runner -t keeperhub-runner:latest .
+	@echo "Loading images into minikube..."
+	minikube image load keeperhub-executor:latest
+	minikube image load keeperhub-runner:latest
+	@echo "Images ready!"
+
+deploy-executor: check-local-kubernetes
+	@echo "Deploying executor to Minikube..."
+	kubectl apply -f ./deploy/local/schedule-trigger.yaml
+	@echo ""
+	@echo "Executor deployed:"
+	@echo "  - ConfigMap: executor-env"
+	@echo "  - Secret: keeperhub-secrets"
+	@echo "  - RBAC: ServiceAccount, Role, RoleBinding for executor"
+	@echo "  - Deployment: executor (polls SQS, executes workflows)"
+
 executor-status:
 	@echo "=== Executor ==="
-	@$(KUBECTL) get pods -l app.kubernetes.io/name=executor
+	@kubectl get pods -n local -l app=executor
 	@echo ""
 	@echo "=== Workflow Runner Jobs ==="
-	@$(KUBECTL) get jobs -l app=workflow-runner --sort-by=.metadata.creationTimestamp | tail -10 || echo "No workflow jobs"
+	@kubectl get jobs -n local -l app=workflow-runner --sort-by=.metadata.creationTimestamp | tail -10 || echo "No workflow jobs"
 
 executor-logs:
 	@echo "=== Executor Logs ==="
-	@$(KUBECTL) logs -l app.kubernetes.io/name=executor --tail=100 -f
-
-schedule-logs:
-	@echo "=== Schedule Dispatcher Logs ==="
-	@$(KUBECTL) logs -l app.kubernetes.io/name=schedule --tail=100 -f
+	@kubectl logs -n local -l app=executor --tail=100 -f
 
 runner-logs:
 	@echo "=== Recent Workflow Runner Job Logs ==="
-	@$(KUBECTL) logs -l app=workflow-runner --tail=100 2>/dev/null || echo "No runner logs available"
+	@kubectl logs -n local -l app=workflow-runner --tail=100 2>/dev/null || echo "No runner logs available"
 
-# Queue inspection. The queue URL is bound into the message signature, so if the
-# executor is rejecting messages as bad_signature, compare what this prints
-# against SQS_QUEUE_URL in deploy/local/lib/common.sh.
-queue-status:
-	@$(KUBECTL) exec deploy/elasticmq -- wget -q -O- http://localhost:9325/statistics/queues
+teardown-executor:
+	kubectl delete -f ./deploy/local/schedule-trigger.yaml --ignore-not-found=true
 
 # Testing
 test:
@@ -144,12 +127,12 @@ test-integration:
 
 test-e2e:
 	@echo "Running E2E tests against local kubernetes..."
-	@$(KUBECTL) port-forward svc/postgresql $(PG_LOCAL_PORT):5432 & PF_PID_DB=$$!; \
-	$(KUBECTL) port-forward svc/elasticmq 9324:9324 & PF_PID_SQS=$$!; \
+	@kubectl port-forward -n local svc/postgresql 5433:5432 & PF_PID_DB=$$!; \
+	kubectl port-forward -n local svc/localstack 4566:4566 & PF_PID_SQS=$$!; \
 	sleep 3; \
-	DATABASE_URL="$(LOCAL_DB_URL)" \
-	AWS_ENDPOINT_URL="http://localhost:9324" \
-	SQS_QUEUE_URL="http://localhost:9324/000000000000/keeperhub-workflow-queue" \
+	DATABASE_URL="postgresql://local:local@localhost:5433/keeperhub" \
+	AWS_ENDPOINT_URL="http://localhost:4566" \
+	SQS_QUEUE_URL="http://localhost:4566/000000000000/keeperhub-workflow-queue" \
 	KEEPERHUB_API_URL="https://workflow.keeperhub.local" \
 	pnpm test -- --run tests/e2e/; \
 	kill $$PF_PID_DB 2>/dev/null || true; \
@@ -366,16 +349,16 @@ help:
 	@echo ""
 	@echo "  Database (Full K8s mode):"
 	@echo "    db-create                  - Create keeperhub database in PostgreSQL"
-	@echo "    local-db-migrate           - Apply migrations by hand (deploy does this too)"
-	@echo "    local-db-recover           - Backfill the drizzle journal on a db:push database"
+	@echo "    db-migrate                 - Run database migrations on local kubernetes"
 	@echo "    db-studio                  - Open Drizzle Studio"
 	@echo ""
-	@echo "  Pipeline (Full K8s mode):"
-	@echo "    executor-status            - Show executor pods and workflow runner jobs"
+	@echo "  Executor (Full K8s mode):"
+	@echo "    build-images               - Build and load executor + runner images"
+	@echo "    deploy-executor            - Deploy executor with RBAC"
+	@echo "    executor-status            - Show executor pods and workflow jobs"
 	@echo "    executor-logs              - Follow executor logs"
-	@echo "    schedule-logs              - Follow schedule dispatcher logs"
 	@echo "    runner-logs                - Show workflow runner job logs"
-	@echo "    queue-status               - Show ElasticMQ queue depths"
+	@echo "    teardown-executor          - Remove executor components"
 	@echo ""
 	@echo "  Testing:"
 	@echo "    test                       - Run all tests"

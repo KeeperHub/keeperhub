@@ -113,6 +113,7 @@ lib/credential-map.ts
 public/monaco/
 
 # local kubernetes generated values (from templates)
+deploy/local/values-keeperhub.yaml
 deploy/local/hybrid/schedule-trigger-hybrid.yaml
 
 # pnpm cache
