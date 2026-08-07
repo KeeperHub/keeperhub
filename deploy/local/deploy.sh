@@ -237,7 +237,7 @@ create_secrets() {
 
 apply_runner_sa() {
     section "Applying workflow-runner ServiceAccount"
-    kube apply -f "$REPO_ROOT/deploy/keeperhub-stack/local/runner-sa.yaml"
+    kube apply -f "$REPO_ROOT/deploy/keeperhub-stack/self-hosted/runner-sa.yaml"
     ok "keeperhub-workflow-runner"
 }
 

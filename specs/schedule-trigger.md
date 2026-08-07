@@ -472,7 +472,7 @@ For production, use the full K8s mode or hybrid mode with:
 | `deploy/local/hybrid/init-localstack.sh` | LocalStack SQS initialization |
 | `deploy/local/hybrid/README.md` | Hybrid mode documentation |
 | **Full K8s Mode** ||
-| `deploy/keeperhub-stack/local/values.yaml` | Chart values for the whole pipeline (full k8s mode) |
+| `deploy/keeperhub-stack/self-hosted/values.yaml` | Chart values for the whole pipeline (full k8s mode) |
 | `deploy/local/setup-local.sh` | Minikube infrastructure setup |
 | `deploy/local/deploy.sh` | Image build/load and chart install |
 | `deploy/local/lib/common.sh` | Shared values, including the queue URL |

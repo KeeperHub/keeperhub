@@ -49,7 +49,7 @@ CHART_REPO_NAME="techops-services"
 CHART_REPO_URL="https://techops-services.github.io/helm-charts"
 CHART_NAME="techops-services/keeperhub-stack"
 CHART_VERSION="0.3.0"
-VALUES_TEMPLATE="deploy/keeperhub-stack/local/values.yaml"
+VALUES_TEMPLATE="deploy/keeperhub-stack/self-hosted/values.yaml"
 HELM_TIMEOUT="15m0s"
 
 # Single local image repository, one tag prefix per component. Mirrors the
@@ -57,7 +57,21 @@ HELM_TIMEOUT="15m0s"
 # the same structure as deploy/keeperhub-stack/{staging,prod}/values.yaml.
 IMAGE_REPO="keeperhub-local"
 
-APP_HOST="workflow.keeperhub.local"
+# Deliberately a *.keeperhub.com name, not the more natural *.keeperhub.local.
+#
+# lib/trusted-origins.ts hardcodes the trusted-origin list to http://localhost:*,
+# http://127.0.0.1:* and https://*.keeperhub.com, with no environment variable to
+# extend it. That list backs the CSRF guard in proxy.ts and better-auth, so on any
+# other hostname every cookie-authenticated POST/PATCH/PUT/DELETE is rejected.
+# The UI still loads and reads fine, which makes it look like the app works until
+# you try to save: enabling a workflow returns "Failed to update workflow state"
+# and the only trace is a "[csrf] blocked: untrusted origin" line in the app log.
+#
+# Picking a hostname inside the already-trusted suffix sidesteps this without
+# touching application code. It resolves only through /etc/hosts, so nothing
+# leaves the machine. The real fix is making the trusted origins configurable,
+# which is a prerequisite for running on a client domain at all.
+APP_HOST="local.keeperhub.com"
 
 # Cloudflare's documented always-pass Turnstile test keys, the same pair the
 # PR-environment values use. Dummy values, not credentials.

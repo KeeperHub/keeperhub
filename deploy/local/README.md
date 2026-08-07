@@ -168,7 +168,7 @@ queue is live so a rejected message is visible rather than simply gone.
 | `deploy.sh` | image build and load, secrets, chart install |
 | `manifests/` | namespace and ElasticMQ |
 | `docker-bake.local.hcl` | bake overlay giving the images local tags |
-| `../keeperhub-stack/local/values.yaml` | the chart values, a peer of `staging/` and `prod/` |
+| `../keeperhub-stack/self-hosted/values.yaml` | the chart values, a peer of `staging/` and `prod/` |
 
 The values file lives beside the staging and production ones on purpose. Diff it
 against `staging/values.yaml` when you change either; this environment is only

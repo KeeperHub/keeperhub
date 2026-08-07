@@ -1,4 +1,4 @@
-# keeperhub-stack umbrella values - local (minikube)
+# keeperhub-stack umbrella values - self-hosted
 #
 # A peer of staging/values.yaml and prod/values.yaml, deliberately the same
 # chart and the same structure. Diff this against staging/values.yaml whenever
@@ -228,6 +228,15 @@ app:
     WORKFLOW_TARGET_WORLD:
       type: kv
       value: "@workflow/world-postgres"
+    # Match production exactly. Without these the DevKit falls back to its own
+    # defaults, which is the one remaining difference between this stack's
+    # workflow engine configuration and prod's.
+    WORKFLOW_LOCAL_QUEUE_CONCURRENCY:
+      type: kv
+      value: "5000"
+    WORKFLOW_POSTGRES_WORKER_CONCURRENCY:
+      type: kv
+      value: "5"
     NEXT_PUBLIC_APP_URL:
       type: kv
       value: "https://${APP_HOST}"
@@ -245,6 +254,24 @@ app:
     METRICS_COLLECTOR:
       type: kv
       value: "prometheus"
+    # Outbound email. Without this the app still generates verification codes,
+    # invitations and password resets, but sendEmail returns false and nothing is
+    # delivered, so signup dead-ends at "enter the 6-digit code" with no way to
+    # obtain one. lib/email.ts hardcodes SendGrid's HTTP API, so there is no
+    # local mail-catcher option today - see KEEP-1119 for configurable SMTP.
+    #
+    # Optional: the secret is created by deploy.sh only when a key is available,
+    # and the reference is marked optional so the stack still installs without
+    # it. An install with no key simply has no email.
+    SENDGRID_API_KEY:
+      type: secret
+      name: keeperhub-local-email
+      key: SENDGRID_API_KEY
+    # Must be a sender identity verified in the SendGrid account, or every send
+    # is rejected with 403.
+    FROM_ADDRESS:
+      type: kv
+      value: "noreply@keeperhub.com"
     BETTER_AUTH_SECRET:
       type: secret
       name: keeperhub-local-shared
