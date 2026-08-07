@@ -260,9 +260,13 @@ app:
     # obtain one. lib/email.ts hardcodes SendGrid's HTTP API, so there is no
     # local mail-catcher option today - see KEEP-1119 for configurable SMTP.
     #
-    # Optional: the secret is created by deploy.sh only when a key is available,
-    # and the reference is marked optional so the stack still installs without
-    # it. An install with no key simply has no email.
+    # deploy.sh always creates this Secret, with an empty value when no key is
+    # available, and the app treats an empty key as "no email configured" and
+    # returns false from sendEmail. The Secret cannot be conditional: the common
+    # chart renders a bare secretKeyRef with no `optional` field, so a missing
+    # Secret is CreateContainerConfigError and --atomic rolls the whole release
+    # back. (The runner's own credential refs ARE optional, but those are built
+    # in code by the executor rather than rendered by the chart.)
     SENDGRID_API_KEY:
       type: secret
       name: keeperhub-local-email

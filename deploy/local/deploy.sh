@@ -218,6 +218,33 @@ create_secrets() {
         --from-literal=keeperhub-executor-integration-encryption-key="$enc" \
         --dry-run=client -o yaml | kube apply -f -
 
+    # Outbound email. Created unconditionally, even with an empty value, because
+    # the values file references it with a plain secretKeyRef and the common
+    # chart provides no way to mark that optional - a missing Secret is
+    # CreateContainerConfigError, not a degraded install.
+    #
+    # An empty key is a legitimate state: sendEmail returns false and nothing is
+    # delivered, so signup, invitations and password reset all dead-end at the
+    # "enter the code" step. Supply SENDGRID_API_KEY in .env to make them work.
+    # There is no local mail-catcher option because lib/email.ts posts to
+    # SendGrid's HTTP API rather than SMTP; see KEEP-1119.
+    # Deliberately NOT secret_value_or_keep: that generates a random value when
+    # it finds nothing, which for an API key would replace a clean "not
+    # configured" state with a bogus credential and turn silence into 401s from
+    # SendGrid. Order here is .env, then whatever is already stored, then empty.
+    local sendgrid
+    sendgrid="${SENDGRID_API_KEY:-}"
+    if [ -z "$sendgrid" ]; then
+        sendgrid=$(kube_ns get secret keeperhub-local-email \
+            -o "jsonpath={.data.SENDGRID_API_KEY}" 2>/dev/null | base64 -d 2>/dev/null || true)
+    fi
+    kube_ns create secret generic keeperhub-local-email \
+        --from-literal=SENDGRID_API_KEY="$sendgrid" \
+        --dry-run=client -o yaml | kube apply -f -
+    if [ -z "$sendgrid" ]; then
+        echo "  note  no SENDGRID_API_KEY - outbound email is off, so signup cannot be completed"
+    fi
+
     # Pods read these through secretKeyRef, and updating a Secret does NOT
     # restart the pods consuming it - an env var is resolved once, at pod start.
     # So without this, changing a secret leaves the running pods holding the old
@@ -229,7 +256,7 @@ create_secrets() {
     # Staging solves this with the stakater reloader annotation, which needs an
     # operator that a stock cluster does not have. A checksum in the pod template
     # is the operator-free equivalent: when it changes, helm rolls the pods.
-    SECRETS_CHECKSUM=$(printf '%s' "$hmac$agentic$auth$oauth$mcp$enc" | sha256sum | cut -c1-16)
+    SECRETS_CHECKSUM=$(printf '%s' "$hmac$agentic$auth$oauth$mcp$enc$sendgrid" | sha256sum | cut -c1-16)
     export SECRETS_CHECKSUM
 
     ok "secrets applied (checksum $SECRETS_CHECKSUM)"
