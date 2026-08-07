@@ -263,7 +263,7 @@ const RAW_FIXTURES: AgentGuardPauseFixture[] = [
           contractAddress:
             "0xBda3ca77aC1442f13A57b136430C383DBf7DC891", // replace with your deployed vault
           abiFunction: "pause",
-          functionArgs: ['["risk score 70 >= 70"]'],
+          functionArgs: '["risk score 70 >= 70"]',
           abi: JSON.stringify(SECURITY_VAULT_ABI),
         },
         400
