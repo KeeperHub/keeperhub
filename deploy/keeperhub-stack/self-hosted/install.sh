@@ -265,6 +265,7 @@ DB_BUNDLED_SUBST_VARS=(PG_NAME PG_INSTANCES PG_DATABASE PG_USER PG_CREDENTIALS_S
 DB_BYO_SUBST_VARS=()
 QUEUE_BUNDLED_SUBST_VARS=(QUEUE_NAME AWS_ENDPOINT_URL SQS_QUEUE_URL SQS_DLQ_URL)
 QUEUE_BYO_SUBST_VARS=(SQS_QUEUE_URL SQS_DLQ_URL)
+QUEUE_BYO_ENDPOINT_SUBST_VARS=(AWS_ENDPOINT_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY)
 
 VALUES_ARGS=()
 
@@ -322,7 +323,15 @@ render_values() {
 
     render_values_file "values.db-$DB_MODE.yaml" "${db_vars[@]+"${db_vars[@]}"}"
     render_values_file "values.queue-$QUEUE_MODE.yaml" "${queue_vars[@]}"
-    ok "values.yaml + db-$DB_MODE + queue-$QUEUE_MODE"
+
+    # Only when an endpoint was given. Its ABSENCE is what selects real AWS SQS,
+    # so this cannot be folded into values.queue-byo.yaml with an empty value.
+    local composed="values.yaml + db-$DB_MODE + queue-$QUEUE_MODE"
+    if [ "$QUEUE_MODE" = byo ] && [ -n "$AWS_ENDPOINT_URL" ]; then
+        render_values_file values.queue-byo-endpoint.yaml "${QUEUE_BYO_ENDPOINT_SUBST_VARS[@]}"
+        composed="$composed + queue-byo-endpoint"
+    fi
+    ok "$composed"
 }
 
 # A working-tree chart when CHART_DIR is set, the published one otherwise. The

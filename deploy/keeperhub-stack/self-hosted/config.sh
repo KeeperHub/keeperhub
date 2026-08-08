@@ -100,10 +100,31 @@ SQS_QUEUE_NAME="${SQS_QUEUE_NAME:-keeperhub-workflow-queue}"
 # Overridable in full, because a real SQS URL has a different shape entirely
 # (https://sqs.<region>.amazonaws.com/<account>/<name>) and is not derivable
 # from the parts above.
-AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-http://${SQS_HOST}:${SQS_PORT}}"
-# Read the note at the top of this file before changing either URL.
-SQS_QUEUE_URL="${SQS_QUEUE_URL:-${AWS_ENDPOINT_URL}/${SQS_ACCOUNT_ID}/${SQS_QUEUE_NAME}}"
-SQS_DLQ_URL="${SQS_DLQ_URL:-${AWS_ENDPOINT_URL}/${SQS_ACCOUNT_ID}/${SQS_QUEUE_NAME}-dlq}"
+#
+# Only defaulted when the chart runs the queue. Under QUEUE_MODE=byo an UNSET
+# endpoint is meaningful: it is what sends the SDK to real AWS SQS with its
+# normal credential resolution. Setting it there selects a self-hosted
+# SQS-compatible endpoint instead, and install.sh merges the extra values
+# fragment that carries it. Defaulting it would silently rule out real SQS.
+if [ "$QUEUE_MODE" = "bundled" ]; then
+    AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-http://${SQS_HOST}:${SQS_PORT}}"
+else
+    AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-}"
+fi
+# Only used alongside a custom endpoint. ElasticMQ ignores them, but the SDK
+# refuses to sign a request without credentials of some kind.
+AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-test}"
+AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-test}"
+# Read the note at the top of this file before changing either URL. Derived from
+# the endpoint only when there is one; with real AWS SQS both must be given in
+# full, because that URL shape is not derivable from anything here.
+if [ -n "$AWS_ENDPOINT_URL" ]; then
+    SQS_QUEUE_URL="${SQS_QUEUE_URL:-${AWS_ENDPOINT_URL}/${SQS_ACCOUNT_ID}/${SQS_QUEUE_NAME}}"
+    SQS_DLQ_URL="${SQS_DLQ_URL:-${AWS_ENDPOINT_URL}/${SQS_ACCOUNT_ID}/${SQS_QUEUE_NAME}-dlq}"
+else
+    SQS_QUEUE_URL="${SQS_QUEUE_URL:-}"
+    SQS_DLQ_URL="${SQS_DLQ_URL:-}"
+fi
 
 # --- Database ----------------------------------------------------------------
 # DB_MODE=bundled  the chart runs PostgreSQL as a CloudNativePG Cluster, which
@@ -145,6 +166,23 @@ DB_SECRET_KEY="${DB_SECRET_KEY:-DATABASE_URL}"
 validate_modes() {
     case "$DB_MODE" in bundled|byo) ;; *) echo "DB_MODE must be 'bundled' or 'byo', got '$DB_MODE'" >&2; exit 1 ;; esac
     case "$QUEUE_MODE" in bundled|byo) ;; *) echo "QUEUE_MODE must be 'bundled' or 'byo', got '$QUEUE_MODE'" >&2; exit 1 ;; esac
+    if [ "$QUEUE_MODE" = byo ] && { [ -z "$SQS_QUEUE_URL" ] || [ -z "$SQS_DLQ_URL" ]; }; then
+        cat >&2 <<EOF
+QUEUE_MODE=byo needs SQS_QUEUE_URL and SQS_DLQ_URL.
+
+Real AWS SQS - give both in full and leave AWS_ENDPOINT_URL unset, so the SDK
+resolves credentials the normal way:
+
+    SQS_QUEUE_URL=https://sqs.<region>.amazonaws.com/<account>/<queue>
+    SQS_DLQ_URL=https://sqs.<region>.amazonaws.com/<account>/<queue>-dlq
+
+Your own SQS-compatible endpoint - set AWS_ENDPOINT_URL too, and the URLs are
+derived from it unless you give them:
+
+    AWS_ENDPOINT_URL=http://my-queue.my-namespace.svc.cluster.local:9324
+EOF
+        exit 1
+    fi
 }
 
 kube() {

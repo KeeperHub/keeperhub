@@ -14,6 +14,7 @@ while it stays structurally identical to what staging and production run.
 | --- | --- |
 | `values.yaml` | chart values common to every install |
 | `values.db-{bundled,byo}.yaml`, `values.queue-{bundled,byo}.yaml` | the parts that differ per mode, merged over `values.yaml` |
+| `values.queue-byo-endpoint.yaml` | merged only when `QUEUE_MODE=byo` and `AWS_ENDPOINT_URL` is set |
 | `namespace.yaml`, `runner-sa.yaml` | resources applied alongside the release |
 | `config.sh` | every value that has to agree across the install |
 | `install.sh` | installs into an existing cluster |
@@ -40,17 +41,34 @@ but a cluster.
 | | `DB_MODE` / `QUEUE_MODE` = `bundled` | = `byo` |
 | --- | --- | --- |
 | PostgreSQL | the chart renders a CloudNativePG `Cluster`, and the operator brings HA, failover, backup and restore with it | you create a Secret holding `DATABASE_URL` and name it in `DB_SECRET_NAME` |
-| Queue | the chart runs ElasticMQ with a PVC | you point `SQS_QUEUE_URL` and `SQS_DLQ_URL` at your own SQS-compatible endpoint, including real AWS SQS |
+| Queue | the chart runs ElasticMQ with a PVC | you point `SQS_QUEUE_URL` and `SQS_DLQ_URL` at your own queue, either real AWS SQS or your own SQS-compatible endpoint |
 
 ```bash
-DB_MODE=bundled QUEUE_MODE=bundled ./install.sh    # the default
+# The default: the chart runs both.
+DB_MODE=bundled QUEUE_MODE=bundled ./install.sh
+
+# Your own database, and real AWS SQS.
 DB_MODE=byo DB_SECRET_NAME=my-db QUEUE_MODE=byo \
   SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/<acct>/<queue> \
   SQS_DLQ_URL=https://sqs.us-east-1.amazonaws.com/<acct>/<queue>-dlq ./install.sh
+
+# Your own database, and your own SQS-compatible queue somewhere else in the
+# cluster. The URLs are derived from the endpoint when you do not give them.
+DB_MODE=byo DB_SECRET_NAME=my-db QUEUE_MODE=byo \
+  AWS_ENDPOINT_URL=http://my-queue.my-namespace.svc.cluster.local:9324 ./install.sh
 ```
 
-The four modes compose, so a bundled database with a real SQS queue is a valid
-combination.
+All four combinations compose, so a bundled database with an external queue, or
+an external database with the bundled queue, are both valid.
+
+Under `QUEUE_MODE=byo` whether `AWS_ENDPOINT_URL` is set is itself the choice.
+Left unset, the SDK talks to real AWS SQS and resolves credentials the normal
+way (IRSA, instance profile, environment), which is how staging and production
+are configured. Set, it talks to whatever you point it at, and static
+credentials go with it because an explicit endpoint leaves no credential chain
+to fall back on. That is why the two live in separate values files: absence and
+presence are different behaviours, and a values file cannot express a
+conditional key.
 
 ### Bundled PostgreSQL
 

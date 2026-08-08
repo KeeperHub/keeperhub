@@ -1,0 +1,34 @@
+# Merged on top of values.queue-byo.yaml, and ONLY when AWS_ENDPOINT_URL is set
+# explicitly, so that "bring your own queue" covers a self-hosted SQS-compatible
+# endpoint and not just real AWS SQS.
+#
+# It has to be a separate file because presence and absence are the two distinct
+# behaviours and a values file cannot express a conditional key:
+#
+#   endpoint absent  the SDK talks to real AWS SQS and resolves credentials the
+#                    normal way - IRSA, instance profile, environment. This is
+#                    how staging and production are configured.
+#   endpoint present the SDK talks to whatever you point it at. Static
+#                    credentials must come with it: with an endpoint set there is
+#                    no credential chain to fall back on, and the SDK fails to
+#                    sign at all rather than reaching the endpoint unsigned.
+#
+# The values are ignored by ElasticMQ, which does not verify signatures, but the
+# SDK still refuses to build a request without them.
+app:
+  env:
+    AWS_ENDPOINT_URL: { type: kv, value: "${AWS_ENDPOINT_URL}" }
+    AWS_ACCESS_KEY_ID: { type: kv, value: "${AWS_ACCESS_KEY_ID}" }
+    AWS_SECRET_ACCESS_KEY: { type: kv, value: "${AWS_SECRET_ACCESS_KEY}" }
+
+executor:
+  env:
+    AWS_ENDPOINT_URL: { type: kv, value: "${AWS_ENDPOINT_URL}" }
+    AWS_ACCESS_KEY_ID: { type: kv, value: "${AWS_ACCESS_KEY_ID}" }
+    AWS_SECRET_ACCESS_KEY: { type: kv, value: "${AWS_SECRET_ACCESS_KEY}" }
+
+schedule:
+  env:
+    AWS_ENDPOINT_URL: { type: kv, value: "${AWS_ENDPOINT_URL}" }
+    AWS_ACCESS_KEY_ID: { type: kv, value: "${AWS_ACCESS_KEY_ID}" }
+    AWS_SECRET_ACCESS_KEY: { type: kv, value: "${AWS_SECRET_ACCESS_KEY}" }
