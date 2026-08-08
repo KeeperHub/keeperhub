@@ -169,7 +169,9 @@ const SECURITY_VAULT_ABI = [
     type: "event",
   },
   {
-    inputs: [],
+    inputs: [
+      { internalType: "bytes32", name: "runId", type: "bytes32" },
+    ],
     name: "emergencyWithdraw",
     outputs: [],
     stateMutability: "nonpayable",
