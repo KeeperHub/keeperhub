@@ -133,10 +133,9 @@ Build the workflow in the visual builder — no code or local repository needed:
      generates it with `forge inspect` or Hardhat's artifact).
 3. Save the workflow.
 
-> **Contributors**: the same workflow ships as a seedable fixture —
-> `scripts/seed/fixtures/agentguard-pause.ts` — with a matching seeder
-> (`pnpm db:seed-agentguard-pause`). The fixture keeps `contractAddress`
-> empty on purpose; fill in your own deployment before seeding.
+> The same pattern — a pause-protected vault with a guardian-controlled
+> emergency action — is reusable for any kill-switch or emergency-control
+> workflow you want to guard behind the KeeperHub execution layer.
 
 ## Step 4: Run and verify
 
