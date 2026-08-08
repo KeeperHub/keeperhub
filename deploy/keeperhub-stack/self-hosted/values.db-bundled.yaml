@@ -1,0 +1,18 @@
+# DB_MODE=bundled - the chart runs PostgreSQL as a CloudNativePG Cluster, which
+# brings HA, failover, backup and restore with it.
+#
+# No env here. The connection string is read from a Secret in both modes (see
+# values.yaml); in this mode the installer composes it from the credentials
+# below and creates that Secret. Deliberately not CloudNativePG's own generated
+# Secret: its `uri` and `fqdn-uri` keys use hosts that do not end
+# .svc.cluster.local, so the application forces sslmode=verify-full and then
+# fails TLS against the in-cluster certificate.
+postgresql:
+  bundled: true
+  nameOverride: "${PG_NAME}"
+  instances: ${PG_INSTANCES}
+  database: "${PG_DATABASE}"
+  owner: "${PG_USER}"
+  credentialsSecret: "${PG_CREDENTIALS_SECRET}"
+  storage:
+    size: ${PG_STORAGE_SIZE}

@@ -12,11 +12,17 @@
 #
 # Rendered by install.sh with envsubst over an explicit allowlist:
 #   ${IMAGE_REPO} ${IMAGE_TAG} ${IMAGE_PULL_POLICY} ${APP_HOST}
-#   ${INGRESS_CLASS} ${TLS_ISSUER} ${NAMESPACE} ${DATABASE_URL_IN_CLUSTER}
-#   ${AWS_ENDPOINT_URL} ${AWS_REGION} ${SQS_QUEUE_URL} ${SQS_DLQ_URL}
-#   ${TURNSTILE_SECRET_KEY}
+#   ${INGRESS_CLASS} ${TLS_ISSUER} ${NAMESPACE} ${AWS_REGION}
+#   ${TURNSTILE_SECRET_KEY} ${DB_SECRET_NAME} ${DB_SECRET_KEY}
 # Nothing else is substituted, so shell-looking text such as $(date) below is
 # passed through untouched.
+#
+# This is not the whole picture. install.sh merges two more files over this one,
+# values.db-<mode>.yaml and values.queue-<mode>.yaml, which is how the database
+# and the queue can each be bundled by the chart or brought by the operator. The
+# queue endpoint and its static credentials live in those fragments rather than
+# here, because bring-your-own needs them ABSENT and a later -f cannot delete a
+# key.
 #
 # No secret material appears in this file. Secrets are plain Kubernetes Secrets
 # created by install.sh and referenced with `type: secret`. The common chart
@@ -29,15 +35,25 @@ app:
   # Anchored here and reused by the db-migration initContainer below, mirroring
   # the shape staging uses.
   shared_env: &shared_env
+    # Always a Secret reference, in both modes.
+    #
+    # In bundled mode the installer composes it from the CloudNativePG
+    # credentials and creates this Secret; in bring-your-own mode you create it.
+    # Keeping one shape for both means the db-migration initContainer inherits
+    # it through the shared_env anchor, which a later -f could not reach: an
+    # anchor is expanded when its own file is parsed, so a values fragment
+    # cannot extend it.
     DATABASE_URL:
-      type: kv
-      value: "${DATABASE_URL_IN_CLUSTER}"
+      type: secret
+      name: "${DB_SECRET_NAME}"
+      key: "${DB_SECRET_KEY}"
+    WORKFLOW_POSTGRES_URL:
+      type: secret
+      name: "${DB_SECRET_NAME}"
+      key: "${DB_SECRET_KEY}"
     # ensureExplicitSslMode deliberately no-ops for *.svc.cluster.local, so no
     # sslmode and no NODE_EXTRA_CA_CERTS/RDS CA bundle are needed here. That is
     # the one place local legitimately differs from staging.
-    WORKFLOW_POSTGRES_URL:
-      type: kv
-      value: "${DATABASE_URL_IN_CLUSTER}"
     INTERNAL_SERVICE_HMAC_SECRET:
       type: secret
       name: keeperhub-shared
@@ -55,23 +71,6 @@ app:
     AWS_REGION:
       type: kv
       value: "${AWS_REGION}"
-    AWS_ENDPOINT_URL:
-      type: kv
-      value: "${AWS_ENDPOINT_URL}"
-    # ElasticMQ ignores the signature but the SDK still signs, and every client
-    # construction site sets endpoint and static credentials together.
-    AWS_ACCESS_KEY_ID:
-      type: kv
-      value: "test"
-    AWS_SECRET_ACCESS_KEY:
-      type: kv
-      value: "test"
-    # Byte-identical across app, executor and schedule. The queue URL is bound
-    # into the HMAC signing string and the executor verifies against its own
-    # copy, so any difference here rejects every message as bad_signature.
-    SQS_QUEUE_URL:
-      type: kv
-      value: "${SQS_QUEUE_URL}"
     # Set for the same reason staging sets them. The Code plugin throws at
     # module load when NODE_ENV is "production" unless both are present, and the
     # plugin registry imports it eagerly. NODE_ENV is "development" here, so the
@@ -125,6 +124,39 @@ app:
   deployment:
     enabled: true
     initContainers:
+      # Helm does not track the CloudNativePG Cluster's readiness - it is a CR
+      # reconciled by an operator, not a workload, so --wait sees nothing to wait
+      # for. Without this the migration starts against a database that is still
+      # bootstrapping, fails, and --atomic rolls the whole release back.
+      #
+      # Uses the migrator image and the application's own driver rather than
+      # pulling a postgres client: the image is already being pulled for the next
+      # step, and a real query proves the database is accepting queries, not just
+      # that a port is open.
+      - name: wait-for-db
+        image: "${IMAGE_REPO}:migrator-${IMAGE_TAG}"
+        command:
+          - /bin/sh
+          - -c
+        args:
+          - |
+            set -e
+            echo "Waiting for the database to accept connections..."
+            i=0
+            until node -e "
+              const postgres = require('postgres');
+              const sql = postgres(process.env.DATABASE_URL, { max: 1, connect_timeout: 5, onnotice: () => {} });
+              sql.unsafe('select 1').then(() => sql.end()).catch(() => process.exit(1));
+            " 2>/dev/null; do
+              i=$((i + 1))
+              if [ "$i" -ge 60 ]; then
+                echo "Database did not become reachable within 5 minutes" >&2
+                exit 1
+              fi
+              sleep 5
+            done
+            echo "Database is reachable"
+        env: *shared_env
       # Mirrors staging's db-migration initContainer. No irsa-preflight: there
       # is no AWS to preflight.
       #
@@ -146,6 +178,11 @@ app:
           - |
             set -e
             echo "Setting up workflow postgres tables..."
+            # Same line staging runs. workflow-postgres-setup parses the URL
+            # itself and does not tolerate unencoded characters in the userinfo
+            # component, while drizzle goes through getDatabaseUrl and is already
+            # safe. A generated password is where that difference shows up.
+            export WORKFLOW_POSTGRES_URL=$(tsx scripts/encode-pg-url.ts)
             pnpm exec workflow-postgres-setup
             echo "Running database migrations..."
             pnpm db:migrate
@@ -372,8 +409,9 @@ executor:
 
   env:
     DATABASE_URL:
-      type: kv
-      value: "${DATABASE_URL_IN_CLUSTER}"
+      type: secret
+      name: "${DB_SECRET_NAME}"
+      key: "${DB_SECRET_KEY}"
     INTERNAL_SERVICE_HMAC_SECRET:
       type: secret
       name: keeperhub-shared
@@ -386,21 +424,6 @@ executor:
     AWS_REGION:
       type: kv
       value: "${AWS_REGION}"
-    AWS_ENDPOINT_URL:
-      type: kv
-      value: "${AWS_ENDPOINT_URL}"
-    AWS_ACCESS_KEY_ID:
-      type: kv
-      value: "test"
-    AWS_SECRET_ACCESS_KEY:
-      type: kv
-      value: "test"
-    SQS_QUEUE_URL:
-      type: kv
-      value: "${SQS_QUEUE_URL}"
-    SQS_DLQ_URL:
-      type: kv
-      value: "${SQS_DLQ_URL}"
     # enforce, not warn. Local must fail the same way production does when a
     # producer and the consumer disagree about the queue URL, and the DLQ makes
     # that failure visible instead of silent.
@@ -579,18 +602,6 @@ schedule:
     AWS_REGION:
       type: kv
       value: "${AWS_REGION}"
-    AWS_ENDPOINT_URL:
-      type: kv
-      value: "${AWS_ENDPOINT_URL}"
-    AWS_ACCESS_KEY_ID:
-      type: kv
-      value: "test"
-    AWS_SECRET_ACCESS_KEY:
-      type: kv
-      value: "test"
-    SQS_QUEUE_URL:
-      type: kv
-      value: "${SQS_QUEUE_URL}"
     LEADER_ELECTION_ENABLED:
       type: kv
       value: "false"

@@ -12,8 +12,9 @@ while it stays structurally identical to what staging and production run.
 
 | Path | What it is |
 | --- | --- |
-| `values.yaml` | chart values |
-| `namespace.yaml`, `elasticmq.yaml`, `runner-sa.yaml` | resources applied alongside the release |
+| `values.yaml` | chart values common to every install |
+| `values.db-{bundled,byo}.yaml`, `values.queue-{bundled,byo}.yaml` | the parts that differ per mode, merged over `values.yaml` |
+| `namespace.yaml`, `runner-sa.yaml` | resources applied alongside the release |
 | `config.sh` | every value that has to agree across the install |
 | `install.sh` | installs into an existing cluster |
 | `test-harness/` | scaffolding to try it on a throwaway minikube cluster, not part of the product |
@@ -27,12 +28,79 @@ It assumes a cluster and does not create one. You bring:
 
 - Kubernetes 1.28 or later with a default StorageClass
 - an ingress controller
-- PostgreSQL 17, reachable from the cluster
 - a cert-manager `ClusterIssuer`, if you want TLS
 - container images the cluster can pull
+- the CloudNativePG operator, if you want the chart to run PostgreSQL
 
-The queue is not on that list. A self-hosted install needs one and ElasticMQ is
-what we support, so it is installed as part of the profile.
+## The database and the queue: bundled, or bring your own
+
+Both are switchable, and both default to bundled so a first install needs nothing
+but a cluster.
+
+| | `DB_MODE` / `QUEUE_MODE` = `bundled` | = `byo` |
+| --- | --- | --- |
+| PostgreSQL | the chart renders a CloudNativePG `Cluster`, and the operator brings HA, failover, backup and restore with it | you create a Secret holding `DATABASE_URL` and name it in `DB_SECRET_NAME` |
+| Queue | the chart runs ElasticMQ with a PVC | you point `SQS_QUEUE_URL` and `SQS_DLQ_URL` at your own SQS-compatible endpoint, including real AWS SQS |
+
+```bash
+DB_MODE=bundled QUEUE_MODE=bundled ./install.sh    # the default
+DB_MODE=byo DB_SECRET_NAME=my-db QUEUE_MODE=byo \
+  SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/<acct>/<queue> \
+  SQS_DLQ_URL=https://sqs.us-east-1.amazonaws.com/<acct>/<queue>-dlq ./install.sh
+```
+
+The four modes compose, so a bundled database with a real SQS queue is a valid
+combination.
+
+### Bundled PostgreSQL
+
+Install the [CloudNativePG](https://cloudnative-pg.io/) operator first. It is a
+prerequisite rather than a subchart because its CRDs are cluster-scoped:
+
+```bash
+kubectl apply --server-side -f \
+  https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.1.yaml
+```
+
+`install.sh` refuses to run without it rather than failing later inside a Helm
+rollback.
+
+Set `PG_INSTANCES=3` for a highly available cluster. One primary and two
+replicas, failover handled by the operator, and the application follows it with
+no configuration change because it connects through the `-rw` Service, which the
+operator repoints. It needs three schedulable nodes; the default is 1 so a
+single-node cluster does not sit forever waiting on anti-affinity.
+
+Backup and restore are CloudNativePG's, not ours. Anything set under
+`postgresql.backup` in the values reaches `spec.backup` on the `Cluster`
+verbatim, and `postgresql.recovery` reaches `spec.bootstrap.recovery`, so you
+configure a `barmanObjectStore` and restore from it exactly as CloudNativePG
+documents.
+
+The database host must be the fully qualified `.svc.cluster.local` name.
+`ensureExplicitSslMode` in `lib/db/connection-utils.ts` only skips forcing
+`sslmode=verify-full` for that suffix, and anything shorter then fails TLS
+against the in-cluster certificate. This is why CloudNativePG's own generated
+`uri` and `fqdn-uri` Secret keys cannot be used and `install.sh` composes the
+connection string itself.
+
+### Bundled queue
+
+Single node, and that is not a placeholder to be improved later: ElasticMQ has
+no clustering or replication, so a second replica would be a second independent
+queue that silently splits messages. A restart is therefore a brief outage.
+Persistence is what keeps it from also being data loss - messages are written to
+a PVC and are still there afterwards, which
+`test-harness/queue-restart-test.sh` measures directly.
+
+One known deviation from real SQS: `PurgeQueue` is not persisted, so purged
+messages reappear after a restart. Nothing in the application calls it; only
+tests do.
+
+If you are upgrading an install that predates this, the namespace already has an
+`elasticmq` Service that Helm did not create and will refuse to adopt. Delete the
+old Deployment and Service once before installing. That drops whatever is
+in-flight, which is precisely the failure mode persistence exists to end.
 
 ## Installing
 
@@ -46,24 +114,29 @@ lands somewhere it should not.
 
 Everything else has a default in `config.sh` and can be overridden in the
 environment: `NAMESPACE`, `APP_HOST`, `INGRESS_CLASS`, `TLS_ISSUER`,
-`IMAGE_REPO`, `DATABASE_URL_IN_CLUSTER`, and the queue settings.
+`IMAGE_REPO`, the `DB_MODE`/`QUEUE_MODE` settings above, and the `PG_*` and
+`SQS_*` values behind them.
 
 `--dry-run` renders the manifests and the chart without touching the cluster.
+
+`CHART_DIR` points the install at a working-tree copy of the chart instead of the
+published one, for developing chart changes alongside this profile.
 
 ## Trying it on a throwaway cluster
 
 ```bash
-./test-harness/bootstrap-cluster.sh                    # minikube + calico + cert-manager + postgres
+./test-harness/bootstrap-cluster.sh                    # minikube + calico + cert-manager + cloudnative-pg
 IMAGE_TAG=$(./test-harness/build-images.sh --print-tag)
 ./test-harness/build-images.sh
 KUBE_CONTEXT=keeperhub IMAGE_TAG=$IMAGE_TAG ./install.sh
+KUBE_CONTEXT=keeperhub ./test-harness/queue-restart-test.sh   # optional: measure queue durability
 ```
 
 Then, to reach it:
 
 ```bash
 minikube tunnel -p keeperhub
-echo "$(minikube -p keeperhub ip) local.keeperhub.com" | sudo tee -a /etc/hosts
+echo "$(minikube -p keeperhub ip) selfhosted.keeperhub.com" | sudo tee -a /etc/hosts
 ```
 
 Note that `minikube status` without `-p keeperhub` reports on whatever profile
@@ -88,7 +161,7 @@ hostname every cookie-authenticated POST/PATCH/PUT/DELETE is rejected. The UI
 loads and reads fine, so it looks like the app works until you try to save:
 enabling a workflow returns "Failed to update workflow state" and the only trace
 is `[csrf] blocked: untrusted origin` in the app log. `APP_HOST` defaults to
-`local.keeperhub.com` to stay inside the trusted suffix. **A client cannot do
+`selfhosted.keeperhub.com` to stay inside the trusted suffix. **A client cannot do
 this** - they do not own the domain. Making trusted origins configurable is a
 prerequisite for any client install (KEEP-1110).
 

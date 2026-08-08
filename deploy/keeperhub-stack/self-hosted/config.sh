@@ -27,7 +27,10 @@ RELEASE="${RELEASE:-keeperhub}"
 CHART_REPO_NAME="techops-services"
 CHART_REPO_URL="https://techops-services.github.io/helm-charts"
 CHART_NAME="techops-services/keeperhub-stack"
-CHART_VERSION="${CHART_VERSION:-0.3.0}"
+CHART_VERSION="${CHART_VERSION:-0.4.0}"
+# Point at a working-tree chart instead of the published one, for developing
+# chart changes alongside this profile: CHART_DIR=../../../helm-charts/charts/keeperhub-stack
+CHART_DIR="${CHART_DIR:-}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-15m0s}"
 
 # Where the images come from. Defaults suit the test harness, which builds them
@@ -49,7 +52,11 @@ IMAGE_PULL_POLICY="${IMAGE_PULL_POLICY:-Never}"
 #
 # A real client cannot do this - they do not own keeperhub.com. Making the
 # trusted origins configurable is a prerequisite for any client domain.
-APP_HOST="${APP_HOST:-local.keeperhub.com}"
+#
+# Not "local.keeperhub.com": that name belongs to deploy/local, and nginx-ingress
+# rejects a second Ingress claiming the same host and path with an admission
+# error. The two profiles are meant to be able to share a cluster.
+APP_HOST="${APP_HOST:-selfhosted.keeperhub.com}"
 INGRESS_CLASS="${INGRESS_CLASS:-nginx}"
 TLS_ISSUER="${TLS_ISSUER:-mkcert-ca-issuer}"
 
@@ -72,29 +79,73 @@ TURNSTILE_SITE_KEY="${TURNSTILE_SITE_KEY:-1x00000000000000000000AA}"
 TURNSTILE_SECRET_KEY="${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}"
 
 # --- Queue -------------------------------------------------------------------
-# ElasticMQ speaks the SQS API, so no application code changes: the same
-# @aws-sdk/client-sqs reaches it through AWS_ENDPOINT_URL. Unlike LocalStack it
-# needs no auth token and its free edition is not being retired.
-SQS_HOST="${SQS_HOST:-elasticmq.${NAMESPACE}.svc.cluster.local}"
+# QUEUE_MODE=bundled  the chart runs ElasticMQ, persistent, single node
+# QUEUE_MODE=byo      point the values at your own SQS-compatible endpoint,
+#                     including real AWS SQS
+#
+# ElasticMQ speaks the SQS API, so nothing in the application changes between
+# the two: the same @aws-sdk/client-sqs reaches either through AWS_ENDPOINT_URL.
+QUEUE_MODE="${QUEUE_MODE:-bundled}"
+
+# The queue Service name. Also appears inside SQS_QUEUE_URL, which is an HMAC
+# signing input, so changing it on an existing install rejects every in-flight
+# message. Must match `queue.name` in the chart values.
+QUEUE_NAME="${QUEUE_NAME:-elasticmq}"
+SQS_HOST="${SQS_HOST:-${QUEUE_NAME}.${NAMESPACE}.svc.cluster.local}"
 SQS_PORT="${SQS_PORT:-9324}"
-AWS_ENDPOINT_URL="http://${SQS_HOST}:${SQS_PORT}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
-SQS_ACCOUNT_ID="000000000000"
-SQS_QUEUE_NAME="keeperhub-workflow-queue"
+SQS_ACCOUNT_ID="${SQS_ACCOUNT_ID:-000000000000}"
+SQS_QUEUE_NAME="${SQS_QUEUE_NAME:-keeperhub-workflow-queue}"
+
+# Overridable in full, because a real SQS URL has a different shape entirely
+# (https://sqs.<region>.amazonaws.com/<account>/<name>) and is not derivable
+# from the parts above.
+AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-http://${SQS_HOST}:${SQS_PORT}}"
 # Read the note at the top of this file before changing either URL.
-SQS_QUEUE_URL="${AWS_ENDPOINT_URL}/${SQS_ACCOUNT_ID}/${SQS_QUEUE_NAME}"
-SQS_DLQ_URL="${AWS_ENDPOINT_URL}/${SQS_ACCOUNT_ID}/${SQS_QUEUE_NAME}-dlq"
+SQS_QUEUE_URL="${SQS_QUEUE_URL:-${AWS_ENDPOINT_URL}/${SQS_ACCOUNT_ID}/${SQS_QUEUE_NAME}}"
+SQS_DLQ_URL="${SQS_DLQ_URL:-${AWS_ENDPOINT_URL}/${SQS_ACCOUNT_ID}/${SQS_QUEUE_NAME}-dlq}"
 
 # --- Database ----------------------------------------------------------------
-# Bring-your-own PostgreSQL 17. The install does not provision one; the test
-# harness does, purely so there is something to point at.
-PG_HOST="${PG_HOST:-postgresql.${NAMESPACE}.svc.cluster.local}"
-PG_USER="${PG_USER:-local}"
-PG_PASSWORD="${PG_PASSWORD:-local}"
+# DB_MODE=bundled  the chart runs PostgreSQL as a CloudNativePG Cluster, which
+#                  brings HA, failover, backup and restore with it. Requires the
+#                  CNPG operator to be installed cluster-wide first.
+# DB_MODE=byo      supply DATABASE_URL yourself, as a Kubernetes Secret.
+DB_MODE="${DB_MODE:-bundled}"
+
+PG_NAME="${PG_NAME:-${RELEASE}-postgres}"
+PG_USER="${PG_USER:-keeperhub}"
 PG_DATABASE="${PG_DATABASE:-keeperhub}"
-# ensureExplicitSslMode (lib/db/connection-utils.ts) deliberately no-ops for
-# *.svc.cluster.local, so no sslmode and no CA bundle are needed in-cluster.
-DATABASE_URL_IN_CLUSTER="${DATABASE_URL_IN_CLUSTER:-postgresql://${PG_USER}:${PG_PASSWORD}@${PG_HOST}:5432/${PG_DATABASE}}"
+PG_INSTANCES="${PG_INSTANCES:-1}"
+PG_STORAGE_SIZE="${PG_STORAGE_SIZE:-20Gi}"
+# kubernetes.io/basic-auth Secret the installer creates and CNPG bootstraps from.
+PG_CREDENTIALS_SECRET="${PG_CREDENTIALS_SECRET:-${RELEASE}-db-credentials}"
+
+# The host MUST be the fully qualified .svc.cluster.local form.
+#
+# ensureExplicitSslMode (lib/db/connection-utils.ts) only skips forcing
+# sslmode=verify-full for that suffix. Anything shorter gets verify-full applied
+# and then fails TLS against CloudNativePG's in-cluster certificate - which is
+# why CNPG's own generated `uri` and `fqdn-uri` Secret keys are unusable here
+# and the connection string is composed by hand.
+#
+# -rw is CNPG's primary Service and is repointed automatically on failover, so
+# it stays correct with PG_INSTANCES > 1.
+if [ "$DB_MODE" = "bundled" ]; then
+    PG_HOST="${PG_HOST:-${PG_NAME}-rw.${NAMESPACE}.svc.cluster.local}"
+else
+    PG_HOST="${PG_HOST:-postgresql.${NAMESPACE}.svc.cluster.local}"
+fi
+PG_PASSWORD="${PG_PASSWORD:-}"
+DATABASE_URL_IN_CLUSTER="${DATABASE_URL_IN_CLUSTER:-}"
+
+# Name and key of the Secret holding DATABASE_URL when DB_MODE=byo.
+DB_SECRET_NAME="${DB_SECRET_NAME:-keeperhub-db}"
+DB_SECRET_KEY="${DB_SECRET_KEY:-DATABASE_URL}"
+
+validate_modes() {
+    case "$DB_MODE" in bundled|byo) ;; *) echo "DB_MODE must be 'bundled' or 'byo', got '$DB_MODE'" >&2; exit 1 ;; esac
+    case "$QUEUE_MODE" in bundled|byo) ;; *) echo "QUEUE_MODE must be 'bundled' or 'byo', got '$QUEUE_MODE'" >&2; exit 1 ;; esac
+}
 
 kube() {
     kubectl --context "$KUBE_CONTEXT" "$@"

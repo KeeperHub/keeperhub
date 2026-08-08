@@ -50,11 +50,44 @@ preflight() {
     section "Preflight"
     require_tools kubectl helm envsubst openssl
     require_context
+    validate_modes
     if [ -z "$IMAGE_TAG" ]; then
         echo "IMAGE_TAG is not set. It must name images the cluster can resolve." >&2
         exit 1
     fi
-    ok "context $KUBE_CONTEXT, namespace $NAMESPACE, images $IMAGE_REPO:*-$IMAGE_TAG"
+
+    # CloudNativePG is a prerequisite, not something this install provides: its
+    # CRDs are cluster-scoped. Checked here rather than in the chart, because a
+    # template gated on .Capabilities would silently render nothing under
+    # `helm template` and prove nothing.
+    if [ "$DB_MODE" = bundled ] && [ "$DRY_RUN" != true ]; then
+        if ! kube get crd clusters.postgresql.cnpg.io >/dev/null 2>&1; then
+            cat >&2 <<EOF
+DB_MODE=bundled needs the CloudNativePG operator, and its CRD is not installed.
+
+    kubectl apply --server-side -f \\
+      https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.1.yaml
+
+Or set DB_MODE=byo and point DB_SECRET_NAME at a Secret holding your own
+connection string.
+EOF
+            exit 1
+        fi
+    fi
+
+    # The chart renders a bare secretKeyRef with no `optional`, so a missing
+    # Secret is CreateContainerConfigError and --atomic rolls the whole release
+    # back with a message that names the container, not the Secret. Fail here
+    # instead, where it can say what is actually wrong.
+    if [ "$DB_MODE" = byo ] && [ "$DRY_RUN" != true ]; then
+        if ! kube_ns get secret "$DB_SECRET_NAME" >/dev/null 2>&1; then
+            echo "DB_MODE=byo but Secret '$DB_SECRET_NAME' does not exist in namespace '$NAMESPACE'." >&2
+            echo "Create it with key '$DB_SECRET_KEY' holding the connection string, then re-run." >&2
+            exit 1
+        fi
+    fi
+
+    ok "context $KUBE_CONTEXT, namespace $NAMESPACE, db=$DB_MODE queue=$QUEUE_MODE, images $IMAGE_REPO:*-$IMAGE_TAG"
 }
 
 # The manifests carry ${NAMESPACE}, so they are rendered the same way the values
@@ -68,23 +101,17 @@ apply_manifests() {
     if [ "$DRY_RUN" = true ]; then
         # A dry run must not touch the cluster, so print instead of applying.
         render_manifest namespace.yaml
-        render_manifest elasticmq.yaml
         render_manifest runner-sa.yaml
         return 0
     fi
 
     render_manifest namespace.yaml | kube apply -f -
-    # The queue. Part of the install rather than a prerequisite: a self-hosted
-    # install needs one, and ElasticMQ is what we support. Declares its queues
-    # statically, so readiness implies queue-ready with no bootstrap race.
-    render_manifest elasticmq.yaml | kube apply -f -
     # Zero-RBAC ServiceAccount for per-execution runner pods. Not chart-rendered,
     # because the executor submits those Jobs through the API rather than Helm.
     # Without it the Jobs are admitted but their pods are rejected, and with
     # backoffLimit 0 the execution dies with no retry.
     render_manifest runner-sa.yaml | kube apply -f -
-    kube wait --for=condition=Available deployment/elasticmq -n "$NAMESPACE" --timeout=180s
-    ok "queue ready at $AWS_ENDPOINT_URL"
+    ok "namespace and runner service account applied"
 }
 
 # Formats differ per secret and are not interchangeable:
@@ -125,6 +152,37 @@ secret_value_or_keep() {
     generate_secret "$fmt"
 }
 
+# In bundled mode: generate/keep the database password, create the basic-auth
+# Secret CloudNativePG bootstraps from, and compose the connection string into
+# the Secret every component reads.
+#
+# Hex rather than base64 on purpose. A "/" in a password breaks URL parsing in
+# the migration step, and 64 hex characters carry more entropy than the base64
+# form anyway. The encode step downstream is then defence in depth rather than
+# load-bearing.
+create_db_secrets() {
+    [ "$DB_MODE" = bundled ] || return 0
+    local pw
+    pw=$(secret_value_or_keep "$PG_CREDENTIALS_SECRET" password hex "${PG_PASSWORD:-}")
+
+    kube_ns create secret generic "$PG_CREDENTIALS_SECRET" \
+        --type=kubernetes.io/basic-auth \
+        --from-literal=username="$PG_USER" \
+        --from-literal=password="$pw" \
+        --dry-run=client -o yaml | kube apply -f -
+
+    # Composed by hand rather than read from CloudNativePG's generated Secret:
+    # its uri/fqdn-uri keys use hosts that do not end .svc.cluster.local, which
+    # makes the application force sslmode=verify-full and fail TLS against the
+    # in-cluster certificate.
+    DATABASE_URL_IN_CLUSTER="postgresql://${PG_USER}:${pw}@${PG_HOST}:5432/${PG_DATABASE}"
+
+    kube_ns create secret generic "$DB_SECRET_NAME" \
+        --from-literal="$DB_SECRET_KEY=$DATABASE_URL_IN_CLUSTER" \
+        --dry-run=client -o yaml | kube apply -f -
+    ok "database credentials and connection string ($PG_HOST)"
+}
+
 create_secrets() {
     section "Creating secrets"
     local hmac agentic auth oauth mcp enc sendgrid
@@ -155,8 +213,14 @@ create_secrets() {
     enc=$(secret_value_or_keep keeperhub-executor-integration-encryption-key \
         keeperhub-executor-integration-encryption-key hex "${INTEGRATION_ENCRYPTION_KEY:-}")
 
+    # Runner Job pods get DATABASE_URL from here. In byo mode the installer does
+    # not know the URL, so it is copied out of the operator-supplied Secret.
+    local runner_db_url="$DATABASE_URL_IN_CLUSTER"
+    if [ -z "$runner_db_url" ]; then
+        runner_db_url=$(kube_ns get secret "$DB_SECRET_NAME" -o "jsonpath={.data.$DB_SECRET_KEY}" 2>/dev/null | base64 -d 2>/dev/null || true)
+    fi
     kube_ns create secret generic keeperhub-executor-db-url \
-        --from-literal=keeperhub-executor-db-url="$DATABASE_URL_IN_CLUSTER" \
+        --from-literal=keeperhub-executor-db-url="$runner_db_url" \
         --dry-run=client -o yaml | kube apply -f -
     kube_ns create secret generic keeperhub-executor-integration-encryption-key \
         --from-literal=keeperhub-executor-integration-encryption-key="$enc" \
@@ -183,26 +247,38 @@ create_secrets() {
     # restart the pods consuming it - an env var is resolved once, at pod start.
     # A checksum in the pod template is the operator-free equivalent of the
     # reloader annotation staging uses: when it changes, helm rolls the pods.
-    SECRETS_CHECKSUM=$(printf '%s' "$hmac$agentic$auth$oauth$mcp$enc$sendgrid" | sha256sum | cut -c1-16)
+    SECRETS_CHECKSUM=$(printf '%s' "$hmac$agentic$auth$oauth$mcp$enc$sendgrid$runner_db_url" | sha256sum | cut -c1-16)
     export SECRETS_CHECKSUM
     ok "secrets applied (checksum $SECRETS_CHECKSUM)"
 }
 
-SUBST_VARS=(
+# Which placeholders each values file may contain, kept per file rather than as
+# one list. A variable is then only required when the mode that uses it is
+# selected: PG_* is meaningless under DB_MODE=byo, and AWS_ENDPOINT_URL is
+# deliberately unset under QUEUE_MODE=byo, where its absence is what sends the
+# SDK to real AWS.
+BASE_SUBST_VARS=(
     IMAGE_REPO IMAGE_TAG IMAGE_PULL_POLICY APP_HOST INGRESS_CLASS TLS_ISSUER
-    NAMESPACE DATABASE_URL_IN_CLUSTER AWS_ENDPOINT_URL AWS_REGION
-    SQS_QUEUE_URL SQS_DLQ_URL TURNSTILE_SECRET_KEY
+    NAMESPACE AWS_REGION TURNSTILE_SECRET_KEY DB_SECRET_NAME DB_SECRET_KEY
 )
+DB_BUNDLED_SUBST_VARS=(PG_NAME PG_INSTANCES PG_DATABASE PG_USER PG_CREDENTIALS_SECRET PG_STORAGE_SIZE)
+DB_BYO_SUBST_VARS=()
+QUEUE_BUNDLED_SUBST_VARS=(QUEUE_NAME AWS_ENDPOINT_URL SQS_QUEUE_URL SQS_DLQ_URL)
+QUEUE_BYO_SUBST_VARS=(SQS_QUEUE_URL SQS_DLQ_URL)
 
-render_values() {
-    local var names=""
+VALUES_ARGS=()
+
+render_values_file() {
+    local file="$1"; shift
+    local var names="" rendered
+
     # envsubst reads the ENVIRONMENT, so every variable must be exported, not
     # merely set. Worth asserting rather than assuming: an unexported variable is
     # substituted with an empty string, not left as a placeholder, so the
     # leftover-placeholder check below cannot catch it. An empty APP_HOST renders
     # an Ingress with an empty TLS host, which the API server rejects with an RFC
     # 1123 error that says nothing about the real cause.
-    for var in "${SUBST_VARS[@]}"; do
+    for var in "$@"; do
         if [ -z "${!var:-}" ]; then
             echo "Substitution variable $var is unset or empty (see config.sh)." >&2
             exit 1
@@ -211,33 +287,79 @@ render_values() {
         names="$names \${$var}"
     done
 
-    RENDERED_VALUES="$(mktemp -t keeperhub-self-hosted-values.XXXXXX.yaml)"
-    envsubst "$names" < "$SCRIPT_DIR/values.yaml" > "$RENDERED_VALUES"
+    rendered="$(mktemp -t "keeperhub-${file%.yaml}.XXXXXX.yaml")"
+    # Named explicitly rather than substituting everything in the environment,
+    # so an unrelated shell variable that happens to share a name with a word in
+    # the file cannot rewrite it.
+    envsubst "$names" < "$SCRIPT_DIR/$file" > "$rendered"
 
-    if grep -q '\${' "$RENDERED_VALUES"; then
-        echo "Unsubstituted placeholders remain:" >&2
-        grep -n '\${' "$RENDERED_VALUES" >&2
+    if grep -q '\${' "$rendered"; then
+        echo "Unsubstituted placeholders remain in $file:" >&2
+        grep -n '\${' "$rendered" >&2
         exit 1
+    fi
+    VALUES_ARGS+=(-f "$rendered")
+}
+
+# Mode selection COMPOSES values files; it never overrides keys to null. Helm's
+# null-deletion only fires for keys present in the chart's own defaults, and
+# app.env is {} there, so `AWS_ENDPOINT_URL: null` in a later -f does not remove
+# the key - it crashes the subchart on a nil dereference. Omitting the key from
+# the file that is merged is the only way to express "not set".
+render_values() {
+    section "Rendering values"
+    render_values_file values.yaml "${BASE_SUBST_VARS[@]}"
+
+    local db_vars=() queue_vars=()
+    case "$DB_MODE" in
+        bundled) db_vars=("${DB_BUNDLED_SUBST_VARS[@]}") ;;
+        byo) db_vars=("${DB_BYO_SUBST_VARS[@]+"${DB_BYO_SUBST_VARS[@]}"}") ;;
+    esac
+    case "$QUEUE_MODE" in
+        bundled) queue_vars=("${QUEUE_BUNDLED_SUBST_VARS[@]}") ;;
+        byo) queue_vars=("${QUEUE_BYO_SUBST_VARS[@]}") ;;
+    esac
+
+    render_values_file "values.db-$DB_MODE.yaml" "${db_vars[@]+"${db_vars[@]}"}"
+    render_values_file "values.queue-$QUEUE_MODE.yaml" "${queue_vars[@]}"
+    ok "values.yaml + db-$DB_MODE + queue-$QUEUE_MODE"
+}
+
+# A working-tree chart when CHART_DIR is set, the published one otherwise. The
+# --version flag is meaningless for a directory and helm rejects it there.
+chart_ref() {
+    if [ -n "$CHART_DIR" ]; then
+        printf '%s' "$CHART_DIR"
+    else
+        printf '%s' "$CHART_NAME"
     fi
 }
 
+
 install_chart() {
-    section "Installing keeperhub-stack $CHART_VERSION"
-    helm repo add "$CHART_REPO_NAME" "$CHART_REPO_URL" >/dev/null
-    helm repo update "$CHART_REPO_NAME" >/dev/null
+    local version_args=()
+    if [ -n "$CHART_DIR" ]; then
+        section "Installing keeperhub-stack from $CHART_DIR"
+    else
+        section "Installing keeperhub-stack $CHART_VERSION"
+        helm repo add "$CHART_REPO_NAME" "$CHART_REPO_URL" >/dev/null
+        helm repo update "$CHART_REPO_NAME" >/dev/null
+        version_args=(--version "$CHART_VERSION")
+    fi
 
     if [ "$DRY_RUN" = true ]; then
-        helm template "$RELEASE" "$CHART_NAME" \
-            --version "$CHART_VERSION" --namespace "$NAMESPACE" -f "$RENDERED_VALUES"
+        helm template "$RELEASE" "$(chart_ref)" \
+            "${version_args[@]+"${version_args[@]}"}" \
+            --namespace "$NAMESPACE" "${VALUES_ARGS[@]}"
         return 0
     fi
 
     # --atomic rolls the whole release back if any component fails readiness.
-    helm upgrade --install "$RELEASE" "$CHART_NAME" \
+    helm upgrade --install "$RELEASE" "$(chart_ref)" \
         --kube-context "$KUBE_CONTEXT" \
-        --version "$CHART_VERSION" \
+        "${version_args[@]+"${version_args[@]}"}" \
         --namespace "$NAMESPACE" \
-        -f "$RENDERED_VALUES" \
+        "${VALUES_ARGS[@]}" \
         --set "app.podAnnotations.keeperhub\.io/secrets-checksum=$SECRETS_CHECKSUM" \
         --set "executor.podAnnotations.keeperhub\.io/secrets-checksum=$SECRETS_CHECKSUM" \
         --set "schedule.podAnnotations.keeperhub\.io/secrets-checksum=$SECRETS_CHECKSUM" \
@@ -256,6 +378,7 @@ main() {
     if [ "$DRY_RUN" = true ]; then
         SECRETS_CHECKSUM="dry-run"
     else
+        create_db_secrets
         create_secrets
     fi
     render_values

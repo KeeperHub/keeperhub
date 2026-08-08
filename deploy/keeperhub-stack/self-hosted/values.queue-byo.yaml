@@ -1,0 +1,24 @@
+# QUEUE_MODE=byo - you supply the queue, including real AWS SQS.
+#
+# Deliberately sets neither AWS_ENDPOINT_URL nor static credentials. Their
+# ABSENCE is what makes the SDK talk to real AWS and resolve credentials the
+# normal way (IRSA, instance profile, or your own Secret); this is how staging
+# and production are configured. Composing files rather than overriding keys is
+# the only way to express that, since a later -f cannot remove a key.
+#
+# Only the queue URLs are set, because they have no default the SDK can infer.
+queue:
+  bundled: false
+
+app:
+  env:
+    SQS_QUEUE_URL: { type: kv, value: "${SQS_QUEUE_URL}" }
+
+executor:
+  env:
+    SQS_QUEUE_URL: { type: kv, value: "${SQS_QUEUE_URL}" }
+    SQS_DLQ_URL: { type: kv, value: "${SQS_DLQ_URL}" }
+
+schedule:
+  env:
+    SQS_QUEUE_URL: { type: kv, value: "${SQS_QUEUE_URL}" }

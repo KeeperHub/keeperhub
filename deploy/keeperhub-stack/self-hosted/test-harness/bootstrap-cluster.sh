@@ -5,7 +5,11 @@
 # assumes the client already has a cluster; install.sh never creates one. All
 # this does is produce a cluster that is not staging or prod, plus the
 # prerequisites install.sh expects a platform to provide: an ingress controller,
-# a TLS issuer and a PostgreSQL to point at.
+# a TLS issuer and, for DB_MODE=bundled, the CloudNativePG operator.
+#
+# Postgres itself is no longer installed here. The chart brings it under
+# DB_MODE=bundled, and under DB_MODE=byo it is by definition the operator's to
+# provide.
 #
 # Usage:
 #   ./bootstrap-cluster.sh              # create or reuse
@@ -35,9 +39,12 @@ FLOOR_MEMORY_GB=6
 CNI="calico"
 
 CERT_MANAGER_VERSION="v1.21.1"
-POSTGRES_CHART_VERSION="16.7.27"
-POSTGRES_IMAGE_REPO="bitnamilegacy/postgresql"
-POSTGRES_IMAGE_TAG="17.6.0-debian-12-r4"
+
+# CloudNativePG ships one cluster-scoped YAML rather than a chart. Its CRDs are
+# cluster-scoped, which is exactly why the operator is a documented prerequisite
+# of the install rather than a subchart of it.
+CNPG_VERSION="1.24.1"
+CNPG_MANIFEST="https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-${CNPG_VERSION}.yaml"
 
 RECREATE=false
 for arg in "$@"; do
@@ -141,20 +148,59 @@ EOF
     ok "cluster ready with $CNI"
 }
 
+# The namespace a ClusterIssuer resolves its secretName in. cert-manager takes it
+# from --cluster-resource-namespace and defaults to its own namespace, so it is
+# read off the running controller rather than assumed - putting the CA Secret in
+# the wrong place leaves the issuer permanently NotReady with "secret not found".
+cert_manager_resource_namespace() {
+    local ns args
+    ns=$(kubectl --context "$KUBE_CONTEXT" get deploy -A \
+        -l app.kubernetes.io/name=cert-manager,app.kubernetes.io/component=controller \
+        -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)
+    [ -n "$ns" ] || return 1
+    args=$(kubectl --context "$KUBE_CONTEXT" -n "$ns" get deploy -l app.kubernetes.io/component=controller \
+        -o jsonpath='{.items[0].spec.template.spec.containers[0].args}' 2>/dev/null || true)
+    case "$args" in
+        *--cluster-resource-namespace=*)
+            printf '%s' "${args#*--cluster-resource-namespace=}" | cut -d'"' -f1 ;;
+        *) printf '%s' "$ns" ;;
+    esac
+}
+
 setup_tls() {
     section "TLS"
-    local ca_root ca_cert ca_key
+    # A working issuer is the prerequisite, not a cert-manager release owned by
+    # this script. Reused when it is already there, which also keeps this off
+    # any cert-manager another profile on the same cluster installed.
+    if [ "$(kubectl --context "$KUBE_CONTEXT" get clusterissuer "$TLS_ISSUER" \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = "True" ]; then
+        ok "$TLS_ISSUER already ready"
+        return 0
+    fi
+
+    local ca_root ca_cert ca_key issuer_ns
     ca_root=$(mkcert -CAROOT); ca_cert="$ca_root/rootCA.pem"; ca_key="$ca_root/rootCA-key.pem"
     [ -f "$ca_cert" ] || { echo "  installing mkcert CA (may prompt)"; mkcert -install; }
 
-    helm repo add jetstack https://charts.jetstack.io >/dev/null
-    helm repo update jetstack >/dev/null
-    helm upgrade --install cert-manager jetstack/cert-manager \
-        --kube-context "$KUBE_CONTEXT" --namespace "$NAMESPACE" --create-namespace \
-        --version "$CERT_MANAGER_VERSION" --set crds.enabled=true \
-        --set "clusterResourceNamespace=$NAMESPACE" --wait
+    # cert-manager's CRDs are cluster-scoped and carry helm ownership metadata,
+    # so a second release fails outright on "cannot be imported into the current
+    # release" rather than merging.
+    if kubectl --context "$KUBE_CONTEXT" get crd certificates.cert-manager.io >/dev/null 2>&1; then
+        issuer_ns=$(cert_manager_resource_namespace)
+        echo "  cert-manager already installed, adding only $TLS_ISSUER (CA in $issuer_ns)"
+    else
+        helm repo add jetstack https://charts.jetstack.io >/dev/null
+        helm repo update jetstack >/dev/null
+        helm upgrade --install cert-manager jetstack/cert-manager \
+            --kube-context "$KUBE_CONTEXT" --namespace "$NAMESPACE" --create-namespace \
+            --version "$CERT_MANAGER_VERSION" --set crds.enabled=true \
+            --set "clusterResourceNamespace=$NAMESPACE" --wait
+        issuer_ns="$NAMESPACE"
+    fi
 
-    kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" create secret generic mkcert-ca \
+    kubectl --context "$KUBE_CONTEXT" create namespace "$issuer_ns" \
+        --dry-run=client -o yaml | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null
+    kubectl --context "$KUBE_CONTEXT" -n "$issuer_ns" create secret generic mkcert-ca \
         --from-file=tls.crt="$ca_cert" --from-file=tls.key="$ca_key" \
         --dry-run=client -o yaml | kubectl --context "$KUBE_CONTEXT" apply -f -
 
@@ -173,49 +219,33 @@ EOF
     ok "$TLS_ISSUER ready"
 }
 
-setup_postgres() {
-    section "PostgreSQL"
-    # Bring-your-own in a real install. Provided here only so there is something
-    # for DATABASE_URL_IN_CLUSTER to point at.
-    helm upgrade --install postgresql \
-        oci://registry-1.docker.io/bitnamicharts/postgresql \
-        --kube-context "$KUBE_CONTEXT" --namespace "$NAMESPACE" --create-namespace \
-        --version "$POSTGRES_CHART_VERSION" \
-        --set "auth.username=$PG_USER" --set "auth.password=$PG_PASSWORD" \
-        --set auth.database=local --set "auth.postgresPassword=$PG_PASSWORD" \
-        --set image.registry=docker.io \
-        --set "image.repository=$POSTGRES_IMAGE_REPO" \
-        --set "image.tag=$POSTGRES_IMAGE_TAG" --wait
-    kubectl --context "$KUBE_CONTEXT" wait --for=condition=Ready pods \
-        -l app.kubernetes.io/name=postgresql -n "$NAMESPACE" --timeout=300s
-
-    local psql_admin
-    psql_admin=(kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" exec postgresql-0 --
-        env "PGPASSWORD=$PG_PASSWORD" psql -U postgres -tAc)
-    if [ "$("${psql_admin[@]}" "SELECT 1 FROM pg_database WHERE datname='$PG_DATABASE';" | tr -d '[:space:]')" != "1" ]; then
-        "${psql_admin[@]}" "CREATE DATABASE $PG_DATABASE;" >/dev/null
+setup_cnpg() {
+    section "CloudNativePG"
+    if [ "$DB_MODE" != bundled ]; then
+        echo "  skipped (DB_MODE=$DB_MODE - you supply the database)"
+        return 0
     fi
-    # drizzle-kit migrate creates its own 'drizzle' schema, so the app role needs
-    # CREATE on the database as well as rights inside public.
-    "${psql_admin[@]}" "GRANT ALL PRIVILEGES ON DATABASE $PG_DATABASE TO $PG_USER;" >/dev/null
-    kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" exec postgresql-0 -- \
-        env "PGPASSWORD=$PG_PASSWORD" psql -U postgres -d "$PG_DATABASE" -tAc \
-        "GRANT ALL ON SCHEMA public TO $PG_USER; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO $PG_USER;" >/dev/null
-    ok "postgresql ready, database $PG_DATABASE"
+    # --server-side because the CRDs carry annotations past the 262144-byte limit
+    # that client-side apply stores in last-applied-configuration.
+    kubectl --context "$KUBE_CONTEXT" apply --server-side -f "$CNPG_MANIFEST"
+    kubectl --context "$KUBE_CONTEXT" wait --for=condition=Available \
+        deployment/cnpg-controller-manager -n cnpg-system --timeout=300s
+    ok "cloudnative-pg $CNPG_VERSION ready"
 }
 
 main() {
     check_host
     start_cluster
     setup_tls
-    setup_postgres
+    setup_cnpg
     cat <<EOF
 
 == Test cluster ready
 
   context     $KUBE_CONTEXT
   namespace   $NAMESPACE
-  database    $PG_HOST/$PG_DATABASE
+  database    DB_MODE=$DB_MODE
+  queue       QUEUE_MODE=$QUEUE_MODE
   TLS issuer  $TLS_ISSUER
   CNI         $CNI (NetworkPolicy is enforced)
 

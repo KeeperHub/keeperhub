@@ -1,0 +1,37 @@
+# QUEUE_MODE=bundled - the chart runs ElasticMQ.
+#
+# Merged over values.yaml by install.sh. These keys live here rather than in the
+# base file because the bring-your-own case needs them ABSENT, not empty, and a
+# later -f cannot delete a key: helm's null-deletion only applies to keys present
+# in the chart's own defaults, and setting one to null instead crashes the
+# subchart on a nil dereference.
+#
+# The static credentials matter as much as the endpoint. With the endpoint
+# absent the SDK falls back to its default credential chain, which reads these
+# same variables - so a real-SQS install that inherited "test" here would fail
+# with InvalidClientTokenId. All five keys move together.
+queue:
+  bundled: true
+  name: "${QUEUE_NAME}"
+
+app:
+  env:
+    AWS_ENDPOINT_URL: { type: kv, value: "${AWS_ENDPOINT_URL}" }
+    AWS_ACCESS_KEY_ID: { type: kv, value: "test" }
+    AWS_SECRET_ACCESS_KEY: { type: kv, value: "test" }
+    SQS_QUEUE_URL: { type: kv, value: "${SQS_QUEUE_URL}" }
+
+executor:
+  env:
+    AWS_ENDPOINT_URL: { type: kv, value: "${AWS_ENDPOINT_URL}" }
+    AWS_ACCESS_KEY_ID: { type: kv, value: "test" }
+    AWS_SECRET_ACCESS_KEY: { type: kv, value: "test" }
+    SQS_QUEUE_URL: { type: kv, value: "${SQS_QUEUE_URL}" }
+    SQS_DLQ_URL: { type: kv, value: "${SQS_DLQ_URL}" }
+
+schedule:
+  env:
+    AWS_ENDPOINT_URL: { type: kv, value: "${AWS_ENDPOINT_URL}" }
+    AWS_ACCESS_KEY_ID: { type: kv, value: "test" }
+    AWS_SECRET_ACCESS_KEY: { type: kv, value: "test" }
+    SQS_QUEUE_URL: { type: kv, value: "${SQS_QUEUE_URL}" }
