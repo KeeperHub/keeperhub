@@ -28,6 +28,7 @@
     "db:seed-workflows": "tsx scripts/seed/seed-protocol-workflows.ts",
     "db:seed-onboarding": "tsx scripts/seed/seed-onboarding-workflows.ts",
     "db:seed-all": "pnpm db:seed && pnpm db:seed-test-wallet && pnpm db:seed-workflows",
+    "db:seed-agentguard-pause": "tsx scripts/seed/seed-agentguard-pause.ts",
     "dev:bootstrap": "tsx scripts/seed/dev-bootstrap.ts",
     "dev:mint-cookie": "tsx scripts/dev-mint-session.ts",
     "dev:login": "tsx scripts/dev-login.ts",

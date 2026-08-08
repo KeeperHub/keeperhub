@@ -61,6 +61,7 @@ import {
   DEV_WORKFLOW_FIXTURES,
 } from "./fixtures/dev-workflows";
 import { seedOnboardingWorkflows } from "./seed-onboarding-workflows";
+import { seedAgentGuardPause } from "./seed-agentguard-pause";
 
 // ---------------------------------------------------------------------------
 // Hostname guard
@@ -524,6 +525,12 @@ async function main(): Promise<void> {
     console.log(
       `  + onboarding: ${onboarding.created} created, ${onboarding.refreshed} refreshed, ` +
         `${onboarding.skipped} skipped (user-edited)`
+    );
+
+    const agentguard = await seedAgentGuardPause(db, identity);
+    console.log(
+      `  + agentguard-pause: ${agentguard.created} created, ${agentguard.refreshed} refreshed, ` +
+        `${agentguard.skipped} skipped (user-edited)`
     );
 
     // Use sql to keep schema imports honest: this is just a smoke-test count.

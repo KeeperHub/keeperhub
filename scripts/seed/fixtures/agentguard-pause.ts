@@ -260,8 +260,7 @@ const RAW_FIXTURES: AgentGuardPauseFixture[] = [
         {
           actionType: "web3/write-contract",
           network: 11155111, // Sepolia — change to 8453 for Base mainnet
-          contractAddress:
-            "0xBda3ca77aC1442f13A57b136430C383DBf7DC891", // replace with your deployed vault
+          contractAddress: "", // fill in your deployed vault address
           abiFunction: "pause",
           functionArgs: '["risk score 70 >= 70"]',
           abi: JSON.stringify(SECURITY_VAULT_ABI),

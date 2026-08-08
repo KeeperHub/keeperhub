@@ -1,38 +1,26 @@
 ---
 title: "AgentGuard: Pause-Protected Vault Starter Template"
-description: "Go from zero to your first on-chain protection transaction with a pause-protected vault — deploy a SecurityVault, run the workflow, and pause it on-chain via KeeperHub."
+description: "Deploy a pause-protected vault and pause it on-chain through KeeperHub — a reusable pattern for guarding funds behind a guardian wallet."
 ---
 
 # AgentGuard: Pause-Protected Vault Starter Template
 
-This template is the fastest way to get from zero to a **real protection
-transaction executed on-chain through KeeperHub**. It was built for the
-KeeperHub Agents Onchain hackathon and doubles as a reusable onboarding path:
+This template shows how to guard funds behind a pause-protected vault and
+pause it on-chain through KeeperHub:
 
 ```
-deploy SecurityVault  →  run the AgentGuard pause workflow  →  vault is
-paused on-chain (real tx)  →  inspect the audit trail
+deploy SecurityVault  →  create the pause workflow  →  run it  →  the vault
+is paused on-chain (a real transaction)  →  inspect the audit trail
 ```
 
-The agent never holds the private key: KeeperHub's execution layer
-broadcasts the `pause()` call from the organization's Turnkey wallet, and
-every run is recorded in the KeeperHub audit trail.
-
-## What you get
-
-| Asset | Path |
-|---|---|
-| Starter workflow fixture | `scripts/seed/fixtures/agentguard-pause.ts` |
-| Minimal SecurityVault contract | Hardhat / Foundry, see contract below |
-| This tutorial | `docs/getting-started/agentguard-pause-template.md` |
-
-The fixture embeds the full `SecurityVault` ABI, so the workflow runs even
-before the contract is verified on a block explorer — no manual ABI entry.
+The agent never holds the private key: KeeperHub's execution layer broadcasts
+the `pause()` call from the organization's Turnkey wallet, and every run is
+recorded in the KeeperHub audit trail.
 
 ## How it works
 
 ```
-Manual trigger ──► web3/write-contract: pause("risk score 70 >= 70")
+Manual trigger ──► web3/write-contract: pause("reason")
                         │
                         ▼
               KeeperHub execution layer
@@ -41,6 +29,9 @@ Manual trigger ──► web3/write-contract: pause("risk score 70 >= 70")
                         ▼
               SecurityVault.pause() on-chain (VaultPaused event)
 ```
+
+The pattern is reusable for any emergency-control workflow — pause,
+emergency withdrawal, or a kill switch on a contract you control.
 
 ## Step 1: Deploy a SecurityVault
 
@@ -53,8 +44,10 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-/// @notice Minimal pause-protected vault. Only the guardian (the KeeperHub
-///         org wallet) or the owner can pause; only the owner can unpause.
+/// @notice Pause-protected vault. Only the guardian (the KeeperHub org
+///         wallet) or the owner can pause; only the owner can unpause.
+///         Emergency withdrawals move the balance to a pre-registered
+///         recovery address and are not blocked by the paused state.
 contract SecurityVault is Ownable {
     address public guardian;
     address public recovery;
@@ -62,6 +55,7 @@ contract SecurityVault is Ownable {
 
     event VaultPaused(address indexed by, uint256 ts, string reason);
     event VaultUnpaused(address indexed by, uint256 ts);
+    event EmergencyWithdraw(address indexed to, uint256 amount, bytes32 runId);
     event GuardianChanged(address indexed oldGuardian, address indexed newGuardian);
     event RecoveryChanged(address indexed oldRecovery, address indexed newRecovery);
 
@@ -87,6 +81,16 @@ contract SecurityVault is Ownable {
         emit VaultUnpaused(msg.sender, block.timestamp);
     }
 
+    /// @notice Move the full balance to `recovery`. A protection action:
+    ///         deliberately not blocked by `paused`.
+    function emergencyWithdraw(bytes32 runId) external onlyGuardian {
+        uint256 amount = address(this).balance;
+        require(amount > 0, "VaultIsEmpty");
+        (bool ok, ) = recovery.call{value: amount}("");
+        require(ok, "TransferFailed");
+        emit EmergencyWithdraw(recovery, amount, runId);
+    }
+
     function setGuardian(address _guardian) external onlyOwner {
         emit GuardianChanged(guardian, _guardian);
         guardian = _guardian;
@@ -96,50 +100,47 @@ contract SecurityVault is Ownable {
         emit RecoveryChanged(recovery, _recovery);
         recovery = _recovery;
     }
+
+    receive() external payable {}
 }
 ```
 
-Deploy it with your preferred toolchain (Hardhat, Foundry, Remix). The
-**guardian address must be your KeeperHub organization wallet** — that is the
-account the execution layer broadcasts from. You can find it in the KeeperHub
-dashboard under **Wallet**, or via:
+Deploy it with your preferred toolchain (Hardhat, Foundry, Remix). Note the
+deployed `contractAddress`.
 
-```bash
-npx -p @keeperhub/wallet keeperhub-wallet info   # prints the org wallet
-```
+## Step 2: Find your organization wallet
 
-Note the deployed `contractAddress`.
+The **guardian address must be your KeeperHub organization wallet** — that is
+the account the execution layer broadcasts from.
 
-## Step 2: Point the fixture at your vault
+1. Open the KeeperHub dashboard.
+2. Go to the **Wallet** page (profile icon, top right).
+3. Copy the organization wallet address and pass it as `_guardian` when you
+   deploy the contract.
 
-Open `scripts/seed/fixtures/agentguard-pause.ts` and replace the placeholder
-`contractAddress` with your deployment:
+## Step 3: Create the pause workflow
 
-```ts
-contractAddress: "0xYourDeployedVaultAddress",
-```
+Build the workflow in the visual builder — no code or local repository needed:
 
-If you deployed to Base mainnet, also change:
+1. **New Workflow** → add a **Manual** trigger.
+2. Add a **Write Contract** action:
+   - **Network**: the chain you deployed on (e.g. Sepolia).
+   - **Contract Address**: your deployed `contractAddress`.
+   - **Function**: `pause`.
+   - **Arguments**: a reason string, e.g. `risk score 70 >= 70`.
+   - **ABI**: the workflow fetches the ABI automatically for verified
+     contracts. If yours is unverified, paste the ABI (the contract above
+     generates it with `forge inspect` or Hardhat's artifact).
+3. Save the workflow.
 
-```ts
-network: 8453, // Base mainnet (default in the fixture is Sepolia 11155111)
-```
+> **Contributors**: the same workflow ships as a seedable fixture —
+> `scripts/seed/fixtures/agentguard-pause.ts` — with a matching seeder
+> (`pnpm db:seed-agentguard-pause`). The fixture keeps `contractAddress`
+> empty on purpose; fill in your own deployment before seeding.
 
-## Step 3: Seed and run the workflow
+## Step 4: Run and verify
 
-Seed the workflow into your local database (the seeder is idempotent — safe
-to re-run):
-
-```bash
-pnpm db:seed-agentguard-pause
-```
-
-Or, without a local database, import the fixture into the visual workflow
-builder and click **Run** — the Manual trigger fires immediately.
-
-## Step 4: Verify the protection transaction
-
-After the run completes, open the workflow run in KeeperHub:
+Click **Run** on the workflow. After it completes:
 
 1. The run shows the submitted transaction hash.
 2. On the block explorer, confirm the `VaultPaused` event was emitted from
@@ -158,11 +159,12 @@ so the protection action is fully re-checkable.
 
 ## That's it
 
-You went from zero to a real on-chain protection transaction through
-KeeperHub in four steps — no private key ever left the Turnkey enclave.
+You now have a pause-protected vault with a one-click emergency control,
+broadcast through KeeperHub — and the private key never left the Turnkey
+enclave.
 
 See also:
 
 - [Quick Start Guide](./quickstart)
-- [Workflow Builder docs](/docs/workflows)
-- [KeeperHub Execution](/docs/keeper-runs)
+- [Workflow Builder docs](/workflows)
+- [KeeperHub Execution](/keeper-runs)
