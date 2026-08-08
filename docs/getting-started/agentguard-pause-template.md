@@ -46,8 +46,9 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @notice Pause-protected vault. Only the guardian (the KeeperHub org
 ///         wallet) or the owner can pause; only the owner can unpause.
-///         Emergency withdrawals move the balance to a pre-registered
-///         recovery address and are not blocked by the paused state.
+///         Management changes are locked while paused. Emergency withdrawals
+///         move the balance to a pre-registered recovery address and are not
+///         blocked by the paused state.
 contract SecurityVault is Ownable {
     address public guardian;
     address public recovery;
@@ -64,7 +65,15 @@ contract SecurityVault is Ownable {
         _;
     }
 
+    /// @dev Locks management changes during protection so an attack cannot
+    ///      rewire the vault mid-incident.
+    modifier whenNotPaused() {
+        require(!paused, "VaultPaused");
+        _;
+    }
+
     constructor(address _guardian, address _recovery) Ownable(msg.sender) {
+        require(_guardian != address(0), "GuardianCannotBeZero");
         require(_recovery != address(0), "RecoveryCannotBeZero");
         guardian = _guardian;
         recovery = _recovery;
@@ -91,14 +100,29 @@ contract SecurityVault is Ownable {
         emit EmergencyWithdraw(recovery, amount, runId);
     }
 
-    function setGuardian(address _guardian) external onlyOwner {
+    function setGuardian(address _guardian) external onlyOwner whenNotPaused {
         emit GuardianChanged(guardian, _guardian);
         guardian = _guardian;
     }
 
-    function setRecovery(address _recovery) external onlyOwner {
+    function setRecovery(address _recovery) external onlyOwner whenNotPaused {
         emit RecoveryChanged(recovery, _recovery);
         recovery = _recovery;
+    }
+
+    /// @dev Override Ownable to lock ownership transfer during protection.
+    function transferOwnership(address newOwner)
+        public
+        override
+        onlyOwner
+        whenNotPaused
+    {
+        super.transferOwnership(newOwner);
+    }
+
+    /// @dev Override Ownable to lock ownership renouncement during protection.
+    function renounceOwnership() public override onlyOwner whenNotPaused {
+        super.renounceOwnership();
     }
 
     receive() external payable {}

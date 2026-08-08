@@ -2,11 +2,10 @@
  * AgentGuard pause-protected vault starter template.
  *
  * A public hub workflow that pauses a SecurityVault on-chain. This is the
- * "zero to first protection transaction" starter for the KeeperHub Agents
- * Onchain hackathon track: deploy a minimal SecurityVault (or paste your
- * own contract address), then trigger this workflow to pause it via the
- * `web3/write-contract` action — executed by the KeeperHub execution layer,
- * so the agent never holds the private key.
+ * "zero to first protection transaction" starter: deploy a minimal
+ * SecurityVault (or paste your own contract address), then trigger this
+ * workflow to pause it via the `web3/write-contract` action — executed by
+ * the KeeperHub execution layer, so the agent never holds the private key.
  *
  * Companion tutorial: docs/getting-started/agentguard-pause-template.md
  *
@@ -229,6 +228,13 @@ const SECURITY_VAULT_ABI = [
   {
     inputs: [{ internalType: "address", name: "newOwner", type: "address" }],
     name: "transferOwnership",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "renounceOwnership",
     outputs: [],
     stateMutability: "nonpayable",
     type: "function",
