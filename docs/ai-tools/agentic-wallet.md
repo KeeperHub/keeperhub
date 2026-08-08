@@ -70,26 +70,46 @@ The hook reads only the payment-challenge fields `amount`, `unit`, and the asset
 
 The tiers live in a `PreToolUse` hook, which is an **agent-framework** mechanism — `skill install` registers it in `~/.claude/settings.json`. Enforcement therefore depends on how the payment is initiated:
 
-| Entry point | auto / ask / block |
-|---|---|
-| **Claude Code** | **Yes** — `skill install` registers the hook in `~/.claude/settings.json` |
-| **Cursor, Cline, Windsurf, OpenCode** | **No.** `skill install` writes the skill file for these agents but does not register a hook — it prints a notice that the agent does not support auto-registered hooks. The skill is installed; the tiers are not enforced |
-| **`keeperhub-wallet-mcp`** (the wallet package's own stdio server) | **`block_threshold_usd` only, and only for x402.** Enforced inline before signing, because the hook fires on the MCP tool call where there is no payment shape yet. **MPP amounts are not checked** — the client never decodes the credential, so the cap check is skipped and the server-side limits are the only bound |
-| Your own code importing `@keeperhub/wallet` and calling `paymentSigner.fetch()` directly — a backend service, a scheduled job, a test harness | **No** — nothing reads `safety.json` on this path |
+Coverage is **per path, not per agent** — most agents get one of the two mechanisms but not both:
 
-The [server-side hard limits](#server-side-hard-limits) apply to every row and cannot be bypassed, so none of these is unbounded. But `~/.keeperhub/safety.json` does not read as framework-scoped — it is a user-level file, in a user-level directory, named after the package rather than after the agent. Someone who sets `block_threshold_usd: 10`, then runs their agent in Cursor or writes a script against the package, will reasonably expect that limit to hold. It will not.
+| Entry point | `PreToolUse` hook | MCP `block_threshold_usd` |
+|---|---|---|
+| **Claude Code** | **Yes** — `skill install` registers it in `~/.claude/settings.json` | Yes |
+| **Cursor, Windsurf, OpenCode** | **No** — `skill install` writes the skill file and prints a notice that the agent does not support auto-registered hooks | **Yes** — the MCP server is auto-registered, so paid `call_workflow` calls hit the cap |
+| **Cline** | **No** | **No** — no known MCP config location, so neither mechanism is registered |
+| **`keeperhub-wallet-mcp`** (the wallet package's own stdio server) | n/a — the hook fires on the MCP tool call, where there is no payment shape yet | **x402 only.** The cap is computed from the decoded x402 amount; **MPP amounts are not checked**, because the client never decodes the credential |
+| Your own code importing `@keeperhub/wallet` and calling `paymentSigner.fetch()` directly — a backend service, a scheduled job, a test harness | **No** | **No** — nothing reads `safety.json` on this path |
+| **`feedback`** — the MCP tool and the `keeperhub-wallet feedback` CLI command | **No** | **No** — see below |
+
+**`feedback` is gated by neither, and it spends real money.** It signs and broadcasts a `giveFeedback()` transaction on Ethereum mainnet, and its own tool description puts the cost at roughly $0.05–2 per call in native gas. The safety config is loaded at exactly one place — inside the `call_workflow` handler — so no other tool consults it. The hook does not catch it either: the tool's input schema declares `executionId`, `value`, `valueDecimals`, `comment`, `agentChainId`, `agentId` and `forceBroadcast`, none of which is a payment shape, so the hook short-circuits to `allow` before any tier is evaluated. Set `block_threshold_usd: 0.01`, ask the agent to rate five executions, and you will burn mainnet gas five times without a tier ever running.
+
+The [server-side hard limits](#server-side-hard-limits) cover the USDC payment rows and cannot be bypassed. They do **not** bound `feedback`: it signs on Ethereum mainnet under the ERC-8004 policy, and its native gas spend is outside the per-transfer and daily USDC caps.
+
+And `~/.keeperhub/safety.json` does not read as framework-scoped — it is a user-level file, in a user-level directory, named after the package rather than after the agent. Someone who sets `block_threshold_usd: 10`, then runs their agent in Cline or writes a script against the package, will reasonably expect that limit to hold. It will not.
 
 If you pay from your own code and want the tiers, call the exported hook before signing:
 
 ```ts
-import { createPreToolUseHook, paymentSigner } from "@keeperhub/wallet";
+import { createPreToolUseHook } from "@keeperhub/wallet";
 
 const hook = await createPreToolUseHook();
-const decision = await hook({
+
+const asset = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"; // Base USDC
+const payTo = "0x…";                                        // the recipient
+
+const { decision, reason } = await hook({
   tool_name: "keeperhub_wallet_sign",
   tool_input: { paymentChallenge: { amount: "10000", unit: "microUsdc", asset, payTo } },
 });
-if (decision.decision !== "allow") throw new Error(decision.reason ?? "refused");
+
+if (decision === "block") throw new Error(reason ?? "refused");
+if (decision === "ask") {
+  // No runtime here to render a prompt — decide deliberately. Proceeding is a
+  // choice to ignore the tier; refusing is a choice to be stricter than Claude
+  // Code, which would have asked the user.
+  throw new Error(`needs approval: ${reason ?? "above auto_approve_max_usd"}`);
+}
+// decision === "allow"
 ```
 
 Two things a non-interactive caller has to handle. The amount **must** carry an explicit `unit` — `"usd"` for a number, `"microUsdc"` for an integer string — and an untagged amount throws rather than being guessed at. And the hook can return `{decision: "ask"}`, which has no meaning without a runtime to render a prompt: a backend service has to decide for itself whether `ask` means proceed, refuse, or escalate.
