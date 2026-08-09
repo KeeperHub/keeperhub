@@ -10,7 +10,7 @@ KeeperHub paid workflows settle via [x402](https://docs.cdp.coinbase.com/x402) o
 This page covers the first-party **KeeperHub agentic wallet** (skill + npm package, server-side Turnkey custody) and the main third-party alternatives. Every wallet listed works with KeeperHub and with any other x402/MPP-compliant service.
 
 ## KeeperHub agentic wallet
-> **Wallet identity:** The CLI wallet created by `keeperhub-wallet add` and the MCP execution wallet are **different addresses**. The MCP server executes from a wallet managed by your organization's Turnkey integration, not the one in `~/.keeperhub/wallet.json`. Always call `list_integrations` via MCP to find the actual execution wallet address before funding.
+> **Wallet identity:** The CLI wallet created by `keeperhub-wallet add` and the MCP execution wallet are **different addresses**. The MCP server executes from a wallet managed by your organization's Turnkey integration, not the one in `~/.keeperhub/wallet.json`. If you are funding execution, use `list_integrations` to find the MCP execution wallet — it is different from the CLI wallet.
 
 
 A skill + npm package from KeeperHub. Custody is server-side in a per-wallet [Turnkey sub-organisation](https://docs.turnkey.com/concepts/sub-organizations), so no private key lands on disk. A `PreToolUse` hook gates every signing call against a three-tier (auto / ask / block) policy sourced from `~/.keeperhub/safety.json`.

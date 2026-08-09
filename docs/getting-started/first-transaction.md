@@ -26,7 +26,7 @@ Your KeeperHub wallet is automatically provisioned when you verify your email. F
 1. Click your profile icon → **Wallet**
 2. Copy the wallet address (starts with `0x...`)
 
-> **⚠️ Important:** If you also install the `@keeperhub/wallet` CLI (`keeperhub-wallet add`), that creates a **separate** wallet stored in `~/.keeperhub/wallet.json`. The CLI wallet and the MCP execution wallet are **different addresses**. Always fund the wallet shown in your KeeperHub dashboard or returned by `list_integrations` via MCP.
+> **Important:** If you also install the `@keeperhub/wallet` CLI (`keeperhub-wallet add`), that creates a **separate** wallet stored in `~/.keeperhub/wallet.json`. The CLI wallet and the MCP execution wallet are **different addresses**. Always fund the wallet shown in your KeeperHub dashboard or returned by `list_integrations` via MCP.
 
 ## Step 3: Fund Your Wallet
 
@@ -89,6 +89,7 @@ Always pass `simulate: true` before executing for real. This runs a dry-run with
 
 ```javascript
 // Simulate a USDC transfer on Base
+async function main() {
 const simRes = await fetch(MCP_URL, {
   method: "POST",
   headers: {
@@ -101,7 +102,7 @@ const simRes = await fetch(MCP_URL, {
     params: {
       name: "execute_transfer",
       arguments: {
-        chain_id: "8453",                                    // Base mainnet (STRING, not number)
+        chain_id: "8453",                                    // Base mainnet
         to_address: "0xYourWalletAddress",
         amount: "0.001",                                     // Human-readable amount
         token_address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // USDC on Base
@@ -114,8 +115,11 @@ const simRes = await fetch(MCP_URL, {
 const simData = await simRes.json();
 if (simData.result.isError) {
   console.error("Simulation failed:", simData.result.content[0].text);
-  return; // Don't execute for real
+  throw new Error("Simulation failed — fix issues above before executing for real");
 }
+}
+
+main().catch(console.error);
 ```
 
 ## Step 6: Execute for Real
@@ -147,7 +151,7 @@ const execRes = await fetch(MCP_URL, {
 
 const execData = await execRes.json();
 const result = JSON.parse(execData.result.content[0].text);
-console.log("Transaction:", `https://basescan.org/tx/${result.txHash}`);
+console.log("Transaction:", result.transactionLink);
 ```
 
 ## Common Token Addresses
@@ -163,7 +167,7 @@ console.log("Transaction:", `https://basescan.org/tx/${result.txHash}`);
 
 1. **Two wallets exist** — the CLI wallet (`keeperhub-wallet add`) and the MCP execution wallet are different. Always check `list_integrations` to find the one MCP uses.
 
-2. **Session ID is in headers** — after `initialize`, grab `mcp-session-id` from the response headers. Without it, all subsequent calls fail silently.
+2. **Session ID is in headers** — after `initialize`, grab `mcp-session-id` from the response headers. Without it, subsequent calls return HTTP 400 with `code: -32003` ("Session not initialized").
 
 3. **Always simulate first** — pass `simulate: true` before executing. It catches balance issues and would-be reverts without spending gas.
 
