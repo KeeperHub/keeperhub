@@ -9,7 +9,7 @@ This guide gets you from zero to a confirmed onchain transaction through KeeperH
 
 ## Prerequisites
 
-- Node.js 22+ (for built-in `fetch`)
+- Node.js 18+ (for built-in `fetch`)
 - A KeeperHub account (free — sign up at [app.keeperhub.com](https://app.keeperhub.com))
 - A small amount of USDC + ETH on Base (~$1 USDC and ~$0.10 ETH is plenty)
 
@@ -23,7 +23,7 @@ This guide gets you from zero to a confirmed onchain transaction through KeeperH
 
 Your KeeperHub wallet is automatically provisioned when you verify your email. Find its address via the UI:
 
-1. Click your profile icon → **Wallet**
+1. Click the **Wallet** button in the workflow toolbar (or find it in the billing PAYG section)
 2. Copy the wallet address (starts with `0x...`)
 
 > **Important:** If you also install the `@keeperhub/wallet` CLI (`keeperhub-wallet add`), that creates a **separate** wallet stored in `~/.keeperhub/wallet.json`. The CLI wallet and the MCP execution wallet are **different addresses**. Always fund the wallet shown in your KeeperHub dashboard or returned by `list_integrations` via MCP.
@@ -144,6 +144,7 @@ const execRes = await fetch(MCP_URL, {
         amount: "0.001",
         token_address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
         // No simulate field — this is the real thing
+        idempotency_key: `transfer-${Date.now()}`,  // Prevents duplicate execution on retry
       },
     },
   }),
@@ -153,6 +154,8 @@ const execData = await execRes.json();
 const result = JSON.parse(execData.result.content[0].text);
 console.log("Transaction:", result.transactionLink);
 ```
+
+> **Why `idempotency_key`:** If a network timeout leaves you unsure whether a transfer went through, re-sending the same request with the same key is safe — KeeperHub deduplicates. Without it, a retry could execute twice.
 
 ## Common Token Addresses
 
