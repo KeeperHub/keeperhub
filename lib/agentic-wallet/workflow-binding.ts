@@ -40,8 +40,8 @@
  * Optimism, Polygon, Arbitrum), the listing's chain identifies WHERE THE
  * CONTRACTS LIVE, not which chain payment must arrive on. Such listings now
  * accept either Base x402 or Tempo MPP. The defensive-mismatch behaviour for
- * unknown / unparseable tags is preserved — only the explicitly whitelisted
- * data-chain ids in `KNOWN_DATA_CHAIN_IDS` widen the payment side.
+ * unknown / unparseable tags is preserved — only enabled, non-testnet chains
+ * in the `chains` table widen the payment side (see classifyChainTag).
  *
  * Security: even on data-chain listings the binding still server-derives
  * payTo from the registry on the Base path, and the Tempo path still resolves
@@ -73,7 +73,7 @@
  */
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { organizationWallets, workflows } from "@/lib/db/schema";
+import { chains, organizationWallets, workflows } from "@/lib/db/schema";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 import {
   BASE_CHAIN_ID,
@@ -107,34 +107,12 @@ export type BindingChain = "base" | "tempo";
 
 const USDC_DECIMALS = 6;
 
-const BASE_CHAIN_ID_STR = String(BASE_CHAIN_ID);
-const TEMPO_MAINNET_CHAIN_ID_STR = String(TEMPO_MAINNET_CHAIN_ID);
-const TEMPO_TESTNET_CHAIN_ID_STR = String(TEMPO_TESTNET_CHAIN_ID);
-
-/**
- * Whitelisted data-chain ids — chains that KeeperHub workflows can READ from
- * but that are NOT payment chains. Listings with one of these chains accept
- * payment via either Base x402 or Tempo MPP. Mirrors the mainnet set declared
- * in lib/rpc/rpc-config.ts; extend by editing this set when adding support
- * for a new read-only chain.
- *
- * Decimal string form to match the format stored in workflows.chain.
- */
-export const KNOWN_DATA_CHAIN_IDS = new Set<string>([
-  "1", // Ethereum mainnet
-  "42161", // Arbitrum One
-  "43114", // Avalanche C-Chain
-  "56", // BNB Chain
-  "137", // Polygon
-  "16661", // 0G Mainnet (Aristotle)
-  "9745", // Plasma Mainnet
-]);
-
 /**
  * Explicit "payable on either rail" tags. A listing carrying one of these
  * declares no single payment-chain preference, so the binding accepts both
  * Base x402 and Tempo MPP -- the same acceptance as a data-chain id or a null
- * chain. Matched case-insensitively after trim (see classifyChainTag).
+ * chain. Matched case-insensitively after trim (see classifyChainTag). Not
+ * chain data, so this stays a fixed vocabulary rather than a DB column.
  */
 export const MULTI_CHAIN_TAGS = new Set<string>([
   "multi-chain",
@@ -153,47 +131,200 @@ type ChainClassification =
   | { readonly kind: "multi" }
   | { readonly kind: "unrecognised" };
 
+type ChainLookupRow = {
+  chainId: number;
+  aliases: string[];
+  isTestnet: boolean;
+  isPaymentRail: boolean;
+};
+
+const CHAIN_LOOKUP_TTL_MS = 60_000;
+let chainLookupCache: { rows: ChainLookupRow[]; expiresAt: number } | null =
+  null;
+
+// Test-only seam: without this, the in-memory cache below survives across
+// tests within the same file (module state is not reset between `it`
+// blocks), so only the first test that classifies a chain tag would ever
+// hit the mocked DB -- every later test would silently reuse its fixture.
+export function _resetChainLookupCacheForTesting(): void {
+  chainLookupCache = null;
+}
+
+/**
+ * Enabled chains, cached briefly. Was previously two hardcoded shadows of
+ * this table (KNOWN_DATA_CHAIN_IDS, DATA_CHAIN_SLUG_TO_ID) that never
+ * tracked chains.isEnabled -- disabling a chain there did nothing to
+ * payment-binding classification, and a chain seeded here but missing from
+ * the hardcoded set (Optimism) was silently unclassifiable. The chains
+ * table is tiny (~20 rows), so this is a single query rather than a
+ * per-alias lookup.
+ */
+async function loadEnabledChains(): Promise<ChainLookupRow[]> {
+  const cached = chainLookupCache;
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.rows;
+  }
+  const rows = await db
+    .select({
+      chainId: chains.chainId,
+      aliases: chains.aliases,
+      isTestnet: chains.isTestnet,
+      isPaymentRail: chains.isPaymentRail,
+    })
+    .from(chains)
+    .where(eq(chains.isEnabled, true));
+  const result = rows.map((row) => ({
+    chainId: row.chainId,
+    aliases: row.aliases ?? [],
+    isTestnet: row.isTestnet ?? false,
+    isPaymentRail: row.isPaymentRail,
+  }));
+  // Never cache an empty result. seed-chains.ts disables stale rows as part of
+  // a seed run, and a DB restored ahead of its seed can legitimately return
+  // nothing for a moment; caching that would keep every tag "unrecognised" for
+  // a full TTL after the table is already correct. The expiry is stamped after
+  // the query (not before it) so a slow query extends the usable window rather
+  // than silently shortening it.
+  if (result.length > 0) {
+    chainLookupCache = {
+      rows: result,
+      expiresAt: Date.now() + CHAIN_LOOKUP_TTL_MS,
+    };
+  }
+  return result;
+}
+
+/**
+ * Which BindingChain a payment-rail chainId settles on. A DB row can say
+ * "this is a payment rail" (chains.isPaymentRail); only these two ids are
+ * wired into wallet routing, so the id-to-rail mapping stays a code
+ * constant rather than a second DB column.
+ */
+function resolvePaymentRailChain(chainId: number): BindingChain | null {
+  if (chainId === BASE_CHAIN_ID) {
+    return "base";
+  }
+  if (
+    chainId === TEMPO_MAINNET_CHAIN_ID ||
+    chainId === TEMPO_TESTNET_CHAIN_ID
+  ) {
+    return "tempo";
+  }
+  return null;
+}
+
+/**
+ * Payment-rail tags resolved from code, ahead of the chains table.
+ *
+ * The two rails are the chains the wallet actually settles on, and which one a
+ * tag means is already a code constant (resolvePaymentRailChain, and the
+ * BASE_/TEMPO_ ids in ./constants). Deriving the *tags* for them from the DB as
+ * well made payment acceptance depend on seed state it has no business
+ * depending on, and produced two live failures:
+ *
+ * - Shared alias, wrong row. seed-chains.ts stamps aliases ["tempo"] on both
+ *   Tempo rows, and the testnet row's seeded chainId (42431) is not one
+ *   resolvePaymentRailChain knows (4218). The unordered lookup below can match
+ *   that row first, so `chain: "tempo"` collapsed to "unrecognised" and 403'd
+ *   every Tempo payment. Until the 42431-vs-4218 seed mismatch is reconciled,
+ *   the alias must not decide which rail a tag means.
+ * - No rows at all. An unseeded PR environment, a migrate-only local DB, or a
+ *   chains row disabled by config left even `chain: "base"` unrecognised -
+ *   a defensive 403 on every priced listing, where the pre-table code path
+ *   simply worked.
+ *
+ * The table still owns the data-chain vocabulary (aliases, enabled, testnet);
+ * it just no longer gets a vote on the two rails.
+ */
+export const PAYMENT_RAIL_TAGS = new Map<string, BindingChain>([
+  ["base", "base"],
+  [String(BASE_CHAIN_ID), "base"],
+  ["tempo", "tempo"],
+  [String(TEMPO_MAINNET_CHAIN_ID), "tempo"],
+  [String(TEMPO_TESTNET_CHAIN_ID), "tempo"],
+]);
+
+/**
+ * Strict canonical decimal only: Number("08453") silently parses to 8453,
+ * which would let a leading-zero typo widen acceptance to a real chain id
+ * (KEEP-432 negative-set regression caught by
+ * tests/unit/agentic-wallet-workflow-binding.test.ts). No leading zeros,
+ * no hex, no floats.
+ */
+const CANONICAL_DECIMAL_RE = /^(0|[1-9]\d*)$/;
+
 /**
  * Classify a workflow.chain tag into one of three buckets:
  * - "payment": a recognised payment-chain slug or chain id; the listing is
- *   pinned to that payment chain and the caller must match.
- * - "data": a recognised data-chain id (Ethereum, OP, Polygon, Arbitrum); the
- *   listing's chain identifies where the contracts live, not which chain
- *   payment must arrive on. Either Base or Tempo payment is accepted.
+ *   pinned to that payment chain and the caller must match. Resolved from
+ *   PAYMENT_RAIL_TAGS first (see the note there on why the rails do not go
+ *   through the table), then from a table row flagged isPaymentRail whose id
+ *   the wallet can actually route.
+ * - "data": a recognised, enabled, non-testnet data chain; the listing's
+ *   chain identifies where the contracts live, not which chain payment
+ *   must arrive on. Either Base or Tempo payment is accepted. Testnets are
+ *   excluded even when enabled in the chains table (for RPC/execution
+ *   purposes) -- this preserves the historical mainnet-only scope of the
+ *   marketplace acceptance list; a testnet has never been a valid data-chain
+ *   listing tag.
  * - "multi": an explicit multi-chain tag (see MULTI_CHAIN_TAGS). The listing
  *   opts into either payment rail; accepted like a data-chain listing.
- * - "unrecognised": a non-empty value we can't parse. Treated as defensive
- *   mismatch by the binding so a typo or future tag never silently widens
- *   access.
+ * - "unrecognised": a non-empty value we can't parse, or a disabled chain.
+ *   Treated as defensive mismatch by the binding so a typo, a disabled
+ *   chain, or a future tag never silently widens access.
  *
  * Case-insensitive on slug input; whitespace-trimmed. Numeric forms match
- * the canonical constants in lib/agentic-wallet/constants.ts so a chain-id
- * rename only happens in one place.
+ * chains.chainId directly, so a chain-id rename only happens in one place
+ * (the chains table).
  */
-function classifyChainTag(
+export async function classifyChainTag(
   value: string | null | undefined
-): ChainClassification {
+): Promise<ChainClassification> {
   if (typeof value !== "string") {
     return { kind: "unrecognised" };
   }
   const v = value.trim().toLowerCase();
-  if (v === "base" || v === BASE_CHAIN_ID_STR) {
-    return { kind: "payment", chain: "base" };
-  }
-  if (
-    v === "tempo" ||
-    v === TEMPO_MAINNET_CHAIN_ID_STR ||
-    v === TEMPO_TESTNET_CHAIN_ID_STR
-  ) {
-    return { kind: "payment", chain: "tempo" };
-  }
-  if (KNOWN_DATA_CHAIN_IDS.has(v)) {
-    return { kind: "data" };
-  }
   if (MULTI_CHAIN_TAGS.has(v)) {
     return { kind: "multi" };
   }
-  return { kind: "unrecognised" };
+  const railChain = PAYMENT_RAIL_TAGS.get(v);
+  if (railChain) {
+    return { kind: "payment", chain: railChain };
+  }
+  const numericId = CANONICAL_DECIMAL_RE.test(v) ? Number(v) : null;
+  const rows = await loadEnabledChains();
+  const match = rows.find(
+    (row) =>
+      row.chainId === numericId ||
+      row.aliases.some((alias) => alias.toLowerCase() === v)
+  );
+  if (!match) {
+    return { kind: "unrecognised" };
+  }
+  if (match.isPaymentRail) {
+    const chain = resolvePaymentRailChain(match.chainId);
+    // A row flagged as a rail whose id the wallet cannot route (today: the
+    // seeded Tempo testnet, chainId 42431) stays unrecognised rather than
+    // falling through to the data-chain branch. Falling through would widen
+    // that tag to accept BOTH rails, which is the opposite of what flagging it
+    // a rail asked for.
+    return chain ? { kind: "payment", chain } : { kind: "unrecognised" };
+  }
+  if (match.isTestnet) {
+    return { kind: "unrecognised" };
+  }
+  return { kind: "data" };
+}
+
+function isChainTagCompatibleWithCaller(
+  wfClass: ChainClassification,
+  callerChain: BindingChain
+): boolean {
+  return (
+    wfClass.kind === "data" ||
+    wfClass.kind === "multi" ||
+    (wfClass.kind === "payment" && wfClass.chain === callerChain)
+  );
 }
 
 function priceToMicro(
@@ -262,12 +393,8 @@ export async function verifyWorkflowBinding(
   // A null wf.chain remains permissive for legacy listings that pre-date the
   // workflows.chain column.
   if (wf.chain) {
-    const wfClass = classifyChainTag(wf.chain);
-    const matched =
-      wfClass.kind === "data" ||
-      wfClass.kind === "multi" ||
-      (wfClass.kind === "payment" && wfClass.chain === chain);
-    if (!matched) {
+    const wfClass = await classifyChainTag(wf.chain);
+    if (!isChainTagCompatibleWithCaller(wfClass, chain)) {
       return {
         ok: false,
         status: 403,

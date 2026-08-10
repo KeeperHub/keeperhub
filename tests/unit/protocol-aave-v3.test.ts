@@ -89,20 +89,24 @@ describe("Aave V3 Protocol Definition", () => {
     expect(Object.keys(aaveV3Def.contracts)).toHaveLength(2);
   });
 
-  it("pool contract is available on all 4 supported chains", () => {
+  it("pool contract is available on mainnets and testnets", () => {
     const chains = Object.keys(aaveV3Def.contracts.pool.addresses);
     expect(chains).toContain("1");
     expect(chains).toContain("8453");
     expect(chains).toContain("42161");
     expect(chains).toContain("10");
+    expect(chains).toContain("11155111");
+    expect(chains).toContain("84532");
   });
 
-  it("poolDataProvider contract is available on all 4 supported chains", () => {
+  it("poolDataProvider contract is available on mainnets and testnets", () => {
     const chains = Object.keys(aaveV3Def.contracts.poolDataProvider.addresses);
     expect(chains).toContain("1");
     expect(chains).toContain("8453");
     expect(chains).toContain("42161");
     expect(chains).toContain("10");
+    expect(chains).toContain("11155111");
+    expect(chains).toContain("84532");
   });
 
   it("uses current Aave V3 PoolDataProvider addresses", () => {
@@ -112,6 +116,7 @@ describe("Aave V3 Protocol Definition", () => {
       "42161": "0x243Aa95cAC2a25651eda86e80bEe66114413c43b",
       "10": "0x243Aa95cAC2a25651eda86e80bEe66114413c43b",
       "11155111": "0x3e9708d80f7B3e43118013075F7e95CE3AB31F31",
+      "84532": "0xBc9f5b7E248451CdD7cA54e717a2BFe1F32b566b",
     });
   });
 

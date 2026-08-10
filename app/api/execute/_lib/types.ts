@@ -1,6 +1,19 @@
 import type { DirectExecutionReceiptEntry } from "@/lib/db/schema";
 
-export type ExecutionStatus = "pending" | "running" | "completed" | "failed";
+/**
+ * `unconfirmed` is non-terminal and means a transaction was broadcast but the
+ * chain has not yet told us whether it landed. It is deliberately not `failed`:
+ * a caller that reads "failed" for a transaction that actually succeeded will
+ * retry, and a retry of a fund-moving action is the thing we most need to
+ * avoid. Clients should keep polling; a reconciliation sweep settles the row to
+ * completed or failed once the chain answers.
+ */
+export type ExecutionStatus =
+  | "pending"
+  | "running"
+  | "unconfirmed"
+  | "completed"
+  | "failed";
 
 export type ExecuteResponse = {
   executionId: string;

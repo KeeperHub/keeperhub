@@ -14,8 +14,19 @@ const mockBillOverageForOrg = vi
   .fn()
   .mockResolvedValue({ billed: false, reason: "no overage" });
 
+const mockCollectFinalPeriodOverage = vi
+  .fn()
+  .mockResolvedValue({ collected: false, reason: "no overage" });
+const mockCollectOutstandingOverage = vi
+  .fn()
+  .mockResolvedValue({ attempted: 0, collected: 0 });
+
 vi.mock("@/lib/billing/overage", () => ({
   billOverageForOrg: (...args: unknown[]) => mockBillOverageForOrg(...args),
+  collectFinalPeriodOverage: (...args: unknown[]) =>
+    mockCollectFinalPeriodOverage(...args),
+  collectOutstandingOverage: (...args: unknown[]) =>
+    mockCollectOutstandingOverage(...args),
 }));
 
 const mockIncrementCounter = vi.fn();
@@ -106,6 +117,12 @@ function createMockProvider(
     createInvoiceItem: vi.fn(),
     getInvoiceStatus: vi.fn().mockResolvedValue({ status: "paid", paid: true }),
     getInvoiceForItem: vi.fn().mockResolvedValue(undefined),
+    createDraftInvoice: vi.fn().mockResolvedValue({ invoiceId: "in_draft" }),
+    finalizeAndCollectInvoice: vi
+      .fn()
+      .mockResolvedValue({ invoiceId: "in_draft", paid: true }),
+    deleteDraftInvoice: vi.fn().mockResolvedValue(undefined),
+    wasRejectedWithoutCreating: vi.fn().mockReturnValue(false),
     ...overrides,
   };
 }
@@ -126,6 +143,14 @@ beforeEach(() => {
   mockBillOverageForOrg.mockResolvedValue({
     billed: false,
     reason: "no overage",
+  });
+  mockCollectFinalPeriodOverage.mockResolvedValue({
+    collected: false,
+    reason: "no overage",
+  });
+  mockCollectOutstandingOverage.mockResolvedValue({
+    attempted: 0,
+    collected: 0,
   });
 });
 
@@ -196,6 +221,37 @@ describe("handleBillingEvent", () => {
           }),
         })
       );
+    });
+
+    it("settles overage the org left unpaid when it subscribes again", async () => {
+      const provider = createMockProvider();
+
+      await handleBillingEvent(
+        makeEvent("checkout.completed", {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_1",
+        }),
+        provider
+      );
+
+      expect(mockCollectOutstandingOverage).toHaveBeenCalledWith(
+        "org_1",
+        provider
+      );
+    });
+
+    it("still subscribes when settling the old balance fails", async () => {
+      mockCollectOutstandingOverage.mockRejectedValue(new Error("Stripe down"));
+
+      await handleBillingEvent(
+        makeEvent("checkout.completed", {
+          organizationId: "org_1",
+          providerSubscriptionId: "sub_1",
+        }),
+        createMockProvider()
+      );
+
+      expect(db.insert).toHaveBeenCalled();
     });
 
     it("skips when organizationId is missing", async () => {
@@ -684,7 +740,7 @@ describe("handleBillingEvent", () => {
       expect(setArg.plan).toBeUndefined();
     });
 
-    it("clears all debt when resetting to free", async () => {
+    it("keeps debt when resetting to free", async () => {
       const pastDate = new Date(Date.now() - 86_400_000);
       mockSelectReturning([
         {
@@ -702,10 +758,10 @@ describe("handleBillingEvent", () => {
 
       await handleBillingEvent(event, provider);
 
-      expect(mockClearAllDebtForOrg).toHaveBeenCalledWith("org_1");
+      expect(mockClearAllDebtForOrg).not.toHaveBeenCalled();
     });
 
-    it("clears debt even when period still active", async () => {
+    it("keeps debt when the period is still active", async () => {
       const futureDate = new Date(Date.now() + 86_400_000 * 30);
       mockSelectReturning([
         {
@@ -723,7 +779,107 @@ describe("handleBillingEvent", () => {
 
       await handleBillingEvent(event, provider);
 
-      expect(mockClearAllDebtForOrg).toHaveBeenCalledWith("org_1");
+      expect(mockClearAllDebtForOrg).not.toHaveBeenCalled();
+    });
+
+    it("bills the final period before the row drops to free", async () => {
+      const pastDate = new Date(Date.now() - 86_400_000);
+      const row = {
+        providerSubscriptionId: "sub_1",
+        organizationId: "org_1",
+        providerCustomerId: "cus_1",
+        currentPeriodStart: new Date("2025-01-01"),
+        currentPeriodEnd: pastDate,
+        plan: "pro",
+      };
+      mockSelectReturning([row]);
+
+      await handleBillingEvent(
+        makeEvent("subscription.deleted", { providerSubscriptionId: "sub_1" }),
+        createMockProvider()
+      );
+
+      expect(mockCollectFinalPeriodOverage).toHaveBeenCalledWith(
+        "org_1",
+        row.currentPeriodStart,
+        pastDate,
+        "cus_1"
+      );
+      // Order matters: billing reads the plan off the row, and a free row bills
+      // nothing.
+      const billOrder =
+        mockCollectFinalPeriodOverage.mock.invocationCallOrder[0];
+      const resetOrder = mockSet.mock.invocationCallOrder[0];
+      expect(billOrder).toBeLessThan(resetOrder);
+    });
+
+    it("does not bill while the paid period is still running", async () => {
+      const futureDate = new Date(Date.now() + 86_400_000 * 30);
+      mockSelectReturning([
+        {
+          providerSubscriptionId: "sub_1",
+          organizationId: "org_1",
+          providerCustomerId: "cus_1",
+          currentPeriodStart: new Date("2025-01-01"),
+          currentPeriodEnd: futureDate,
+          plan: "pro",
+        },
+      ]);
+
+      await handleBillingEvent(
+        makeEvent("subscription.deleted", { providerSubscriptionId: "sub_1" }),
+        createMockProvider()
+      );
+
+      expect(mockCollectFinalPeriodOverage).not.toHaveBeenCalled();
+    });
+
+    it("still downgrades when the final charge fails", async () => {
+      const pastDate = new Date(Date.now() - 86_400_000);
+      mockSelectReturning([
+        {
+          providerSubscriptionId: "sub_1",
+          organizationId: "org_1",
+          providerCustomerId: "cus_1",
+          currentPeriodStart: new Date("2025-01-01"),
+          currentPeriodEnd: pastDate,
+          plan: "pro",
+        },
+      ]);
+      mockCollectFinalPeriodOverage.mockRejectedValue(new Error("Stripe down"));
+
+      await handleBillingEvent(
+        makeEvent("subscription.deleted", { providerSubscriptionId: "sub_1" }),
+        createMockProvider()
+      );
+
+      expect(mockSet).toHaveBeenCalledWith(
+        expect.objectContaining({ plan: "free" })
+      );
+    });
+
+    it("skips billing when the org has no customer on file", async () => {
+      const pastDate = new Date(Date.now() - 86_400_000);
+      mockSelectReturning([
+        {
+          providerSubscriptionId: "sub_1",
+          organizationId: "org_1",
+          providerCustomerId: null,
+          currentPeriodStart: new Date("2025-01-01"),
+          currentPeriodEnd: pastDate,
+          plan: "pro",
+        },
+      ]);
+
+      await handleBillingEvent(
+        makeEvent("subscription.deleted", { providerSubscriptionId: "sub_1" }),
+        createMockProvider()
+      );
+
+      expect(mockCollectFinalPeriodOverage).not.toHaveBeenCalled();
+      expect(mockSet).toHaveBeenCalledWith(
+        expect.objectContaining({ plan: "free" })
+      );
     });
 
     it("skips when providerSubscriptionId is missing", async () => {

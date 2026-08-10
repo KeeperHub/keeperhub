@@ -6,7 +6,7 @@ Provision a new agentic wallet (no KeeperHub account required)
 
 Provision a new agentic wallet by calling POST /api/agentic-wallet/provision.
 
-This is a thin wrapper around `npx @keeperhub/wallet add` -- the npm package is the
+This is a thin wrapper around `npx -p @keeperhub/wallet keeperhub-wallet add` -- the npm package is the
 canonical tool. Writes {subOrgId, walletAddress, hmacSecret} to ~/.keeperhub/wallet.json
 (chmod 0o600) and prints subOrgId + walletAddress (hmacSecret is NEVER printed).
 

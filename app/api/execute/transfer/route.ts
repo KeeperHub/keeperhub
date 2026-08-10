@@ -1,3 +1,4 @@
+import { simulationHttpStatus } from "@/app/api/execute/_lib/simulation-response";
 import { HttpStatus } from "@/lib/http-status";
 import "server-only";
 
@@ -22,6 +23,7 @@ import { transferTokenCore } from "@/plugins/web3/steps/transfer-token-core";
 import { validateApiKey } from "../_lib/auth";
 import { enforceDirectExecutionConcurrency } from "../_lib/concurrency-limit";
 import {
+  type CompleteExecutionOutcome,
   completeExecution,
   failExecution,
   markRunning,
@@ -155,7 +157,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         decimals: typeof body.decimals === "number" ? body.decimals : undefined,
       });
       return NextResponse.json(result, {
-        status: result.wouldRevert ? HttpStatus.BAD_REQUEST : HttpStatus.OK,
+        status: simulationHttpStatus(result),
       });
     }
     const nativeResult = await simulateNativeTransfer({
@@ -165,7 +167,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       amount,
     });
     return NextResponse.json(nativeResult, {
-      status: nativeResult.wouldRevert ? HttpStatus.BAD_REQUEST : HttpStatus.OK,
+      status: simulationHttpStatus(nativeResult),
     });
   }
 
@@ -287,7 +289,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   // 9. Handle result. completeExecution independently re-verifies the claimed
   // transaction against the chain (KEEP-966) -- its returned outcome, not
   // result.success, is authoritative for the response and idempotency cache.
-  let outcome: { status: "completed" | "failed"; error?: string } = {
+  let outcome: CompleteExecutionOutcome = {
     status: "failed",
     error: result.success ? undefined : result.error,
   };
@@ -301,14 +303,16 @@ export async function POST(request: Request): Promise<NextResponse> {
       output: result as unknown as Record<string, unknown>,
     });
   } else {
-    // A failure that already reached the chain carries its hash,
-    // so the execution records which transaction failed and what the chain
-    // said about it, rather than leaving the hash only inside the message.
-    await failExecution(executionId, result.error, {
+    // A failure that already reached the chain carries its hash, so the
+    // execution records which transaction failed and what the chain said about
+    // it. failExecution decides from that receipt whether this is terminal or
+    // a broadcast that may still land, and its verdict is authoritative.
+    const settled = await failExecution(executionId, result.error, {
       transactionHash: result.transactionHash,
       chainId: result.chainId,
       sponsored: result.sponsored,
     });
+    outcome = { status: settled.status, error: result.error };
   }
 
   // 10. Return. A failed broadcast/verification is finalized (not released)

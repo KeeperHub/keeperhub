@@ -38,32 +38,39 @@ This site. Canonical reference for concepts, node configuration, plugins, API, C
 
 ## Docs
 
-- [Introduction](https://docs.keeperhub.com/intro/overview): What KeeperHub is and the problem it solves
-- [Concepts](https://docs.keeperhub.com/intro/concepts): Workflow, node, trigger, action, edge, execution
-- [Benefits](https://docs.keeperhub.com/intro/benefits): Why use KeeperHub over rolling your own automation
-- [Getting Started](https://docs.keeperhub.com/getting-started): Build your first workflow
+- [Overview](https://docs.keeperhub.com/): What KeeperHub is, the workflow model, and platform capabilities
+- [Getting Started](https://docs.keeperhub.com/getting-started): Four paths to a first result, by interface
+- [Getting Started: Browser](https://docs.keeperhub.com/getting-started/browser): Build and run a workflow in the visual builder
+- [Getting Started: Agent](https://docs.keeperhub.com/getting-started/agent): Connect an agent over MCP, run a workflow, write onchain safely
+- [Getting Started: API](https://docs.keeperhub.com/getting-started/api): Trigger a workflow over REST and read the result
+- [Getting Started: CLI](https://docs.keeperhub.com/getting-started/cli): Install kh, authenticate, run a workflow
+- [Core Concepts](https://docs.keeperhub.com/concepts): Workflow, node, trigger, action, edge, execution
+- [Platform Reference](https://docs.keeperhub.com/platform-reference): MCP endpoint, chains, USDC addresses, faucets, key types, rate limits
 - [Node Types](https://docs.keeperhub.com/keepers/overview): Triggers, actions, system steps, conditionals
 - [Node Configuration](https://docs.keeperhub.com/keepers/configuration): Configuring nodes and template references
-- [Workflow Introduction](https://docs.keeperhub.com/workflows/introduction): Workflow model and lifecycle
+- [Workflows](https://docs.keeperhub.com/workflows): Workflow model, builder, node types
 - [Creating Workflows](https://docs.keeperhub.com/workflows/creating): Builder walkthrough
-- [Paid Workflows](https://docs.keeperhub.com/workflows/paid-workflows): Monetised workflows
-- [Workflow Examples](https://docs.keeperhub.com/workflows/examples): End-to-end patterns
+- [Templating Reference](https://docs.keeperhub.com/workflows/templating): Referencing earlier node output
+- [Schema Reference](https://docs.keeperhub.com/workflows/schema-reference): Workflow JSON schema
+- [Marketplace](https://docs.keeperhub.com/workflows/marketplace): Listing and monetising workflows
+- [Hub](https://docs.keeperhub.com/workflows/hub): Discover and import community workflows
 - [Keeper Runs](https://docs.keeperhub.com/keeper-runs): Execution status, logs, performance, troubleshooting
-- [Wallet Management](https://docs.keeperhub.com/wallet-management): Para MPC wallets, gas, address book
+- [Wallet Management](https://docs.keeperhub.com/wallet-management): Turnkey wallets, gas and sponsorship, address book
 - [Notifications](https://docs.keeperhub.com/notifications): Connections and message templates
 - [Best Practices](https://docs.keeperhub.com/practices): Security and reliability
 - [Users and Organizations](https://docs.keeperhub.com/users-teams-orgs): Team and org model
 - [API](https://docs.keeperhub.com/api): REST API reference
 - [CLI](https://docs.keeperhub.com/cli): Command-line interface
-- [Guides](https://docs.keeperhub.com/guides): Migration from OpenZeppelin Defender, Gelato
+- [Guides](https://docs.keeperhub.com/guides): Verified first transaction, migration from OpenZeppelin Defender and Gelato
 - [FAQ](https://docs.keeperhub.com/FAQ): Common questions
 
-## AI tools
+## Agent tools
 
-- [AI Tools Overview](https://docs.keeperhub.com/ai-tools/overview): How agents interact with KeeperHub
-- [MCP Server](https://docs.keeperhub.com/ai-tools/mcp-server): OAuth-authenticated MCP server exposing workflow catalog, schema introspection, and execution
-- [Claude Code Plugin](https://docs.keeperhub.com/ai-tools/claude-code-plugin): Marketplace install and skill set
-- [Agentic Wallets](https://docs.keeperhub.com/ai-tools/agentic-wallet): Para MPC wallet model for autonomous agents
+- [Agent Tools Overview](https://docs.keeperhub.com/agent): How agents interact with KeeperHub
+- [MCP Server](https://docs.keeperhub.com/agent/mcp-server): OAuth-authenticated MCP server exposing workflow catalog, schema introspection, and execution
+- [MCP Trigger Inputs](https://docs.keeperhub.com/agent/mcp-trigger-inputs): Input schema per trigger type
+- [Claude Code Plugin](https://docs.keeperhub.com/agent/claude-code-plugin): Marketplace install and skill set
+- [Agentic Wallets](https://docs.keeperhub.com/agent/agentic-wallet): x402 and MPP wallets so an agent can pay for workflows
 
 ## Plugins
 

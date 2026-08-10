@@ -147,6 +147,8 @@ async function settlePaygOverflow(params: {
         error: charge.message,
         errorCategory: "billing",
         errorType: "user",
+        // Unpaid means the run never started, so it consumes no quota.
+        billable: false,
         completedAt: new Date(),
       })
       .where(

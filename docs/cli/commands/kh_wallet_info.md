@@ -6,7 +6,7 @@ Print subOrgId and walletAddress from local agentic wallet config
 
 Print subOrgId and walletAddress from ~/.keeperhub/wallet.json.
 
-Thin wrapper around `npx @keeperhub/wallet info`. Exits non-zero if the config is missing.
+Thin wrapper around `npx -p @keeperhub/wallet keeperhub-wallet info`. Exits non-zero if the config is missing.
 
 ```
 kh wallet info [flags]

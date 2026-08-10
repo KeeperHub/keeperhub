@@ -9,6 +9,7 @@ import {
 import { generateId } from "@/lib/utils/id";
 import {
   describeVerificationFailure,
+  hasUnreadableReceipt,
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
 
@@ -34,9 +35,18 @@ type CompleteParams = {
 };
 
 export type CompleteExecutionOutcome = {
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "unconfirmed";
   error?: string;
 };
+
+function isInconclusive(receipts: DirectExecutionReceiptEntry[]): boolean {
+  return hasUnreadableReceipt(
+    receipts.map((receipt) => ({
+      verified: receipt.verified,
+      status: receipt.receiptStatus,
+    }))
+  );
+}
 
 export async function createExecution(
   params: CreateExecutionParams
@@ -77,7 +87,7 @@ export async function completeExecution(
   executionId: string,
   result: CompleteParams
 ): Promise<CompleteExecutionOutcome> {
-  let status: "completed" | "failed" = "completed";
+  let status: CompleteExecutionOutcome["status"] = "completed";
   let error: string | undefined;
   let receipts: DirectExecutionReceiptEntry[] = [];
 
@@ -99,17 +109,22 @@ export async function completeExecution(
         verifiedAt: r.verifiedAt,
       }));
       if (!allVerified) {
-        status = "failed";
+        // A hash we cannot see is not a hash that failed. Settling it as
+        // failed is what makes a caller retry an action that already moved
+        // funds, so it stays non-terminal until the chain actually answers.
+        status = isInconclusive(receipts) ? "unconfirmed" : "failed";
         error = describeVerificationFailure(results);
       }
     }
   }
 
+  const isTerminal = status !== "unconfirmed";
+
   await db
     .update(directExecutions)
     .set({
       status,
-      error: status === "failed" ? error : null,
+      error: status === "completed" ? null : error,
       transactionHash: result.transactionHash ?? null,
       receipts,
       gasUsedWei: result.gasUsedWei ?? null,
@@ -117,7 +132,9 @@ export async function completeExecution(
       estimatedCostUsd: result.estimatedCostUsd ?? null,
       // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
       output: (result.output ?? {}) as any,
-      completedAt: new Date(),
+      // An unconfirmed execution has not completed, and the reconciler uses a
+      // null completedAt to find rows that still need settling.
+      completedAt: isTerminal ? new Date() : null,
     })
     .where(eq(directExecutions.id, executionId));
 
@@ -139,11 +156,22 @@ type FailParams = {
   sponsored?: boolean;
 };
 
+/**
+ * Finalize a failed execution.
+ *
+ * A failure that carries a transaction hash is not automatically terminal. The
+ * write path can report failure for a send that is already on the network and
+ * may still land, most notably a gas-sponsored transaction Turnkey accepted but
+ * whose receipt no endpoint could read. Calling that "failed" is what invites
+ * the retry that broadcasts a second transaction from the same wallet, so the
+ * chain decides: conclusive receipt means failed, no readable receipt means
+ * `unconfirmed` and the reconciler keeps watching.
+ */
 export async function failExecution(
   executionId: string,
   error: string,
   params: FailParams = {}
-): Promise<void> {
+): Promise<{ status: "failed" | "unconfirmed" }> {
   let receipts: DirectExecutionReceiptEntry[] = [];
 
   if (params.transactionHash && params.chainId !== undefined) {
@@ -161,10 +189,13 @@ export async function failExecution(
     }));
   }
 
+  const status =
+    receipts.length > 0 && isInconclusive(receipts) ? "unconfirmed" : "failed";
+
   await db
     .update(directExecutions)
     .set({
-      status: "failed",
+      status,
       error,
       ...(params.transactionHash
         ? { transactionHash: params.transactionHash }
@@ -174,9 +205,13 @@ export async function failExecution(
         ? {}
         : // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
           { output: { sponsored: params.sponsored } as any }),
-      completedAt: new Date(),
+      // The reconciler finds rows still needing settlement by their null
+      // completedAt, so an unconfirmed row must not carry one.
+      completedAt: status === "failed" ? new Date() : null,
     })
     .where(eq(directExecutions.id, executionId));
+
+  return { status };
 }
 
 export async function setRetryCount(

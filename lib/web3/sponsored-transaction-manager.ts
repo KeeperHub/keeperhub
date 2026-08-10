@@ -1,5 +1,5 @@
 import "server-only";
-import type { Hex } from "viem";
+import type { Hex, TransactionReceipt } from "viem";
 import { BaseError, createPublicClient, encodeFunctionData, http } from "viem";
 import {
   checkGasCredits,
@@ -9,6 +9,7 @@ import {
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
 import { MetricNames } from "@/lib/metrics/types";
+import { resolveRpcConfig } from "@/lib/rpc/config-service";
 import {
   isBlockedHost,
   isBlockedIp,
@@ -17,7 +18,11 @@ import {
 import { isTestnetChain } from "@/lib/web3/chainlink-feeds";
 import { createSponsoredClient } from "@/lib/web3/sponsored-client";
 import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
-import { SponsoredTxRevertError } from "@/lib/web3/turnkey-revert";
+import {
+  isSponsoredTxRevertError,
+  SponsoredTxPendingError,
+  SponsoredTxRevertError,
+} from "@/lib/web3/turnkey-revert";
 import { submitTurnkeySponsoredTransaction } from "@/lib/web3/turnkey-sponsored-tx";
 import { isSponsorshipSupported } from "@/lib/web3/turnkey-sponsorship-config";
 
@@ -82,7 +87,8 @@ function isSponsorshipBlockedRpc(rpcUrl: string): boolean {
  * signing when null is returned.
  */
 export async function executeSponsoredTransaction(
-  params: SponsoredTxParams
+  params: SponsoredTxParams,
+  receiptWait?: ReceiptWaitOptions
 ): Promise<SponsoredTransactionResult> {
   if (!isGasSponsorshipEnabled()) {
     return null;
@@ -123,13 +129,14 @@ export async function executeSponsoredTransaction(
     return null;
   }
 
-  return await finalizeSponsoredTx(
+  return await settleSponsoredTx(
     submitResult.txHash,
     submitResult.sendTransactionStatusId,
     params.rpcUrl,
     params.organizationId,
     params.chainId,
-    params.executionId
+    params.executionId,
+    receiptWait
   );
 }
 
@@ -140,7 +147,8 @@ export async function executeSponsoredTransaction(
  * so callers can fall back to direct signing.
  */
 export async function executeSponsoredContractTransaction(
-  params: SponsoredContractTxParams
+  params: SponsoredContractTxParams,
+  receiptWait?: ReceiptWaitOptions
 ): Promise<SponsoredTransactionResult> {
   if (!isGasSponsorshipEnabled()) {
     return null;
@@ -187,13 +195,14 @@ export async function executeSponsoredContractTransaction(
     return null;
   }
 
-  return await finalizeSponsoredTx(
+  return await settleSponsoredTx(
     submitResult.txHash,
     submitResult.sendTransactionStatusId,
     params.rpcUrl,
     params.organizationId,
     params.chainId,
-    params.executionId
+    params.executionId,
+    receiptWait
   );
 }
 
@@ -241,6 +250,127 @@ async function decodeSponsoredRevertReason(
   }
 }
 
+// The send is already on the network by the time this runs, so the question is
+// only how long to keep looking for its receipt. A healthy sponsored write has
+// been observed going from submit to readable receipt in seconds, so eight
+// minutes is a very wide margin and covers a badly congested mempool.
+//
+// This plus the Turnkey hash poll exceeds the idempotency processing lock's
+// base TTL, which is safe only because the routes wrap the whole call in
+// withIdempotencyHeartbeat: the heartbeat re-extends the lock every 2 minutes,
+// so the request cannot outlive its own reservation. Do not raise this without
+// checking that heartbeat is still in place.
+const RECEIPT_WAIT_BUDGET_MS = 8 * 60_000;
+// How long to give one endpoint before rotating to the next. Short relative to
+// the budget so a single wedged endpoint cannot consume it.
+const RECEIPT_WAIT_PER_ENDPOINT_MS = 30_000;
+// Pause between full rotations. Endpoints that reject immediately (connection
+// refused, instant 429) would otherwise let the loop spin as fast as they can
+// say no, hammering every endpoint for the whole budget.
+const RECEIPT_WAIT_ROUND_DELAY_MS = 2000;
+
+/** Shrinkable in tests so the wait budget does not add wall-clock time. */
+export type ReceiptWaitOptions = {
+  budgetMs?: number;
+  perEndpointMs?: number;
+  roundDelayMs?: number;
+};
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * Every endpoint worth asking for the receipt, most-likely first: the URL the
+ * caller broadcast against, then the chain's configured primary and fallback.
+ * Deduped, since the caller's URL is usually the primary already.
+ */
+async function receiptRpcUrls(
+  rpcUrl: string,
+  chainId: number
+): Promise<string[]> {
+  let config: Awaited<ReturnType<typeof resolveRpcConfig>> = null;
+  try {
+    config = await resolveRpcConfig(chainId);
+  } catch {
+    // Config lookup is an optimization; the caller's URL alone still works.
+  }
+  const candidates = [rpcUrl, config?.primaryRpcUrl, config?.fallbackRpcUrl];
+  return [...new Set(candidates.filter((url): url is string => Boolean(url)))];
+}
+
+/**
+ * Read the receipt for an already-broadcast sponsored transaction, trying
+ * every configured endpoint before giving up.
+ *
+ * A single load-balanced endpoint can answer for a node that has not yet seen
+ * the transaction, so one failed read is not evidence the send did not land.
+ * When no endpoint can answer, this raises a pending error carrying the hash
+ * rather than a bare Error: the distinction is what stops the caller from
+ * re-sending, and a bare Error here is indistinguishable from a pre-broadcast
+ * failure.
+ */
+async function waitForSponsoredReceipt(
+  txHash: Hex,
+  sendTransactionStatusId: string,
+  rpcUrl: string,
+  chainId: number,
+  options: ReceiptWaitOptions = {}
+): Promise<TransactionReceipt> {
+  const budgetMs = options.budgetMs ?? RECEIPT_WAIT_BUDGET_MS;
+  const perEndpointMs = options.perEndpointMs ?? RECEIPT_WAIT_PER_ENDPOINT_MS;
+  const roundDelayMs = options.roundDelayMs ?? RECEIPT_WAIT_ROUND_DELAY_MS;
+
+  const urls = await receiptRpcUrls(rpcUrl, chainId);
+  const deadline = Date.now() + budgetMs;
+  let lastError: unknown;
+  let firstRound = true;
+
+  // Rotate through the endpoints until the budget is spent. One endpoint being
+  // wedged or lagging says nothing about whether the transaction landed, so a
+  // failed read is a reason to ask someone else rather than to conclude.
+  while (firstRound || Date.now() < deadline) {
+    if (!firstRound) {
+      await sleep(Math.min(roundDelayMs, Math.max(0, deadline - Date.now())));
+    }
+    firstRound = false;
+
+    for (const url of urls) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        break;
+      }
+      try {
+        return await createPublicClient({
+          transport: http(url),
+        }).waitForTransactionReceipt({
+          hash: txHash,
+          timeout: Math.min(perEndpointMs, remaining),
+        });
+      } catch (error) {
+        lastError = error;
+      }
+    }
+  }
+
+  logSystemError(
+    ErrorCategory.NETWORK_RPC,
+    "[Sponsorship] Sponsored transaction broadcast but its receipt could not be read on any endpoint",
+    lastError instanceof Error ? lastError : new Error(String(lastError)),
+    { chainId: chainId.toString(), txHash, endpoints: String(urls.length) }
+  );
+
+  throw new SponsoredTxPendingError({
+    message: `Sponsored transaction was broadcast but its receipt could not be read on any RPC endpoint: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`,
+    sendTransactionStatusId,
+    txHash,
+  });
+}
+
 /**
  * Wait for receipt, record gas usage, and build the result.
  *
@@ -248,6 +378,10 @@ async function decodeSponsoredRevertReason(
  * underlying tx -- but the on-chain receipt still reports gasUsed and
  * effectiveGasPrice, which is what we meter against the org's gas-credit
  * balance. Billing is skipped on testnets.
+ *
+ * Callers treat a throw from here as "do not fall back to direct signing",
+ * which only holds if every throw is one of the two typed sponsored errors.
+ * `settleSponsoredTx` below enforces that.
  */
 async function finalizeSponsoredTx(
   txHash: Hex,
@@ -255,15 +389,20 @@ async function finalizeSponsoredTx(
   rpcUrl: string,
   organizationId: string,
   chainId: number,
-  executionId: string
+  executionId: string,
+  receiptWait?: ReceiptWaitOptions
 ): Promise<SponsoredTransactionResult> {
   const publicClient = createPublicClient({
     transport: http(rpcUrl),
   });
 
-  const receipt = await publicClient.waitForTransactionReceipt({
-    hash: txHash,
-  });
+  const receipt = await waitForSponsoredReceipt(
+    txHash,
+    sendTransactionStatusId,
+    rpcUrl,
+    chainId,
+    receiptWait
+  );
 
   if (receipt.status !== "success") {
     // The sponsored tx is on-chain and reverted. Read-only replay to recover
@@ -346,4 +485,60 @@ async function finalizeSponsoredTx(
     effectiveGasPrice: effectiveGasPrice.toString(),
     sponsored: true,
   };
+}
+
+/**
+ * The single exit from the post-broadcast half of the sponsored path.
+ *
+ * By the time this runs Turnkey has already put a transaction from the user's
+ * wallet on the network. Callers read an untyped throw as a pre-broadcast
+ * failure and respond by signing and broadcasting again, which is how one
+ * authorized action becomes two on-chain transactions. So anything that
+ * escapes finalization other than the two typed sponsored errors -- a gas
+ * price lookup, a metrics call, a revert-reason decode -- is converted into a
+ * pending error carrying the hash, which callers already handle as
+ * "terminal, do not re-send".
+ */
+async function settleSponsoredTx(
+  txHash: Hex,
+  sendTransactionStatusId: string,
+  rpcUrl: string,
+  organizationId: string,
+  chainId: number,
+  executionId: string,
+  receiptWait?: ReceiptWaitOptions
+): Promise<SponsoredTransactionResult> {
+  try {
+    return await finalizeSponsoredTx(
+      txHash,
+      sendTransactionStatusId,
+      rpcUrl,
+      organizationId,
+      chainId,
+      executionId,
+      receiptWait
+    );
+  } catch (error) {
+    if (
+      isSponsoredTxRevertError(error) ||
+      error instanceof SponsoredTxPendingError
+    ) {
+      throw error;
+    }
+
+    logSystemError(
+      ErrorCategory.TRANSACTION,
+      "[Sponsorship] Finalization failed after the sponsored transaction was broadcast",
+      error instanceof Error ? error : new Error(String(error)),
+      { organizationId, chainId: chainId.toString(), txHash }
+    );
+
+    throw new SponsoredTxPendingError({
+      message: `Sponsored transaction ${txHash} was broadcast but could not be finalized: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      sendTransactionStatusId,
+      txHash,
+    });
+  }
 }

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { ethers } from "ethers";
+import { ethers, isError } from "ethers";
 import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
 import { type AbiItem, findAbiFunction } from "@/lib/abi/utils";
 import {
@@ -9,8 +9,9 @@ import {
   type INSUFFICIENT_BALANCE_CODE,
 } from "@/lib/execute/native-balance";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { isNonRetryableError } from "@/lib/rpc/providers/error-classification";
 import { getErrorMessage } from "@/lib/utils";
 import {
   decodeRevertReason,
@@ -73,6 +74,8 @@ const ERC20_DECIMALS_ABI = [
   "function decimals() view returns (uint8)",
 ] as const;
 
+const MAX_ERC20_DECIMALS = 255;
+
 export type SimulateSuccess = {
   success: true;
   status: "simulated";
@@ -93,14 +96,14 @@ export type SimulateSuccess = {
  */
 export type SimulateFailureCode = typeof INSUFFICIENT_BALANCE_CODE;
 
-export type SimulateFailure = {
+export type SimulationFailureKind = "validation" | "revert" | "unavailable";
+
+type SimulateFailureBase = {
   success: false;
   status: "simulated";
   from: string;
   to: string;
   value: string;
-  wouldRevert: true;
-  revertReason: string;
   error: string;
   /**
    * Machine-readable cause, set only when the simulator could attribute the
@@ -131,6 +134,18 @@ export type SimulateFailure = {
    */
   undecodedRevertData?: string;
 };
+
+export type SimulateFailure =
+  | (SimulateFailureBase & {
+      failureKind: "validation" | "revert";
+      wouldRevert: true;
+      revertReason: string;
+    })
+  | (SimulateFailureBase & {
+      failureKind: "unavailable";
+      wouldRevert: false;
+      revertReason?: never;
+    });
 
 export type SimulateResult = SimulateSuccess | SimulateFailure;
 
@@ -174,6 +189,14 @@ export type SimulateTokenTransferInput = {
   decimals?: number;
 };
 
+type RpcManagerResolution =
+  | { success: true; rpc: RpcProviderManager; chainId: number }
+  | {
+      success: false;
+      failureKind: "validation" | "unavailable";
+      error: string;
+    };
+
 function serializeForJson(value: unknown): unknown {
   if (typeof value === "bigint") {
     return value.toString();
@@ -195,6 +218,26 @@ function failure(
   from: string,
   to: string,
   value: bigint,
+  message: string,
+  failureKind: "validation" | "revert" = "validation"
+): SimulateFailure {
+  return {
+    success: false,
+    status: "simulated",
+    from,
+    to,
+    value: value.toString(),
+    failureKind,
+    wouldRevert: true,
+    revertReason: message,
+    error: message,
+  };
+}
+
+function unavailable(
+  from: string,
+  to: string,
+  value: bigint,
   message: string
 ): SimulateFailure {
   return {
@@ -203,10 +246,29 @@ function failure(
     from,
     to,
     value: value.toString(),
-    wouldRevert: true,
-    revertReason: message,
+    failureKind: "unavailable",
+    wouldRevert: false,
     error: message,
   };
+}
+
+function classifySimulationError(error: unknown): SimulationFailureKind {
+  if (isError(error, "CALL_EXCEPTION")) {
+    return "revert";
+  }
+
+  if (
+    isError(error, "INVALID_ARGUMENT") ||
+    isError(error, "MISSING_ARGUMENT") ||
+    isError(error, "UNEXPECTED_ARGUMENT") ||
+    isError(error, "NUMERIC_FAULT") ||
+    isError(error, "INSUFFICIENT_FUNDS") ||
+    isNonRetryableError(error)
+  ) {
+    return "validation";
+  }
+
+  return "unavailable";
 }
 
 /**
@@ -284,6 +346,29 @@ async function nativeShortfallFailure(input: {
   }
 }
 
+function simulationFailureFromError(
+  from: string,
+  to: string,
+  value: bigint,
+  error: unknown,
+  contractInterface?: ethers.Interface
+): SimulateFailure {
+  const decodedReason = decodeRevertReason(error, contractInterface);
+
+  if (decodedReason) {
+    return failure(from, to, value, decodedReason, "revert");
+  }
+
+  const failureKind = classifySimulationError(error);
+  const message = getErrorMessage(error);
+
+  if (failureKind === "unavailable") {
+    return unavailable(from, to, value, `Simulation unavailable: ${message}`);
+  }
+
+  return failure(from, to, value, `Simulation failed: ${message}`, failureKind);
+}
+
 /** First four bytes of revert data: the selector an integrator can look up. */
 function revertSelector(data: string): string {
   return ethers.dataLength(data) >= 4 ? ethers.dataSlice(data, 0, 4) : data;
@@ -317,13 +402,15 @@ async function failureFromPreflightError(input: {
     // as the whole revertReason, so dropping it once decoding succeeded would
     // make this one branch less informative than before.
     return {
-      ...failure(input.from, input.to, input.value, reason),
+      ...failure(input.from, input.to, input.value, reason, "revert"),
       originalError: getErrorMessage(input.err),
     };
   }
 
   const originalError = getErrorMessage(input.err);
   const revertData = extractRevertData(input.err);
+  const undecodedRevertData =
+    revertData && revertData !== "0x" ? revertData : undefined;
   const shortfall = await nativeShortfallFailure({
     rpc: input.rpc,
     chainId: input.chainId,
@@ -331,26 +418,111 @@ async function failureFromPreflightError(input: {
     to: input.to,
     value: input.value,
     originalError,
-    undecodedRevertData:
-      revertData && revertData !== "0x" ? revertData : undefined,
+    undecodedRevertData,
   });
-  return (
-    shortfall ??
-    failure(
+
+  if (shortfall) {
+    return shortfall;
+  }
+
+  const failureKind = classifySimulationError(input.err);
+  if (failureKind === "unavailable") {
+    return unavailable(
       input.from,
       input.to,
       input.value,
-      `Simulation reverted: ${originalError}`
-    )
-  );
+      `Simulation unavailable: ${originalError}`
+    );
+  }
+
+  const message =
+    failureKind === "revert"
+      ? `Simulation reverted: ${originalError}`
+      : `Simulation failed: ${originalError}`;
+
+  return {
+    ...failure(input.from, input.to, input.value, message, failureKind),
+    originalError,
+    undecodedRevertData,
+  };
 }
 
 async function getRpcManagerForChain(
   network: string
-): Promise<{ rpc: RpcProviderManager; chainId: number }> {
-  const chainId = getChainIdFromNetwork(network);
-  const rpc = await getRpcProvider({ chainId });
-  return { rpc, chainId };
+): Promise<RpcManagerResolution> {
+  let chainId: number;
+
+  try {
+    chainId = getChainIdFromNetwork(network);
+  } catch (error) {
+    return {
+      success: false,
+      failureKind: "validation",
+      error: getErrorMessage(error),
+    };
+  }
+
+  if (isSolanaChain(chainId)) {
+    return {
+      success: false,
+      failureKind: "validation",
+      error: "Read-only simulation currently supports EVM networks only",
+    };
+  }
+
+  try {
+    return {
+      success: true,
+      rpc: await getRpcProvider({ chainId }),
+      chainId,
+    };
+  } catch {
+    return {
+      success: false,
+      failureKind: "unavailable",
+      error: "Simulation unavailable: RPC provider initialization failed",
+    };
+  }
+}
+
+function rpcResolutionFailure(
+  resolution: Extract<RpcManagerResolution, { success: false }>,
+  from: string,
+  to: string,
+  value: bigint
+): SimulateFailure {
+  return resolution.failureKind === "unavailable"
+    ? unavailable(from, to, value, resolution.error)
+    : failure(from, to, value, resolution.error);
+}
+
+async function resolveSimulationWallet(
+  organizationId: string,
+  to: string,
+  value: bigint
+): Promise<string | SimulateFailure> {
+  try {
+    return await getOrganizationWalletAddress(organizationId);
+  } catch {
+    return unavailable(
+      "",
+      to,
+      value,
+      "Simulation unavailable: could not resolve the organization wallet"
+    );
+  }
+}
+
+function validateDecimals(decimals: number): string | null {
+  if (
+    !Number.isInteger(decimals) ||
+    decimals < 0 ||
+    decimals > MAX_ERC20_DECIMALS
+  ) {
+    return `Invalid token decimals: ${decimals}`;
+  }
+
+  return null;
 }
 
 function parseFunctionArgs(raw: string | undefined): unknown[] | string {
@@ -394,8 +566,16 @@ function parseValue(raw: string | undefined): bigint | string {
 export async function simulateContractCall(
   input: SimulateContractCallInput
 ): Promise<SimulateResult> {
-  const from = await getOrganizationWalletAddress(input.organizationId);
   const to = input.contractAddress;
+  const fromOrFailure = await resolveSimulationWallet(
+    input.organizationId,
+    to,
+    BigInt(0)
+  );
+  if (typeof fromOrFailure !== "string") {
+    return fromOrFailure;
+  }
+  const from = fromOrFailure;
 
   const valueOrError = parseValue(input.value);
   if (typeof valueOrError === "string") {
@@ -424,9 +604,10 @@ export async function simulateContractCall(
     return failure(from, to, value, argsOrError);
   }
 
-  const iface = new ethers.Interface(abiArray as ethers.InterfaceAbi);
+  let iface: ethers.Interface;
   let encodedData: string;
   try {
+    iface = new ethers.Interface(abiArray as ethers.InterfaceAbi);
     const coerced = coerceArgsForAbi(argsOrError, abiFn);
     const reshaped = reshapeArgsForAbi(coerced, abiFn);
     encodedData = iface.encodeFunctionData(input.functionName, reshaped);
@@ -439,7 +620,12 @@ export async function simulateContractCall(
     );
   }
 
-  const { rpc, chainId } = await getRpcManagerForChain(input.network);
+  const rpcResolution = await getRpcManagerForChain(input.network);
+  if (!rpcResolution.success) {
+    return rpcResolutionFailure(rpcResolution, from, to, value);
+  }
+  const { rpc, chainId } = rpcResolution;
+
   const tx: ethers.TransactionRequest = { from, to, data: encodedData, value };
 
   let gasEstimate: bigint;
@@ -493,8 +679,16 @@ export async function simulateContractCall(
 export async function simulateNativeTransfer(
   input: SimulateNativeTransferInput
 ): Promise<SimulateResult> {
-  const from = await getOrganizationWalletAddress(input.organizationId);
   const to = input.recipientAddress;
+  const fromOrFailure = await resolveSimulationWallet(
+    input.organizationId,
+    to,
+    BigInt(0)
+  );
+  if (typeof fromOrFailure !== "string") {
+    return fromOrFailure;
+  }
+  const from = fromOrFailure;
 
   const valueOrError = parseValue(input.amount);
   if (typeof valueOrError === "string") {
@@ -502,7 +696,12 @@ export async function simulateNativeTransfer(
   }
   const value = valueOrError;
 
-  const { rpc, chainId } = await getRpcManagerForChain(input.network);
+  const rpcResolution = await getRpcManagerForChain(input.network);
+  if (!rpcResolution.success) {
+    return rpcResolutionFailure(rpcResolution, from, to, value);
+  }
+  const { rpc, chainId } = rpcResolution;
+
   const tx: ethers.TransactionRequest = { from, to, value };
 
   // Run estimateGas + provider.call together so a contract recipient
@@ -556,17 +755,46 @@ async function fetchTokenDecimals(
 export async function simulateTokenTransfer(
   input: SimulateTokenTransferInput
 ): Promise<SimulateResult> {
-  const { rpc, chainId } = await getRpcManagerForChain(input.network);
-
-  const resolvedTokenAddress = await parseTokenAddress(
-    {
-      tokenConfig: input.tokenConfig ?? "",
-      tokenAddress: input.tokenAddress,
-    },
-    chainId
+  const initialTokenAddress = input.tokenAddress ?? "";
+  const fromOrFailure = await resolveSimulationWallet(
+    input.organizationId,
+    initialTokenAddress,
+    BigInt(0)
   );
+  if (typeof fromOrFailure !== "string") {
+    return fromOrFailure;
+  }
+  const from = fromOrFailure;
+
+  const rpcResolution = await getRpcManagerForChain(input.network);
+  if (!rpcResolution.success) {
+    return rpcResolutionFailure(
+      rpcResolution,
+      from,
+      input.tokenAddress ?? "",
+      BigInt(0)
+    );
+  }
+  const { rpc, chainId } = rpcResolution;
+
+  let resolvedTokenAddress: string | null;
+  try {
+    resolvedTokenAddress = await parseTokenAddress(
+      {
+        tokenConfig: input.tokenConfig ?? "",
+        tokenAddress: input.tokenAddress,
+      },
+      chainId
+    );
+  } catch {
+    return unavailable(
+      from,
+      input.tokenAddress ?? "",
+      BigInt(0),
+      "Simulation unavailable: could not resolve the token configuration"
+    );
+  }
   if (!resolvedTokenAddress) {
-    const from = await getOrganizationWalletAddress(input.organizationId);
     return failure(
       from,
       input.tokenAddress ?? "",
@@ -575,14 +803,40 @@ export async function simulateTokenTransfer(
     );
   }
 
-  const decimals =
-    input.decimals ?? (await fetchTokenDecimals(rpc, resolvedTokenAddress));
+  if (!ethers.isAddress(resolvedTokenAddress)) {
+    return failure(
+      from,
+      resolvedTokenAddress,
+      BigInt(0),
+      `Invalid token address: ${resolvedTokenAddress}`
+    );
+  }
+
+  let decimals: number;
+  if (input.decimals === undefined) {
+    try {
+      decimals = await fetchTokenDecimals(rpc, resolvedTokenAddress);
+    } catch (error) {
+      return simulationFailureFromError(
+        from,
+        resolvedTokenAddress,
+        BigInt(0),
+        error
+      );
+    }
+  } else {
+    decimals = input.decimals;
+  }
+
+  const decimalsError = validateDecimals(decimals);
+  if (decimalsError) {
+    return failure(from, resolvedTokenAddress, BigInt(0), decimalsError);
+  }
 
   let amountUnits: bigint;
   try {
     amountUnits = ethers.parseUnits(input.amount, decimals);
   } catch {
-    const from = await getOrganizationWalletAddress(input.organizationId);
     return failure(
       from,
       resolvedTokenAddress,

@@ -458,6 +458,60 @@ describe("validateWorkflow — missing-write-action-for-write-workflow (VALID-04
   });
 });
 
+describe("validateWorkflow — explicit write-action classification (VALID-04)", () => {
+  it.each([
+    "web3/transfer-funds",
+    "web3/transfer-token",
+    "web3/approve-token",
+    "safe/get-pending-transactions",
+  ])("does not treat %s as an MCP-callable write", (actionType) => {
+    const writeWorkflow = validateWorkflow(
+      makeWorkflow({
+        workflowType: "write",
+        nodes: [triggerNode(), actionNode("action-1", { actionType })],
+        edges: [edge("e1", "trigger-1", "action-1")],
+      })
+    );
+
+    expect(
+      writeWorkflow.errors.some(
+        (issue) => issue.code === "missing-write-action-for-write-workflow"
+      )
+    ).toBe(true);
+
+    const readWorkflow = validateWorkflow(
+      makeWorkflow({
+        workflowType: "read",
+        nodes: [triggerNode(), actionNode("action-1", { actionType })],
+        edges: [edge("e1", "trigger-1", "action-1")],
+      })
+    );
+
+    expect(
+      readWorkflow.warnings.some(
+        (issue) => issue.code === "write-action-on-read-workflow"
+      )
+    ).toBe(false);
+  });
+
+  it("uses the same protocol-write classifier as MCP calldata generation", () => {
+    const actionType = "aave/protocol-write";
+    const result = validateWorkflow(
+      makeWorkflow({
+        workflowType: "write",
+        nodes: [triggerNode(), actionNode("protocol-1", { actionType })],
+        edges: [edge("e1", "trigger-1", "protocol-1")],
+      })
+    );
+
+    expect(
+      result.errors.some(
+        (issue) => issue.code === "missing-write-action-for-write-workflow"
+      )
+    ).toBe(false);
+  });
+});
+
 describe("validateWorkflow — write-action-on-read-workflow (VALID-04)", () => {
   it("emits a warning (not error) when workflowType=read but a write node is present", () => {
     const result = validateWorkflow(

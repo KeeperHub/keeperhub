@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { agentRegistrations } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { getAuthenticatedToolsForDiscovery } from "@/lib/mcp/mcp-tool-catalog";
 
 // Must match TARGET_CHAIN_ID and IDENTITY_REGISTRY_ADDRESS in
 // scripts/register-agent.ts. The endpoint serves the public ERC-8004
@@ -36,38 +37,7 @@ export async function GET(_request: Request): Promise<NextResponse> {
           name: "MCP",
           endpoint: "https://app.keeperhub.com/.well-known/mcp.json",
           version: "2025-06-18",
-          mcpTools: [
-            "list_workflows",
-            "get_workflow",
-            "search_workflows",
-            "search_plugins",
-            "get_plugin",
-            "list_integrations",
-            "get_wallet_integration",
-            "search_templates",
-            "get_template",
-            "deploy_template",
-            "list_action_schemas",
-            "search_protocol_actions",
-            "ai_generate_workflow",
-            "create_workflow",
-            "update_workflow",
-            "delete_workflow",
-            "execute_workflow",
-            "get_execution_status",
-            "get_execution_logs",
-            "execute_transfer",
-            "execute_contract_call",
-            "execute_check_and_execute",
-            "execute_protocol_action",
-            "get_direct_execution_status",
-            "call_workflow",
-            "list_workflow",
-            "unlist_workflow",
-            "update_workflow_listing",
-            "get_workflow_listing",
-            "tools_documentation",
-          ],
+          mcpTools: getAuthenticatedToolsForDiscovery(),
         },
         {
           name: "A2A",

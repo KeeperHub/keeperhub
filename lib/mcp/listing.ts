@@ -1,4 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
+import { classifyChainTag } from "@/lib/agentic-wallet/workflow-binding";
 import { db } from "@/lib/db";
 import { workflows } from "@/lib/db/schema";
 import {
@@ -9,6 +10,11 @@ import {
   findBareAtLiterals,
   isInputSchemaPresent,
 } from "@/lib/mcp/listing-validators";
+import {
+  canShareExecutionStatus,
+  clearShareExecutionStatus,
+  shareExecutionStatusUpdate,
+} from "@/lib/workflow/share-execution-status";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 
 export type ListingErrorCode =
@@ -19,13 +25,42 @@ export type ListingErrorCode =
   | "SLUG_REQUIRED"
   | "MISSING_WRITE_ACTION"
   | "INVALID_TEMPLATE_LITERALS"
-  | "INPUT_SCHEMA_REQUIRED";
+  | "INPUT_SCHEMA_REQUIRED"
+  | "INVALID_CHAIN"
+  | "SHARE_REQUIRES_PUBLIC_VISIBILITY";
 
 export interface ListingErrorDetails {
   // Bare-@ literals found in node configs at publish time, surfaced so the
   // author can locate the offending field without spelunking. Capped at
   // MAX_FINDINGS by the validator.
   literals?: string[];
+  // The unrecognised chain value, for INVALID_CHAIN.
+  chain?: string;
+}
+
+/**
+ * Reject a chain tag classifyChainTag cannot place in payment, data, or
+ * multi. Without this, an unrecognised value (typo, disabled chain,
+ * unsupported chain) persists silently and only surfaces as
+ * 403 CHAIN_MISMATCH at the first payment attempt, months after listing.
+ */
+async function validateChainTag(chain: string | undefined): Promise<{
+  ok: false;
+  error: "INVALID_CHAIN";
+  details: { chain: string };
+} | null> {
+  // An empty (or whitespace-only) chain is how a caller clears the pin, not a
+  // tag to classify. workflows.chain is read as falsy by verifyWorkflowBinding,
+  // so a cleared value is permissive exactly like the null it replaces -- and
+  // rejecting it here would leave a mis-tagged listing with no way back.
+  if (chain === undefined || chain.trim() === "") {
+    return null;
+  }
+  const classification = await classifyChainTag(chain);
+  if (classification.kind === "unrecognised") {
+    return { ok: false, error: "INVALID_CHAIN", details: { chain } };
+  }
+  return null;
 }
 
 export type ListingResult<T> =
@@ -39,6 +74,7 @@ export interface ListWorkflowMetadata {
   inputSchema?: Record<string, unknown>;
   outputMapping?: Record<string, unknown>;
   workflowType?: string;
+  shareExecutionStatus?: boolean;
 }
 
 export interface UpdateWorkflowPatch {
@@ -170,10 +206,30 @@ export async function listWorkflow(
     updateSet.category = metadata.category;
   }
   if (metadata.chain !== undefined) {
+    const chainError = await validateChainTag(metadata.chain);
+    if (chainError) {
+      return chainError;
+    }
     updateSet.chain = metadata.chain;
   }
   if (metadata.inputSchema !== undefined) {
     updateSet.inputSchema = metadata.inputSchema;
+  }
+  if (metadata.shareExecutionStatus !== undefined) {
+    // Listing a workflow does not make it public - visibility is a separate
+    // axis this API never writes - so a curator enabling sharing on a private
+    // workflow would persist a flag the read gate refuses, and hand out links
+    // that 404 with a 200 to say it worked.
+    if (
+      metadata.shareExecutionStatus &&
+      !canShareExecutionStatus(current.visibility)
+    ) {
+      return { ok: false, error: "SHARE_REQUIRES_PUBLIC_VISIBILITY" };
+    }
+    Object.assign(
+      updateSet,
+      shareExecutionStatusUpdate(metadata.shareExecutionStatus)
+    );
   }
   if (metadata.outputMapping !== undefined) {
     updateSet.outputMapping = metadata.outputMapping;
@@ -279,7 +335,11 @@ export async function unlistWorkflow(
 
   const [result] = await db
     .update(workflows)
-    .set({ isListed: false, updatedAt: new Date() })
+    .set({
+      ...clearShareExecutionStatus(),
+      isListed: false,
+      updatedAt: new Date(),
+    })
     .where(
       and(
         eq(workflows.id, workflowId),
@@ -329,6 +389,10 @@ export async function updateWorkflowListing(
     updateSet.category = patch.category;
   }
   if (patch.chain !== undefined) {
+    const chainError = await validateChainTag(patch.chain);
+    if (chainError) {
+      return chainError;
+    }
     updateSet.chain = patch.chain;
   }
   if (patch.inputSchema !== undefined) {

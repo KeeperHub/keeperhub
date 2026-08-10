@@ -50,8 +50,8 @@ import type {
 
 /**
  * Normalize workflow execution status to a unified status.
- * workflow_executions uses: pending | running | success | error | cancelled
- * direct_executions uses: pending | running | completed | failed
+ * workflow_executions uses: pending | running | unconfirmed | success | error | cancelled
+ * direct_executions uses: pending | running | unconfirmed | completed | failed
  * We normalize to: pending | running | success | error
  */
 export function normalizeStatus(
@@ -69,6 +69,11 @@ export function normalizeStatus(
   }
   if (status === "cancelled") {
     return "cancelled";
+  }
+  // Both sources use "unconfirmed" for a broadcast the chain has not confirmed.
+  // It is still in flight, not an outcome, so it reads as running in the UI.
+  if (status === "unconfirmed") {
+    return "running";
   }
   // Phantom rows are runs that were enqueued but never picked up; they have no
   // user-facing status of their own and surface as pending everywhere in the UI.
@@ -93,6 +98,9 @@ function directDbStatuses(status: NormalizedStatus): string[] {
   if (status === "error") {
     return ["failed"];
   }
+  if (status === "running") {
+    return ["running", "unconfirmed"];
+  }
   return [status];
 }
 
@@ -104,6 +112,9 @@ function directDbStatuses(status: NormalizedStatus): string[] {
 export function workflowDbStatuses(status: NormalizedStatus): string[] {
   if (status === "pending") {
     return ["pending", "phantom"];
+  }
+  if (status === "running") {
+    return ["running", "unconfirmed"];
   }
   if (status === "error" || status === "external_error") {
     return ["error"];
@@ -408,7 +419,7 @@ function getActiveDirectCount(organizationId: string): Promise<number> {
     .where(
       and(
         eq(directExecutions.organizationId, organizationId),
-        sql`${directExecutions.status} IN ('pending', 'running')`
+        sql`${directExecutions.status} IN ('pending', 'running', 'unconfirmed')`
       )
     )
     .then((r) => Number(r[0]?.count) || 0);
@@ -604,7 +615,7 @@ async function computeTimeSeries(
       error: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'failed' THEN 1 ELSE 0 END)`,
       cancelled: sql<string>`0`,
       pending: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'pending' THEN 1 ELSE 0 END)`,
-      running: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'running' THEN 1 ELSE 0 END)`,
+      running: sql<string>`SUM(CASE WHEN ${directExecutions.status} IN ('running', 'unconfirmed') THEN 1 ELSE 0 END)`,
     })
     .from(directExecutions)
     .where(
@@ -726,7 +737,7 @@ async function computeNetworkBreakdown(
           .select({
             network: directExecutions.network,
             totalGasWei: sql<string>`COALESCE(SUM(CAST(${directExecutions.gasUsedWei} AS NUMERIC)), 0)::text`,
-            // Completed runs only, so pending/running direct executions do not
+            // Settled runs only, so in-flight direct executions do not
             // inflate the per-network execution count.
             executionCount: sql<number>`SUM(CASE WHEN ${directExecutions.status} IN ('completed', 'failed') THEN 1 ELSE 0 END)`,
             successCount: sql<number>`SUM(CASE WHEN ${directExecutions.status} = 'completed' THEN 1 ELSE 0 END)`,

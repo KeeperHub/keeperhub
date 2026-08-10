@@ -283,6 +283,8 @@ export default defineAbiProtocol({
         "10": "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
         // Sepolia Testnet
         "11155111": "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951",
+        // Base Sepolia Testnet (bgd-labs AaveV3BaseSepolia.POOL)
+        "84532": "0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27",
       },
       overrides: {
         supply: {
@@ -392,6 +394,8 @@ export default defineAbiProtocol({
         "10": "0x243Aa95cAC2a25651eda86e80bEe66114413c43b",
         // Sepolia Testnet
         "11155111": "0x3e9708d80f7B3e43118013075F7e95CE3AB31F31",
+        // Base Sepolia Testnet (bgd-labs AaveV3BaseSepolia.POOL_DATA_PROVIDER)
+        "84532": "0xBc9f5b7E248451CdD7cA54e717a2BFe1F32b566b",
       },
       overrides: {
         getUserReserveData: {

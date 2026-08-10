@@ -87,7 +87,9 @@ export async function checkDirectExecutionConcurrency<
       and(
         eq(directExecutions.organizationId, organizationId),
         isNotNull(directExecutions.network),
-        inArray(directExecutions.status, ["pending", "running"]),
+        // An unconfirmed row is a broadcast still in flight on chain, so it
+        // holds a slot like any other in-flight execution until it settles.
+        inArray(directExecutions.status, ["pending", "running", "unconfirmed"]),
         sql`${directExecutions.createdAt} > now() - interval '${sql.raw(String(DIRECT_STALE_MINUTES))} minutes'`
       )
     );

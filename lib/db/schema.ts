@@ -487,6 +487,10 @@ export const workflows = pgTable(
     isListed: boolean("is_listed").default(false).notNull(),
     listedSlug: text("listed_slug"),
     listedAt: timestamp("listed_at"),
+    /** When true, execution status is shareable via deep link for public/unlisted workflows. Opt-in; default false. */
+    shareExecutionStatus: boolean("share_execution_status")
+      .default(false)
+      .notNull(),
     inputSchema: jsonb("input_schema").$type<Record<string, unknown>>(),
     outputMapping: jsonb("output_mapping").$type<Record<string, unknown>>(),
     priceUsdcPerCall: numeric("price_usdc_per_call"),
@@ -655,17 +659,18 @@ export const workflowExecutions = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id),
-    status: text("status")
-      .notNull()
-      .$type<
-        | "pending"
-        | "running"
-        | "success"
-        | "error"
-        | "cancelled"
-        | "phantom"
-        | "system_error"
-      >(),
+    status: text("status").notNull().$type<
+      | "pending"
+      | "running"
+      // A run whose claimed transaction hashes could not be read on chain.
+      // Non-terminal: settled to success or error by the reconciler.
+      | "unconfirmed"
+      | "success"
+      | "error"
+      | "cancelled"
+      | "phantom"
+      | "system_error"
+    >(),
     // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
     input: jsonb("input").$type<Record<string, any>>(),
     // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
@@ -1123,6 +1128,18 @@ export const chains = pgTable(
     chainId: integer("chain_id").notNull().unique(), // e.g., 1, 11155111, 8453
     name: text("name").notNull(), // e.g., "Ethereum Mainnet"
     symbol: text("symbol").notNull(), // e.g., "ETH"
+    // Human-readable slugs a workflow listing's `chain` field may use in
+    // place of the numeric chainId, e.g. ["ethereum", "eth"] for chainId 1.
+    // Matched case-insensitively by classifyChainTag in
+    // lib/agentic-wallet/workflow-binding.ts. Empty for chains with no
+    // registered alias.
+    aliases: jsonb("aliases").notNull().default([]).$type<string[]>(),
+    // Whether this chain is one of KeeperHub's own payment settlement rails
+    // (Base, Tempo) rather than a read-only data chain. Determines whether
+    // classifyChainTag treats a workflow's chain tag as a payment-chain pin
+    // (caller must match) or a data-chain hint (either payment rail
+    // accepted).
+    isPaymentRail: boolean("is_payment_rail").notNull().default(false),
     chainType: text("chain_type").notNull().default("evm"), // "evm" | "solana"
     defaultPrimaryRpc: text("default_primary_rpc").notNull(),
     defaultFallbackRpc: text("default_fallback_rpc"),

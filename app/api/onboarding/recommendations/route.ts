@@ -7,6 +7,8 @@ import { ONBOARDING_WORKFLOW_FIXTURES } from "@/scripts/seed/fixtures/onboarding
 
 const CHIP_SLUGS = [
   "aave-health",
+  "aave-health-sepolia",
+  "aave-health-base-sepolia",
   "whale-withdrawal",
   "governance",
   "sky-staking",

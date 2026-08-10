@@ -4,6 +4,7 @@ import type {
   BillingDetails,
   BillingProvider,
   BillingWebhookEvent,
+  CollectInvoiceResult,
   CreateCheckoutParams,
   CreateCustomerParams,
   CreateInvoiceItemParams,
@@ -566,14 +567,22 @@ export class StripeBillingProvider implements BillingProvider {
   async createInvoiceItem(
     params: CreateInvoiceItemParams
   ): Promise<CreateInvoiceItemResult> {
-    const item = await getStripe().invoiceItems.create({
+    const body = {
       customer: params.customerId,
       amount: params.amount,
       currency: params.currency,
       description: params.description,
       metadata: params.metadata,
       ...(params.invoiceId && { invoice: params.invoiceId }),
-    });
+    };
+
+    // Callers without a key keep the original single-argument call.
+    const item = params.idempotencyKey
+      ? await getStripe().invoiceItems.create(body, {
+          idempotencyKey: params.idempotencyKey,
+        })
+      : await getStripe().invoiceItems.create(body);
+
     return { invoiceItemId: item.id };
   }
 
@@ -615,6 +624,91 @@ export class StripeBillingProvider implements BillingProvider {
       status: invoice.status ?? "draft",
       paid: invoice.status === "paid",
     };
+  }
+
+  async createDraftInvoice(
+    customerId: string,
+    currency: string
+  ): Promise<{ invoiceId: string }> {
+    // No `subscription`, so Stripe adds no plan or proration lines, and
+    // pending_invoice_items_behavior "exclude" keeps unrelated pending items
+    // off it. The invoice bills exactly what is attached to it afterwards.
+    const invoice = await getStripe().invoices.create({
+      customer: customerId,
+      currency,
+      auto_advance: false,
+      collection_method: "charge_automatically",
+      pending_invoice_items_behavior: "exclude",
+    });
+
+    if (!invoice.id) {
+      throw new Error("Stripe did not return an invoice ID");
+    }
+
+    return { invoiceId: invoice.id };
+  }
+
+  async finalizeAndCollectInvoice(
+    invoiceId: string
+  ): Promise<CollectInvoiceResult> {
+    const s = getStripe();
+    const existing = await s.invoices.retrieve(invoiceId);
+
+    if (existing.status === "paid") {
+      return { invoiceId, paid: true };
+    }
+
+    // Only a draft needs finalizing. A retry on an already-open invoice, e.g.
+    // when a returning org settles what it left behind, goes straight to pay.
+    if (existing.status === "draft") {
+      const finalized = await s.invoices.finalizeInvoice(invoiceId);
+      if (finalized.status === "paid") {
+        return { invoiceId, paid: true };
+      }
+    }
+
+    try {
+      const paid = await s.invoices.pay(invoiceId);
+      return paid.status === "paid"
+        ? { invoiceId, paid: true }
+        : {
+            invoiceId,
+            paid: false,
+            failureReason: `invoice status ${paid.status ?? "unknown"}`,
+          };
+    } catch (error: unknown) {
+      // A decline or a missing payment method is an expected outcome here, not
+      // a fault: the invoice stays open and the amount is carried as debt.
+      return {
+        invoiceId,
+        paid: false,
+        failureReason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // A 400 means the request was evaluated and refused, so no object was
+  // created. Transport and rate-limit failures say nothing about whether the
+  // provider acted, so they are deliberately excluded.
+  wasRejectedWithoutCreating(error: unknown): boolean {
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      "type" in error &&
+      (error as { type: unknown }).type === "StripeInvalidRequestError"
+    );
+  }
+
+  async deleteDraftInvoice(invoiceId: string): Promise<void> {
+    try {
+      await getStripe().invoices.del(invoiceId);
+    } catch (error: unknown) {
+      // Already gone or already finalized; nothing left to discard.
+      if (isStripeNotFound(error)) {
+        return;
+      }
+      throw error;
+    }
   }
 }
 

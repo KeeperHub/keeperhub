@@ -142,6 +142,9 @@ packages/*/dist/
 .claude/test-*-output.txt
 .claude/worktrees/
 
+# Local PR review screenshot drops (attach via PR comment, do not commit)
+.claude/pr*-screenshots/
+
 # Locally generated Solana devnet payer keypair
 # (scripts/solana-devnet-spl-fixture.ts). Devnet-only and worthless, but it is
 # still a private key and must never be committed.

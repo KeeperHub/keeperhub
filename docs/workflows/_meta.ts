@@ -1,4 +1,5 @@
 export default {
+  index: "Overview",
   creating: "Creating Workflows",
   templating: "Templating Reference",
   "schema-reference": "Schema Reference",

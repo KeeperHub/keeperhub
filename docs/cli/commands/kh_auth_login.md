@@ -5,7 +5,9 @@ Log in to KeeperHub
 ### Synopsis
 
 Authenticate with KeeperHub using the device code flow.
-Prints a URL and a one-time code; open the URL in a browser to confirm it.
+Prints a URL and a one-time code. Open the URL in any browser (the browser
+does not open automatically — copy the URL from the terminal) and enter the
+code to complete sign-in. Codes expire after 15 minutes.
 Use --with-token to read an API key from stdin for non-interactive automation.
 
 See also: kh auth status, kh auth logout

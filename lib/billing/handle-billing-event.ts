@@ -14,8 +14,12 @@ import { getMetricsCollector } from "@/lib/metrics";
 import { MetricNames } from "@/lib/metrics/types";
 import { recordAuditEvent } from "@/lib/security/audit-log";
 import { BILLING_ALERTS } from "./constants";
-import { clearAllDebtForOrg, clearDebtForInvoice } from "./execution-debt";
-import { billOverageForOrg } from "./overage";
+import { clearDebtForInvoice } from "./execution-debt";
+import {
+  billOverageForOrg,
+  collectFinalPeriodOverage,
+  collectOutstandingOverage,
+} from "./overage";
 import { type PlanName, parsePlanName } from "./plans";
 import { resolveSubscriptionPlan } from "./plans-server";
 import type { BillingProvider, BillingWebhookEvent } from "./provider";
@@ -222,6 +226,20 @@ async function handleCheckoutCompleted(
     });
 
   console.info(LOG_PREFIX, "Upserted subscription for org:", organizationId);
+
+  // A returning org may have left an unpaid overage invoice behind when it
+  // cancelled. Subscribing again means there is a payment method on file, so
+  // this is the moment to settle it. Never blocks the subscription itself.
+  try {
+    await collectOutstandingOverage(organizationId, provider);
+  } catch (error) {
+    logSystemWarn(
+      ErrorCategory.BILLING,
+      `${LOG_PREFIX} Failed to settle outstanding overage on resubscribe`,
+      error,
+      { org_id: organizationId }
+    );
+  }
 
   const metrics = getMetricsCollector();
   metrics.incrementCounter(MetricNames.BILLING_SUBSCRIPTION_CREATED, {
@@ -462,6 +480,44 @@ async function handleSubscriptionUpdated(
   }
 }
 
+/**
+ * Charge the closing period's overage on a subscription that is ending.
+ *
+ * Never throws. The downgrade has to complete regardless: leaving an org on a
+ * paid plan because a card was declined would hand it a plan it is not paying
+ * for. An uncollected amount stays on the open invoice and is picked up by the
+ * debt scan.
+ */
+async function collectFinalPeriodOverageSafely(
+  current: SubscriptionRow | undefined
+): Promise<void> {
+  if (
+    !(
+      current?.providerCustomerId &&
+      current.currentPeriodStart instanceof Date &&
+      current.currentPeriodEnd instanceof Date
+    )
+  ) {
+    return;
+  }
+
+  try {
+    await collectFinalPeriodOverage(
+      current.organizationId,
+      current.currentPeriodStart,
+      current.currentPeriodEnd,
+      current.providerCustomerId
+    );
+  } catch (error) {
+    logSystemWarn(
+      ErrorCategory.BILLING,
+      `${LOG_PREFIX} Failed to bill the final period on cancellation (will be retried by scan)`,
+      error,
+      { org_id: current.organizationId }
+    );
+  }
+}
+
 async function handleSubscriptionDeleted(
   data: BillingWebhookEvent["data"]
 ): Promise<void> {
@@ -503,11 +559,9 @@ async function handleSubscriptionDeleted(
         )
       );
 
-    // Clear debt even when period is still active -- no further overage
-    // will be billed on a canceled subscription, so debt is moot.
-    if (current) {
-      await clearAllDebtForOrg(current.organizationId);
-    }
+    // Debt is deliberately left in place. The org still owes the amount, and
+    // it is what gates them if they subscribe again. The period is not over
+    // here, so the excess is billed later by the overage scan.
 
     getMetricsCollector().incrementCounter(
       MetricNames.BILLING_SUBSCRIPTION_CANCELED,
@@ -543,6 +597,11 @@ async function handleSubscriptionDeleted(
     "period ended, resetting to free"
   );
 
+  // Before the reset, while the row still carries the paid plan and its limit.
+  // billOverageForOrg reads plan off the row and skips a free one, so this
+  // cannot move below the update.
+  await collectFinalPeriodOverageSafely(current);
+
   await db
     .update(organizationSubscriptions)
     .set({
@@ -561,10 +620,8 @@ async function handleSubscriptionDeleted(
       )
     );
 
-  // Clear any active debt -- it becomes moot when downgrading to free
-  if (current) {
-    await clearAllDebtForOrg(current.organizationId);
-  }
+  // Debt survives the downgrade. Dropping to free does not settle what the org
+  // already ran up, and the record is what lets us collect if they return.
 
   getMetricsCollector().incrementCounter(
     MetricNames.BILLING_SUBSCRIPTION_CANCELED,

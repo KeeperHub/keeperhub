@@ -484,6 +484,10 @@ export async function resolvePhantomToError(
       error: fields.error,
       errorCategory: fields.errorCategory,
       errorType: fields.errorType,
+      // The run was blocked before it started, so it consumes no quota. The
+      // claim flips billable to true up front; undo that here or a blocked
+      // org's retries keep inflating its plan-usage ratio past 100%.
+      billable: false,
       completedAt: new Date(),
     })
     .where(

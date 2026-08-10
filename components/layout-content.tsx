@@ -28,7 +28,7 @@ const BARE_LAYOUT_PATHS: ReadonlySet<string> = new Set([
 // Prefixes whose whole subtree renders bare. The welcome landing plus its
 // onboarding wizard (/welcome, /welcome/create-org, ...) are full-screen and
 // must not render the workflow shell behind them.
-const BARE_LAYOUT_PREFIXES: readonly string[] = ["/welcome"];
+const BARE_LAYOUT_PREFIXES: readonly string[] = ["/welcome", "/executions"];
 
 function isBareLayoutPath(pathname: string): boolean {
   if (BARE_LAYOUT_PATHS.has(pathname)) {

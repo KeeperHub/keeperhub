@@ -193,6 +193,8 @@ async function prepareExecution(
           error: paygCharge.message,
           errorCategory: "billing",
           errorType: "user",
+          // Unpaid means the run never started, so it consumes no quota.
+          billable: false,
           completedAt: new Date(),
         })
         .where(eq(workflowExecutions.id, execution.id));

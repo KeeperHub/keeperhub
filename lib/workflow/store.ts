@@ -134,6 +134,7 @@ export const currentWorkflowOutputMappingAtom = atom<Record<
   unknown
 > | null>(null);
 export const currentWorkflowPriceUsdcAtom = atom<string | null>(null);
+export const currentWorkflowShareExecutionStatusAtom = atom<boolean>(false);
 
 // UI state atoms
 export const propertiesPanelActiveTabAtom = atom<string>("properties");

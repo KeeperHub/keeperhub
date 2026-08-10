@@ -53,9 +53,14 @@ describe("workflowDbStatuses", () => {
     expect(workflowDbStatuses("external_error")).toEqual(["error"]);
   });
 
+  it("expands the running filter to also match unconfirmed rows", () => {
+    // A run whose broadcast hashes the chain has not confirmed is in flight,
+    // so the running filter has to show it or it disappears from the UI.
+    expect(workflowDbStatuses("running")).toEqual(["running", "unconfirmed"]);
+  });
+
   it("leaves other statuses as a single-value filter", () => {
     expect(workflowDbStatuses("success")).toEqual(["success"]);
-    expect(workflowDbStatuses("running")).toEqual(["running"]);
     expect(workflowDbStatuses("cancelled")).toEqual(["cancelled"]);
   });
 });

@@ -1,27 +1,39 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useSession } from "@/lib/auth-client";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { authClient, useSession } from "@/lib/auth-client";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import {
   type BranchKey,
+  type ChipContext,
   getBranches,
+  resolveTestnetWorkspace,
   type SignalId,
   type Step,
+  type WalletBalanceEntry,
 } from "@/lib/onboarding/getting-started-config";
+import {
+  isChipAwareStepComplete,
+  type StepCompleteStatus,
+} from "@/lib/onboarding/getting-started-step-complete";
 import { gettingStartedSuppressed } from "@/lib/onboarding/tours-disabled";
+import { useWalletInfo } from "@/lib/wallet/use-wallet-info";
 
 /**
  * Persisted UI state + completion for the getting-started launcher (KEEP-878).
  *
- * Completion is hybrid and latched:
+ * Completion is hybrid:
  *  - Outcome steps are detected from real state (`GET /api/onboarding/status`):
  *    a step turns green once the user has actually created an API key,
  *    connected an alert channel, or run a workflow. Opening the surface does
  *    not complete them.
- *  - Once a signal is first observed satisfied it is latched into persisted
- *    `done`, so the step stays complete even if the underlying workflow / key
- *    is later deleted (real state would otherwise flip it back to incomplete).
+ *  - Once a non-chip signal is first observed satisfied it is latched into
+ *    persisted `done`, so the step stays complete even if the underlying
+ *    workflow / key is later deleted.
+ *  - Chip-bearing steps derive from a LIVE starter clone when any chip was
+ *    ever cloned (deleting the clone un-completes). If no chip was ever
+ *    cloned, `done` is honored so adding chips does not regress users who
+ *    already finished the step.
  *  - Informational steps ("open your wallet") have no measurable outcome and
  *    complete the first time the user opens them.
  *
@@ -125,7 +137,7 @@ function stepWorkflowRan(
 
 function resolveRealSignal(
   step: Step,
-  status: OnboardingStatus | null,
+  status: StepCompleteStatus | null,
   workflows: Record<string, string>
 ): boolean {
   if (!status) {
@@ -185,13 +197,16 @@ export type GettingStarted = {
    * workflow instead of falling back to the AI prompt.
    */
   recommendedIds: Record<string, string>;
+  chipContext: ChipContext;
 };
 
 export function useGettingStarted(): GettingStarted {
   const { data: session } = useSession();
+  const { data: activeOrg } = authClient.useActiveOrganization();
   const userId = session?.user?.id;
   const isAuthenticated =
     Boolean(session?.user) && !isAnonymousUser(session?.user);
+  const activeOrgId = activeOrg?.id ?? null;
   const [persisted, setPersisted] = useState<Persisted>(() =>
     readPersisted(undefined)
   );
@@ -199,6 +214,19 @@ export function useGettingStarted(): GettingStarted {
   const [recommendedIds, setRecommendedIds] = useState<Record<string, string>>(
     {}
   );
+  const [testnetWorkspace, setTestnetWorkspace] = useState(
+    resolveTestnetWorkspace(undefined)
+  );
+  const { walletAddress } = useWalletInfo();
+
+  const chipContext = useMemo((): ChipContext => {
+    return {
+      walletAddress,
+      isTestnetWorkspace: testnetWorkspace.isTestnetWorkspace,
+      chainId: testnetWorkspace.chainId,
+      resolvedIds: recommendedIds,
+    };
+  }, [walletAddress, testnetWorkspace, recommendedIds]);
 
   // Re-hydrate persisted state once the user id is known (the key is per-user).
   useEffect(() => {
@@ -254,9 +282,11 @@ export function useGettingStarted(): GettingStarted {
     return () => window.removeEventListener("focus", fetchStatus);
   }, [fetchStatus]);
 
-  // Fetch hub workflow ids for onboarding chips once on mount. These change
-  // only when workflows are reseeded, so a single fetch per session is enough.
+  // Fetch hub workflow ids for onboarding chips once per session.
   useEffect(() => {
+    if (!isAuthenticated || persisted.state === "dismissed") {
+      return;
+    }
     fetch("/api/onboarding/recommendations")
       .then((r) =>
         r.ok ? (r.json() as Promise<Record<string, string>>) : null
@@ -267,7 +297,24 @@ export function useGettingStarted(): GettingStarted {
         }
       })
       .catch(() => undefined);
-  }, []);
+  }, [isAuthenticated, persisted.state]);
+
+  // Derive testnet workspace from org wallet balances when the launcher is expanded.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeOrgId is the refetch trigger on org switch; balances are scoped server-side
+  useEffect(() => {
+    if (!isAuthenticated || persisted.state !== "expanded") {
+      setTestnetWorkspace(resolveTestnetWorkspace(undefined));
+      return;
+    }
+    fetch("/api/user/wallet/balances")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { balances?: WalletBalanceEntry[] } | null) => {
+        if (data) {
+          setTestnetWorkspace(resolveTestnetWorkspace(data.balances));
+        }
+      })
+      .catch(() => undefined);
+  }, [isAuthenticated, persisted.state, activeOrgId]);
 
   // While the checklist is open, poll so an outcome completed elsewhere (an
   // in-app overlay, or running the draft in the builder) is reflected without
@@ -343,28 +390,16 @@ export function useGettingStarted(): GettingStarted {
     [isWorkflowLive, persisted.workflows]
   );
   const isStepComplete = useCallback(
-    (step: Step): boolean => {
-      if (step.signal === "always") {
-        return true;
-      }
-      // Chip steps complete on a LIVE starter clone (or once one has run).
-      // Derived, not latched, so deleting the clone cleanly un-completes it.
-      if (step.chips && step.chips.length > 0) {
-        const hasLiveClone = step.chips.some((chip) =>
-          isWorkflowLive(persisted.workflows[`${step.key}:${chip.id}`])
-        );
-        return (
-          hasLiveClone || resolveRealSignal(step, status, persisted.workflows)
-        );
-      }
-      if (persisted.done.includes(step.key)) {
-        return true;
-      }
-      if (CLICK_DRIVEN.has(step.signal)) {
-        return false;
-      }
-      return resolveRealSignal(step, status, persisted.workflows);
-    },
+    (step: Step): boolean =>
+      isChipAwareStepComplete({
+        step,
+        done: persisted.done,
+        workflows: persisted.workflows,
+        status,
+        isWorkflowLive,
+        resolveRealSignal,
+        isClickDriven: (signal) => CLICK_DRIVEN.has(signal),
+      }),
     [persisted.done, persisted.workflows, status, isWorkflowLive]
   );
   const getStepWorkflowId = useCallback(
@@ -393,5 +428,6 @@ export function useGettingStarted(): GettingStarted {
     refetch: fetchStatus,
     isAuthenticated,
     recommendedIds,
+    chipContext,
   };
 }

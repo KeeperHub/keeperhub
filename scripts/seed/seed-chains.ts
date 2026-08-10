@@ -81,6 +81,7 @@ const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("eth-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "eth-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "eth-mainnet" }),
+    aliases: ["ethereum", "eth"],
   },
   {
     chainId: getChainConfigValue("eth-sepolia", "chainId", 11_155_111),
@@ -125,6 +126,8 @@ const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("base-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "base-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "base-mainnet" }),
+    aliases: ["base"],
+    isPaymentRail: true,
   },
   {
     chainId: getChainConfigValue("base-testnet", "chainId", 84_532),
@@ -169,6 +172,8 @@ const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("tempo-testnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "tempo-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "tempo-testnet" }),
+    aliases: ["tempo"],
+    isPaymentRail: true,
   },
   {
     chainId: getChainConfigValue("tempo-mainnet", "chainId", 4217),
@@ -191,6 +196,8 @@ const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("tempo-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "tempo-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "tempo-mainnet" }),
+    aliases: ["tempo"],
+    isPaymentRail: true,
   },
   {
     chainId: getChainConfigValue("bsc-mainnet", "chainId", 56),
@@ -213,6 +220,7 @@ const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("bsc-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "bsc-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "bsc-mainnet" }),
+    aliases: ["bnb", "bsc", "binance"],
   },
   {
     chainId: getChainConfigValue("bsc-testnet", "chainId", 97),
@@ -257,6 +265,7 @@ const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("polygon-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "polygon-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "polygon-mainnet" }),
+    aliases: ["polygon", "matic"],
   },
   {
     chainId: getChainConfigValue("arbitrum-mainnet", "chainId", 42_161),
@@ -279,6 +288,7 @@ const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("arbitrum-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "arbitrum-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "arbitrum-mainnet" }),
+    aliases: ["arbitrum", "arbitrum-one"],
   },
   {
     chainId: getChainConfigValue("polygon-amoy", "chainId", 80_002),
@@ -352,6 +362,7 @@ const DEFAULT_CHAINS: NewChain[] = [
       rpcConfig,
       jsonKey: "op-mainnet",
     }),
+    aliases: ["optimism", "op"],
   },
   {
     chainId: getChainConfigValue("op-sepolia", "chainId", 11_155_420),
@@ -403,6 +414,7 @@ const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("avax-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "avax-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "avax-mainnet" }),
+    aliases: ["avalanche", "avax"],
   },
   {
     chainId: getChainConfigValue("avax-fuji", "chainId", 43_113),
@@ -448,6 +460,7 @@ const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("plasma-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "plasma-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "plasma-mainnet" }),
+    aliases: ["plasma"],
   },
   {
     chainId: getChainConfigValue("plasma-testnet", "chainId", 9746),
@@ -494,6 +507,7 @@ const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "0g-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "0g-mainnet" }),
+    aliases: ["0g", "og", "aristotle"],
   },
   {
     chainId: getChainConfigValue("0g-galileo", "chainId", 16_602),
@@ -831,6 +845,8 @@ async function seedChains() {
           isTestnet: chain.isTestnet,
           isEnabled: chain.isEnabled,
           status: chain.status ?? "stable",
+          aliases: chain.aliases ?? [],
+          isPaymentRail: chain.isPaymentRail ?? false,
           updatedAt: new Date(),
         })
         .where(eq(chains.chainId, chain.chainId));

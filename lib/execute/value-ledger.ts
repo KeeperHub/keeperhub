@@ -12,6 +12,8 @@ import { parseNodeNativeValueWei } from "@/lib/execute/reserved-value";
 // In-flight rows older than this are treated as stale (crashed pod / lost
 // process) and drop out of the cap SUM, matching the direct-execution
 // concurrency limiter, so a stuck reservation cannot hold the cap all day.
+// Unconfirmed rows are exempt: the transaction is on chain and may have moved
+// the funds, so it keeps counting until the reconciler settles it.
 const STALE_INFLIGHT_MINUTES = 15;
 
 // biome-ignore lint/suspicious/noExplicitAny: accept either the app db or a tx
@@ -44,7 +46,7 @@ export async function sumOrgValueTodayWei(
         eq(directExecutions.organizationId, organizationId),
         ne(directExecutions.status, "failed"),
         gte(directExecutions.createdAt, todayStart),
-        sql`(${directExecutions.status} = 'completed' OR ${directExecutions.createdAt} > now() - interval '${sql.raw(String(STALE_INFLIGHT_MINUTES))} minutes')`
+        sql`(${directExecutions.status} IN ('completed', 'unconfirmed') OR ${directExecutions.createdAt} > now() - interval '${sql.raw(String(STALE_INFLIGHT_MINUTES))} minutes')`
       )
     );
 
@@ -95,7 +97,7 @@ export async function sumOrgSolanaValueTodayLamports(
         eq(directExecutions.organizationId, organizationId),
         ne(directExecutions.status, "failed"),
         gte(directExecutions.createdAt, todayStart),
-        sql`(${directExecutions.status} = 'completed' OR ${directExecutions.createdAt} > now() - interval '${sql.raw(String(STALE_INFLIGHT_MINUTES))} minutes')`
+        sql`(${directExecutions.status} IN ('completed', 'unconfirmed') OR ${directExecutions.createdAt} > now() - interval '${sql.raw(String(STALE_INFLIGHT_MINUTES))} minutes')`
       )
     );
 

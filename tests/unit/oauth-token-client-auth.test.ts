@@ -109,6 +109,13 @@ describe("token endpoint -- confidential client authentication", () => {
     );
     expect(res.status).toBe(401);
     expect(mockGetRefreshToken).not.toHaveBeenCalled();
+    const body = (await res.json()) as {
+      error: string;
+      detail: string;
+      error_description: string;
+    };
+    expect(body.error).toBe("invalid_client");
+    expect(body.error_description).toBe(body.detail);
   });
 
   it("rejects refresh when the client_secret is wrong", async () => {
@@ -123,6 +130,8 @@ describe("token endpoint -- confidential client authentication", () => {
     );
     expect(res.status).toBe(401);
     expect(mockGetRefreshToken).not.toHaveBeenCalled();
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_client");
   });
 
   it("accepts refresh with the correct client_secret", async () => {
@@ -241,5 +250,7 @@ describe("token endpoint -- confidential client authentication", () => {
     );
     expect(res.status).toBe(401);
     expect(mockGetAuthCode).not.toHaveBeenCalled();
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_client");
   });
 });

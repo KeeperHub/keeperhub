@@ -34,7 +34,7 @@ Restart your agent session once after this so it picks up the newly installed sk
 
 ### First payment
 
-The wallet handles payment; the agent still needs a way to discover and call KeeperHub workflows. That comes from the [KeeperHub MCP server](/ai-tools/mcp-server), which exposes the `search_workflows` and `call_workflow` meta-tools to your agent. You can install the MCP server on its own (see the [MCP server](/ai-tools/mcp-server) page) or bundled with the [KeeperHub Claude Code plugin](/ai-tools/claude-code-plugin), which wires both the MCP server and (soon) the wallet skill in one step.
+The wallet handles payment; the agent still needs a way to discover and call KeeperHub workflows. That comes from the [KeeperHub MCP server](/agent/mcp-server), which exposes the `search_workflows` and `call_workflow` meta-tools to your agent. You can install the MCP server on its own (see the [MCP server](/agent/mcp-server) page) or bundled with the [KeeperHub Claude Code plugin](/agent/claude-code-plugin), which wires both the MCP server and (soon) the wallet skill in one step.
 
 With MCP + wallet both installed, ask your agent in plain language:
 
@@ -56,11 +56,21 @@ Every wallet signing call is gated by a `PreToolUse` hook that reads thresholds 
 
 The hook reads only the payment-challenge fields `amount`, `unit`, and the asset contract address from the tool payload. Forged fields like `trust-level hint` or `admin-override` are ignored by design.
 
+> **The allowlists cover which token is spent. The recipient is pinned somewhere else.**
+>
+> `allowlisted_contracts` and the [server-side contract allowlist](#server-side-hard-limits) both constrain the ERC-20 being transferred. Neither reads the challenge's `payTo` — so no *allowlist*, local or Turnkey, restricts who is paid. That is deliberate: `payTo` is the facilitator or service operator, not the contract being invoked, so it is not what a contract allowlist should match on.
+>
+> **The recipient is constrained by `/sign`'s workflow binding instead.** A signing request must carry a `workflowSlug`; the route derives the expected recipient from that workflow's organisation wallet and rejects a mismatch with `403 PAYTO_MISMATCH`. So an arbitrary destination is refused — by the workflow binding, not by an allowlist and not by a Turnkey policy.
+>
+> Two consequences worth knowing. The client-side tiers approve without ever considering the recipient, so a local `allowlisted_contracts` entry gives no assurance about *where* funds go. And the hook is stateless — it sees one payment at a time, so repeated payments each under `auto_approve_max_usd` all pass. The bound on that is server-side: the [daily spend cap](#server-side-hard-limits), plus a server-side `ask` at 50 USDC and `block` above 100 USDC that apply on every signing request independently of `safety.json`.
+>
+> If your agent should only pay a specific subset of workflows, or should hold to a budget you set, enforce that in your own `PreToolUse` hook or in a wrapper around `paymentSigner`. The tiers above will not do it for you.
+
 ### Server-side hard limits
 
 Beyond the client-side hook, a set of Turnkey-enforced policies apply to every wallet and cannot be bypassed by editing `safety.json` or changing the agent's hook. They are created per sub-organisation at provision time and enforced by Turnkey itself on every signing activity:
 
-- **Contract allowlist.** Signing is denied on any call whose target contract is not Base USDC (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`) or Tempo USDC.e (`0x20C000000000000000000000B9537D11c60E8b50`). On the EIP-712 (x402) signing path the same restriction is applied against the typed-data domain's verifying contract.
+- **Contract allowlist.** Signing is denied on any call whose target contract is not Base USDC (`0x833589fcd6edb6e08f4c7c32d4f71b54bda02913`) or Tempo USDC.e (`0x20c000000000000000000000b9537d11c60e8b50`). On the EIP-712 (x402) signing path the same restriction is applied against the typed-data domain's verifying contract.
 - **Per-transfer cap.** `transfer()` or `transferFrom()` of more than 100 USDC is denied. The same 100 USDC ceiling applies to EIP-3009 `TransferWithAuthorization` typed-data signing.
 - **Approval cap.** `approve()` above 100 USDC is denied. Anything over the same 100 USDC per-transfer ceiling is rejected.
 - **Chain allowlist.** EIP-712 signing is denied for any `domain.chainId` outside Base (8453), Tempo mainnet (4217), and Tempo testnet (42431).
@@ -75,18 +85,35 @@ When `~/.keeperhub/safety.json` is absent the hook applies these defaults:
 ```json
 {
   "auto_approve_max_usd": 5,
+  "ask_threshold_usd": 50,
   "block_threshold_usd": 100,
   "allowlisted_contracts": [
-    "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    "0x20C000000000000000000000B9537D11c60E8b50"
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "0x20c000000000000000000000b9537d11c60e8b50"
   ]
 }
 ```
 
+> **`ask_threshold_usd` is inert, but it is not inconsequential.**
+>
+> It is part of `DEFAULT_SAFETY_CONFIG` and is still parsed and range-checked — it must be `>= auto_approve_max_usd`, and `block_threshold_usd` must be `>= ask_threshold_usd` — but the hook does not consult it when deciding. The ask tier is bounded by `auto_approve_max_usd` and `block_threshold_usd` alone, as the table above describes. The field is retained for backward compatibility with existing configs.
+>
+> **Any edit that raises `auto_approve_max_usd` above 50, or lowers `block_threshold_usd` below 50, must write `ask_threshold_usd` too.** Both directions throw, and the default of 50 sits between them. A partial config is merged over the defaults, so writing only:
+>
+> ```json
+> { "auto_approve_max_usd": 1, "block_threshold_usd": 20 }
+> ```
+>
+> leaves `ask_threshold_usd` at its default of 50, which trips `block_threshold_usd must be >= ask_threshold_usd`. The mirror case is just as easy to hit: `{ "auto_approve_max_usd": 60 }` leaves `ask_threshold_usd` at 50 and trips `ask_threshold_usd must be >= auto_approve_max_usd`.
+>
+> Either error is thrown while the hook is being constructed, before any input is read, so the hook process exits non-zero — **and because `skill install` registers it with `matcher: "*"`, the failure blocks the whole session rather than just wallet calls.** (A hand-registered hook with a narrower matcher fails only for the tools it matches.) The only explanation is a single line on stderr.
+>
+> Write all three together, or keep `auto_approve_max_usd` ≤ 50 ≤ `block_threshold_usd`.
+
 The two allowlisted addresses are the only tokens the client-side hook will authorise out of the box:
 
-- `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` — **Base USDC**. Canonical Circle USDC contract on Base mainnet (chain id 8453). Used by x402 challenges from KeeperHub and any other x402-compliant service.
-- `0x20C000000000000000000000B9537D11c60E8b50` — **Tempo USDC.e**. USDC bridge token on Tempo mainnet (chain id 4217). Used by MPP challenges from KeeperHub paid workflows that settle on Tempo.
+- `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` — **Base USDC**. Canonical Circle USDC contract on Base mainnet (chain id 8453). Used by x402 challenges from KeeperHub and any other x402-compliant service.
+- `0x20c000000000000000000000b9537d11c60e8b50` — **Tempo USDC.e**. USDC bridge token on Tempo mainnet (chain id 4217). Used by MPP challenges from KeeperHub paid workflows that settle on Tempo.
 
 `allowlisted_contracts` in `safety.json` is a client-side first-pass filter — the hook rejects signing calls whose target contract is not in this list. You can **narrow** it further (for example, remove Tempo USDC.e if your agent only pays on Base). You cannot **widen** it: adding a third contract here has no effect because the [server-side hard limits](#server-side-hard-limits) still restrict every signature to Base USDC + Tempo USDC.e. For access to other contracts, contact KeeperHub support so a sub-organisation with a different server-side allowlist can be provisioned.
 
@@ -175,7 +202,11 @@ This is a custodial model. You are trusting KeeperHub to honour the policy limit
 
 A set of Turnkey policies, applied per sub-organisation at provision time and enforced by Turnkey itself (not by application code). Full list above under [Server-side hard limits](#server-side-hard-limits). Briefly: signing only against the Base USDC / Tempo USDC.e contracts, no `approve()` above 100 USDC, no `transfer()` or `transferFrom()` above 100 USDC, and EIP-712 signing restricted to allowlisted chain ids and verifying contracts.
 
-If KeeperHub's operator key is compromised, the attacker is still bound by these policies. They cannot drain funds to an arbitrary address or approve an arbitrary contract to spend your balance.
+If KeeperHub's operator key is compromised, the attacker is still bound by these policies. They cannot approve an arbitrary contract to spend your balance, and they cannot sign against a contract outside [the allowlisted set](#server-side-hard-limits) — Base USDC, Tempo USDC.e, and the ERC-8004 `ReputationRegistry`. The registry is bound to Ethereum mainnet and restricted to `giveFeedback()`, so it moves no funds, but it is a third allowlisted destination and not a USDC contract.
+
+**The recipient constraint is weaker than the ones above, and the difference matters here.** An attacker also cannot drain funds to an arbitrary address — but that comes from `/sign`'s workflow binding, not from the Turnkey policy set. The policy conditions cover `eth.tx.to` and `eth.eip_712.domain.verifying_contract`; neither is the transfer recipient. `verifyWorkflowBinding` is application code that reads the `workflows` and `organizationWallets` tables and rejects a mismatch with `403 PAYTO_MISMATCH`.
+
+So the Turnkey policies survive a compromise of the application because Turnkey enforces them. The recipient pin holds only while the application and those records are intact — it is the compromised application checking itself. See [the note under Safety hooks](#safety-hooks).
 
 ### What happens if I lose `wallet.json`?
 
@@ -198,6 +229,8 @@ Passkey-backed sub-orgs are a more secure option Turnkey supports natively, and 
 ### Can I change the safety thresholds or the allowed contracts?
 
 You can edit `~/.keeperhub/safety.json` (mode `0644`) to raise or lower `auto_approve_max_usd` and `block_threshold_usd`, or to narrow `allowlisted_contracts` (for example, drop Tempo USDC.e if your agent only pays on Base). The hook picks up changes on its next invocation.
+
+The file also carries `ask_threshold_usd`, which the hook does not consult but does validate. If you are raising `auto_approve_max_usd` above 50 **or** lowering `block_threshold_usd` below 50, read [the note under Default safety config](#default-safety-config) first — either edit fails validation in a way that blocks every tool call, not only wallet ones.
 
 Raising thresholds raises your exposure. Widening the contract allowlist past the server-side default (Base USDC + Tempo USDC.e) has no effect on its own — the [server-side hard limits](#server-side-hard-limits) still block signatures against any other contract. If you need access to a different contract, contact KeeperHub support.
 

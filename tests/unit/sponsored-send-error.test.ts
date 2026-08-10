@@ -54,10 +54,28 @@ describe("resolveSponsoredSendError", () => {
       error: expect.stringContaining("not confirmed"),
       errorClass: ExecutionErrorType.SYSTEM,
     });
-    // No confirmed hash for an unresolved in-flight send.
+    // No hash was ever assigned, so there is nothing to reconcile against.
     if (!decision.fallback) {
       expect(decision.transactionHash).toBeUndefined();
     }
+  });
+
+  it("surfaces the hash of a broadcast whose outcome could not be read", () => {
+    const error = new SponsoredTxPendingError({
+      message: "receipt unreadable",
+      sendTransactionStatusId: "sid",
+      txHash: "0xbroadcast",
+    });
+
+    const decision = resolveSponsoredSendError(error, CTX);
+
+    expect(decision.fallback).toBe(false);
+    // The execution record needs the hash: without it the transaction exists
+    // on-chain and nowhere in our data.
+    expect(decision).toMatchObject({
+      transactionHash: "0xbroadcast",
+      errorClass: ExecutionErrorType.SYSTEM,
+    });
   });
 
   it("falls back to direct signing on a generic pre-broadcast error", () => {

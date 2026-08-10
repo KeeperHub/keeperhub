@@ -1,4 +1,5 @@
 export default {
+  index: "Overview",
   turnkey: "Turnkey Integration",
   safe: "Safe Smart Accounts",
   gas: "Gas Management",

@@ -20,6 +20,7 @@ vi.mock("@/lib/logging", () => ({
     TRANSACTION: "transaction",
   },
   logUserError: vi.fn(),
+  logSystemWarn: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({

@@ -5,6 +5,8 @@ import { auth } from "@/lib/auth";
 import { readAllSetCookies } from "@/lib/auth-cookie-chain";
 import { db } from "@/lib/db";
 import { accounts, users } from "@/lib/db/schema";
+import { ApiErrorCodes, apiError } from "@/lib/errors/api-envelope";
+import { HttpStatus } from "@/lib/http-status";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { verifyPassword } from "@/lib/password";
 import { resolveClientIpFromHeaders } from "@/lib/security/login-risk";
@@ -42,23 +44,24 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     body = (await request.json()) as Body;
   } catch {
-    return NextResponse.json(
-      { error: "Invalid JSON body", code: "bad_body" },
-      { status: 400 }
-    );
+    return apiError({
+      status: HttpStatus.BAD_REQUEST,
+      code: "bad_body",
+      detail: "Invalid JSON body",
+      requestHeaders: request.headers,
+    });
   }
 
   const email = body.email?.trim().toLowerCase() ?? "";
   const password = body.password ?? "";
 
   if (!(email && password)) {
-    return NextResponse.json(
-      {
-        error: "Email and password are required",
-        code: "missing_credentials",
-      },
-      { status: 400 }
-    );
+    return apiError({
+      status: HttpStatus.BAD_REQUEST,
+      code: "missing_credentials",
+      detail: "Email and password are required",
+      requestHeaders: request.headers,
+    });
   }
 
   // F-013 / KEEP-738: this route verifies the credential password and returns a
@@ -81,17 +84,15 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!isE2eTestTraffic) {
     const rateLimit = checkCredentialAttemptRateLimit(email, clientIp);
     if (!rateLimit.allowed) {
-      return NextResponse.json(
-        {
-          error: "Too many attempts. Wait and try again.",
-          code: "rate_limited",
-          retryAfter: rateLimit.retryAfterSeconds,
+      return apiError({
+        status: HttpStatus.TOO_MANY_REQUESTS,
+        code: ApiErrorCodes.RATE_LIMITED,
+        detail: "Too many attempts. Wait and try again.",
+        requestHeaders: request.headers,
+        headers: {
+          "Retry-After": String(rateLimit.retryAfterSeconds),
         },
-        {
-          status: 429,
-          headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
-        }
-      );
+      });
     }
   }
 
@@ -107,10 +108,12 @@ export async function POST(request: Request): Promise<NextResponse> {
     .where(eq(users.email, email))
     .limit(1);
   if (!user) {
-    return NextResponse.json(
-      { error: "Invalid sign-in", code: "invalid_signin" },
-      { status: 401 }
-    );
+    return apiError({
+      status: HttpStatus.UNAUTHORIZED,
+      code: "invalid_signin",
+      detail: "Invalid sign-in",
+      requestHeaders: request.headers,
+    });
   }
 
   const [credentialAccount] = await db
@@ -121,28 +124,31 @@ export async function POST(request: Request): Promise<NextResponse> {
     )
     .limit(1);
   if (!credentialAccount?.password) {
-    return NextResponse.json(
-      { error: "Invalid sign-in", code: "invalid_signin" },
-      { status: 401 }
-    );
+    return apiError({
+      status: HttpStatus.UNAUTHORIZED,
+      code: "invalid_signin",
+      detail: "Invalid sign-in",
+      requestHeaders: request.headers,
+    });
   }
 
   const passwordOk = await verifyPassword(password, credentialAccount.password);
   if (!passwordOk) {
-    return NextResponse.json(
-      { error: "Invalid sign-in", code: "invalid_signin" },
-      { status: 401 }
-    );
+    return apiError({
+      status: HttpStatus.UNAUTHORIZED,
+      code: "invalid_signin",
+      detail: "Invalid sign-in",
+      requestHeaders: request.headers,
+    });
   }
 
   if (user.deactivatedAt) {
-    return NextResponse.json(
-      {
-        error: "Your account has been deactivated.",
-        code: "account_deactivated",
-      },
-      { status: 403 }
-    );
+    return apiError({
+      status: HttpStatus.FORBIDDEN,
+      code: "account_deactivated",
+      detail: "Your account has been deactivated.",
+      requestHeaders: request.headers,
+    });
   }
 
   // The account exists and the password matched, but the email isn't verified.
@@ -151,13 +157,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   // instead of treating it as a generic 500. The password already matched, so
   // this does not widen account enumeration beyond a correct-password reveal.
   if (!user.emailVerified) {
-    return NextResponse.json(
-      {
-        error: "Please verify your email to continue.",
-        code: "email_not_verified",
-      },
-      { status: 403 }
-    );
+    return apiError({
+      status: HttpStatus.FORBIDDEN,
+      code: "email_not_verified",
+      detail: "Please verify your email to continue.",
+      requestHeaders: request.headers,
+    });
   }
 
   // Users without TOTP enrolled bypass the dual-factor flow. Mint the
@@ -185,10 +190,12 @@ export async function POST(request: Request): Promise<NextResponse> {
         err,
         { endpoint: "/api/auth/strict-signin/start", user_id: user.id }
       );
-      return NextResponse.json(
-        { error: "Sign-in failed", code: "signin_failed" },
-        { status: 500 }
-      );
+      return apiError({
+        status: HttpStatus.INTERNAL_SERVER_ERROR,
+        code: "signin_failed",
+        detail: "Sign-in failed",
+        requestHeaders: request.headers,
+      });
     }
   }
 
@@ -210,10 +217,12 @@ export async function POST(request: Request): Promise<NextResponse> {
       err,
       { endpoint: "/api/auth/strict-signin/start", user_id: user.id }
     );
-    return NextResponse.json(
-      { error: "Failed to send confirmation email", code: "email_send_failed" },
-      { status: 503 }
-    );
+    return apiError({
+      status: HttpStatus.SERVICE_UNAVAILABLE,
+      code: "email_send_failed",
+      detail: "Failed to send confirmation email",
+      requestHeaders: request.headers,
+    });
   }
 
   // No session, no cookie, just a green light to proceed to email

@@ -1,9 +1,10 @@
 /**
  * Onboarding workflow fixtures for the getting-started launcher.
  *
- * Six public hub workflows, one per chip in getting-started-config.ts. Each
- * is seeded with a stable `id` and a `listedSlug` matching its chip id so the
- * recommendations endpoint can return the live workflow id by slug.
+ * Eight public hub workflows: six mainnet chip starters plus Sepolia and
+ * Base Sepolia variants of the Aave health monitor. Each is seeded with a
+ * stable `id` and a `listedSlug` matching its chip id so the recommendations
+ * endpoint can return the live workflow id by slug.
  *
  * Placeholder values for user-specific fields (wallet addresses, Discord
  * integration) are left as empty strings; the user fills them in after cloning.
@@ -48,11 +49,16 @@ function withAutoLayout(
   return { ...fixture, nodes };
 }
 
-const RAW_FIXTURES: OnboardingWorkflowFixture[] = [
-  {
-    id: "onb-aave-health",
-    listedSlug: "aave-health",
-    name: "Aave Health Factor Monitor",
+function buildAaveHealthMonitorFixture(
+  id: string,
+  listedSlug: string,
+  name: string,
+  network: string
+): OnboardingWorkflowFixture {
+  return {
+    id,
+    listedSlug,
+    name,
     description:
       "Check your Aave v3 health factor hourly, and when it drops below the 1.5 safety threshold alert both Discord and email.",
     featuredProtocol: "aave-v3",
@@ -68,7 +74,7 @@ const RAW_FIXTURES: OnboardingWorkflowFixture[] = [
         "Read the health factor from Aave v3 for the monitored wallet",
         {
           actionType: "aave-v3/get-user-account-data",
-          network: "1",
+          network,
           _protocolMeta: buildProtocolMeta(
             "aave-v3",
             "pool",
@@ -118,7 +124,28 @@ const RAW_FIXTURES: OnboardingWorkflowFixture[] = [
       buildEdge("step-2", "step-3", "true"),
       buildEdge("step-2", "step-4", "true"),
     ],
-  },
+  };
+}
+
+const RAW_FIXTURES: OnboardingWorkflowFixture[] = [
+  buildAaveHealthMonitorFixture(
+    "onb-aave-health",
+    "aave-health",
+    "Aave Health Factor Monitor",
+    "1"
+  ),
+  buildAaveHealthMonitorFixture(
+    "onb-aave-health-sepolia",
+    "aave-health-sepolia",
+    "Aave Health Factor Monitor (Sepolia)",
+    "11155111"
+  ),
+  buildAaveHealthMonitorFixture(
+    "onb-aave-health-base-sepolia",
+    "aave-health-base-sepolia",
+    "Aave Health Factor Monitor (Base Sepolia)",
+    "84532"
+  ),
 
   {
     id: "onb-whale-withdrawal",

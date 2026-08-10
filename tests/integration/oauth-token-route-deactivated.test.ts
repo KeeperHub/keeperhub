@@ -76,6 +76,13 @@ async function postForm(body: Record<string, string>): Promise<Response> {
   );
 }
 
+type EnvelopeBody = {
+  error: string;
+  detail: string;
+  error_description?: string;
+  request_id?: string;
+};
+
 function stubActiveOAuthClient(): void {
   mockGetOAuthClient.mockResolvedValue({
     clientId: TEST_CLIENT_ID,
@@ -146,8 +153,10 @@ describe("POST /api/oauth/token -- authorization_code grant", () => {
     });
 
     expect(response.status).toBe(401);
-    const body = (await response.json()) as { error?: string };
-    expect(body.error).toBe("User account is deactivated");
+    const body = (await response.json()) as EnvelopeBody;
+    expect(body.error).toBe("invalid_grant");
+    expect(body.detail).toBe("User account is deactivated");
+    expect(body.error_description).toBe(body.detail);
     expect(mockCreateAccessToken).not.toHaveBeenCalled();
     expect(mockStoreRefreshToken).not.toHaveBeenCalled();
   });
@@ -198,8 +207,10 @@ describe("POST /api/oauth/token -- refresh_token grant", () => {
     });
 
     expect(response.status).toBe(401);
-    const body = (await response.json()) as { error?: string };
-    expect(body.error).toBe("User is no longer a member of this organization");
+    const body = (await response.json()) as EnvelopeBody;
+    expect(body.error).toBe("invalid_grant");
+    expect(body.detail).toBe("User is no longer a member of this organization");
+    expect(body.error_description).toBe(body.detail);
     expect(mockIsMember).toHaveBeenCalledWith(TEST_USER_ID, TEST_ORG_ID);
     expect(mockDeleteRefreshToken).toHaveBeenCalledWith("refresh-1");
     expect(mockStoreRefreshToken).not.toHaveBeenCalled();
@@ -229,8 +240,10 @@ describe("POST /api/oauth/token -- refresh_token grant", () => {
     });
 
     expect(response.status).toBe(401);
-    const body = (await response.json()) as { error?: string };
-    expect(body.error).toBe("User account is deactivated");
+    const body = (await response.json()) as EnvelopeBody;
+    expect(body.error).toBe("invalid_grant");
+    expect(body.detail).toBe("User account is deactivated");
+    expect(body.error_description).toBe(body.detail);
     // The presented refresh token must still be invalidated -- attacker
     // does not get to keep replaying the same token after a deactivated
     // attempt.

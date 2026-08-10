@@ -41,19 +41,27 @@ vi.mock("@/lib/web3/turnkey-sponsored-tx", () => ({
     mockSubmitTurnkeySponsoredTransaction(...args),
 }));
 
+// Receipt reads are keyed by endpoint so a test can make one endpoint fail and
+// another answer, which is the whole point of trying more than one.
 const mockWaitForTransactionReceipt = vi.fn();
 
 vi.mock("viem", () => ({
-  createPublicClient: () => ({
-    waitForTransactionReceipt: (...args: unknown[]) =>
-      mockWaitForTransactionReceipt(...args),
+  createPublicClient: ({ transport }: { transport: { url: string } }) => ({
+    waitForTransactionReceipt: (args: Record<string, unknown>) =>
+      mockWaitForTransactionReceipt({ ...args, url: transport.url }),
   }),
   encodeFunctionData: () => "0xencoded",
-  http: () => ({}),
+  http: (url: string) => ({ url }),
+  BaseError: class BaseError extends Error {},
+}));
+
+const mockResolveRpcConfig = vi.fn();
+vi.mock("@/lib/rpc/config-service", () => ({
+  resolveRpcConfig: (...args: unknown[]) => mockResolveRpcConfig(...args),
 }));
 
 vi.mock("@/lib/logging", () => ({
-  ErrorCategory: { TRANSACTION: "transaction" },
+  ErrorCategory: { TRANSACTION: "transaction", NETWORK_RPC: "network_rpc" },
   logSystemError: vi.fn(),
 }));
 
@@ -79,6 +87,11 @@ import {
   executeSponsoredTransaction,
 } from "@/lib/web3/sponsored-transaction-manager";
 import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
+import {
+  isSponsoredTxPendingError,
+  isSponsoredTxRevertError,
+  type SponsoredTxPendingError,
+} from "@/lib/web3/turnkey-revert";
 
 const baseTxParams = {
   organizationId: "org_1",
@@ -95,6 +108,10 @@ const baseContractParams = {
   functionName: "store",
   args: [42],
 };
+
+// One rotation, no waiting: the receipt wait budget is wall-clock, so a test
+// that expects it to give up would otherwise sit through the full five minutes.
+const SINGLE_ROTATION = { budgetMs: 0, perEndpointMs: 50, roundDelayMs: 0 };
 
 const blockedRpcUrls: [string, string][] = [
   ["loopback hostname", "http://localhost:8548"],
@@ -127,6 +144,12 @@ function setupSuccessfulSponsorship(): void {
   });
   mockGetGasTokenPriceUsd.mockResolvedValue(2000);
   mockRecordGasUsage.mockResolvedValue(undefined);
+  mockResolveRpcConfig.mockResolvedValue({
+    chainId: 11_155_111,
+    chainName: "sepolia",
+    primaryRpcUrl: "https://rpc.example.com",
+    fallbackRpcUrl: "https://fallback.example.com",
+  });
 }
 
 beforeEach(() => {
@@ -333,6 +356,105 @@ describe("executeSponsoredTransaction", () => {
 
     expect(result).not.toBeNull();
     expect(mockCreateSponsoredClient).toHaveBeenCalled();
+  });
+});
+
+/**
+ * Callers read `null` as "nothing was broadcast, safe to sign and send
+ * directly" and a throw as "stop". Once Turnkey has handed back a hash there is
+ * already a transaction from the user's wallet on the network, so returning
+ * null -- or throwing anything the caller cannot recognise as terminal -- makes
+ * one authorized action land twice. These tests pin the boundary.
+ */
+describe("failures after the sponsored transaction is broadcast", () => {
+  it("raises a pending error carrying the hash when no endpoint can read the receipt", async () => {
+    setupSuccessfulSponsorship();
+    mockWaitForTransactionReceipt.mockRejectedValue(new Error("HTTP 429"));
+
+    const error = await executeSponsoredTransaction(
+      baseTxParams,
+      SINGLE_ROTATION
+    ).catch((e: unknown) => e);
+
+    expect(isSponsoredTxPendingError(error)).toBe(true);
+    expect((error as SponsoredTxPendingError).txHash).toBe("0xtxhash");
+  });
+
+  it("does not resolve to null when the receipt read fails", async () => {
+    setupSuccessfulSponsorship();
+    mockWaitForTransactionReceipt.mockRejectedValue(new Error("HTTP 429"));
+
+    const result = await executeSponsoredTransaction(
+      baseTxParams,
+      SINGLE_ROTATION
+    ).then(
+      () => "resolved",
+      () => "threw"
+    );
+
+    expect(result).toBe("threw");
+  });
+
+  it("reads the receipt from the fallback endpoint when the broadcast endpoint fails", async () => {
+    setupSuccessfulSponsorship();
+    mockWaitForTransactionReceipt.mockImplementation(
+      ({ url }: { url: string }) => {
+        if (url === "https://fallback.example.com") {
+          return Promise.resolve({
+            status: "success",
+            gasUsed: BigInt(21_000),
+            effectiveGasPrice: BigInt(1_000_000_000),
+          });
+        }
+        return Promise.reject(new Error("HTTP 503"));
+      }
+    );
+
+    const result = await executeSponsoredTransaction(baseTxParams);
+
+    expect(result?.success).toBe(true);
+    expect(result?.transactionHash).toBe("0xtxhash");
+  });
+
+  it("converts an untyped post-receipt failure into a pending error rather than letting it look pre-broadcast", async () => {
+    setupSuccessfulSponsorship();
+    // Mainnet, so the price lookup runs; it sits after the receipt, meaning the
+    // transaction is already mined by the time it throws.
+    mockGetGasTokenPriceUsd.mockRejectedValue(new Error("price feed down"));
+
+    const error = await executeSponsoredTransaction(
+      { ...baseTxParams, chainId: 8453 },
+      SINGLE_ROTATION
+    ).catch((e: unknown) => e);
+
+    expect(isSponsoredTxPendingError(error)).toBe(true);
+    expect((error as SponsoredTxPendingError).txHash).toBe("0xtxhash");
+  });
+
+  it("still surfaces an on-chain revert as a revert, not as pending", async () => {
+    setupSuccessfulSponsorship();
+    mockWaitForTransactionReceipt.mockResolvedValue({
+      status: "reverted",
+      blockNumber: BigInt(100),
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+    });
+
+    const error = await executeSponsoredTransaction(baseTxParams).catch(
+      (e: unknown) => e
+    );
+
+    expect(isSponsoredTxRevertError(error)).toBe(true);
+    expect(isSponsoredTxPendingError(error)).toBe(false);
+  });
+
+  it("a pre-broadcast rejection still resolves to null so direct signing can proceed", async () => {
+    setupSuccessfulSponsorship();
+    mockSubmitTurnkeySponsoredTransaction.mockResolvedValue(null);
+
+    const result = await executeSponsoredTransaction(baseTxParams);
+
+    expect(result).toBeNull();
   });
 });
 

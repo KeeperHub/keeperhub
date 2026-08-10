@@ -28,7 +28,7 @@ claude mcp add --transport http --scope user keeperhub https://app.keeperhub.com
 
 ### Via Claude Code Plugin
 
-Install the [Claude Code Plugin](/ai-tools/claude-code-plugin) for additional skills and slash commands on top of the MCP tools. The plugin connects to the same remote endpoint.
+Install the [Claude Code Plugin](/agent/claude-code-plugin) for additional skills and slash commands on top of the MCP tools. The plugin connects to the same remote endpoint.
 
 ### Local via kh CLI (deprecated)
 
@@ -59,7 +59,7 @@ Any valid bearer can call any listed workflow regardless of which organization o
 
 ### Paid workflows
 
-Paid listings return an HTTP 402 with an x402 challenge. The MCP transport surfaces this as a tool error with the full challenge body in the response text. To autopay, install the [agentic wallet](/ai-tools/agentic-wallet) — its PreToolUse safety hook intercepts the 402, evaluates the price against your safety thresholds, signs the payment, and retries.
+Paid listings return an HTTP 402 with an x402 challenge. The MCP transport surfaces this as a tool error with the full challenge body in the response text. To autopay, install the [agentic wallet](/agent/agentic-wallet) — its PreToolUse safety hook intercepts the 402, evaluates the price against your safety thresholds, signs the payment, and retries.
 
 ### Compared to the aggregate server
 
@@ -143,11 +143,26 @@ The server registers more than 30 tools. Call `tools_documentation` (or `list_ac
 |------|-------------|
 | `list_workflows` | List all workflows for the organization. Optionally filter by `projectId` or `tagId`. |
 | `get_workflow` | Get a single workflow by ID, including nodes, edges, and configuration. |
-| `create_workflow` | Create a workflow with nodes and edges. Created disabled by default; pass `enabled=true` to make schedule, event, block, or webhook triggers fire immediately. |
+| `create_workflow` | Create a workflow with nodes and edges. Created disabled by default; pass `enabled=true` to make schedule, event, block, or webhook triggers fire immediately. Pass `idempotency_key` so cold-start retries are safe. |
 | `update_workflow` | Update a workflow's name, description, nodes, edges, project/tag assignment, or enabled state. Set `enabled=false` to stop triggers without deleting the workflow. |
 | `delete_workflow` | Permanently delete a workflow. This action is irreversible. |
 | `validate_workflow` | Check a workflow's structural and Web3-specific correctness before creating or executing it. |
 | `prepare_test_pin_data` | Return the JSON Schema each node expects as pin data, so an agent can construct valid test inputs. |
+| `validate_cron` | Validate a cron expression or interval schedule before wiring a schedule trigger. |
+
+#### Cold start and retries
+
+`create_workflow` and `ai_generate_workflow` may return a structured cold-start
+error (`code: upstream_cold_start`) when the app is waking from idle (HTTP 502,
+503, or 504). The error includes `retryAfterSeconds` and a hint to retry with the
+same `idempotency_key`. Wait the suggested interval, then retry once or twice with
+bounded backoff. Connection errors and DNS failures are **not** cold-start signals.
+
+Most MCP tool calls use a 55-second client-side fetch timeout. Long-running
+execute tools (`execute_workflow`, `execute_transfer`, `execute_contract_call`,
+`execute_check_and_execute`, `execute_protocol_action`, `call_workflow`,
+`get_direct_execution_status`) disable that cap so on-chain work is not aborted
+mid-flight.
 
 ### Execution
 
@@ -155,6 +170,19 @@ The server registers more than 30 tools. Call `tools_documentation` (or `list_ac
 |------|-------------|
 | `execute_workflow` | Trigger a manual execution. Returns an execution ID for status polling. |
 | `get_execution` | Get combined status and step-by-step logs for an execution in one response. Replaces the earlier `get_execution_status` + `get_execution_logs` pair. |
+| `get_execution_status` | **Deprecated (v1.13)** — status only. Use `get_execution`. |
+| `get_execution_logs` | **Deprecated (v1.13)** — logs only. Use `get_execution`. |
+| `list_executions` | List workflow and direct executions with cursor pagination. |
+
+### Agent utilities
+
+| Tool | Description |
+|------|-------------|
+| `get_spending_limits` | Read org daily direct-execution spending caps and usage. |
+| `test_notification` | Test an integration (Discord, Slack, etc.) without saving credentials. May send a real test message. |
+| `tempo_sign_and_hold` | Sign a Tempo transfer and hold for later broadcast (org owner). Scheduled broadcast and immediate release are both available to OAuth/`mcp:write` callers; interactive browser sessions still require step-up MFA on release. |
+| `tempo_cancel_hold` | Cancel a pending held payment. |
+| `tempo_release_hold` | Broadcast a held payment now. Org owner only. Interactive sessions require step-up MFA; OAuth and API-key callers may release without MFA. |
 
 ### Direct On-Chain Execution
 

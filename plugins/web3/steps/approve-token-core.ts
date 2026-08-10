@@ -377,6 +377,9 @@ export async function approveTokenCore(
         return {
           success: false,
           error: decision.error,
+          // Carried so a failOnError=false node cannot soften an unresolved
+          // in-flight send into success.
+          errorClass: decision.errorClass,
           sponsored: true,
           ...(decision.transactionHash
             ? { transactionHash: decision.transactionHash, chainId }

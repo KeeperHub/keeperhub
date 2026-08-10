@@ -11,6 +11,7 @@ import {
 } from "@/lib/agentic-wallet/sign-typed-data";
 import { facilitatorClient } from "@/lib/payments/x402/server";
 import { getOrganizationWallet } from "@/lib/web3/wallet-helpers";
+import { hasSufficientUsdc } from "./balance";
 import { getPaygSettings } from "./config-store";
 import {
   evmNetworkId,
@@ -180,6 +181,18 @@ export async function autopayForExecution(params: {
   const zeroCap = zeroCapBlock(config);
   if (zeroCap) {
     return { ok: false, reason: zeroCap };
+  }
+
+  // Stop an unfundable run before it costs a Turnkey signature and a
+  // facilitator round-trip. Unknown (unsupported chain, RPC failure) falls
+  // through and settles as before, so a flaky read never blocks a payer.
+  const funded = await hasSufficientUsdc({
+    payerAddress: wallet.walletAddress,
+    amountRaw: priceRaw,
+    chainId: config.chainId,
+  });
+  if (funded === false) {
+    return { ok: false, reason: "insufficient_funds" };
   }
 
   // Claim the (org, execution) slot with a pending row before settling. The

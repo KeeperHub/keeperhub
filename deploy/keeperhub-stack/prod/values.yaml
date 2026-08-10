@@ -657,6 +657,63 @@ app:
         failedJobsHistoryLimit: 3
         restartPolicy: OnFailure
         backoffLimit: 2
+      - name: overage-scan
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-prod
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "17 1,13 * * *" # twice daily, offset by 17 minutes
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/billing/overage"
+          - "POST"
+          - '{"scan":true}'
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-prod/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
+      - name: billing-debt-scan
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-prod
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "23 4 * * *" # daily at 04:23 UTC
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/billing/debt-scan"
+          - "POST"
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-prod/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
       - name: tempo-broadcast-due
         image:
           repository: ${ECR_REGISTRY}/keeperhub-prod

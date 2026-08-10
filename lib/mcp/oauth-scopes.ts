@@ -39,6 +39,11 @@ const READ_TOOLS = new Set<string>([
   "list_workflows",
   "get_workflow",
   "get_execution",
+  "get_execution_status",
+  "get_execution_logs",
+  "list_executions",
+  "validate_cron",
+  "get_spending_limits",
   "list_action_schemas",
   "search_plugins",
   "get_plugin",
@@ -75,6 +80,10 @@ const WRITE_TOOLS = new Set<string>([
   "list_workflow",
   "unlist_workflow",
   "update_workflow_listing",
+  "test_notification",
+  "tempo_sign_and_hold",
+  "tempo_cancel_hold",
+  "tempo_release_hold",
 ]);
 
 export function isScopeValid(scope: string): boolean {

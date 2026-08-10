@@ -89,10 +89,21 @@ export type CreateInvoiceItemParams = {
   // Attach to this specific draft invoice. Without it the item is left pending
   // and the provider only sweeps it into whichever invoice is created next.
   invoiceId?: string;
+  // Makes the create safe to repeat. If the provider created the item but the
+  // response never arrived, replaying the same key returns that item instead of
+  // billing the customer a second time.
+  idempotencyKey?: string;
 };
 
 export type CreateInvoiceItemResult = {
   invoiceItemId: string;
+};
+
+export type CollectInvoiceResult = {
+  invoiceId: string;
+  paid: boolean;
+  // Why collection failed, for the log and the debt record. Undefined when paid.
+  failureReason?: string;
 };
 
 export type ProrationPreview = {
@@ -165,4 +176,39 @@ export interface BillingProvider {
   getInvoiceForItem(
     invoiceItemId: string
   ): Promise<{ invoiceId: string; status: string; paid: boolean } | undefined>;
+
+  /**
+   * Open an empty draft invoice for a customer, deliberately not tied to a
+   * subscription so the provider puts no plan or proration lines on it. Items
+   * are attached explicitly via createInvoiceItem, so the invoice bills only
+   * what the caller adds.
+   *
+   * `currency` must match the items that will be attached. Left to the
+   * provider it defaults to the account or customer currency, and an invoice
+   * cannot mix currencies, so a mismatch rejects the attach outright.
+   */
+  createDraftInvoice(
+    customerId: string,
+    currency: string
+  ): Promise<{ invoiceId: string }>;
+
+  /**
+   * Finalize a draft and attempt payment. Resolves with paid: false and a
+   * reason rather than throwing when the charge is declined or no payment
+   * method is on file, since an uncollected invoice is a debt to record and
+   * not an error to retry.
+   */
+  finalizeAndCollectInvoice(invoiceId: string): Promise<CollectInvoiceResult>;
+
+  /** Discard a draft that ended up with nothing to bill. */
+  deleteDraftInvoice(invoiceId: string): Promise<void>;
+
+  /**
+   * Whether a create failed because the provider refused the request, meaning
+   * nothing was created and retrying with different parameters is safe.
+   *
+   * A transport failure is the opposite case: the item may well exist, and only
+   * the response was lost. Retrying that would bill twice.
+   */
+  wasRejectedWithoutCreating(error: unknown): boolean;
 }

@@ -1007,7 +1007,7 @@ const workflowExecutionsFinished = getOrCreateCounter(
 );
 
 export function recordWorkflowExecutionFinished(labels: {
-  status: "success" | ErrorStatus;
+  status: "success" | "unconfirmed" | ErrorStatus;
   orgSlug: string;
   errorType: ExecutionErrorType | typeof NA_ERROR_TYPE;
 }): void {

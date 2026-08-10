@@ -14,11 +14,7 @@ import {
   parseTierKey,
 } from "../lib/billing/plans";
 import { PAYG_OVERFLOW_REASON } from "../lib/billing/payg/constants";
-import {
-  executionDebt,
-  organizationSubscriptions,
-  paygConfig,
-} from "../lib/db/schema";
+import { executionDebt, organizationSubscriptions } from "../lib/db/schema";
 
 export type BillingGuardResult =
   | {
@@ -127,18 +123,12 @@ export async function checkExecutionLimitForExecutor(
         effectiveLimit,
       };
     default: {
-      // Free plan at its included limit: if PAYG is enabled, admit and let the
-      // executor charge the per-execution price before the run (the charge is
-      // the real gate). PAYG is a free-tier feature only.
+      // Free plan at its included limit: admit and let the executor charge the
+      // per-execution price before the run (the charge is the real gate). PAYG
+      // covers every free org, so an org with no config row runs on the default
+      // caps rather than being blocked. Matches checkExecutionLimit.
       if (plan === "free") {
-        const [cfg] = await db
-          .select({ id: paygConfig.id })
-          .from(paygConfig)
-          .where(eq(paygConfig.organizationId, organizationId))
-          .limit(1);
-        if (cfg) {
-          return { allowed: true, reason: PAYG_OVERFLOW_REASON };
-        }
+        return { allowed: true, reason: PAYG_OVERFLOW_REASON };
       }
       return {
         allowed: false,

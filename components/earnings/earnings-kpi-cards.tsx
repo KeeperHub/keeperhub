@@ -120,7 +120,7 @@ export function EarningsKpiCards(): ReactNode {
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <KpiCard
-          helpHref="https://docs.keeperhub.com/workflows/paid-workflows"
+          helpHref="https://docs.keeperhub.com/workflows/marketplace#receiving-revenue-on-two-chains"
           helpTitle="How dual-chain revenue works"
           icon={<DollarSign className="size-5" />}
           iconClassName="bg-green-500/10 text-green-600 dark:text-green-400"
@@ -129,7 +129,7 @@ export function EarningsKpiCards(): ReactNode {
           value={totalGrossRevenue}
         />
         <KpiCard
-          helpHref="https://docs.keeperhub.com/workflows/paid-workflows"
+          helpHref="https://docs.keeperhub.com/workflows/marketplace#earnings"
           helpTitle="How creator earnings are calculated"
           icon={<TrendingUp className="size-5" />}
           iconClassName="bg-keeperhub-green/10 text-keeperhub-green-dark"

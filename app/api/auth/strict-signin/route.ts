@@ -16,6 +16,7 @@ import {
   users,
   verifications,
 } from "@/lib/db/schema";
+import { ApiErrorCodes, apiError } from "@/lib/errors/api-envelope";
 import { HttpStatus } from "@/lib/http-status";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import {
@@ -103,15 +104,43 @@ type Body = {
   totpCode?: string;
 };
 
-function badRequest(error: string, code: string): NextResponse {
-  return NextResponse.json({ error, code }, { status: HttpStatus.BAD_REQUEST });
+function badRequest(
+  request: Request,
+  detail: string,
+  code: string
+): NextResponse {
+  return apiError({
+    status: HttpStatus.BAD_REQUEST,
+    code,
+    detail,
+    requestHeaders: request.headers,
+  });
 }
 
-function unauthorized(error: string, code: string): NextResponse {
-  return NextResponse.json(
-    { error, code },
-    { status: HttpStatus.UNAUTHORIZED }
-  );
+function unauthorized(
+  request: Request,
+  detail: string,
+  code: string
+): NextResponse {
+  return apiError({
+    status: HttpStatus.UNAUTHORIZED,
+    code,
+    detail,
+    requestHeaders: request.headers,
+  });
+}
+
+function serverError(
+  request: Request,
+  detail: string,
+  code: string
+): NextResponse {
+  return apiError({
+    status: HttpStatus.INTERNAL_SERVER_ERROR,
+    code,
+    detail,
+    requestHeaders: request.headers,
+  });
 }
 
 async function validateEmailOtp(
@@ -157,7 +186,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     body = (await request.json()) as Body;
   } catch {
-    return badRequest("Invalid JSON body", "bad_body");
+    return badRequest(request, "Invalid JSON body", "bad_body");
   }
 
   const email = body.email?.trim().toLowerCase() ?? "";
@@ -166,13 +195,21 @@ export async function POST(request: Request): Promise<NextResponse> {
   const totpCode = body.totpCode?.trim() ?? "";
 
   if (!(email && password)) {
-    return badRequest("Email and password are required", "missing_credentials");
+    return badRequest(
+      request,
+      "Email and password are required",
+      "missing_credentials"
+    );
   }
   if (emailOtp.length !== 6) {
-    return badRequest("Email code is required", "missing_email_otp");
+    return badRequest(request, "Email code is required", "missing_email_otp");
   }
   if (totpCode.length !== 6) {
-    return badRequest("Authenticator code is required", "missing_totp");
+    return badRequest(
+      request,
+      "Authenticator code is required",
+      "missing_totp"
+    );
   }
 
   // Per-email sliding window. Keys on the lowercased email so an
@@ -184,17 +221,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   // confused user with typos still gets to land.
   const rateLimit = checkDualFactorRateLimit(email, "strict_signin");
   if (!rateLimit.allowed) {
-    return NextResponse.json(
-      {
-        error: "Too many attempts. Wait and try again.",
-        code: "rate_limited",
-        retryAfter: rateLimit.retryAfter,
-      },
-      {
-        status: HttpStatus.TOO_MANY_REQUESTS,
-        headers: { "Retry-After": String(rateLimit.retryAfter) },
-      }
-    );
+    return apiError({
+      status: HttpStatus.TOO_MANY_REQUESTS,
+      code: ApiErrorCodes.RATE_LIMITED,
+      detail: "Too many attempts. Wait and try again.",
+      requestHeaders: request.headers,
+      headers: { "Retry-After": String(rateLimit.retryAfter) },
+    });
   }
 
   const serverSecret = process.env.BETTER_AUTH_SECRET;
@@ -205,10 +238,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       new Error("BETTER_AUTH_SECRET missing"),
       { endpoint: "/api/auth/strict-signin" }
     );
-    return NextResponse.json(
-      { error: "Server misconfigured", code: "server_misconfigured" },
-      { status: HttpStatus.INTERNAL_SERVER_ERROR }
-    );
+    return serverError(request, "Server misconfigured", "server_misconfigured");
   }
 
   // 1. Look up the user. Single not-found-or-mismatch response so this
@@ -219,7 +249,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     .where(eq(users.email, email))
     .limit(1);
   if (!user) {
-    return unauthorized("Invalid sign-in", "invalid_signin");
+    return unauthorized(request, "Invalid sign-in", "invalid_signin");
   }
 
   // 2. Validate password against the user's credential account.
@@ -231,17 +261,17 @@ export async function POST(request: Request): Promise<NextResponse> {
     )
     .limit(1);
   if (!credentialAccount?.password) {
-    return unauthorized("Invalid sign-in", "invalid_signin");
+    return unauthorized(request, "Invalid sign-in", "invalid_signin");
   }
   const passwordOk = await verifyPassword(password, credentialAccount.password);
   if (!passwordOk) {
-    return unauthorized("Invalid sign-in", "invalid_signin");
+    return unauthorized(request, "Invalid sign-in", "invalid_signin");
   }
 
   // 3. Validate the email OTP. Look-up only; do NOT consume yet.
   const emailOtpResult = await validateEmailOtp(email, emailOtp, serverSecret);
   if (!emailOtpResult.ok) {
-    return unauthorized("Invalid email code", "invalid_email_otp");
+    return unauthorized(request, "Invalid email code", "invalid_email_otp");
   }
 
   // 4. Validate TOTP against the user's two_factor row.
@@ -252,13 +282,14 @@ export async function POST(request: Request): Promise<NextResponse> {
     .limit(1);
   if (!totpRow) {
     return unauthorized(
+      request,
       "Two-factor not configured on this account",
       "totp_not_configured"
     );
   }
   const totpOk = await verifyUserTotp(totpRow.secret, totpCode, serverSecret);
   if (!totpOk) {
-    return unauthorized("Invalid authenticator code", "invalid_totp");
+    return unauthorized(request, "Invalid authenticator code", "invalid_totp");
   }
 
   // Three factors are now valid but we have not minted a session
@@ -333,15 +364,17 @@ export async function POST(request: Request): Promise<NextResponse> {
       err,
       { endpoint: "/api/auth/strict-signin", user_id: user.id }
     );
-    return NextResponse.json(
-      { error: "Sign-in failed at session step", code: "session_failed" },
-      { status: HttpStatus.INTERNAL_SERVER_ERROR }
+    return serverError(
+      request,
+      "Sign-in failed at session step",
+      "session_failed"
     );
   }
   if (twoFactorSetCookies.length === 0) {
-    return NextResponse.json(
-      { error: "Sign-in failed at session step", code: "session_failed" },
-      { status: HttpStatus.INTERNAL_SERVER_ERROR }
+    return serverError(
+      request,
+      "Sign-in failed at session step",
+      "session_failed"
     );
   }
 
@@ -369,15 +402,17 @@ export async function POST(request: Request): Promise<NextResponse> {
       err,
       { endpoint: "/api/auth/strict-signin", user_id: user.id }
     );
-    return NextResponse.json(
-      { error: "Sign-in failed at session step", code: "session_failed" },
-      { status: HttpStatus.INTERNAL_SERVER_ERROR }
+    return serverError(
+      request,
+      "Sign-in failed at session step",
+      "session_failed"
     );
   }
   if (sessionSetCookies.length === 0) {
-    return NextResponse.json(
-      { error: "Sign-in failed at session step", code: "session_failed" },
-      { status: HttpStatus.INTERNAL_SERVER_ERROR }
+    return serverError(
+      request,
+      "Sign-in failed at session step",
+      "session_failed"
     );
   }
 

@@ -158,6 +158,28 @@ export type DualAuthContext =
     }
   | { error: string; status: number; code?: "mfa_required" };
 
+export type ResolvedAuthContext = Exclude<DualAuthContext, { error: string }>;
+
+/**
+ * True when a credential resolved to a principal (user and/or organization)
+ * that authorization can be evaluated against. `required: false` callers get a
+ * null-principal context both when no credential was sent and when one was
+ * sent but failed, so this is the check that separates "somebody" from
+ * "nobody" - it is not evidence that the credential was valid.
+ *
+ * Note it does not exclude `isAnonymous`: a better-auth anonymous account is a
+ * real principal with its own organization, and every authorization helper
+ * (getWorkflowAccess) treats it as one.
+ */
+export function hasResolvedPrincipal(
+  authContext: DualAuthContext
+): authContext is ResolvedAuthContext {
+  if ("error" in authContext) {
+    return false;
+  }
+  return Boolean(authContext.userId || authContext.organizationId);
+}
+
 /**
  * Sentinel error returned by getDualAuthContext when the user holds a
  * session that login-risk detection flagged and they have TOTP enrolled.

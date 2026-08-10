@@ -5,7 +5,7 @@ Authenticate with KeeperHub
 ### Examples
 
 ```
-  # Log in via browser
+  # Log in (device code flow — prints a URL and code to confirm in a browser)
   kh auth login
 
   # Check current auth status

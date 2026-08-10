@@ -4,31 +4,33 @@ import { getSpendCapData } from "@/lib/analytics/queries";
 import { apiError } from "@/lib/api-error";
 import { db } from "@/lib/db";
 import { organizationSpendCaps } from "@/lib/db/schema";
-import {
-  requireOrganization,
-  requirePermission,
-} from "@/lib/middleware/require-org";
+import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
+import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
+import { requirePermission } from "@/lib/middleware/require-org";
+import { requireScope } from "@/lib/middleware/require-scope";
 
 const NON_NEGATIVE_INTEGER = /^\d+$/;
 
-export const GET = requireOrganization(
-  async (_req: NextRequest, context): Promise<Response> => {
-    const organizationId = context.organization?.id;
-    if (!organizationId) {
-      return NextResponse.json(
-        { error: "Organization not found" },
-        { status: 403 }
-      );
-    }
-
-    try {
-      const data = await getSpendCapData(organizationId);
-      return NextResponse.json(data);
-    } catch (error: unknown) {
-      return apiError(error, "Failed to fetch spend cap data");
-    }
+export async function GET(request: Request): Promise<Response> {
+  const authCtx = await resolveOrganizationId(request);
+  if ("error" in authCtx) {
+    return NextResponse.json(
+      { error: authCtx.error },
+      { status: authCtx.status }
+    );
   }
-);
+  const scopeError = requireScope(authCtx.scope, SCOPE_MCP_READ);
+  if (scopeError) {
+    return scopeError;
+  }
+
+  try {
+    const data = await getSpendCapData(authCtx.organizationId);
+    return NextResponse.json(data);
+  } catch (error: unknown) {
+    return apiError(error, "Failed to fetch spend cap data");
+  }
+}
 
 /**
  * Set or clear the organization's daily value caps.

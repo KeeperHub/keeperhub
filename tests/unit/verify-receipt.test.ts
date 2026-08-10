@@ -4,6 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 const executeWithFailover = vi.fn();
+const fallbackGetTransactionReceipt = vi.fn();
+const getFallbackProvider = vi.fn(() => ({
+  getTransactionReceipt: fallbackGetTransactionReceipt,
+}));
 const resolveRpcConfig = vi.fn();
 const isSolanaChain = vi.fn(
   (chainId: number) => chainId === 101 || chainId === 103
@@ -15,7 +19,7 @@ vi.mock("@/lib/rpc/providers", () => ({
   // from the constructor overrides the constructed `this`, which is how the
   // shared `executeWithFailover` spy gets attached to every instance.
   RpcProviderManager: vi.fn().mockImplementation(function RpcProviderManager() {
-    return { executeWithFailover };
+    return { executeWithFailover, getFallbackProvider };
   }),
 }));
 vi.mock("@/lib/rpc/config-service", () => ({
@@ -52,9 +56,17 @@ function makeReceipt(
 const HASH = "0xabc123";
 const CHAIN_ID = 1;
 
+// One round, no waiting: the retry budget is wall-clock, so tests that expect
+// the lookup to give up would otherwise sit through it.
+const SINGLE_ROUND = { budgetMs: 0, retryDelayMs: 0 };
+// Enough rounds to exercise the retry, still effectively instant.
+const FAST_RETRY = { budgetMs: 200, retryDelayMs: 1 };
+
 describe("verifyExecutionReceipts", () => {
   beforeEach(() => {
     executeWithFailover.mockReset();
+    fallbackGetTransactionReceipt.mockReset();
+    fallbackGetTransactionReceipt.mockResolvedValue(null);
     resolveRpcConfig.mockReset();
     resolveRpcConfig.mockResolvedValue({
       chainId: CHAIN_ID,
@@ -123,21 +135,70 @@ describe("verifyExecutionReceipts", () => {
   });
 
   it("null receipt after retries verifies as not_found", async () => {
-    executeWithFailover.mockResolvedValueOnce(null);
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: HASH, chainId: CHAIN_ID },
-    ]);
+    executeWithFailover.mockResolvedValue(null);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      SINGLE_ROUND
+    );
     expect(allVerified).toBe(false);
     expect(results[0].status).toBe("not_found");
   });
 
   it("provider throwing on every attempt verifies as timeout, fail-closed", async () => {
-    executeWithFailover.mockRejectedValueOnce(new Error("RPC exhausted"));
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: HASH, chainId: CHAIN_ID },
-    ]);
+    executeWithFailover.mockRejectedValue(new Error("RPC exhausted"));
+    fallbackGetTransactionReceipt.mockRejectedValue(new Error("RPC exhausted"));
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      SINGLE_ROUND
+    );
     expect(allVerified).toBe(false);
     expect(results[0].status).toBe("timeout");
+  });
+
+  // The reported defect: a load-balanced RPC answered for a node that had not
+  // yet seen the transaction, and one miss was taken as proof of failure.
+  it("a receipt that is invisible on the first read is found on a later one", async () => {
+    executeWithFailover
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue(makeReceipt(1));
+
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      FAST_RETRY
+    );
+
+    expect(allVerified).toBe(true);
+    expect(results[0]).toMatchObject({ verified: true, status: "success" });
+  });
+
+  // A null answer is a successful call, so executeWithFailover never moves off
+  // the primary. Without an explicit read the fallback endpoint is unreachable
+  // for the one case it exists to cover.
+  it("consults the fallback endpoint when the primary reports no receipt", async () => {
+    executeWithFailover.mockResolvedValue(null);
+    fallbackGetTransactionReceipt.mockResolvedValue(makeReceipt(1));
+
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      SINGLE_ROUND
+    );
+
+    expect(fallbackGetTransactionReceipt).toHaveBeenCalledWith(HASH);
+    expect(allVerified).toBe(true);
+    expect(results[0].status).toBe("success");
+  });
+
+  it("a reverted receipt is terminal and is not retried away", async () => {
+    executeWithFailover.mockResolvedValue(makeReceipt(0));
+
+    const { results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      FAST_RETRY
+    );
+
+    expect(results[0].status).toBe("reverted");
+    expect(executeWithFailover).toHaveBeenCalledTimes(1);
   });
 
   it("unresolvable chain (resolveRpcConfig returns null) fails closed as timeout", async () => {
@@ -206,6 +267,8 @@ describe("verifyExecutionReceipts", () => {
 describe("sponsored (wrapped) executions", () => {
   beforeEach(() => {
     executeWithFailover.mockReset();
+    fallbackGetTransactionReceipt.mockReset();
+    fallbackGetTransactionReceipt.mockResolvedValue(null);
     resolveRpcConfig.mockReset();
     resolveRpcConfig.mockResolvedValue({
       chainId: CHAIN_ID,

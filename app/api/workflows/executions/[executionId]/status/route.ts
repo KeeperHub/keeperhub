@@ -6,12 +6,64 @@ import { isErrorStatus } from "@/lib/errors/execution-status";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { createTimer } from "@/lib/metrics";
 import { recordStatusPollMetrics } from "@/lib/metrics/instrumentation/api";
-import { resolveAuthorizedExecution } from "@/lib/workflow/execution-access";
+import { HttpStatus } from "@/lib/http-status";
+import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
+import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
+import {
+  type AuthorizedExecution,
+  type ExecutionStatusPayload,
+  redactExecutionStatusForPublicView,
+  resolveExecutionViewAccess,
+} from "@/lib/workflow/execution-access";
+import { checkExecutionStatusRateLimit } from "@/lib/workflow/execution-status-rate-limit";
 
 type NodeStatus = {
   nodeId: string;
   status: "pending" | "running" | "success" | "error" | "cancelled";
 };
+
+// Statuses after which there is nothing left to poll for. Mirrors the set the
+// share view stops on (components/executions/execution-share-view.tsx).
+const TERMINAL_STATUSES = new Set([
+  "success",
+  "error",
+  "system_error",
+  "cancelled",
+]);
+const POLL_INTERVAL_HINT_SECONDS = 2;
+
+function buildStatusPayload(
+  execution: AuthorizedExecution,
+  nodeStatuses: NodeStatus[]
+): ExecutionStatusPayload {
+  const runningCount = nodeStatuses.filter((n) => n.status === "running").length;
+  const totalSteps = Number.parseInt(execution.totalSteps || "0", 10);
+  const completedSteps = Number.parseInt(execution.completedSteps || "0", 10);
+
+  return {
+    status: execution.status,
+    nodeStatuses,
+    progress: {
+      totalSteps,
+      completedSteps,
+      runningSteps: runningCount,
+      currentNodeId: execution.currentNodeId,
+      currentNodeName: execution.currentNodeName,
+      percentage:
+        totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0,
+    },
+    errorContext: isErrorStatus(execution.status)
+      ? {
+          failedNodeId: execution.currentNodeId,
+          lastSuccessfulNodeId: execution.lastSuccessfulNodeId,
+          lastSuccessfulNodeName: execution.lastSuccessfulNodeName,
+          executionTrace: execution.executionTrace,
+          error: execution.error,
+        }
+      : null,
+    transactionHashes: execution.transactionHashes,
+  };
+}
 
 export async function GET(
   request: Request,
@@ -22,59 +74,73 @@ export async function GET(
   try {
     const { executionId } = await context.params;
 
-    const resolved = await resolveAuthorizedExecution(request, executionId);
-    if (!resolved.ok) {
+    // Resolved once and threaded through both the limiter and the access
+    // check: this is the hottest endpoint in the app, and each extra
+    // resolution is another api-key/session lookup plus a last_used_at write.
+    const authContext = await getDualAuthContext(request, { required: false });
+
+    const rateLimit = checkExecutionStatusRateLimit(request, authContext);
+    if (!rateLimit.allowed) {
       recordStatusPollMetrics({
         executionId,
         durationMs: timer(),
-        statusCode: resolved.status,
+        statusCode: HttpStatus.TOO_MANY_REQUESTS,
+      });
+      const response = NextResponse.json(
+        { error: "Too many requests" },
+        { status: HttpStatus.TOO_MANY_REQUESTS }
+      );
+      return applyRateLimitHeaders(response, rateLimit);
+    }
+
+    const viewAccess = await resolveExecutionViewAccess(
+      request,
+      executionId,
+      authContext
+    );
+    if (viewAccess.mode === "invalidAuth") {
+      recordStatusPollMetrics({
+        executionId,
+        durationMs: timer(),
+        statusCode: 401,
+      });
+      return NextResponse.json({ error: viewAccess.error }, { status: 401 });
+    }
+    if (viewAccess.mode === "notFound") {
+      recordStatusPollMetrics({
+        executionId,
+        durationMs: timer(),
+        statusCode: 404,
       });
       return NextResponse.json(
-        { error: resolved.error },
-        { status: resolved.status }
+        { error: "Execution not found" },
+        { status: 404 }
       );
     }
-    const { execution } = resolved;
+    if (viewAccess.mode === "accessDenied") {
+      recordStatusPollMetrics({
+        executionId,
+        durationMs: timer(),
+        statusCode: 403,
+      });
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
 
-    // Get logs for all nodes
+    const { execution } = viewAccess;
+
     const logs = await db.query.workflowExecutionLogs.findMany({
       where: eq(workflowExecutionLogs.executionId, executionId),
     });
 
-    // Map logs to node statuses
     const nodeStatuses: NodeStatus[] = logs.map((log) => ({
       nodeId: log.nodeId,
       status: log.status,
     }));
 
-    // Calculate running count for parallel execution visibility
-    const runningCount = nodeStatuses.filter(
-      (n) => n.status === "running"
-    ).length;
-    const totalSteps = Number.parseInt(execution.totalSteps || "0", 10);
-    const completedSteps = Number.parseInt(execution.completedSteps || "0", 10);
-
-    // Build progress data
-    const progress = {
-      totalSteps,
-      completedSteps,
-      runningSteps: runningCount,
-      currentNodeId: execution.currentNodeId,
-      currentNodeName: execution.currentNodeName,
-      percentage:
-        totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0,
-    };
-
-    // Build error context (only when failed)
-    const errorContext = isErrorStatus(execution.status)
-      ? {
-          failedNodeId: execution.currentNodeId,
-          lastSuccessfulNodeId: execution.lastSuccessfulNodeId,
-          lastSuccessfulNodeName: execution.lastSuccessfulNodeName,
-          executionTrace: execution.executionTrace,
-          error: execution.error,
-        }
-      : null;
+    let payload = buildStatusPayload(execution, nodeStatuses);
+    if (viewAccess.mode === "publicReadOnly") {
+      payload = redactExecutionStatusForPublicView(payload);
+    }
 
     recordStatusPollMetrics({
       executionId,
@@ -83,12 +149,13 @@ export async function GET(
       executionStatus: execution.status,
     });
 
-    return NextResponse.json({
-      status: execution.status,
-      nodeStatuses,
-      progress,
-      errorContext,
-      transactionHashes: execution.transactionHashes,
+    // Budget headers belong on the success path too, not just the denial: a
+    // poller that can only learn its remaining budget from the response that
+    // already rejected it has no way to slow down before hitting the wall.
+    return applyRateLimitHeaders(NextResponse.json(payload), rateLimit, {
+      pollIntervalHint: TERMINAL_STATUSES.has(execution.status)
+        ? 0
+        : POLL_INTERVAL_HINT_SECONDS,
     });
   } catch (error) {
     const { executionId } = await context.params;

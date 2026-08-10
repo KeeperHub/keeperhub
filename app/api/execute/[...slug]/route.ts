@@ -31,6 +31,7 @@ import {
 import { validateApiKey } from "../_lib/auth";
 import { enforceDirectExecutionConcurrency } from "../_lib/concurrency-limit";
 import {
+  type CompleteExecutionOutcome,
   completeExecution,
   failExecution,
   markRunning,
@@ -287,7 +288,7 @@ async function executeProtocolAction(
   // completeExecution independently re-verifies the claimed transaction
   // against the chain (KEEP-966) -- its returned outcome, not result.success,
   // is authoritative for the response and idempotency cache.
-  let outcome: { status: "completed" | "failed"; error?: string } = {
+  let outcome: CompleteExecutionOutcome = {
     status: "failed",
     error: result.success ? undefined : result.error,
   };
@@ -301,14 +302,16 @@ async function executeProtocolAction(
       output: result as unknown as Record<string, unknown>,
     });
   } else {
-    // A failure that already reached the chain carries its hash,
-    // so the execution records which transaction failed and what the chain
-    // said about it, rather than leaving the hash only inside the message.
-    await failExecution(executionId, result.error, {
+    // A failure that already reached the chain carries its hash, so the
+    // execution records which transaction failed and what the chain said about
+    // it. failExecution decides from that receipt whether this is terminal or
+    // a broadcast that may still land, and its verdict is authoritative.
+    const settled = await failExecution(executionId, result.error, {
       transactionHash: result.transactionHash,
       chainId: result.chainId,
       sponsored: result.sponsored,
     });
+    outcome = { status: settled.status, error: result.error };
   }
 
   const responseBody =

@@ -6,7 +6,7 @@ Print Coinbase Onramp URL (Base USDC) and Tempo deposit address for the agentic 
 
 Print a Coinbase Onramp URL for Base USDC funding plus the Tempo deposit address.
 
-Thin wrapper around `npx @keeperhub/wallet fund`. No HTTP calls, no browser launch --
+Thin wrapper around `npx -p @keeperhub/wallet keeperhub-wallet fund`. No HTTP calls, no browser launch --
 prints copy-paste instructions only.
 
 ```

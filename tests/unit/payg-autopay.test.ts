@@ -52,6 +52,12 @@ vi.mock("@/lib/billing/payg/treasury", () => ({
   getPaygTreasuryOrNull: vi.fn(() => state.treasury),
 }));
 
+// The balance pre-check runs before the claim; never let it reach the network.
+const hasSufficientUsdc = vi.fn();
+vi.mock("@/lib/billing/payg/balance", () => ({
+  hasSufficientUsdc: (...a: unknown[]) => hasSufficientUsdc(...a),
+}));
+
 // --- Payments helpers: spies configured per test. ---
 const findPaygPayment = vi.fn();
 const claimPaygPayment = vi.fn();
@@ -90,6 +96,7 @@ beforeEach(() => {
   markPaygPaymentSettled.mockResolvedValue(undefined);
   releasePaygClaim.mockResolvedValue(undefined);
   facilitatorSettle.mockResolvedValue({ success: true, transaction: "0xtx" });
+  hasSufficientUsdc.mockResolvedValue(true);
 });
 
 describe("autopayForExecution claim-before-settle", () => {
@@ -270,5 +277,40 @@ describe("autopayForExecution claim-before-settle", () => {
     expect(releasePaygClaim).toHaveBeenCalledWith("org_1", "exec_1");
     expect(markPaygPaymentSettled).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: false, reason: "insufficient_funds" });
+  });
+});
+
+describe("autopayForExecution balance pre-check", () => {
+  it("blocks an unfunded wallet before claiming or signing", async () => {
+    hasSufficientUsdc.mockResolvedValue(false);
+
+    const result = await autopayForExecution(PARAMS);
+
+    expect(result).toEqual({ ok: false, reason: "insufficient_funds" });
+    expect(claimPaygPayment).not.toHaveBeenCalled();
+    expect(facilitatorSettle).not.toHaveBeenCalled();
+  });
+
+  it("checks the balance against the per-execution price and payer", async () => {
+    await autopayForExecution(PARAMS);
+
+    expect(hasSufficientUsdc).toHaveBeenCalledWith({
+      payerAddress: "0xabc",
+      amountRaw: BigInt(10_000),
+      chainId: 8453,
+    });
+  });
+
+  it("settles as before when the balance is unknown", async () => {
+    hasSufficientUsdc.mockResolvedValue(null);
+
+    const result = await autopayForExecution(PARAMS);
+
+    expect(result).toEqual({
+      ok: true,
+      txHash: "0xtx",
+      amountRaw: BigInt(10_000),
+    });
+    expect(facilitatorSettle).toHaveBeenCalled();
   });
 });

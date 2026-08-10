@@ -229,6 +229,46 @@ describe("idempotencyEarlyResponse", () => {
     expect(early?.status).toBe(409);
     expect(body.code).toBe("idempotency_in_progress");
   });
+
+  // The two 409s mean opposite things and a caller that reads only the status
+  // cannot tell them apart. For a fund-moving call, reading `in_progress` as
+  // terminal reports a failure while the original request is still on its way
+  // to the chain.
+  it("marks in_progress retryable and conflict not, so status alone is never the signal", () => {
+    const inProgress = idempotencyEarlyResponse({ kind: "in_progress" });
+    const conflict = idempotencyEarlyResponse({
+      kind: "conflict",
+      originalResourceId: "e1",
+    });
+
+    const inProgressBody = inProgress?.body as { retryable?: boolean };
+    const conflictBody = conflict?.body as { retryable?: boolean };
+
+    expect(inProgress?.status).toBe(conflict?.status);
+    expect(inProgressBody.retryable).toBe(true);
+    expect(conflictBody.retryable).toBe(false);
+  });
+
+  // Rotating the key on `in_progress` escapes the in-flight guard and can
+  // broadcast the same action twice, so the message must not leave a caller to
+  // guess which habit applies.
+  it("tells the caller to keep the same key while a request is in flight", () => {
+    const body = idempotencyEarlyResponse({ kind: "in_progress" })?.body as {
+      error?: string;
+    };
+    expect(body.error).toMatch(/same key/i);
+    expect(body.error).toMatch(/do not rotate/i);
+  });
+
+  it("leaves a replayed body free of a disposition it did not carry", () => {
+    const early = idempotencyEarlyResponse({
+      kind: "replay",
+      responseStatus: 200,
+      responseBody: { success: true },
+    });
+    // A replay is the real prior outcome, not a disposition about retrying.
+    expect(early?.body).not.toHaveProperty("retryable");
+  });
 });
 
 describe("recordIdempotentResponse", () => {

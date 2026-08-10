@@ -360,6 +360,44 @@ function annotateReplay(body: unknown): unknown {
 
 // Maps a non-proceed outcome to the response the caller should return as-is.
 // Returns null for `proceed` (the caller does the work, then calls finalize).
+//
+// `conflict` and `in_progress` both answer 409 but mean opposite things, and
+// only the `code` separates them. A client that classifies on status alone
+// reads `in_progress` as a permanent failure, and for a fund-moving call that
+// is the worst available reading: the original request still holds its
+// processing lock and is very likely to land on chain, so the caller reports a
+// payment failed while it is in fact succeeding.
+//
+// `retryable` answers exactly one question, and it is narrower than the name
+// suggests: IS IT SAFE TO SEND THIS AGAIN UNDER THE SAME KEY?
+//
+//   in_progress -> true.  The first request holds the lock; the same key is the
+//                         only safe way to retry, and it returns the guard now
+//                         and the real outcome as a replay once that finishes.
+//   conflict    -> false. The key is bound to a different body, and stays bound
+//                         for as long as the record lives, so resending this
+//                         body under this key can never succeed.
+//
+// `false` does not mean abandon the call. It also does not mean "rotate and
+// resend", and on a fund-moving route that distinction is the whole thing. A
+// conflict says one thing only: this body is not the body the key was bound to.
+// There are two reasons for that and they want opposite responses.
+//
+//   genuinely different work -> rotate. That is what a new key is for.
+//
+//   the same intent, whose body was re-serialized -> the body drifted, not the
+//   intent. `hashRequest` normalizes key order but not values, so "0.1" against
+//   "0.10", `network` for `chainId`, or a reworded memo all land here. Rotating
+//   escapes the in-flight guard on a request that may already have broadcast,
+//   and pays twice. Canonicalize the body and keep the key.
+//
+// Do not read this field as a general "is this error retryable": a 429 on these
+// routes is retryable and carries no `retryable` field at all, because the field
+// exists only on these two codes.
+//
+// It rides in the body for the same reason `idempotentReplay` does: the common
+// consumer is an agent reading a tool result, where response headers are not
+// surfaced.
 export function idempotencyEarlyResponse(
   outcome: IdempotencyOutcome
 ): IdempotencyEarlyResponse | null {
@@ -377,6 +415,7 @@ export function idempotencyEarlyResponse(
             "Idempotency-Key was reused with a different request payload. Use a new key for a different request.",
           code: "idempotency_conflict",
           originalExecutionId: outcome.originalResourceId,
+          retryable: false,
         },
       };
     case "in_progress":
@@ -384,8 +423,9 @@ export function idempotencyEarlyResponse(
         status: 409,
         body: {
           error:
-            "A request with this Idempotency-Key is already being processed. Retry shortly.",
+            "A request with this Idempotency-Key is already being processed. Retry the same key shortly; do not rotate it.",
           code: "idempotency_in_progress",
+          retryable: true,
         },
       };
     default:

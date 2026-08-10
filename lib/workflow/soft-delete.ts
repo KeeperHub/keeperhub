@@ -29,8 +29,16 @@ export function isWorkflowDeleted(workflow: {
  * path -- the delete handler and the duplicate-route anonymous move -- writes
  * this same shape so a workflow is never left half-retired.
  */
-export function softDeleteValues(): { deletedAt: Date; isListed: boolean } {
-  return { deletedAt: new Date(), isListed: false };
+export function softDeleteValues(): {
+  deletedAt: Date;
+  isListed: boolean;
+  shareExecutionStatus: boolean;
+} {
+  return {
+    deletedAt: new Date(),
+    isListed: false,
+    shareExecutionStatus: false,
+  };
 }
 
 /**

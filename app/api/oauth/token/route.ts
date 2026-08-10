@@ -1,5 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { NextResponse } from "next/server";
+import { type ZodError, z } from "zod";
 import { isUserDeactivated } from "@/lib/auth-deactivation-guard";
+import {
+  resolveRequestId,
+  sanitizeDetailForEnv,
+} from "@/lib/errors/api-envelope";
 import { HttpStatus } from "@/lib/http-status";
 import { createAccessToken } from "@/lib/mcp/oauth-auth";
 import {
@@ -18,13 +24,54 @@ import {
   oauthAuthorizationCodeSchema,
   oauthRefreshTokenSchema,
 } from "@/lib/schemas/oauth";
-import { validateData } from "@/lib/validate-request";
 import { isUserMemberOfOrganization } from "@/lib/workflow/access";
 
 export const dynamic = "force-dynamic";
 
-function jsonError(message: string, status: number): Response {
-  return Response.json({ error: message }, { status });
+/**
+ * Token-endpoint errors use the KEEP-489 envelope plus RFC 6749 §5.2's
+ * `error_description` alias for `detail`. Client/grant failures use the
+ * registered OAuth set (invalid_request, invalid_client, invalid_grant,
+ * unsupported_grant_type). `rate_limited` is the only extension, used on
+ * 429 only. All of these go through `routeError` (not ApiErrorCodes generics).
+ */
+function routeError(
+  request: Request,
+  detail: string,
+  status: number,
+  code: string
+): Response {
+  const requestId = resolveRequestId(request.headers);
+  const sanitized = sanitizeDetailForEnv(detail) ?? detail;
+  return NextResponse.json(
+    {
+      error: code,
+      detail: sanitized,
+      error_description: sanitized,
+      request_id: requestId,
+    },
+    {
+      status,
+      headers: { "x-request-id": requestId },
+    }
+  );
+}
+
+function oauthValidationError(request: Request, zodError: ZodError): Response {
+  const flattened = z.flattenError(zodError);
+  const fieldMessages = Object.entries(flattened.fieldErrors).flatMap(
+    ([field, messages]) => {
+      if (!Array.isArray(messages)) {
+        return [];
+      }
+      return messages.map((message) => `${field}: ${message}`);
+    }
+  );
+  const formMessages = flattened.formErrors;
+  const detail =
+    [...fieldMessages, ...formMessages].join("; ") || "Validation failed";
+
+  return routeError(request, detail, HttpStatus.BAD_REQUEST, "invalid_request");
 }
 
 function verifyPkceS256(verifier: string, challenge: string): boolean {
@@ -93,10 +140,20 @@ function verifyClientAuthentication(
   }
   const secret = extractClientSecret(request, params);
   if (!secret) {
-    return jsonError("client_secret is required for this client", 401);
+    return routeError(
+      request,
+      "client_secret is required for this client",
+      HttpStatus.UNAUTHORIZED,
+      "invalid_client"
+    );
   }
   if (!secretMatches(secret, client.clientSecretHash)) {
-    return jsonError("Invalid client_secret", 401);
+    return routeError(
+      request,
+      "Invalid client_secret",
+      HttpStatus.UNAUTHORIZED,
+      "invalid_client"
+    );
   }
   return null;
 }
@@ -105,12 +162,11 @@ async function handleAuthorizationCode(
   request: Request,
   params: URLSearchParams
 ): Promise<Response> {
-  const parsed = validateData(
-    Object.fromEntries(params),
-    oauthAuthorizationCodeSchema
+  const parsed = oauthAuthorizationCodeSchema.safeParse(
+    Object.fromEntries(params)
   );
   if (!parsed.success) {
-    return parsed.response;
+    return oauthValidationError(request, parsed.error);
   }
   const {
     code,
@@ -121,7 +177,12 @@ async function handleAuthorizationCode(
 
   const client = await getOAuthClient(clientId);
   if (!client) {
-    return jsonError("Unknown client_id", 400);
+    return routeError(
+      request,
+      "Unknown client_id",
+      HttpStatus.BAD_REQUEST,
+      "invalid_client"
+    );
   }
 
   const clientAuthError = verifyClientAuthentication(client, request, params);
@@ -131,29 +192,48 @@ async function handleAuthorizationCode(
 
   const authCode = await getAuthCode(code);
   if (!authCode) {
-    return jsonError(
+    return routeError(
+      request,
       "Invalid or expired authorization code",
-      HttpStatus.BAD_REQUEST
+      HttpStatus.BAD_REQUEST,
+      "invalid_grant"
     );
   }
 
   if (authCode.clientId !== clientId) {
-    return jsonError("client_id mismatch", HttpStatus.BAD_REQUEST);
+    return routeError(
+      request,
+      "client_id mismatch",
+      HttpStatus.BAD_REQUEST,
+      "invalid_grant"
+    );
   }
 
   if (authCode.redirectUri !== redirectUri) {
-    return jsonError("redirect_uri mismatch", HttpStatus.BAD_REQUEST);
+    return routeError(
+      request,
+      "redirect_uri mismatch",
+      HttpStatus.BAD_REQUEST,
+      "invalid_grant"
+    );
   }
 
   if (authCode.codeChallengeMethod !== "S256") {
-    return jsonError(
+    return routeError(
+      request,
       "Unsupported code_challenge_method",
-      HttpStatus.BAD_REQUEST
+      HttpStatus.BAD_REQUEST,
+      "invalid_grant"
     );
   }
 
   if (!verifyPkceS256(codeVerifier, authCode.codeChallenge)) {
-    return jsonError("Invalid code_verifier", HttpStatus.BAD_REQUEST);
+    return routeError(
+      request,
+      "Invalid code_verifier",
+      HttpStatus.BAD_REQUEST,
+      "invalid_grant"
+    );
   }
 
   // Consume the code immediately (single use)
@@ -163,7 +243,12 @@ async function handleAuthorizationCode(
   // to the auth code and exchanging it. Without this, an auth code held
   // by an attacker would still buy a fresh access + refresh token pair.
   if (await isUserDeactivated(authCode.userId)) {
-    return jsonError("User account is deactivated", HttpStatus.UNAUTHORIZED);
+    return routeError(
+      request,
+      "User account is deactivated",
+      HttpStatus.UNAUTHORIZED,
+      "invalid_grant"
+    );
   }
 
   const accessToken = await createAccessToken({
@@ -195,18 +280,20 @@ async function handleRefreshToken(
   request: Request,
   params: URLSearchParams
 ): Promise<Response> {
-  const parsed = validateData(
-    Object.fromEntries(params),
-    oauthRefreshTokenSchema
-  );
+  const parsed = oauthRefreshTokenSchema.safeParse(Object.fromEntries(params));
   if (!parsed.success) {
-    return parsed.response;
+    return oauthValidationError(request, parsed.error);
   }
   const { refresh_token: refreshTokenValue, client_id: clientId } = parsed.data;
 
   const client = await getOAuthClient(clientId);
   if (!client) {
-    return jsonError("Unknown client_id", HttpStatus.BAD_REQUEST);
+    return routeError(
+      request,
+      "Unknown client_id",
+      HttpStatus.BAD_REQUEST,
+      "invalid_client"
+    );
   }
 
   const clientAuthError = verifyClientAuthentication(client, request, params);
@@ -216,14 +303,21 @@ async function handleRefreshToken(
 
   const entry = await getRefreshToken(refreshTokenValue);
   if (!entry) {
-    return jsonError(
+    return routeError(
+      request,
       "Invalid or expired refresh token",
-      HttpStatus.BAD_REQUEST
+      HttpStatus.BAD_REQUEST,
+      "invalid_grant"
     );
   }
 
   if (entry.clientId !== clientId) {
-    return jsonError("client_id mismatch", HttpStatus.BAD_REQUEST);
+    return routeError(
+      request,
+      "client_id mismatch",
+      HttpStatus.BAD_REQUEST,
+      "invalid_grant"
+    );
   }
 
   // Rotate the refresh token
@@ -234,7 +328,12 @@ async function handleRefreshToken(
   // gap on the refresh-exchange path so a stolen refresh token cannot
   // survive deactivation by repeatedly cycling itself.
   if (await isUserDeactivated(entry.userId)) {
-    return jsonError("User account is deactivated", HttpStatus.UNAUTHORIZED);
+    return routeError(
+      request,
+      "User account is deactivated",
+      HttpStatus.UNAUTHORIZED,
+      "invalid_grant"
+    );
   }
 
   // Re-check org membership before re-issuing. A refresh token outlives any
@@ -242,7 +341,12 @@ async function handleRefreshToken(
   // the org could keep cycling the refresh token into fresh org-scoped
   // access tokens indefinitely.
   if (!(await isUserMemberOfOrganization(entry.userId, entry.organizationId))) {
-    return jsonError("User is no longer a member of this organization", 401);
+    return routeError(
+      request,
+      "User is no longer a member of this organization",
+      HttpStatus.UNAUTHORIZED,
+      "invalid_grant"
+    );
   }
 
   const newRefreshToken = randomBytes(32).toString("hex");
@@ -275,9 +379,11 @@ export async function POST(request: Request): Promise<Response> {
   const rateLimit = checkIpRateLimit(ip, 30, 60_000);
   if (!rateLimit.allowed) {
     return applyRateLimitHeaders(
-      Response.json(
-        { error: "Too many requests" },
-        { status: HttpStatus.TOO_MANY_REQUESTS }
+      routeError(
+        request,
+        "Too many requests",
+        HttpStatus.TOO_MANY_REQUESTS,
+        "rate_limited"
       ),
       rateLimit
     );
@@ -294,7 +400,12 @@ export async function POST(request: Request): Promise<Response> {
       const body = (await request.json()) as Record<string, string>;
       params = new URLSearchParams(body);
     } catch {
-      return jsonError("Invalid request body", HttpStatus.BAD_REQUEST);
+      return routeError(
+        request,
+        "Invalid request body",
+        HttpStatus.BAD_REQUEST,
+        "invalid_request"
+      );
     }
   }
 
@@ -315,9 +426,11 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   return applyRateLimitHeaders(
-    jsonError(
+    routeError(
+      request,
       "Unsupported grant_type. Supported: authorization_code, refresh_token",
-      HttpStatus.BAD_REQUEST
+      HttpStatus.BAD_REQUEST,
+      "unsupported_grant_type"
     ),
     rateLimit
   );

@@ -1,9 +1,11 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api-client";
+
+type IndexState = "loading" | "empty" | "error";
 
 // Index route for `/workflows` (no workflow selected). Without this the bare
 // path 404s in the canvas. Redirects to the most recently created workflow so
@@ -16,36 +18,53 @@ export default function WorkflowsIndexPage(): React.ReactElement | null {
   const searchParams = useSearchParams();
   const hasDeepLink = searchParams.get("digestSettings") !== null;
   const resolvedRef = useRef(false);
-  const [empty, setEmpty] = useState(false);
+  const [state, setState] = useState<IndexState>("loading");
+
+  const resolve = useCallback(async (): Promise<void> => {
+    setState("loading");
+    try {
+      const list = await api.workflow.getAll();
+      const mostRecent = [...list].sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )[0];
+      if (mostRecent) {
+        router.replace(`/workflows/${mostRecent.id}`);
+      } else {
+        setState("empty");
+      }
+    } catch {
+      setState("error");
+    }
+  }, [router]);
 
   useEffect(() => {
     if (hasDeepLink || resolvedRef.current) {
       return;
     }
     resolvedRef.current = true;
-
-    const resolve = async (): Promise<void> => {
-      try {
-        const list = await api.workflow.getAll();
-        const mostRecent = [...list].sort(
-          (a, b) =>
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        )[0];
-        if (mostRecent) {
-          router.replace(`/workflows/${mostRecent.id}`);
-        } else {
-          setEmpty(true);
-        }
-      } catch {
-        setEmpty(true);
-      }
-    };
-
     resolve();
-  }, [hasDeepLink, router]);
+  }, [hasDeepLink, resolve]);
 
-  if (!empty) {
+  const handleRetry = (): void => {
+    resolvedRef.current = true;
+    resolve();
+  };
+
+  if (state === "loading") {
     return null;
+  }
+
+  if (state === "error") {
+    return (
+      <div className="flex h-dvh w-full flex-col items-center justify-center gap-3 text-center">
+        <h1 className="font-semibold text-xl">Couldn&apos;t load workflows</h1>
+        <p className="text-muted-foreground text-sm">
+          Something went wrong while fetching your workflows. Try again.
+        </p>
+        <Button onClick={handleRetry}>Retry</Button>
+      </div>
+    );
   }
 
   return (

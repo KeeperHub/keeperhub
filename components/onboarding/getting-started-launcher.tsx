@@ -186,6 +186,9 @@ function StepRow({
               >
                 {cloned && <Check aria-hidden="true" className="size-3" />}
                 {chip.label}
+                {chip.badge ? (
+                  <span className="template-badge px-1">{chip.badge}</span>
+                ) : null}
               </button>
             );
           })}
@@ -301,7 +304,7 @@ function ExpandedCard({
   onTour: (step: Step) => void;
 }): React.ReactElement {
   const [infoStep, setInfoStep] = useState<Step | null>(null);
-  const branches = getBranches({ resolvedIds: gs.recommendedIds });
+  const branches = getBranches(gs.chipContext);
   // Single linear checklist: the agent branch (Wallet ready -> Connect your
   // agent -> Run your first workflow). Monitor / Yield are no longer surfaced.
   const steps = (branches.find((b) => b.key === "agent") ?? branches[0]).steps;
@@ -459,16 +462,18 @@ export function GettingStartedLauncher({
   // The workflow is created once per (step, prompt) and remembered: taking the
   // step again reopens that same draft instead of spawning another Untitled
   // Workflow. If the user deleted it, a fresh one is created.
-  // Open the step's draft workflow: reuse the one created for this (step,
-  // prompt) if it still exists, otherwise create a fresh trigger+action draft.
+  // Open the step's draft workflow: reuse the one created for this persist key
+  // if it still exists, otherwise create a fresh trigger+action draft.
+  // Chip paths pass persistKey `${step.key}:${chip.id}` so clone and AI-fallback
+  // share the same slot; non-chip AI actions still key by prompt text.
   // In tour mode it requests the guided editor tour instead of seeding the AI
   // prompt, so the tour runs on the same draft.
   const startStepWorkflow = async (
     step: Step,
     prompt: string,
-    opts?: { tour?: boolean }
+    opts?: { tour?: boolean; persistKey?: string }
   ): Promise<void> => {
-    const key = `${step.key}:${prompt}`;
+    const key = opts?.persistKey ?? `${step.key}:${prompt}`;
     let id = gs.getStepWorkflowId(key);
     if (id) {
       try {
@@ -602,7 +607,9 @@ export function GettingStartedLauncher({
     if (chip.workflowId) {
       cloneStarterWorkflow(step, chip);
     } else {
-      startStepWorkflow(step, chip.prompt);
+      startStepWorkflow(step, chip.prompt, {
+        persistKey: `${step.key}:${chip.id}`,
+      });
     }
   };
 
@@ -660,16 +667,12 @@ export function GettingStartedLauncher({
 }
 
 function launcherTotal(gs: GettingStarted): number {
-  const branch = getBranches({ resolvedIds: gs.recommendedIds }).find(
-    (b) => b.key === "agent"
-  );
+  const branch = getBranches(gs.chipContext).find((b) => b.key === "agent");
   return branch?.steps.length ?? 0;
 }
 
 function launcherDone(gs: GettingStarted): number {
-  const branch = getBranches({ resolvedIds: gs.recommendedIds }).find(
-    (b) => b.key === "agent"
-  );
+  const branch = getBranches(gs.chipContext).find((b) => b.key === "agent");
   if (!branch) {
     return 0;
   }

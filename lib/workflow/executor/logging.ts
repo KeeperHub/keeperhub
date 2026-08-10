@@ -25,6 +25,7 @@ import {
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import {
   ERROR_STATUSES,
+  type ErrorStatus,
   isErrorStatus,
   statusForErrorType,
 } from "@/lib/errors/execution-status";
@@ -40,6 +41,7 @@ import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
 import { toJsonSafe } from "@/lib/utils/json-safe";
 import {
   describeVerificationFailure,
+  hasUnreadableReceipt,
   type ReceiptVerificationResult,
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
@@ -224,7 +226,15 @@ function mergeReceiptResults(
 
 type ReconcileTransactionHashesResult =
   | { ok: true; hashes: TransactionHashEntry[] }
-  | { ok: false; hashes: TransactionHashEntry[]; error: string };
+  | {
+      ok: false;
+      hashes: TransactionHashEntry[];
+      error: string;
+      // False when at least one hash could not be read at all. The run did not
+      // fail; we could not see whether it succeeded, and calling that an error
+      // is what makes a caller re-run an already-broadcast transaction.
+      conclusive: boolean;
+    };
 
 /**
  * KEEP-966: independently re-verify every claimed transaction hash against
@@ -247,11 +257,14 @@ async function reconcileTransactionHashes(
       entry.chainId !== undefined
   );
   if (verifiable.length < hashes.length) {
+    // A hash we can never verify is a defect in what the step reported, not an
+    // unread receipt, so this stays a conclusive failure.
     return {
       ok: false,
       hashes,
       error:
         "On-chain verification failed: missing chainId for one or more transaction hashes",
+      conclusive: true,
     };
   }
 
@@ -265,6 +278,7 @@ async function reconcileTransactionHashes(
       ok: false,
       hashes: merged,
       error: describeVerificationFailure(results),
+      conclusive: !hasUnreadableReceipt(results),
     };
   }
   return { ok: true, hashes: merged };
@@ -840,10 +854,17 @@ export async function logWorkflowCompleteDb(
   // this is the "per-execution receipts" deliverable: an operator needs to
   // see which hash failed and why, not just that the run errored.
   let verifiedTransactionHashes = transactionHashes;
+  // Set when a claimed hash could not be read at all. The run is neither a
+  // success we can assert nor a failure we can assert, so it finalizes to a
+  // non-terminal state and the reconciler settles it once the chain answers.
+  // Demoting it to error instead would tell an operator a broadcast run failed
+  // and invite a re-run of transactions that may already have landed.
+  let unreadableReceipts = false;
   if (resolvedStatus === "success" && transactionHashes.length > 0) {
     const reconciled = await reconcileTransactionHashes(transactionHashes);
     verifiedTransactionHashes = reconciled.hashes;
     if (!reconciled.ok) {
+      unreadableReceipts = !reconciled.conclusive;
       resolvedStatus = "error";
       resolvedError = reconciled.error;
     }
@@ -869,7 +890,12 @@ export async function logWorkflowCompleteDb(
   // error for the user-facing status (its errorType is still written as
   // "system" below, so alerting is unchanged). Step logs and the success-path
   // stay on resolvedStatus; only the execution row's status carries the split.
-  const executionStatus =
+  // An unread receipt is not an error outcome, so the row carries no error
+  // classification even though resolvedStatus was set to error above to reuse
+  // the non-success branches.
+  const persistedClassification = unreadableReceipts ? null : classification;
+
+  let executionStatus: "success" | "unconfirmed" | ErrorStatus =
     resolvedStatus === "error"
       ? statusForErrorType(
           classification && !isDefaultClassification(classification)
@@ -877,6 +903,9 @@ export async function logWorkflowCompleteDb(
             : null
         )
       : resolvedStatus;
+  if (unreadableReceipts) {
+    executionStatus = "unconfirmed";
+  }
 
   // Self-join alias so RETURNING can expose the pre-update status (the FROM
   // clause reads the statement snapshot, i.e. the row as it was before this
@@ -891,9 +920,9 @@ export async function logWorkflowCompleteDb(
       status: executionStatus,
       output: toJsonSafe(params.output),
       error: resolvedError,
-      errorCategory: classification?.errorCategory ?? null,
-      errorType: classification?.errorType ?? null,
-      errorCode: classification?.code ?? null,
+      errorCategory: persistedClassification?.errorCategory ?? null,
+      errorType: persistedClassification?.errorType ?? null,
+      errorCode: persistedClassification?.code ?? null,
       completedAt: new Date(),
       duration: duration.toString(),
       // Clear current step on completion
@@ -931,21 +960,28 @@ export async function logWorkflowCompleteDb(
   // must not emit a second sample - counters are append-only, so the first
   // terminal sample stands. resolvedStatus is post-reconciliation, so
   // spurious errors already flipped to success are counted as success here.
-  if (updated.length > 0 && !isErrorStatus(updated[0].previousStatus)) {
+  // An unconfirmed run has not finished, so it emits no sample here. The
+  // reconciler emits one when it settles, which keeps the counter meaning
+  // "finished" and keeps a success rate computed from it correct.
+  if (
+    updated.length > 0 &&
+    !isErrorStatus(updated[0].previousStatus) &&
+    executionStatus !== "unconfirmed"
+  ) {
     const workflowId = updated[0].workflowId;
     try {
       const orgSlug = await resolveOrgSlugForCounter(workflowId);
-      if (classification) {
+      if (persistedClassification) {
         recordWorkflowExecutionError({
           orgSlug,
-          errorCategory: classification.errorCategory,
-          errorType: classification.errorType,
+          errorCategory: persistedClassification.errorCategory,
+          errorType: persistedClassification.errorType,
         });
       }
       recordWorkflowExecutionFinished({
         status: executionStatus,
         orgSlug,
-        errorType: classification?.errorType ?? NA_ERROR_TYPE,
+        errorType: persistedClassification?.errorType ?? NA_ERROR_TYPE,
       });
     } catch {
       // Counter emission must never break finalization.

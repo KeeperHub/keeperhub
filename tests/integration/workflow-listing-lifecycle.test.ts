@@ -24,6 +24,8 @@ type WorkflowRow = {
   category: string | null;
   chain: string | null;
   workflowType: "read" | "write";
+  visibility: "private" | "unlisted" | "public";
+  shareExecutionStatus: boolean;
   nodes: unknown[];
   createdAt: Date;
   updatedAt: Date;
@@ -135,6 +137,10 @@ describe("workflow listing lifecycle", () => {
       category: null,
       chain: null,
       workflowType: "read",
+      // Listing does not change visibility; a workflow stays private until the
+      // separate go-live flow promotes it.
+      visibility: "private",
+      shareExecutionStatus: false,
       nodes: [],
       createdAt: new Date("2026-01-01"),
       updatedAt: new Date("2026-01-01"),
@@ -185,6 +191,46 @@ describe("workflow listing lifecycle", () => {
       return;
     }
     expect(result.listing.listedSlug).toBe("padded-slug");
+  });
+
+  it("list: rejects shareExecutionStatus on a private workflow", async () => {
+    // Listing is not publishing. Without this the curator gets a 200, the flag
+    // persists, and every /executions/<id> link 404s because the read gate
+    // keys off visibility.
+    const result = await listWorkflow(WORKFLOW_ID, ORG_ID, {
+      slug: "share-on-private",
+      shareExecutionStatus: true,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "SHARE_REQUIRES_PUBLIC_VISIBILITY",
+    });
+    expect(workflowState.shareExecutionStatus).toBe(false);
+  });
+
+  it("list: accepts shareExecutionStatus on an unlisted-visibility workflow", async () => {
+    workflowState.visibility = "unlisted";
+
+    const result = await listWorkflow(WORKFLOW_ID, ORG_ID, {
+      slug: "share-on-unlisted",
+      shareExecutionStatus: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(workflowState.shareExecutionStatus).toBe(true);
+  });
+
+  it("list: always accepts turning sharing off, whatever the visibility", async () => {
+    workflowState.shareExecutionStatus = true;
+
+    const result = await listWorkflow(WORKFLOW_ID, ORG_ID, {
+      slug: "share-off-on-private",
+      shareExecutionStatus: false,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(workflowState.shareExecutionStatus).toBe(false);
   });
 
   it("unlist: sets isListed=false, preserves listedSlug and listedAt", async () => {

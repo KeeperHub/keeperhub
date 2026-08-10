@@ -25,6 +25,10 @@ import {
 } from "@/lib/schedule-service";
 import { sanitizeDescription } from "@/lib/sanitize-description";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
+import {
+  canShareExecutionStatus,
+  clearShareExecutionStatus,
+} from "@/lib/workflow/share-execution-status";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
 import { recordWorkflowSnapshot } from "@/lib/workflow/history";
@@ -243,6 +247,7 @@ function buildUpdateData(
     "inputSchema", // v1.7 listing fields //
     "outputMapping", // v1.7 listing fields //
     "priceUsdcPerCall", // v1.7 listing fields //
+    "shareExecutionStatus",
   ];
   for (const field of fields) {
     if (body[field] !== undefined) {
@@ -603,6 +608,40 @@ export async function PATCH(
       body.isListed === false && existingWorkflow.isListed === true;
     const isTransitioningToListed =
       body.isListed === true && existingWorkflow.isListed !== true;
+    // Sharing is an explicit owner opt-in, so it has to be cleared on every
+    // path that retires the surface it applies to - not just unlisting.
+    // Demoting visibility to private already makes the share links 404
+    // (isPubliclyShareableWorkflow requires public/unlisted), which reads to
+    // the owner as "sharing is off"; leaving the column true meant a later
+    // promotion back to public/unlisted silently re-exposed every historical
+    // run, including ones from the private period, with no re-consent.
+    const isTransitioningToPrivate =
+      body.visibility === "private" && existingWorkflow.visibility !== "private";
+    if (isTransitioningToUnlisted || isTransitioningToPrivate) {
+      Object.assign(updateData, clearShareExecutionStatus());
+    }
+
+    // Enforce the sharing invariant against the visibility this request will
+    // leave behind, not the one it started with, so `{visibility: "private",
+    // shareExecutionStatus: true}` in a single PATCH is refused rather than
+    // half-applied. Rejecting beats silently dropping the field: a caller that
+    // is told nothing assumes sharing is on and hands out links that 404,
+    // which is the failure this invariant exists to prevent.
+    const effectiveVisibility = (body.visibility ??
+      existingWorkflow.visibility) as string | null;
+    if (
+      body.shareExecutionStatus === true &&
+      !canShareExecutionStatus(effectiveVisibility)
+    ) {
+      return NextResponse.json(
+        {
+          error: "SHARE_REQUIRES_PUBLIC_VISIBILITY",
+          message:
+            "Execution status can only be shared on a public or unlisted workflow. Change the workflow's visibility before enabling sharing.",
+        },
+        { status: 422 }
+      );
+    }
     const willBeListed =
       !isTransitioningToUnlisted &&
       (isTransitioningToListed || existingWorkflow.isListed === true);

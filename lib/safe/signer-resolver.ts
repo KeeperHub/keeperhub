@@ -196,13 +196,17 @@ function backfillRoleInBackground(safe: SafeWallet): void {
  */
 export async function resolveSignerMode(
   organizationId: string,
-  chainId: number
+  chainId: number,
+  options: { recordMetrics?: boolean } = {}
 ): Promise<SignerMode> {
   const mode = await resolveSignerModeImpl(organizationId, chainId);
   // KEEP-568: emit a single resolver-level counter so dashboards can track
   // the eoa / safe / safe-role distribution. The per-tx `safe.tx.*` counter
-  // only sees the two Safe branches; this one also covers EOA.
-  recordSignerMode({ kind: mode.kind, chainId });
+  // only sees the two Safe branches; this one also covers EOA. Editor
+  // preflight calls opt out so they do not inflate production execution data.
+  if (options.recordMetrics !== false) {
+    recordSignerMode({ kind: mode.kind, chainId });
+  }
   return mode;
 }
 
@@ -376,6 +380,7 @@ type ResolveSignerForNodeInput = {
   organizationId: string;
   chainId: number;
   web3Connection?: string | null;
+  recordMetrics?: boolean;
 };
 
 /**
@@ -400,14 +405,18 @@ export async function resolveSignerForNode(
   const parsed = parseWeb3Connection(input.web3Connection);
 
   if (parsed.kind === "default") {
-    return resolveSignerMode(input.organizationId, input.chainId);
+    return resolveSignerMode(input.organizationId, input.chainId, {
+      recordMetrics: input.recordMetrics,
+    });
   }
 
   if (parsed.kind === SIGNER_MODE.EOA) {
     const ownerAddress = normalizeAddressForStorage(
       await getOrganizationWalletAddress(input.organizationId)
     );
-    recordSignerMode({ kind: SIGNER_MODE.EOA, chainId: input.chainId });
+    if (input.recordMetrics !== false) {
+      recordSignerMode({ kind: SIGNER_MODE.EOA, chainId: input.chainId });
+    }
     return { kind: SIGNER_MODE.EOA, ownerAddress };
   }
 
@@ -471,7 +480,9 @@ export async function resolveSignerForNode(
 
   const role = roleRows[0];
   if (role && role.status === "active") {
-    recordSignerMode({ kind: SIGNER_MODE.SAFE_ROLE, chainId: input.chainId });
+    if (input.recordMetrics !== false) {
+      recordSignerMode({ kind: SIGNER_MODE.SAFE_ROLE, chainId: input.chainId });
+    }
     return {
       kind: SIGNER_MODE.SAFE_ROLE,
       ownerAddress,
@@ -498,7 +509,9 @@ export async function resolveSignerForNode(
       isSigningActive: safe.isSigningActive,
     } as SafeWallet;
     backfillRoleInBackground(safeForReconcile);
-    recordSignerMode({ kind: SIGNER_MODE.SAFE_ROLE, chainId: input.chainId });
+    if (input.recordMetrics !== false) {
+      recordSignerMode({ kind: SIGNER_MODE.SAFE_ROLE, chainId: input.chainId });
+    }
     return {
       kind: SIGNER_MODE.SAFE_ROLE,
       ownerAddress,
@@ -510,7 +523,9 @@ export async function resolveSignerForNode(
     };
   }
 
-  recordSignerMode({ kind: SIGNER_MODE.SAFE, chainId: input.chainId });
+  if (input.recordMetrics !== false) {
+    recordSignerMode({ kind: SIGNER_MODE.SAFE, chainId: input.chainId });
+  }
   return {
     kind: SIGNER_MODE.SAFE,
     ownerAddress,

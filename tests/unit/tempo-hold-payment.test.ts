@@ -75,6 +75,7 @@ import {
   type HoldPaymentInput,
   holdPaymentStep,
 } from "@/plugins/tempo/steps/hold-payment";
+import { executeHoldPayment } from "@/plugins/tempo/steps/hold-payment-core";
 
 const USDC = "0x20c0000000000000000000000000000000000001";
 const RECIPIENT = "0x1111111111111111111111111111111111111111";
@@ -269,6 +270,102 @@ describe("holdPaymentStep - input validation", () => {
     expect(res.success).toBe(false);
     if (!res.success) {
       expect(res.error).toContain("Amount is required");
+    }
+  });
+
+  it("rejects an invalid recipient before requiring execution context", async () => {
+    const res = await holdPaymentStep(
+      baseInput({
+        recipientAddress: "nope",
+        _context: undefined,
+      })
+    );
+    expect(res.success).toBe(false);
+    if (!res.success) {
+      expect(res.error).toContain("Invalid recipient");
+      expect(res.failureKind).toBe("validation");
+    }
+    expect(mockResolveOrganizationContext).not.toHaveBeenCalled();
+  });
+});
+
+describe("executeHoldPayment - validation vs infrastructure", () => {
+  it("returns validation failureKind for an unknown token config", async () => {
+    mockResolveTempoToken.mockRejectedValue(
+      new Error("Unknown token NOTATOKEN")
+    );
+
+    const res = await executeHoldPayment({
+      organizationId: "org1",
+      userId: "u1",
+      network: "tempo-testnet",
+      tokenConfig: "NOTATOKEN",
+      amount: "1",
+      recipientAddress: RECIPIENT,
+    });
+
+    expect(res.success).toBe(false);
+    if (!res.success) {
+      expect(res.failureKind).toBe("validation");
+      expect(res.error).toContain("NOTATOKEN");
+    }
+    expect(mockSignTempoTx).not.toHaveBeenCalled();
+  });
+
+  it("returns validation failureKind for a non-numeric amount", async () => {
+    const res = await executeHoldPayment({
+      organizationId: "org1",
+      userId: "u1",
+      network: "tempo-testnet",
+      tokenConfig: { supportedTokenId: "usdc" },
+      amount: "abc",
+      recipientAddress: RECIPIENT,
+    });
+
+    expect(res.success).toBe(false);
+    if (!res.success) {
+      expect(res.failureKind).toBe("validation");
+    }
+    expect(mockSignTempoTx).not.toHaveBeenCalled();
+  });
+
+  it("returns infrastructure failureKind when RPC provider setup fails", async () => {
+    mockGetRpcProvider.mockRejectedValue(new Error("RPC unavailable"));
+
+    const res = await executeHoldPayment({
+      organizationId: "org1",
+      userId: "u1",
+      network: "tempo-testnet",
+      tokenConfig: { supportedTokenId: "usdc" },
+      amount: "1",
+      recipientAddress: RECIPIENT,
+    });
+
+    expect(res.success).toBe(false);
+    if (!res.success) {
+      expect(res.failureKind).toBe("infrastructure");
+      expect(res.error).toContain("RPC unavailable");
+    }
+    expect(mockResolveTempoToken).not.toHaveBeenCalled();
+    expect(mockSignTempoTx).not.toHaveBeenCalled();
+  });
+
+  it("returns infrastructure failureKind when signing fails", async () => {
+    mockSignTempoTx.mockRejectedValue(new Error("Turnkey unavailable"));
+
+    const res = await executeHoldPayment({
+      organizationId: "org1",
+      userId: "u1",
+      network: "tempo-testnet",
+      tokenConfig: { supportedTokenId: "usdc" },
+      amount: "1",
+      recipientAddress: RECIPIENT,
+    });
+
+    expect(res.success).toBe(false);
+    if (!res.success) {
+      expect(res.failureKind).toBe("infrastructure");
+      expect(res.error).toContain("Turnkey unavailable");
     }
   });
 });

@@ -7,7 +7,7 @@ import { USER_EDIT_EPSILON_MS } from "@/scripts/seed/seed-onboarding-workflows";
 
 describe("ONBOARDING_WORKFLOW_FIXTURES", () => {
   it("has the expected fixture count", () => {
-    expect(ONBOARDING_WORKFLOW_FIXTURES).toHaveLength(6);
+    expect(ONBOARDING_WORKFLOW_FIXTURES).toHaveLength(8);
   });
 
   it("has unique ids", () => {

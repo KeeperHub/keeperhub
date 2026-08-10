@@ -5,32 +5,13 @@ description: "KeeperHub command-line interface for managing workflows, executing
 
 # CLI
 
-The KeeperHub CLI (`kh`) lets you manage workflows, execute blockchain actions, and monitor runs from the terminal. It is designed for scripting, CI/CD pipelines, and AI-assisted workflows via MCP.
+The KeeperHub CLI (`kh`) lets you manage workflows, execute blockchain actions, and monitor runs
+from the terminal. It is designed for scripting, CI/CD pipelines, and AI-assisted workflows via MCP.
 
-## Install
-
-**Homebrew (macOS/Linux):**
-```
-brew install keeperhub/tap/kh
-```
-
-**Go install:**
-```
-go install github.com/keeperhub/cli/cmd/kh@latest
-```
-
-**Binary download:** Download from [GitHub Releases](https://github.com/keeperhub/cli/releases) and add to your PATH.
-
-## Authenticate
-
-```
-kh auth login
-```
-
-For CI/CD environments, set the `KH_API_KEY` environment variable instead.
+New to it? [Getting Started with the CLI](/getting-started/cli) covers install, authentication,
+and running your first workflow.
 
 ## What's in this section
 
-- [Quickstart](./cli/quickstart) -- install, authenticate, and run your first commands
-- [Concepts](./cli/concepts) -- authentication model, output formats, configuration, MCP mode
-- [Commands](./cli/commands) -- full reference for every `kh` command
+- [Concepts](/cli/concepts) - authentication model, output formats, configuration, MCP mode
+- [Commands](/cli/commands/kh) - full reference for every `kh` command

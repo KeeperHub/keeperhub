@@ -1,8 +1,15 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import {
+  describeCron,
+  IntervalTooSmallError,
+  parseIntervalSeconds,
+  validateCronExpression,
+} from "@/lib/cron-utils";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { SUPPORTED_CHAIN_IDS } from "@/lib/rpc/types";
 import { withToolLogging } from "./logging";
+import { deprecatedToolDescription } from "./mcp-tool-catalog";
 import {
   getRequiredScopeForTool,
   isToolAllowed,
@@ -250,11 +257,24 @@ function buildPaymentRequiredHint(
 // Optional idempotency key shared by the mutating tools. Forwarded to the REST
 // layer as the `Idempotency-Key` header so a retry with the same key and
 // arguments replays the original result instead of executing again.
+//
+// The description spells out which 409 to retry because an agent cannot tell
+// from the status: conflict and in-progress share it and mean opposite things,
+// and rotating the key on the in-progress one can broadcast a second
+// transaction for an action the first request is still completing. It also has
+// to say what `retryable` does NOT mean, since `false` on a conflict is neither
+// "stop" nor an unconditional "rotate".
+//
+// The rotate case needs its precondition stated here more than anywhere else.
+// This text is read by an LLM, which is the caller most likely to rebuild a body
+// from memory and re-serialize the same intent differently -- "0.1" against
+// "0.10" -- and an unqualified "use a NEW key" would tell it to resend a
+// transfer that is already in flight.
 const IDEMPOTENCY_KEY_ARG = z
   .string()
   .optional()
   .describe(
-    "Optional Idempotency-Key (e.g. an agent-side transaction id). Retrying with the same key and arguments returns the original result instead of executing again, within a 24h window. Reusing a key with different arguments returns a 409 conflict."
+    "Optional Idempotency-Key (e.g. an agent-side transaction id). Retrying with the same key and arguments returns the original result instead of executing again, within a 24h window. Two 409s are possible, and the body's `retryable` field says only whether it is safe to send the request again under the SAME key. `idempotency_in_progress` (retryable true): the first request is still running, so retry shortly with the same key. `idempotency_conflict` (retryable false): this body is not the body the key was bound to. Rotate to a NEW key ONLY if this is genuinely different work. If it is the same intent you already sent, the body drifted rather than the intent - re-serializing `0.1` as `0.10`, or `network` for `chainId`, produces this - so rebuild the body to match the original and keep the key. Rotating there escapes the in-flight guard and can broadcast a second transaction. False does not mean give up. Keep the same key whenever the previous attempt's outcome is unknown, such as after a timeout, because rotating it then escapes the in-flight guard. The field appears on these two codes only; other statuses keep their usual meaning, so a 429 is still worth retrying after a back-off even though it carries no `retryable`."
   );
 
 // The direct-execution REST routes support a dry-run path that estimates gas
@@ -273,6 +293,17 @@ const SOLANA_DIRECT_EXECUTION_CHAIN_IDS = new Set<number>([
   SUPPORTED_CHAIN_IDS.SOLANA_DEVNET,
 ]);
 
+export function buildSimulationUnsupportedChainError(chainId: number): Error {
+  return new Error(
+    JSON.stringify({
+      error: "simulation_unsupported_chain",
+      message: "Direct-execution simulation is not supported on this chain.",
+      chain_id: chainId,
+      hint: "Direct-execution simulation is EVM-only. Preflight with a Solana-aware client before broadcasting.",
+    })
+  );
+}
+
 function assertSimulationSupported(chainId: string, simulate?: boolean): void {
   if (!simulate) {
     return;
@@ -289,9 +320,7 @@ function assertSimulationSupported(chainId: string, simulate?: boolean): void {
     return;
   }
   if (SOLANA_DIRECT_EXECUTION_CHAIN_IDS.has(normalizedChainId)) {
-    throw new Error(
-      `Direct-execution simulation is currently EVM-only; Solana chain ${normalizedChainId} cannot be simulated. Do not broadcast unless you can preflight the transaction through a Solana-aware client.`
-    );
+    throw buildSimulationUnsupportedChainError(normalizedChainId);
   }
 }
 
@@ -416,13 +445,68 @@ function looseJsonString(description: string) {
     .describe(description);
 }
 
+const DEFAULT_COLD_START_RETRY_SECONDS = 30;
+const COLD_START_HTTP_STATUSES = new Set([502, 503, 504]);
+const MCP_FETCH_TIMEOUT_MS = 55_000;
+
+type CallApiOptions = {
+  coldStartAware?: boolean;
+  /** Default 55s. Pass null to disable the MCP client abort (long-running execute tools). */
+  timeoutMs?: number | null;
+};
+
+const NO_MCP_FETCH_TIMEOUT: CallApiOptions = { timeoutMs: null };
+const COLD_START_NO_TIMEOUT: CallApiOptions = {
+  coldStartAware: true,
+  timeoutMs: null,
+};
+
+function isMcpFetchTimeoutError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return error.name === "TimeoutError";
+}
+
+function parseRetryAfterSeconds(header: string | null): number {
+  if (!header) {
+    return DEFAULT_COLD_START_RETRY_SECONDS;
+  }
+  const asNumber = Number(header);
+  if (Number.isFinite(asNumber) && asNumber >= 0) {
+    return Math.ceil(asNumber);
+  }
+  const asDate = Date.parse(header);
+  if (!Number.isNaN(asDate)) {
+    return Math.max(1, Math.ceil((asDate - Date.now()) / 1000));
+  }
+  return DEFAULT_COLD_START_RETRY_SECONDS;
+}
+
+function buildColdStartError(
+  retryAfterSeconds: number,
+  idempotencyKey?: string
+): Error {
+  const hint = idempotencyKey
+    ? `Retry the same idempotency_key after ${retryAfterSeconds} seconds.`
+    : `Retry after ${retryAfterSeconds} seconds. Pass idempotency_key on create_workflow to make retries safe.`;
+  return new Error(
+    JSON.stringify({
+      code: "upstream_cold_start",
+      retryAfterSeconds,
+      hint,
+    })
+  );
+}
+
 async function callApi(
   internalApiBaseUrl: string,
   authHeader: string,
   path: string,
   method: string,
   body?: unknown,
-  idempotencyKey?: string
+  idempotencyKey?: string,
+  options?: CallApiOptions
 ): Promise<ApiResponse> {
   const url = `${internalApiBaseUrl}${path}`;
   const headers: Record<string, string> = {
@@ -433,17 +517,46 @@ async function callApi(
     headers["Idempotency-Key"] = idempotencyKey;
   }
 
-  const response = await fetch(url, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    const timeoutMs =
+      options?.timeoutMs === undefined
+        ? MCP_FETCH_TIMEOUT_MS
+        : options.timeoutMs;
+    const fetchInit: RequestInit = {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    };
+    if (timeoutMs !== null) {
+      fetchInit.signal = AbortSignal.timeout(timeoutMs);
+    }
+    response = await fetch(url, fetchInit);
+  } catch (error) {
+    if (options?.coldStartAware && isMcpFetchTimeoutError(error)) {
+      throw buildColdStartError(
+        DEFAULT_COLD_START_RETRY_SECONDS,
+        idempotencyKey
+      );
+    }
+    throw error;
+  }
 
   if (!response.ok) {
+    if (
+      options?.coldStartAware &&
+      COLD_START_HTTP_STATUSES.has(response.status)
+    ) {
+      throw buildColdStartError(
+        parseRetryAfterSeconds(response.headers.get("Retry-After")),
+        idempotencyKey
+      );
+    }
     const errorText = await response.text();
-    throw new Error(
-      `API call failed: ${response.status} ${response.statusText} - ${errorText}`
-    );
+    const statusLabel = response.statusText
+      ? `${response.status} ${response.statusText}`
+      : String(response.status);
+    throw new Error(`API call failed: ${statusLabel} - ${errorText}`);
   }
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -453,6 +566,68 @@ async function callApi(
 
   return { result: await response.text() };
 }
+
+type GetExecutionArgs = {
+  executionId: string;
+  includeData?: boolean;
+  nodeIds?: string[];
+  truncateData?: number;
+};
+
+async function fetchExecutionData(
+  internalApiBaseUrl: string,
+  authHeader: string,
+  args: GetExecutionArgs
+): Promise<{ status: ApiResponse; logs: ApiResponse }> {
+  const params = new URLSearchParams();
+  if (args.includeData !== undefined) {
+    params.set("includeData", String(args.includeData));
+  }
+  if (args.nodeIds !== undefined && args.nodeIds.length > 0) {
+    for (const nodeId of args.nodeIds) {
+      params.append("nodeIds", nodeId);
+    }
+  }
+  if (args.truncateData !== undefined) {
+    params.set("truncateData", String(args.truncateData));
+  }
+  const query = params.toString();
+  const logsPath = query
+    ? `/api/workflows/executions/${args.executionId}/logs?${query}`
+    : `/api/workflows/executions/${args.executionId}/logs`;
+  const statusPath = `/api/workflows/executions/${args.executionId}/status`;
+  const [statusData, logsData] = await Promise.all([
+    callApi(internalApiBaseUrl, authHeader, statusPath, "GET"),
+    callApi(internalApiBaseUrl, authHeader, logsPath, "GET"),
+  ]);
+  return { status: statusData, logs: logsData };
+}
+
+const GET_EXECUTION_SCHEMA = {
+  executionId: z
+    .string()
+    .describe("The execution ID returned by execute_workflow"),
+  includeData: z
+    .boolean()
+    .optional()
+    .describe(
+      "Include input/output/outputRaw blobs on each log entry. Defaults to true for backward compatibility with v1.11 get_execution_logs callers. Pass false to receive a compact status-only response."
+    ),
+  nodeIds: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Restrict full input/output/outputRaw data to only the listed nodeIds (exact, case-sensitive match against the nodeId column). All other entries still return status, error, nodeName, nodeType, startedAt, completedAt, duration, timestamp, iterationIndex, and forEachNodeId. Empty array is treated as omitted. Has no effect when includeData is false."
+    ),
+  truncateData: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Per-field byte cap. Any input/output/outputRaw JSON-stringified payload exceeding this size is replaced with { _truncated: true, originalSize: <bytes>, preview: <first N bytes of stringified value> }. The error field is NEVER truncated regardless of this cap."
+    ),
+};
 
 export function registerTools(
   server: McpServer,
@@ -567,7 +742,8 @@ export function registerTools(
             projectId: args.projectId,
             tagId: args.tagId,
           },
-          args.idempotency_key
+          args.idempotency_key,
+          { coldStartAware: true }
         );
         return {
           content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -785,7 +961,8 @@ export function registerTools(
           `/api/workflow/${args.workflowId}/execute`,
           "POST",
           { input: args.input ?? {} },
-          args.idempotency_key
+          args.idempotency_key,
+          NO_MCP_FETCH_TIMEOUT
         );
         // KEEP-966: `data` already carries status: "running", not "completed"
         // -- restate that explicitly at the MCP content layer so a calling
@@ -804,65 +981,139 @@ export function registerTools(
 
   server.tool(
     "get_execution",
-    "Get combined status and step-by-step logs for a workflow execution. Replaces the v1.11 get_execution_status + get_execution_logs pair. Returns { status, logs } in a single response. `status` and each log's `transactionHashes[].verified`/`receiptStatus` are independently reconciled against on-chain receipts before the execution is allowed to finalize as success -- this, not execute_workflow's trigger acknowledgement, is the authoritative signal for whether a workflow (and any money movement within it) actually completed. By default returns full node input/output data (backward compatible with v1.11 get_execution_logs no-param callers). Pass `includeData: false` to omit input/output/outputRaw blobs, `nodeIds: string[]` to restrict full data to specific nodes (status and error always returned for every node), or `truncateData: number` (bytes) to cap individual input/output/outputRaw payloads. The `error` field is never truncated.",
-    {
-      executionId: z
-        .string()
-        .describe("The execution ID returned by execute_workflow"),
-      includeData: z
-        .boolean()
-        .optional()
-        .describe(
-          "Include input/output/outputRaw blobs on each log entry. Defaults to true for backward compatibility with v1.11 get_execution_logs callers. Pass false to receive a compact status-only response."
-        ),
-      nodeIds: z
-        .array(z.string())
-        .optional()
-        .describe(
-          "Restrict full input/output/outputRaw data to only the listed nodeIds (exact, case-sensitive match against the nodeId column). All other entries still return status, error, nodeName, nodeType, startedAt, completedAt, duration, timestamp, iterationIndex, and forEachNodeId. Empty array is treated as omitted. Has no effect when includeData is false."
-        ),
-      truncateData: z
-        .number()
-        .int()
-        .positive()
-        .optional()
-        .describe(
-          "Per-field byte cap. Any input/output/outputRaw JSON-stringified payload exceeding this size is replaced with { _truncated: true, originalSize: <bytes>, preview: <first N bytes of stringified value> }. The error field is NEVER truncated regardless of this cap."
-        ),
-    },
+    "Get combined status and step-by-step logs for a workflow execution. Replaces the v1.11 get_execution_status + get_execution_logs pair. Returns { status, logs } in a single response. `status` and each log's `transactionHashes[].verified`/`receiptStatus` are independently reconciled against on-chain receipts before the execution is allowed to finalize as success -- this, not execute_workflow's trigger acknowledgement, is the authoritative signal for whether a workflow (and any money movement within it) actually completed. By default returns full node input/output data (backward compatible with v1.11 get_execution_logs no-param callers). Pass `includeData: false` to omit input/output/outputRaw blobs, `nodeIds: string[]` to restrict full data to specific nodes (status and error always returned for every node), or `truncateData: number` (bytes) to cap individual input/output/outputRaw payloads. The `error` field is never truncated. One exception to the shape: for an execution owned by another organization that you can see only through its workflow's public share setting, `logs` is null and `status` is redacted (node identifiers omitted) -- includeData, nodeIds and truncateData have no effect there.",
+    GET_EXECUTION_SCHEMA,
     { title: "Get Execution", readOnlyHint: true, destructiveHint: false },
     withScopeCheck("get_execution", scope, async (args) =>
       withToolLogging("get_execution", undefined, async () => {
-        const params = new URLSearchParams();
-        if (args.includeData !== undefined) {
-          params.set("includeData", String(args.includeData));
+        const accessRequest = new Request(`${internalApiBaseUrl}/mcp`, {
+          headers: { Authorization: authHeader },
+        });
+        const { resolveExecutionViewAccess } = await import(
+          "@/lib/workflow/execution-access"
+        );
+        const viewAccess = await resolveExecutionViewAccess(
+          accessRequest,
+          args.executionId
+        );
+        if (viewAccess.mode === "invalidAuth") {
+          throw new Error(viewAccess.error);
         }
-        if (args.nodeIds !== undefined && args.nodeIds.length > 0) {
-          for (const nodeId of args.nodeIds) {
-            params.append("nodeIds", nodeId);
-          }
+        if (viewAccess.mode === "notFound") {
+          throw new Error(
+            `API call failed: 404 Not Found - ${JSON.stringify({ error: "Execution not found" })}`
+          );
         }
-        if (args.truncateData !== undefined) {
-          params.set("truncateData", String(args.truncateData));
+        if (viewAccess.mode === "accessDenied") {
+          throw new Error(
+            `API call failed: 403 Forbidden - ${JSON.stringify({ error: "Access denied" })}`
+          );
         }
-        const query = params.toString();
-        const logsPath = query
-          ? `/api/workflows/executions/${args.executionId}/logs?${query}`
-          : `/api/workflows/executions/${args.executionId}/logs`;
-        const statusPath = `/api/workflows/executions/${args.executionId}/status`;
-        const [statusData, logsData] = await Promise.all([
-          callApi(internalApiBaseUrl, authHeader, statusPath, "GET"),
-          callApi(internalApiBaseUrl, authHeader, logsPath, "GET"),
-        ]);
+
+        if (viewAccess.mode === "publicReadOnly") {
+          const statusPath = `/api/workflows/executions/${args.executionId}/status`;
+          const statusData = await callApi(
+            internalApiBaseUrl,
+            authHeader,
+            statusPath,
+            "GET"
+          );
+          // Same top-level shape as the owned path. Dropping the `logs` key
+          // here instead would make the response shape depend on ownership,
+          // so a client written against its own execution would silently read
+          // `undefined` (and report zero steps) the first time it was pointed
+          // at a shared one. `null` says "withheld", not "empty".
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    status: statusData,
+                    logs: null,
+                    note: "This execution belongs to another organization and is visible only through its workflow's public share setting. Step logs are withheld and the status is redacted (node identifiers omitted); includeData, nodeIds and truncateData do not apply.",
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+        }
+
+        const data = await fetchExecutionData(
+          internalApiBaseUrl,
+          authHeader,
+          args
+        );
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify(
-                { status: statusData, logs: logsData },
-                null,
-                2
-              ),
+              text: JSON.stringify(data, null, 2),
+            },
+          ],
+        };
+      })
+    )
+  );
+
+  server.tool(
+    "get_execution_status",
+    deprecatedToolDescription(
+      "get_execution_status",
+      "Get workflow execution status only (status sub-object). Prefer get_execution for combined status and logs."
+    ),
+    {
+      executionId: GET_EXECUTION_SCHEMA.executionId,
+    },
+    {
+      title: "Get Execution Status (deprecated)",
+      readOnlyHint: true,
+      destructiveHint: false,
+    },
+    withScopeCheck("get_execution_status", scope, async (args) =>
+      withToolLogging("get_execution_status", undefined, async () => {
+        const data = await fetchExecutionData(internalApiBaseUrl, authHeader, {
+          executionId: args.executionId,
+          includeData: false,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ status: data.status }, null, 2),
+            },
+          ],
+        };
+      })
+    )
+  );
+
+  server.tool(
+    "get_execution_logs",
+    deprecatedToolDescription(
+      "get_execution_logs",
+      "Get workflow execution step logs only (logs sub-object). Prefer get_execution for combined status and logs."
+    ),
+    GET_EXECUTION_SCHEMA,
+    {
+      title: "Get Execution Logs (deprecated)",
+      readOnlyHint: true,
+      destructiveHint: false,
+    },
+    withScopeCheck("get_execution_logs", scope, async (args) =>
+      withToolLogging("get_execution_logs", undefined, async () => {
+        const data = await fetchExecutionData(
+          internalApiBaseUrl,
+          authHeader,
+          args
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ logs: data.logs }, null, 2),
             },
           ],
         };
@@ -900,7 +1151,9 @@ export function registerTools(
           authHeader,
           "/api/ai/generate",
           "POST",
-          { prompt: args.prompt, context: args.context }
+          { prompt: args.prompt, context: args.context },
+          undefined,
+          COLD_START_NO_TIMEOUT
         );
         return {
           content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -956,7 +1209,10 @@ export function registerTools(
 
   server.tool(
     "search_plugins",
-    "[DEPRECATED — will be removed in v1.13. Use list_action_schemas instead.] List available action schemas filtered by category (e.g., 'web3', 'discord', 'system').",
+    deprecatedToolDescription(
+      "search_plugins",
+      "List available action schemas filtered by category (e.g., 'web3', 'discord', 'system')."
+    ),
     {
       category: z
         .string()
@@ -1090,7 +1346,10 @@ export function registerTools(
 
   server.tool(
     "get_template",
-    "[DEPRECATED — will be removed in v1.13. Use get_workflow instead.] Get details of a specific workflow template by ID.",
+    deprecatedToolDescription(
+      "get_template",
+      "Get details of a specific workflow template by ID."
+    ),
     {
       templateId: z.string().describe("The template workflow ID"),
     },
@@ -1190,6 +1449,7 @@ export function registerTools(
           "3. Repeat the same arguments with simulate omitted and a unique idempotency_key",
           "4. Poll get_direct_execution_status with bounded backoff until completed or failed",
           "5. Save the terminal transactionLink as the onchain proof",
+          "- status unconfirmed means the transaction was broadcast but the chain has not confirmed it yet; it is NOT a failure. Keep polling. Never re-send an unconfirmed execution: the transaction may still land and re-sending moves the funds twice",
           "- simulate must be a JSON boolean, not a string",
           "- simulation is EVM-only; Solana chain IDs 101/103 and their aliases are rejected before the API call",
           "- view/pure calls and unmet conditions return their normal read/no-action result",
@@ -1258,7 +1518,8 @@ export function registerTools(
               tokenAddress: args.token_address,
               simulate: args.simulate,
             },
-            args.idempotency_key
+            args.idempotency_key,
+            NO_MCP_FETCH_TIMEOUT
           );
           return {
             content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -1318,7 +1579,8 @@ export function registerTools(
               priorityFeeGwei: args.priority_fee_gwei,
               simulate: args.simulate,
             },
-            args.idempotency_key
+            args.idempotency_key,
+            NO_MCP_FETCH_TIMEOUT
           );
           return {
             content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -1397,7 +1659,8 @@ export function registerTools(
               },
               simulate: args.simulate,
             },
-            args.idempotency_key
+            args.idempotency_key,
+            NO_MCP_FETCH_TIMEOUT
           );
           return {
             content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -1409,7 +1672,7 @@ export function registerTools(
 
   server.tool(
     "get_direct_execution_status",
-    "Get the status of a direct execution (transfer or contract call). Returns transaction hash, status, and result when complete.",
+    "Get the status of a direct execution (transfer or contract call). Returns transaction hash, status, and result when complete. Status is one of pending, running, unconfirmed, completed, failed; only completed and failed are terminal. unconfirmed means the transaction is on chain but not yet confirmed, so keep polling rather than re-sending.",
     {
       execution_id: z
         .string()
@@ -1429,6 +1692,312 @@ export function registerTools(
           authHeader,
           `/api/execute/${args.execution_id}/status`,
           "GET"
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        };
+      })
+    )
+  );
+
+  // =========================================================================
+  // Agent DX tools (cron, executions, notifications, spending, Tempo hold)
+  // =========================================================================
+
+  server.tool(
+    "validate_cron",
+    "Validate a cron expression or interval schedule before creating a schedule trigger. Returns { valid, error?, description? }.",
+    {
+      cronExpression: z
+        .string()
+        .describe("Cron expression with 5 or 6 fields (e.g. '0 9 * * *')"),
+      scheduleIntervalSeconds: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Optional interval trigger seconds (minimum 60). Validated separately from cronExpression."
+        ),
+    },
+    { title: "Validate Cron", readOnlyHint: true, destructiveHint: false },
+    withScopeCheck("validate_cron", scope, async (args) =>
+      withToolLogging("validate_cron", undefined, () => {
+        const cronResult = validateCronExpression(args.cronExpression);
+        const description = cronResult.valid
+          ? describeCron(args.cronExpression)
+          : undefined;
+        let intervalError: string | undefined;
+        if (args.scheduleIntervalSeconds !== undefined) {
+          try {
+            parseIntervalSeconds(args.scheduleIntervalSeconds);
+          } catch (error) {
+            intervalError =
+              error instanceof IntervalTooSmallError
+                ? error.message
+                : "Invalid scheduleIntervalSeconds";
+          }
+        }
+        const valid = cronResult.valid && intervalError === undefined;
+        const payload: {
+          valid: boolean;
+          error?: string;
+          description?: string;
+        } = {
+          valid,
+          error: cronResult.error ?? intervalError,
+        };
+        if (valid) {
+          payload.description = description;
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(payload, null, 2),
+            },
+          ],
+        };
+      })
+    )
+  );
+
+  server.tool(
+    "list_executions",
+    "List workflow and direct executions for the organization with cursor pagination. Wraps GET /api/analytics/runs.",
+    {
+      cursor: z
+        .string()
+        .optional()
+        .describe("Pagination cursor from prior page"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe("Page size (default 20, max 100)"),
+      status: z
+        .string()
+        .optional()
+        .describe(
+          "Filter by status: pending, running, success, error, system_error, external_error, cancelled"
+        ),
+      source: z
+        .enum(["workflow", "direct"])
+        .optional()
+        .describe("Filter by execution source"),
+      range: z
+        .string()
+        .optional()
+        .describe("Time range preset (e.g. 24h, 7d, 30d)"),
+    },
+    { title: "List Executions", readOnlyHint: true, destructiveHint: false },
+    withScopeCheck("list_executions", scope, async (args) =>
+      withToolLogging("list_executions", undefined, async () => {
+        const params = new URLSearchParams();
+        if (args.cursor) {
+          params.set("cursor", args.cursor);
+        }
+        if (args.limit !== undefined) {
+          params.set("limit", String(args.limit));
+        }
+        if (args.status) {
+          params.set("status", args.status);
+        }
+        if (args.source) {
+          params.set("source", args.source);
+        }
+        if (args.range) {
+          params.set("range", args.range);
+        }
+        const query = params.toString();
+        const path = `/api/analytics/runs${query ? `?${query}` : ""}`;
+        const data = await callApi(internalApiBaseUrl, authHeader, path, "GET");
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        };
+      })
+    )
+  );
+
+  server.tool(
+    "get_spending_limits",
+    "Get the organization's daily direct-execution spending caps and current usage (EVM wei and Solana lamports).",
+    {},
+    {
+      title: "Get Spending Limits",
+      readOnlyHint: true,
+      destructiveHint: false,
+    },
+    withScopeCheck("get_spending_limits", scope, async () =>
+      withToolLogging("get_spending_limits", undefined, async () => {
+        const data = await callApi(
+          internalApiBaseUrl,
+          authHeader,
+          "/api/analytics/spend-cap",
+          "GET"
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        };
+      })
+    )
+  );
+
+  server.tool(
+    "test_notification",
+    "Test an integration connection (e.g. Discord, Slack, SendGrid) without saving credentials. May send a real test message depending on the integration type.",
+    {
+      type: z
+        .string()
+        .describe(
+          "Integration plugin type (e.g. 'discord', 'slack', 'sendgrid')"
+        ),
+      config: z
+        .record(z.string(), z.string())
+        .describe(
+          "Credential fields to test (same shape as integration config)"
+        ),
+    },
+    { title: "Test Notification", readOnlyHint: false, destructiveHint: false },
+    withScopeCheck("test_notification", scope, async (args) =>
+      withToolLogging("test_notification", undefined, async () => {
+        const data = await callApi(
+          internalApiBaseUrl,
+          authHeader,
+          "/api/integrations/test",
+          "POST",
+          { type: args.type, config: args.config }
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        };
+      })
+    )
+  );
+
+  server.tool(
+    "tempo_sign_and_hold",
+    "Sign a Tempo transfer-with-memo transaction and hold it for later broadcast (Sign and Hold). Org owner only. Returns paymentId for tempo_release_hold or tempo_cancel_hold.",
+    {
+      network: z.string().describe("Tempo network name or chain ID"),
+      tokenConfig: z
+        .union([z.string(), z.record(z.string(), z.unknown())])
+        .describe("Token symbol or address config"),
+      amount: z.string().describe("Human-readable token amount"),
+      recipientAddress: z.string().describe("Recipient address"),
+      memo: z.string().optional().describe("Optional memo (max 32 bytes)"),
+      broadcastMode: z
+        .enum(["manual", "schedule"])
+        .optional()
+        .describe("manual (default) or schedule"),
+      broadcastAt: z
+        .string()
+        .optional()
+        .describe("ISO timestamp when broadcastMode is schedule"),
+      validBefore: z
+        .string()
+        .optional()
+        .describe("Optional on-chain expiry override"),
+      idempotency_key: IDEMPOTENCY_KEY_ARG,
+    },
+    {
+      title: "Tempo Sign and Hold",
+      readOnlyHint: false,
+      destructiveHint: false,
+    },
+    withScopeCheck("tempo_sign_and_hold", scope, async (args) =>
+      withToolLogging("tempo_sign_and_hold", undefined, async () => {
+        const {
+          idempotency_key: idempotencyKey,
+          network,
+          tokenConfig,
+          amount,
+          recipientAddress,
+          memo,
+          broadcastMode,
+          broadcastAt,
+          validBefore,
+        } = args;
+        const data = await callApi(
+          internalApiBaseUrl,
+          authHeader,
+          "/api/tempo/held-payments",
+          "POST",
+          {
+            network,
+            tokenConfig,
+            amount,
+            recipientAddress,
+            memo,
+            broadcastMode,
+            broadcastAt,
+            validBefore,
+          },
+          idempotencyKey,
+          NO_MCP_FETCH_TIMEOUT
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        };
+      })
+    )
+  );
+
+  server.tool(
+    "tempo_cancel_hold",
+    "Cancel a pending Tempo held payment so it is never broadcast. Org owner only.",
+    {
+      paymentId: z
+        .string()
+        .describe("Held payment ID from tempo_sign_and_hold"),
+    },
+    {
+      title: "Tempo Cancel Hold",
+      readOnlyHint: false,
+      destructiveHint: false,
+    },
+    withScopeCheck("tempo_cancel_hold", scope, async (args) =>
+      withToolLogging("tempo_cancel_hold", undefined, async () => {
+        const data = await callApi(
+          internalApiBaseUrl,
+          authHeader,
+          `/api/tempo/held-payments/${encodeURIComponent(args.paymentId)}/cancel`,
+          "POST",
+          {}
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        };
+      })
+    )
+  );
+
+  server.tool(
+    "tempo_release_hold",
+    "Release (broadcast) a held Tempo payment now. Org owner only. Interactive browser sessions still require step-up MFA; OAuth and API-key callers may release without MFA.",
+    {
+      paymentId: z
+        .string()
+        .describe("Held payment ID from tempo_sign_and_hold"),
+      idempotency_key: IDEMPOTENCY_KEY_ARG,
+    },
+    {
+      title: "Tempo Release Hold",
+      readOnlyHint: false,
+      destructiveHint: false,
+    },
+    withScopeCheck("tempo_release_hold", scope, async (args) =>
+      withToolLogging("tempo_release_hold", undefined, async () => {
+        const data = await callApi(
+          internalApiBaseUrl,
+          authHeader,
+          `/api/tempo/held-payments/${encodeURIComponent(args.paymentId)}/broadcast`,
+          "POST",
+          {},
+          args.idempotency_key,
+          NO_MCP_FETCH_TIMEOUT
         );
         return {
           content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -1619,7 +2188,9 @@ export function registerMetaTools(
           authHeader,
           `/api/execute/${integration}/${slug}`,
           "POST",
-          args.params as Record<string, unknown>
+          args.params as Record<string, unknown>,
+          undefined,
+          NO_MCP_FETCH_TIMEOUT
         );
 
         return {
@@ -1708,7 +2279,9 @@ export function registerMetaTools(
             authHeader,
             `/api/mcp/workflows/${encodeURIComponent(args.slug)}/call`,
             "POST",
-            args.inputs
+            args.inputs,
+            undefined,
+            NO_MCP_FETCH_TIMEOUT
           );
           return {
             content: [{ type: "text", text: JSON.stringify(data, null, 2) }],

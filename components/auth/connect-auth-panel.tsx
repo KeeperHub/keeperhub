@@ -11,6 +11,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  type AuthErrorBody,
+  authErrorCode,
+  authErrorMessage,
+} from "@/lib/auth/auth-error-envelope-client";
 import { authClient, signIn, signUp } from "@/lib/auth-client";
 import { DISPOSABLE_EMAIL_REJECTION_MESSAGE } from "@/lib/auth-disposable-emails-message";
 import { AUTH_SUCCESS_EVENT } from "@/lib/auth-events";
@@ -163,12 +168,13 @@ export function ConnectAuthPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      const body = (await response.json().catch(() => ({}))) as {
-        error?: string;
+      const body = (await response
+        .json()
+        .catch(() => ({}))) as AuthErrorBody & {
         signedIn?: boolean;
       };
       if (!response.ok) {
-        setError(body.error ?? "Sign in failed");
+        setError(authErrorMessage(body, "Sign in failed"));
         return;
       }
       if (body.signedIn) {
@@ -332,24 +338,25 @@ export function ConnectAuthPanel({
           totpCode: mfaTotpCode.trim(),
         }),
       });
-      const body = (await response.json().catch(() => ({}))) as {
-        error?: string;
-        code?: string;
+      const body = (await response
+        .json()
+        .catch(() => ({}))) as AuthErrorBody & {
         redirect?: string;
       };
       if (!response.ok) {
-        if (body.code === "invalid_email_otp") {
-          setError("Invalid email code");
+        const code = authErrorCode(body);
+        if (code === "invalid_email_otp") {
+          setError(authErrorMessage(body, "Invalid email code"));
           setMfaEmailOtp("");
           setView("mfa-email");
           return;
         }
-        if (body.code === "invalid_totp") {
-          setError("Invalid authenticator code");
+        if (code === "invalid_totp") {
+          setError(authErrorMessage(body, "Invalid authenticator code"));
           setMfaTotpCode("");
           return;
         }
-        setError(body.error ?? "Sign in failed");
+        setError(authErrorMessage(body, "Sign in failed"));
         return;
       }
       if (body.redirect === "/verify-ip") {

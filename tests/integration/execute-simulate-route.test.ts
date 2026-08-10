@@ -322,6 +322,40 @@ describe("/api/execute/contract-call simulate", () => {
     expect(body.wouldRevert).toBe(true);
     expect(body.revertReason).toBe("Insufficient balance");
   });
+  it("returns HTTP 503 when contract simulation is unavailable", async () => {
+    resetSpies();
+    simulateContractCallMock.mockResolvedValueOnce({
+      success: false,
+      status: "simulated",
+      from: FROM_ADDRESS,
+      to: "0xbb0000000000000000000000000000000000bb00",
+      value: "0",
+      failureKind: "unavailable",
+      wouldRevert: false,
+      error: "Simulation unavailable: RPC timeout",
+    });
+
+    const res = await contractCallPOST(
+      jsonRequest("/api/execute/contract-call", {
+        contractAddress: "0xbb0000000000000000000000000000000000bb00",
+        network: "1",
+        functionName: "setValue",
+        abi: WRITE_ABI,
+        functionArgs: JSON.stringify(["1"]),
+        simulate: true,
+      })
+    );
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.failureKind).toBe("unavailable");
+    expect(body.wouldRevert).toBe(false);
+    expect(body.revertReason).toBeUndefined();
+
+    expect(checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(writeContractCore).not.toHaveBeenCalled();
+  });
 });
 
 describe("/api/execute/transfer simulate", () => {
@@ -341,6 +375,36 @@ describe("/api/execute/transfer simulate", () => {
     expect(res.status).toBe(200);
     expect(simulateNativeTransferMock).toHaveBeenCalledTimes(1);
     expect(simulateTokenTransferMock).not.toHaveBeenCalled();
+    expect(checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(transferFundsCore).not.toHaveBeenCalled();
+  });
+
+  it("returns HTTP 503 when native transfer simulation is unavailable", async () => {
+    resetSpies();
+    simulateNativeTransferMock.mockResolvedValueOnce({
+      success: false,
+      status: "simulated",
+      from: FROM_ADDRESS,
+      to: "0xcc0000000000000000000000000000000000cc00",
+      value: "100000000000000000",
+      failureKind: "unavailable",
+      wouldRevert: false,
+      error: "Simulation unavailable: RPC timeout",
+    });
+
+    const res = await transferPOST(
+      jsonRequest("/api/execute/transfer", {
+        recipientAddress: "0xcc0000000000000000000000000000000000cc00",
+        amount: "0.1",
+        chainId: 1,
+        simulate: true,
+      })
+    );
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.failureKind).toBe("unavailable");
+    expect(body.wouldRevert).toBe(false);
     expect(checkAndReserveExecution).not.toHaveBeenCalled();
     expect(transferFundsCore).not.toHaveBeenCalled();
   });
@@ -410,6 +474,38 @@ describe("/api/execute/transfer simulate", () => {
     expect(res.status).toBe(200);
     expect(simulateTokenTransferMock).toHaveBeenCalledTimes(1);
     expect(simulateNativeTransferMock).not.toHaveBeenCalled();
+    expect(transferTokenCore).not.toHaveBeenCalled();
+  });
+
+  it("returns HTTP 503 when token transfer simulation is unavailable", async () => {
+    resetSpies();
+    simulateTokenTransferMock.mockResolvedValueOnce({
+      success: false,
+      status: "simulated",
+      from: FROM_ADDRESS,
+      to: "0xbb0000000000000000000000000000000000bb00",
+      value: "0",
+      failureKind: "unavailable",
+      wouldRevert: false,
+      error: "Simulation unavailable: RPC timeout",
+    });
+
+    const res = await transferPOST(
+      jsonRequest("/api/execute/transfer", {
+        recipientAddress: "0xcc0000000000000000000000000000000000cc00",
+        amount: "100",
+        tokenAddress: "0xbb0000000000000000000000000000000000bb00",
+        decimals: 6,
+        chainId: 1,
+        simulate: true,
+      })
+    );
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.failureKind).toBe("unavailable");
+    expect(body.wouldRevert).toBe(false);
+    expect(checkAndReserveExecution).not.toHaveBeenCalled();
     expect(transferTokenCore).not.toHaveBeenCalled();
   });
 
@@ -486,6 +582,60 @@ describe("/api/execute/check-and-execute simulate", () => {
 
     expect(readContractCore).toHaveBeenCalledTimes(1);
     expect(simulateContractCallMock).toHaveBeenCalledTimes(1);
+    expect(checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(writeContractCore).not.toHaveBeenCalled();
+  });
+
+  it("returns executed=false when conditional simulation is unavailable", async () => {
+    resetSpies();
+    readContractCore.mockResolvedValueOnce({
+      success: true,
+      result: BigInt(100),
+    });
+    simulateContractCallMock.mockResolvedValueOnce({
+      success: false,
+      status: "simulated",
+      from: FROM_ADDRESS,
+      to: "0xbb0000000000000000000000000000000000bb00",
+      value: "0",
+      failureKind: "unavailable",
+      wouldRevert: false,
+      error: "Simulation unavailable: RPC timeout",
+    });
+
+    const res = await checkAndExecutePOST(
+      jsonRequest("/api/execute/check-and-execute", {
+        contractAddress: "0xbb0000000000000000000000000000000000bb00",
+        functionName: "balanceOf",
+        functionArgs: JSON.stringify([FROM_ADDRESS]),
+        abi: JSON.stringify([
+          {
+            type: "function",
+            name: "balanceOf",
+            inputs: [{ name: "", type: "address" }],
+            outputs: [{ name: "", type: "uint256" }],
+            stateMutability: "view",
+          },
+        ]),
+        chainId: 1,
+        condition: {},
+        action: {
+          contractAddress: "0xbb0000000000000000000000000000000000bb00",
+          functionName: "setValue",
+          functionArgs: JSON.stringify(["1"]),
+          abi: WRITE_ABI,
+        },
+        simulate: true,
+      })
+    );
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.executed).toBe(false);
+    expect(body.failureKind).toBe("unavailable");
+    expect(body.wouldRevert).toBe(false);
+
     expect(checkAndReserveExecution).not.toHaveBeenCalled();
     expect(writeContractCore).not.toHaveBeenCalled();
   });

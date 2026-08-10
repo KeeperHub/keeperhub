@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Drives the REAL broadcast route handler with the auth stack stubbed, asserting
-// the fund-moving gate: only an org owner on an interactive session that clears
-// step-up MFA reaches releaseHeldPaymentNow. Every earlier rejection must stop
-// short of it.
+// Drives the REAL broadcast route handler with the auth stack stubbed. Org
+// owners on OAuth/API-key may release without MFA; interactive sessions still
+// clear step-up before releaseHeldPaymentNow.
 
 vi.mock("server-only", () => ({}));
 
@@ -45,6 +44,24 @@ vi.mock("@/lib/tempo/held-payments", () => ({
 }));
 vi.mock("@/lib/tempo/release-held-payment", () => ({
   releaseHeldPaymentNow: mockReleaseHeldPaymentNow,
+}));
+const beginIdempotentFromRequestMock = vi.fn().mockResolvedValue({
+  kind: "proceed",
+});
+const recordIdempotentResponseMock = vi.fn(
+  (_outcome: unknown, response: Response, _disposition?: string) =>
+    Promise.resolve(response)
+);
+
+vi.mock("@/lib/idempotency", () => ({
+  beginIdempotentFromRequest: (...args: unknown[]) =>
+    beginIdempotentFromRequestMock(...args),
+  idempotencyEarlyResponse: vi.fn().mockReturnValue(null),
+  recordIdempotentResponse: (
+    outcome: unknown,
+    response: Response,
+    disposition?: string
+  ) => recordIdempotentResponseMock(outcome, response, disposition),
 }));
 vi.mock("@/lib/auth", () => ({
   auth: { api: { getSession: mockGetSession } },
@@ -102,17 +119,22 @@ beforeEach(() => {
 });
 
 describe("POST /api/tempo/held-payments/[id]/broadcast authorization", () => {
-  it("rejects a non-session (API key / OAuth) caller with 403", async () => {
+  it("allows an API-key / OAuth owner to release without step-up MFA", async () => {
     mockResolveCreatorContext.mockResolvedValue({
       ...SESSION_OWNER,
       authMethod: "api-key",
+      apiKeyId: "key-1",
     });
 
     const res = await post();
-    expect(res.status).toBe(403);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toMatch(/interactive session/i);
-    expect(mockReleaseHeldPaymentNow).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mockAuthorizeAction).not.toHaveBeenCalled();
+    expect(mockGetSession).not.toHaveBeenCalled();
+    expect(mockReleaseHeldPaymentNow).toHaveBeenCalledWith({
+      paymentId: "hp-1",
+      organizationId: "org-1",
+      userId: "user-1",
+    });
   });
 
   it("rejects a non-owner org member with 403", async () => {
@@ -126,7 +148,7 @@ describe("POST /api/tempo/held-payments/[id]/broadcast authorization", () => {
     expect(mockReleaseHeldPaymentNow).not.toHaveBeenCalled();
   });
 
-  it("returns the step-up challenge and does not release when MFA is unsatisfied", async () => {
+  it("returns the step-up challenge and does not reserve idempotency when MFA is unsatisfied", async () => {
     mockAuthorizeAction.mockResolvedValue({
       ok: false,
       response: new Response(JSON.stringify({ error: "signature_required" }), {
@@ -138,6 +160,7 @@ describe("POST /api/tempo/held-payments/[id]/broadcast authorization", () => {
     const res = await post();
     expect(res.status).toBe(401);
     expect(mockReleaseHeldPaymentNow).not.toHaveBeenCalled();
+    expect(beginIdempotentFromRequestMock).not.toHaveBeenCalled();
   });
 
   it("fast-rejects a non-pending row before reaching step-up MFA", async () => {
@@ -150,6 +173,7 @@ describe("POST /api/tempo/held-payments/[id]/broadcast authorization", () => {
     expect(res.status).toBe(409);
     expect(mockAuthorizeAction).not.toHaveBeenCalled();
     expect(mockReleaseHeldPaymentNow).not.toHaveBeenCalled();
+    expect(beginIdempotentFromRequestMock).not.toHaveBeenCalled();
   });
 
   it("releases the payment once owner + session + step-up all pass", async () => {

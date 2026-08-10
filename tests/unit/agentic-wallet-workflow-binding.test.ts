@@ -10,8 +10,18 @@
  *
  * Strategy: hoisted vi mocks for db.select() so the test stays focused
  * on the matching logic and does not require a live Postgres. The mock
- * routes the first .from() call to the workflows fixture and the second
- * to the organizationWallets fixture by tracking call order.
+ * pulls from a single FIFO queue in call order: workflow lookup, then
+ * (only when wf.chain is truthy) the chains-table lookup classifyChainTag
+ * now runs, then the organizationWallets lookup. The chains query is
+ * awaited directly (no .limit()), so the mock's query-result object
+ * supports both `.limit()` and being awaited on its own.
+ *
+ * KEEP-1055: classifyChainTag was DATA_CHAIN_SLUG_TO_ID /
+ * KNOWN_DATA_CHAIN_IDS -- two hardcoded shadows of the chains table that
+ * never tracked chains.isEnabled. It now queries chains directly, so
+ * these tests supply their own CHAINS_FIXTURE (mirroring what
+ * scripts/seed/seed-chains.ts seeds in production) instead of importing
+ * the old exported maps.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -27,46 +37,158 @@ type WalletRow = {
   walletAddress: string;
 };
 
+type ChainRow = {
+  chainId: number;
+  aliases: string[];
+  isTestnet: boolean;
+  isPaymentRail: boolean;
+};
+
 const { mockSelectQueue } = vi.hoisted(
   (): { mockSelectQueue: { rows: unknown[][] } } => ({
     mockSelectQueue: { rows: [] },
   })
 );
 
-vi.mock("@/lib/db", () => ({
-  db: {
-    select: (): {
-      from: () => {
-        where: () => {
-          limit: () => Promise<unknown[]>;
-        };
-      };
-    } => ({
-      from: () => ({
-        where: () => ({
-          limit: (): Promise<unknown[]> => {
-            const next = mockSelectQueue.rows.shift() ?? [];
-            return Promise.resolve(next);
-          },
+vi.mock("@/lib/db", () => {
+  function nextRows(): unknown[] {
+    return mockSelectQueue.rows.shift() ?? [];
+  }
+  function queryResult(): PromiseLike<unknown[]> & {
+    limit: () => Promise<unknown[]>;
+  } {
+    return {
+      limit: (): Promise<unknown[]> => Promise.resolve(nextRows()),
+      // biome-ignore lint/suspicious/noThenProperty: the chains lookup awaits the drizzle query builder directly (no .limit()), so the mock has to be a genuine thenable to stand in for it
+      then<TResult1 = unknown[], TResult2 = never>(
+        onFulfilled?:
+          | ((value: unknown[]) => TResult1 | PromiseLike<TResult1>)
+          | null,
+        onRejected?:
+          | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+          | null
+      ): PromiseLike<TResult1 | TResult2> {
+        return Promise.resolve(nextRows()).then(
+          onFulfilled ?? undefined,
+          onRejected ?? undefined
+        );
+      },
+    };
+  }
+  return {
+    db: {
+      select: (): {
+        from: () => { where: () => ReturnType<typeof queryResult> };
+      } => ({
+        from: () => ({
+          where: () => queryResult(),
         }),
       }),
-    }),
-  },
-}));
+    },
+  };
+});
 
 vi.mock("@/lib/db/schema", () => ({
   workflows: { _table: "workflows" },
   organizationWallets: { _table: "organization_wallets" },
+  chains: { _table: "chains" },
 }));
 
-const { verifyWorkflowBinding, KNOWN_DATA_CHAIN_IDS, MULTI_CHAIN_TAGS } =
-  await import("@/lib/agentic-wallet/workflow-binding");
+const {
+  verifyWorkflowBinding,
+  classifyChainTag,
+  MULTI_CHAIN_TAGS,
+  PAYMENT_RAIL_TAGS,
+  _resetChainLookupCacheForTesting,
+} = await import("@/lib/agentic-wallet/workflow-binding");
 
 const SLUG = "test-slug";
 const CREATOR = "0xCreATor000000000000000000000000000000001";
 const ATTACKER = "0xAttacker0000000000000000000000000000beef";
 
+// Mirrors scripts/seed/seed-chains.ts post-KEEP-1055: mainnets carry
+// aliases, Base/Tempo are flagged as payment rails, testnets carry
+// neither (so classifyChainTag treats them as unrecognised).
+const CHAINS_FIXTURE: ChainRow[] = [
+  {
+    chainId: 1,
+    aliases: ["ethereum", "eth"],
+    isTestnet: false,
+    isPaymentRail: false,
+  },
+  { chainId: 11_155_111, aliases: [], isTestnet: true, isPaymentRail: false },
+  { chainId: 8453, aliases: ["base"], isTestnet: false, isPaymentRail: true },
+  { chainId: 84_532, aliases: [], isTestnet: true, isPaymentRail: false },
+  { chainId: 4217, aliases: ["tempo"], isTestnet: false, isPaymentRail: true },
+  { chainId: 4218, aliases: ["tempo"], isTestnet: true, isPaymentRail: true },
+  {
+    chainId: 56,
+    aliases: ["bnb", "bsc", "binance"],
+    isTestnet: false,
+    isPaymentRail: false,
+  },
+  {
+    chainId: 137,
+    aliases: ["polygon", "matic"],
+    isTestnet: false,
+    isPaymentRail: false,
+  },
+  {
+    chainId: 42_161,
+    aliases: ["arbitrum", "arbitrum-one"],
+    isTestnet: false,
+    isPaymentRail: false,
+  },
+  { chainId: 421_614, aliases: [], isTestnet: true, isPaymentRail: false },
+  { chainId: 80_002, aliases: [], isTestnet: true, isPaymentRail: false },
+  {
+    chainId: 10,
+    aliases: ["optimism", "op"],
+    isTestnet: false,
+    isPaymentRail: false,
+  },
+  {
+    chainId: 43_114,
+    aliases: ["avalanche", "avax"],
+    isTestnet: false,
+    isPaymentRail: false,
+  },
+  { chainId: 43_113, aliases: [], isTestnet: true, isPaymentRail: false },
+  {
+    chainId: 9745,
+    aliases: ["plasma"],
+    isTestnet: false,
+    isPaymentRail: false,
+  },
+  { chainId: 9746, aliases: [], isTestnet: true, isPaymentRail: false },
+  {
+    chainId: 16_661,
+    aliases: ["0g", "og", "aristotle"],
+    isTestnet: false,
+    isPaymentRail: false,
+  },
+  { chainId: 16_602, aliases: [], isTestnet: true, isPaymentRail: false },
+];
+
+// The subset classifyChainTag should classify as "data" -- enabled,
+// non-testnet, non-payment-rail. Used in place of the old exported
+// KNOWN_DATA_CHAIN_IDS so the test's expectation is independent of the
+// implementation it is verifying.
+const DATA_CHAIN_IDS = CHAINS_FIXTURE.filter(
+  (c) => !(c.isTestnet || c.isPaymentRail)
+).map((c) => String(c.chainId));
+
+const TESTNET_CHAIN_IDS = CHAINS_FIXTURE.filter((c) => c.isTestnet).map((c) =>
+  String(c.chainId)
+);
+
 function queueWorkflow(row: Partial<WorkflowRow> | null): void {
+  // loadEnabledChains caches for 60s in-process; without a reset here, a
+  // test that calls verifyWorkflowBinding more than once (e.g. looping
+  // over several chain slugs) would only issue a real chains query on its
+  // first call, leaving every later queued CHAINS_FIXTURE unconsumed and
+  // shifting the FIFO out of sync with the next wallet-row queue entry.
+  _resetChainLookupCacheForTesting();
   if (row === null) {
     mockSelectQueue.rows.push([]);
     return;
@@ -80,6 +202,17 @@ function queueWorkflow(row: Partial<WorkflowRow> | null): void {
     ...row,
   };
   mockSelectQueue.rows.push([full]);
+  // classifyChainTag only queries chains when wf.chain is truthy AND is
+  // neither an explicit multi-chain tag nor a payment-rail tag -- both
+  // short-circuit before the DB query runs.
+  const normalised = full.chain?.trim().toLowerCase();
+  const isShortCircuitTag = Boolean(
+    normalised &&
+      (MULTI_CHAIN_TAGS.has(normalised) || PAYMENT_RAIL_TAGS.has(normalised))
+  );
+  if (full.chain && !isShortCircuitTag) {
+    mockSelectQueue.rows.push(CHAINS_FIXTURE);
+  }
 }
 
 function queueWallet(row: Partial<WalletRow> | null): void {
@@ -94,6 +227,7 @@ function queueWallet(row: Partial<WalletRow> | null): void {
 describe("verifyWorkflowBinding", () => {
   beforeEach(() => {
     mockSelectQueue.rows = [];
+    _resetChainLookupCacheForTesting();
   });
 
   it("returns ok when slug + payTo + amount all match", async () => {
@@ -289,12 +423,35 @@ describe("verifyWorkflowBinding", () => {
       });
     });
 
+    // chain: "ethereum" resolves as a data-chain slug (not payment-chain rejection).
+    // "9999" remains the unrecognised-chain case in the test below.
+    it("accepts data-chain slug aliases (ethereum, polygon, arbitrum, bsc)", async () => {
+      for (const chainSlug of [
+        "ethereum",
+        "polygon",
+        "arbitrum",
+        "bsc",
+      ] as const) {
+        queueWorkflow({ chain: chainSlug });
+        queueWallet({});
+        const rBase = await verifyWorkflowBinding(
+          SLUG,
+          "base",
+          CREATOR,
+          "50000"
+        );
+        expect(rBase.ok).toBe(true);
+
+        queueWorkflow({ chain: chainSlug });
+        queueWallet({});
+        const rTempo = await verifyWorkflowBinding(SLUG, "tempo", "", "0");
+        expect(rTempo.ok).toBe(true);
+      }
+    });
+
     it("rejects an unrecognised wf.chain tag (defensive — no silent widening)", async () => {
-      // wf.chain is a non-null string we cannot classify (slug form, not in
-      // the data-chain whitelist, not a payment chain). Treat as mismatch
-      // rather than falling through to permissive null branch, so a typo or
-      // future chain stored as "ethereum" / "9999" can never pass through.
-      queueWorkflow({ chain: "ethereum" });
+      // Unknown slug that is not in the chains fixture at all.
+      queueWorkflow({ chain: "9999" });
       const rBase = await verifyWorkflowBinding(SLUG, "base", CREATOR, "50000");
       expect(rBase).toMatchObject({
         ok: false,
@@ -305,6 +462,21 @@ describe("verifyWorkflowBinding", () => {
       queueWorkflow({ chain: "9999" });
       const rTempo = await verifyWorkflowBinding(SLUG, "tempo", "", "0");
       expect(rTempo).toMatchObject({
+        ok: false,
+        status: 403,
+        code: "CHAIN_MISMATCH",
+      });
+    });
+
+    it("rejects a disabled chain even though it is otherwise a known data chain", async () => {
+      // classifyChainTag's chains query already filters isEnabled=true at
+      // the SQL level, so a disabled chain never appears in the fixture the
+      // query returns -- simulate by queueing a fixture with chainId 1 (the
+      // Ethereum row from the accepted-alias test above) absent.
+      queueWorkflow({ chain: "1" });
+      mockSelectQueue.rows[1] = CHAINS_FIXTURE.filter((c) => c.chainId !== 1);
+      const r = await verifyWorkflowBinding(SLUG, "base", CREATOR, "50000");
+      expect(r).toMatchObject({
         ok: false,
         status: 403,
         code: "CHAIN_MISMATCH",
@@ -331,12 +503,13 @@ describe("verifyWorkflowBinding", () => {
       expect(r.ok).toBe(true);
     });
 
-    it("accepts either payment chain for every whitelisted data-chain listing", async () => {
-      // Sourced directly from production to eliminate manual-sync drift —
-      // adding a chain id to KNOWN_DATA_CHAIN_IDS now extends test coverage
-      // automatically. Skip "1" because it's covered by the explicit
-      // Ethereum tests above.
-      for (const dataChain of KNOWN_DATA_CHAIN_IDS) {
+    it("accepts either payment chain for every data chain in the chains table", async () => {
+      // Sourced from CHAINS_FIXTURE (which mirrors seed-chains.ts) instead
+      // of an implementation-owned constant, so this stays a check on
+      // classifyChainTag's behavior rather than a tautology against its
+      // own data. Skip "1" because it's covered by the explicit Ethereum
+      // tests above.
+      for (const dataChain of DATA_CHAIN_IDS) {
         if (dataChain === "1") {
           continue;
         }
@@ -436,6 +609,8 @@ describe("verifyWorkflowBinding", () => {
     });
 
     it("accepts either payment chain for every multi-chain tag", async () => {
+      // MULTI_CHAIN_TAGS is checked before the chains-table lookup, so no
+      // chains fixture needs queueing for these.
       for (const tag of MULTI_CHAIN_TAGS) {
         queueWorkflow({ chain: tag });
         queueWallet({});
@@ -527,18 +702,12 @@ describe("verifyWorkflowBinding", () => {
       expect(r).toMatchObject({ ok: false, code: "CHAIN_MISMATCH" });
     });
 
-    it("rejects testnet ids that aren't on the mainnet whitelist", async () => {
-      // Mainnet-only by intent. If KeeperHub starts supporting testnet
-      // listings, extend KNOWN_DATA_CHAIN_IDS and update this test.
-      const testnetIds = [
-        "11155111", // Sepolia
-        "421614", // Arbitrum Sepolia
-        "80002", // Polygon Amoy
-        "43113", // Avalanche Fuji
-        "9746", // Plasma testnet
-        "16602", // 0G Galileo testnet
-      ];
-      for (const t of testnetIds) {
+    it("rejects testnet ids even though they exist (enabled) in the chains table", async () => {
+      // Mainnet-only by intent, now enforced via chains.isTestnet rather
+      // than a curated id set. If KeeperHub starts supporting testnet
+      // listings, flip isTestnet on the relevant seed row and update this
+      // test.
+      for (const t of TESTNET_CHAIN_IDS) {
         queueWorkflow({ chain: t });
         const r = await verifyWorkflowBinding(SLUG, "base", CREATOR, "50000");
         expect(r).toMatchObject({ ok: false, code: "CHAIN_MISMATCH" });
@@ -580,5 +749,83 @@ describe("verifyWorkflowBinding", () => {
         code: "CHAIN_MISMATCH",
       });
     });
+  });
+
+  // The two payment rails resolve from code, so no arrangement of chain rows
+  // (or absence of them) can turn a rail tag into a defensive 403.
+  describe("payment-rail tags do not depend on chain rows", () => {
+    it("classifies chain=tempo without querying chains at all", async () => {
+      // Regression: seed-chains.ts stamps aliases ["tempo"] + isPaymentRail on
+      // the Tempo TESTNET row, whose seeded chainId (42431) is not one the
+      // wallet routes (4218). Resolving the alias against an unordered chains
+      // query matched that row first and collapsed "tempo" to unrecognised,
+      // 403ing every Tempo MPP payment. Only two queries may run here -- the
+      // workflow row and the wallet row -- so a fully drained queue is the
+      // assertion that no chains lookup happened.
+      mockSelectQueue.rows.push([
+        {
+          id: "wf_test",
+          organizationId: "org_test",
+          priceUsdcPerCall: "0.05",
+          isListed: true,
+          chain: "tempo",
+        },
+      ]);
+      mockSelectQueue.rows.push([{ walletAddress: CREATOR }]);
+
+      const r = await verifyWorkflowBinding(SLUG, "tempo", "", "0");
+
+      expect(r.ok).toBe(true);
+      expect(mockSelectQueue.rows).toHaveLength(0);
+    });
+
+    it("classifies chain=base in an environment with no chains rows", async () => {
+      // An unseeded PR-environment DB, or one bootstrapped by db:migrate
+      // alone, returns zero enabled rows. Before this, that made even "base"
+      // unrecognised and 403'd every priced listing in the environment.
+      mockSelectQueue.rows.push([
+        {
+          id: "wf_test",
+          organizationId: "org_test",
+          priceUsdcPerCall: "0.05",
+          isListed: true,
+          chain: "base",
+        },
+      ]);
+      mockSelectQueue.rows.push([{ walletAddress: CREATOR }]);
+
+      const r = await verifyWorkflowBinding(SLUG, "base", CREATOR, "50000");
+
+      expect(r.ok).toBe(true);
+      expect(mockSelectQueue.rows).toHaveLength(0);
+    });
+  });
+});
+
+describe("classifyChainTag chain-row cache", () => {
+  beforeEach(() => {
+    mockSelectQueue.rows = [];
+    _resetChainLookupCacheForTesting();
+  });
+
+  it("does not cache an empty result", async () => {
+    // seed-chains.ts disables stale rows as part of a run, so the table can
+    // briefly answer with nothing. Caching that kept every data-chain tag
+    // unrecognised -- 403 on payment, 422 on publish -- for a full TTL after
+    // the table was already correct again.
+    mockSelectQueue.rows.push([]);
+    expect(await classifyChainTag("1")).toEqual({ kind: "unrecognised" });
+
+    mockSelectQueue.rows.push(CHAINS_FIXTURE);
+    expect(await classifyChainTag("1")).toEqual({ kind: "data" });
+  });
+
+  it("caches a non-empty result", async () => {
+    mockSelectQueue.rows.push(CHAINS_FIXTURE);
+    expect(await classifyChainTag("1")).toEqual({ kind: "data" });
+
+    // No second fixture queued: a cache miss would read an empty queue and
+    // classify the same tag as unrecognised.
+    expect(await classifyChainTag("137")).toEqual({ kind: "data" });
   });
 });

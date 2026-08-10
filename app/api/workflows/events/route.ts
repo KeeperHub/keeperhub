@@ -166,6 +166,8 @@ export async function GET(request: Request) {
         chainId: chains.chainId,
         name: chains.name,
         symbol: chains.symbol,
+        aliases: chains.aliases,
+        isPaymentRail: chains.isPaymentRail,
         chainType: chains.chainType,
         defaultPrimaryRpc: chains.defaultPrimaryRpc,
         defaultFallbackRpc: chains.defaultFallbackRpc,

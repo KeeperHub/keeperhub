@@ -104,5 +104,5 @@ Your MCP client receives the discriminated input schema directly from each per-w
 
 ## See also
 
-- [MCP Server](/ai-tools/mcp-server) — overview of the KeeperHub MCP server, authentication, and the full tool list
-- [Agentic Wallets](/ai-tools/agentic-wallet) — installing an x402/MPP wallet so your agent can call paid workflows
+- [MCP Server](/agent/mcp-server) — overview of the KeeperHub MCP server, authentication, and the full tool list
+- [Agentic Wallets](/agent/agentic-wallet) — installing an x402/MPP wallet so your agent can call paid workflows

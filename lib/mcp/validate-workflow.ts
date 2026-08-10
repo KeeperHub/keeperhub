@@ -2,7 +2,7 @@
 // from tests and from the API route. Web3 + ABI checks land in
 // Plans 48-02 and 48-03 as additional exported functions.
 
-import { findFirstWriteActionNode } from "@/lib/mcp/calldata";
+import { isWriteActionType } from "@/lib/mcp/calldata";
 import {
   findBareAtLiterals,
   isInputSchemaPresent,
@@ -278,23 +278,52 @@ function extractNodeIdReference(value: unknown): string | null {
   return null;
 }
 
+function getWorkflowActionType(node: unknown): string | undefined {
+  if (node === null || typeof node !== "object" || !("data" in node)) {
+    return undefined;
+  }
+
+  const data = node.data;
+
+  if (data === null || typeof data !== "object") {
+    return undefined;
+  }
+
+  const config = "config" in data ? data.config : undefined;
+  const configActionType =
+    config !== null && typeof config === "object" && "actionType" in config
+      ? config.actionType
+      : undefined;
+  const legacyActionType = "actionType" in data ? data.actionType : undefined;
+  const actionType = configActionType ?? legacyActionType;
+
+  return typeof actionType === "string"
+    ? actionType.replace(":", "/")
+    : undefined;
+}
+
+function hasWorkflowWriteAction(nodes: unknown[]): boolean {
+  return nodes.some((node) => isWriteActionType(getWorkflowActionType(node)));
+}
+
 function runWriteActionCheck(
   workflow: ValidatorWorkflow,
   errors: ValidationIssue[],
   warnings: ValidationIssue[]
 ): void {
-  const writeNode = Array.isArray(workflow.nodes)
-    ? findFirstWriteActionNode(workflow.nodes)
-    : undefined;
-  if (workflow.workflowType === "write" && writeNode === undefined) {
+  const hasWriteAction =
+    Array.isArray(workflow.nodes) && hasWorkflowWriteAction(workflow.nodes);
+
+  if (workflow.workflowType === "write" && !hasWriteAction) {
     errors.push({
       code: VALIDATION_ERROR_CODES.MISSING_WRITE_ACTION_FOR_WRITE_WORKFLOW,
       message:
-        'workflowType is "write" but no node has a write actionType (web3 write-contract or protocol-write).',
+        'workflowType is "write" but no node has an MCP-callable write actionType.',
       parameterPath: "workflowType",
     });
   }
-  if (workflow.workflowType === "read" && writeNode !== undefined) {
+
+  if (workflow.workflowType === "read" && hasWriteAction) {
     warnings.push({
       code: VALIDATION_WARNING_CODES.WRITE_ACTION_ON_READ_WORKFLOW,
       message:

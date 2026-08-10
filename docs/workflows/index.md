@@ -32,11 +32,12 @@ Every workflow starts with a trigger that determines when it runs:
 
 | Trigger | Description |
 |---------|-------------|
-| Scheduled | Run at intervals (every 5 minutes, hourly, daily, etc.) |
+| Manual | Run only when you click the Run button |
+| Schedule | Run at intervals (every 5 minutes, hourly, daily, etc.) |
 | Webhook | Run when an external service calls your workflow URL |
 | Event | Run when a blockchain event is detected |
 | Block | Run every N blocks on a chosen network |
-| Manual | Run only when you click the Run button |
+| Transfer | Run when a payment arrives at a watched address |
 
 ### Action Nodes
 
@@ -44,9 +45,12 @@ Actions perform the actual work in your workflow:
 
 | Category | Actions |
 |----------|---------|
-| Web3 | Check Balance, Read Contract, Write Contract, Transfer Funds, Approve Token |
-| Notifications | Send Email, Send Discord Message, Send Slack Message |
+| Web3 | Get Native Token Balance, Get ERC20 Token Balance, Read Contract, Write Contract, Transfer Native Token, Transfer ERC20 Token, Approve ERC20 Token |
+| Notifications | Send Email, Send Discord Message, Send Slack Message, Send Telegram Message |
 | Integrations | Send Webhook, Custom HTTP requests |
+
+Names here match the labels in the action grid. The live list, including every protocol plugin, is
+in the [Plugins](/plugins) reference.
 
 ### Condition Nodes
 
@@ -54,13 +58,8 @@ A condition node evaluates a value from an earlier node against a target using a
 
 ## Building Your First Workflow
 
-1. Click **New Workflow** from the workflow dropdown
-2. Add a **Trigger** node to define when your workflow runs
-3. Add **Action** nodes to perform operations
-4. Optionally add **Condition** nodes to create branching logic
-5. Connect nodes by dragging from output to input connectors
-6. Configure each node using the right-side panel
-7. Enable nodes and click **Run** to test
+See [Getting Started in the Browser](/getting-started/browser) for a step-by-step walkthrough from
+signup to a run you can read the result of.
 
 ## AI-Assisted Workflow Creation
 

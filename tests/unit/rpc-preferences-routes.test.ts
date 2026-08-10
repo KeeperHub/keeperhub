@@ -111,6 +111,8 @@ describe("RPC Preferences API Routes", () => {
     chainId: 1,
     name: "Ethereum Mainnet",
     symbol: "ETH",
+    aliases: ["ethereum", "eth"],
+    isPaymentRail: false,
     chainType: "evm",
     defaultPrimaryRpc: "https://eth.example.com",
     defaultFallbackRpc: "https://eth-backup.example.com",

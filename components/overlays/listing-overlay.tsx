@@ -16,7 +16,11 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, ApiError } from "@/lib/api-client";
-import type { WorkflowNode } from "@/lib/workflow/store";
+import { canShareExecutionStatus } from "@/lib/workflow/share-execution-status";
+import type {
+  WorkflowNode,
+  WorkflowVisibility,
+} from "@/lib/workflow/store";
 import { ConfirmOverlay } from "./confirm-overlay";
 
 // ---------------------------------------------------------------------------
@@ -203,6 +207,7 @@ function hasChanges(
     price: string;
     inputSchema: SchemaField[];
     outputMapping: { nodeId: string; field: string } | null;
+    shareExecutionStatus: boolean;
   },
   existing: {
     existingIsListed: boolean;
@@ -210,6 +215,7 @@ function hasChanges(
     existingPrice: string | null;
     existingInputSchema: Record<string, unknown> | null;
     existingOutputMapping: Record<string, unknown> | null;
+    existingShareExecutionStatus: boolean;
   },
   workflowName: string
 ): boolean {
@@ -230,6 +236,10 @@ function hasChanges(
     ? parseOutputMapping(existing.existingOutputMapping)
     : null;
   if (JSON.stringify(local.outputMapping) !== JSON.stringify(existingMapping)) {
+    return true;
+  }
+
+  if (local.shareExecutionStatus !== existing.existingShareExecutionStatus) {
     return true;
   }
 
@@ -284,12 +294,15 @@ type ListingOverlayProps = OverlayComponentProps<{
   existingInputSchema: Record<string, unknown> | null;
   existingOutputMapping: Record<string, unknown> | null;
   existingPrice: string | null;
+  existingShareExecutionStatus: boolean;
+  existingVisibility: WorkflowVisibility;
   onSave: (data: {
     isListed: boolean;
     listedSlug: string | null;
     inputSchema: Record<string, unknown> | null;
     outputMapping: Record<string, unknown> | null;
     priceUsdcPerCall: string | null;
+    shareExecutionStatus: boolean;
   }) => void;
 }>;
 
@@ -304,6 +317,8 @@ export function ListingOverlay({
   existingInputSchema,
   existingOutputMapping,
   existingPrice,
+  existingShareExecutionStatus,
+  existingVisibility,
   onSave,
 }: ListingOverlayProps) {
   const { closeAll, push } = useOverlay();
@@ -324,11 +339,25 @@ export function ListingOverlay({
   } | null>(
     existingOutputMapping ? parseOutputMapping(existingOutputMapping) : null
   );
+  // Shown as off, and saved as off, whenever visibility cannot support it -
+  // both because a toggle reading "on" over links that 404 is the lie this
+  // gate removes, and because the server now refuses a `true` on a private
+  // workflow, so echoing a stale one back would 422 an unrelated edit. Saving
+  // clears the stale flag on rows that predate the gate.
+  const [localShareExecutionStatus, setLocalShareExecutionStatus] = useState(
+    existingShareExecutionStatus && canShareExecutionStatus(existingVisibility)
+  );
   const [isSaving, setIsSaving] = useState(false);
 
   const slugError = validateSlug(localSlug, localIsListed);
   const priceError = validatePrice(localPrice);
   const isSlugImmutable = existingSlug !== null && existingListedAt !== null;
+  // The server gate for shared execution links is visibility, not listing
+  // (lib/workflow/share-execution-status.ts::canShareExecutionStatus), and
+  // visibility is set elsewhere (the go-live flow), never by this overlay.
+  // Offering the toggle on a private workflow persisted the flag and returned
+  // a success toast for links that then 404 for every recipient.
+  const isPubliclyVisible = canShareExecutionStatus(existingVisibility);
 
   const changed = hasChanges(
     {
@@ -337,6 +366,7 @@ export function ListingOverlay({
       price: localPrice,
       inputSchema: localInputSchema,
       outputMapping: localOutputMapping,
+      shareExecutionStatus: localShareExecutionStatus,
     },
     {
       existingIsListed,
@@ -344,6 +374,7 @@ export function ListingOverlay({
       existingPrice,
       existingInputSchema,
       existingOutputMapping,
+      existingShareExecutionStatus,
     },
     workflowName
   );
@@ -388,22 +419,25 @@ export function ListingOverlay({
         ? { nodeId: localOutputMapping.nodeId, field: localOutputMapping.field }
         : null;
 
-      await api.workflow.update(workflowId, {
+      const updated = await api.workflow.update(workflowId, {
         isListed: effectiveIsListed,
         listedSlug: localSlug || null,
         inputSchema: schema,
         outputMapping: mapping,
         priceUsdcPerCall: localPrice || null,
+        shareExecutionStatus: localShareExecutionStatus,
       });
 
       closeAll();
       setTimeout(() => {
         onSave({
-          isListed: effectiveIsListed,
-          listedSlug: localSlug || null,
-          inputSchema: schema,
-          outputMapping: mapping,
-          priceUsdcPerCall: localPrice || null,
+          isListed: updated.isListed ?? effectiveIsListed,
+          listedSlug: updated.listedSlug ?? (localSlug || null),
+          inputSchema: updated.inputSchema ?? schema,
+          outputMapping: updated.outputMapping ?? mapping,
+          priceUsdcPerCall: updated.priceUsdcPerCall ?? (localPrice || null),
+          // Server clears this on unlist; never echo stale local true.
+          shareExecutionStatus: updated.shareExecutionStatus ?? false,
         });
       }, 250);
 
@@ -517,6 +551,26 @@ export function ListingOverlay({
               checked={localIsListed}
               id="list-toggle"
               onCheckedChange={handleToggleListed}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <Label htmlFor="share-execution-status">
+                Share execution status publicly
+              </Label>
+              <p className="text-muted-foreground text-xs">
+                {isPubliclyVisible
+                  ? "Allow anyone with the link to view run progress"
+                  : "Set this workflow's visibility to public or unlisted first - while it is private, shared run links return not found"}
+              </p>
+            </div>
+            <Switch
+              aria-label="Share execution status publicly"
+              checked={localShareExecutionStatus}
+              disabled={!(localIsListed && isPubliclyVisible)}
+              id="share-execution-status"
+              onCheckedChange={setLocalShareExecutionStatus}
             />
           </div>
 

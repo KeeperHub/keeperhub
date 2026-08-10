@@ -76,11 +76,23 @@ export function isSponsoredTxRevertError(
 export class SponsoredTxPendingError extends Error {
   readonly kind = "sponsored-tx-pending" as const;
   readonly sendTransactionStatusId: string;
+  /**
+   * Set when Turnkey already handed back a hash, i.e. the send is on the
+   * network but its outcome could not be read. Absent when the wait window
+   * lapsed before any hash existed. Callers persist it so an unconfirmed
+   * broadcast stays auditable instead of vanishing from the record.
+   */
+  readonly txHash?: Hex;
 
-  constructor(opts: { message: string; sendTransactionStatusId: string }) {
+  constructor(opts: {
+    message: string;
+    sendTransactionStatusId: string;
+    txHash?: Hex;
+  }) {
     super(opts.message);
     this.name = "SponsoredTxPendingError";
     this.sendTransactionStatusId = opts.sendTransactionStatusId;
+    this.txHash = opts.txHash;
   }
 }
 

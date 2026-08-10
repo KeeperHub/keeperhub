@@ -31,6 +31,43 @@ describe("parseMarkdownEndpoints - http fences", () => {
 
     expect(parseMarkdownEndpoints(text, SOURCE)[0].path).toBe("/api/runs");
   });
+
+  it("skips a fenced declaration marked with the ignore comment", () => {
+    // The failure message points every author at this marker, and the
+    // http fence is where most declarations live, so the marker has to be
+    // read here and not only in prose.
+    const text = page(
+      "```http",
+      "GET /api/legacy/thing <!-- api-docs-ignore -->",
+      "POST /api/keys",
+      "```"
+    );
+
+    expect(parseMarkdownEndpoints(text, SOURCE)).toEqual([
+      {
+        method: "POST",
+        path: "/api/keys",
+        source: SOURCE,
+        line: 3,
+        format: "http-fence",
+      },
+    ]);
+  });
+
+  it("ignores an http fence written inside an HTML comment", () => {
+    const text = page(
+      "<!--",
+      "```http",
+      "GET /api/legacy/thing",
+      "```",
+      "-->",
+      "Call `GET /api/user` for the account."
+    );
+
+    expect(parseMarkdownEndpoints(text, SOURCE).map((e) => e.path)).toEqual([
+      "/api/user",
+    ]);
+  });
 });
 
 describe("parseMarkdownEndpoints - inline code spans", () => {
@@ -116,6 +153,90 @@ describe("parseMarkdownEndpoints - inline code spans", () => {
 
     expect(parseMarkdownEndpoints(text, SOURCE)).toEqual([]);
   });
+
+  it("ignores a code span inside a json fence", () => {
+    // The case above is the real docs line, which carries no backticks and
+    // so is skipped by the code-span regex whether or not the fence is
+    // read. This one only passes because the fence is read.
+    const span = '  "hint": "`POST /api/integrations/wallet` to provision"';
+
+    expect(parseMarkdownEndpoints(span, SOURCE)).toHaveLength(1);
+    expect(
+      parseMarkdownEndpoints(page("```json", span, "```"), SOURCE)
+    ).toEqual([]);
+  });
+
+  it("ignores a code span inside a tilde fence", () => {
+    const text = page(
+      "~~~json",
+      '  "hint": "`POST /api/integrations/wallet` to provision"',
+      "~~~"
+    );
+
+    expect(parseMarkdownEndpoints(text, SOURCE)).toEqual([]);
+  });
+
+  it("treats a backtick fence inside a tilde block as content", () => {
+    // Only the marker that opened a block can close it, so the prose after
+    // the inner ``` is still fenced and must not be scanned.
+    const text = page(
+      "~~~text",
+      "```",
+      "Call `POST /api/legacy/thing` here.",
+      "~~~"
+    );
+
+    expect(parseMarkdownEndpoints(text, SOURCE)).toEqual([]);
+  });
+
+  it("ignores an endpoint inside an HTML comment", () => {
+    const text = "<!-- Call `POST /api/legacy/thing` to do the old thing. -->";
+
+    expect(parseMarkdownEndpoints(text, SOURCE)).toEqual([]);
+  });
+
+  it("ignores an endpoint inside a multi-line HTML comment", () => {
+    const text = page(
+      "<!--",
+      "Call `POST /api/legacy/thing` to do the old thing.",
+      "-->",
+      "Call `GET /api/user` for the account."
+    );
+
+    expect(parseMarkdownEndpoints(text, SOURCE)).toEqual([
+      {
+        method: "GET",
+        path: "/api/user",
+        source: SOURCE,
+        line: 4,
+        format: "inline-code",
+      },
+    ]);
+  });
+
+  it("skips a line marked with the ignore comment", () => {
+    // Documenting a removal is a normal thing to want to do, and the
+    // marker renders as nothing on the docs site.
+    const text = page(
+      "Deprecated: `POST /api/legacy/thing` was removed in v2. <!-- api-docs-ignore -->",
+      "Use `GET /api/user` instead."
+    );
+
+    expect(parseMarkdownEndpoints(text, SOURCE).map((e) => e.path)).toEqual([
+      "/api/user",
+    ]);
+  });
+
+  it("keeps a declaration that sits behind a marker written mid-line", () => {
+    // The marker skips the line it ends, so a marker written anywhere
+    // else is not one - taking the rest of the line with it would drop a
+    // real declaration on the author's behalf.
+    const text = "<!-- api-docs-ignore --> and also `GET /api/user`";
+
+    expect(parseMarkdownEndpoints(text, SOURCE).map((e) => e.path)).toEqual([
+      "/api/user",
+    ]);
+  });
 });
 
 describe("parseMarkdownEndpoints - code samples", () => {
@@ -191,6 +312,63 @@ describe("parseMarkdownEndpoints - code samples", () => {
 
     expect(parseMarkdownEndpoints(text, SOURCE)).toEqual([]);
   });
+
+  it("lets an explicit method beat the verb in the helper name", () => {
+    // The helper name is an inference; `method:` is what gets sent.
+    const text = page(
+      "```ts",
+      'await get("/api/keys", { method: "POST" });',
+      "```"
+    );
+
+    expect(parseMarkdownEndpoints(text, SOURCE)[0].method).toBe("POST");
+  });
+
+  it("does not read a path out of a call that is not a request", () => {
+    // app/api/user/wallet/withdraw/route.ts exports POST only, so reading
+    // either of these as a GET would fail the gate on a correct page.
+    const text = page(
+      "```ts",
+      'const url = new URL("/api/user/wallet/withdraw", BASE);',
+      'console.log("/api/keys");',
+      "```"
+    );
+
+    expect(parseMarkdownEndpoints(text, SOURCE)).toEqual([]);
+  });
+
+  it("ignores a code sample written inside an HTML comment", () => {
+    // Same class as the commented-out prose case: it renders as nothing
+    // on the docs site, so it must not gate CI either.
+    const text = page(
+      "<!--",
+      "```ts",
+      'await api("/api/legacy/thing");',
+      "```",
+      "-->"
+    );
+
+    expect(parseMarkdownEndpoints(text, SOURCE)).toEqual([]);
+  });
+
+  it("skips a marked call without shifting the lines reported after it", () => {
+    const text = page(
+      "```ts",
+      'await api("/api/legacy/thing"); // <!-- api-docs-ignore -->',
+      'await api("/api/user");',
+      "```"
+    );
+
+    expect(parseMarkdownEndpoints(text, SOURCE)).toEqual([
+      {
+        method: "GET",
+        path: "/api/user",
+        source: SOURCE,
+        line: 3,
+        format: "code-sample",
+      },
+    ]);
+  });
 });
 
 describe("parseCodeSampleBlock", () => {
@@ -244,5 +422,14 @@ describe("canonicalizeSamplePath", () => {
 
   it("rejects a literal that is not shaped like a route", () => {
     expect(canonicalizeSamplePath("/api/keys - the key endpoint")).toBeNull();
+  });
+
+  it("does not name a computed hole after its last identifier", () => {
+    // `{b}` would read like a parameter the API has. The artifact string
+    // is what the post-deploy probe reports on.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the placeholder is the docs sample's content, not this file's
+    expect(canonicalizeSamplePath("/api/workflows/${a + b}")).toBe(
+      "/api/workflows/{param}"
+    );
   });
 });

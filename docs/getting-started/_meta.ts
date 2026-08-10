@@ -1,3 +1,7 @@
 export default {
-  quickstart: "Quick Start Guide",
+  index: "Overview",
+  browser: "Browser",
+  agent: "Agent (MCP)",
+  api: "API",
+  cli: "CLI",
 };

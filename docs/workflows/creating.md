@@ -8,8 +8,8 @@ description: "Step-by-step guide to building workflows with the visual node-base
 There are several ways to create a KeeperHub workflow. The visual builder in the browser is the most direct path; for AI agents and terminal-driven workflows, you can also create them programmatically:
 
 - [**Visual builder**](/workflows/creating) (this guide): design workflows on a node canvas in the KeeperHub web app.
-- [**MCP server**](/ai-tools/mcp-server): AI agents call `create_workflow` over the Model Context Protocol to build workflows from natural language.
-- [**Claude Code plugin**](/ai-tools/claude-code-plugin): bundles the MCP server plus skills so you can ask Claude Code to "create a workflow that..." inside the terminal.
+- [**MCP server**](/agent/mcp-server): AI agents call `create_workflow` over the Model Context Protocol to build workflows from natural language.
+- [**Claude Code plugin**](/agent/claude-code-plugin): bundles the MCP server plus skills so you can ask Claude Code to "create a workflow that..." inside the terminal.
 - [**`kh` CLI**](/cli): scriptable workflow management for CI and headless environments.
 
 The rest of this page covers the visual builder.

@@ -302,13 +302,18 @@ async function handleResult(
   // outcome, not that default, is authoritative for the response.
   const outcome = await completeExecution(executionId, completeParams);
 
-  if (outcome.status === "failed") {
+  // Anything other than a verified success is reported as such. `unconfirmed`
+  // is grouped here rather than with the success response because the
+  // transaction is on chain but unverified; reporting it as completed would
+  // assert an outcome we do not have. It is non-terminal, so the caller polls
+  // the status endpoint and the reconciler settles the row.
+  if (outcome.status !== "completed") {
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
         {
           executionId,
-          status: "failed",
+          status: outcome.status,
           error: outcome.error ?? "On-chain verification failed",
           ...(retryCount > 0 ? { retryCount } : {}),
         },

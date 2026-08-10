@@ -5,6 +5,7 @@
 // authenticated, org-scoped surface is advertised separately under
 // `authenticatedEndpoint` (OAuth-gated /mcp).
 
+import { getAuthenticatedToolsForDiscovery } from "@/lib/mcp/mcp-tool-catalog";
 import { PUBLIC_TOOLS } from "@/lib/mcp/oauth-scopes";
 
 const TRAILING_SLASH = /\/$/;
@@ -18,38 +19,7 @@ function deriveBaseUrl(request: Request): string {
   return `${url.protocol}//${url.host}`;
 }
 
-const TOOLS = [
-  "list_workflows",
-  "get_workflow",
-  "search_workflows",
-  "search_plugins",
-  "get_plugin",
-  "list_integrations",
-  "get_wallet_integration",
-  "search_templates",
-  "get_template",
-  "deploy_template",
-  "list_action_schemas",
-  "search_protocol_actions",
-  "ai_generate_workflow",
-  "create_workflow",
-  "update_workflow",
-  "delete_workflow",
-  "execute_workflow",
-  "get_execution_status",
-  "get_execution_logs",
-  "execute_transfer",
-  "execute_contract_call",
-  "execute_check_and_execute",
-  "execute_protocol_action",
-  "get_direct_execution_status",
-  "call_workflow",
-  "list_workflow",
-  "unlist_workflow",
-  "update_workflow_listing",
-  "get_workflow_listing",
-  "tools_documentation",
-] as const;
+const TOOLS = getAuthenticatedToolsForDiscovery();
 
 export function GET(request: Request): Response {
   const baseUrl = deriveBaseUrl(request);

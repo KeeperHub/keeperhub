@@ -18,12 +18,22 @@
  *                      docs-site link like [User API](/api/user) - no
  *                      method, no span - from being read as a route.
  *   3. `code-sample` - a path literal passed as the first argument of a
- *                      call inside a ```ts / ```js block: api("/api/user"),
- *                      post("/api/keys", ...), api(`/api/x/${id}/y`). The
- *                      method comes from the helper name, else from a
- *                      `method: "POST"` in that same call, else GET.
- *                      A URL assembled from variables (fetch(BASE + path))
- *                      is out of reach and is deliberately not guessed at.
+ *                      recognised request call inside a ```ts / ```js
+ *                      block: api("/api/user"), post("/api/keys", ...),
+ *                      api(`/api/x/${id}/y`). The method comes from an
+ *                      explicit `method: "POST"`, else from the helper
+ *                      name, else GET. A call that is neither - new
+ *                      URL("/api/x", base), console.log("/api/keys") - is
+ *                      a string, not a declaration. A URL assembled from
+ *                      variables (fetch(BASE + path)) is out of reach and
+ *                      is deliberately not guessed at.
+ *
+ * Nothing inside an HTML comment is scanned, prose and fenced blocks
+ * alike, and a line ending in `<!-- api-docs-ignore -->` is skipped in
+ * all three formats, so a page can say that `POST /api/legacy/thing` was
+ * removed without failing the build. In prose the marker renders as
+ * nothing; inside a fence it renders as literal text, which is the price
+ * of the fence being the natural place to write a removed endpoint.
  *
  * When the same endpoint is declared twice, the artifact records the
  * highest-priority format in the order above, so adding formats 2 and 3
@@ -162,12 +172,38 @@ const HELPER_METHODS: ReadonlyMap<string, HttpMethod> = new Map([
   ["delete", "DELETE"],
 ]);
 
+// Request helpers that do not name a method: the verb comes from a
+// `method:` option, else GET. A call that is in neither map is not read as
+// a declaration at all, which is what keeps `new URL("/api/x", base)` and
+// `console.log("/api/keys")` from claiming a route.
+const NEUTRAL_REQUEST_HELPERS: ReadonlySet<string> = new Set([
+  "api",
+  "fetch",
+  "request",
+]);
+
 // Characters a canonical route path may contain once placeholders are
 // normalised. Anything else means we did not understand the literal, and a
 // guess would be worse than a miss.
 const PLAUSIBLE_ROUTE_PATH_RE = /^\/api\/[A-Za-z0-9\-_./{}]*$/u;
 
-const FENCE_RE = /^\s*```(\S*)/;
+// A template hole we can name a parameter after: an identifier or a
+// property chain. `${a + b}` is neither, and naming it after its last
+// identifier produces a placeholder that reads like a real parameter.
+const SIMPLE_TEMPLATE_HOLE_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/u;
+
+// Both fence markers CommonMark allows. The marker is captured so that a
+// ``` line inside a ~~~ block counts as content rather than closing it.
+const FENCE_RE = /^\s*(```|~~~)(\S*)/;
+
+// Opt-out for a line that names an endpoint without claiming it exists -
+// "`POST /api/legacy/thing` was removed in v2". Written as an HTML comment
+// so it renders as nothing in prose, and read from the raw line before
+// comments are stripped. Anchored to the end of the line because that is
+// what the header promises: unanchored, a marker written at the front of
+// a line silently drops every real declaration behind it as well.
+const IGNORE_MARKER_RE = /<!--\s*api-docs-ignore\s*-->\s*$/;
+const IGNORE_MARKER = "<!-- api-docs-ignore -->";
 
 function walkFiles(dir: string, suffix: string): string[] {
   const out: string[] = [];
@@ -200,16 +236,20 @@ function canonicalizePath(rawPath: string): string {
  *     -> /api/execute/{executionId}/status
  * The last identifier of the interpolation names the parameter, so a
  * sample and the prose that documents the same route collapse to one
- * entry instead of two. Returns null when the result is not a shape we
- * can reason about.
+ * entry instead of two. An expression that is not a plain identifier or
+ * property chain has no name to borrow - `${a + b}` becomes `{param}`
+ * rather than `{b}`, which would read like a parameter the API has.
+ * Returns null when the result is not a shape we can reason about.
  */
 export function canonicalizeSamplePath(rawPath: string): string | null {
   const withPlaceholders = rawPath.replace(
     /\$\{([^}]*)\}/gu,
     (_match: string, expression: string) => {
-      const identifiers = expression.match(/[A-Za-z_$][\w$]*/gu);
-      const name = identifiers?.at(-1) ?? "param";
-      return `{${name}}`;
+      const trimmed = expression.trim();
+      if (!SIMPLE_TEMPLATE_HOLE_RE.test(trimmed)) {
+        return "{param}";
+      }
+      return `{${trimmed.split(".").at(-1)}}`;
     }
   );
   const canonical = canonicalizePath(withPlaceholders);
@@ -256,6 +296,29 @@ function callArgumentSpan(text: string, start: number, ceiling: number): string 
 }
 
 /**
+ * The method a sample call declares, or null when the call is not a
+ * request at all.
+ *
+ * An explicit `method:` option outranks the helper name, because the
+ * helper name is only an inference: `get(url, { method: "POST" })` sends a
+ * POST. A call that neither names a verb nor is a recognised request
+ * helper is not a declaration - `new URL("/api/user/wallet/withdraw",
+ * base)` is a string, not a documented GET.
+ */
+function resolveSampleMethod(helper: string, span: string): HttpMethod | null {
+  const explicit = span.match(METHOD_OPTION_RE)?.[1].toUpperCase();
+  if (explicit) {
+    return explicit as HttpMethod;
+  }
+  const name = helper.toLowerCase();
+  const inferred = HELPER_METHODS.get(name);
+  if (inferred) {
+    return inferred;
+  }
+  return NEUTRAL_REQUEST_HELPERS.has(name) ? "GET" : null;
+}
+
+/**
  * Extract endpoints from a ```ts / ```js sample. `startLine` is the
  * 1-based line of the block's opening fence.
  */
@@ -275,10 +338,10 @@ export function parseCodeSampleBlock(
     }
     const ceiling = matches[position + 1]?.index ?? block.length;
     const span = callArgumentSpan(block, matchIndex + whole.length, ceiling);
-    const fromOption = span.match(METHOD_OPTION_RE);
-    const method =
-      HELPER_METHODS.get(helper.toLowerCase()) ??
-      ((fromOption?.[1].toUpperCase() as HttpMethod | undefined) ?? "GET");
+    const method = resolveSampleMethod(helper, span);
+    if (method === null) {
+      continue;
+    }
     // Lines are counted in the block, then offset by the fence line.
     const linesBefore = block.slice(0, matchIndex).split("\n").length - 1;
     endpoints.push({
@@ -293,6 +356,35 @@ export function parseCodeSampleBlock(
 }
 
 /**
+ * Blank out every HTML-comment region on a line, carrying an unterminated
+ * comment across lines. Commented-out prose renders as nothing on the docs
+ * site, so it must not create a CI-gating claim either.
+ */
+function stripHtmlComments(line: string, state: { open: boolean }): string {
+  let out = "";
+  let index = 0;
+  while (index < line.length) {
+    if (state.open) {
+      const close = line.indexOf("-->", index);
+      if (close === -1) {
+        return out;
+      }
+      state.open = false;
+      index = close + "-->".length;
+      continue;
+    }
+    const open = line.indexOf("<!--", index);
+    if (open === -1) {
+      return out + line.slice(index);
+    }
+    out += line.slice(index, open);
+    state.open = true;
+    index = open + "<!--".length;
+  }
+  return out;
+}
+
+/**
  * Parse one markdown page in document order across all three formats.
  * Returns matches with 1-based line numbers.
  */
@@ -303,14 +395,27 @@ export function parseMarkdownEndpoints(
   const lines = text.split(/\r?\n/);
   const endpoints: DocumentedEndpoint[] = [];
   let fenceLang: string | null = null;
+  let fenceMarker = "";
   let fenceStart = 0;
   let sampleLines: string[] = [];
+  const comment = { open: false };
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
-    const fence = raw.match(FENCE_RE);
-    if (fence) {
+    // Comment state advances before the fence match, so a fenced block
+    // written inside an HTML comment never opens one - it renders as
+    // nothing on the docs site and must not gate CI either. Inside a
+    // fence, `<!--` is content: only the closing fence gets us out.
+    // Annotated because `fenceLang` is assigned below from a match on this
+    // value, and inference would have to walk that cycle.
+    const visible: string =
+      fenceLang === null ? stripHtmlComments(raw, comment) : raw;
+    const fence = visible.match(FENCE_RE);
+    // A fence marker only closes the block it opened, so ``` inside a ~~~
+    // block (and the reverse) is content.
+    if (fence && (fenceLang === null || fence[1] === fenceMarker)) {
       if (fenceLang === null) {
-        fenceLang = fence[1].toLowerCase();
+        fenceMarker = fence[1];
+        fenceLang = fence[2].toLowerCase();
         fenceStart = i + 1;
         sampleLines = [];
       } else {
@@ -324,6 +429,9 @@ export function parseMarkdownEndpoints(
       continue;
     }
     if (fenceLang === "http") {
+      if (IGNORE_MARKER_RE.test(raw)) {
+        continue;
+      }
       const match = raw.match(/^\s*(GET|POST|PUT|PATCH|DELETE)\s+(\/api\/\S+)/);
       if (match) {
         endpoints.push({
@@ -338,11 +446,18 @@ export function parseMarkdownEndpoints(
     }
     if (fenceLang !== null) {
       if (CODE_SAMPLE_LANGS.has(fenceLang)) {
-        sampleLines.push(raw);
+        // A marked line is blanked rather than dropped, so the line
+        // numbers the block reports stay the line numbers the file has.
+        sampleLines.push(IGNORE_MARKER_RE.test(raw) ? "" : raw);
       }
       continue;
     }
-    for (const match of raw.matchAll(INLINE_CODE_ENDPOINT_RE)) {
+    // The marker is read off the raw text: it lives inside a comment, and
+    // stripping comments would eat it.
+    if (IGNORE_MARKER_RE.test(raw)) {
+      continue;
+    }
+    for (const match of visible.matchAll(INLINE_CODE_ENDPOINT_RE)) {
       const path = canonicalizePath(match[2]);
       if (!PLAUSIBLE_ROUTE_PATH_RE.test(path)) {
         continue;
@@ -409,11 +524,14 @@ function indexRouteFiles(): {
     walkFiles(APP_API_DIR, "route.tsx")
   );
   for (const abs of files) {
-    const rel = relative(REPO_ROOT, abs);
+    // Normalised once, at the single point where a repo-relative route
+    // path enters the program: DELEGATED_CATCH_ALL_ROUTES is written with
+    // forward slashes, and comparing it against a raw relative() result
+    // never matches on Windows.
+    const rel = relative(REPO_ROOT, abs).replace(/\\/gu, "/");
     const routePath =
       "/" +
       rel
-        .replace(/\\/g, "/")
         .replace(/^app\//u, "")
         .replace(/\/route\.tsx?$/u, "")
         .split("/")
@@ -696,7 +814,17 @@ function main(): number {
       ]) {
         console.error(`    documented in ${site}`);
       }
-      console.error(`    ${reason}\n`);
+      console.error(`    ${reason}`);
+      // A page documenting a removal is a legitimate thing to write, and
+      // the marker that says so is only discoverable here, at the moment
+      // the author is looking at the failure.
+      if (d.kind === "missing-file") {
+        console.error(
+          `    if the page is describing a removed endpoint on purpose, ` +
+            `end that line with ${IGNORE_MARKER}`
+        );
+      }
+      console.error("");
     }
   }
 
@@ -719,12 +847,12 @@ function main(): number {
   return 0;
 }
 
-// Only execute when run directly (not when imported in tests).
-const isMain =
-  process.argv[1] &&
-  (process.argv[1].endsWith("check-api-docs-routes.ts") ||
-    process.argv[1].endsWith("check-api-docs-routes.js"));
-
-if (isMain) {
+// Only execute when run directly (not when imported in tests). Module
+// identity, not the spelling of process.argv[1]: a CI gate that exits 0
+// having checked nothing is worse than one that does not run at all, and
+// every path-string comparison has an invocation that misses. Dropping the
+// extension is enough to defeat both the suffix test this replaces and a
+// `pathToFileURL(process.argv[1]).href` comparison.
+if (require.main === module) {
   process.exit(main());
 }

@@ -9,7 +9,7 @@ wallet paid for. Signs giveFeedback() via Turnkey and broadcasts on Ethereum
 mainnet via the KeeperHub server proxy. Caller wallet pays gas natively
 (~$0.05-2 per call at typical mainnet gas).
 
-Thin wrapper around `npx @keeperhub/wallet feedback`. Defaults to rating
+Thin wrapper around `npx -p @keeperhub/wallet keeperhub-wallet feedback`. Defaults to rating
 KeeperHub's own ERC-8004 agent (id 31875 on Ethereum); use --agent-id to rate
 any other agent.
 

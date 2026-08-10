@@ -29,6 +29,7 @@ export type WorkflowData = {
   inputSchema?: Record<string, unknown> | null;
   outputMapping?: Record<string, unknown> | null;
   priceUsdcPerCall?: string | null;
+  shareExecutionStatus?: boolean;
 };
 
 export type PublicTag = {
@@ -834,6 +835,21 @@ export const workflowApi = {
       nodeStatuses: Array<{
         nodeId: string;
         status: "pending" | "running" | "success" | "error" | "cancelled";
+      }>;
+      progress?: {
+        totalSteps: number;
+        completedSteps: number;
+        runningSteps: number;
+        currentNodeId: string | null;
+        currentNodeName: string | null;
+        percentage: number;
+      };
+      transactionHashes?: Array<{
+        hash: string;
+        nodeId: string;
+        nodeName: string;
+        chainId?: number;
+        network?: string;
       }>;
     }>(`/api/workflows/executions/${executionId}/status`),
 

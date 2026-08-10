@@ -190,7 +190,7 @@ function setupPassingGuards(): void {
   );
   mocks.markRunning.mockResolvedValue(undefined);
   mocks.completeExecution.mockResolvedValue({ status: "completed" });
-  mocks.failExecution.mockResolvedValue(undefined);
+  mocks.failExecution.mockResolvedValue({ status: "failed" });
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +430,28 @@ describe("Direct Execution API", () => {
           sponsored: undefined,
         }
       );
+    });
+
+    it("reports unconfirmed, not failed, for a broadcast whose outcome is unknown", async () => {
+      setupPassingGuards();
+      // A gas-sponsored send Turnkey accepted but whose receipt no endpoint
+      // could read. Calling this failed is what invites the retry that
+      // broadcasts a second transaction from the same wallet.
+      mocks.transferFundsCore.mockResolvedValue({
+        success: false,
+        error:
+          "Sponsored transaction 0xbeef was broadcast but its outcome could not be confirmed.",
+        transactionHash: "0xbeef",
+        chainId: 11_155_111,
+        sponsored: true,
+      });
+      mocks.failExecution.mockResolvedValue({ status: "unconfirmed" });
+
+      const response = await transferPOST(postRequest("/transfer", validBody));
+
+      expect(response.status).toBe(202);
+      const data = await response.json();
+      expect(data.status).toBe("unconfirmed");
     });
 
     it("records the hash and route when a broadcast transaction reverts", async () => {

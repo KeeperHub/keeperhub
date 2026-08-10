@@ -119,6 +119,19 @@ const { verifyExecutionReceiptsMock } = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/web3/verify-receipt", () => ({
   verifyExecutionReceipts: verifyExecutionReceiptsMock,
+  // A run only demotes to error when the chain was conclusive. An unreadable
+  // receipt leaves it unconfirmed instead, so the real predicate is used here
+  // rather than a stub that would hide that split.
+  hasUnreadableReceipt: (
+    results: Array<{ verified: boolean; status: string }>
+  ) =>
+    results.some(
+      (r) =>
+        !(
+          r.verified ||
+          ["success", "reverted", "safe_inner_failure"].includes(r.status)
+        )
+    ),
   describeVerificationFailure: (
     results: Array<{ hash: string; status: string }>
   ) =>
@@ -858,6 +871,46 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
         verified: false,
         receiptStatus: "reverted",
       }),
+    ]);
+
+    clearExecution(executionId);
+  });
+
+  it("holds a run unconfirmed, rather than demoting it to error, when a receipt cannot be read", async () => {
+    const executionId = "exec_reconciliation_unreadable";
+    recordTransactionHashIfPresent(
+      ctx({ executionId, nodeId: "swap-1", nodeName: "Swap" }),
+      { transactionHash: "0xunseen", chainId: 1, network: "mainnet" }
+    );
+
+    verifyExecutionReceiptsMock.mockResolvedValueOnce({
+      allVerified: false,
+      results: [
+        {
+          hash: "0xunseen",
+          chainId: 1,
+          verified: false,
+          status: "not_found" as const,
+          verifiedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    await logWorkflowCompleteDb({
+      executionId,
+      status: "success",
+      startTime: Date.now() - 1000,
+    });
+
+    const update = getExecUpdate();
+    // Not an outcome. The transaction may still land, and calling the run
+    // errored would invite a re-run of transactions that already broadcast.
+    expect(update?.set.status).toBe("unconfirmed");
+    // No error classification on a run that has not failed.
+    expect(update?.set.errorCategory).toBeNull();
+    expect(update?.set.errorType).toBeNull();
+    expect(update?.set.transactionHashes).toEqual([
+      expect.objectContaining({ hash: "0xunseen", receiptStatus: "not_found" }),
     ]);
 
     clearExecution(executionId);

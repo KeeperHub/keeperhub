@@ -188,7 +188,7 @@ export async function getEarningsSummary(
   const totalInvocations = orgTotals?.invocationCount ?? 0;
 
   // Per-chain breakdown so creators see Base (x402/USDC) vs Tempo (MPP/USDC.e)
-  // split instead of just an aggregate. See docs/workflows/paid-workflows.md.
+  // split instead of just an aggregate. See docs/workflows/marketplace.md.
   const perChainRows = await db
     .select({
       chain: workflowPayments.chain,

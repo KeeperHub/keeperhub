@@ -3,13 +3,27 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-// Both HOCs are pass-throughs here: authorization is exercised elsewhere, and
-// these tests are about the route's own body parsing and column-write logic.
+const resolveOrganizationIdMock = vi.fn();
+
+vi.mock("@/lib/middleware/auth-helpers", () => ({
+  resolveOrganizationId: (...args: unknown[]) =>
+    resolveOrganizationIdMock(...args),
+}));
+
+vi.mock("@/lib/middleware/require-scope", () => ({
+  requireScope: (grantedScope: string | undefined, required: string) => {
+    if (grantedScope === "mcp:read" || grantedScope === undefined) {
+      return null;
+    }
+    return new Response(
+      JSON.stringify({ error: "insufficient_scope", required_scope: required }),
+      { status: 403 }
+    );
+  },
+}));
+
+// PUT remains session-gated via requirePermission.
 vi.mock("@/lib/middleware/require-org", () => ({
-  requireOrganization:
-    (handler: (req: NextRequest, context: unknown) => Promise<Response>) =>
-    (req: NextRequest) =>
-      handler(req, { organization: { id: "org_1" } }),
   requirePermission:
     (
       _resource: string,
@@ -81,6 +95,12 @@ beforeEach(() => {
   written.values = null;
   written.set = null;
   written.calls = 0;
+  resolveOrganizationIdMock.mockResolvedValue({
+    organizationId: "org_1",
+    scope: "mcp:read",
+    authMethod: "oauth",
+    apiKeyId: null,
+  });
 });
 
 describe("GET /api/analytics/spend-cap", () => {
@@ -96,6 +116,15 @@ describe("GET /api/analytics/spend-cap", () => {
       dailySolanaCapLamports: "2000000000",
       dailySolanaUsedLamports: "5",
     });
+  });
+
+  it("returns 401 when OAuth token cannot resolve org", async () => {
+    resolveOrganizationIdMock.mockResolvedValueOnce({
+      error: "Unauthorized",
+      status: 401,
+    });
+    const res = await GET({} as NextRequest);
+    expect(res.status).toBe(401);
   });
 });
 

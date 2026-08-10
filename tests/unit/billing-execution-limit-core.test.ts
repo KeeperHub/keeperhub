@@ -363,16 +363,12 @@ describe("statusAllowsOverage", () => {
     expect(statusAllowsOverage("trialing")).toBe(true);
   });
 
-  it.each([
-    "past_due",
-    "canceled",
-    "incomplete",
-    "unpaid",
-    null,
-    undefined,
-  ])("stops %s at the included limit", (status) => {
-    expect(statusAllowsOverage(status)).toBe(false);
-  });
+  it.each(["past_due", "canceled", "incomplete", "unpaid", null, undefined])(
+    "stops %s at the included limit",
+    (status) => {
+      expect(statusAllowsOverage(status)).toBe(false);
+    }
+  );
 });
 
 describe("decideExecutionLimit", () => {

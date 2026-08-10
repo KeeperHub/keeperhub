@@ -1,4 +1,5 @@
 export default {
+  index: "Overview",
   overview: "Overview",
   web3: "Web3",
   tempo: "Tempo",

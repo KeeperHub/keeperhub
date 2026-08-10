@@ -63,7 +63,7 @@ Restart Claude Code after setup. [Plugin source code](https://github.com/KeeperH
 
 ### Prerequisites
 
-- Node.js 22 (Next.js 16 requires `>=20.9.0`; Node 18 will not work)
+- Node.js 24 (see `.node-version`; every Docker stage builds on `node:24-alpine`)
 - pnpm package manager
 - PostgreSQL 16 (only for "Local Development" mode below; Docker and Hybrid modes start their own Postgres in a container)
 - Docker Engine with the Compose plugin (only for Docker and Hybrid modes)

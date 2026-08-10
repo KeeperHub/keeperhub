@@ -20,7 +20,7 @@ type WriteNode = {
 const TRIGGER_TEMPLATE_RE = /\{\{@trigger:Trigger\.(\w+)\}\}/g;
 const UNRESOLVED_TEMPLATE_RE = /\{\{@[^}]+\}\}/;
 
-function isWriteActionType(actionType: unknown): boolean {
+export function isWriteActionType(actionType: unknown): boolean {
   if (typeof actionType !== "string") {
     return false;
   }

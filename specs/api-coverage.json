@@ -139,14 +139,14 @@
       "path": "/api/chains/{chainId}/abi",
       "route_file": "app/api/chains/[chainId]/abi/route.ts",
       "source": "docs/api/chains.md",
-      "line": 119
+      "line": 142
     },
     {
       "method": "GET",
       "path": "/api/execute/{executionId}/status",
       "route_file": "app/api/execute/[executionId]/status/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 575
+      "line": 615
     },
     {
       "method": "GET",
@@ -384,21 +384,21 @@
       "path": "/api/execute/check-and-execute",
       "route_file": "app/api/execute/check-and-execute/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 343
+      "line": 383
     },
     {
       "method": "POST",
       "path": "/api/execute/contract-call",
       "route_file": "app/api/execute/contract-call/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 287
+      "line": 327
     },
     {
       "method": "POST",
       "path": "/api/execute/transfer",
       "route_file": "app/api/execute/transfer/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 225
+      "line": 265
     },
     {
       "method": "POST",
@@ -532,6 +532,13 @@
       "route_file": "app/api/workflows/[workflowId]/execute/route.ts",
       "source": "docs/api/workflows.md",
       "line": 227
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/{workflowId}/simulate",
+      "route_file": "app/api/workflows/[workflowId]/simulate/route.ts",
+      "source": "docs/api/direct-execution.md",
+      "line": 717
     },
     {
       "method": "POST",

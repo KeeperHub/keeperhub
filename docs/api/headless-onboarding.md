@@ -202,7 +202,7 @@ funds.
 
 ## 4. Gas on the sponsored chains
 
-The [Hackathon Quickstart](/quickstart) says to fund the wallet with native gas
+The [Hackathon Quickstart](/platform-reference) says to fund the wallet with native gas
 first. On the chains Turnkey's Gas Station covers, that is only true of the
 value the transaction moves: Ethereum, Polygon, Base and Arbitrum, plus Ethereum
 Sepolia, Polygon Amoy, Base Sepolia and Arbitrum Sepolia. The transaction is
