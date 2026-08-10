@@ -15,6 +15,7 @@ while it stays structurally identical to what staging and production run.
 | `values.yaml` | chart values common to every install |
 | `values.db-{bundled,byo}.yaml`, `values.queue-{bundled,byo}.yaml` | the parts that differ per mode, merged over `values.yaml` |
 | `values.queue-byo-endpoint.yaml` | merged only when `QUEUE_MODE=byo` and `AWS_ENDPOINT_URL` is set |
+| `values.queue-aws-credentials.yaml` | merged only when `QUEUE_MODE=byo` with real AWS credentials |
 | `namespace.yaml`, `runner-sa.yaml` | resources applied alongside the release |
 | `config.sh` | every value that has to agree across the install |
 | `install.sh` | installs into an existing cluster |
@@ -61,6 +62,32 @@ DB_MODE=byo DB_SECRET_NAME=my-db QUEUE_MODE=byo \
 All four combinations compose, so a bundled database with an external queue, or
 an external database with the bundled queue, are both valid.
 
+#### Authenticating to real AWS SQS
+
+Staging and production use IRSA, which needs an EKS cluster with an OIDC
+provider and an IAM role that trusts it. A self-hosted cluster usually has
+neither, so supply credentials instead:
+
+```bash
+DB_MODE=byo QUEUE_MODE=byo \
+  SQS_QUEUE_URL=https://sqs.<region>.amazonaws.com/<acct>/<queue> \
+  SQS_DLQ_URL=https://sqs.<region>.amazonaws.com/<acct>/<queue>-dlq \
+  AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... [AWS_SESSION_TOKEN=...] ./install.sh
+```
+
+`install.sh` puts them in a Kubernetes Secret and the values reference it, so no
+credential is ever written to a values file. `AWS_SESSION_TOKEN` is optional and
+carries the temporary-credential case, so an assumed role works as well as a
+long-lived key. Supply both key and secret or neither: half a pair falls back to
+the default credential chain, which on a cluster without IRSA means no
+credentials at all, so the installer refuses it.
+
+Leave all three unset if the cluster already provides credentials, through IRSA,
+an instance profile, or anything else the AWS default chain understands. Grant
+the identity only `SendMessage`, `ReceiveMessage`, `DeleteMessage`,
+`GetQueueUrl` and `GetQueueAttributes` on the queue, plus `SendMessage` on the
+dead-letter queue.
+
 Under `QUEUE_MODE=byo` whether `AWS_ENDPOINT_URL` is set is itself the choice.
 Left unset, the SDK talks to real AWS SQS and resolves credentials the normal
 way (IRSA, instance profile, environment), which is how staging and production
@@ -82,6 +109,21 @@ kubectl apply --server-side -f \
 
 `install.sh` refuses to run without it rather than failing later inside a Helm
 rollback.
+
+The chart grants the database owner `SET` on `session_replication_role`. The
+upstream test suite sets it while deleting rows, to suppress the append-only
+trigger on the audit log; without the grant, two of the three call sites run in
+Playwright's global setup and abort the whole run before any test executes. It
+is not an escalation, because the owner already owns every table and can disable
+those triggers directly. Drop `grantSetOnParameters` from
+`values.db-bundled.yaml` if you would rather it fail closed.
+
+That grant rides on a bootstrap hook, which CloudNativePG runs exactly once when
+it creates the cluster. On a database that already exists, issue it by hand:
+
+```sql
+GRANT SET ON PARAMETER session_replication_role TO keeperhub;
+```
 
 Set `PG_INSTANCES=3` for a highly available cluster. One primary and two
 replicas, failover handled by the operator, and the application follows it with

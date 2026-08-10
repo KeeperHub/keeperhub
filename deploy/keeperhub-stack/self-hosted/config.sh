@@ -111,10 +111,32 @@ if [ "$QUEUE_MODE" = "bundled" ]; then
 else
     AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-}"
 fi
-# Only used alongside a custom endpoint. ElasticMQ ignores them, but the SDK
-# refuses to sign a request without credentials of some kind.
-AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-test}"
-AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-test}"
+# Two different jobs, depending on whether an endpoint is set.
+#
+# With a custom endpoint, these are dummies that only exist because the SDK
+# refuses to sign a request without credentials; ElasticMQ ignores them, so they
+# default to "test" and are passed as plain values.
+#
+# Against real AWS they are real credentials. They are then NOT defaulted, they
+# go into a Secret rather than a values file, and AWS_SESSION_TOKEN carries the
+# temporary-credential case. Leave all three empty to use the default credential
+# chain instead, which is what an IRSA-enabled cluster wants.
+if [ -n "$AWS_ENDPOINT_URL" ]; then
+    AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-test}"
+    AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-test}"
+else
+    AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
+    AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
+fi
+AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
+AWS_CREDENTIALS_SECRET="${AWS_CREDENTIALS_SECRET:-keeperhub-aws-credentials}"
+
+# True when the operator supplied real AWS credentials for a real SQS queue.
+# Deliberately not true for the ElasticMQ dummies, which travel as plain values.
+use_aws_credentials() {
+    [ "$QUEUE_MODE" = byo ] && [ -z "$AWS_ENDPOINT_URL" ] \
+        && [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]
+}
 # Read the note at the top of this file before changing either URL. Derived from
 # the endpoint only when there is one; with real AWS SQS both must be given in
 # full, because that URL shape is not derivable from anything here.

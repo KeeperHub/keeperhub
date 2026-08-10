@@ -384,6 +384,57 @@ executor:
       echo "$(date) - [Executor] Starting..."
       tsx keeperhub-executor/index.ts
 
+  deployment:
+    enabled: true
+    initContainers:
+      # The executor queries the database ONCE at startup, before it binds its
+      # health port, and dies if that query fails:
+      #
+      #   assertTurnkeyEnvForActiveWallets (keeperhub-executor/startup-checks.ts)
+      #   selects from organization_wallets, and index.ts calls it before
+      #   healthServer.listen(). On a database whose schema does not exist yet the
+      #   query throws, the process exits 1, and the port is never bound - so the
+      #   pod cannot even report why it is unhealthy.
+      #
+      # Migrations run in the app pod, so on a first install the executor races
+      # them and loses. It recovers on the second or third restart, which is
+      # noisy and looks like a real fault. This waits instead.
+      #
+      # It polls for exactly the table that check reads. Waiting for a broader
+      # notion of "migrated" would be guesswork; this is the actual precondition.
+      #
+      # The tag is deliberately not ":latest". The common chart does not render
+      # imagePullPolicy for initContainers, so kubelet applies its own default,
+      # which is Always for ":latest" - and that would try to pull an image that
+      # exists only inside the node.
+      - name: wait-for-schema
+        image: "${IMAGE_REPO}:migrator-${IMAGE_TAG}"
+        command:
+          - /bin/sh
+          - -c
+        args:
+          - |
+            set -e
+            echo "Waiting for the database schema..."
+            i=0
+            until node -e "
+              const postgres = require('postgres');
+              const sql = postgres(process.env.DATABASE_URL, { max: 1, connect_timeout: 5, onnotice: () => {} });
+              sql.unsafe(\"select to_regclass('public.organization_wallets') is not null as ready\")
+                .then((r) => { if (!r[0].ready) { process.exit(1); } return sql.end(); })
+                .catch(() => process.exit(1));
+            " 2>/dev/null; do
+              i=$((i + 1))
+              if [ "$i" -ge 120 ]; then
+                echo "Schema did not appear within 10 minutes." >&2
+                echo "The app pod runs the migrations; check its db-migration initContainer." >&2
+                exit 1
+              fi
+              sleep 5
+            done
+            echo "Schema is ready"
+        env: *shared_env
+
   serviceAccount:
     create: true
     name: keeperhub-executor

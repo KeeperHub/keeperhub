@@ -43,8 +43,10 @@ for arg in "$@"; do
     esac
 done
 
-section() { echo; echo "== $1"; }
-ok() { echo "  ok    $1"; }
+# Progress goes to stderr, so that --dry-run writes nothing but YAML to stdout
+# and its output can be piped into a parser or kubectl.
+section() { echo >&2; echo "== $1" >&2; }
+ok() { echo "  ok    $1" >&2; }
 
 preflight() {
     section "Preflight"
@@ -87,6 +89,14 @@ EOF
         fi
     fi
 
+    if { [ -n "$AWS_ACCESS_KEY_ID" ] && [ -z "$AWS_SECRET_ACCESS_KEY" ]; } \
+       || { [ -z "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]; }; then
+        echo "Supply both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or neither." >&2
+        echo "Half a pair silently falls back to the default credential chain, which" >&2
+        echo "on a cluster without IRSA means no credentials at all." >&2
+        exit 1
+    fi
+
     ok "context $KUBE_CONTEXT, namespace $NAMESPACE, db=$DB_MODE queue=$QUEUE_MODE, images $IMAGE_REPO:*-$IMAGE_TAG"
 }
 
@@ -101,7 +111,9 @@ apply_manifests() {
     if [ "$DRY_RUN" = true ]; then
         # A dry run must not touch the cluster, so print instead of applying.
         render_manifest namespace.yaml
+        echo "---"
         render_manifest runner-sa.yaml
+        echo "---"
         return 0
     fi
 
@@ -183,6 +195,22 @@ create_db_secrets() {
     ok "database credentials and connection string ($PG_HOST)"
 }
 
+# Real AWS credentials for a real SQS queue. Kept out of the values files, which
+# are committed and readable through `helm get values`.
+create_aws_credentials_secret() {
+    use_aws_credentials || return 0
+    kube_ns create secret generic "$AWS_CREDENTIALS_SECRET" \
+        --from-literal=AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+        --from-literal=AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+        --from-literal=AWS_SESSION_TOKEN="$AWS_SESSION_TOKEN" \
+        --dry-run=client -o yaml | kube apply -f -
+    if [ -n "$AWS_SESSION_TOKEN" ]; then
+        echo "  note  these are temporary credentials; the pods stop being able to" >&2
+        echo "        reach SQS when they expire, with ExpiredToken in the logs" >&2
+    fi
+    ok "aws credentials ($AWS_CREDENTIALS_SECRET)"
+}
+
 create_secrets() {
     section "Creating secrets"
     local hmac agentic auth oauth mcp enc sendgrid
@@ -247,7 +275,7 @@ create_secrets() {
     # restart the pods consuming it - an env var is resolved once, at pod start.
     # A checksum in the pod template is the operator-free equivalent of the
     # reloader annotation staging uses: when it changes, helm rolls the pods.
-    SECRETS_CHECKSUM=$(printf '%s' "$hmac$agentic$auth$oauth$mcp$enc$sendgrid$runner_db_url" | sha256sum | cut -c1-16)
+    SECRETS_CHECKSUM=$(printf '%s' "$hmac$agentic$auth$oauth$mcp$enc$sendgrid$runner_db_url$AWS_ACCESS_KEY_ID$AWS_SECRET_ACCESS_KEY$AWS_SESSION_TOKEN" | sha256sum | cut -c1-16)
     export SECRETS_CHECKSUM
     ok "secrets applied (checksum $SECRETS_CHECKSUM)"
 }
@@ -331,6 +359,10 @@ render_values() {
         render_values_file values.queue-byo-endpoint.yaml "${QUEUE_BYO_ENDPOINT_SUBST_VARS[@]}"
         composed="$composed + queue-byo-endpoint"
     fi
+    if use_aws_credentials; then
+        render_values_file values.queue-aws-credentials.yaml AWS_CREDENTIALS_SECRET
+        composed="$composed + queue-aws-credentials"
+    fi
     ok "$composed"
 }
 
@@ -388,6 +420,7 @@ main() {
         SECRETS_CHECKSUM="dry-run"
     else
         create_db_secrets
+        create_aws_credentials_secret
         create_secrets
     fi
     render_values
