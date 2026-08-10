@@ -74,16 +74,16 @@ Coverage is **per path, not per agent** — most agents get one of the two mecha
 
 | Entry point | `PreToolUse` hook | MCP `block_threshold_usd` |
 |---|---|---|
-| **Claude Code** | **Yes** — `skill install` registers it in `~/.claude/settings.json` | Yes |
-| **Cursor, Windsurf, OpenCode** | **No** — `skill install` writes the skill file and prints a notice that the agent does not support auto-registered hooks | **Yes** — the MCP server is auto-registered, so paid `call_workflow` calls hit the cap |
+| **Claude Code** | **Yes** — `skill install` registers it in `~/.claude/settings.json` | **Registered, x402 only** — see the `keeperhub-wallet-mcp` row for what the cap does and does not cover |
+| **Cursor, Windsurf, OpenCode** | **No** — `skill install` writes the skill file and prints a notice that the agent does not support auto-registered hooks | **Registered, x402 only** — the MCP server is auto-registered, so a paid `call_workflow` hits the cap when the challenge is x402, and is unchecked when it is MPP |
 | **Cline** | **No** | **No** — no known MCP config location, so neither mechanism is registered |
 | **`keeperhub-wallet-mcp`** (the wallet package's own stdio server) | n/a — the hook fires on the MCP tool call, where there is no payment shape yet | **x402 only.** The cap is computed from the decoded x402 amount; **MPP amounts are not checked**, because the client never decodes the credential |
 | Your own code importing `@keeperhub/wallet` and calling `paymentSigner.fetch()` directly — a backend service, a scheduled job, a test harness | **No** | **No** — nothing reads `safety.json` on this path |
 | **`feedback`** — the MCP tool and the `keeperhub-wallet feedback` CLI command | **No** | **No** — see below |
 
-**`feedback` is gated by neither, and it spends real money.** It signs and broadcasts a `giveFeedback()` transaction on Ethereum mainnet, and its own tool description puts the cost at roughly $0.05–2 per call in native gas. The safety config is loaded at exactly one place — inside the `call_workflow` handler — so no other tool consults it. The hook does not catch it either: the tool's input schema declares `executionId`, `value`, `valueDecimals`, `comment`, `agentChainId`, `agentId` and `forceBroadcast`, none of which is a payment shape, so the hook short-circuits to `allow` before any tier is evaluated. Set `block_threshold_usd: 0.01`, ask the agent to rate five executions, and you will burn mainnet gas five times without a tier ever running.
+**`feedback` is gated by neither, and it spends real money.** It signs and broadcasts a `giveFeedback()` transaction on Ethereum mainnet, paid for in native ETH by the caller's own wallet — roughly $0.05 to $10 per call depending on the prevailing mainnet gas price. The safety config is loaded at exactly one place — inside the `call_workflow` handler — so no other tool consults it. The hook does not catch it either: the tool's input schema declares `executionId`, `value`, `valueDecimals`, `comment`, `agentChainId`, `agentId` and `forceBroadcast`, none of which is a payment shape, so the hook short-circuits to `allow` before any tier is evaluated. Set `block_threshold_usd: 0.01`, ask the agent to rate five executions, and you will burn mainnet gas five times without a tier ever running.
 
-The [server-side hard limits](#server-side-hard-limits) cover the USDC payment rows and cannot be bypassed. They do **not** bound `feedback`: it signs on Ethereum mainnet under the ERC-8004 policy, and its native gas spend is outside the per-transfer and daily USDC caps.
+The [server-side hard limits](#server-side-hard-limits) cover the USDC payment rows and cannot be bypassed. They reach `feedback` too, but only to constrain **what** it can do, not **how much** it can spend: Turnkey policies confine the transaction to the ERC-8004 ReputationRegistry contract, to Ethereum mainnet, and to the `giveFeedback()` selector alone. Nothing bounds the spend. The gas is native ETH rather than a USDC transfer, so the per-transfer and daily USDC caps do not apply to it, and no separate gas ceiling exists today.
 
 And `~/.keeperhub/safety.json` does not read as framework-scoped — it is a user-level file, in a user-level directory, named after the package rather than after the agent. Someone who sets `block_threshold_usd: 10`, then runs their agent in Cline or writes a script against the package, will reasonably expect that limit to hold. It will not.
 
@@ -102,7 +102,7 @@ const { decision, reason } = await hook({
   tool_input: { paymentChallenge: { amount: "10000", unit: "microUsdc", asset, payTo } },
 });
 
-if (decision === "block") throw new Error(reason ?? "refused");
+if (decision === "deny") throw new Error(reason ?? "refused by a safety tier");
 if (decision === "ask") {
   // No runtime here to render a prompt — decide deliberately. Proceeding is a
   // choice to ignore the tier; refusing is a choice to be stricter than Claude
@@ -112,7 +112,7 @@ if (decision === "ask") {
 // decision === "allow"
 ```
 
-Two things a non-interactive caller has to handle. The amount **must** carry an explicit `unit` — `"usd"` for a number, `"microUsdc"` for an integer string — and an untagged amount throws rather than being guessed at. And the hook can return `{decision: "ask"}`, which has no meaning without a runtime to render a prompt: a backend service has to decide for itself whether `ask` means proceed, refuse, or escalate.
+Three things a non-interactive caller has to handle. **The block tier returns `decision: "deny"`, not `"block"`** — the decision values are `"allow" | "deny" | "ask"`, and the tier names in the table above are not the values on the wire. Comparing against `"block"` is a type error under `tsc` and, in plain JavaScript, silently falls through to the allow path and signs the payment the hook just refused. The amount **must** carry an explicit `unit` — `"usd"` for a number, `"microUsdc"` for an integer string — and an untagged amount throws rather than being guessed at. And the hook can return `{decision: "ask"}`, which has no meaning without a runtime to render a prompt: a backend service has to decide for itself whether `ask` means proceed, refuse, or escalate.
 
 ### Server-side hard limits
 
