@@ -1,11 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const spawnMock = vi.hoisted(() => vi.fn());
 const spawnSyncMock = vi.hoisted(() => vi.fn());
 const postgresMock = vi.hoisted(() => vi.fn());
 const endMock = vi.hoisted(() => vi.fn());
 const migrateMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", () => ({
+  spawn: spawnMock,
   spawnSync: spawnSyncMock,
 }));
 
@@ -86,10 +88,17 @@ function mockBackfill(status: number, output = ""): void {
 
 describe("runMigrateWithRecovery", () => {
   beforeEach(() => {
+    vi.stubEnv("npm_config_user_agent", "pnpm/9.15.0 npm/? node/v24.0.0");
+    vi.stubEnv("npm_execpath", "/opt/pnpm/pnpm.cjs");
+    spawnMock.mockReset();
     spawnSyncMock.mockReset();
     postgresMock.mockReset();
     endMock.mockReset();
     migrateMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("returns ok when the first migration succeeds, without probing", async () => {
@@ -124,9 +133,13 @@ describe("runMigrateWithRecovery", () => {
     // Exact args: any reintroduced bound flag fails here.
     expect(spawnSyncMock).toHaveBeenCalledTimes(1);
     expect(spawnSyncMock).toHaveBeenCalledWith(
-      "pnpm",
-      ["tsx", expect.stringContaining(BACKFILL_SCRIPT_SUFFIX)],
-      expect.objectContaining({ encoding: "utf8" })
+      process.execPath,
+      [
+        "/opt/pnpm/pnpm.cjs",
+        "tsx",
+        expect.stringContaining(BACKFILL_SCRIPT_SUFFIX),
+      ],
+      expect.objectContaining({ encoding: "utf8", shell: false })
     );
   });
 

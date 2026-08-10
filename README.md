@@ -73,6 +73,16 @@ Restart Claude Code after setup. [Plugin source code](https://github.com/KeeperH
 
 Copy `.env.example` to `.env` and fill in the keys you need. Use `.env`, not `.env.local`: `drizzle-kit` (used by `pnpm db:push`) reads `.env` only.
 
+```bash
+# macOS / Linux
+cp .env.example .env
+```
+
+```powershell
+# Windows PowerShell
+Copy-Item .env.example .env
+```
+
 The minimum keys needed to boot the dev server are:
 
 ```env
@@ -98,6 +108,8 @@ pnpm dev
 ```
 
 Visit [http://localhost:3000](http://localhost:3000) to get started. The first request triggers a Next.js dev compile that can take 30-60 seconds; subsequent requests are fast.
+
+To bootstrap local data and open a signed-in development browser, run `pnpm dev:login`. This command works from Windows PowerShell as well as macOS and Linux. If Playwright Chromium is not installed or cannot start, it reports the launch error and the install command to run before retrying.
 
 ### Local development troubleshooting
 

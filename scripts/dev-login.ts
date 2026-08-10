@@ -34,12 +34,14 @@
 
 import "dotenv/config";
 
-import { spawn, spawnSync } from "node:child_process";
+import { fork } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 
 import { getDatabaseUrl } from "../lib/db/connection-utils";
+import { waitForBrowserReady } from "./lib/dev-login-browser-process";
+import { spawnPnpm, spawnPnpmSync } from "./lib/pnpm-process";
 
 const ALLOWED_HOSTS = new Set([
   "localhost",
@@ -99,10 +101,13 @@ function runStep(
 ): void {
   console.log(`> ${label}`);
   const env = { ...process.env, ...extraEnv } as NodeJS.ProcessEnv;
-  const result = spawnSync("pnpm", ["tsx", script, ...args], {
+  const result = spawnPnpmSync(["tsx", script, ...args], {
     stdio: "inherit",
     env,
   });
+  if (result.error) {
+    throw new Error(`${label} failed to start: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new Error(`${label} exited with status ${result.status ?? "null"}`);
   }
@@ -132,7 +137,7 @@ function probeServer(url: string): Promise<boolean> {
 function startDevServerDetached(): void {
   const logFd = fs.openSync(DEV_SERVER_LOG, "a");
   try {
-    const child = spawn("pnpm", ["dev"], {
+    const child = spawnPnpm(["dev"], {
       detached: true,
       stdio: ["ignore", logFd, logFd],
       cwd: REPO_ROOT,
@@ -190,7 +195,7 @@ function readCookieValue(): string {
   throw new Error(`dev-login: ${COOKIE_FILE} has no cookie line`);
 }
 
-function launchBrowserDetached(rawSignedValue: string): void {
+async function launchBrowserDetached(rawSignedValue: string): Promise<void> {
   fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
   // Spawn the browser owner as a detached child. We can't seed cookies in
   // this parent process and then point a separate Chromium at the same
@@ -203,22 +208,18 @@ function launchBrowserDetached(rawSignedValue: string): void {
   // process argv is world-readable via ps / /proc/<pid>/cmdline, whereas
   // /proc/<pid>/environ is owner-only. URL and profile dir are not secret,
   // so they stay as positional args.
-  const child = spawn(
-    "pnpm",
-    [
-      "tsx",
-      path.join("scripts", "dev-login-browser.ts"),
-      DEV_URL,
-      CHROME_PROFILE_DIR,
-    ],
+  const child = fork(
+    path.join(REPO_ROOT, "scripts", "dev-login-browser.ts"),
+    [DEV_URL, CHROME_PROFILE_DIR],
     {
       detached: true,
-      stdio: "ignore",
+      execArgv: ["--import", "tsx"],
+      stdio: ["ignore", "ignore", "pipe", "ipc"],
       cwd: REPO_ROOT,
       env: { ...process.env, KEEPERHUB_DEV_COOKIE: rawSignedValue },
     }
   );
-  child.unref();
+  await waitForBrowserReady(child);
 }
 
 async function main(): Promise<void> {
@@ -237,7 +238,7 @@ async function main(): Promise<void> {
 
   const cookie = readCookieValue();
   console.log(`> launching detached Chromium at ${DEV_URL}`);
-  launchBrowserDetached(cookie);
+  await launchBrowserDetached(cookie);
 
   console.log("\ndev-login: signed-in Chromium window opening.");
   console.log(`  Profile: ${CHROME_PROFILE_DIR}`);

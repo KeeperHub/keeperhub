@@ -24,7 +24,13 @@ Internal contribution guide for the KeeperHub workflow automation platform.
 Copy `.env.example` to `.env` and fill in the required values:
 
 ```bash
+# macOS / Linux
 cp .env.example .env
+```
+
+```powershell
+# Windows PowerShell
+Copy-Item .env.example .env
 ```
 
 See `.env.example` for the complete list of available environment variables.
@@ -40,6 +46,8 @@ pnpm dev
 ```
 
 Visit http://localhost:3000.
+
+Run `pnpm dev:login` to bootstrap local data and open a signed-in development browser. The command supports Windows PowerShell, macOS, and Linux. If Playwright Chromium is missing or fails to start, follow the printed `pnpm exec playwright install chromium` instruction and retry.
 
 ### Docker Compose Development
 

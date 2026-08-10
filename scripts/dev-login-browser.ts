@@ -21,6 +21,15 @@
 import "dotenv/config";
 
 import { chromium } from "@playwright/test";
+import type { BrowserLaunchMessage } from "./lib/dev-login-browser-process";
+
+function notifyParent(message: BrowserLaunchMessage, callback: () => void): void {
+  if (process.send) {
+    process.send(message, callback);
+    return;
+  }
+  callback();
+}
 
 async function main(): Promise<void> {
   // The signed cookie arrives via env (owner-only) rather than argv
@@ -67,6 +76,8 @@ async function main(): Promise<void> {
     // the window itself stays open and the user can refresh manually.
   });
 
+  notifyParent({ type: "browser-ready" }, () => process.disconnect?.());
+
   // Block until Chromium exits. launchPersistentContext returns a
   // contextless browser (ctx.browser() === null), so we wait on the
   // context's own close lifecycle via waitForEvent. The parent
@@ -77,7 +88,10 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);
-  // biome-ignore lint/suspicious/noConsole: detached daemon, stderr is the only signal
-  console.error(msg);
-  process.exit(1);
+  notifyParent({ type: "browser-error", message: msg }, () => {
+    process.disconnect?.();
+    // biome-ignore lint/suspicious/noConsole: detached daemon, stderr is the only signal
+    console.error(msg);
+    process.exit(1);
+  });
 });

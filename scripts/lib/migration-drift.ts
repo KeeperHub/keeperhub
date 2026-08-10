@@ -1,10 +1,10 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import * as path from "node:path";
 
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
+import { spawnPnpmSync } from "./pnpm-process";
 
 /**
  * Recovery for the `db:push` -> `db:migrate` handoff in local development.
@@ -223,7 +223,7 @@ export async function shouldRecoverAfterMigrateFailure(
 export function runBackfillScript(
   env: NodeJS.ProcessEnv = process.env
 ): CommandResult {
-  const result = spawnSync("pnpm", ["tsx", BACKFILL_SCRIPT], {
+  const result = spawnPnpmSync(["tsx", BACKFILL_SCRIPT], {
     stdio: ["ignore", "pipe", "pipe"],
     env,
     encoding: "utf8",

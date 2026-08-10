@@ -30,7 +30,6 @@
 import "dotenv/config";
 
 import { createHash, randomBytes, scrypt } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import {
   assertMigrateSucceeded,
   queryJournalDriftState,
@@ -55,6 +54,7 @@ import {
 } from "../../lib/db/schema";
 import { organizationApiKeys } from "../../lib/db/schema-extensions";
 import { generateId } from "../../lib/utils/id";
+import { spawnPnpmSync } from "../lib/pnpm-process";
 import { seedPersistentTestUsers } from "../../tests/e2e/playwright/utils/seed";
 import {
   buildTriggerNodes,
@@ -152,10 +152,13 @@ async function maybeBackfillJournal(
 
 function runChildScript(script: string, label: string): void {
   console.log(`> ${label}`);
-  const result = spawnSync("pnpm", ["tsx", script], {
+  const result = spawnPnpmSync(["tsx", script], {
     stdio: "inherit",
     env: process.env,
   });
+  if (result.error) {
+    throw new Error(`${label} failed to start: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new Error(`${label} exited with status ${result.status ?? "null"}`);
   }
