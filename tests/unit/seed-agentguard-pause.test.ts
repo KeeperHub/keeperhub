@@ -35,6 +35,13 @@ vi.mock("drizzle-orm", () => ({
   eq: (a: unknown, b: unknown) => ({ a, b }),
 }));
 
+// The seeder imports drizzle from here at module scope; the unit test never
+// calls main() (so drizzle() is never invoked), but mocking the module keeps
+// importing the seeder free of postgres-js side effects in the test pool.
+vi.mock("drizzle-orm/postgres-js", () => ({
+  drizzle: () => ({}) as never,
+}));
+
 vi.mock("../../lib/db/connection-utils", () => ({
   getDatabaseUrl: () => "postgres://mock",
 }));
