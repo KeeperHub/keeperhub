@@ -115,6 +115,27 @@ One known deviation from real SQS: `PurgeQueue` is not persisted, so purged
 messages reappear after a restart. Nothing in the application calls it; only
 tests do.
 
+#### Backing up the queue volume
+
+Do not. Restore the queue from an empty volume and let the producers re-drive.
+
+That is a deliberate position, not an omission. The volume holds work in flight
+for seconds to minutes, so any backup is stale before it is written, and
+restoring one re-delivers messages whose executions already finished. The queue
+carries no record you cannot rebuild: workflow definitions, schedules and
+execution history all live in PostgreSQL, which is the thing worth backing up.
+
+What protects in-flight work is persistence plus the visibility timeout, both
+measured rather than assumed. A queue restart keeps every message
+(`test-harness/queue-restart-test.sh`, 10 restarts x 25 messages, none lost),
+and a consumer that dies mid-message gets the message re-delivered when its
+300s visibility timeout expires. Between them a restart is an outage of seconds,
+not data loss.
+
+If your compliance regime requires the volume be snapshotted anyway, snapshot
+the PVC with whatever your CSI driver provides and treat the result as
+diagnostic material, not as something to restore into a live queue.
+
 If you are upgrading an install that predates this, the namespace already has an
 `elasticmq` Service that Helm did not create and will refuse to adopt. Delete the
 old Deployment and Service once before installing. That drops whatever is
