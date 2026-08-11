@@ -254,4 +254,46 @@ describe("POST /api/workflows/create action config validation", () => {
     expect(response.status).not.toBe(422);
     expect(mockInsert).toHaveBeenCalled();
   });
+
+  it('derives workflowType "write" from a write-contract node on create', async () => {
+    const mockReturning = vi.fn().mockResolvedValue([
+      {
+        id: "wf-1",
+        name: "Untitled Workflow",
+        enabled: false,
+        createdAt: new Date("2024-01-01"),
+        updatedAt: new Date("2024-01-01"),
+      },
+    ]);
+    const mockValues = vi.fn().mockReturnValue({ returning: mockReturning });
+    mockInsert.mockReturnValue({ values: mockValues });
+
+    const response = await POST(
+      request(
+        workflowBody([
+          baseActionNode({
+            actionType: "web3/write-contract",
+            network: "1",
+            contractAddress: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+            abi: JSON.stringify([
+              {
+                inputs: [],
+                name: "doWrite",
+                outputs: [],
+                stateMutability: "nonpayable",
+                type: "function",
+              },
+            ]),
+            abiFunction: "doWrite",
+            functionArgs: "[]",
+          }),
+        ])
+      )
+    );
+
+    expect(response.status).not.toBe(422);
+    expect(mockValues).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowType: "write" })
+    );
+  });
 });

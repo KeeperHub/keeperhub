@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { NextResponse } from "next/server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { deriveWorkflowType } from "@/lib/mcp/calldata";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { recordWorkflowCreatedFromSource } from "@/lib/metrics/collectors/prometheus";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
@@ -153,6 +154,13 @@ export async function POST(request: Request) {
     nodes = sanitized.nodes;
     edges = sanitized.edges;
 
+    // Auto-derive workflowType from content via the shared helper
+    // (lib/mcp/calldata.ts::deriveWorkflowType), matching the PATCH handler
+    // and lib/mcp/listing.ts. There is no "requested type" field on this
+    // endpoint's body, so "read" is passed as the fallback -- the workflows
+    // table default a create with no callable write node would otherwise get.
+    const workflowType = deriveWorkflowType(nodes, "read");
+
     // A 201 from this endpoint does not mean the workflow will run. The gate
     // below is an AUTHORIZATION check on integrationId, not an existence
     // check: filterUnauthorizedIntegrationIds treats ids with no matching row
@@ -245,6 +253,7 @@ export async function POST(request: Request) {
         description: body.description,
         nodes,
         edges,
+        workflowType,
         userId,
         organizationId,
         isAnonymous: false,
