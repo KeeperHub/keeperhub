@@ -670,8 +670,19 @@ read calls and simulations.
 
 - `pending`: Queued for execution
 - `running`: Currently executing
+- `unconfirmed`: Broadcast, but the receipt could not be read conclusively yet.
+  **Non-terminal.** Keep polling. Do not re-send the request with a fresh
+  `Idempotency-Key`, which would risk a second transaction: see
+  [Idempotency](#idempotency) and
+  [Zero to a Verified Onchain Transaction](/guides/first-verified-transaction).
 - `completed`: Successfully completed
 - `failed`: Execution failed
+
+Treat this list as a lower bound rather than a closed set. A client that routes an
+unrecognised status into a failing `default` branch will report a failure for an
+execution that is still settling, and one that responds by retrying with a new
+idempotency key can put a second transaction onchain. Handle unknown values as
+non-terminal.
 
 `sponsored` is `true` when the write was gas-sponsored and broadcast through
 a relayer or smart-account path rather than your org's EOA wallet — see
