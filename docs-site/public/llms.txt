@@ -29,7 +29,7 @@ The interactive product. Most routes require auth, but the surfaces below are ho
 - [Sign in](https://app.keeperhub.com): Entry point to the workflow builder, runs view, wallets, billing
 - [Hub](https://app.keeperhub.com/hub): Browseable catalog of supported protocols and plugins
 - [REST API](https://app.keeperhub.com/api): Base path for programmatic control (see [/api docs](https://docs.keeperhub.com/api))
-- [OpenAPI spec](https://app.keeperhub.com/api/openapi): Machine-readable schema for the REST API
+- [OpenAPI spec](https://app.keeperhub.com/api/openapi): Machine-readable schema for the published-workflow call endpoints (`POST /api/mcp/workflows/{slug}/call`) and their x402/SIWX payment schemes. The core REST API, including authentication and direct execution, is documented at [/api](https://docs.keeperhub.com/api)
 - [MCP server](https://app.keeperhub.com/mcp): OAuth-authenticated Model Context Protocol endpoint for LLM clients
 
 ### docs.keeperhub.com — documentation
