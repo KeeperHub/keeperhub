@@ -132,13 +132,19 @@ describe("runMigrateWithRecovery", () => {
     );
     // Exact args: any reintroduced bound flag fails here.
     expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+    const expectedCommand =
+      process.platform === "win32" ? process.execPath : "pnpm";
+    const expectedArgs =
+      process.platform === "win32"
+        ? [
+            "/opt/pnpm/pnpm.cjs",
+            "tsx",
+            expect.stringContaining(BACKFILL_SCRIPT_SUFFIX),
+          ]
+        : ["tsx", expect.stringContaining(BACKFILL_SCRIPT_SUFFIX)];
     expect(spawnSyncMock).toHaveBeenCalledWith(
-      process.execPath,
-      [
-        "/opt/pnpm/pnpm.cjs",
-        "tsx",
-        expect.stringContaining(BACKFILL_SCRIPT_SUFFIX),
-      ],
+      expectedCommand,
+      expectedArgs,
       expect.objectContaining({ encoding: "utf8", shell: false })
     );
   });

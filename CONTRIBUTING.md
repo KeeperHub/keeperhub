@@ -47,7 +47,7 @@ pnpm dev
 
 Visit http://localhost:3000.
 
-Run `pnpm dev:login` to bootstrap local data and open a signed-in development browser. The command supports Windows PowerShell, macOS, and Linux. If Playwright Chromium is missing or fails to start, follow the printed `pnpm exec playwright install chromium` instruction and retry.
+Run `pnpm dev:login` to bootstrap local data and open a signed-in development browser. The pnpm subprocesses in the `dev:login` / `dev:bootstrap` path include Windows-specific handling; other development scripts are outside this scope.
 
 ### Docker Compose Development
 

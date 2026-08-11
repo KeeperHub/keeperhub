@@ -109,7 +109,7 @@ pnpm dev
 
 Visit [http://localhost:3000](http://localhost:3000) to get started. The first request triggers a Next.js dev compile that can take 30-60 seconds; subsequent requests are fast.
 
-To bootstrap local data and open a signed-in development browser, run `pnpm dev:login`. This command works from Windows PowerShell as well as macOS and Linux. If Playwright Chromium is not installed or cannot start, it reports the launch error and the install command to run before retrying.
+To bootstrap local data and open a signed-in development browser, run `pnpm dev:login`. The pnpm subprocesses in the `dev:login` / `dev:bootstrap` path include Windows-specific handling; other development scripts are outside this scope.
 
 ### Local development troubleshooting
 

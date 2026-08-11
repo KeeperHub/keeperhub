@@ -17,6 +17,7 @@ import {
 
 const WINDOWS_NODE = "C:\\Program Files\\nodejs\\node.exe";
 const WINDOWS_PNPM_CLI = "C:\\Users\\dev\\AppData\\Local\\pnpm\\pnpm.cjs";
+const WINDOWS_PNPM_EXE = "C:\\Users\\dev\\AppData\\Local\\pnpm\\pnpm.exe";
 
 function runtime(
   platform: NodeJS.Platform,
@@ -30,23 +31,43 @@ function runtime(
 }
 
 describe("resolvePnpmInvocation", () => {
-  it("uses Node plus npm_execpath on Windows and preserves argument boundaries", () => {
-    const args = ["tsx", "script.ts", "value & calc.exe"];
-    const invocation = resolvePnpmInvocation(
-      args,
-      runtime("win32", {
-        npm_config_user_agent: "pnpm/9.15.0 npm/? node/v24.0.0 win32 x64",
-        npm_execpath: WINDOWS_PNPM_CLI,
-      })
-    );
+  it.each([".js", ".cjs", ".mjs"])(
+    "uses Node for a Windows pnpm %s entry point",
+    (extension) => {
+      const pnpmCli = `C:\\Users\\dev\\AppData\\Local\\pnpm\\pnpm${extension}`;
+      const args = ["tsx", "script.ts", "value & calc.exe"];
+      const invocation = resolvePnpmInvocation(
+        args,
+        runtime("win32", {
+          npm_config_user_agent: "pnpm/9.15.0 npm/? node/v24.0.0 win32 x64",
+          npm_execpath: pnpmCli,
+        })
+      );
 
-    expect(invocation).toEqual({
-      args: [WINDOWS_PNPM_CLI, ...args],
-      command: WINDOWS_NODE,
+      expect(invocation).toEqual({
+        args: [pnpmCli, ...args],
+        command: WINDOWS_NODE,
+      });
+    }
+  );
+
+  it("runs a standalone pnpm executable directly on Windows", () => {
+    const args = ["tsx", "script.ts", "value & calc.exe"];
+    expect(
+      resolvePnpmInvocation(
+        args,
+        runtime("win32", {
+          npm_config_user_agent: "pnpm/10.15.0 node/v24.0.0 win32 x64",
+          npm_execpath: WINDOWS_PNPM_EXE,
+        })
+      )
+    ).toEqual({
+      args,
+      command: WINDOWS_PNPM_EXE,
     });
   });
 
-  it("uses the same shell-free Node invocation on non-Windows platforms", () => {
+  it("keeps the existing pnpm PATH behavior on Linux", () => {
     expect(
       resolvePnpmInvocation(
         ["dev"],
@@ -56,13 +77,21 @@ describe("resolvePnpmInvocation", () => {
         })
       )
     ).toEqual({
-      args: ["/opt/pnpm/pnpm.cjs", "dev"],
-      command: "/usr/local/bin/node",
+      args: ["dev"],
+      command: "pnpm",
     });
   });
 
-  it("keeps the existing pnpm PATH fallback on non-Windows platforms", () => {
-    expect(resolvePnpmInvocation(["dev"], runtime("darwin"))).toEqual({
+  it("keeps the existing pnpm PATH behavior on macOS with a native npm_execpath", () => {
+    expect(
+      resolvePnpmInvocation(
+        ["dev"],
+        runtime("darwin", {
+          npm_config_user_agent: "pnpm/10.15.0 node/v24.0.0 darwin arm64",
+          npm_execpath: "/opt/pnpm/pnpm",
+        })
+      )
+    ).toEqual({
       args: ["dev"],
       command: "pnpm",
     });

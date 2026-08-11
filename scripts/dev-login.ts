@@ -34,13 +34,11 @@
 
 import "dotenv/config";
 
-import { fork } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 
 import { getDatabaseUrl } from "../lib/db/connection-utils";
-import { waitForBrowserReady } from "./lib/dev-login-browser-process";
 import { spawnPnpm, spawnPnpmSync } from "./lib/pnpm-process";
 
 const ALLOWED_HOSTS = new Set([
@@ -195,7 +193,7 @@ function readCookieValue(): string {
   throw new Error(`dev-login: ${COOKIE_FILE} has no cookie line`);
 }
 
-async function launchBrowserDetached(rawSignedValue: string): Promise<void> {
+function launchBrowserDetached(rawSignedValue: string): void {
   fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
   // Spawn the browser owner as a detached child. We can't seed cookies in
   // this parent process and then point a separate Chromium at the same
@@ -208,18 +206,21 @@ async function launchBrowserDetached(rawSignedValue: string): Promise<void> {
   // process argv is world-readable via ps / /proc/<pid>/cmdline, whereas
   // /proc/<pid>/environ is owner-only. URL and profile dir are not secret,
   // so they stay as positional args.
-  const child = fork(
-    path.join(REPO_ROOT, "scripts", "dev-login-browser.ts"),
-    [DEV_URL, CHROME_PROFILE_DIR],
+  const child = spawnPnpm(
+    [
+      "tsx",
+      path.join("scripts", "dev-login-browser.ts"),
+      DEV_URL,
+      CHROME_PROFILE_DIR,
+    ],
     {
       detached: true,
-      execArgv: ["--import", "tsx"],
-      stdio: ["ignore", "ignore", "pipe", "ipc"],
+      stdio: "ignore",
       cwd: REPO_ROOT,
       env: { ...process.env, KEEPERHUB_DEV_COOKIE: rawSignedValue },
     }
   );
-  await waitForBrowserReady(child);
+  child.unref();
 }
 
 async function main(): Promise<void> {
@@ -238,7 +239,7 @@ async function main(): Promise<void> {
 
   const cookie = readCookieValue();
   console.log(`> launching detached Chromium at ${DEV_URL}`);
-  await launchBrowserDetached(cookie);
+  launchBrowserDetached(cookie);
 
   console.log("\ndev-login: signed-in Chromium window opening.");
   console.log(`  Profile: ${CHROME_PROFILE_DIR}`);
