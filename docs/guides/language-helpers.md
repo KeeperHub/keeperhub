@@ -19,6 +19,7 @@ header. An explicit, stable application `User-Agent` avoids depending on the
 library-generated default request signature:
 
 ```python
+import urllib.error
 import urllib.request
 
 request = urllib.request.Request(
@@ -29,8 +30,11 @@ request = urllib.request.Request(
     },
 )
 
-with urllib.request.urlopen(request) as response:
-    print(response.status)
+try:
+    with urllib.request.urlopen(request) as response:
+        print(response.status)
+except urllib.error.HTTPError as error:
+    print(error.code)
 ```
 
 The `User-Agent` is an interoperability header, not an authentication credential and not a permission. When probing `GET /api/keys` (documented to return `200` on success or `401` for invalid credentials), if a Python client receives an unexpected response status while a known-good client using the same credential succeeds, compare the actual request construction and headers before rotating keys or broadening permissions.
