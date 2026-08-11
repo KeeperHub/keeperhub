@@ -223,12 +223,12 @@ describe("executeSponsoredTransaction", () => {
     expect(result?.sponsored).toBe(true);
   });
 
-  it("returns gasUsed as raw gas units, not wei cost", async () => {
+  it("returns gasUsed as the wei cost, not raw gas units", async () => {
     setupSuccessfulSponsorship();
 
     const result = await executeSponsoredTransaction(baseTxParams);
 
-    expect(result?.gasUsed).toBe("21000");
+    expect(result?.gasUsed).toBe("21000000000000");
   });
 
   it("records gas usage after confirmation", async () => {
@@ -480,7 +480,7 @@ describe("executeSponsoredContractTransaction", () => {
 
     expect(result).not.toBeNull();
     expect(result?.success).toBe(true);
-    expect(result?.gasUsed).toBe("21000");
+    expect(result?.gasUsed).toBe("21000000000000");
   });
 
   it("encodes call data and forwards it to the Turnkey wrapper", async () => {

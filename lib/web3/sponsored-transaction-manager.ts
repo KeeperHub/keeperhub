@@ -424,6 +424,7 @@ async function finalizeSponsoredTx(
 
   const gasUsed = receipt.gasUsed;
   const effectiveGasPrice = receipt.effectiveGasPrice;
+  const gasCostWei = (gasUsed * effectiveGasPrice).toString();
 
   const metrics = getMetricsCollector();
   const labels = {
@@ -466,7 +467,6 @@ async function finalizeSponsoredTx(
   }
 
   if (!isTestnet) {
-    const gasCostWei = gasUsed * effectiveGasPrice;
     const gasCostEth = Number(gasCostWei) / 1e18;
     const gasCostUsd = gasCostEth * ethPriceUsd;
 
@@ -480,7 +480,7 @@ async function finalizeSponsoredTx(
   return {
     success: true,
     transactionHash: txHash,
-    gasUsed: gasUsed.toString(),
+    gasUsed: gasCostWei,
     gasUsedUnits: gasUsed.toString(),
     effectiveGasPrice: effectiveGasPrice.toString(),
     sponsored: true,
