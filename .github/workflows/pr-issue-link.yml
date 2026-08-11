@@ -1,0 +1,105 @@
+name: PR Issue Link
+
+# Runs on pull_request_target so it also runs on fork pull requests, which are
+# the ones this gate exists for. Fork runs of `pull_request` need per-run
+# maintainer approval, which would leave the gate silent exactly where it is
+# needed.
+#
+# SAFETY: pull_request_target runs with the base repository's token. This job
+# therefore never checks out, builds, or executes pull request code. It reads
+# the title, the labels, and the referenced issue through the API and nothing
+# else. Do not add a checkout step to this file.
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, labeled, unlabeled]
+    branches:
+      - staging
+      - prod
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  check-issue-link:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require an accepted issue in the PR title
+        env:
+          # Untrusted input. Passed through the environment and never
+          # interpolated into the script body.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          EXEMPT_LABEL: no-issue-required
+          ACCEPTED_LABEL: accepted
+          # Types that never require an issue. Keep in step with the
+          # "not required" list in ISSUES.md.
+          EXEMPT_TYPES: docs chore style
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "----------------------------------------------"
+            echo "  ERROR: $1"
+            echo "----------------------------------------------"
+            echo ""
+            echo "  Got title: $PR_TITLE"
+            echo ""
+            echo "  KeeperHub takes issues before pull requests. Open an issue,"
+            echo "  wait for a maintainer to apply the '$ACCEPTED_LABEL' label,"
+            echo "  then reference it in this PR's title:"
+            echo ""
+            echo "    fix: #1978 return 403 with a body on public /api/chains"
+            echo "    feat(cli): #2014 add --require-verified to execute status"
+            echo ""
+            echo "  No issue needed for typos, broken links, formatting, or docs"
+            echo "  corrected to match existing behaviour. Retitle as one of:"
+            echo "    $EXEMPT_TYPES"
+            echo ""
+            echo "  Full policy: https://github.com/$REPO/blob/staging/ISSUES.md"
+            echo ""
+            echo "  Already labelled '$ACCEPTED_LABEL'? This check does not rerun"
+            echo "  by itself when the issue changes - re-run the job, or edit"
+            echo "  the PR title to retrigger it."
+            exit 1
+          }
+
+          if printf '%s' "$PR_LABELS" | grep -qF "\"$EXEMPT_LABEL\""; then
+            echo "Exempt: pull request carries the '$EXEMPT_LABEL' label."
+            exit 0
+          fi
+
+          pr_type=$(printf '%s' "$PR_TITLE" | sed -nE 's/^([a-zA-Z]+)(\([^)]*\))?!?:.*/\1/p' | tr '[:upper:]' '[:lower:]')
+          for exempt in $EXEMPT_TYPES; do
+            if [ "$pr_type" = "$exempt" ]; then
+              echo "Exempt: '$pr_type' changes do not require an issue."
+              exit 0
+            fi
+          done
+
+          issue_number=$(printf '%s' "$PR_TITLE" | grep -oE '#[0-9]+' | head -n1 | tr -d '#')
+          if [ -z "$issue_number" ]; then
+            fail "PR title carries no issue reference."
+          fi
+
+          if ! issue_json=$(gh api "repos/$REPO/issues/$issue_number" 2>/dev/null); then
+            fail "#$issue_number does not resolve to an issue in $REPO."
+          fi
+
+          if printf '%s' "$issue_json" | jq -e '.pull_request' >/dev/null 2>&1; then
+            fail "#$issue_number is a pull request, not an issue."
+          fi
+
+          if ! printf '%s' "$issue_json" | jq -e --arg l "$ACCEPTED_LABEL" \
+            '.labels | map(.name) | index($l)' >/dev/null 2>&1; then
+            state=$(printf '%s' "$issue_json" | jq -r '.state')
+            labels=$(printf '%s' "$issue_json" | jq -r '[.labels[].name] | join(", ")')
+            fail "#$issue_number is not marked '$ACCEPTED_LABEL' (state: $state; labels: ${labels:-none})."
+          fi
+
+          echo "PR title references accepted issue #$issue_number."

@@ -1,0 +1,111 @@
+# Must remain 1: there is no cross-pod coordination, so 2+ replicas would
+# subscribe to every chain WSS twice and dispatch duplicate SQS messages.
+replicaCount: 1
+
+service:
+  enabled: true
+  name: keeperhub-event-staging
+  port: 3000
+  type: ClusterIP
+  containerPort: 3000
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-event-staging
+  tag: event-${IMAGE_TAG}
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+
+# Own service account + IRSA role rather than the shared app one, so queue
+# access can be scoped per producer. The role currently carries the same broad
+# queue policy as the shared one, so this repoint cannot lose access; it is
+# narrowed to send-only later.
+serviceAccount:
+  create: true
+  requireRoleArn: true
+  irsaCheck:
+    enabled: true
+  annotations:
+    eks.amazonaws.com/role-arn: ${EVENTS_SERVICE_ACCOUNT_ROLE_ARN}
+  name: keeperhub-events-staging
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+env:
+  NODE_ENV:
+    type: kv
+    value: "staging"
+  LOG_LEVEL:
+    type: kv
+    value: "info"
+  KEEPERHUB_API_URL:
+    type: kv
+    value: "http://keeperhub-common:3000"
+  INTERNAL_SERVICE_HMAC_SECRET:
+    type: parameterStore
+    name: internal-service-hmac-secret
+    parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+  REDIS_HOST:
+    type: parameterStore
+    name: redis-host
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-host
+  REDIS_PORT:
+    type: parameterStore
+    name: redis-port
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-port
+  REDIS_PASSWORD:
+    type: parameterStore
+    name: redis-password
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-password
+  JWT_TOKEN_USERNAME:
+    type: parameterStore
+    name: jwt-token-username
+    parameter_name: /eks/techops-staging/keeperhub-events/jwt-token-username
+  JWT_TOKEN_PASSWORD:
+    type: parameterStore
+    name: jwt-token-password
+    parameter_name: /eks/techops-staging/keeperhub-events/jwt-token-password
+  ETHERSCAN_API_KEY:
+    type: parameterStore
+    name: etherscan-api-key
+    parameter_name: /eks/techops-staging/keeperhub/etherscan-api-key
+  SQS_QUEUE_URL:
+    type: kv
+    value: "https://sqs.us-east-1.amazonaws.com/${AWS_ACCOUNT_ID}/keeperhub-workflow-queue-staging"
+  AWS_REGION:
+    type: kv
+    value: "us-east-1"
+
+externalSecrets:
+  clusterSecretStoreName: techops-staging
+
+livenessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - "pgrep -f 'dist/index.js' || exit 1"
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - "pgrep -f 'dist/index.js' || exit 1"

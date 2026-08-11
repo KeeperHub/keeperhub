@@ -1,0 +1,13 @@
+-- KEEP-458: track when each workflow row was last written by the
+-- protocol-coverage seeder. Null for rows that were never seeded
+-- (i.e. user-created in the UI). The seeder writes this on insert and
+-- on refresh; the value is then compared to `updated_at` to decide
+-- whether a row was user-edited after the last seed touch.
+--
+-- Detection: updated_at > seeded_at + epsilon => skip refresh.
+-- seeded_at IS NULL => row is user-created, never touched by the seeder.
+--
+-- Read-only by everything else; existing readers of created_at and
+-- updated_at are unaffected (those columns retain their canonical
+-- meanings: first-insert wall-clock and last modification time).
+ALTER TABLE "workflows" ADD COLUMN "seeded_at" timestamp;

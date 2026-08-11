@@ -1,0 +1,58 @@
+{
+  "protocol": "ethena",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Ethena Approve USDe + Deposit sUSDe",
+  "description": "Approve USDe for sUSDe vault then deposit 2 USDe on mainnet. Requires USDe in wallet (swap USDC->USDe via Uniswap first).",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "approve-usde",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Approve USDe for sUSDe",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/approve-usde",
+          "network": "1",
+          "spender": "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497",
+          "amount": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "deposit-susde",
+      "type": "action",
+      "position": { "x": 544, "y": 0 },
+      "data": {
+        "label": "Deposit USDe to sUSDe",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/vault-deposit",
+          "network": "1",
+          "contractAddress": "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497",
+          "assets": "2000000000000000000",
+          "receiver": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "approve-usde", "type": "animated" },
+    { "id": "e2", "source": "approve-usde", "target": "deposit-susde", "type": "animated" }
+  ]
+}

@@ -1,0 +1,1662 @@
+name: Deploy PR Environment
+
+concurrency:
+  group: pr-env-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches:
+      - staging
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check-labels:
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.check.outputs.should-deploy }}
+      should-test: ${{ steps.check.outputs.should-test }}
+      should-deploy-events: ${{ steps.check.outputs.should-deploy-events }}
+      should-deploy-events-only: ${{ steps.check.outputs.should-deploy-events-only }}
+      should-build-executor: ${{ steps.check.outputs.should-build-executor }}
+      should-deploy-collector: ${{ steps.check.outputs.should-deploy-collector }}
+      should-load-test: ${{ steps.check.outputs.should-load-test }}
+    steps:
+      - name: Checkout code (for change detection)
+        if: github.event.action == 'synchronize'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Determine what to run based on trigger
+        id: check
+        run: |
+          echo "should-deploy=false" >> $GITHUB_OUTPUT
+          echo "should-test=false" >> $GITHUB_OUTPUT
+          echo "should-deploy-events=false" >> $GITHUB_OUTPUT
+          echo "should-deploy-events-only=false" >> $GITHUB_OUTPUT
+          echo "should-build-executor=false" >> $GITHUB_OUTPUT
+          echo "should-deploy-collector=false" >> $GITHUB_OUTPUT
+          echo "should-load-test=false" >> $GITHUB_OUTPUT
+
+          HAS_DEPLOY_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-pr-environment') }}"
+          HAS_TEST_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'run-e2e-tests-pr-deploy') }}"
+          # Events PR build is opt-in alongside the standard PR deploy. Both
+          # labels must be present: events satellite ships into the PR
+          # namespace created by deploy-pr-environment, so it has no meaning
+          # without that label. See KEEP-325.
+          HAS_EVENTS_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-pr-events') }}"
+          # Executor PR build is opt-in alongside deploy-pr-environment, same
+          # pattern as deploy-pr-events. The PR env always deploys an executor
+          # (using executor-latest by default) so SQS messages from the PR's
+          # dispatchers are consumed; this label adds a PR-specific build for
+          # ticket-driven validation. See KEEP-556.
+          HAS_EXECUTOR_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-pr-executor') }}"
+          # Metrics-collector PR deploy is opt-in alongside deploy-pr-environment
+          # (TECH-6484), same pattern as deploy-pr-executor. Default off; when
+          # set, CI builds a PR-specific collector image and deploys it as a
+          # satellite so the PR's collector code can be exercised against the
+          # PR's DB. ServiceMonitors are off in PR envs - verify via curl.
+          HAS_METRICS_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'deploy-pr-metrics') }}"
+          HAS_LOAD_TEST_LABEL="${{ contains(github.event.pull_request.labels.*.name, 'run-load-test') }}"
+          ACTION="${{ github.event.action }}"
+          ADDED_LABEL="${{ github.event.label.name }}"
+
+          if [[ "$ACTION" == "labeled" ]]; then
+            if [[ "$ADDED_LABEL" == "deploy-pr-environment" ]]; then
+              echo "should-deploy=true" >> $GITHUB_OUTPUT
+              if [[ "$HAS_TEST_LABEL" == "true" ]]; then
+                echo "should-test=true" >> $GITHUB_OUTPUT
+              fi
+              if [[ "$HAS_EVENTS_LABEL" == "true" ]]; then
+                echo "should-deploy-events=true" >> $GITHUB_OUTPUT
+              fi
+              if [[ "$HAS_EXECUTOR_LABEL" == "true" ]]; then
+                echo "should-build-executor=true" >> $GITHUB_OUTPUT
+              fi
+              if [[ "$HAS_METRICS_LABEL" == "true" ]]; then
+                echo "should-deploy-collector=true" >> $GITHUB_OUTPUT
+              fi
+              if [[ "$HAS_LOAD_TEST_LABEL" == "true" ]]; then
+                echo "should-load-test=true" >> $GITHUB_OUTPUT
+              fi
+            elif [[ "$ADDED_LABEL" == "run-e2e-tests-pr-deploy" ]]; then
+              echo "should-test=true" >> $GITHUB_OUTPUT
+            elif [[ "$ADDED_LABEL" == "run-load-test" ]]; then
+              # Load-test-only path: PR env is already deployed. Only meaningful
+              # when deploy-pr-environment is also present — no env, no target.
+              if [[ "$HAS_DEPLOY_LABEL" == "true" ]]; then
+                echo "should-load-test=true" >> $GITHUB_OUTPUT
+              fi
+            elif [[ "$ADDED_LABEL" == "deploy-pr-executor" ]]; then
+              # Executor-only path: PR env is already deployed. Build a PR
+              # executor image and redeploy just that satellite. Cheaper than
+              # re-running the full app+migrator deploy.
+              if [[ "$HAS_DEPLOY_LABEL" == "true" ]]; then
+                echo "should-build-executor=true" >> $GITHUB_OUTPUT
+                echo "should-deploy=true" >> $GITHUB_OUTPUT
+                if [[ "$HAS_EVENTS_LABEL" == "true" ]]; then
+                  echo "should-deploy-events=true" >> $GITHUB_OUTPUT
+                fi
+                if [[ "$HAS_TEST_LABEL" == "true" ]]; then
+                  echo "should-test=true" >> $GITHUB_OUTPUT
+                fi
+              fi
+            elif [[ "$ADDED_LABEL" == "deploy-pr-events" ]]; then
+              # Events-only path: PR env is already deployed (HAS_DEPLOY_LABEL).
+              # Build a PR-specific events image and only re-run the events
+              # helm upgrade — not the full app stack.
+              if [[ "$HAS_DEPLOY_LABEL" == "true" ]]; then
+                echo "should-deploy-events=true" >> $GITHUB_OUTPUT
+                echo "should-deploy-events-only=true" >> $GITHUB_OUTPUT
+                if [[ "$HAS_TEST_LABEL" == "true" ]]; then
+                  echo "should-test=true" >> $GITHUB_OUTPUT
+                fi
+              fi
+            elif [[ "$ADDED_LABEL" == "deploy-pr-metrics" ]]; then
+              # Metrics path: PR env already deployed. Build a PR collector image
+              # and re-run the deploy (which now includes the collector step).
+              # should-deploy=true is required because the collector deploy step
+              # lives inside the should-deploy-gated deploy job - same pattern as
+              # the deploy-pr-executor incremental path. (TECH-6484)
+              if [[ "$HAS_DEPLOY_LABEL" == "true" ]]; then
+                echo "should-deploy=true" >> $GITHUB_OUTPUT
+                echo "should-deploy-collector=true" >> $GITHUB_OUTPUT
+                if [[ "$HAS_TEST_LABEL" == "true" ]]; then
+                  echo "should-test=true" >> $GITHUB_OUTPUT
+                fi
+              fi
+            fi
+          elif [[ "$ACTION" == "unlabeled" ]]; then
+            # Removing deploy-pr-events while the PR env is still deployed
+            # should revert the events satellite to the staging event-latest
+            # tag. Run the events-only deploy (no PR build, default tag) —
+            # cheaper than re-running the full app+migrator deploy.
+            REMOVED_LABEL="$ADDED_LABEL"
+            if [[ "$REMOVED_LABEL" == "deploy-pr-events" && "$HAS_DEPLOY_LABEL" == "true" ]]; then
+              echo "should-deploy-events-only=true" >> $GITHUB_OUTPUT
+              if [[ "$HAS_TEST_LABEL" == "true" ]]; then
+                echo "should-test=true" >> $GITHUB_OUTPUT
+              fi
+            fi
+          elif [[ "$ACTION" == "synchronize" || "$ACTION" == "opened" || "$ACTION" == "reopened" ]]; then
+            NEEDS_DEPLOY=true
+
+            # On synchronize, check if changes are only in CI/test files
+            if [[ "$ACTION" == "synchronize" ]]; then
+              CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+              if [ -n "$CHANGED" ]; then
+                NON_CI_TEST_FILES=$(echo "$CHANGED" | grep -vE '^(\.github/|tests/|playwright\.config|vitest\.config)' || true)
+                if [ -z "$NON_CI_TEST_FILES" ]; then
+                  echo "Only CI/test files changed -- skipping deploy, running tests only"
+                  NEEDS_DEPLOY=false
+                fi
+              fi
+            fi
+
+            if [[ "$HAS_DEPLOY_LABEL" == "true" && "$NEEDS_DEPLOY" == "true" ]]; then
+              echo "should-deploy=true" >> $GITHUB_OUTPUT
+              if [[ "$HAS_EVENTS_LABEL" == "true" ]]; then
+                echo "should-deploy-events=true" >> $GITHUB_OUTPUT
+              fi
+              if [[ "$HAS_EXECUTOR_LABEL" == "true" ]]; then
+                echo "should-build-executor=true" >> $GITHUB_OUTPUT
+              fi
+              if [[ "$HAS_METRICS_LABEL" == "true" ]]; then
+                echo "should-deploy-collector=true" >> $GITHUB_OUTPUT
+              fi
+            fi
+            # Run tests if both labels present (even without deploy)
+            if [[ "$HAS_DEPLOY_LABEL" == "true" && "$HAS_TEST_LABEL" == "true" ]]; then
+              echo "should-test=true" >> $GITHUB_OUTPUT
+            fi
+            if [[ "$HAS_DEPLOY_LABEL" == "true" && "$HAS_LOAD_TEST_LABEL" == "true" ]]; then
+              echo "should-load-test=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  build-images:
+    needs: check-labels
+    if: needs.check-labels.outputs.should-deploy == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    strategy:
+      fail-fast: true
+      matrix:
+        image:
+          - name: app
+            target: runner
+            tag_prefix: app
+            build_args: true
+            cache_key: cache-app
+          - name: migrator
+            target: migrator
+            tag_prefix: migrator
+            build_args: false
+            cache_key: cache-migrator
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REGION: ${{ vars.TO_REGION }}
+      AWS_ECR_NAME: ${{ vars.TO_ECR_NAME }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract commit hash
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if image exists
+        id: check-image
+        run: |
+          IMAGE_TAG="${{ steps.vars.outputs.sha_short }}"
+          if aws ecr describe-images \
+            --repository-name ${{ env.AWS_ECR_NAME }} \
+            --image-ids imageTag=${{ matrix.image.tag_prefix }}-${IMAGE_TAG} \
+            --region ${{ env.REGION }} >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push image
+        if: steps.check-image.outputs.exists != 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: ${{ matrix.image.target }}
+          push: true
+          provenance: false
+          # One arg per line via a YAML block scalar. A previous version used
+          # format('...\n...') in a single expression, but GitHub Actions does
+          # not interpret \n as a newline, so every NEXT_PUBLIC_* collapsed into
+          # the value of the first build-arg and the rest (incl. the Turnstile
+          # site key) were never set - the signup captcha never rendered. Blank
+          # lines (migrator image, build_args=false) are ignored by buildx.
+          build-args: |
+            ${{ matrix.image.build_args == true && format('NEXT_PUBLIC_AUTH_PROVIDERS={0}', vars.NEXT_PUBLIC_AUTH_PROVIDERS) || '' }}
+            ${{ matrix.image.build_args == true && format('NEXT_PUBLIC_GITHUB_CLIENT_ID={0}', vars.NEXT_PUBLIC_GITHUB_CLIENT_ID) || '' }}
+            ${{ matrix.image.build_args == true && format('NEXT_PUBLIC_GOOGLE_CLIENT_ID={0}', vars.NEXT_PUBLIC_GOOGLE_CLIENT_ID) || '' }}
+            ${{ matrix.image.build_args == true && format('NEXT_PUBLIC_BILLING_ENABLED={0}', vars.NEXT_PUBLIC_BILLING_ENABLED) || '' }}
+            ${{ matrix.image.build_args == true && format('NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED={0}', vars.NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED) || '' }}
+            ${{ matrix.image.build_args == true && 'NEXT_PUBLIC_TURNSTILE_SITE_KEY=1x00000000000000000000AA' || '' }}
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:${{ matrix.image.tag_prefix }}-${{ steps.vars.outputs.sha_short }}
+          cache-from: |
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:cache-app
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:${{ matrix.image.cache_key }}
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:${{ matrix.image.cache_key }},mode=max
+
+  # Builds a PR-specific metrics-collector image when the deploy-pr-metrics
+  # label is present alongside deploy-pr-environment (TECH-6484). Pushed to the
+  # staging collector ECR with a collector-${sha_short} tag; never pushes
+  # collector-latest so concurrent staging deploys are unaffected.
+  build-collector-image:
+    needs: check-labels
+    if: needs.check-labels.outputs.should-deploy-collector == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      COLLECTOR_ECR_NAME: keeperhub-metrics-collector-staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract commit hash
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push collector image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: metrics-collector
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.COLLECTOR_ECR_NAME }}:collector-${{ steps.vars.outputs.sha_short }}
+          cache-from: |
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.COLLECTOR_ECR_NAME }}:cache
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.COLLECTOR_ECR_NAME }}:cache-pr
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.COLLECTOR_ECR_NAME }}:cache-pr,mode=max
+
+  # Builds a PR-specific event-tracker image when the deploy-pr-events
+  # label is present alongside deploy-pr-environment. Without it, the PR
+  # environment uses the staging events image (event-latest tag). Pushed
+  # to the staging events ECR with an event-${sha_short} tag; never pushes
+  # event-latest so concurrent staging deploys are not affected. See KEEP-325.
+  build-events-image:
+    needs: check-labels
+    if: needs.check-labels.outputs.should-deploy-events == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      EVENTS_ECR_NAME: keeperhub-event-staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract commit hash
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if events image exists
+        id: check-image
+        run: |
+          IMAGE_TAG="${{ steps.vars.outputs.sha_short }}"
+          if aws ecr describe-images \
+            --repository-name ${{ env.EVENTS_ECR_NAME }} \
+            --image-ids imageTag=event-${IMAGE_TAG} \
+            --region ${{ env.REGION }} >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push events image
+        if: steps.check-image.outputs.exists != 'true'
+        # Read from both staging cache (warm start) and PR cache, but only
+        # write to :cache-pr. Prevents PR builds (which may carry broken
+        # or experimental code) from poisoning the staging :cache layer
+        # used by deploy-events.yaml.
+        uses: docker/build-push-action@v7
+        with:
+          context: ./keeperhub-events
+          file: ./keeperhub-events/event-tracker/Dockerfile
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.EVENTS_ECR_NAME }}:event-${{ steps.vars.outputs.sha_short }}
+          cache-from: |
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EVENTS_ECR_NAME }}:cache
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EVENTS_ECR_NAME }}:cache-pr
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EVENTS_ECR_NAME }}:cache-pr,mode=max
+
+  # Builds a PR-specific solana-tracker image when the deploy-pr-events label
+  # is present. Unlike event-tracker there is no solana-latest staging
+  # baseline, so solana-tracker is only deployed to the PR env when this
+  # sha-tagged image is built. Pushed to the shared events ECR with a
+  # solana-${sha_short} tag; never solana-latest, and to a solana-specific
+  # cache tag so it cannot poison the event-tracker cache.
+  build-solana-image:
+    needs: check-labels
+    if: needs.check-labels.outputs.should-deploy-events == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      EVENTS_ECR_NAME: keeperhub-event-staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract commit hash
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if solana image exists
+        id: check-image
+        run: |
+          IMAGE_TAG="${{ steps.vars.outputs.sha_short }}"
+          if aws ecr describe-images \
+            --repository-name ${{ env.EVENTS_ECR_NAME }} \
+            --image-ids imageTag=solana-${IMAGE_TAG} \
+            --region ${{ env.REGION }} >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push solana image
+        if: steps.check-image.outputs.exists != 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ./keeperhub-events
+          file: ./keeperhub-events/solana-tracker/Dockerfile
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.EVENTS_ECR_NAME }}:solana-${{ steps.vars.outputs.sha_short }}
+          cache-from: |
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EVENTS_ECR_NAME }}:cache
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EVENTS_ECR_NAME }}:cache-solana-pr
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EVENTS_ECR_NAME }}:cache-solana-pr,mode=max
+
+  # Builds a PR-specific executor image when the deploy-pr-executor label is
+  # present alongside deploy-pr-environment. Without it, the PR environment
+  # always deploys an executor anyway (using the executor-latest staging tag),
+  # so the PR's SQS messages get consumed; this job only builds a sha-tagged
+  # image so the executor running in the PR env is bit-identical to the PR
+  # commit (needed for end-to-end validation of executor-side changes, e.g.
+  # the KEEP-556 counter increment).
+  # Pushes only executor-${sha_short} - never executor-latest, so concurrent
+  # staging deploys are unaffected.
+  build-executor-image:
+    needs: check-labels
+    if: needs.check-labels.outputs.should-build-executor == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      EXECUTOR_ECR_NAME: keeperhub-executor-staging
+      RUNNER_ECR_NAME: keeperhub-staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract commit hash
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if executor image exists
+        id: check-image
+        run: |
+          IMAGE_TAG="${{ steps.vars.outputs.sha_short }}"
+          if aws ecr describe-images \
+            --repository-name ${{ env.EXECUTOR_ECR_NAME }} \
+            --image-ids imageTag=executor-${IMAGE_TAG} \
+            --region ${{ env.REGION }} >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push executor image
+        if: steps.check-image.outputs.exists != 'true'
+        # Read from staging cache (warm start) and PR cache, but only write to
+        # :cache-pr. Prevents PR builds from poisoning the staging :cache layer
+        # used by deploy-executor.yaml.
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: executor
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.EXECUTOR_ECR_NAME }}:executor-${{ steps.vars.outputs.sha_short }}
+          cache-from: |
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EXECUTOR_ECR_NAME }}:cache
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EXECUTOR_ECR_NAME }}:cache-pr
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.EXECUTOR_ECR_NAME }}:cache-pr,mode=max
+
+      - name: Check if runner image exists
+        id: check-runner-image
+        run: |
+          IMAGE_TAG="${{ steps.vars.outputs.sha_short }}"
+          if aws ecr describe-images \
+            --repository-name ${{ env.RUNNER_ECR_NAME }} \
+            --image-ids imageTag=workflow-runner-${IMAGE_TAG} \
+            --region ${{ env.REGION }} >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push runner image
+        if: steps.check-runner-image.outputs.exists != 'true'
+        # The workflow steps run in a per-execution Job using RUNNER_IMAGE, so a
+        # PR-specific runner is required to exercise executor.workflow.ts changes.
+        # Same Dockerfile as the executor (target: workflow-runner). Uses a
+        # runner-scoped PR cache so it never writes the app's :cache layer.
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: workflow-runner
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.RUNNER_ECR_NAME }}:workflow-runner-${{ steps.vars.outputs.sha_short }}
+          cache-from: |
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.RUNNER_ECR_NAME }}:workflow-runner-cache-pr
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.RUNNER_ECR_NAME }}:workflow-runner-cache-pr,mode=max
+
+  deploy:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write # actions/github-script posts PR comments
+    needs:
+      [
+        check-labels,
+        build-images,
+        build-events-image,
+        build-solana-image,
+        build-executor-image,
+        build-collector-image,
+      ]
+    # Cannot use the `success()` shorthand here because GHA evaluates it
+    # as false whenever ANY needed job is skipped. build-events-image is
+    # skipped on purpose for PRs without the deploy-pr-events label, so
+    # success() would also skip the deploy job. We need an explicit
+    # per-need result check that treats skipped as acceptable for the
+    # optional events build only. !cancelled() restores the default skip
+    # behaviour for cancelled upstream runs.
+    if: |
+      !cancelled() &&
+      needs.check-labels.outputs.should-deploy == 'true' &&
+      needs.build-images.result == 'success' &&
+      (needs.build-events-image.result == 'success' || needs.build-events-image.result == 'skipped') &&
+      (needs.build-solana-image.result == 'success' || needs.build-solana-image.result == 'skipped') &&
+      (needs.build-executor-image.result == 'success' || needs.build-executor-image.result == 'skipped') &&
+      (needs.build-collector-image.result == 'success' || needs.build-collector-image.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REGION: us-east-1
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      NAMESPACE: pr-${{ github.event.pull_request.number }}
+      AWS_ECR_NAME: keeperhub-staging
+      PG_VERSION: "16"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Connect to EKS
+        uses: ./.github/actions/eks-connect
+        with:
+          enabled: ${{ vars.TO_EKS_CONNECT }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Extract commit hash
+        id: vars
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.REGION }}
+
+      - name: Create namespace
+        run: |
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl label namespace ${{ env.NAMESPACE }} pr-number=${{ env.PR_NUMBER }} --overwrite
+
+      - name: Generate database password
+        id: db-password
+        run: |
+          # Check if secret already exists
+          if kubectl get secret keeperhub-pr-${{ env.PR_NUMBER }}-db-credentials -n ${{ env.NAMESPACE }} >/dev/null 2>&1; then
+            echo "Secret already exists, retrieving existing password"
+            DB_PASSWORD=$(kubectl get secret keeperhub-pr-${{ env.PR_NUMBER }}-db-credentials -n ${{ env.NAMESPACE }} -o jsonpath='{.data.password}' | base64 -d)
+          else
+            echo "Generating new password"
+            DB_PASSWORD=$(openssl rand -base64 32)
+          fi
+          echo "::add-mask::$DB_PASSWORD"
+          echo "password=$DB_PASSWORD" >> $GITHUB_OUTPUT
+
+      - name: Deploy infrastructure (parallel)
+        env:
+          DB_PASSWORD: ${{ steps.db-password.outputs.password }}
+          PG_VERSION: ${{ env.PG_VERSION }}
+          LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          LOGDIR=$(mktemp -d)
+
+          # PostgreSQL
+          (
+            envsubst < deploy/pr-environment/postgres-cluster.template.yaml | kubectl apply -f -
+            echo "Waiting for PostgreSQL..."
+            kubectl wait --for=condition=ready cluster/keeperhub-pr-${PR_NUMBER}-db \
+              -n ${NAMESPACE} --timeout=10m || {
+              echo "PostgreSQL failed:"
+              kubectl describe cluster keeperhub-pr-${PR_NUMBER}-db -n ${NAMESPACE}
+              exit 1
+            }
+            echo "PostgreSQL ready."
+          ) > "${LOGDIR}/postgres.log" 2>&1 &
+          PG_PID=$!
+
+          # LocalStack
+          (
+            kubectl delete job create-sqs-queue -n ${NAMESPACE} --ignore-not-found
+            envsubst '$PR_NUMBER $LOCALSTACK_AUTH_TOKEN' < deploy/pr-environment/localstack.template.yaml | kubectl apply -f -
+            echo "Waiting for LocalStack..."
+            kubectl wait --for=condition=ready pod -l app=localstack,pr=pr-${PR_NUMBER} \
+              -n ${NAMESPACE} --timeout=5m || {
+              echo "LocalStack failed:"
+              kubectl get pods -l app=localstack -n ${NAMESPACE}
+              exit 1
+            }
+            echo "LocalStack ready."
+          ) > "${LOGDIR}/localstack.log" 2>&1 &
+          LS_PID=$!
+
+          # Redis
+          (
+            envsubst '$PR_NUMBER' < deploy/pr-environment/redis.template.yaml | kubectl apply -f -
+            echo "Waiting for Redis..."
+            kubectl wait --for=condition=ready pod -l app=redis,pr=pr-${PR_NUMBER} \
+              -n ${NAMESPACE} --timeout=3m || {
+              echo "Redis failed:"
+              kubectl get pods -l app=redis -n ${NAMESPACE}
+              exit 1
+            }
+            echo "Redis ready."
+          ) > "${LOGDIR}/redis.log" 2>&1 &
+          REDIS_PID=$!
+
+          # Sandbox prerequisites - ServiceAccount and NetworkPolicy must
+          # exist before the helm install in the satellite step so the
+          # chart's serviceAccount: { create: false, name: ... } finds
+          # the SA and so a restarted Pod cannot have a brief window of
+          # wide-open egress. The Helm release itself runs in the
+          # "Deploy satellite services (parallel)" step below.
+          (
+            envsubst '$PR_NUMBER' < deploy/pr-environment/sandbox-sa.template.yaml | kubectl apply -f -
+            envsubst '$PR_NUMBER' < deploy/pr-environment/sandbox-networkpolicy.template.yaml | kubectl apply -f -
+            echo "Sandbox SA and NetworkPolicy applied."
+          ) > "${LOGDIR}/sandbox-pre.log" 2>&1 &
+          SANDBOX_PRE_PID=$!
+
+          # Workflow-runner ServiceAccount - the executor sets this dedicated
+          # zero-RBAC SA (with no projected token) on the runner Job pods it
+          # builds in code. It must exist in the PR namespace before any
+          # workflow runs, otherwise runner pods fail to schedule (SA not
+          # found). Staging/prod create it via deploy-executor.yaml; the PR
+          # env never runs that workflow, so apply it here.
+          (
+            envsubst '$PR_NUMBER' < deploy/pr-environment/runner-sa.template.yaml | kubectl apply -f -
+            echo "Workflow-runner SA applied."
+          ) > "${LOGDIR}/runner-pre.log" 2>&1 &
+          RUNNER_PRE_PID=$!
+
+          # Wait for all five, print logs for failures
+          FAILED=0
+          for COMPONENT in postgres:$PG_PID localstack:$LS_PID redis:$REDIS_PID sandbox-pre:$SANDBOX_PRE_PID runner-pre:$RUNNER_PRE_PID; do
+            NAME="${COMPONENT%%:*}"
+            PID="${COMPONENT##*:}"
+            if wait "$PID"; then
+              echo "${NAME}: OK"
+            else
+              echo "=== ${NAME} FAILED ==="
+              cat "${LOGDIR}/${NAME}.log"
+              FAILED=1
+            fi
+          done
+
+          if [ $FAILED -ne 0 ]; then
+            exit 1
+          fi
+          echo "All infrastructure components ready."
+
+      - name: Prepare Helm values
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+          DB_PASSWORD: ${{ steps.db-password.outputs.password }}
+          SERVICE_ACCOUNT_ROLE_ARN: ${{ vars.TO_SERVICE_ACCOUNT_ROLE_ARN }}
+          # PR-specific events image tag if deploy-pr-events label was set
+          # (build-events-image job ran). Otherwise stays on the staging
+          # event-latest tag.
+          EVENTS_IMAGE_TAG: ${{ needs.check-labels.outputs.should-deploy-events == 'true' && format('event-{0}', steps.vars.outputs.sha_short) || 'event-latest' }}
+          # PR-specific solana-tracker tag. Meaningful only when deploy-pr-events
+          # ran (build-solana-image built solana-<sha>); the solana deploy step
+          # is gated on the same label, so the rendered file is unused otherwise.
+          SOLANA_IMAGE_TAG: solana-${{ steps.vars.outputs.sha_short }}
+          # PR-specific executor image tag if deploy-pr-executor label was set
+          # (build-executor-image job ran). Otherwise stays on executor-latest
+          # so the PR env still has a working SQS consumer for schedule / block
+          # / event triggers. The template prepends "executor-" itself, so we
+          # set only the bare tag here (matches the {{IMAGE_TAG}} pattern).
+          EXECUTOR_IMAGE_TAG: ${{ needs.check-labels.outputs.should-build-executor == 'true' && steps.vars.outputs.sha_short || 'latest' }}
+          # Workflow steps run in a per-execution Job using RUNNER_IMAGE, so
+          # executor.workflow.ts changes only take effect with a PR runner.
+          # deploy-pr-executor builds workflow-runner-<sha>; else stay on the
+          # staging workflow-runner-latest. Full tag (template uses it verbatim).
+          RUNNER_IMAGE_TAG: ${{ needs.check-labels.outputs.should-build-executor == 'true' && format('workflow-runner-{0}', steps.vars.outputs.sha_short) || 'workflow-runner-latest' }}
+          # PR-specific collector image tag when deploy-pr-metrics was set
+          # (build-collector-image ran); else the collector-latest baseline.
+          # Bare tag; the template prepends "collector-". (TECH-6484)
+          COLLECTOR_IMAGE_TAG: ${{ needs.check-labels.outputs.should-deploy-collector == 'true' && steps.vars.outputs.sha_short || 'latest' }}
+        run: |
+          # Percent-encode DB_PASSWORD so base64 characters (+/=) don't break URL parsing
+          # in the pod. Init containers previously encoded at runtime but that path was
+          # fragile (stdout truncation on process.exit in piped $() capture).
+          ENCODED_DB_PASSWORD=$(python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['DB_PASSWORD'], safe=''))")
+          echo "::add-mask::$ENCODED_DB_PASSWORD"
+          export ENCODED_DB_PASSWORD
+          # Detect the scheduler image tags currently running on staging. The -latest
+          # floating tags (schedule-latest, block-latest) are not reliably maintained;
+          # using the pinned tag from the live staging deployment guarantees the image
+          # exists and is known-good.
+          SCHEDULE_IMAGE_TAG=$(kubectl get deployment keeperhub-schedule-common \
+            -n keeperhub \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | cut -d: -f2)
+          BLOCK_IMAGE_TAG=$(kubectl get deployment keeperhub-block-common \
+            -n keeperhub \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | cut -d: -f2)
+          echo "Scheduler image tags: schedule=${SCHEDULE_IMAGE_TAG}, block=${BLOCK_IMAGE_TAG}"
+          export SCHEDULE_IMAGE_TAG BLOCK_IMAGE_TAG
+          envsubst < deploy/pr-environment/values.template.yaml > ${{ github.workspace }}/values-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/scheduler-dispatcher.template.yaml > ${{ github.workspace }}/schedule-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/block-dispatcher.template.yaml > ${{ github.workspace }}/block-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/event-tracker.template.yaml > ${{ github.workspace }}/event-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/solana-tracker.template.yaml > ${{ github.workspace }}/solana-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/executor.template.yaml > ${{ github.workspace }}/executor-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/metrics-collector.template.yaml > ${{ github.workspace }}/metrics-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/sandbox.template.yaml > ${{ github.workspace }}/sandbox-pr-${{ env.PR_NUMBER }}.yaml
+
+          # Provision the runner's DATABASE_URL as a Secret. The hardened runner
+          # reads DATABASE_URL via secretKeyRef (RUNNER_SECRET_PREFIX), but the
+          # PR env injects the executor's DATABASE_URL as a kv literal pointing
+          # at the ephemeral per-PR Postgres - so no chart-managed db-url Secret
+          # exists. Create one matching the chart's <release>-common-<slug>
+          # naming and the executor's exact connection string. The executor
+          # Helm release does not manage this name (DATABASE_URL is kv there),
+          # so there is no ownership conflict.
+          RUNNER_DB_URL="postgresql://keeperhub:${ENCODED_DB_PASSWORD}@keeperhub-pr-${{ env.PR_NUMBER }}-db-rw.pr-${{ env.PR_NUMBER }}.svc.cluster.local:5432/keeperhub"
+          kubectl create secret generic "executor-pr-${{ env.PR_NUMBER }}-common-db-url" \
+            -n "${NAMESPACE}" \
+            --from-literal="executor-pr-${{ env.PR_NUMBER }}-common-db-url=${RUNNER_DB_URL}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Clean up stale Helm releases
+        run: |
+          for release in $(helm list -n ${{ env.NAMESPACE }} --pending --failed -q 2>/dev/null); do
+            echo "Cleaning up stale release: $release"
+            helm uninstall "$release" -n ${{ env.NAMESPACE }} --no-hooks 2>/dev/null || true
+          done
+
+      - name: Add Helm repository
+        run: |
+          helm repo add techops-services https://techops-services.github.io/helm-charts
+          helm repo update
+
+      - name: Deploy Keeperhub application with Helm
+        run: |
+          set -euo pipefail
+          helm upgrade --install keeperhub-pr-${PR_NUMBER} \
+            techops-services/common \
+            -f ${GITHUB_WORKSPACE}/values-pr-${PR_NUMBER}.yaml \
+            --namespace "${NAMESPACE}" --timeout 10m0s --atomic --version 0.2.1
+
+      # Seed the internal-service HMAC store for this PR's fresh database. The
+      # app verifies HMAC-signed internal requests (reaper, dispatchers) against
+      # a DB-backed secret store that starts empty. This runs AFTER the app
+      # deploy so external-secrets has synced the signing secret from SSM - the
+      # app's db-migration initContainer can't do it (its secretKeyRef env is
+      # fixed at container start and races ESO on first boot). A short poll
+      # guards against the secret object existing before its value lands.
+      - name: Seed internal-service HMAC store
+        env:
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          NAMESPACE: ${{ env.NAMESPACE }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+        run: |
+          set -euo pipefail
+          SECRET_NAME="keeperhub-pr-${PR_NUMBER}-common-internal-service-hmac-secret"
+          echo "Waiting for ${SECRET_NAME} to be populated by external-secrets..."
+          for i in $(seq 1 60); do
+            v=$(kubectl get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath="{.data.${SECRET_NAME}}" 2>/dev/null || true)
+            [ -n "${v}" ] && { echo "secret populated"; break; }
+            sleep 5
+          done
+          DB_PASSWORD=$(kubectl get secret keeperhub-pr-${PR_NUMBER}-db-credentials -n "${NAMESPACE}" -o jsonpath='{.data.password}' | base64 -d)
+          ENCODED_PASSWORD=$(DB_PASSWORD="${DB_PASSWORD}" python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['DB_PASSWORD'], safe=''))")
+          DB_URL="postgresql://keeperhub:${ENCODED_PASSWORD}@keeperhub-pr-${PR_NUMBER}-db-rw.${NAMESPACE}.svc.cluster.local:5432/keeperhub"
+          kubectl delete job keeperhub-pr-${PR_NUMBER}-hmac-seed -n "${NAMESPACE}" --ignore-not-found
+          kubectl apply -n "${NAMESPACE}" -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keeperhub-pr-${PR_NUMBER}-hmac-seed
+          spec:
+            backoffLimit: 2
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: hmac-seed
+                    image: ${ECR_REGISTRY}/keeperhub-staging:migrator-${IMAGE_TAG}
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - 'printf "%s" "\$INTERNAL_SERVICE_HMAC_SECRET" | pnpm tsx scripts/seed-internal-service-hmac.ts || echo "seed skipped (row already present or failed - see above)"'
+                    env:
+                      - name: DATABASE_URL
+                        value: "${DB_URL}"
+                      - name: ALLOW_REMOTE
+                        value: "1"
+                      - name: INTERNAL_SERVICE_HMAC_SECRET
+                        valueFrom:
+                          secretKeyRef:
+                            name: keeperhub-pr-${PR_NUMBER}-common-internal-service-hmac-secret
+                            key: keeperhub-pr-${PR_NUMBER}-common-internal-service-hmac-secret
+                      - name: AGENTIC_WALLET_HMAC_KMS_KEY
+                        valueFrom:
+                          secretKeyRef:
+                            name: keeperhub-pr-${PR_NUMBER}-common-agentic-wallet-hmac-kms-key
+                            key: keeperhub-pr-${PR_NUMBER}-common-agentic-wallet-hmac-kms-key
+          EOF
+          kubectl wait --for=condition=complete job/keeperhub-pr-${PR_NUMBER}-hmac-seed -n "${NAMESPACE}" --timeout=180s || true
+          echo "--- hmac-seed job logs ---"
+          kubectl logs -n "${NAMESPACE}" job/keeperhub-pr-${PR_NUMBER}-hmac-seed --tail=30 || true
+
+      - name: Seed onboarding workflows
+        env:
+          PR_NUMBER: ${{ env.PR_NUMBER }}
+          NAMESPACE: ${{ env.NAMESPACE }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+        run: |
+          set -euo pipefail
+          DB_PASSWORD=$(kubectl get secret keeperhub-pr-${PR_NUMBER}-db-credentials -n "${NAMESPACE}" -o jsonpath='{.data.password}' | base64 -d)
+          ENCODED_PASSWORD=$(DB_PASSWORD="${DB_PASSWORD}" python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['DB_PASSWORD'], safe=''))")
+          DB_URL="postgresql://keeperhub:${ENCODED_PASSWORD}@keeperhub-pr-${PR_NUMBER}-db-rw.${NAMESPACE}.svc.cluster.local:5432/keeperhub"
+          kubectl delete job keeperhub-pr-${PR_NUMBER}-onboarding-seed -n "${NAMESPACE}" --ignore-not-found
+          kubectl apply -n "${NAMESPACE}" -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keeperhub-pr-${PR_NUMBER}-onboarding-seed
+          spec:
+            backoffLimit: 2
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: onboarding-seed
+                    image: ${ECR_REGISTRY}/keeperhub-staging:migrator-${IMAGE_TAG}
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - 'pnpm tsx scripts/seed/seed-onboarding-workflows.ts || echo "onboarding seed failed - see above"'
+                    env:
+                      - name: DATABASE_URL
+                        value: "${DB_URL}"
+                      - name: ALLOW_REMOTE
+                        value: "1"
+                      - name: SEED_EMAIL
+                        value: "pr-test-do-not-delete@techops.services"
+          EOF
+          kubectl wait --for=condition=complete job/keeperhub-pr-${PR_NUMBER}-onboarding-seed -n "${NAMESPACE}" --timeout=120s || true
+          echo "--- onboarding-seed job logs ---"
+          kubectl logs -n "${NAMESPACE}" job/keeperhub-pr-${PR_NUMBER}-onboarding-seed --tail=30 || true
+
+      # Opt-in (deploy-pr-metrics label). Deploys the metrics-collector
+      # satellite against the PR DB so its /metrics can be curled directly
+      # (ServiceMonitors are off in PR envs). TECH-6484.
+      - name: Deploy metrics collector (PR, opt-in)
+        if: needs.check-labels.outputs.should-deploy-collector == 'true'
+        run: |
+          set -euo pipefail
+          helm upgrade --install metrics-pr-${PR_NUMBER} \
+            techops-services/common \
+            -f ${GITHUB_WORKSPACE}/metrics-pr-${PR_NUMBER}.yaml \
+            --namespace "${NAMESPACE}" --timeout 5m0s --atomic --version 0.2.1
+
+      # Opt-in (deploy-pr-events label). Deploys the solana-tracker satellite
+      # from the solana-${sha} image built by build-solana-image. Runs healthy
+      # but idle until Solana RPC/WSS is configured in chain-config.
+      - name: Deploy solana-tracker (PR, opt-in)
+        if: needs.check-labels.outputs.should-deploy-events == 'true'
+        run: |
+          set -euo pipefail
+          helm upgrade --install solana-pr-${PR_NUMBER} \
+            techops-services/common \
+            -f ${GITHUB_WORKSPACE}/solana-pr-${PR_NUMBER}.yaml \
+            --namespace "${NAMESPACE}" --timeout 5m0s --atomic --version 0.2.1
+
+      - name: Deploy satellite services (parallel)
+        run: |
+          set -euo pipefail
+          # 10m (not 5m): satellite env secrets are provisioned asynchronously by
+          # external-secrets (parameterStore -> ExternalSecret -> Secret). The
+          # executor needs 8 such secrets (Optional: false); when ESO is slow to
+          # reconcile, the pod sits in CreateContainerConfigError and the 5m
+          # --atomic window rolled back before the secrets landed - the deploy's
+          # intermittent "context deadline exceeded". Match the app's 10m budget.
+          COMMON_ARGS=(--namespace "${NAMESPACE}" --timeout 10m0s --atomic --version 0.2.1)
+          LOGDIR=$(mktemp -d)
+
+          (
+            helm upgrade --install schedule-pr-${PR_NUMBER} \
+              techops-services/common \
+              -f ${GITHUB_WORKSPACE}/schedule-pr-${PR_NUMBER}.yaml \
+              "${COMMON_ARGS[@]}"
+          ) > "${LOGDIR}/schedule.log" 2>&1 &
+          PID1=$!
+
+          (
+            helm upgrade --install block-pr-${PR_NUMBER} \
+              techops-services/common \
+              -f ${GITHUB_WORKSPACE}/block-pr-${PR_NUMBER}.yaml \
+              "${COMMON_ARGS[@]}"
+          ) > "${LOGDIR}/block.log" 2>&1 &
+          PID2=$!
+
+          (
+            helm upgrade --install event-pr-${PR_NUMBER} \
+              techops-services/common \
+              -f ${GITHUB_WORKSPACE}/event-pr-${PR_NUMBER}.yaml \
+              "${COMMON_ARGS[@]}"
+          ) > "${LOGDIR}/event.log" 2>&1 &
+          PID3=$!
+
+          (
+            helm upgrade --install executor-pr-${PR_NUMBER} \
+              techops-services/common \
+              -f ${GITHUB_WORKSPACE}/executor-pr-${PR_NUMBER}.yaml \
+              "${COMMON_ARGS[@]}"
+          ) > "${LOGDIR}/executor.log" 2>&1 &
+          PID4=$!
+
+          # Sandbox - the techops-services/common chart does not expose
+          # automountServiceAccountToken on the Pod template or
+          # emptyDir.medium on the tmp volume, so layer those on after
+          # helm upgrade via a strategic-merge patch, wait for the
+          # patched Deployment to roll out, then verify the patch
+          # actually merged. The verification defends against chart
+          # fullname-template drift silently no-op'ing the strategic
+          # merge (volume-name mismatch -> patch appends a new orphan
+          # volume instead of overlaying medium: Memory on the chart's
+          # one, /tmp ends up on node disk with no deploy signal).
+          # Staging's deploy-sandbox.yaml has an exec-based WORK-03
+          # smoke check, but the sandbox image is distroless (no /bin/sh)
+          # so an exec into it always fails - we read the Deployment
+          # spec instead.
+          (
+            helm upgrade --install keeperhub-sandbox-pr-${PR_NUMBER} \
+              techops-services/common \
+              -f ${GITHUB_WORKSPACE}/sandbox-pr-${PR_NUMBER}.yaml \
+              "${COMMON_ARGS[@]}"
+            envsubst '$PR_NUMBER' < deploy/pr-environment/sandbox-pod-hardening-patch.template.yaml \
+              | kubectl -n "${NAMESPACE}" patch deployment "keeperhub-sandbox-pr-${PR_NUMBER}-common" \
+                --patch-file /dev/stdin
+            kubectl -n "${NAMESPACE}" rollout status \
+              deployment/"keeperhub-sandbox-pr-${PR_NUMBER}-common" --timeout=3m
+
+            # Verify pod-hardening patch merged into the Deployment spec.
+            AUTOMOUNT=$(kubectl -n "${NAMESPACE}" get deployment \
+              "keeperhub-sandbox-pr-${PR_NUMBER}-common" \
+              -o jsonpath='{.spec.template.spec.automountServiceAccountToken}')
+            if [ "$AUTOMOUNT" != "false" ]; then
+              echo "::error::Pod-level automountServiceAccountToken expected 'false', got '${AUTOMOUNT:-<empty>}' - pod-hardening patch did not apply."
+              exit 1
+            fi
+            MEDIUM=$(kubectl -n "${NAMESPACE}" get deployment \
+              "keeperhub-sandbox-pr-${PR_NUMBER}-common" \
+              -o jsonpath="{.spec.template.spec.volumes[?(@.name=='keeperhub-sandbox-pr-${PR_NUMBER}-common-tmp-volume')].emptyDir.medium}")
+            if [ "$MEDIUM" != "Memory" ]; then
+              echo "::error::tmp volume medium expected 'Memory', got '${MEDIUM:-<empty>}' - strategic-merge likely appended a new volume instead of merging (chart fullname-template drift?). Check sandbox-pod-hardening-patch.template.yaml volumes[].name against the chart-rendered name."
+              exit 1
+            fi
+            echo "Sandbox hardening verified: automountServiceAccountToken=false, /tmp medium=Memory"
+          ) > "${LOGDIR}/sandbox.log" 2>&1 &
+          PID5=$!
+
+          FAILED=0
+          for COMPONENT in schedule:$PID1 block:$PID2 event:$PID3 executor:$PID4 sandbox:$PID5; do
+            NAME="${COMPONENT%%:*}"
+            PID="${COMPONENT##*:}"
+            if wait "$PID"; then
+              echo "${NAME}: OK"
+            else
+              echo "=== ${NAME} FAILED ==="
+              cat "${LOGDIR}/${NAME}.log"
+              FAILED=1
+            fi
+          done
+
+          if [ $FAILED -ne 0 ]; then
+            helm list -n ${NAMESPACE}
+            exit 1
+          fi
+          echo "All satellite services deployed successfully."
+
+      - name: Get deployment status
+        if: always()
+        run: |
+          echo "=== Deployment Status ==="
+          kubectl get all -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "=== Helm Releases ==="
+          helm list -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "=== Ingress ==="
+          kubectl get ingress -n ${{ env.NAMESPACE }}
+
+      - name: Comment on PR
+        if: success()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const namespace = 'pr-' + prNumber;
+            const url = `https://app-pr-${prNumber}.keeperhub.com`;
+
+            const comment = `## PR Environment Deployed
+
+            Your PR environment has been deployed!
+
+            **Environment Details:**
+            - URL: [${url}](${url})
+            - Namespace: \`${namespace}\`
+            - Cluster: \`${{ vars.TO_CLUSTER_NAME }}\`
+            - Image Tag: \`${{ steps.vars.outputs.sha_short }}\`
+            - Commit: \`${{ github.event.pull_request.head.sha }}\`
+
+            **Components:**
+            - Keeperhub Application
+            - PostgreSQL Database (isolated instance)
+            - LocalStack (SQS emulation)
+            - Redis (isolated instance)
+            - Schedule Dispatcher (staging image)
+            - Block Dispatcher (staging image)
+            - Event Tracker (staging image)
+
+            The environment will be automatically cleaned up when this PR is closed or merged.
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Comment on PR (failure)
+        if: failure()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+
+            const comment = `## PR Environment Deployment Failed
+
+            The PR environment deployment encountered an error.
+
+            Please check the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+
+            Common issues:
+            - Database initialization timeout
+            - Image build failures
+            - Resource constraints
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # Events-only redeploy. Triggers when the deploy-pr-events label is added
+  # to (or removed from) a PR that already has deploy-pr-environment. Skips
+  # the full app/scheduler/dispatcher helm path the main `deploy` job runs;
+  # only the event-pr-${PR_NUMBER} satellite moves. EVENTS_IMAGE_TAG resolves
+  # to event-${sha_short} on add (PR build from build-events-image) or
+  # event-latest on remove (revert to staging events).
+  deploy-events-only:
+    needs: [check-labels, build-events-image, build-solana-image]
+    if: |
+      !cancelled() &&
+      needs.check-labels.outputs.should-deploy-events-only == 'true' &&
+      (needs.build-events-image.result == 'success' || needs.build-events-image.result == 'skipped') &&
+      (needs.build-solana-image.result == 'success' || needs.build-solana-image.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REGION: us-east-1
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      NAMESPACE: pr-${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Connect to EKS
+        uses: ./.github/actions/eks-connect
+        with:
+          enabled: ${{ vars.TO_EKS_CONNECT }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Extract commit hash
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.REGION }}
+
+      - name: Verify PR namespace exists
+        # Sanity check: events-only deploy requires deploy-pr-environment to
+        # have already created the namespace. Fail fast with a clear message
+        # if the user labelled events without ever deploying the env.
+        run: |
+          if ! kubectl get namespace ${{ env.NAMESPACE }} >/dev/null 2>&1; then
+            echo "::error::PR namespace ${{ env.NAMESPACE }} does not exist. Add deploy-pr-environment first."
+            exit 1
+          fi
+
+      - name: Prepare events Helm values
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          EVENTS_IMAGE_TAG: ${{ needs.check-labels.outputs.should-deploy-events == 'true' && format('event-{0}', steps.vars.outputs.sha_short) || 'event-latest' }}
+          SOLANA_IMAGE_TAG: solana-${{ steps.vars.outputs.sha_short }}
+        run: |
+          envsubst < deploy/pr-environment/event-tracker.template.yaml > ${{ github.workspace }}/event-pr-${{ env.PR_NUMBER }}.yaml
+          envsubst < deploy/pr-environment/solana-tracker.template.yaml > ${{ github.workspace }}/solana-pr-${{ env.PR_NUMBER }}.yaml
+
+      - name: Add Helm repository
+        run: |
+          helm repo add techops-services https://techops-services.github.io/helm-charts
+          helm repo update
+
+      - name: Deploy events satellite
+        run: |
+          set -euo pipefail
+          helm upgrade --install event-pr-${PR_NUMBER} \
+            techops-services/common \
+            -f ${GITHUB_WORKSPACE}/event-pr-${PR_NUMBER}.yaml \
+            --namespace "${NAMESPACE}" --timeout 5m0s --atomic --version 0.2.1
+
+      - name: Redeploy or remove solana-tracker satellite
+        # On add (deploy-pr-events present) install the solana-<sha> image built
+        # by build-solana-image. On remove there is no solana-latest baseline to
+        # revert to, so uninstall the satellite rather than leave a stale image.
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.check-labels.outputs.should-deploy-events }}" = "true" ]; then
+            helm upgrade --install solana-pr-${PR_NUMBER} \
+              techops-services/common \
+              -f ${GITHUB_WORKSPACE}/solana-pr-${PR_NUMBER}.yaml \
+              --namespace "${NAMESPACE}" --timeout 5m0s --atomic --version 0.2.1
+          else
+            helm uninstall solana-pr-${PR_NUMBER} --namespace "${NAMESPACE}" --ignore-not-found || true
+          fi
+
+  # Remote E2E tests against deployed PR environment
+  # Runs when: test label just added (deploy skipped), or deploy just completed with test label present
+  # DISABLED: remote E2E tests temporarily disabled while KEEP-1351 stabilises auth/rate-limit infrastructure
+  e2e-vitest-remote:
+    needs: [check-labels, deploy]
+    if: >-
+      always() &&
+      needs.check-labels.outputs.should-test == 'true' &&
+      (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') &&
+      vars.ENABLE_E2E_REMOTE_TESTS == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      NAMESPACE: pr-${{ github.event.pull_request.number }}
+      REGION: us-east-1
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      KEEPERHUB_URL: https://app-pr-${{ github.event.pull_request.number }}.keeperhub.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          discover-plugins: "true"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Connect to EKS
+        uses: ./.github/actions/eks-connect
+        with:
+          enabled: ${{ vars.TO_EKS_CONNECT }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          region: ${{ env.REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.REGION }}
+
+      - name: Port-forward PR database and LocalStack
+        run: |
+          # Retrieve DB password from K8s secret
+          DB_PASSWORD=$(kubectl get secret keeperhub-pr-${{ env.PR_NUMBER }}-db-credentials \
+            -n ${{ env.NAMESPACE }} -o jsonpath='{.data.password}' | base64 -d)
+
+          # URL-encode the password (handles base64 special chars +/=)
+          ENCODED_PASSWORD=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${DB_PASSWORD}', safe=''))")
+
+          # Port-forward PostgreSQL (CNPG read-write service)
+          kubectl port-forward -n ${{ env.NAMESPACE }} \
+            svc/keeperhub-pr-${{ env.PR_NUMBER }}-db-rw 5432:5432 &
+          PF_PG_PID=$!
+
+          # Port-forward LocalStack
+          kubectl port-forward -n ${{ env.NAMESPACE }} \
+            svc/localstack 4566:4566 &
+          PF_LS_PID=$!
+
+          # Wait for port-forwards to be ready
+          for i in $(seq 1 15); do
+            if pg_isready -h localhost -p 5432 -U keeperhub 2>/dev/null; then
+              echo "PostgreSQL port-forward ready"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "PostgreSQL port-forward did not become ready"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          # Export connection details
+          echo "DATABASE_URL=postgresql://keeperhub:${ENCODED_PASSWORD}@localhost:5432/keeperhub" >> $GITHUB_ENV
+          echo "AWS_ENDPOINT_URL=http://localhost:4566" >> $GITHUB_ENV
+          echo "PF_PG_PID=$PF_PG_PID" >> $GITHUB_ENV
+          echo "PF_LS_PID=$PF_LS_PID" >> $GITHUB_ENV
+
+      - name: Wait for PR environment to be ready
+        run: |
+          echo "Waiting for ${{ env.KEEPERHUB_URL }}/api/health to return 200..."
+          CURL_ARGS=(-s -o /dev/null -w "%{http_code}")
+          if [[ -n "$CF_ACCESS_CLIENT_ID" && -n "$CF_ACCESS_CLIENT_SECRET" ]]; then
+            CURL_ARGS+=(-H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}")
+          fi
+          for i in {1..30}; do
+            STATUS=$(curl "${CURL_ARGS[@]}" "${{ env.KEEPERHUB_URL }}/api/health" || echo "000")
+            if [[ "$STATUS" == "200" ]]; then
+              echo "PR environment is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: got HTTP $STATUS, waiting 10s..."
+            sleep 10
+          done
+          echo "PR environment did not become ready in time"
+          exit 1
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.TO_CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.TO_CF_ACCESS_CLIENT_SECRET }}
+
+      - name: Run E2E Vitest tests (remote)
+        run: >-
+          pnpm vitest run tests/e2e/vitest
+          --exclude '**/full-pipeline.test.ts'
+          --exclude '**/write-contract-workflow.test.ts'
+        env:
+          KEEPERHUB_URL: ${{ env.KEEPERHUB_URL }}
+          WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_REGION: us-east-1
+
+      - name: Cleanup port-forwards
+        if: always()
+        run: |
+          kill $PF_PG_PID 2>/dev/null || true
+          kill $PF_LS_PID 2>/dev/null || true
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vitest-e2e-remote-results-pr-${{ env.PR_NUMBER }}
+          path: |
+            test-results/
+            coverage/
+          retention-days: 7
+
+  # DISABLED: remote E2E tests temporarily disabled while KEEP-1351 stabilises auth/rate-limit infrastructure
+  e2e-playwright-remote:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write # actions/github-script posts PR comments
+    needs: [check-labels, deploy]
+    if: >-
+      always() &&
+      needs.check-labels.outputs.should-test == 'true' &&
+      (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') &&
+      vars.ENABLE_E2E_REMOTE_TESTS == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      NAMESPACE: pr-${{ github.event.pull_request.number }}
+      REGION: us-east-1
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      BASE_URL: https://app-pr-${{ github.event.pull_request.number }}.keeperhub.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node.js, pnpm, and Playwright
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          install-playwright: "true"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Connect to EKS
+        uses: ./.github/actions/eks-connect
+        with:
+          enabled: ${{ vars.TO_EKS_CONNECT }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          region: ${{ env.REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.REGION }}
+
+      - name: Port-forward PR database
+        run: |
+          DB_PASSWORD=$(kubectl get secret keeperhub-pr-${{ env.PR_NUMBER }}-db-credentials \
+            -n ${{ env.NAMESPACE }} -o jsonpath='{.data.password}' | base64 -d)
+
+          ENCODED_PASSWORD=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${DB_PASSWORD}', safe=''))")
+
+          kubectl port-forward -n ${{ env.NAMESPACE }} \
+            svc/keeperhub-pr-${{ env.PR_NUMBER }}-db-rw 5432:5432 &
+          PF_PG_PID=$!
+
+          for i in $(seq 1 15); do
+            if pg_isready -h localhost -p 5432 -U keeperhub 2>/dev/null; then
+              echo "PostgreSQL port-forward ready"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "PostgreSQL port-forward did not become ready"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          echo "DATABASE_URL=postgresql://keeperhub:${ENCODED_PASSWORD}@localhost:5432/keeperhub" >> $GITHUB_ENV
+          echo "PF_PG_PID=$PF_PG_PID" >> $GITHUB_ENV
+
+      - name: Wait for PR environment to be ready
+        run: |
+          echo "Waiting for ${{ env.BASE_URL }}/api/health to return 200..."
+          CURL_ARGS=(-s -o /dev/null -w "%{http_code}")
+          if [[ -n "$CF_ACCESS_CLIENT_ID" && -n "$CF_ACCESS_CLIENT_SECRET" ]]; then
+            CURL_ARGS+=(-H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}")
+          fi
+          for i in {1..30}; do
+            STATUS=$(curl "${CURL_ARGS[@]}" "${{ env.BASE_URL }}/api/health" || echo "000")
+            if [[ "$STATUS" == "200" ]]; then
+              echo "PR environment is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: got HTTP $STATUS, waiting 10s..."
+            sleep 10
+          done
+          echo "PR environment did not become ready in time"
+          exit 1
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.TO_CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.TO_CF_ACCESS_CLIENT_SECRET }}
+
+      - name: Fetch TEST_API_KEY from deployed environment
+        run: |
+          # Read from the K8s secret created by Helm for the parameterStore env var
+          # The common chart names secrets as: <release>-<env-name>
+          SECRET_NAME="test-api-key"
+          # Try reading the secret; the common chart stores the value under key "value"
+          TEST_API_KEY=$(kubectl get secret "$SECRET_NAME" \
+            -n ${{ env.NAMESPACE }} -o jsonpath='{.data.value}' 2>/dev/null | base64 -d) || true
+          if [ -z "$TEST_API_KEY" ]; then
+            # Fallback: extract from the running pod's environment
+            POD=$(kubectl get pods -n ${{ env.NAMESPACE }} \
+              -l app.kubernetes.io/instance=keeperhub-pr-${{ env.PR_NUMBER }} \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || \
+              kubectl get pods -n ${{ env.NAMESPACE }} -o jsonpath='{.items[0].metadata.name}')
+            TEST_API_KEY=$(kubectl exec -n ${{ env.NAMESPACE }} "$POD" -- printenv TEST_API_KEY)
+          fi
+          echo "::add-mask::$TEST_API_KEY"
+          echo "TEST_API_KEY=$TEST_API_KEY" >> $GITHUB_ENV
+
+      - name: Run Playwright tests against deployed environment
+        run: pnpm exec playwright test --grep-invert "happy-paths"
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          TEST_API_KEY: ${{ env.TEST_API_KEY }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.TO_CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.TO_CF_ACCESS_CLIENT_SECRET }}
+          CI: true
+
+      - name: Cleanup port-forwards
+        if: always()
+        run: |
+          kill $PF_PG_PID 2>/dev/null || true
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-deployed-report-pr-${{ env.PR_NUMBER }}
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+      - name: Comment test results on PR
+        if: always()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const status = '${{ job.status }}';
+            const label = status === 'success' ? 'PASS' : 'FAIL';
+            const title = status === 'success' ? 'E2E Remote Tests Passed' : 'E2E Remote Tests Failed';
+            const marker = '<!-- e2e-remote-test-result -->';
+
+            const body = [
+              marker,
+              `## ${label} ${title}`,
+              '',
+              `**Environment:** [app-pr-${prNumber}.keeperhub.com](https://app-pr-${prNumber}.keeperhub.com)`,
+              `**Status:** ${status}`,
+              `**Workflow Run:** [View Details](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`,
+              '',
+              status !== 'success' ? 'Check the workflow run for test failure details and screenshots.' : '',
+            ].filter(Boolean).join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.find(c => c.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                comment_id: existing.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: prNumber,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            }
+
+  seed-load-test-users:
+    permissions:
+      id-token: write
+      contents: read
+    needs: [check-labels, deploy]
+    if: >-
+      !cancelled() &&
+      needs.check-labels.outputs.should-load-test == 'true' &&
+      (needs.deploy.result == 'success' || needs.deploy.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REGION: us-east-1
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      NAMESPACE: pr-${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Connect to EKS
+        uses: ./.github/actions/eks-connect
+        with:
+          enabled: ${{ vars.TO_EKS_CONNECT }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.REGION }}
+
+      - name: Seed load-test users
+        env:
+          LOAD_TEST_USER_PASSWORD: ${{ secrets.LOAD_TEST_USER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Derive the migrator image from the running deployment initContainer rather
+          # than the HEAD SHA — the image may have been built on an earlier commit if
+          # only CI/test files changed and build-images was skipped this run.
+          MIGRATOR_IMAGE=$(kubectl get deployment keeperhub-pr-${PR_NUMBER}-common -n "${NAMESPACE}" \
+            -o jsonpath='{.spec.template.spec.initContainers[0].image}')
+          DB_PASSWORD=$(kubectl get secret keeperhub-pr-${PR_NUMBER}-db-credentials -n "${NAMESPACE}" -o jsonpath='{.data.password}' | base64 -d)
+          ENCODED_PASSWORD=$(DB_PASSWORD="${DB_PASSWORD}" python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['DB_PASSWORD'], safe=''))")
+          DB_URL="postgresql://keeperhub:${ENCODED_PASSWORD}@keeperhub-pr-${PR_NUMBER}-db-rw.${NAMESPACE}.svc.cluster.local:5432/keeperhub"
+          kubectl delete job keeperhub-pr-${PR_NUMBER}-load-test-seed -n "${NAMESPACE}" --ignore-not-found
+          kubectl apply -n "${NAMESPACE}" -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keeperhub-pr-${PR_NUMBER}-load-test-seed
+          spec:
+            backoffLimit: 2
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: load-test-seed
+                    image: ${MIGRATOR_IMAGE}
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - 'pnpm tsx scripts/seed-load-test-users.ts'
+                    env:
+                      - name: DATABASE_URL
+                        value: "${DB_URL}"
+                      - name: ALLOW_REMOTE
+                        value: "1"
+                      - name: LOAD_TEST_USER_PASSWORD
+                        value: "${LOAD_TEST_USER_PASSWORD}"
+                      - name: SEED_COUNT
+                        value: "50"
+          EOF
+          kubectl wait --for=condition=complete job/keeperhub-pr-${PR_NUMBER}-load-test-seed -n "${NAMESPACE}" --timeout=120s || true
+          echo "--- load-test-seed job logs ---"
+          kubectl logs -n "${NAMESPACE}" job/keeperhub-pr-${PR_NUMBER}-load-test-seed --tail=30 || true
+
+  load-test:
+    needs: [check-labels, deploy, seed-load-test-users]
+    if: >-
+      !cancelled() &&
+      needs.check-labels.outputs.should-load-test == 'true' &&
+      (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') &&
+      needs.seed-load-test-users.result == 'success'
+    uses: ./.github/workflows/load-test.yml
+    with:
+      target_url: https://app-pr-${{ github.event.pull_request.number }}.keeperhub.com
+    secrets: inherit

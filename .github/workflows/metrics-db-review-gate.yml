@@ -1,0 +1,99 @@
+name: Metrics DB Review Gate
+
+# Forces a sign-off when a PR changes metrics code, as a guardrail for the
+# 2026-05-29 DB CPU incident class: heavy aggregate queries whose cost only
+# manifests at production data volume and therefore cannot be caught by tests.
+# See docs/incidents/2026-05-29-db-cpu-spike.md.
+#
+# Behaviour:
+#   - The job ALWAYS runs (no path filter on the trigger). A required check
+#     that is skipped by a path filter shows as pending forever and blocks the
+#     PR, so the path match is computed inside the job instead.
+#   - If the PR does not touch app/api/metrics/**, lib/metrics/**, or
+#     lib/db/index.ts, the check passes as a no-op.
+#   - If it does, the check fails until the `metrics-db-reviewed` label is
+#     applied. The label asserts that any new or changed aggregate queries are
+#     optimised and that the tables those aggregations scan are appropriately
+#     indexed.
+#
+# NOTE: self-approval is permitted - the label may be applied by the PR author,
+# so this is an attestation rather than an enforced second-person review.
+# (Changed at the repo owner's request; the gate previously required the label
+# to be applied by someone other than the author.)
+#
+# The `labeled` / `unlabeled` trigger types are required: without them the
+# status check would not re-evaluate when the label is flipped and would stay
+# red until the next push.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches:
+      - staging
+      - prod
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  metrics-db-review-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes under metrics paths
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Directory pathspecs match every file beneath them, so a new file
+          # added anywhere under the metrics trees is covered without glob
+          # upkeep. lib/db/index.ts is gated as a single file - it holds the
+          # metricsDb pool and its concurrency cap (the incident lever) - while
+          # the rest of lib/db is intentionally left out: schema.ts and the
+          # query helpers churn on nearly every feature PR, so gating them
+          # would turn the label into a rubber stamp.
+          CHANGED=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- app/api/metrics lib/metrics lib/db/index.ts)
+          if [ -n "$CHANGED" ]; then
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+            echo "Metrics paths changed in this PR:"
+            printf '  %s\n' $CHANGED
+            {
+              echo "files<<EOF"
+              printf '%s\n' "$CHANGED"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+            echo "PR does not touch app/api/metrics/**, lib/metrics/**, or lib/db/index.ts."
+          fi
+
+      - name: No metrics changes - gate passes
+        if: steps.detect.outputs.touched != 'true'
+        run: echo "No metrics paths changed; review gate passes automatically."
+
+      - name: Require metrics-db-reviewed label
+        if: steps.detect.outputs.touched == 'true'
+        env:
+          LABEL: metrics-db-reviewed
+          LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          FILES: ${{ steps.detect.outputs.files }}
+        run: |
+          set -euo pipefail
+
+          # The label must be present on the PR. Self-approval is allowed, so
+          # the applier is not checked (see file header).
+          if ! printf '%s' "$LABELS_JSON" | jq -e --arg L "$LABEL" 'any(. == $L)' >/dev/null; then
+            echo "::error::This PR changes metrics or metrics-DB code:"
+            printf '::error::  %s\n' $FILES
+            echo "::error::The '$LABEL' label is required. Confirm that new or changed aggregate queries are optimised, that the tables they scan are appropriately indexed, and that any change to the metricsDb pool concurrency has been measured against the scrape timeout, then apply the label."
+            exit 1
+          fi
+
+          echo "'$LABEL' present; metrics DB review confirmed; gate passes."

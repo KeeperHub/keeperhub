@@ -1,0 +1,11 @@
+-- Per-org daily Solana native-value cap, denominated in lamports.
+--
+-- Solana value is deliberately NOT charged against daily_value_cap_wei: that
+-- column is wei-denominated and admins set it thinking in ETH, so folding SOL
+-- into it would compare two non-commensurable assets against a single number.
+-- A separate column lets SOL be accounted at its true 9-decimal precision.
+--
+-- Nullable with no default, so adding it is a metadata-only change (no table
+-- rewrite, no lock of consequence) and every existing org keeps unlimited
+-- Solana spending until an admin sets a value.
+ALTER TABLE "organization_spend_caps" ADD COLUMN IF NOT EXISTS "daily_solana_value_cap_lamports" text;

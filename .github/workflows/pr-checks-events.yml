@@ -1,0 +1,84 @@
+# Type: standalone | PR checks for the keeperhub-events workspace.
+# Runs only when keeperhub-events/**, this workflow, or docker-compose.yml
+# (which defines the test profile services) change. The events workspace is
+# a separate pnpm workspace from the main app, so the existing
+# setup-node-pnpm action (which installs from the repo root) is not reused.
+name: PR Checks (Events)
+
+on:
+  pull_request:
+    paths:
+      - "keeperhub-events/**"
+      - ".github/workflows/pr-checks-events.yml"
+      - ".github/actions/setup-events-deps/**"
+      - "docker-compose.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-events-deps
+      - name: Run lint
+        working-directory: keeperhub-events
+        run: pnpm lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-events-deps
+      - name: Run typecheck
+        working-directory: keeperhub-events
+        run: pnpm typecheck
+
+  test-unit:
+    # Policy: all test jobs resolve secrets from the staging environment.
+    environment: staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-events-deps
+      - name: Run unit tests
+        working-directory: keeperhub-events
+        run: pnpm --filter @techops/events-tracker test:unit
+
+  test-integration:
+    runs-on: ubuntu-latest
+    # 15min cap: typical run is ~2min; exceeding 15min indicates a hang
+    # (anvil/redis/localstack stuck, or vitest deadlock) worth surfacing
+    # as failure rather than burning the default 6h GHA budget.
+    timeout-minutes: 15
+    # staging env carries LOCALSTACK_AUTH_TOKEN (the localstack image now
+    # requires it even for community SQS use). Mirrors e2e-tests-ephemeral.
+    environment: staging
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-events-deps
+      - name: Ensure keeperhub-network exists
+        # docker-compose.yml declares keeperhub-network as external, so
+        # a fresh CI runner needs the network created before any compose
+        # command runs (`compose up` validates external networks even
+        # for inactive profiles). `|| true` keeps it idempotent.
+        run: docker network create keeperhub-network 2>/dev/null || true
+      - name: Start integration test infrastructure
+        # Bring up only the services events tests need (anvil, localstack,
+        # redis). --wait blocks until healthchecks pass. Excludes test-app /
+        # test-dispatcher / test-executor — heavy main-app stack the events
+        # tests don't touch. LOCALSTACK_AUTH_TOKEN is required by the
+        # current localstack/localstack:latest image even for SQS-only use.
+        env:
+          LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+        run: docker compose --profile test up -d --wait test-anvil test-localstack test-redis
+      - name: Run integration tests
+        working-directory: keeperhub-events
+        run: pnpm --filter @techops/events-tracker test:integration
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose --profile test logs --no-color test-anvil test-localstack test-redis
+      - name: Tear down infrastructure
+        if: always()
+        run: docker compose --profile test down -v

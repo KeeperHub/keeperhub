@@ -1,0 +1,240 @@
+# Type: reusable | Called by ci-pipeline.yml
+# Builds Docker images via docker-bake.hcl and pushes to ECR.
+# Skips build if images already exist for the current commit SHA (rerun optimization).
+name: Build Images
+
+on:
+  workflow_dispatch: {}
+  workflow_call:
+    outputs:
+      image_tag:
+        description: "Short SHA used as image tag"
+        value: ${{ jobs.build.outputs.image_tag }}
+      sandbox_image:
+        description: "Full ECR ref of the prebuilt sandbox image for e2e to pull"
+        value: ${{ jobs.build.outputs.sandbox_image }}
+      ecr_registry:
+        description: "ECR registry URL"
+        value: ${{ jobs.build.outputs.ecr_registry }}
+      ecr_repo:
+        description: "ECR repository name"
+        value: ${{ jobs.build.outputs.ecr_repo }}
+      ecr_region:
+        description: "AWS region for ECR"
+        value: ${{ jobs.build.outputs.ecr_region }}
+      skip_build:
+        description: "true when [skip build] was in the commit message"
+        value: ${{ jobs.build.outputs.skip_build }}
+      images_exist:
+        description: "true when every pipeline image already exists in ECR for this SHA"
+        value: ${{ jobs.build.outputs.images_exist }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+    outputs:
+      image_tag: ${{ steps.vars.outputs.sha_short }}
+      sandbox_image: ${{ steps.vars.outputs.sandbox_image }}
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+      ecr_repo: ${{ steps.vars.outputs.ecr_repo }}
+      ecr_region: ${{ steps.vars.outputs.ecr_region }}
+      # Surfaced so the sibling sentry-upload job (ci-pipeline.yml) can reuse the
+      # same skip/rerun guard the build steps use without re-querying ECR.
+      skip_build: ${{ steps.skip.outputs.skip_build }}
+      images_exist: ${{ steps.check-image.outputs.exists }}
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      AWS_ECR_NAME: ${{ vars.TO_ECR_NAME }}
+      # Satellite ECR repos follow the same keeperhub-<component>-<env> convention
+      # the standalone deploy workflows used. All live in the same TechOps account.
+      EXECUTOR_ECR_NAME: keeperhub-executor-${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      SCHEDULER_ECR_NAME: keeperhub-scheduler-${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      COLLECTOR_ECR_NAME: keeperhub-metrics-collector-${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      # Baked alongside the pipeline on push so the e2e jobs pull a prebuilt
+      # image instead of each rebuilding the sandbox locally (~72s/job). Same
+      # convention deploy-sandbox.yaml uses; the sandbox target has its own
+      # Dockerfile and cache scope, so it does not share the app builder stage.
+      SANDBOX_ECR_NAME: keeperhub-sandbox-${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      ENVIRONMENT_TAG: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      # INCLUDE_TEST_ENDPOINTS is derived from ENVIRONMENT_TAG in the
+      # "Derive build flags" step below (KEEP-237).
+      NEXT_PUBLIC_AUTH_PROVIDERS: ${{ vars.NEXT_PUBLIC_AUTH_PROVIDERS }}
+      NEXT_PUBLIC_GITHUB_CLIENT_ID: ${{ vars.NEXT_PUBLIC_GITHUB_CLIENT_ID }}
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${{ vars.NEXT_PUBLIC_GOOGLE_CLIENT_ID }}
+      NEXT_PUBLIC_BILLING_ENABLED: ${{ vars.NEXT_PUBLIC_BILLING_ENABLED }}
+      NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED: ${{ vars.NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED }}
+      NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+      NEXT_PUBLIC_SENTRY_DSN: ${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
+      SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Derive build flags
+        run: |
+          if [[ "$ENVIRONMENT_TAG" != "prod" ]]; then
+            echo "INCLUDE_TEST_ENDPOINTS=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Check commit message for skip flags
+        id: skip
+        run: |
+          MSG=$(git log -1 --format=%B)
+          echo "skip_build=$([[ "$MSG" == *"[skip build]"* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Extract commit hash and ECR coordinates
+        id: vars
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          if [[ -z "$SHA" || ${#SHA} -lt 7 ]]; then
+            echo "::error::Failed to resolve commit SHA (got '${SHA}')"
+            exit 1
+          fi
+          {
+            echo "sha_short=${SHA}"
+            echo "ecr_repo=${AWS_ECR_NAME}"
+            echo "ecr_region=${REGION}"
+            echo "sandbox_image=${{ steps.login-ecr.outputs.registry }}/${SANDBOX_ECR_NAME}:sandbox-${SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check if images already exist
+        id: check-image
+        run: |
+          IMAGE_TAG="${{ steps.vars.outputs.sha_short }}"
+          ALL_EXIST=true
+          # repo:prefix pairs for every image in the pipeline bake group.
+          for pair in \
+            "${{ env.AWS_ECR_NAME }}:app" \
+            "${{ env.AWS_ECR_NAME }}:migrator" \
+            "${{ env.AWS_ECR_NAME }}:workflow-runner" \
+            "${{ env.EXECUTOR_ECR_NAME }}:executor" \
+            "${{ env.SCHEDULER_ECR_NAME }}:schedule" \
+            "${{ env.SCHEDULER_ECR_NAME }}:block" \
+            "${{ env.COLLECTOR_ECR_NAME }}:collector" \
+            "${{ env.SANDBOX_ECR_NAME }}:sandbox"; do
+            repo="${pair%%:*}"; prefix="${pair##*:}"
+            if aws ecr describe-images \
+              --repository-name "${repo}" \
+              --image-ids "imageTag=${prefix}-${IMAGE_TAG}" \
+              --region "${{ env.REGION }}" >/dev/null 2>&1; then
+              echo "${repo}:${prefix}-${IMAGE_TAG} exists"
+            else
+              echo "${repo}:${prefix}-${IMAGE_TAG} not found"
+              ALL_EXIST=false
+            fi
+          done
+          echo "exists=${ALL_EXIST}" >> "$GITHUB_OUTPUT"
+
+      - name: Fail fast if build skipped but image missing
+        if: steps.skip.outputs.skip_build == 'true' && steps.check-image.outputs.exists != 'true'
+        run: |
+          echo "::error::Cannot skip build: one or more images for ${{ steps.vars.outputs.sha_short }} do not exist in ECR. Remove [skip build] from the commit message or push a build first."
+          exit 1
+
+      - name: Free runner disk space
+        if: steps.skip.outputs.skip_build != 'true' && steps.check-image.outputs.exists != 'true'
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: false
+
+      - name: Set up Docker Buildx
+        if: steps.skip.outputs.skip_build != 'true' && steps.check-image.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@v4
+
+      # Persist the Next.js incremental-compile cache (.next/cache) across runs.
+      # BuildKit type=cache mounts are not carried by the registry layer cache,
+      # so on ephemeral runners the mount starts empty and next build runs cold
+      # every time. actions/cache stores the mount contents; buildkit-cache-dance
+      # injects them into the BuildKit builder before the build (and extracts
+      # them again in its post step, before actions/cache saves). Keyed per
+      # environment so staging and prod never share a lineage.
+      - name: Restore Next.js build cache
+        id: next-cache
+        if: steps.skip.outputs.skip_build != 'true' && steps.check-image.outputs.exists != 'true'
+        uses: actions/cache@v6
+        with:
+          path: .next-cache
+          key: next-build-cache-${{ env.ENVIRONMENT_TAG }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            next-build-cache-${{ env.ENVIRONMENT_TAG }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            next-build-cache-${{ env.ENVIRONMENT_TAG }}-
+
+      - name: Inject Next.js build cache into BuildKit
+        if: steps.skip.outputs.skip_build != 'true' && steps.check-image.outputs.exists != 'true'
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          cache-map: |
+            {
+              ".next-cache": {
+                "target": "/app/.next/cache",
+                "id": "nextjs-build-cache"
+              }
+            }
+          skip-extraction: ${{ steps.next-cache.outputs.cache-hit }}
+
+      - name: Build and push all images to ECR
+        if: steps.skip.outputs.skip_build != 'true' && steps.check-image.outputs.exists != 'true'
+        uses: docker/bake-action@v7
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPO: ${{ env.AWS_ECR_NAME }}
+          EXECUTOR_ECR_REPO: ${{ env.EXECUTOR_ECR_NAME }}
+          SCHEDULER_ECR_REPO: ${{ env.SCHEDULER_ECR_NAME }}
+          METRICS_COLLECTOR_ECR_REPO: ${{ env.COLLECTOR_ECR_NAME }}
+          SANDBOX_ECR_REPO: ${{ env.SANDBOX_ECR_NAME }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+          NEXT_PUBLIC_AUTH_PROVIDERS: ${{ env.NEXT_PUBLIC_AUTH_PROVIDERS }}
+          NEXT_PUBLIC_GITHUB_CLIENT_ID: ${{ env.NEXT_PUBLIC_GITHUB_CLIENT_ID }}
+          NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${{ env.NEXT_PUBLIC_GOOGLE_CLIENT_ID }}
+          NEXT_PUBLIC_BILLING_ENABLED: ${{ env.NEXT_PUBLIC_BILLING_ENABLED }}
+          NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED: ${{ env.NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ env.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+          ENVIRONMENT_TAG: ${{ env.ENVIRONMENT_TAG }}
+          INCLUDE_TEST_ENDPOINTS: ${{ env.INCLUDE_TEST_ENDPOINTS }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ env.NEXT_PUBLIC_SENTRY_DSN }}
+          SENTRY_ORG: ${{ env.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ env.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ env.SENTRY_AUTH_TOKEN }}
+          SENTRY_RELEASE: ${{ steps.vars.outputs.sha_short }}
+        with:
+          files: docker-bake.hcl
+          # sandbox baked in the same session so it pushes under the app-compile
+          # shadow instead of adding a serial ~72s to every e2e job. It has its
+          # own Dockerfile/context and cache scope, so it builds independently
+          # of the shared app builder stage.
+          targets: |
+            pipeline
+            sandbox
+          push: true
+
+      # Sentry source-map upload moved out to its own sentry-upload.yml job,
+      # fanned out from build-images in ci-pipeline.yml so it runs parallel to
+      # e2e instead of extending this job's critical path. It consumes the
+      # :cache-app scope this pipeline bake just pushed, so it stays ordered
+      # after build via `needs: [build-images]`.

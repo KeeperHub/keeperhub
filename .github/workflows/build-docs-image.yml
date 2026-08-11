@@ -1,0 +1,96 @@
+# Type: reusable | Called by deploy-docs.yaml and pr-docs-site-build.yaml
+# Builds the docs-site Docker image. Optionally pushes to ECR for prod
+# deploys; PR validation calls with push: false and uses GHA cache so the
+# build runs without AWS credentials.
+name: Build Docs Image
+
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: 'Push the built image to ECR. False for PR build validation.'
+        type: boolean
+        default: false
+    outputs:
+      image_tag:
+        description: 'Short SHA used as image tag'
+        value: ${{ jobs.build.outputs.image_tag }}
+      ecr_registry:
+        description: 'ECR registry URL (only set when push=true)'
+        value: ${{ jobs.build.outputs.ecr_registry }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Environment context is only relevant when pushing to ECR (needs the
+    # prod/staging-scoped secrets and vars). For PR validation we deliberately
+    # skip the environment so the build does not require any environment
+    # protection rules.
+    environment: ${{ inputs.push && (github.ref == 'refs/heads/prod' && 'prod' || 'staging') || '' }}
+    outputs:
+      image_tag: ${{ steps.vars.outputs.sha_short }}
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+    env:
+      REGION: ${{ vars.TO_REGION }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract commit hash
+        id: vars
+        shell: bash
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        if: ${{ inputs.push }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        if: ${{ inputs.push }}
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # PR validation path: build the image, do not load or push. Cache via
+      # GHA so the build is reasonably incremental across PR pushes without
+      # touching ECR.
+      - name: Build docs-site image (validate only)
+        if: ${{ !inputs.push }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./docs-site/Dockerfile
+          push: false
+          cache-from: type=gha,scope=docs-site
+          cache-to: type=gha,scope=docs-site,mode=max
+
+      # Prod deploy path: same Dockerfile and context, but push to ECR with
+      # commit-pinned and :latest tags. Cache via the ECR registry to match
+      # deploy-docs.yaml's previous behaviour exactly. AWS_ECR_NAME is scoped
+      # to this step so it does not appear (unused) when push=false.
+      - name: Build and push docs-site image to ECR
+        if: ${{ inputs.push }}
+        env:
+          AWS_ECR_NAME: keeperhub-docs-${{ github.ref == 'refs/heads/prod' && 'prod' || 'staging' }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./docs-site/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:${{ steps.vars.outputs.sha_short }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:latest
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:cache
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.AWS_ECR_NAME }}:cache,mode=max

@@ -1,0 +1,188 @@
+{
+  "1": {
+    "supply": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0xf2b9fdb8000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000000000000000000000000000000000000005f5e100",
+      "skipped": false
+    },
+    "withdraw": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0xf3fef3a3000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb480000000000000000000000000000000000000000000000000000000002faf080",
+      "skipped": false
+    },
+    "get-balance": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-collateral-balance": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0x2b92a07d0000000000000000000000001111111111111111111111111111111111111111000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "skipped": false
+    },
+    "get-borrow-balance": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0x374c49b40000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-utilization": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0x7eb71131",
+      "skipped": false
+    },
+    "get-supply-rate": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0xd955759d00000000000000000000000000000000000000000000000006f05b59d3b20000",
+      "skipped": false
+    },
+    "get-borrow-rate": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0x9fa83b5a00000000000000000000000000000000000000000000000006f05b59d3b20000",
+      "skipped": false
+    },
+    "get-total-supply": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0x18160ddd",
+      "skipped": false
+    },
+    "get-total-borrow": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0x8285ef40",
+      "skipped": false
+    },
+    "is-liquidatable": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0x042e02cf0000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-num-assets": {
+      "to": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+      "data": "0xa46fe83b",
+      "skipped": false
+    }
+  },
+  "8453": {
+    "supply": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0xf2b9fdb8000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda029130000000000000000000000000000000000000000000000000000000005f5e100",
+      "skipped": false
+    },
+    "withdraw": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0xf3fef3a3000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda029130000000000000000000000000000000000000000000000000000000002faf080",
+      "skipped": false
+    },
+    "get-balance": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-collateral-balance": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0x2b92a07d00000000000000000000000011111111111111111111111111111111111111110000000000000000000000004200000000000000000000000000000000000006",
+      "skipped": false
+    },
+    "get-borrow-balance": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0x374c49b40000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-utilization": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0x7eb71131",
+      "skipped": false
+    },
+    "get-supply-rate": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0xd955759d00000000000000000000000000000000000000000000000006f05b59d3b20000",
+      "skipped": false
+    },
+    "get-borrow-rate": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0x9fa83b5a00000000000000000000000000000000000000000000000006f05b59d3b20000",
+      "skipped": false
+    },
+    "get-total-supply": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0x18160ddd",
+      "skipped": false
+    },
+    "get-total-borrow": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0x8285ef40",
+      "skipped": false
+    },
+    "is-liquidatable": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0x042e02cf0000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-num-assets": {
+      "to": "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      "data": "0xa46fe83b",
+      "skipped": false
+    }
+  },
+  "42161": {
+    "supply": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0xf2b9fdb8000000000000000000000000af88d065e77c8cc2239327c5edb3a432268e58310000000000000000000000000000000000000000000000000000000005f5e100",
+      "skipped": false
+    },
+    "withdraw": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0xf3fef3a3000000000000000000000000af88d065e77c8cc2239327c5edb3a432268e58310000000000000000000000000000000000000000000000000000000002faf080",
+      "skipped": false
+    },
+    "get-balance": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-collateral-balance": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0x2b92a07d000000000000000000000000111111111111111111111111111111111111111100000000000000000000000082af49447d8a07e3bd95bd0d56f35241523fbab1",
+      "skipped": false
+    },
+    "get-borrow-balance": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0x374c49b40000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-utilization": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0x7eb71131",
+      "skipped": false
+    },
+    "get-supply-rate": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0xd955759d00000000000000000000000000000000000000000000000006f05b59d3b20000",
+      "skipped": false
+    },
+    "get-borrow-rate": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0x9fa83b5a00000000000000000000000000000000000000000000000006f05b59d3b20000",
+      "skipped": false
+    },
+    "get-total-supply": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0x18160ddd",
+      "skipped": false
+    },
+    "get-total-borrow": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0x8285ef40",
+      "skipped": false
+    },
+    "is-liquidatable": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0x042e02cf0000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-num-assets": {
+      "to": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      "data": "0xa46fe83b",
+      "skipped": false
+    }
+  }
+}

@@ -1,0 +1,148 @@
+{
+  "protocol": "uniswap",
+  "network": "11155111",
+  "networkName": "sepolia",
+  "type": "write",
+  "name": "Protocol Test: Uniswap V3 Write Actions",
+  "description": "Tests all Uniswap V3 write actions on Sepolia testnet",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 300 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-swap-exact-input",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Swap Exact Input",
+        "description": "Swap exact input tokens (Sepolia)",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/swap-exact-input",
+          "network": "11155111",
+          "tokenIn": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+          "tokenOut": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+          "fee": "3000",
+          "recipient": "0x0000000000000000000000000000000000000001",
+          "amountIn": "1000000000000000",
+          "amountOutMinimum": "0",
+          "sqrtPriceLimitX96": "0"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-swap-exact-output",
+      "type": "action",
+      "position": { "x": 450, "y": 150 },
+      "data": {
+        "label": "Swap Exact Output",
+        "description": "Swap for exact output tokens (Sepolia)",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/swap-exact-output",
+          "network": "11155111",
+          "tokenIn": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+          "tokenOut": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+          "fee": "3000",
+          "recipient": "0x0000000000000000000000000000000000000001",
+          "amountOut": "1000000",
+          "amountInMaximum": "1000000000000000000",
+          "sqrtPriceLimitX96": "0"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-approve-position",
+      "type": "action",
+      "position": { "x": 450, "y": 300 },
+      "data": {
+        "label": "Approve Position Transfer",
+        "description": "Approve address to manage position NFT (Sepolia)",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/approve-position",
+          "network": "11155111",
+          "to": "0x0000000000000000000000000000000000000001",
+          "tokenId": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-transfer-position",
+      "type": "action",
+      "position": { "x": 450, "y": 450 },
+      "data": {
+        "label": "Transfer Position NFT",
+        "description": "Transfer position NFT to another address (Sepolia)",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/transfer-position",
+          "network": "11155111",
+          "from": "0x0000000000000000000000000000000000000001",
+          "to": "0x0000000000000000000000000000000000000002",
+          "tokenId": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-burn-position",
+      "type": "action",
+      "position": { "x": 450, "y": 600 },
+      "data": {
+        "label": "Burn Empty Position",
+        "description": "Burn an empty position NFT (Sepolia)",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/burn-position",
+          "network": "11155111",
+          "tokenId": "1"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-to-uniswap-swap-exact-input",
+      "source": "node-1",
+      "target": "uniswap-swap-exact-input",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-swap-exact-output",
+      "source": "node-1",
+      "target": "uniswap-swap-exact-output",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-approve-position",
+      "source": "node-1",
+      "target": "uniswap-approve-position",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-transfer-position",
+      "source": "node-1",
+      "target": "uniswap-transfer-position",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-burn-position",
+      "source": "node-1",
+      "target": "uniswap-burn-position",
+      "type": "animated"
+    }
+  ]
+}

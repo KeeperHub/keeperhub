@@ -1,0 +1,32 @@
+# Type: standalone | PR checks for the keeperhub-executor module.
+# Runs only when keeperhub-executor/** or this workflow change. Unlike
+# keeperhub-events / keeperhub-scheduler, the executor lives in the root
+# pnpm workspace (shared lockfile, shared deps), so the existing
+# setup-node-pnpm action is reused rather than a dedicated setup action.
+# The executor's tests are pure unit tests with mocked external deps -
+# no docker services required.
+name: PR Checks (Executor)
+
+on:
+  pull_request:
+    paths:
+      - "keeperhub-executor/**"
+      - ".github/workflows/pr-checks-executor.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test-unit:
+    # Policy: all test jobs resolve secrets from the staging environment.
+    environment: staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Run executor unit tests
+        run: pnpm test:executor

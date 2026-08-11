@@ -1,0 +1,137 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "extends": ["ultracite/core", "ultracite/react", "ultracite/next"],
+  "files": {
+    "includes": [
+      "**/*",
+      "!.worktrees",
+      "!components/ui",
+      "!components/ai-elements",
+      "!lib/utils.ts",
+      "!hooks/use-mobile.ts",
+      "!plugins",
+      "!app/api/ai-gateway",
+      "!lib/ai-gateway",
+      "!components/workflow/config/action-grid.tsx",
+      "!lib/rpc/index.ts",
+      "!drizzle",
+      "!.work",
+      "!.planning",
+      "!.pnpm-store",
+      "!docs-site",
+      "!components/overlays",
+      "!scripts",
+      "!app/api/workflow",
+      "!app/api/workflows",
+      "!lib/workflow-executor.workflow.ts",
+      "!components/settings",
+      "!components/workflow",
+      "!lib/atoms",
+      "!keeperhub-events",
+      "!keeperhub-scheduler",
+      "!keeperhub-executor",
+      "!keeperhub-metrics-collector",
+      "!.history",
+      "!tests/k6",
+      "!packages/*/dist",
+      "!packages/*/node_modules"
+    ]
+  },
+  "linter": {
+    "rules": {
+      "complexity": {
+        "useMaxParams": "off",
+        "noUselessUndefined": "off",
+        // New threshold from biome bump - pre-existing complexity to be addressed separately
+        "noExcessiveCognitiveComplexity": "off"
+      },
+      "performance": {
+        // Barrel files are a standard pattern for module exports
+        "noBarrelFile": "off"
+      },
+      "suspicious": {
+        // Bitwise operators are legitimate for hashing/masking
+        "noBitwiseOperators": "off",
+        // New rule from biome bump - pre-existing test.skip() to be addressed separately
+        "noSkippedTests": "off",
+        // KEEP-814: route failures through the structured logger
+        // (logSystemError / logUserError / logSystemWarn) so they reach
+        // Prometheus + Sentry. console.log/info/debug stay allowed (the
+        // lib/logger facade normalizes them to canonical JSON); console.warn /
+        // console.error are disallowed in server code. Client (browser),
+        // tests, and the logging infra itself are exempted in `overrides`.
+        "noConsole": {
+          "level": "error",
+          "options": { "allow": ["log", "info", "debug"] }
+        }
+      },
+      "nursery": {
+        // These are experimental rules that add friction without clear benefit
+        "useSortedClasses": "off"
+      },
+      "style": {
+        "useConsistentTypeDefinitions": "off",
+        "noSubstr": "off"
+      }
+    }
+  },
+  "overrides": [
+    {
+      // noConsole is server-only. These paths legitimately use console:
+      //  - client/browser code (logs go to the browser console + client Sentry;
+      //    the server logger's ALS/Prometheus path does not apply)
+      //  - tests (console spies and scaffolding)
+      //  - the logging infra itself (captures/patches the real console)
+      //  - staging-only admin test routes
+      "includes": [
+        "components/**",
+        "app/page.tsx",
+        "app/accept-invite/**",
+        "app/workflows/**",
+        "lib/hooks/**",
+        "lib/api-client.ts",
+        "tests/**",
+        "**/*.staging.ts",
+        "lib/log/core.ts",
+        "lib/logger.ts",
+        "instrumentation.ts"
+      ],
+      "linter": { "rules": { "suspicious": { "noConsole": "off" } } }
+    },
+    {
+      // The protocol on-chain tests declare cases via `itOnchain` (a custom
+      // wrapper around `it` in tests/integration/_shared/onchain-rpc.ts that
+      // retries RPC-infrastructure faults). noMisplacedAssertion only knows
+      // it/test/Deno.test, so it flags every expect() inside an itOnchain
+      // body as misplaced. Scope just that rule off for these files.
+      "includes": ["tests/integration/*onchain*.test.ts"],
+      "linter": {
+        "rules": { "suspicious": { "noMisplacedAssertion": "off" } }
+      }
+    },
+    {
+      // Test-only rule noise. These rules carry no signal in test code and are
+      // needlessly noisy against test suites:
+      //  - useTopLevelRegex: a runtime-perf rule; a regex allocated inside a
+      //    test body has no production cost.
+      //  - useAwait: test helpers and mocks are declared async for signature
+      //    parity with the async code they stand in for, without awaiting.
+      //  - noMisplacedAssertion: false positives from custom expect() wrappers
+      //    (fixtures, table-driven helpers) that the rule does not recognise.
+      "includes": ["tests/**", "**/*.test.ts", "**/*.test.tsx"],
+      "linter": {
+        "rules": {
+          "performance": { "useTopLevelRegex": "off" },
+          "suspicious": { "useAwait": "off", "noMisplacedAssertion": "off" }
+        }
+      }
+    },
+    {
+      // Static brand/icon SVGs shipped as assets (logos, decorative glyphs),
+      // not interactive UI. The a11y <title> requirement does not apply to
+      // these files.
+      "includes": ["public/**"],
+      "linter": { "rules": { "a11y": { "noSvgWithoutTitle": "off" } } }
+    }
+  ]
+}

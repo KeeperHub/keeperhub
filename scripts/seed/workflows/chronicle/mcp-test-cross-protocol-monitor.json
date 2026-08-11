@@ -1,0 +1,28 @@
+{
+  "protocol": "chronicle",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "Cross-Protocol DeFi Monitor",
+  "description": "Chronicle ETH/USD oracle + Lido wstETH rate + Compound USDC supply rate -> formatted dashboard with price alerts",
+  "notes": "Sequential pipeline to ensure all outputs are available for the Code node. Node labels must NOT contain colons -- the template parser uses : as separator in {{@nodeId:Label.field}}.",
+  "nodes": [
+    {"id":"trigger-1","type":"trigger","position":{"x":100,"y":300},"data":{"type":"trigger","label":"Hourly Schedule","config":{"triggerType":"Schedule","scheduleCron":"0 * * * *","scheduleTimezone":"UTC"},"status":"idle","description":"Check every hour"}},
+    {"id":"oracle-eth","type":"action","position":{"x":350,"y":300},"data":{"type":"action","label":"Read ETH Price","description":"Get current ETH price and staleness from Chronicle oracle","config":{"actionType":"chronicle/try-read-with-age","network":"1","contractAddress":"0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E","_protocolMeta":"{\"protocolSlug\":\"chronicle\",\"contractKey\":\"oracle\",\"functionName\":\"tryReadWithAge\",\"actionType\":\"read\"}"},"status":"idle"}},
+    {"id":"lido-rate","type":"action","position":{"x":600,"y":300},"data":{"type":"action","label":"Get wstETH Rate","description":"Current wstETH-to-stETH exchange rate","config":{"actionType":"lido/get-steth-by-wsteth","network":"1","_wstETHAmount":"1000000000000000000","_protocolMeta":"{\"protocolSlug\":\"lido\",\"contractKey\":\"wsteth\",\"functionName\":\"getStETHByWstETH\",\"actionType\":\"read\"}"},"status":"idle"}},
+    {"id":"compound-rate","type":"action","position":{"x":850,"y":300},"data":{"type":"action","label":"Get USDC Supply Rate","description":"Current USDC supply rate on Compound V3","config":{"actionType":"compound/get-supply-rate","network":"1","contractAddress":"0xc3d688B66703497DAA19211EEdff47f25384cdc3","utilization":"800000000000000000","_protocolMeta":"{\"protocolSlug\":\"compound-v3\",\"contractKey\":\"cUsdcV3\",\"functionName\":\"getSupplyRate\",\"actionType\":\"read\"}"},"status":"idle"}},
+    {"id":"fmt","type":"action","position":{"x":1100,"y":300},"data":{"type":"action","label":"Format Dashboard","description":"Format all data into dashboard","config":{"actionType":"code/run-code","code":"const ethRaw = Number({{@oracle-eth:Read ETH Price.result.unnamedOutput1}});\nconst ethPrice = ethRaw / 1e18;\nconst oracleAge = Number({{@oracle-eth:Read ETH Price.result.unnamedOutput2}});\nconst now = Math.floor(Date.now() / 1000);\nconst staleMinutes = Math.floor((now - oracleAge) / 60);\nconst wstethRate = Number({{@lido-rate:Get wstETH Rate.result}}) / 1e18;\nconst supplyRatePerSec = Number({{@compound-rate:Get USDC Supply Rate.result}});\nconst supplyAPR = supplyRatePerSec > 0 ? ((supplyRatePerSec / 1e18) * 31536000 * 100).toFixed(2) : \"0.00\";\nconst ethFmt = new Intl.NumberFormat(\"en-US\", {style:\"currency\",currency:\"USD\"}).format(ethPrice);\nreturn {\n  ethPrice: ethFmt,\n  ethRaw: ethPrice.toFixed(2),\n  staleMinutes: String(staleMinutes),\n  wstethRate: wstethRate.toFixed(4),\n  compoundAPR: supplyAPR,\n  summary: `ETH: ${ethFmt} (${staleMinutes}m old) | wstETH: ${wstethRate.toFixed(4)} stETH | Compound USDC APR: ${supplyAPR}%`\n};"},"status":"idle"}},
+    {"id":"cond-price","type":"action","position":{"x":1350,"y":300},"data":{"type":"action","label":"ETH Below 2000","description":"Alert if ETH below $2,000","config":{"actionType":"Condition","condition":"{{@fmt:Format Dashboard.result.ethRaw}} < 2000","conditionConfig":{"group":{"id":"price-check","logic":"AND","rules":[{"id":"rule-eth-low","operator":"<","leftOperand":"{{@fmt:Format Dashboard.result.ethRaw}}","rightOperand":"2000"}]}}},"status":"idle"}},
+    {"id":"discord-ok","type":"action","position":{"x":1600,"y":150},"data":{"type":"action","label":"Discord DeFi Healthy","description":"Hourly dashboard summary","config":{"actionType":"discord/send-message","discordMessage":"**Hourly DeFi Dashboard**\n\n{{@fmt:Format Dashboard.result.summary}}\n\nAll systems normal."},"status":"idle"}},
+    {"id":"discord-alert","type":"action","position":{"x":1600,"y":450},"data":{"type":"action","label":"Discord ETH Alert","description":"ETH dropped below $2,000","config":{"actionType":"discord/send-message","discordMessage":"**ETH PRICE ALERT**\n\nETH/USD: {{@fmt:Format Dashboard.result.ethPrice}} (below $2,000)\nOracle age: {{@fmt:Format Dashboard.result.staleMinutes}} min\nwstETH: {{@fmt:Format Dashboard.result.wstethRate}} stETH\nCompound APR: {{@fmt:Format Dashboard.result.compoundAPR}}%"},"status":"idle"}}
+  ],
+  "edges": [
+    {"id":"e1","source":"trigger-1","target":"oracle-eth"},
+    {"id":"e2","source":"oracle-eth","target":"lido-rate"},
+    {"id":"e3","source":"lido-rate","target":"compound-rate"},
+    {"id":"e4","source":"compound-rate","target":"fmt"},
+    {"id":"e5","source":"fmt","target":"cond-price"},
+    {"id":"e6","type":"animated","source":"cond-price","target":"discord-ok","sourceHandle":"false"},
+    {"id":"e7","type":"animated","source":"cond-price","target":"discord-alert","sourceHandle":"true"}
+  ]
+}

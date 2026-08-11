@@ -1,0 +1,60 @@
+{
+  "name": "Superfluid wrap demo (KEEP-415)",
+  "description": "Two-step workflow: approve fUSDCx to spend fUSDC, then wrap 1 fUSDC into 1 fUSDCx. Demonstrates ERC20 -> SuperToken via the deployed runtime.",
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "type": "trigger",
+        "label": "",
+        "config": { "triggerType": "Manual" },
+        "status": "idle",
+        "description": ""
+      }
+    },
+    {
+      "id": "step-approve",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "type": "action",
+        "label": "",
+        "config": {
+          "actionType": "web3/approve-token",
+          "network": "11155111",
+          "tokenConfig": "{\"mode\":\"custom\",\"customToken\":{\"address\":\"0xe72f289584eDA2bE69Cfe487f4638F09bAc920Db\",\"symbol\":\"fUSDC\"}}",
+          "spenderAddress": "0xb598E6C621618a9f63788816ffb50Ee2862D443B",
+          "amount": "1",
+          "integrationId": "t6xtd727ow2up79uy6v0y"
+        },
+        "status": "idle",
+        "description": ""
+      }
+    },
+    {
+      "id": "step-wrap",
+      "type": "action",
+      "position": { "x": 544, "y": 0 },
+      "data": {
+        "type": "action",
+        "label": "",
+        "config": {
+          "actionType": "superfluid/wrap",
+          "network": "11155111",
+          "contractAddress": "0xb598E6C621618a9f63788816ffb50Ee2862D443B",
+          "amount": "1000000000000000000",
+          "integrationId": "t6xtd727ow2up79uy6v0y",
+          "_protocolMeta": "{\"protocolSlug\":\"superfluid\",\"contractKey\":\"superToken\",\"functionName\":\"upgrade\",\"actionType\":\"write\"}"
+        },
+        "status": "idle",
+        "description": ""
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger-1", "target": "step-approve" },
+    { "id": "e2", "source": "step-approve", "target": "step-wrap" }
+  ]
+}

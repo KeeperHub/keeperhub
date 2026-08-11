@@ -1,0 +1,69 @@
+name: Setup Node.js + pnpm
+description: Install Node.js, pnpm, dependencies, and optionally Playwright browsers
+
+inputs:
+  install-playwright:
+    description: Install and cache Playwright Chromium browsers
+    required: false
+    default: "false"
+  discover-plugins:
+    description: Run pnpm discover-plugins after install
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: "22"
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 9
+
+    - name: Get pnpm store directory
+      shell: bash
+      run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+    - name: Setup pnpm cache
+      uses: actions/cache@v5
+      with:
+        path: ${{ env.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    - name: Generate plugin registry
+      if: inputs.discover-plugins == 'true'
+      shell: bash
+      run: pnpm discover-plugins
+
+    - name: Get Playwright version
+      if: inputs.install-playwright == 'true'
+      shell: bash
+      run: echo "PW_VERSION=$(pnpm exec playwright --version | awk '{print $2}')" >> $GITHUB_ENV
+
+    - name: Cache Playwright browsers
+      if: inputs.install-playwright == 'true'
+      id: playwright-cache
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/ms-playwright
+        key: ${{ runner.os }}-playwright-${{ env.PW_VERSION }}
+
+    - name: Install Playwright browsers
+      if: inputs.install-playwright == 'true' && steps.playwright-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: pnpm exec playwright install --with-deps chromium
+
+    - name: Install Playwright system deps
+      if: inputs.install-playwright == 'true' && steps.playwright-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: pnpm exec playwright install-deps chromium

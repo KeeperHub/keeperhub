@@ -1,0 +1,24 @@
+# Dedicated ServiceAccount template for the per-PR workflow-runner Job pods.
+#
+# Variables substituted by envsubst at deploy time: ${PR_NUMBER}
+#
+# Mirrors deploy/executor/<env>/runner-sa.yaml for the PR namespace. The
+# executor builds runner Jobs in code (keeperhub-executor/k8s-job.ts) and sets
+# serviceAccountName to this SA with automountServiceAccountToken: false, so the
+# runner pod never carries a projected token. The runner makes no in-cluster
+# Kubernetes API calls; no Role or RoleBinding targets this SA, so it has zero
+# API permissions even if a token were somehow projected. No IRSA annotation,
+# so the runner has no federated AWS identity of its own.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keeperhub-workflow-runner
+  namespace: pr-${PR_NUMBER}
+  labels:
+    app.kubernetes.io/name: keeperhub-workflow-runner
+    app.kubernetes.io/instance: keeperhub-workflow-runner-pr-${PR_NUMBER}
+    app.kubernetes.io/component: workflow-runner
+    app.kubernetes.io/part-of: keeperhub
+  # Intentionally no annotations. In particular: NO
+  # eks.amazonaws.com/role-arn.
+automountServiceAccountToken: false

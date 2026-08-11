@@ -1,0 +1,7 @@
+ignored:
+  # Alpine package versions are tied to the base image tag (node:25-alpine).
+  # Pinning apk packages independently breaks when the base image updates.
+  - DL3018
+  # pnpm is installed globally as a build tool; pinning it across multiple
+  # Dockerfiles creates maintenance burden for no security benefit.
+  - DL3016

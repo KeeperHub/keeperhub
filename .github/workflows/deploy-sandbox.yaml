@@ -1,0 +1,190 @@
+# Type: standalone | Builds and deploys the keeperhub-sandbox service.
+# Runs independently from ci-pipeline.yml because the sandbox has no shared
+# runtime with the main app, no DB access, no AWS creds — it's the Code
+# workflow node's out-of-pod execution service (v1.9, KEEP-332).
+on:
+  push:
+    branches:
+      - staging
+      - prod
+    paths:
+      - "sandbox/**"
+      - "deploy/keeperhub-sandbox/**"
+      - ".github/workflows/deploy-sandbox.yaml"
+      - "docker-bake.hcl"
+      # Shared grandchild source consumed by the sandbox Dockerfile.
+      # Changes here must rebuild and redeploy the sandbox image.
+      - "lib/sandbox/child-source.ts"
+  workflow_dispatch:
+
+name: deploy-sandbox
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-sandbox-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    environment: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+    runs-on: ubuntu-latest
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      ENVIRONMENT_TAG: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      NAMESPACE: keeperhub
+      SANDBOX_ECR_NAME: keeperhub-sandbox-${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      SANDBOX_HELM_FILE: deploy/keeperhub-sandbox/${{ github.ref_name == 'prod' && 'prod' || 'staging' }}/values.yaml
+      SANDBOX_SA_FILE: deploy/keeperhub-sandbox/${{ github.ref_name == 'prod' && 'prod' || 'staging' }}/sa.yaml
+      SANDBOX_NETPOL_FILE: deploy/keeperhub-sandbox/${{ github.ref_name == 'prod' && 'prod' || 'staging' }}/networkpolicy.yaml
+      SANDBOX_POD_PATCH_FILE: deploy/keeperhub-sandbox/${{ github.ref_name == 'prod' && 'prod' || 'staging' }}/pod-hardening-patch.yaml
+      RELEASE_NAME: keeperhub-sandbox
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Check commit message for skip flags
+        id: skip
+        run: |
+          MSG=$(git log -1 --format=%B)
+          echo "skip_build=$([[ "$MSG" == *"[skip build]"* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "skip_deploy=$([[ "$MSG" == *"[skip deploy]"* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Connect to EKS
+        uses: ./.github/actions/eks-connect
+        with:
+          enabled: ${{ vars.TO_EKS_CONNECT }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        if: steps.skip.outputs.skip_build != 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract commit hash
+        id: vars
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if sandbox image already exists
+        if: steps.skip.outputs.skip_build == 'true'
+        run: |
+          IMAGE_TAG="${{ steps.vars.outputs.sha_short }}"
+          if ! aws ecr describe-images \
+            --repository-name "$SANDBOX_ECR_NAME" \
+            --image-ids "imageTag=sandbox-${IMAGE_TAG}" \
+            --region "${{ env.REGION }}" >/dev/null 2>&1; then
+            echo "::error::Cannot skip build: sandbox-${IMAGE_TAG} not found in ${SANDBOX_ECR_NAME}. Remove [skip build] or push a build first."
+            exit 1
+          fi
+          echo "sandbox-${IMAGE_TAG} exists in ${SANDBOX_ECR_NAME}"
+
+      - name: Build and push sandbox image
+        if: steps.skip.outputs.skip_build != 'true'
+        uses: docker/bake-action@v7
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          SANDBOX_ECR_REPO: ${{ env.SANDBOX_ECR_NAME }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+          ENVIRONMENT_TAG: ${{ env.ENVIRONMENT_TAG }}
+        with:
+          files: docker-bake.hcl
+          targets: sandbox
+          push: true
+
+      - name: Replace variables in Helm values file
+        if: steps.skip.outputs.skip_deploy != 'true'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+        run: |
+          sed -i "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g" "$SANDBOX_HELM_FILE"
+          sed -i "s|\${IMAGE_TAG}|${IMAGE_TAG}|g" "$SANDBOX_HELM_FILE"
+
+      - name: Configure kubectl
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          aws eks update-kubeconfig --name "${{ env.CLUSTER_NAME }}" --region "${{ env.REGION }}"
+
+      - name: Ensure namespace exists
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          kubectl create namespace "${{ env.NAMESPACE }}" --dry-run=client -o yaml | kubectl apply -f -
+
+      # Pre-create the scrubbed ServiceAccount BEFORE helm upgrade so the
+      # chart's serviceAccount: { create: false, name: ... } finds it.
+      # automountServiceAccountToken: false at SA level closes the SA token
+      # exfil path even if a later admission overlay removed the Pod-level
+      # toggle.
+      - name: Apply scrubbed ServiceAccount
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          kubectl apply -f "$SANDBOX_SA_FILE"
+
+      # Pre-create the egress-deny NetworkPolicy BEFORE helm upgrade so a
+      # restarted Pod that comes up before the policy exists cannot have
+      # a brief window of wide-open egress. Policy is enforced by the VPC
+      # CNI Network Policy Agent (eBPF); see networkpolicy.yaml for the
+      # full threat model.
+      - name: Apply sandbox NetworkPolicy
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          kubectl apply -f "$SANDBOX_NETPOL_FILE"
+
+      - name: Deploy keeperhub-sandbox
+        if: steps.skip.outputs.skip_deploy != 'true'
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.12
+        with:
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          config-files: ${{ env.SANDBOX_HELM_FILE }}
+          chart-path: techops-services/common
+          namespace: ${{ env.NAMESPACE }}
+          timeout: 5m0s
+          name: ${{ env.RELEASE_NAME }}
+          chart-repository: https://techops-services.github.io/helm-charts
+          version: 0.2.1
+          atomic: true
+
+      # Chart v0.2.1 does not expose automountServiceAccountToken on the
+      # Pod template, so layer it on after helm upgrade. Belt-and-braces
+      # with the SA-level setting: WORK-03 regression (token file ENOENT
+      # inside the Pod) becomes deterministic against misconfigured
+      # admission overlays that might silently re-project the SA token.
+      - name: Patch pod-level automountServiceAccountToken = false
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          kubectl -n "${{ env.NAMESPACE }}" patch deployment "${{ env.RELEASE_NAME }}-common" \
+            --patch-file "$SANDBOX_POD_PATCH_FILE"
+          kubectl -n "${{ env.NAMESPACE }}" rollout status \
+            deployment/"${{ env.RELEASE_NAME }}-common" --timeout=3m
+
+      - name: Verify SA token file is absent (WORK-03 smoke)
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          POD=$(kubectl -n "${{ env.NAMESPACE }}" get pods \
+            -l app.kubernetes.io/instance="${{ env.RELEASE_NAME }}" \
+            -o jsonpath='{.items[0].metadata.name}')
+          echo "Checking token absence in pod: $POD"
+          if kubectl -n "${{ env.NAMESPACE }}" exec "$POD" -- \
+            sh -c 'test -e /var/run/secrets/kubernetes.io/serviceaccount/token' 2>/dev/null; then
+            echo "::error::SA token file is present in sandbox pod — WORK-03 FAILED. Check automountServiceAccountToken at SA AND Pod level."
+            exit 1
+          fi
+          echo "WORK-03 smoke: token file ENOENT"

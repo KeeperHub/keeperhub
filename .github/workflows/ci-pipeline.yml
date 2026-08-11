@@ -1,0 +1,125 @@
+# Type: orchestrator | Coordinates build-images + e2e-tests -> deploy -> release -> docs-sync
+name: CI Pipeline
+
+on:
+  push:
+    branches: [staging, prod]
+  pull_request:
+    types: [labeled, synchronize]
+  workflow_dispatch: {}
+
+# Cancel a PR's in-flight run when it is superseded by a newer push to the same
+# PR - saves runner queue time on rapid iteration. Scoped to pull_request only:
+# push (staging/prod) and workflow_dispatch each get a unique per-run group via
+# github.run_id, so deploys are never cancelled and always run to completion.
+# Deliberately NOT cancel-on-failure - a run must be able to surface multiple
+# test failures at once.
+concurrency:
+  group: ci-pipeline-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+  # Granted through to e2e-tests-ephemeral.yml (called workflows can
+  # only downgrade caller permissions): the tier1 job lists/downloads
+  # the nightly fork-cache artifact.
+  actions: read
+
+jobs:
+  # Build Docker images once for push/dispatch events (staging/prod).
+  # Outputs image tag and ECR coordinates for downstream jobs.
+  # Skipped for PRs -- e2e falls back to bare-metal build.
+  build-images:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/build-images.yml
+    secrets: inherit
+
+  # Ephemeral e2e tests.
+  e2e-tests:
+    needs: [build-images]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/e2e-tests-ephemeral.yml
+    with:
+      caller_event: ${{ github.event_name }}
+      caller_action: ${{ github.event.action }}
+      has_e2e_label: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-e2e-tests-ephemeral') || false }}
+      label_name: ${{ github.event.label.name || '' }}
+      # Pass build outputs only on staging; '' must be the `||` fallthrough since
+      # an empty string is falsy (`cond && '' || x` would always yield x).
+      image_tag: ${{ github.ref_name == 'staging' && (needs.build-images.outputs.image_tag || '') || '' }}
+      # Prebuilt sandbox ref, staging only (same fallthrough rule as image_tag);
+      # empty on PRs/prod makes the e2e jobs build the sandbox locally.
+      sandbox_image: ${{ github.ref_name == 'staging' && (needs.build-images.outputs.sandbox_image || '') || '' }}
+      ecr_registry: ${{ github.ref_name == 'staging' && (needs.build-images.outputs.ecr_registry || '') || '' }}
+      ecr_repo: ${{ github.ref_name == 'staging' && (needs.build-images.outputs.ecr_repo || '') || '' }}
+      ecr_region: ${{ github.ref_name == 'staging' && (needs.build-images.outputs.ecr_region || '') || '' }}
+    secrets: inherit
+
+  # Sentry source-map upload, fanned out from build-images alongside e2e so it
+  # no longer extends the build critical path. Runs on staging/prod pushes only
+  # (PRs never build images), and only when the build actually baked - a
+  # [skip build] or all-images-exist rerun skips it, mirroring the guard the
+  # old in-build step used. Deploy does not depend on it, so a source-map
+  # failure surfaces as a red run without blocking the deploy.
+  sentry-upload:
+    needs: [build-images]
+    if: ${{ github.event_name != 'pull_request' && !failure() && !cancelled() && needs.build-images.outputs.skip_build != 'true' && needs.build-images.outputs.images_exist != 'true' }}
+    uses: ./.github/workflows/sentry-upload.yml
+    with:
+      image_tag: ${{ needs.build-images.outputs.image_tag }}
+    secrets: inherit
+
+  # Deploy runs after build-images and e2e-tests.
+  # Blocked if e2e tests fail — no deployment without passing tests.
+  # Deploys the whole execution pipeline (app + executor + schedule + block +
+  # metrics-collector) as one atomic keeperhub-stack release, so every component
+  # rolls together. This replaces the previously separate app/executor/scheduler/
+  # metrics-collector deploys and removes the staggered-rollover window that left
+  # in-flight executions orphaned mid-deploy.
+  deploy:
+    needs: [build-images, e2e-tests]
+    if: ${{ github.event_name != 'pull_request' && !failure() && !cancelled() }}
+    uses: ./.github/workflows/deploy-keeperhub.yaml
+    with:
+      image_tag: ${{ needs.build-images.outputs.image_tag }}
+    secrets: inherit
+
+  # Synthetic gate: green once the single atomic stack deploy finishes. Kept as a
+  # stable, observable "all deployments rolled" signal for downstream jobs.
+  deploy-ready:
+    needs: [deploy]
+    if: ${{ github.event_name != 'pull_request' && !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm deployment complete
+        run: |
+          echo "Atomic keeperhub-stack deploy rolled all components to the new image."
+          echo "Workflows submitted from this point will run on the new build."
+
+  # Release and docs-sync only run on prod pushes, after successful deploy.
+  # Previously a separate workflow — moved here so e2e/deploy failures block release.
+  # Note: if ENABLE_E2E_EPHEMERAL_TESTS is false, e2e jobs are skipped (not failed),
+  # so deploy and release proceed unconditionally — the variable is the kill switch.
+  release:
+    needs: [deploy-ready]
+    if: ${{ github.ref_name == 'prod' && !failure() && !cancelled() }}
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
+
+  docs-sync:
+    needs: [release]
+    if: ${{ github.ref_name == 'prod' && !failure() && !cancelled() }}
+    uses: ./.github/workflows/docs-sync.yml
+    secrets: inherit
+
+  # Pin the ERC-8004 agent registry JSON to IPFS (Pinata) on every prod deploy.
+  # Same content -> same CID, so this is a no-op when nothing changed. When the
+  # JSON drifts, the job logs the new ipfs://<cid> + the manual command to run
+  # locally to update the on-chain agentURI. Never sends a tx itself.
+  pin-agent-card:
+    needs: [deploy-ready]
+    if: ${{ github.ref_name == 'prod' && !failure() && !cancelled() }}
+    uses: ./.github/workflows/pin-agent-card.yml
+    secrets: inherit

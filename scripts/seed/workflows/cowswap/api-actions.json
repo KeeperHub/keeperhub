@@ -1,0 +1,79 @@
+{
+  "protocol": "cowswap",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "Protocol Test: CoW Swap API Actions",
+  "description": "Tests CoW Swap off-chain API actions (get-quote, get-account-orders, get-trades)",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 200 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "cowswap-get-quote",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Get Quote",
+        "description": "Get a swap quote: 1 WETH -> USDC on mainnet",
+        "type": "action",
+        "config": {
+          "actionType": "cowswap/get-quote",
+          "network": "1",
+          "sellToken": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "buyToken": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+          "kind": "sell",
+          "amount": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "cowswap-get-account-orders",
+      "type": "action",
+      "position": { "x": 450, "y": 200 },
+      "data": {
+        "label": "Get Account Orders",
+        "description": "List orders for vitalik.eth on mainnet",
+        "type": "action",
+        "config": {
+          "actionType": "cowswap/get-account-orders",
+          "network": "1",
+          "ownerAddress": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+          "limit": "5"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "cowswap-get-trades",
+      "type": "action",
+      "position": { "x": 450, "y": 400 },
+      "data": {
+        "label": "Get Trades",
+        "description": "Get executed trades for vitalik.eth on mainnet",
+        "type": "action",
+        "config": {
+          "actionType": "cowswap/get-trades",
+          "network": "1",
+          "ownerAddress": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e-trigger-to-get-quote", "source": "node-1", "target": "cowswap-get-quote", "type": "animated" },
+    { "id": "e-trigger-to-get-account-orders", "source": "node-1", "target": "cowswap-get-account-orders", "type": "animated" },
+    { "id": "e-trigger-to-get-trades", "source": "node-1", "target": "cowswap-get-trades", "type": "animated" }
+  ]
+}

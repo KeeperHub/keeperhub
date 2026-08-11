@@ -1,0 +1,56 @@
+{
+  "protocol": "lido",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Lido Approve stETH + Wrap to wstETH",
+  "description": "Approve stETH for wstETH contract then wrap 0.002 stETH back to wstETH on mainnet",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "approve-steth",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Approve stETH",
+        "type": "action",
+        "config": {
+          "actionType": "lido/approve-steth",
+          "network": "1",
+          "spender": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+          "amount": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "wrap",
+      "type": "action",
+      "position": { "x": 544, "y": 0 },
+      "data": {
+        "label": "Wrap stETH to wstETH",
+        "type": "action",
+        "config": {
+          "actionType": "lido/wrap",
+          "network": "1",
+          "_stETHAmount": "2000000000000000"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "approve-steth", "type": "animated" },
+    { "id": "e2", "source": "approve-steth", "target": "wrap", "type": "animated" }
+  ]
+}

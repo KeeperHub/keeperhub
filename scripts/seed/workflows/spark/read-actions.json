@@ -1,0 +1,133 @@
+{
+  "protocol": "spark",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "Protocol Test: Spark Read Actions",
+  "description": "Tests all Spark read actions on Ethereum mainnet",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 300 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-user-account-data",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Get User Account Data",
+        "description": "Fetch aggregated account data from Spark Pool",
+        "type": "action",
+        "config": {
+          "actionType": "spark/get-user-account-data",
+          "network": "1",
+          "user": "0x83F20F44975D03b1b09e64809B757c47f942BEeA"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-user-reserve-data",
+      "type": "action",
+      "position": { "x": 450, "y": 150 },
+      "data": {
+        "label": "Get User Reserve Data",
+        "description": "Fetch reserve-specific data for DAI",
+        "type": "action",
+        "config": {
+          "actionType": "spark/get-user-reserve-data",
+          "network": "1",
+          "asset": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+          "user": "0x83F20F44975D03b1b09e64809B757c47f942BEeA"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-vault-balance",
+      "type": "action",
+      "position": { "x": 450, "y": 300 },
+      "data": {
+        "label": "Get sDAI Balance",
+        "description": "Check sDAI balance of the sDAI contract",
+        "type": "action",
+        "config": {
+          "actionType": "spark/vault-balance",
+          "network": "1",
+          "account": "0x83F20F44975D03b1b09e64809B757c47f942BEeA"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-vault-total-assets",
+      "type": "action",
+      "position": { "x": 450, "y": 450 },
+      "data": {
+        "label": "Get sDAI Total Assets",
+        "description": "Fetch total DAI assets held by sDAI vault",
+        "type": "action",
+        "config": {
+          "actionType": "spark/vault-total-assets",
+          "network": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-vault-convert-to-assets",
+      "type": "action",
+      "position": { "x": 450, "y": 600 },
+      "data": {
+        "label": "Get sDAI Convert to Assets",
+        "description": "Convert 1 sDAI share to DAI asset value",
+        "type": "action",
+        "config": {
+          "actionType": "spark/vault-convert-to-assets",
+          "network": "1",
+          "shares": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-to-spark-user-account-data",
+      "source": "node-1",
+      "target": "spark-user-account-data",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-spark-user-reserve-data",
+      "source": "node-1",
+      "target": "spark-user-reserve-data",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-spark-vault-balance",
+      "source": "node-1",
+      "target": "spark-vault-balance",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-spark-vault-total-assets",
+      "source": "node-1",
+      "target": "spark-vault-total-assets",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-spark-vault-convert-to-assets",
+      "source": "node-1",
+      "target": "spark-vault-convert-to-assets",
+      "type": "animated"
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+# Solana ingestion service (event + block triggers). Single-process reconciler:
+# 2+ replicas would subscribe to every chain WSS twice and dispatch duplicate
+# SQS messages, so this must stay 1.
+#
+# Reuses the event-tracker's service account (keeperhub-events-staging) + IRSA
+# role, Redis, and workflow queue - Solana ingestion has the same access needs
+# as the EVM event tracker, so no new AWS resources are required. Runs healthy
+# but idle until a Solana chain (101/103) with primary RPC + WSS is configured
+# in chain-config; the mapper skips chains without WSS and starts no ingestors.
+replicaCount: 1
+
+service:
+  enabled: true
+  name: keeperhub-solana-staging
+  port: 3001
+  type: ClusterIP
+  containerPort: 3001
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-event-staging
+  tag: solana-${IMAGE_TAG}
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+
+# Reuse the event-tracker service account + IRSA role (created by the
+# keeperhub-event release). create: false so this release only references it -
+# no new IAM role is provisioned for Solana.
+serviceAccount:
+  create: false
+  name: keeperhub-events-staging
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 150m
+    memory: 128Mi
+
+env:
+  NODE_ENV:
+    type: kv
+    value: "staging"
+  LOG_LEVEL:
+    type: kv
+    value: "info"
+  HEALTH_PORT:
+    type: kv
+    value: "3001"
+  KEEPERHUB_API_URL:
+    type: kv
+    value: "http://keeperhub-common:3000"
+  INTERNAL_SERVICE_HMAC_SECRET:
+    type: parameterStore
+    name: internal-service-hmac-secret
+    parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+  REDIS_HOST:
+    type: parameterStore
+    name: redis-host
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-host
+  REDIS_PORT:
+    type: parameterStore
+    name: redis-port
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-port
+  REDIS_PASSWORD:
+    type: parameterStore
+    name: redis-password
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-password
+  SQS_QUEUE_URL:
+    type: kv
+    value: "https://sqs.us-east-1.amazonaws.com/${AWS_ACCOUNT_ID}/keeperhub-workflow-queue-staging"
+  AWS_REGION:
+    type: kv
+    value: "us-east-1"
+
+externalSecrets:
+  clusterSecretStoreName: techops-staging
+
+# solana-tracker serves an HTTP health server on HEALTH_PORT (unlike
+# event-tracker, which has no server and uses a pgrep exec probe).
+livenessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  httpGet:
+    path: /healthz
+    port: 3001
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  httpGet:
+    path: /healthz
+    port: 3001

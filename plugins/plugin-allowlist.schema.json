@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Plugin Allowlist",
+  "description": "Configuration for enabled workflow builder plugins",
+  "type": "object",
+  "required": ["plugins"],
+  "properties": {
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of this file"
+    },
+    "plugins": {
+      "type": "array",
+      "description": "List of plugin names to enable",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    }
+  }
+}

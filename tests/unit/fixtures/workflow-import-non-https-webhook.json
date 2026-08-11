@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "exportedAt": "2026-04-30T00:00:00.000Z",
+  "workflow": { "name": "Non-HTTPS Webhook" },
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": { "label": "Manual", "type": "trigger" }
+    },
+    {
+      "id": "action-1",
+      "type": "action",
+      "position": { "x": 200, "y": 0 },
+      "data": {
+        "label": "Webhook",
+        "type": "action",
+        "config": {
+          "actionType": "webhook/send",
+          "webhookUrl": "http://internal.example.com/admin"
+        }
+      }
+    }
+  ],
+  "edges": [{ "id": "e1", "source": "trigger-1", "target": "action-1" }],
+  "integrationBindings": []
+}

@@ -1,0 +1,40 @@
+{
+  "$schema-comment": "SSRF blocklist data. Single source of truth for: lib/safe-fetch.ts (HTTP guards, runtime BlockList + host pattern Set), and lib/sandbox/child-source.ts (sandbox grandchild, interpolated into the node -e template literal via JSON.stringify). Stored as JSON so both consumers can import it with a single canonical extension - the keeperhub bundler (Turbopack) and the standalone sandbox package's strict ESM runtime resolve .json identically, whereas .js/.ts variants need different specifiers in each context. NAT64 well-known prefix is kept separate as nat64PrefixCidr because it must be handled specially: the last 32 bits encode an IPv4 destination, so consumers extract the embedded IPv4 and recheck it against ipv4Cidrs. Site-local NAT64 (64:ff9b:1::/48) is in ipv6Cidrs because it is by construction site-local. ::ffff:0:0/96 (IPv4-mapped IPv6) is intentionally not listed because Node BlockList treats it as 'all IPv4'; consumers handle it via an embedded-IPv4 extraction. Cluster suffix scope: KeeperHub staging and production both run on AWS EKS with the default clusterDomain of cluster.local; if we move to a cluster with a custom clusterDomain, add it to blockedHostSuffixes.",
+  "ipv4Cidrs": [
+    ["0.0.0.0", 8],
+    ["10.0.0.0", 8],
+    ["100.64.0.0", 10],
+    ["127.0.0.0", 8],
+    ["169.254.0.0", 16],
+    ["172.16.0.0", 12],
+    ["192.0.0.0", 24],
+    ["192.0.2.0", 24],
+    ["192.88.99.0", 24],
+    ["192.168.0.0", 16],
+    ["198.18.0.0", 15],
+    ["198.51.100.0", 24],
+    ["203.0.113.0", 24],
+    ["224.0.0.0", 4],
+    ["240.0.0.0", 4]
+  ],
+  "ipv4BroadcastAddresses": ["255.255.255.255"],
+  "ipv6Cidrs": [
+    ["64:ff9b:1::", 48],
+    ["100::", 64],
+    ["2001::", 32],
+    ["2001:db8::", 32],
+    ["2002::", 16],
+    ["fc00::", 7],
+    ["fe80::", 10],
+    ["ff00::", 8]
+  ],
+  "ipv6LiteralAddresses": ["::", "::1"],
+  "nat64PrefixCidr": ["64:ff9b::", 96],
+  "blockedHostExact": ["localhost"],
+  "blockedHostSuffixes": [
+    ".local",
+    ".internal",
+    ".svc.cluster.local",
+    ".pod.cluster.local"
+  ]
+}

@@ -1,0 +1,139 @@
+{
+  "protocol": "lido",
+  "network": "11155111",
+  "networkName": "sepolia",
+  "type": "read",
+  "name": "Protocol Test: Lido Read Actions",
+  "description": "Tests all 7 Lido read actions on Sepolia testnet",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "lido-steth-by-wsteth",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Get stETH by wstETH",
+        "description": "Convert 1 wstETH to stETH value",
+        "type": "action",
+        "config": {
+          "actionType": "lido/get-steth-by-wsteth",
+          "network": "11155111",
+          "_wstETHAmount": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "lido-wsteth-by-steth",
+      "type": "action",
+      "position": { "x": 800, "y": 0 },
+      "data": {
+        "label": "Get wstETH by stETH",
+        "description": "Convert 1 stETH to wstETH value",
+        "type": "action",
+        "config": {
+          "actionType": "lido/get-wsteth-by-steth",
+          "network": "11155111",
+          "_stETHAmount": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "lido-steth-per-token",
+      "type": "action",
+      "position": { "x": 1150, "y": 0 },
+      "data": {
+        "label": "stETH Per Token",
+        "description": "Get wstETH to stETH exchange rate",
+        "type": "action",
+        "config": {
+          "actionType": "lido/steth-per-token",
+          "network": "11155111"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "lido-tokens-per-steth",
+      "type": "action",
+      "position": { "x": 1500, "y": 0 },
+      "data": {
+        "label": "wstETH Per stETH",
+        "description": "Get stETH to wstETH inverse rate",
+        "type": "action",
+        "config": {
+          "actionType": "lido/tokens-per-steth",
+          "network": "11155111"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "lido-wsteth-balance",
+      "type": "action",
+      "position": { "x": 1850, "y": 0 },
+      "data": {
+        "label": "Get wstETH Balance",
+        "description": "Check wstETH balance of wstETH contract itself",
+        "type": "action",
+        "config": {
+          "actionType": "lido/get-wsteth-balance",
+          "network": "11155111",
+          "account": "0xB82381A3fBD3FaFA77B3a7bE693342618240067b"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "lido-wsteth-total-supply",
+      "type": "action",
+      "position": { "x": 2200, "y": 0 },
+      "data": {
+        "label": "Get wstETH Total Supply",
+        "description": "Get total wstETH tokens in circulation",
+        "type": "action",
+        "config": {
+          "actionType": "lido/get-wsteth-total-supply",
+          "network": "11155111"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "lido-steth-balance",
+      "type": "action",
+      "position": { "x": 2550, "y": 0 },
+      "data": {
+        "label": "Get stETH Balance",
+        "description": "Check stETH balance of stETH contract",
+        "type": "action",
+        "config": {
+          "actionType": "lido/get-steth-balance",
+          "network": "11155111",
+          "account": "0x3e3FE7dBc6B4C189E7128855dD526361c49b40Af"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "node-1", "target": "lido-steth-by-wsteth" },
+    { "id": "e2", "source": "lido-steth-by-wsteth", "target": "lido-wsteth-by-steth" },
+    { "id": "e3", "source": "lido-wsteth-by-steth", "target": "lido-steth-per-token" },
+    { "id": "e4", "source": "lido-steth-per-token", "target": "lido-tokens-per-steth" },
+    { "id": "e5", "source": "lido-tokens-per-steth", "target": "lido-wsteth-balance" },
+    { "id": "e6", "source": "lido-wsteth-balance", "target": "lido-wsteth-total-supply" },
+    { "id": "e7", "source": "lido-wsteth-total-supply", "target": "lido-steth-balance" }
+  ]
+}

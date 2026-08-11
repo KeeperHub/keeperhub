@@ -1,0 +1,41 @@
+{
+  "protocol": "aave-v3",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Aave Withdraw WETH",
+  "description": "Withdraw WETH from Aave V3 on mainnet",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "aave-withdraw",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Withdraw WETH from Aave",
+        "type": "action",
+        "config": {
+          "actionType": "aave-v3/withdraw",
+          "network": "1",
+          "asset": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "amount": "3000000000000000",
+          "to": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "aave-withdraw", "type": "animated" }
+  ]
+}

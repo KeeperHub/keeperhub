@@ -1,0 +1,32 @@
+-- KEEP-581: hard floor on interval_seconds.
+--
+-- The scheduler dispatcher (keeperhub-scheduler/schedule-dispatcher) polls
+-- every 60 seconds, so the effective firing resolution for interval-mode
+-- schedules is 60 seconds regardless of what's stored. A row with
+-- interval_seconds = 30 silently fires every 60s, not every 30s, because
+-- shouldTriggerInterval's "fired within the last 60s" window matches every
+-- poll cycle when intervalMs < 60_000.
+--
+-- The API layer rejects sub-60s values at workflow-save time (see
+-- IntervalTooSmallError in lib/cron-utils.ts and the pre-check in
+-- app/api/workflows/[workflowId]/route.ts PATCH). This CHECK constraint is
+-- the bulletproof layer: it catches scripts, psql, future code paths, and
+-- anything else that bypasses the API.
+--
+-- The 60 here mirrors MIN_INTERVAL_SECONDS in lib/cron-utils.ts; SQL can't
+-- import from TS, so keep the two in sync if MIN_INTERVAL_SECONDS ever
+-- changes.
+--
+-- Pre-flight (run 2026-05-21 against staging and prod): zero existing rows
+-- have interval_seconds < 60, so no backfill is needed.
+--
+-- Lock duration: ADD CONSTRAINT ... CHECK takes an ACCESS EXCLUSIVE lock
+-- and scans the whole table to validate. Table size verified 2026-05-22:
+-- staging 39 rows, prod 396 rows. Validation scan at this size is
+-- functionally instant (microseconds), so a single-statement ALTER TABLE
+-- is fine. If this table ever grows past ~100k rows, switch to the
+-- two-step ADD CONSTRAINT ... NOT VALID + VALIDATE CONSTRAINT pattern
+-- so concurrent reads/writes aren't blocked during the scan.
+ALTER TABLE "workflow_schedules"
+  ADD CONSTRAINT "workflow_schedules_interval_seconds_min_60"
+  CHECK ("interval_seconds" IS NULL OR "interval_seconds" >= 60);

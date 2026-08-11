@@ -1,0 +1,41 @@
+{
+  "protocol": "compound",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Compound Withdraw WETH",
+  "description": "Withdraw WETH collateral from Compound V3 USDC market on mainnet",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "compound-withdraw",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Withdraw WETH from Compound",
+        "type": "action",
+        "config": {
+          "actionType": "compound/withdraw",
+          "network": "1",
+          "contractAddress": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+          "asset": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "amount": "3000000000000000"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "compound-withdraw", "type": "animated" }
+  ]
+}

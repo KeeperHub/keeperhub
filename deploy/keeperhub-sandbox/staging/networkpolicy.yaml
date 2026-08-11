@@ -1,0 +1,80 @@
+# NetworkPolicy enforced by the VPC CNI Network Policy Agent (eBPF) on
+# the keeperhub-sandbox Pod in the staging cluster.
+#
+# Threat model: node:vm is not a security boundary. If an attacker
+# escapes the vm and reaches require("net") inside the sandbox child
+# process, the in-process SSRF guard in lib/sandbox/child-source.ts no
+# longer applies. The pod must therefore not be able to reach:
+#   - in-cluster Services (postgres, redis, the main keeperhub-staging
+#     app, kube-apiserver, anything else in the keeperhub namespace)
+#   - the AWS Instance Metadata Service (169.254.169.254)
+#   - other RFC1918, link-local, or CGNAT ranges that would let a
+#     compromised pod pivot to peered VPCs or the node itself
+#
+# Egress is therefore default-deny. The explicit allows are the only
+# legitimate outbound paths the sandbox needs to do its job:
+#   - DNS to kube-dns so user fetch() can resolve public hostnames
+#   - TCP 443 to public IP space (0.0.0.0/0 minus the private ranges
+#     above) so user fetch() can call whitelisted APIs
+#
+# Ingress is restricted to the keeperhub namespace. The sandbox accepts
+# /run from the main keeperhub-staging Deployment and from workflow
+# runner Jobs, all of which run in the keeperhub namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keeperhub-sandbox
+  namespace: keeperhub
+  labels:
+    app.kubernetes.io/name: keeperhub-sandbox
+    app.kubernetes.io/instance: keeperhub-sandbox
+    app.kubernetes.io/component: sandbox
+    app.kubernetes.io/part-of: keeperhub
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: keeperhub-sandbox
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keeperhub
+      ports:
+        - protocol: TCP
+          port: 8787
+  egress:
+    # DNS resolution via kube-dns. Selector targets the kube-system
+    # CoreDNS pods specifically so an attacker cannot pivot to any
+    # other workload via the DNS allow.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS to public internet. The except list strips every range a
+    # compromised pod might use to reach in-cluster or node-adjacent
+    # endpoints. An egress proxy with per-tenant allowlists is the
+    # follow-up under Tier 2; this is the smallest sustainable default.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8        # RFC1918
+              - 172.16.0.0/12     # RFC1918
+              - 192.168.0.0/16    # RFC1918
+              - 169.254.0.0/16    # Link-local + AWS IMDS
+              - 100.64.0.0/10     # CGNAT
+              - 127.0.0.0/8       # Loopback
+      ports:
+        - protocol: TCP
+          port: 443

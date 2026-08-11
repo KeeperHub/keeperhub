@@ -1,0 +1,518 @@
+/* ================================================================
+   KeeperHub Docs - GTM-Site Dark Teal Palette
+   Colors derived from GTM site CSS variables:
+   --bg: #012831          rgb(1, 40, 49)
+   --surface: #062f3a     rgb(6, 47, 58)
+   --surface-2: #0e3842   rgb(14, 56, 66)
+   --border: #1a4a55      rgb(26, 74, 85)
+   --text: #e8f4f0
+   --text-muted: #7a9ca8
+   --accent: #06B171
+   --accent-light: #09FD67
+   --amber: #FDB609
+   --red: #ef4444
+   --cyan: #465E8E
+   ================================================================ */
+
+:root {
+  --nextra-primary-hue: 152deg;
+  --nextra-primary-saturation: 90%;
+  --kh-bg: 1, 40, 49;
+  --kh-surface: 6, 47, 58;
+  --kh-surface-2: 14, 56, 66;
+  --kh-border: 26, 74, 85;
+  --kh-text: #e8f4f0;
+  --kh-text-muted: #7a9ca8;
+  --kh-accent: #06b171;
+  --kh-accent-light: #09fd67;
+  --kh-amber: #fdb609;
+  --kh-red: #ef4444;
+  --kh-cyan: #465e8e;
+}
+
+/* ----------------------------------------------------------------
+   Base typography - Anek Latin from GTM site
+   ---------------------------------------------------------------- */
+body {
+  font-family: var(--font-anek-latin), "Anek Latin", -apple-system,
+    BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  line-height: 1.6;
+}
+
+/* Guard against accidental page-level horizontal scroll. clip (not hidden)
+   avoids creating a scroll container, so position: sticky keeps working. */
+html,
+body {
+  overflow-x: clip;
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Background foundation
+   ---------------------------------------------------------------- */
+.dark {
+  --nextra-bg: var(--kh-bg);
+}
+
+html.dark {
+  background-color: rgb(var(--kh-bg));
+}
+
+html.dark body {
+  background-color: rgb(var(--kh-bg));
+  color: var(--kh-text);
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Content typography (matching GTM site heading styles)
+   ---------------------------------------------------------------- */
+html.dark article h1 {
+  font-weight: 700;
+  letter-spacing: -1.5px;
+  line-height: 1.15;
+  color: var(--kh-text);
+}
+
+html.dark article h2 {
+  font-weight: 700;
+  letter-spacing: -0.75px;
+  color: var(--kh-text);
+}
+
+html.dark article h3 {
+  font-weight: 600;
+  color: var(--kh-text);
+}
+
+html.dark article h4 {
+  font-weight: 600;
+  color: var(--kh-text);
+}
+
+/* Heading anchor links */
+html.dark article h1 a,
+html.dark article h2 a,
+html.dark article h3 a,
+html.dark article h4 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+html.dark article h1 a:hover,
+html.dark article h2 a:hover,
+html.dark article h3 a:hover,
+html.dark article h4 a:hover {
+  color: var(--kh-accent-light);
+}
+
+/* Content links (all links inside article, including ones with Nextra classes) */
+html.dark article a {
+  color: var(--kh-accent);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+html.dark article a:hover {
+  color: var(--kh-accent-light);
+  text-underline-offset: 3px;
+  text-decoration: underline;
+}
+
+/* Content paragraph text (GTM uses --text-muted for body copy) */
+html.dark article p {
+  color: var(--kh-text-muted);
+  line-height: 1.7;
+}
+
+/* Muted/secondary text in content */
+html.dark article .muted,
+html.dark .nx-text-gray-500,
+html.dark .nx-text-gray-400 {
+  color: var(--kh-text-muted) !important;
+}
+
+/* Strong emphasis */
+html.dark article strong {
+  color: var(--kh-text);
+  font-weight: 600;
+}
+
+/* Horizontal rules */
+html.dark article hr {
+  border-color: rgb(var(--kh-border));
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: List styling
+   ---------------------------------------------------------------- */
+html.dark article ol li::marker {
+  color: var(--kh-accent-light);
+}
+
+html.dark article ul {
+  list-style: none;
+}
+
+html.dark article ul > li {
+  position: relative;
+  padding-left: 4px;
+}
+
+html.dark article ul > li::before {
+  content: "";
+  position: absolute;
+  left: -16px;
+  top: 10px;
+  width: 6px;
+  height: 6px;
+  background-color: var(--kh-accent-light);
+}
+
+html.dark article li {
+  color: var(--kh-text-muted);
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Navbar
+   ---------------------------------------------------------------- */
+html.dark nav,
+html.dark header,
+html.dark nav > *,
+html.dark [class*="navbar"],
+html.dark [class*="nav-container"] {
+  background-color: rgb(var(--kh-bg)) !important;
+}
+
+html.dark nav,
+html.dark nav > div,
+html.dark header {
+  border-color: rgb(var(--kh-border)) !important;
+}
+
+/* Navbar bottom border spanning full width */
+html.dark .nextra-navbar::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background-color: rgb(var(--kh-border));
+}
+
+/* Navbar link hover (GTM: rgba(255,255,255,0.05) overlay) */
+html.dark nav a:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Sidebar
+   ---------------------------------------------------------------- */
+html.dark .nextra-sidebar-container,
+html.dark aside {
+  background-color: rgb(var(--kh-bg)) !important;
+  border-color: rgb(var(--kh-border)) !important;
+}
+
+/* Sidebar footer controls */
+html.dark aside > div:last-child,
+html.dark [class*="sidebar"] > div:last-child,
+html.dark .nextra-sidebar-footer {
+  background-color: rgb(var(--kh-bg)) !important;
+}
+
+/* Sidebar sticky bottom */
+html.dark div[class*="sticky"][class*="bottom"] {
+  background-color: rgb(var(--kh-bg)) !important;
+}
+
+/* Sidebar links */
+html.dark aside a {
+  color: var(--kh-text-muted);
+  transition: all 0.2s ease;
+}
+
+html.dark aside a:hover {
+  color: var(--kh-text);
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* Sidebar active item (GTM: accent-light green with subtle bg) */
+html.dark a[class*="active"] {
+  color: var(--kh-accent-light) !important;
+}
+
+html.dark aside a[class*="active"] {
+  color: var(--kh-accent-light) !important;
+  background-color: rgba(9, 253, 103, 0.08);
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: TOC (right sidebar)
+   ---------------------------------------------------------------- */
+html.dark .nextra-toc {
+  background-color: rgb(var(--kh-bg));
+}
+
+/* TOC links */
+html.dark .nextra-toc a {
+  color: var(--kh-text-muted);
+  font-size: 13px;
+  transition: color 0.2s ease;
+}
+
+html.dark .nextra-toc a:hover {
+  color: var(--kh-text);
+}
+
+/* TOC active link (GTM: left border indicator) */
+html.dark .nextra-toc a[class*="active"],
+html.dark .nextra-toc li[class*="active"] a {
+  color: var(--kh-accent-light) !important;
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Content area & main
+   ---------------------------------------------------------------- */
+html.dark main {
+  background-color: rgb(var(--kh-bg));
+}
+
+/* Override black/dark neutral backgrounds (except code blocks) */
+html.dark
+  [class*="bg-black"]:not(pre):not(code):not([class*="code"]):not(
+    [class*="highlight"]
+  ),
+html.dark
+  .bg-neutral-900:not(pre):not(code):not([class*="code"]):not(
+    [class*="highlight"]
+  ) {
+  background-color: rgb(var(--kh-bg)) !important;
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Search
+   ---------------------------------------------------------------- */
+html.dark input[type="search"],
+html.dark [class*="search"] input,
+html.dark [class*="search"] button,
+html.dark .nextra-search button,
+html.dark .nextra-search input {
+  background-color: rgb(var(--kh-surface)) !important;
+  border: 1px solid rgb(var(--kh-border)) !important;
+  border-radius: 20px !important;
+  color: var(--kh-text);
+}
+
+html.dark input[type="search"]::placeholder,
+html.dark [class*="search"] input::placeholder,
+html.dark [class*="search"] button::placeholder {
+  color: var(--kh-text-muted);
+}
+
+html.dark input[type="search"]:focus,
+html.dark [class*="search"] input:focus {
+  border-color: var(--kh-accent) !important;
+  box-shadow: 0 0 0 2px rgba(6, 177, 113, 0.15);
+}
+
+/* Search results dropdown */
+html.dark [class*="search"] ul,
+html.dark [class*="search"] [role="listbox"] {
+  background-color: rgb(var(--kh-surface)) !important;
+  border-color: rgb(var(--kh-border)) !important;
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Dropdowns, menus, overlays
+   ---------------------------------------------------------------- */
+html.dark [role="menu"],
+html.dark [class*="dropdown"],
+html.dark [class*="popover"] {
+  background-color: rgb(var(--kh-surface)) !important;
+  border-color: rgb(var(--kh-border)) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+html.dark [class*="overlay"],
+html.dark [class*="backdrop"]:not([class*="code"]) {
+  background-color: rgba(var(--kh-bg), 0.8) !important;
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Cards, callouts, blockquotes
+   ---------------------------------------------------------------- */
+html.dark [class*="callout"],
+html.dark [class*="card"] {
+  background-color: rgb(var(--kh-surface)) !important;
+  border-color: rgb(var(--kh-border)) !important;
+  border-radius: 10px;
+}
+
+html.dark article blockquote {
+  border-left-color: var(--kh-accent) !important;
+  color: var(--kh-text-muted);
+  background-color: rgba(var(--kh-surface), 0.5);
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Code blocks
+   Code blocks keep their own styling but with teal-harmonized borders
+   ---------------------------------------------------------------- */
+html.dark article pre {
+  border: 1px solid rgb(var(--kh-border));
+  border-radius: 10px;
+}
+
+html.dark article code:not(pre code) {
+  background-color: rgb(var(--kh-surface-2));
+  border: 1px solid rgb(var(--kh-border));
+  color: var(--kh-accent-light);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 0.875em;
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Tables (GTM: uppercase small headers, surface bg)
+   ---------------------------------------------------------------- */
+html.dark table th {
+  background-color: rgb(var(--kh-surface));
+  border-color: rgb(var(--kh-border));
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--kh-text-muted);
+}
+
+html.dark table td {
+  border-color: rgb(var(--kh-border));
+  font-size: 14px;
+}
+
+html.dark table tr:nth-child(2n) {
+  background-color: rgba(var(--kh-surface), 0.5);
+}
+
+html.dark table tr:hover {
+  background-color: rgba(9, 253, 103, 0.04);
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Borders (general override)
+   ---------------------------------------------------------------- */
+html.dark [class*="border"] {
+  border-color: rgb(var(--kh-border));
+}
+
+html.dark [class*="divide"] > * + * {
+  border-color: rgb(var(--kh-border));
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Footer
+   The footer wrapper has x:dark:bg-neutral-900 from Nextra.
+   Override it plus the footer itself.
+   ---------------------------------------------------------------- */
+html.dark footer,
+html.dark [class*="footer"] {
+  background-color: rgb(var(--kh-bg)) !important;
+  border-color: rgb(var(--kh-border)) !important;
+  color: var(--kh-text-muted);
+}
+
+/* Footer parent wrapper (Nextra uses div.dark:bg-neutral-900 around footer) */
+html.dark div:has(> footer) {
+  background-color: rgb(var(--kh-bg)) !important;
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Breadcrumbs
+   ---------------------------------------------------------------- */
+html.dark nav[aria-label="breadcrumb"] {
+  color: var(--kh-text-muted);
+}
+
+html.dark nav[aria-label="breadcrumb"] a {
+  color: var(--kh-text-muted);
+}
+
+html.dark nav[aria-label="breadcrumb"] a:hover {
+  color: var(--kh-accent-light);
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Scrollbar
+   ---------------------------------------------------------------- */
+html.dark ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+html.dark ::-webkit-scrollbar-track {
+  background: rgb(var(--kh-bg));
+}
+
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgb(var(--kh-border));
+  border-radius: 4px;
+}
+
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--kh-surface-2));
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Selection highlight
+   ---------------------------------------------------------------- */
+html.dark ::selection {
+  background-color: rgba(9, 253, 103, 0.2);
+  color: var(--kh-text);
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Back to top button
+   ---------------------------------------------------------------- */
+html.dark [class*="back-to-top"],
+html.dark button[aria-label*="top"] {
+  background-color: rgb(var(--kh-surface)) !important;
+  border-color: rgb(var(--kh-border)) !important;
+  color: var(--kh-text-muted);
+}
+
+/* ----------------------------------------------------------------
+   Dark mode: Nextra navigation buttons (prev/next)
+   ---------------------------------------------------------------- */
+html.dark [class*="navigation"] a,
+html.dark a[class*="nav-link"] {
+  border-color: rgb(var(--kh-border));
+  transition: all 0.2s ease;
+}
+
+html.dark [class*="navigation"] a:hover,
+html.dark a[class*="nav-link"]:hover {
+  border-color: var(--kh-accent);
+  background-color: rgba(var(--kh-surface), 0.5);
+}
+
+/* ----------------------------------------------------------------
+   Hide theme switcher (dark-only site)
+   ---------------------------------------------------------------- */
+[data-theme-switch],
+button[aria-label*="theme"],
+button[aria-label*="Theme"],
+.nextra-sidebar-footer [class*="theme"],
+select:has(option[value="light"]),
+div:has(> select:has(option[value="light"])) {
+  display: none !important;
+}
+
+/* ----------------------------------------------------------------
+   Global transitions for interactive elements
+   ---------------------------------------------------------------- */
+a,
+button,
+input,
+[role="button"] {
+  transition: all 0.2s ease;
+}

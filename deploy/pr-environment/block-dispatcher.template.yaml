@@ -1,0 +1,92 @@
+# Block Dispatcher for PR environments
+# Uses pre-built staging image
+# Variables to be replaced: ${PR_NUMBER}, ${ECR_REGISTRY}, ${BLOCK_IMAGE_TAG}
+
+replicaCount: 1
+
+service:
+  enabled: true
+  name: block-pr-${PR_NUMBER}
+  type: ClusterIP
+  port: 3000
+  containerPort: 3000
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-scheduler-staging
+  tag: ${BLOCK_IMAGE_TAG}
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+
+serviceAccount:
+  create: false
+  name: keeperhub-pr-${PR_NUMBER}
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+serviceMonitors:
+  enabled: false
+
+resources:
+  limits:
+    memory: 512Mi
+    cpu: 500m
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+command: ["/bin/sh"]
+args:
+  - "-c"
+  - |
+    echo "$(date) - [BlockDispatcher] Starting..."
+    tsx block-dispatcher/index.ts
+
+env:
+  KEEPERHUB_API_URL:
+    type: kv
+    value: "http://keeperhub-pr-${PR_NUMBER}-common:3000"
+  INTERNAL_SERVICE_HMAC_SECRET:
+    type: parameterStore
+    name: internal-service-hmac-secret
+    parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+  AWS_REGION:
+    type: kv
+    value: "us-east-1"
+  AWS_ENDPOINT_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566"
+  SQS_QUEUE_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566/000000000000/keeperhub-workflow-queue"
+  RECONCILE_INTERVAL_MS:
+    type: kv
+    value: "30000"
+  HEALTH_PORT:
+    type: kv
+    value: "3000"
+
+externalSecrets:
+  clusterSecretStoreName: techops-staging
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 3000
+  initialDelaySeconds: 10
+  periodSeconds: 10

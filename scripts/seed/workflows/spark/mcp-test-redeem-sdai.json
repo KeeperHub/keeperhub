@@ -1,0 +1,41 @@
+{
+  "protocol": "spark",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Spark Redeem sDAI",
+  "description": "Redeem sDAI shares back to DAI on mainnet",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-redeem",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Redeem sDAI to DAI",
+        "type": "action",
+        "config": {
+          "actionType": "spark/vault-redeem",
+          "network": "1",
+          "shares": "2557065683279584032",
+          "receiver": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9",
+          "owner": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "spark-redeem", "type": "animated" }
+  ]
+}

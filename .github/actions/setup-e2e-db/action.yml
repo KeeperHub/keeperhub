@@ -1,0 +1,54 @@
+name: Setup E2E Database
+description: Run workflow engine setup, migrations, and seed data for E2E tests
+
+inputs:
+  database_url:
+    description: 'PostgreSQL connection string'
+    required: true
+  chain_rpc_config:
+    description: 'CHAIN_RPC_CONFIG for RPC endpoint resolution'
+    required: false
+    default: ''
+  turnkey_api_public_key:
+    description: 'TURNKEY_API_PUBLIC_KEY for the parent org used by createTurnkeyWallet during db:seed-test-wallet'
+    required: false
+    default: ''
+  turnkey_api_private_key:
+    description: 'TURNKEY_API_PRIVATE_KEY for the parent org used by createTurnkeyWallet during db:seed-test-wallet'
+    required: false
+    default: ''
+  turnkey_organization_id:
+    description: 'TURNKEY_ORGANIZATION_ID (parent org) used by createTurnkeyWallet during db:seed-test-wallet'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Setup workflow engine schema
+      shell: bash
+      env:
+        DATABASE_URL: ${{ inputs.database_url }}
+      run: pnpm db:setup-workflow
+
+    - name: Run migrations
+      shell: bash
+      env:
+        DATABASE_URL: ${{ inputs.database_url }}
+      run: pnpm db:migrate
+
+    - name: Seed default data
+      shell: bash
+      env:
+        DATABASE_URL: ${{ inputs.database_url }}
+        CHAIN_RPC_CONFIG: ${{ inputs.chain_rpc_config }}
+      run: pnpm db:seed
+
+    - name: Seed test wallet
+      shell: bash
+      env:
+        DATABASE_URL: ${{ inputs.database_url }}
+        TURNKEY_API_PUBLIC_KEY: ${{ inputs.turnkey_api_public_key }}
+        TURNKEY_API_PRIVATE_KEY: ${{ inputs.turnkey_api_private_key }}
+        TURNKEY_ORGANIZATION_ID: ${{ inputs.turnkey_organization_id }}
+      run: pnpm db:seed-test-wallet

@@ -1,0 +1,67 @@
+# Fast fail-first health probe for local anvil forks. A fork can answer
+# eth_chainId (the process is up) while its upstream is throttled or its
+# pinned block has left the upstream window - a state the test suites only
+# surface as 300s vitest timeouts. eth_getBalance of an account the fork
+# has never touched locally forces a state fetch from the upstream at the
+# fork's pinned block, so a dead upstream fails here in seconds with a
+# named fork instead of minutes into the suites.
+name: Probe Forks
+description: Fail fast when an anvil fork or its upstream is dead, instead of waiting out vitest timeouts
+
+inputs:
+  forks:
+    description: 'One fork per line: label|rpc_url|expected_chain_id_hex|probe_address. The probe address must exist on the forked chain and not be touched by local test state.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Probe forks
+      shell: bash
+      env:
+        FORKS: ${{ inputs.forks }}
+      run: |
+        fail=0
+        while IFS='|' read -r label url chain_id addr; do
+          if [ -z "$label" ]; then
+            continue
+          fi
+          # Liveness: is the fork process answering at all?
+          if ! resp=$(curl -sf -m 10 -X POST "$url" -H 'Content-Type: application/json' \
+              -d '{"jsonrpc":"2.0","method":"eth_chainId","id":1}'); then
+            echo "FORK DEAD: $label ($url) did not answer eth_chainId within 10s"
+            fail=1
+            continue
+          fi
+          if ! echo "$resp" | grep -q "\"$chain_id\""; then
+            echo "FORK WRONG CHAIN: $label ($url) answered $resp, expected chain id $chain_id"
+            fail=1
+            continue
+          fi
+          # Upstream window: force a state read served from the pinned
+          # block. Two attempts with a short pause so a merely-slow
+          # upstream is not declared dead on a single shot.
+          upstream_ok=0
+          upstream_err=""
+          for attempt in 1 2; do
+            if ! resp=$(curl -sf -m 15 -X POST "$url" -H 'Content-Type: application/json' \
+                -d "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBalance\",\"params\":[\"$addr\",\"latest\"],\"id\":1}"); then
+              upstream_err="FORK UPSTREAM DEAD: $label ($url) did not answer eth_getBalance($addr) within 15s (attempt $attempt of 2) - the upstream is throttled or the pinned block left its window"
+            elif ! echo "$resp" | grep -q '"result"'; then
+              upstream_err="FORK UPSTREAM ERROR: $label ($url) eth_getBalance($addr) returned: $resp"
+            else
+              upstream_ok=1
+              break
+            fi
+            if [ "$attempt" -lt 2 ]; then
+              sleep 5
+            fi
+          done
+          if [ "$upstream_ok" -ne 1 ]; then
+            echo "$upstream_err"
+            fail=1
+            continue
+          fi
+          echo "fork healthy: $label ($url) chain $chain_id"
+        done <<< "$FORKS"
+        exit "$fail"

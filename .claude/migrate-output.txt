@@ -1,0 +1,9 @@
+
+> ai-workflow-builder-template@0.1.0 db:migrate /home/suisuss/.programming/work/TechOps/keeperhub/.worktrees/KEEP-PR-761
+> drizzle-kit migrate
+
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/home/suisuss/.programming/work/TechOps/keeperhub/.worktrees/KEEP-PR-761/drizzle.config.ts'
+◇ injected env (0) from .env // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
+Using 'pg' driver for database querying
+[⣷] applying migrations...[2K[1G[⣷] applying migrations... ELIFECYCLE  Command failed with exit code 1.

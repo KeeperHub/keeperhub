@@ -1,0 +1,150 @@
+name: Protocol Nightly
+
+# Nightly depth for protocol node coverage: the full ephemeral e2e run
+# (including the per-action protocol suites and Tier 1 simulations) plus
+# the Tier 0 mutation check that proves the calldata tests still have
+# teeth. PR runs stay fast; breadth and falsification live here. See
+# specs/protocol-coverage-methodology.md.
+
+on:
+  schedule:
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+  # Granted through to e2e-tests-ephemeral.yml (called workflows can
+  # only downgrade caller permissions): the tier1 job lists/downloads
+  # the nightly fork-cache artifact.
+  actions: read
+  # Required: e2e-tests-ephemeral.yml declares id-token: write for AWS OIDC
+  # (configure-aws-credentials in build-app/start-app). A called workflow
+  # requesting a permission the caller lacks fails the whole run at startup,
+  # which is why this nightly never once ran since the reusable call was added.
+  id-token: write
+
+jobs:
+  e2e-full:
+    uses: ./.github/workflows/e2e-tests-ephemeral.yml
+    with:
+      caller_event: schedule
+    secrets: inherit
+
+  # Fork RPC fetch cache: pin a mainnet fork behind head, mount a host
+  # dir at foundry's RPC cache path, run the Tier 1 sweep once to warm
+  # it, and publish the flushed cache as an artifact. The cache stores
+  # upstream fetches, never sweep mutations, so a consumer starts
+  # pristine at the pin with every slot the sweep touches served
+  # locally - its hot path stops depending on live upstream state
+  # mid-execution (the failure mode that blocked the 2026-07-06 prod
+  # release) and the sweep re-runs cleanly on top. This warm sweep runs
+  # against a live pinned fork, so it is itself the live-fork canary;
+  # the e2e-full run's tier1 sub-job consumes the cache exactly like PR
+  # runs do. Cache mechanics are documented in scripts/protocol-local.sh
+  # (snapshot subcommand and start_fork).
+  fork-cache-mainnet:
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Start anvil Ethereum mainnet fork pinned behind head
+        env:
+          ANVIL_FORK_MAINNET_URL: ${{ secrets.ANVIL_FORK_MAINNET_URL }}
+        run: |
+          UPSTREAM="${ANVIL_FORK_MAINNET_URL:-https://ethereum-rpc.publicnode.com}"
+          # Pin a few blocks behind head (same rationale as
+          # scripts/protocol-local.sh start_fork): every node behind a
+          # load-balanced upstream already has the block, and the cache
+          # is only valid at the exact block its values were fetched at,
+          # so the consumer must be able to re-pin there.
+          HEAD_HEX=$(curl -sf -m 10 -X POST -H 'Content-Type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
+            "$UPSTREAM" | grep -oE '"result":"0x[0-9a-f]+"' | cut -d'"' -f4) || HEAD_HEX=""
+          if [ -z "$HEAD_HEX" ]; then
+            echo "could not resolve head from the fork upstream; refusing to warm an unpinned fork"
+            exit 1
+          fi
+          PIN=$((HEAD_HEX - 12))
+          echo "PIN=$PIN" >> "$GITHUB_ENV"
+          echo "pinning mainnet fork at block $PIN"
+          # anvil runs as uid 1000 (foundry) in the container and must
+          # create rpc/mainnet/<block>/ inside the mount; the runner
+          # user is a different uid, so open the dir up.
+          mkdir -p fork-cache
+          chmod 777 fork-cache
+          docker run -d --name fork-cache-anvil-mainnet -p 8548:8545 \
+            -v "$PWD/fork-cache:/home/foundry/.foundry/cache" \
+            --entrypoint anvil ghcr.io/foundry-rs/foundry:latest \
+            --host 0.0.0.0 --fork-url "$UPSTREAM" --fork-block-number "$PIN" \
+            --chain-id 1 --block-time 1
+          retries=0
+          until curl -sf -X POST http://localhost:8548 \
+                -H "Content-Type: application/json" \
+                -d '{"jsonrpc":"2.0","method":"eth_chainId","id":1}' | grep -q '"0x1"'; do
+            retries=$((retries + 1))
+            if [ "$retries" -ge 30 ]; then
+              echo "anvil mainnet fork did not become ready in 60s"
+              docker logs fork-cache-anvil-mainnet || true
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Warm the fork with the Tier 1 sweep (chain 1)
+        run: |
+          pnpm vitest run tests/e2e/vitest/protocol-simulation \
+            --reporter=default --reporter=json --outputFile=sim-results.json
+          # Same floor as the tier1-simulations CI job: a cache warmed
+          # by a self-skipping sweep would cover almost nothing, and
+          # publishing it would silently push consumers back onto live
+          # upstream state. A red sweep or floor breach fails this step,
+          # so the packaging and upload steps below never run.
+          pnpm tsx scripts/protocol-coverage-floor.ts sim-results.json 150
+        env:
+          PROTOCOL_SIM_RPC_1: http://localhost:8548
+
+      - name: Flush and package the fork cache
+        run: |
+          # anvil flushes its RPC cache only on graceful shutdown:
+          # docker stop delivers SIGTERM; rm -f (SIGKILL) would lose it.
+          docker stop --time 30 fork-cache-anvil-mainnet
+          if [ ! -f "fork-cache/rpc/mainnet/${PIN}/storage.json" ]; then
+            echo "anvil flushed no cache (expected fork-cache/rpc/mainnet/${PIN}/storage.json)"
+            exit 1
+          fi
+          # The tar name carries chain and block; the tier1 download
+          # step parses the pin back out of it, so the two must move
+          # together.
+          tar -czf "fork-cache-mainnet-${PIN}.tgz" -C fork-cache rpc
+          du -h "fork-cache-mainnet-${PIN}.tgz"
+
+      - name: Upload fork cache artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: fork-cache-mainnet
+          path: fork-cache-mainnet-*.tgz
+          retention-days: 3
+
+  mutation-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Run mutation check
+        run: RUN_LOCAL=1 scripts/protocol-mutation-check.sh

@@ -1,0 +1,35 @@
+# Dedicated ServiceAccount for workflow-runner Job pods (staging cluster).
+#
+# The runner Jobs are built in code by keeperhub-executor/k8s-job.ts and used
+# to be created under the namespace `default` ServiceAccount. They run
+# user-defined workflow steps, so the SA they use must carry no privileges.
+#
+# Why this is a raw manifest applied by deploy-executor.yaml:
+# The pods are not Helm-rendered (the executor submits the Job object via the
+# Kubernetes API), so this SA has to exist in the namespace independently. The
+# pod template sets serviceAccountName to this SA and automountServiceAccountToken
+# to false, so the projected token is never mounted into the runner container.
+#
+# Why no IRSA annotation:
+# An IRSA `eks.amazonaws.com/role-arn` annotation would re-inject an AWS STS
+# token that an escape could trade for temporary AWS credentials. The runner
+# reaches AWS only through explicit env-provided credentials, so it needs no
+# federated identity of its own.
+#
+# Why no RoleBindings anywhere:
+# No Role or RoleBinding targets this SA, so even if a token were somehow
+# projected it would grant zero Kubernetes API access. Grep this repo for
+# `keeperhub-workflow-runner` - nothing binds a role to it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keeperhub-workflow-runner
+  namespace: keeperhub
+  labels:
+    app.kubernetes.io/name: keeperhub-workflow-runner
+    app.kubernetes.io/instance: keeperhub-workflow-runner
+    app.kubernetes.io/component: workflow-runner
+    app.kubernetes.io/part-of: keeperhub
+  # Intentionally no annotations. In particular: NO
+  # eks.amazonaws.com/role-arn.
+automountServiceAccountToken: false

@@ -1,0 +1,63 @@
+{
+  "protocol": "chronicle",
+  "network": "11155111",
+  "networkName": "sepolia",
+  "type": "write",
+  "wallet": "0x8b2f23b9bcb0276177d026d8d953ccf06844aaf5 (Test Org on local dev)",
+  "name": "MCP Test: Chronicle SelfKiss + Read (Sepolia)",
+  "description": "Whitelist wallet on ETH/USD Sepolia oracle via SelfKisser, then read to verify",
+  "oracleAddress": "0xdd6D76262Fd7BdDe428dcfCd94386EbAe0151603",
+  "selfKisserAddress": "0x9eE458DefDc50409DbF153515DA54Ff5B744e533",
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 250 },
+      "data": {
+        "type": "trigger",
+        "label": "Manual Trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle",
+        "description": "Run manually"
+      }
+    },
+    {
+      "id": "write-1",
+      "type": "action",
+      "position": { "x": 400, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "Chronicle: Whitelist on Oracle (Self)",
+        "description": "Whitelist wallet on ETH/USD Sepolia oracle via SelfKisser",
+        "config": {
+          "actionType": "chronicle/self-kiss",
+          "network": "11155111",
+          "oracle": "0xdd6D76262Fd7BdDe428dcfCd94386EbAe0151603",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"selfKisser\",\"functionName\":\"selfKiss\",\"actionType\":\"write\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "read-1",
+      "type": "action",
+      "position": { "x": 700, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "Chronicle: Try Read Oracle Value",
+        "description": "Verify whitelisting by reading ETH/USD on Sepolia",
+        "config": {
+          "actionType": "chronicle/try-read",
+          "network": "11155111",
+          "contractAddress": "0xdd6D76262Fd7BdDe428dcfCd94386EbAe0151603",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"oracle\",\"functionName\":\"tryRead\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger-1", "target": "write-1" },
+    { "id": "e2", "source": "write-1", "target": "read-1" }
+  ]
+}

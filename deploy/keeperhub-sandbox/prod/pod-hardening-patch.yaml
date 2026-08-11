@@ -1,0 +1,16 @@
+# Strategic-merge patch for the keeperhub-sandbox Deployment in the
+# prod cluster. See deploy/keeperhub-sandbox/staging/pod-hardening-patch.yaml
+# for the full commentary; this file is the prod-cluster mirror.
+#
+# Apply AFTER `helm upgrade` with:
+#   kubectl -n keeperhub patch deployment keeperhub-sandbox-common \
+#     --patch-file deploy/keeperhub-sandbox/prod/pod-hardening-patch.yaml
+spec:
+  template:
+    spec:
+      automountServiceAccountToken: false
+      volumes:
+        - name: keeperhub-sandbox-common-tmp-volume
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

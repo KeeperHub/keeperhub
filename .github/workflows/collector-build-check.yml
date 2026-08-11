@@ -1,0 +1,49 @@
+name: Metrics Collector Build Check
+
+# Smoke-builds the metrics-collector Docker stage and asserts its runtime
+# import graph resolves. The metrics-collector image is otherwise only built on
+# push to staging/prod, so without this a value-import of a builder-generated
+# module in lib/metrics or lib/db (not copied into the trimmed image) would only
+# surface on the post-merge staging deploy. Cheap: the stage depends on source
+# only, not the Next builder. (TECH-6484)
+on:
+  pull_request:
+    branches:
+      - staging
+    paths:
+      - "keeperhub-metrics-collector/**"
+      - "lib/metrics/**"
+      - "lib/db/**"
+      - "Dockerfile"
+      - "docker-bake.hcl"
+      - ".github/workflows/collector-build-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build metrics-collector image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: metrics-collector
+          push: false
+          load: true
+          tags: keeperhub-metrics-collector:pr-check
+          cache-from: type=gha,scope=metrics-collector
+          cache-to: type=gha,scope=metrics-collector,mode=max
+
+      - name: Assert collector import graph resolves
+        run: |
+          docker run --rm keeperhub-metrics-collector:pr-check \
+            tsx keeperhub-metrics-collector/import-check.ts

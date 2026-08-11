@@ -1,0 +1,75 @@
+{
+  "protocol": "lido",
+  "network": "11155111",
+  "networkName": "sepolia",
+  "type": "write",
+  "name": "Protocol Test: Lido Write Actions",
+  "description": "Tests all 3 Lido write actions on Sepolia testnet (requires funded wallet)",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 200 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "lido-approve-steth",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Approve stETH",
+        "description": "Approve wstETH contract to spend stETH",
+        "type": "action",
+        "config": {
+          "actionType": "lido/approve-steth",
+          "network": "11155111",
+          "spender": "0xB82381A3fBD3FaFA77B3a7bE693342618240067b",
+          "amount": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "lido-wrap",
+      "type": "action",
+      "position": { "x": 450, "y": 200 },
+      "data": {
+        "label": "Wrap stETH",
+        "description": "Wrap 1 stETH to wstETH",
+        "type": "action",
+        "config": {
+          "actionType": "lido/wrap",
+          "network": "11155111",
+          "_stETHAmount": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "lido-unwrap",
+      "type": "action",
+      "position": { "x": 450, "y": 400 },
+      "data": {
+        "label": "Unwrap wstETH",
+        "description": "Unwrap 1 wstETH to stETH",
+        "type": "action",
+        "config": {
+          "actionType": "lido/unwrap",
+          "network": "11155111",
+          "_wstETHAmount": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "node-1", "target": "lido-approve-steth" },
+    { "id": "e2", "source": "node-1", "target": "lido-wrap" },
+    { "id": "e3", "source": "node-1", "target": "lido-unwrap" }
+  ]
+}

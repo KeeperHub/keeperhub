@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/KeeperHub/keeperhub/security
+    about: Report privately. Never in a public issue or pull request.
+  - name: Product and API documentation
+    url: https://docs.keeperhub.com
+    about: Check the docs before filing - the behaviour may be intentional and described.
+  - name: Contribution policy
+    url: https://github.com/KeeperHub/keeperhub/blob/staging/ISSUES.md
+    about: What needs an issue, what does not, and what happens after you file one.

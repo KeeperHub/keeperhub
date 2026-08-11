@@ -1,0 +1,159 @@
+{
+  "1": {
+    "vault-deposit": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x6e553f650000000000000000000000000000000000000000000000000000000005f5e1000000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-mint": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x94bf804d00000000000000000000000000000000000000000000000000000000009896800000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-withdraw": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0xb460af940000000000000000000000000000000000000000000000000000000001312d0000000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-redeem": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0xba087652000000000000000000000000000000000000000000000000000000000098968000000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-asset": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x38d52e0f",
+      "skipped": false
+    },
+    "vault-total-assets": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x01e1d114",
+      "skipped": false
+    },
+    "vault-total-supply": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x18160ddd",
+      "skipped": false
+    },
+    "vault-balance": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-convert-to-assets": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x07a2d13a0000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-convert-to-shares": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0xc6e6f5920000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-preview-deposit": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0xef8b30f70000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-preview-mint": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0xb3d7f6b90000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-preview-withdraw": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x0a28a4770000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-preview-redeem": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x4cdad5060000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-max-deposit": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x402d267d0000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-max-mint": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0xc63d75b60000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-max-withdraw": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0xce96cb770000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-max-redeem": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0xd905777e0000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-price-per-share": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x99530b06",
+      "skipped": false
+    },
+    "get-total-idle": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x9aa7df94",
+      "skipped": false
+    },
+    "get-total-debt": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0xfc7b9c18",
+      "skipped": false
+    },
+    "get-is-shutdown": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0xbf86d690",
+      "skipped": false
+    },
+    "get-api-version": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x25829410",
+      "skipped": false
+    },
+    "get-profit-max-unlock-time": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x0952864e",
+      "skipped": false
+    },
+    "get-full-profit-unlock-date": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x2d632692",
+      "skipped": false
+    },
+    "get-accountant": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x4fb3ccc5",
+      "skipped": false
+    },
+    "get-deposit-limit": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0xe46a5797",
+      "skipped": false
+    },
+    "get-role-manager": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x79b98917",
+      "skipped": false
+    },
+    "get-use-default-queue": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x1e56558d",
+      "skipped": false
+    },
+    "get-minimum-total-idle": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x356d6409",
+      "skipped": false
+    },
+    "get-vault-decimals": {
+      "to": "0xBe53A109B494E5c9f97b9Cd39Fe969BE68BF6204",
+      "data": "0x313ce567",
+      "skipped": false
+    }
+  }
+}

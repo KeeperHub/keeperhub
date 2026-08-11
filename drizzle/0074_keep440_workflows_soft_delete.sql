@@ -1,0 +1,14 @@
+-- KEEP-440: soft-delete for workflows.
+--
+-- Hard-deleting a workflow row removed its `listed_slug` from the
+-- `idx_workflows_listed_slug` unique index, letting any other workflow
+-- immediately re-claim the freed slug (slug-squat-after-delete).
+--
+-- The delete handler now sets `deleted_at` instead of deleting the row, so
+-- the row keeps holding its slug in the unique index forever. The index is
+-- intentionally left unchanged -- the surviving row is what blocks re-claim.
+--
+-- Nullable, no default: existing rows stay null (not deleted). Read paths
+-- filter on `deleted_at IS NULL`; the owner-facing workflow list keeps
+-- showing soft-deleted rows so the UI can mark them as deleted.
+ALTER TABLE "workflows" ADD COLUMN "deleted_at" timestamp;

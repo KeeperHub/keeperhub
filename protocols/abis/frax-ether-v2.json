@@ -1,0 +1,30 @@
+[
+  {
+    "type": "function",
+    "name": "mintFrxEth",
+    "stateMutability": "payable",
+    "inputs": [],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "mintFrxEthAndGive",
+    "stateMutability": "payable",
+    "inputs": [{ "name": "_recipient", "type": "address" }],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "submitAndDeposit",
+    "stateMutability": "payable",
+    "inputs": [{ "name": "_recipient", "type": "address" }],
+    "outputs": [{ "name": "_shares", "type": "uint256" }]
+  },
+  {
+    "type": "function",
+    "name": "mintFrxEthPaused",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "bool" }]
+  }
+]

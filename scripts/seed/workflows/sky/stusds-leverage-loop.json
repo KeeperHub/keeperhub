@@ -1,0 +1,169 @@
+{
+  "protocol": "sky",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "stUSDS Leverage Loop (Morpho Blue)",
+  "description": "Execute one iteration of the stUSDS leverage loop on the Morpho Blue stUSDS/USDS market (Ethereum mainnet). Deposits USDS into the stUSDS vault (~16.8% APY), supplies stUSDS as collateral to Morpho, and borrows USDS against it. Each iteration increases leverage. At 2x leverage: ~29.5% net APY. Formula: Net APY = (stUSDS_Rate * leverage) - (Borrow_Rate * (leverage - 1)).\n\nRISK WARNINGS:\n1. stUSDS slashing risk -- stUSDS has a cut() function. If SKY-backed borrowers default, stUSDS holders get slashed.\n2. Variable borrow rate -- Morpho AdaptiveCurveIRM raises rates exponentially above 90% utilization.\n3. Liquidation risk -- At 2x leverage with 86% LLTV, a 42% stUSDS price drop triggers liquidation.\n4. Oracle risk -- MorphoChainlinkOracleV2 uses ERC-4626 share conversion plus Chainlink feeds.\n5. Correlated-pair risk -- stETH June 2022 precedent shows leverage loops can cascade during depegs.",
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 250 },
+      "data": {
+        "type": "trigger",
+        "label": "Manual Trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle",
+        "description": "Run manually for each loop iteration"
+      }
+    },
+    {
+      "id": "get-market",
+      "type": "action",
+      "position": { "x": 350, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "Check Market Liquidity",
+        "description": "Read Morpho stUSDS/USDS market state to verify available liquidity before borrowing",
+        "config": {
+          "actionType": "morpho/get-market",
+          "network": "1",
+          "id": "0x77e624dd9dd980810c2b804249e88f3598d9c7ec91f16aa5fbf6e3fdf6087f82",
+          "_protocolMeta": "{\"protocolSlug\":\"morpho\",\"contractKey\":\"morpho\",\"functionName\":\"market\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "approve-usds",
+      "type": "action",
+      "position": { "x": 600, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "Approve USDS for stUSDS",
+        "description": "Approve stUSDS vault contract to spend USDS",
+        "config": {
+          "actionType": "sky/approve-usds",
+          "network": "1",
+          "spender": "0x99CD4Ec3f88A45940936F469E4bB72A2A701EEB9",
+          "amount": "1000000000000000000000",
+          "_protocolMeta": "{\"protocolSlug\":\"sky\",\"contractKey\":\"usds\",\"functionName\":\"approve\",\"actionType\":\"write\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "vault-deposit",
+      "type": "action",
+      "position": { "x": 850, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "Deposit USDS to stUSDS",
+        "description": "Convert USDS to stUSDS via ERC-4626 vault deposit",
+        "config": {
+          "actionType": "sky/st-usds-vault-deposit",
+          "network": "1",
+          "assets": "1000000000000000000000",
+          "receiver": "0x0000000000000000000000000000000000000001",
+          "_protocolMeta": "{\"protocolSlug\":\"sky\",\"contractKey\":\"stUsds\",\"functionName\":\"deposit\",\"actionType\":\"write\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "approve-stusds",
+      "type": "action",
+      "position": { "x": 1100, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "Approve stUSDS for Morpho",
+        "description": "Approve Morpho Blue contract to spend stUSDS collateral",
+        "config": {
+          "actionType": "web3/approve-token",
+          "network": "1",
+          "token": "0x99CD4Ec3f88A45940936F469E4bB72A2A701EEB9",
+          "spender": "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb",
+          "amount": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "supply-collateral",
+      "type": "action",
+      "position": { "x": 1350, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "Supply stUSDS Collateral",
+        "description": "Deposit stUSDS as collateral into Morpho stUSDS/USDS market",
+        "config": {
+          "actionType": "morpho/supply-collateral",
+          "network": "1",
+          "loanToken": "0xdC035D45d973E3EC169d2276DDab16f1e407384F",
+          "collateralToken": "0x99CD4Ec3f88A45940936F469E4bB72A2A701EEB9",
+          "oracle": "0x0A976226d113B67Bd42D672Ac9f83f92B44b454C",
+          "irm": "0x870aC11D48B15DB9a138Cf899d20F13F79Ba00BC",
+          "lltv": "860000000000000000",
+          "assets": "1000000000000000000000",
+          "onBehalf": "0x0000000000000000000000000000000000000001",
+          "data": "0x",
+          "_protocolMeta": "{\"protocolSlug\":\"morpho\",\"contractKey\":\"morpho\",\"functionName\":\"supplyCollateral\",\"actionType\":\"write\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "borrow-usds",
+      "type": "action",
+      "position": { "x": 1600, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "Borrow USDS",
+        "description": "Borrow USDS against stUSDS collateral (target ~70% of LLTV for safety buffer)",
+        "config": {
+          "actionType": "morpho/borrow",
+          "network": "1",
+          "loanToken": "0xdC035D45d973E3EC169d2276DDab16f1e407384F",
+          "collateralToken": "0x99CD4Ec3f88A45940936F469E4bB72A2A701EEB9",
+          "oracle": "0x0A976226d113B67Bd42D672Ac9f83f92B44b454C",
+          "irm": "0x870aC11D48B15DB9a138Cf899d20F13F79Ba00BC",
+          "lltv": "860000000000000000",
+          "assets": "600000000000000000000",
+          "shares": "0",
+          "onBehalf": "0x0000000000000000000000000000000000000001",
+          "receiver": "0x0000000000000000000000000000000000000001",
+          "_protocolMeta": "{\"protocolSlug\":\"morpho\",\"contractKey\":\"morpho\",\"functionName\":\"borrow\",\"actionType\":\"write\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "get-position",
+      "type": "action",
+      "position": { "x": 1850, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "Verify Position",
+        "description": "Read Morpho position to verify collateral, borrow shares, and health factor",
+        "config": {
+          "actionType": "morpho/get-position",
+          "network": "1",
+          "id": "0x77e624dd9dd980810c2b804249e88f3598d9c7ec91f16aa5fbf6e3fdf6087f82",
+          "user": "0x0000000000000000000000000000000000000001",
+          "_protocolMeta": "{\"protocolSlug\":\"morpho\",\"contractKey\":\"morpho\",\"functionName\":\"position\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger-1", "target": "get-market" },
+    { "id": "e2", "source": "get-market", "target": "approve-usds" },
+    { "id": "e3", "source": "approve-usds", "target": "vault-deposit" },
+    { "id": "e4", "source": "vault-deposit", "target": "approve-stusds" },
+    { "id": "e5", "source": "approve-stusds", "target": "supply-collateral" },
+    { "id": "e6", "source": "supply-collateral", "target": "borrow-usds" },
+    { "id": "e7", "source": "borrow-usds", "target": "get-position" }
+  ]
+}

@@ -1,0 +1,58 @@
+# PostgreSQL Cluster using CloudNativePG for PR environment
+# Variables to be replaced: ${PR_NUMBER}, ${DB_PASSWORD}, ${PG_VERSION}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: keeperhub-pr-${PR_NUMBER}-db
+  namespace: pr-${PR_NUMBER}
+spec:
+  instances: 1
+
+  # PostgreSQL version
+  imageName: ghcr.io/cloudnative-pg/postgresql:${PG_VERSION}
+
+  # Bootstrap configuration
+  bootstrap:
+    initdb:
+      database: keeperhub
+      owner: keeperhub
+      secret:
+        name: keeperhub-pr-${PR_NUMBER}-db-credentials
+
+  # Storage configuration
+  storage:
+    size: 5Gi
+    storageClass: gp3
+
+  # Resource limits
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  # PostgreSQL configuration
+  postgresql:
+    parameters:
+      max_connections: "100"
+      shared_buffers: "128MB"
+      effective_cache_size: "256MB"
+      work_mem: "4MB"
+
+  # Monitoring
+  monitoring:
+    enablePodMonitor: false
+
+---
+# Secret for database credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keeperhub-pr-${PR_NUMBER}-db-credentials
+  namespace: pr-${PR_NUMBER}
+type: kubernetes.io/basic-auth
+stringData:
+  username: keeperhub
+  password: ${DB_PASSWORD}

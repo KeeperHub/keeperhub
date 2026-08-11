@@ -1,0 +1,316 @@
+# Type: reusable | Called by release-pipeline.yml
+name: Release
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get previous release tag
+        id: prev_tag
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous tags found. This will be the first release."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "first_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Previous tag: $PREV_TAG"
+            echo "tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+            echo "first_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Discover merged PRs since last release
+        id: discover_prs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PREV_TAG="${{ steps.prev_tag.outputs.tag }}"
+          FIRST_RELEASE="${{ steps.prev_tag.outputs.first_release }}"
+
+          # Upper bound: the author date of HEAD (the prod push commit).
+          # This prevents including staging PRs merged after the prod push.
+          # Force UTC output so string comparison works with GitHub API dates (also UTC).
+          UNTIL=$(TZ=UTC git log -1 --format='%ad' --date=format-local:'%Y-%m-%dT%H:%M:%SZ' HEAD)
+          echo "Upper bound (HEAD author date): $UNTIL"
+
+          if [ "$FIRST_RELEASE" = "true" ]; then
+            # No previous tag: get all merged PRs to staging up to the prod push
+            echo "First release -- discovering all PRs merged to staging before $UNTIL"
+            PR_JSON=$(gh pr list \
+              --state merged \
+              --base staging \
+              --json number,title,author,url,body,mergedAt \
+              --limit 200 \
+              --jq "[.[] | select(.mergedAt <= \"$UNTIL\")]")
+          else
+            # Get the date of the previous tag commit (UTC to match GitHub API dates)
+            SINCE=$(TZ=UTC git log -1 --format='%ad' --date=format-local:'%Y-%m-%dT%H:%M:%SZ' "$PREV_TAG")
+            echo "Finding PRs merged after: $SINCE and before: $UNTIL"
+
+            PR_JSON=$(gh pr list \
+              --state merged \
+              --base staging \
+              --json number,title,author,url,mergedAt,body \
+              --limit 200 \
+              --jq "[.[] | select(.mergedAt > \"$SINCE\" and .mergedAt <= \"$UNTIL\")]")
+          fi
+
+          PR_COUNT=$(echo "$PR_JSON" | jq 'length')
+          echo "Found $PR_COUNT merged PR(s) since last release."
+
+          if [ "$PR_COUNT" -eq 0 ]; then
+            echo "has_prs=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_prs=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Save PR JSON for subsequent steps
+          echo "PR_JSON<<PRJSONEOF" >> "$GITHUB_ENV"
+          echo "$PR_JSON" >> "$GITHUB_ENV"
+          echo "PRJSONEOF" >> "$GITHUB_ENV"
+
+      - name: Skip release if no PRs found
+        if: steps.discover_prs.outputs.has_prs == 'false'
+        run: |
+          echo "No merged PRs found since last release. Skipping release creation."
+
+      - name: Determine version bump and classify PRs
+        if: steps.discover_prs.outputs.has_prs == 'true'
+        id: version
+        run: |
+          PREV_TAG="${{ steps.prev_tag.outputs.tag }}"
+          FIRST_RELEASE="${{ steps.prev_tag.outputs.first_release }}"
+
+          HAS_BREAKING=false
+          HAS_FEAT=false
+
+          BREAKING_PRS=""
+          FEAT_PRS=""
+          FIX_PRS=""
+          OTHER_PRS=""
+
+          # Process each PR
+          while IFS= read -r pr_line; do
+            NUMBER=$(echo "$pr_line" | jq -r '.number')
+            TITLE=$(echo "$pr_line" | jq -r '.title')
+            AUTHOR=$(echo "$pr_line" | jq -r '.author.login')
+            URL=$(echo "$pr_line" | jq -r '.url')
+            BODY=$(echo "$pr_line" | jq -r '.body // ""')
+
+            # Clean the title: remove leading/trailing whitespace
+            TITLE=$(printf '%s' "$TITLE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+            # Strip the prefix from the title for display
+            DISPLAY_TITLE=$(printf '%s' "$TITLE" | sed -E 's/^(feat|fix|bug|hotfix|breaking|chore|docs|refactor|test|ci|build|perf|style)(\([^)]*\))?[!]?:[[:space:]]*//')
+
+            # If stripping produced empty string, use original title
+            if [ -z "$DISPLAY_TITLE" ]; then
+              DISPLAY_TITLE="$TITLE"
+            fi
+
+            # Build the entry line
+            ENTRY="- ${DISPLAY_TITLE} ([#${NUMBER}](${URL})) @${AUTHOR}"
+
+            # Classify by prefix
+            # Check for breaking changes: prefix "breaking:" or "!" before colon or BREAKING CHANGE in body
+            if printf '%s' "$TITLE" | grep -qiE "^breaking(\([^)]*\))?:"; then
+              HAS_BREAKING=true
+              BREAKING_PRS="${BREAKING_PRS}${ENTRY}"$'\n'
+            elif printf '%s' "$TITLE" | grep -qiE "^[a-z]+(\([^)]*\))?!:"; then
+              HAS_BREAKING=true
+              BREAKING_PRS="${BREAKING_PRS}${ENTRY}"$'\n'
+            elif printf '%s' "$BODY" | grep -q "BREAKING CHANGE"; then
+              HAS_BREAKING=true
+              BREAKING_PRS="${BREAKING_PRS}${ENTRY}"$'\n'
+            elif printf '%s' "$TITLE" | grep -qiE "^feat(\([^)]*\))?:"; then
+              HAS_FEAT=true
+              FEAT_PRS="${FEAT_PRS}${ENTRY}"$'\n'
+            elif printf '%s' "$TITLE" | grep -qiE "^(fix|bug|hotfix)(\([^)]*\))?:"; then
+              FIX_PRS="${FIX_PRS}${ENTRY}"$'\n'
+            else
+              OTHER_PRS="${OTHER_PRS}${ENTRY}"$'\n'
+            fi
+          done < <(echo "$PR_JSON" | jq -c '.[]')
+
+          # Determine bump type
+          if [ "$HAS_BREAKING" = true ]; then
+            BUMP="major"
+          elif [ "$HAS_FEAT" = true ]; then
+            BUMP="minor"
+          else
+            BUMP="patch"
+          fi
+
+          echo "Version bump: $BUMP"
+
+          # Calculate new version
+          if [ "$FIRST_RELEASE" = "true" ]; then
+            # No previous tags: start at v0.1.0
+            NEW_TAG="v0.1.0"
+          else
+            VERSION="${PREV_TAG#v}"
+            MAJOR=$(echo "$VERSION" | cut -d. -f1)
+            MINOR=$(echo "$VERSION" | cut -d. -f2)
+            PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+            case "$BUMP" in
+              major)
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+                ;;
+              minor)
+                MINOR=$((MINOR + 1))
+                PATCH=0
+                ;;
+              patch)
+                PATCH=$((PATCH + 1))
+                ;;
+            esac
+
+            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          echo "New tag: $NEW_TAG"
+
+          # Check if tag already exists
+          if git tag -l "$NEW_TAG" | grep -q "$NEW_TAG"; then
+            echo "Tag $NEW_TAG already exists. Aborting."
+            exit 1
+          fi
+
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+
+          # Build release notes
+          REPO_URL="https://github.com/${{ github.repository }}"
+          NOTES="## What's Changed"$'\n'
+
+          if [ -n "$BREAKING_PRS" ]; then
+            NOTES="${NOTES}"$'\n'"### Breaking Changes"$'\n'
+            NOTES="${NOTES}${BREAKING_PRS}"
+          fi
+
+          if [ -n "$FEAT_PRS" ]; then
+            NOTES="${NOTES}"$'\n'"### Features"$'\n'
+            NOTES="${NOTES}${FEAT_PRS}"
+          fi
+
+          if [ -n "$FIX_PRS" ]; then
+            NOTES="${NOTES}"$'\n'"### Bug Fixes"$'\n'
+            NOTES="${NOTES}${FIX_PRS}"
+          fi
+
+          if [ -n "$OTHER_PRS" ]; then
+            NOTES="${NOTES}"$'\n'"### Other Changes"$'\n'
+            NOTES="${NOTES}${OTHER_PRS}"
+          fi
+
+          if [ "$FIRST_RELEASE" = "true" ]; then
+            NOTES="${NOTES}"$'\n'"**Full Changelog**: ${REPO_URL}/commits/${NEW_TAG}"
+          else
+            NOTES="${NOTES}"$'\n'"**Full Changelog**: ${REPO_URL}/compare/${PREV_TAG}...${NEW_TAG}"
+          fi
+
+          # Save notes to a file for gh release create
+          echo "$NOTES" > /tmp/release-notes.md
+
+          echo "Release notes written to /tmp/release-notes.md"
+
+      - name: Create GitHub Release
+        if: steps.discover_prs.outputs.has_prs == 'true'
+        id: create_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_TAG="${{ steps.version.outputs.new_tag }}"
+          REPO_URL="https://github.com/${{ github.repository }}"
+
+          gh release create "$NEW_TAG" \
+            --title "$NEW_TAG" \
+            --notes-file /tmp/release-notes.md \
+            --target "${{ github.sha }}"
+
+          RELEASE_URL="${REPO_URL}/releases/tag/${NEW_TAG}"
+          echo "release_url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
+          echo "Release created: $RELEASE_URL"
+
+      - name: Notify Discord
+        if: steps.discover_prs.outputs.has_prs == 'true'
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_RELEASES }}
+        run: |
+          NEW_TAG="${{ steps.version.outputs.new_tag }}"
+          RELEASE_URL="${{ steps.create_release.outputs.release_url }}"
+          BUMP="${{ steps.version.outputs.bump }}"
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+
+          # Read release notes and truncate for Discord embed description limit (4096 chars).
+          NOTES=$(cat /tmp/release-notes.md)
+          MAX_DESC_LENGTH=3800
+          if [ ${#NOTES} -gt $MAX_DESC_LENGTH ]; then
+            NOTES="${NOTES:0:$MAX_DESC_LENGTH}"$'\n\n'"... [See full release notes](${RELEASE_URL})"
+          fi
+
+          # Build the Discord JSON payload using jq for safe JSON escaping.
+          # jq handles all special characters (quotes, newlines, backslashes) automatically.
+          jq -n \
+            --arg title "${NEW_TAG} Released" \
+            --arg url "$RELEASE_URL" \
+            --arg desc "$NOTES" \
+            --arg footer "KeeperHub Release | ${BUMP} bump" \
+            --arg ts "$TIMESTAMP" \
+            '{
+              username: "KeeperHub Release Bot",
+              embeds: [{
+                title: $title,
+                url: $url,
+                description: $desc,
+                color: 5763719,
+                footer: { text: $footer },
+                timestamp: $ts
+              }]
+            }' > /tmp/discord-payload.json
+
+          # Send to Discord
+          HTTP_STATUS=$(curl -s -o /tmp/discord-response.txt -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/discord-payload.json \
+            "$DISCORD_WEBHOOK")
+
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "Discord notification sent successfully (HTTP $HTTP_STATUS)."
+          else
+            echo "Discord notification failed (HTTP $HTTP_STATUS)."
+            cat /tmp/discord-response.txt
+            echo ""
+            echo "Release was created successfully. Discord notification failure is non-blocking."
+          fi
+
+      - name: Notify Discord on release failure
+        if: failure() && steps.discover_prs.outputs.has_prs == 'true'
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_RELEASES }}
+        run: |
+          curl -s -H "Content-Type: application/json" \
+            -d "{\"username\": \"KeeperHub Release Bot\", \"content\": \"Release workflow failed. Please check the GitHub Actions logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            "$DISCORD_WEBHOOK"

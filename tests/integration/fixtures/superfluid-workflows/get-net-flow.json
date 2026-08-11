@@ -1,0 +1,37 @@
+{
+  "name": "Superfluid net-flow probe (KEEP-415 demo)",
+  "description": "Reads the combined CFA+GDA net flow rate on Sepolia fUSDCx. Exercises the new get-net-flow action introduced in this PR.",
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "type": "trigger",
+        "label": "",
+        "config": { "triggerType": "Manual" },
+        "status": "idle",
+        "description": ""
+      }
+    },
+    {
+      "id": "step-1",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "type": "action",
+        "label": "",
+        "config": {
+          "actionType": "superfluid/get-net-flow",
+          "network": "11155111",
+          "token": "0xb598E6C621618a9f63788816ffb50Ee2862D443B",
+          "account": "0x0000000000000000000000000000000000000001",
+          "_protocolMeta": "{\"protocolSlug\":\"superfluid\",\"contractKey\":\"gdaForwarder\",\"functionName\":\"getNetFlow\",\"actionType\":\"read\"}"
+        },
+        "status": "idle",
+        "description": ""
+      }
+    }
+  ],
+  "edges": [{ "id": "e1", "source": "trigger-1", "target": "step-1" }]
+}

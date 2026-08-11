@@ -1,0 +1,33 @@
+# RBAC for Job Spawner in Staging
+# Grants the keeperhub-staging service account permission to create K8s Jobs
+# for scheduled workflow execution
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: job-spawner-role
+  namespace: keeperhub
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: job-spawner-binding
+  namespace: keeperhub
+subjects:
+  - kind: ServiceAccount
+    name: keeperhub-staging
+    namespace: keeperhub
+roleRef:
+  kind: Role
+  name: job-spawner-role
+  apiGroup: rbac.authorization.k8s.io

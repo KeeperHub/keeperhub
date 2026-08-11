@@ -1,0 +1,35 @@
+# Scrubbed ServiceAccount for the keeperhub-sandbox release (prod cluster).
+#
+# Why this is a raw manifest and not Helm-generated:
+# techops-services/common chart v0.0.35 does not support
+# automountServiceAccountToken at the SA-object level. Setting it to false
+# here guarantees that:
+#   - the projected SA token volume is NEVER projected into the Pod
+#   - /var/run/secrets/kubernetes.io/serviceaccount/token does NOT exist
+#     inside the sandbox container (WORK-03 regression assertion)
+#
+# Why no IRSA annotation:
+# An IRSA `eks.amazonaws.com/role-arn` annotation would re-inject an
+# AWS STS token that an escape could trade for temporary AWS credentials
+# tied to the main-app IAM role. Omitting the annotation means the
+# sandbox Pod has no federated AWS identity at all.
+#
+# Why no RoleBindings anywhere:
+# Even with the SA token unprojected, an admission bypass that re-projects
+# it would grant no permissions because no RoleBinding or ClusterRoleBinding
+# targets this SA. Grep in this repo for `keeperhub-sandbox` under the
+# keeperhub namespace - no RoleBinding or ClusterRoleBinding references
+# the sandbox SA.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keeperhub-sandbox
+  namespace: keeperhub
+  labels:
+    app.kubernetes.io/name: keeperhub-sandbox
+    app.kubernetes.io/instance: keeperhub-sandbox
+    app.kubernetes.io/component: sandbox
+    app.kubernetes.io/part-of: keeperhub
+  # Intentionally no annotations. In particular: NO
+  # eks.amazonaws.com/role-arn.
+automountServiceAccountToken: false

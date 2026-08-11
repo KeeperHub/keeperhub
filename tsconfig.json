@@ -1,0 +1,50 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      },
+      {
+        "name": "workflow"
+      }
+    ],
+    "paths": {
+      "@/*": ["./*"]
+    },
+    "strictNullChecks": true
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts"
+  ],
+  "exclude": [
+    "node_modules",
+    "tmp/**/*",
+    "docs-site/**/*",
+    "keeperhub-events/**/*",
+    "keeperhub-scheduler/**/*",
+    "sandbox/**/*",
+    "scripts/seed/dev-bootstrap.ts",
+    "scripts/seed/fixtures/dev-workflows.ts",
+    "scripts/dev-mint-session.ts",
+    "scripts/dev-login.ts",
+    "scripts/dev-login-browser.ts"
+  ]
+}

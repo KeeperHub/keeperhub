@@ -1,0 +1,1375 @@
+# keeperhub-stack umbrella values - staging
+#
+# Single atomic Helm release for the KeeperHub execution pipeline. Each top-level
+# key is one aliased instance of the `common` chart (see the keeperhub-stack
+# Chart.yaml). Per-component bodies below are the same config the standalone
+# releases used; `fullnameOverride` pins each component to the resource name its
+# standalone release rendered, so the consolidation is transparent to everything
+# that addresses these services/secrets by name (event-tracker, CI health check,
+# infra runbooks, secret-rotation). Image/registry/account placeholders are
+# substituted by CI at deploy time, exactly as the standalone values were.
+
+app:
+  enabled: true
+  nameOverride: common
+  fullnameOverride: keeperhub-common
+  shared_env: &shared_env
+    NODE_EXTRA_CA_CERTS:
+      type: kv
+      value: "/etc/ssl/certs/rds-combined-ca-bundle.pem"
+    DATABASE_URL:
+      type: parameterStore
+      name: db-url
+      parameter_name: /eks/techops-staging/keeperhub/db-url
+    WORKFLOW_POSTGRES_URL:
+      type: parameterStore
+      name: workflow-postgres-url
+      parameter_name: /eks/techops-staging/keeperhub/db-url
+    CHAIN_RPC_CONFIG:
+      type: parameterStore
+      name: chain-rpc-config
+      parameter_name: /eks/techops-staging/keeperhub/chain-rpc-config
+    # KEEP-988: gate Solana wallet provisioning at signup (Turnkey provisions an
+    # ed25519 Solana account alongside the EVM EOA). Enabled in staging; prod
+    # stays off until the prod Solana rollout (flip to "true" in a PR then).
+    SOLANA_WALLET_PROVISIONING_ENABLED:
+      type: kv
+      value: "true"
+    TURNKEY_API_PUBLIC_KEY:
+      type: parameterStore
+      name: turnkey-api-public-key
+      parameter_name: /eks/techops-staging/keeperhub/turnkey-api-public-key
+    TURNKEY_API_PRIVATE_KEY:
+      type: parameterStore
+      name: turnkey-api-private-key
+      parameter_name: /eks/techops-staging/keeperhub/turnkey-api-private-key
+    TURNKEY_ORGANIZATION_ID:
+      type: parameterStore
+      name: turnkey-organization-id
+      parameter_name: /eks/techops-staging/keeperhub/turnkey-organization-id
+    # v1.9 sandbox hardening: route Code action node to the out-of-pod
+    # sandbox service (deploy/keeperhub-sandbox/staging/) instead of running
+    # user JS in this Pod. Falls back to the in-pod child_process runner
+    # (PR #953) if the value is unset or "local".
+    SANDBOX_BACKEND:
+      type: kv
+      value: "remote"
+    SANDBOX_URL:
+      type: kv
+      value: "http://keeperhub-sandbox-common.keeperhub.svc.cluster.local:8787"
+
+  replicaCount: 1
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  service:
+    enabled: true
+    name: keeperhub-staging
+    port: 3000
+    type: ClusterIP
+    containerPort: 3000
+    tls:
+      enabled: true
+      issuerName: cloudflare
+
+  ingress:
+    enabled: true
+    hosts:
+      - app-staging.keeperhub.com
+    annotations:
+      external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.tls: "true"
+      traefik.ingress.kubernetes.io/router.tls.options: traefik-cloudflare-origin-pull@kubernetescrd
+
+  httpWwwRedirect:
+    enabled: false
+  httpBasicAuth:
+    enabled: false
+
+  image:
+    repository: ${ECR_REGISTRY}/keeperhub-staging
+    tag: app-${IMAGE_TAG}
+    pullPolicy: Always
+
+  deployment:
+    enabled: true
+    initContainers:
+      # IRSA hard gate: assume the role and run a read-only AWS probe before the
+      # main container starts, so --atomic rolls the release back if IRSA is broken.
+      # Anchored here and reused by the other components below.
+      - &irsa_preflight
+        name: irsa-preflight
+        image: amazon/aws-cli
+        command:
+          - /bin/sh
+          - -c
+        args:
+          - |
+            set -euo pipefail
+            aws sts get-caller-identity
+            aws sqs get-queue-url --queue-name keeperhub-workflow-queue-staging --region us-east-1
+      - name: db-migration
+        image: "${ECR_REGISTRY}/keeperhub-staging:migrator-${IMAGE_TAG}"
+        command:
+          - /bin/sh
+          - -c
+        args:
+          - |
+            set -e
+            echo "Setting up workflow postgres tables..."
+            export WORKFLOW_POSTGRES_URL=$(tsx scripts/encode-pg-url.ts)
+            pnpm exec workflow-postgres-setup
+            echo "Running database migrations..."
+            pnpm db:migrate
+            echo "Seeding chains..."
+            pnpm db:seed
+            echo "Backfilling workflow version-history baselines..."
+            pnpm db:backfill-workflow-history || echo "[deploy] workflow-history backfill skipped (non-fatal)"
+            echo "Migrations and seeding completed successfully"
+        env: *shared_env
+
+  serviceAccount:
+    create: true
+    requireRoleArn: true
+    irsaCheck:
+      enabled: true
+    annotations:
+      eks.amazonaws.com/role-arn: ${SERVICE_ACCOUNT_ROLE_ARN}
+    name: keeperhub-staging
+    rules:
+      - apiGroups: ["batch"]
+        resources: ["jobs"]
+        verbs: ["create", "get", "list", "watch", "delete"]
+      - apiGroups: [""]
+        resources: ["pods"]
+        verbs: ["get", "list", "watch"]
+      - apiGroups: [""]
+        resources: ["pods/log"]
+        verbs: ["get"]
+      # Leader election for the schedule and block dispatchers. They share this
+      # service account, so the Lease permission lives here (one owner of the
+      # Role) rather than on a second SA that would need its own IRSA role-arn.
+      - apiGroups: ["coordination.k8s.io"]
+        resources: ["leases"]
+        verbs: ["get", "create", "update"]
+
+  podAnnotations:
+    reloader.stakater.com/auto: "true"
+
+  serviceMonitors:
+    enabled: true
+    monitors:
+      - name: api-metrics
+        port: http
+        path: /api/metrics/api
+        interval: 30s
+        scrapeTimeout: 10s
+      # db-metrics removed (TECH-6484): the DB-sourced gauges are now scraped from
+      # the dedicated keeperhub-metrics-collector single-replica service, not from
+      # the app pods. The app route is also gated off via METRICS_DB_OFFLOADED.
+
+  resources:
+    limits:
+      # Must exceed NODE_OPTIONS --max-old-space-size by ~1 GiB to leave headroom
+      # for off-heap RSS (Buffers, source maps, native addons, worker threads).
+      # Setting these equal causes the kernel OOM-killer to fire before V8 GCs.
+      # Kept in lockstep with prod so staging is predictive of prod memory behaviour.
+      memory: 4Gi
+    requests:
+      cpu: 100m
+      memory: 2Gi
+
+  env:
+    <<: *shared_env
+    LOG_LEVEL:
+      type: kv
+      value: "info"
+    METRICS_COLLECTOR:
+      type: kv
+      value: "prometheus"
+    # TECH-6484: /api/metrics/db is served by keeperhub-metrics-collector now;
+    # gate the app route to 404 so the heavy scan never runs on these pods.
+    METRICS_DB_OFFLOADED:
+      type: kv
+      value: "true"
+    RPC_PROBE_INTERVAL_MS:
+      type: kv
+      value: "30000"
+    RPC_PROBE_TIMEOUT_MS:
+      type: kv
+      value: "5000"
+    NODE_OPTIONS:
+      type: kv
+      value: "--enable-source-maps --max-old-space-size=3072 --trace-warnings --trace-uncaught --trace-exit"
+    NODE_ENV:
+      type: kv
+      value: "development"
+    HOSTNAME:
+      type: kv
+      value: "0.0.0.0"
+    WORKFLOW_TARGET_WORLD:
+      type: kv
+      value: "@workflow/world-postgres"
+    NEXT_PUBLIC_API_URL:
+      type: kv
+      value: "http://localhost:3000"
+    BETTER_AUTH_URL:
+      type: kv
+      value: "https://app-staging.keeperhub.com"
+    BETTER_AUTH_SECRET:
+      type: parameterStore
+      name: better-auth-secret
+      parameter_name: /eks/techops-staging/keeperhub/better-auth-secret
+    OAUTH_JWT_SECRET:
+      type: parameterStore
+      name: oauth-jwt-secret
+      parameter_name: /eks/techops-staging/keeperhub/oauth-jwt-secret
+    MCP_SESSION_SECRET:
+      type: parameterStore
+      name: mcp-session-secret
+      parameter_name: /eks/techops-staging/keeperhub/mcp-session-secret
+    REDIS_HOST:
+      type: parameterStore
+      name: redis-host
+      parameter_name: /eks/techops-staging/keeperhub-events/redis-host
+    REDIS_PORT:
+      type: parameterStore
+      name: redis-port
+      parameter_name: /eks/techops-staging/keeperhub-events/redis-port
+    REDIS_PASSWORD:
+      type: parameterStore
+      name: redis-password
+      parameter_name: /eks/techops-staging/keeperhub-events/redis-password
+    REDIS_KEY_PREFIX:
+      type: kv
+      value: "staging"
+    # Auth and social providers (GitHub, Google)
+    NEXT_PUBLIC_AUTH_PROVIDERS:
+      type: kv
+      value: "email,github,google"
+    GITHUB_CLIENT_ID:
+      type: parameterStore
+      name: github-client-id
+      parameter_name: /eks/techops-staging/keeperhub/github-client-id
+    GITHUB_CLIENT_SECRET:
+      type: parameterStore
+      name: github-client-secret
+      parameter_name: /eks/techops-staging/keeperhub/github-client-secret
+    NEXT_PUBLIC_GITHUB_CLIENT_ID:
+      type: parameterStore
+      name: next-public-github-client-id
+      parameter_name: /eks/techops-staging/keeperhub/github-client-id
+    GOOGLE_CLIENT_ID:
+      type: parameterStore
+      name: google-client-id
+      parameter_name: /eks/techops-staging/keeperhub/google-client-id
+    GOOGLE_CLIENT_SECRET:
+      type: parameterStore
+      name: google-client-secret
+      parameter_name: /eks/techops-staging/keeperhub/google-client-secret
+    NEXT_PUBLIC_GOOGLE_CLIENT_ID:
+      type: parameterStore
+      name: next-public-google-client-id
+      parameter_name: /eks/techops-staging/keeperhub/google-client-id
+    # Cloudflare Turnstile (signup captcha). Site key is also baked into the
+    # client bundle at build time (build-images.yml); this runtime entry covers
+    # server-side reads. Secret key is server-only (lib/auth.ts).
+    NEXT_PUBLIC_TURNSTILE_SITE_KEY:
+      type: parameterStore
+      name: next-public-turnstile-site-key
+      parameter_name: /eks/techops-staging/keeperhub/turnstile-site-key
+    TURNSTILE_SECRET_KEY:
+      type: parameterStore
+      name: turnstile-secret-key
+      parameter_name: /eks/techops-staging/keeperhub/turnstile-secret-key
+    # Opt staging into enforcing the captcha plugin (it is otherwise skipped
+    # where admin test endpoints are enabled). Lets us exercise the real
+    # Turnstile flow before prod. Disables the X-Test-API-Key signup bypass.
+    TURNSTILE_ENFORCE:
+      type: kv
+      value: "true"
+    OPENAI_API_KEY:
+      type: parameterStore
+      name: openai-api-key
+      parameter_name: /eks/techops-staging/keeperhub/openai-api-key
+    # Examples: "gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet-20241022", "openai/gpt-4" (gateway)
+    AI_MODEL:
+      type: kv
+      value: "gpt-4o"
+    TURNKEY_API_PUBLIC_KEY:
+      type: parameterStore
+      name: turnkey-api-public-key
+      parameter_name: /eks/techops-staging/keeperhub/turnkey-api-public-key
+    TURNKEY_API_PRIVATE_KEY:
+      type: parameterStore
+      name: turnkey-api-private-key
+      parameter_name: /eks/techops-staging/keeperhub/turnkey-api-private-key
+    TURNKEY_ORGANIZATION_ID:
+      type: parameterStore
+      name: turnkey-organization-id
+      parameter_name: /eks/techops-staging/keeperhub/turnkey-organization-id
+    AGENTIC_WALLET_HMAC_KMS_KEY:
+      type: parameterStore
+      name: agentic-wallet-hmac-kms-key
+      parameter_name: /eks/techops-staging/keeperhub/agentic-wallet-hmac-kms-key
+    INTEGRATION_ENCRYPTION_KEY:
+      type: parameterStore
+      name: integration-encryption-key
+      parameter_name: /eks/techops-staging/keeperhub/integration-encryption-key
+    ETHERSCAN_API_KEY:
+      type: parameterStore
+      name: etherscan-api-key
+      parameter_name: /eks/techops-staging/keeperhub/etherscan-api-key
+    SENDGRID_API_KEY:
+      type: parameterStore
+      name: sendgrid-api-key
+      parameter_name: /eks/techops-staging/keeperhub/sendgrid-api-key
+    FROM_ADDRESS:
+      type: kv
+      value: "noreply@keeperhub.com"
+    # v1.7 Agent-Callable Workflows
+    BASE_RPC_URL:
+      type: kv
+      value: "https://mainnet.base.org"
+    X402_FACILITATOR_URL:
+      type: kv
+      value: "https://api.cdp.coinbase.com/platform/v2/x402"
+    PLATFORM_FEE_PERCENT:
+      type: kv
+      value: "30"
+    REGISTRATION_PRIVATE_KEY:
+      type: parameterStore
+      name: registration-private-key
+      parameter_name: /eks/techops-staging/keeperhub/registration-private-key
+    CDP_API_KEY_ID:
+      type: parameterStore
+      name: cdp-api-key-id
+      parameter_name: /eks/techops-staging/keeperhub/cdp-api-key-id
+    CDP_API_KEY_SECRET:
+      type: parameterStore
+      name: cdp-api-key-secret
+      parameter_name: /eks/techops-staging/keeperhub/cdp-api-key-secret
+    MPP_SECRET_KEY:
+      type: parameterStore
+      name: mpp-secret-key
+      parameter_name: /eks/techops-staging/keeperhub/mpp-secret-key
+    # Sentry
+    SENTRY_DSN:
+      type: parameterStore
+      name: sentry-dsn
+      parameter_name: /eks/techops-staging/keeperhub/sentry-dsn
+    NEXT_PUBLIC_SENTRY_DSN:
+      type: parameterStore
+      name: next-public-sentry-dsn
+      parameter_name: /eks/techops-staging/keeperhub/next-public-sentry-dsn
+    SENTRY_ORG:
+      type: parameterStore
+      name: sentry-org
+      parameter_name: /eks/techops-staging/keeperhub/sentry-org
+    SENTRY_PROJECT:
+      type: parameterStore
+      name: sentry-project
+      parameter_name: /eks/techops-staging/keeperhub/sentry-project
+    SENTRY_AUTH_TOKEN:
+      type: parameterStore
+      name: sentry-auth-token
+      parameter_name: /eks/techops-staging/keeperhub/sentry-auth-token
+    # Feedback service (internal cluster communication)
+    FEEDBACK_SERVICE_URL:
+      type: kv
+      value: "http://keeperhub-feedback-common.keeperhub:3001/api/feedback"
+    FEEDBACK_API_KEY:
+      type: parameterStore
+      name: feedback-api-key
+      parameter_name: /eks/techops-staging/keeperhub-feedback/feedback-api-key
+    # Billing (Stripe)
+    NEXT_PUBLIC_BILLING_ENABLED:
+      type: kv
+      value: "true"
+    NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED:
+      type: kv
+      value: "true"
+    # Free trials (server-side runtime flags). TRIALS_ENABLED gates the trial
+    # offer + in-app nudge; the rest tune length and repeat behavior.
+    # TRIALS_ENABLED and TRIAL_TIER come from Parameter Store so we can flip the
+    # feature and switch the price tier live, without a PR. Create the params
+    # before deploy (a missing SSM param blocks the pod):
+    #   /eks/techops-staging/keeperhub/trials-enabled  (true|false)
+    #   /eks/techops-staging/keeperhub/trial-tier       (25k|50k|100k)
+    TRIALS_ENABLED:
+      type: parameterStore
+      name: trials-enabled
+      parameter_name: /eks/techops-staging/keeperhub/trials-enabled
+    STRIPE_TRIAL_PERIOD_DAYS:
+      type: kv
+      value: "14"
+    TRIAL_TIER:
+      type: parameterStore
+      name: trial-tier
+      parameter_name: /eks/techops-staging/keeperhub/trial-tier
+    TRIAL_ALLOW_REPEAT:
+      type: kv
+      value: "false"
+    TRIAL_REPEAT_COOLDOWN_DAYS:
+      type: kv
+      value: "90"
+    # AI Prompt feature flag - disabled
+    # (gates UI render in components/workflow/workflow-canvas.tsx
+    #  and /api/ai/generate route)
+    NEXT_PUBLIC_AI_PROMPT_ENABLED:
+      type: kv
+      value: "false"
+    STRIPE_SECRET_KEY:
+      type: parameterStore
+      name: stripe-secret-key
+      parameter_name: /eks/techops-staging/keeperhub/stripe-secret-key
+    STRIPE_WEBHOOK_SECRET:
+      type: parameterStore
+      name: stripe-webhook-secret
+      parameter_name: /eks/techops-staging/keeperhub/stripe-webhook-secret
+    STRIPE_PRICE_PRO_25K_MONTHLY:
+      type: parameterStore
+      name: stripe-price-pro-25k-monthly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-25k-monthly
+    STRIPE_PRICE_PRO_25K_YEARLY:
+      type: parameterStore
+      name: stripe-price-pro-25k-yearly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-25k-yearly
+    STRIPE_PRICE_PRO_50K_MONTHLY:
+      type: parameterStore
+      name: stripe-price-pro-50k-monthly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-50k-monthly
+    STRIPE_PRICE_PRO_50K_YEARLY:
+      type: parameterStore
+      name: stripe-price-pro-50k-yearly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-50k-yearly
+    STRIPE_PRICE_PRO_100K_MONTHLY:
+      type: parameterStore
+      name: stripe-price-pro-100k-monthly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-100k-monthly
+    STRIPE_PRICE_PRO_100K_YEARLY:
+      type: parameterStore
+      name: stripe-price-pro-100k-yearly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-100k-yearly
+    STRIPE_PRICE_BUSINESS_250K_MONTHLY:
+      type: parameterStore
+      name: stripe-price-business-250k-monthly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-250k-monthly
+    STRIPE_PRICE_BUSINESS_250K_YEARLY:
+      type: parameterStore
+      name: stripe-price-business-250k-yearly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-250k-yearly
+    STRIPE_PRICE_BUSINESS_500K_MONTHLY:
+      type: parameterStore
+      name: stripe-price-business-500k-monthly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-500k-monthly
+    STRIPE_PRICE_BUSINESS_500K_YEARLY:
+      type: parameterStore
+      name: stripe-price-business-500k-yearly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-500k-yearly
+    STRIPE_PRICE_BUSINESS_1M_MONTHLY:
+      type: parameterStore
+      name: stripe-price-business-1m-monthly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-1m-monthly
+    STRIPE_PRICE_BUSINESS_1M_YEARLY:
+      type: parameterStore
+      name: stripe-price-business-1m-yearly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-1m-yearly
+    STRIPE_PRICE_ENTERPRISE_MONTHLY:
+      type: parameterStore
+      name: stripe-price-enterprise-monthly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-enterprise-monthly
+    STRIPE_PRICE_ENTERPRISE_YEARLY:
+      type: parameterStore
+      name: stripe-price-enterprise-yearly
+      parameter_name: /eks/techops-staging/keeperhub/stripe-price-enterprise-yearly
+    # Gas credit caps per plan (cents, server-only)
+    GAS_CREDITS_FREE_CENTS:
+      type: kv
+      value: "100"
+    GAS_CREDITS_PRO_CENTS:
+      type: kv
+      value: "500"
+    GAS_CREDITS_BUSINESS_CENTS:
+      type: kv
+      value: "2500"
+    GAS_CREDITS_ENTERPRISE_CENTS:
+      type: kv
+      value: "10000"
+    # Pay As You Go: per-execution USDC price and per-chain treasury (8453 =
+    # Base). Empty price or unset treasury disables charging (PAYG runs block).
+    PAYG_EXECUTION_PRICE_USDC:
+      type: kv
+      value: "0.01"
+    PAYG_TREASURY_ADDRESS_8453:
+      type: parameterStore
+      name: payg-treasury-address-8453
+      parameter_name: /eks/techops-staging/keeperhub/payg-treasury-address-8453
+    # Internal service-to-service auth (HMAC)
+    INTERNAL_SERVICE_HMAC_SECRET:
+      type: parameterStore
+      name: internal-service-hmac-secret
+      parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+    TEST_API_KEY:
+      type: parameterStore
+      name: test-api-key
+      parameter_name: /eks/techops-staging/keeperhub/test-api-key
+    ALLOW_TEST_ENDPOINTS:
+      type: kv
+      value: "true"
+    LOAD_TEST_BYPASS_TOKEN:
+      type: parameterStore
+      name: load-test-captcha-bypass-token
+      parameter_name: /eks/techops-staging/keeperhub/load-test-captcha-bypass-token
+    LOAD_TEST_USER_PASSWORD:
+      type: parameterStore
+      name: load-test-user-password
+      parameter_name: /eks/techops-staging/keeperhub/load-test-user-password
+    KH_ADMIN_SECRET:
+      type: parameterStore
+      name: kh-admin-secret
+      parameter_name: /eks/techops-staging/keeperhub/kh-admin-secret
+
+  externalSecrets:
+    clusterSecretStoreName: techops-staging
+
+  livenessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 30
+    tcpSocket:
+      port: 3000
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 30
+    tcpSocket:
+      port: 3000
+
+  cronjob:
+    enabled: true
+    jobs:
+      - name: reaper
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-staging
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "3-59/10 * * * *" # every 10 minutes, offset by 3 minutes
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/internal/reaper"
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
+      - name: execution-digest
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-staging
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "0 14 * * *" # daily 14:00 UTC; weekly digests are sent on Tuesdays
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/digest-cron.sh"
+          - "http://keeperhub-common:3000/api/internal/execution-digest"
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
+      - name: security-behavioral-scan
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-staging
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "1-59/5 * * * *" # every 5 minutes, offset by 1 minute
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/cron/security-behavioral-scan"
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
+      - name: scan-cache-sweeper
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-staging
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "8,38 * * * *" # every 30 minutes, offset by 8 minutes
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/cron/scan-cache-sweeper"
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
+
+      - name: overage-scan
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-staging
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "17 1,13 * * *" # twice daily, offset by 17 minutes
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/billing/overage"
+          - "POST"
+          - '{"scan":true}'
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
+      - name: billing-debt-scan
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-staging
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "23 4 * * *" # daily at 04:23 UTC
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/billing/debt-scan"
+          - "POST"
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
+      - name: tempo-broadcast-due
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-staging
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "4-59/5 * * * *" # every 5 minutes, offset by 4 minutes
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/internal/tempo/broadcast-due"
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
+
+executor:
+  enabled: true
+  nameOverride: common
+  fullnameOverride: keeperhub-executor-common
+  # Unified Workflow Executor - Staging
+  # Polls SQS for all trigger types (schedule, block, event) and executes
+  # workflows either in isolated K8s Jobs or in-process.
+
+  replicaCount: 1
+
+  service:
+    enabled: true
+    name: keeperhub-executor-staging
+    type: ClusterIP
+    port: 3080
+    containerPort: 3080
+    tls:
+      enabled: false
+
+  ingress:
+    enabled: false
+
+  image:
+    repository: ${ECR_REGISTRY}/keeperhub-executor-staging
+    tag: executor-${IMAGE_TAG}
+    pullPolicy: Always
+
+  deployment:
+    enabled: true
+    initContainers:
+      - *irsa_preflight
+
+  # Own service account + IRSA role, so queue access can be scoped to the
+  # consumer role independently of the producers. The role currently carries the
+  # same broad queue policy as the shared one, so this repoint cannot lose
+  # access; it is narrowed to receive/delete-only once every component is
+  # confirmed running on its own role.
+  serviceAccount:
+    create: true
+    requireRoleArn: true
+    irsaCheck:
+      enabled: true
+    annotations:
+      eks.amazonaws.com/role-arn: ${EXECUTOR_SERVICE_ACCOUNT_ROLE_ARN}
+    name: keeperhub-executor-staging
+    # The executor spawns the workflow runner Jobs and reads their pods/logs, so
+    # it needs its own Role once it stops sharing the app's service account.
+    # Without these it authenticates to AWS fine but gets 403 from the K8s API.
+    rules:
+      - apiGroups: ["batch"]
+        resources: ["jobs"]
+        verbs: ["create", "get", "list", "watch", "delete"]
+      - apiGroups: [""]
+        resources: ["pods"]
+        verbs: ["get", "list", "watch"]
+      - apiGroups: [""]
+        resources: ["pods/log"]
+        verbs: ["get"]
+
+  podAnnotations:
+    reloader.stakater.com/auto: "true"
+
+  serviceMonitors:
+    enabled: true
+    monitors:
+      - name: executor-metrics
+        port: http
+        path: /metrics
+        interval: 30s
+        scrapeTimeout: 10s
+
+  resources:
+    limits:
+      memory: 1Gi
+      cpu: 500m
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+  command: ["/bin/sh"]
+  args:
+    - "-c"
+    - |
+      echo "$(date) - [Executor] Starting..."
+      tsx keeperhub-executor/index.ts
+
+  env:
+    DATABASE_URL:
+      type: parameterStore
+      name: db-url
+      parameter_name: /eks/techops-staging/keeperhub/db-url
+    INTEGRATION_ENCRYPTION_KEY:
+      type: parameterStore
+      name: integration-encryption-key
+      parameter_name: /eks/techops-staging/keeperhub/integration-encryption-key
+    INTERNAL_SERVICE_HMAC_SECRET:
+      type: parameterStore
+      name: internal-service-hmac-secret
+      parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+    AWS_REGION:
+      type: kv
+      value: "us-east-1"
+    SQS_QUEUE_URL:
+      type: kv
+      value: "https://sqs.us-east-1.amazonaws.com/${AWS_ACCOUNT_ID}/keeperhub-workflow-queue-staging"
+    SQS_DLQ_URL:
+      type: kv
+      value: "https://sqs.us-east-1.amazonaws.com/${AWS_ACCOUNT_ID}/keeperhub-workflow-queue-staging-dlq"
+    RUNNER_IMAGE:
+      type: kv
+      value: "${ECR_REGISTRY}/keeperhub-staging:workflow-runner-${IMAGE_TAG}"
+    IMAGE_PULL_POLICY:
+      type: kv
+      value: "Always"
+    K8S_NAMESPACE:
+      type: kv
+      value: "keeperhub"
+    HEALTH_PORT:
+      type: kv
+      value: "3080"
+    JOB_TTL_SECONDS:
+      type: kv
+      value: "120"
+    JOB_ACTIVE_DEADLINE:
+      type: kv
+      value: "300"
+    # Ephemeral-storage guardrail for runner Job pods (mirrored by the runner's
+    # /tmp emptyDir sizeLimit). Live staging runners use ~2 MiB each, so the 1Gi
+    # limit is a runaway-/tmp guard, not the disk-pressure fix (that is node image
+    # GC + disk headroom in the eks-cluster workspace). Retune if a legitimate
+    # data-heavy workflow needs a larger /tmp.
+    RUNNER_EPHEMERAL_STORAGE_REQUEST:
+      type: kv
+      value: "64Mi"
+    RUNNER_EPHEMERAL_STORAGE_LIMIT:
+      type: kv
+      value: "1Gi"
+    EXECUTION_MODE:
+      type: kv
+      value: "isolated"
+    METRICS_COLLECTOR:
+      type: kv
+      value: "prometheus"
+    EXECUTOR_METRICS_INGEST_URL:
+      type: kv
+      value: "http://keeperhub-executor-common:3080"
+    METRICS_INGEST_TOKEN:
+      type: parameterStore
+      name: metrics-ingest-token
+      parameter_name: /eks/techops-staging/keeperhub/metrics-ingest-token
+    WORKFLOW_RUNNER_COLLECT_MONITORING:
+      type: kv
+      value: "false"
+    TURNKEY_API_PUBLIC_KEY:
+      type: parameterStore
+      name: turnkey-api-public-key
+      parameter_name: /eks/techops-staging/keeperhub/turnkey-api-public-key
+    TURNKEY_API_PRIVATE_KEY:
+      type: parameterStore
+      name: turnkey-api-private-key
+      parameter_name: /eks/techops-staging/keeperhub/turnkey-api-private-key
+    TURNKEY_ORGANIZATION_ID:
+      type: parameterStore
+      name: turnkey-organization-id
+      parameter_name: /eks/techops-staging/keeperhub/turnkey-organization-id
+    CHAIN_RPC_CONFIG:
+      type: parameterStore
+      name: chain-rpc-config
+      parameter_name: /eks/techops-staging/keeperhub/chain-rpc-config
+    ETHERSCAN_API_KEY:
+      type: parameterStore
+      name: etherscan-api-key
+      parameter_name: /eks/techops-staging/keeperhub/etherscan-api-key
+    OPENAI_API_KEY:
+      type: parameterStore
+      name: openai-api-key
+      parameter_name: /eks/techops-staging/keeperhub/openai-api-key
+    SENDGRID_API_KEY:
+      type: parameterStore
+      name: sendgrid-api-key
+      parameter_name: /eks/techops-staging/keeperhub/sendgrid-api-key
+    FROM_ADDRESS:
+      type: kv
+      value: "noreply@keeperhub.com"
+    # Billing guard. Read by keeperhub-executor/billing-guard.ts to gate
+    # SQS-triggered runs (schedule / block / event) on the monthly tier.
+    # Must mirror NEXT_PUBLIC_BILLING_ENABLED under the app component above.
+    NEXT_PUBLIC_BILLING_ENABLED:
+      type: kv
+      value: "true"
+    NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED:
+      type: kv
+      value: "true"
+    # Gas credit caps per plan (cents, server-only)
+    GAS_CREDITS_FREE_CENTS:
+      type: kv
+      value: "100"
+    GAS_CREDITS_PRO_CENTS:
+      type: kv
+      value: "500"
+    GAS_CREDITS_BUSINESS_CENTS:
+      type: kv
+      value: "2500"
+    GAS_CREDITS_ENTERPRISE_CENTS:
+      type: kv
+      value: "10000"
+    # Pay As You Go: the executor settles the per-execution charge for enqueued
+    # runs, so it needs the price, treasury, and the x402 facilitator credentials.
+    PAYG_EXECUTION_PRICE_USDC:
+      type: kv
+      value: "0.01"
+    PAYG_TREASURY_ADDRESS_8453:
+      type: parameterStore
+      name: payg-treasury-address-8453
+      parameter_name: /eks/techops-staging/keeperhub/payg-treasury-address-8453
+    X402_FACILITATOR_URL:
+      type: kv
+      value: "https://api.cdp.coinbase.com/platform/v2/x402"
+    CDP_API_KEY_ID:
+      type: parameterStore
+      name: cdp-api-key-id
+      parameter_name: /eks/techops-staging/keeperhub/cdp-api-key-id
+    CDP_API_KEY_SECRET:
+      type: parameterStore
+      name: cdp-api-key-secret
+      parameter_name: /eks/techops-staging/keeperhub/cdp-api-key-secret
+    SANDBOX_BACKEND:
+      type: kv
+      value: "remote"
+    SANDBOX_URL:
+      type: kv
+      value: "http://keeperhub-sandbox-common.keeperhub.svc.cluster.local:8787"
+
+  externalSecrets:
+    clusterSecretStoreName: techops-staging
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 3080
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 3080
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+schedule:
+  enabled: true
+  nameOverride: common
+  fullnameOverride: keeperhub-schedule-common
+  # Schedule Dispatcher - Staging
+  # Evaluates cron schedules every minute and dispatches matching workflows to SQS
+  #
+  # This is a long-running service that:
+  # 1. Runs every minute via setInterval
+  # 2. Fetches enabled schedules from KeeperHub API
+  # 3. Evaluates cron expressions against current time
+  # 4. Sends matching schedules to SQS queue for execution
+
+  # Two replicas with Kubernetes Lease leader election (only the leader
+  # dispatches); a node roll or crash no longer drops dispatch to zero.
+  replicaCount: 2
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  service:
+    enabled: true
+    name: keeperhub-scheduler-staging
+    type: ClusterIP
+    port: 3000
+    containerPort: 3000
+    tls:
+      enabled: false
+
+  ingress:
+    enabled: false
+
+  image:
+    repository: ${ECR_REGISTRY}/keeperhub-scheduler-staging
+    tag: schedule-${IMAGE_TAG}
+    pullPolicy: Always
+
+  deployment:
+    enabled: true
+    initContainers:
+      - *irsa_preflight
+
+  # Owns the scheduler service account, which the block dispatcher below shares -
+  # both are the same logical producer and sign with the same caller. The role
+  # currently carries the same broad queue policy as the shared one, so this
+  # repoint cannot lose access; it is narrowed to send-only later.
+  serviceAccount:
+    create: true
+    requireRoleArn: true
+    irsaCheck:
+      enabled: true
+    annotations:
+      eks.amazonaws.com/role-arn: ${SCHEDULER_SERVICE_ACCOUNT_ROLE_ARN}
+    name: keeperhub-scheduler-staging
+    # Leader election for the schedule and block dispatchers, which share this
+    # service account. This Role owns the Lease permission now that they no
+    # longer run under the app's service account.
+    rules:
+      - apiGroups: ["coordination.k8s.io"]
+        resources: ["leases"]
+        verbs: ["get", "create", "update"]
+
+  podAnnotations:
+    reloader.stakater.com/auto: "true"
+
+  # Staging Alloy scrapes via ServiceMonitor CRDs, not prometheus.io/* annotations.
+  # Same pattern the block component uses below (block.serviceMonitors). Without
+  # this block, the schedule-dispatcher /metrics endpoint (served on the health
+  # port) is never scraped, so the keeperhub_schedule_dispatcher_* series do not
+  # exist and the Grafana dispatcher alerts stay blind.
+  serviceMonitors:
+    enabled: true
+    monitors:
+      - name: schedule-dispatcher-metrics
+        port: http
+        path: /metrics
+        interval: 30s
+        scrapeTimeout: 10s
+
+  resources:
+    limits:
+      memory: 256Mi
+      cpu: 200m
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+  command: ["/bin/sh"]
+  args:
+    - "-c"
+    - |
+      echo "$(date) - [Dispatcher] Starting..."
+      tsx schedule-dispatcher/index.ts
+
+  env:
+    # KeeperHub API connection
+    KEEPERHUB_API_URL:
+      type: kv
+      value: "http://keeperhub-common:3000"
+    INTERNAL_SERVICE_HMAC_SECRET:
+      type: parameterStore
+      name: internal-service-hmac-secret
+      parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+    # AWS/SQS configuration
+    AWS_REGION:
+      type: kv
+      value: "us-east-1"
+    SQS_QUEUE_URL:
+      type: kv
+      value: "https://sqs.us-east-1.amazonaws.com/${AWS_ACCOUNT_ID}/keeperhub-workflow-queue-staging"
+    # Leader election: only the pod holding the Lease dispatches. Namespace and
+    # holder identity are resolved in-pod (service account file + hostname), so
+    # nothing environment-scoped is hardcoded here.
+    LEADER_ELECTION_ENABLED:
+      type: kv
+      value: "true"
+    LEASE_NAME:
+      type: kv
+      value: "schedule-dispatcher-leader"
+    # Health check server port
+    HEALTH_PORT:
+      type: kv
+      value: "3000"
+
+  externalSecrets:
+    clusterSecretStoreName: techops-staging
+
+  # HTTP health probe on port 3000
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 3000
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 3000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+block:
+  enabled: true
+  nameOverride: common
+  fullnameOverride: keeperhub-block-common
+  # Block Dispatcher - Staging
+  # Monitors blockchain blocks via WebSocket and enqueues matching workflows to SQS
+  #
+  # This is a long-running service that:
+  # 1. Fetches active block-trigger workflows from KeeperHub API every 30s
+  # 2. Maintains WebSocket connections to each chain's WSS endpoint
+  # 3. Filters blocks by workflow interval and enqueues matches to SQS
+
+  # Two replicas with Kubernetes Lease leader election (only the leader opens
+  # WebSocket subscriptions and enqueues); a node roll no longer drops block
+  # monitoring to zero.
+  replicaCount: 2
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  service:
+    enabled: true
+    name: keeperhub-block-staging
+    type: ClusterIP
+    port: 3000
+    containerPort: 3000
+    tls:
+      enabled: false
+
+  ingress:
+    enabled: false
+
+  image:
+    repository: ${ECR_REGISTRY}/keeperhub-scheduler-staging
+    tag: block-${IMAGE_TAG}
+    pullPolicy: Always
+
+  deployment:
+    enabled: true
+    initContainers:
+      - *irsa_preflight
+
+  # Shares the scheduler service account created by the schedule component above
+  # (same logical producer), so it is referenced here rather than created.
+  serviceAccount:
+    create: false
+    name: keeperhub-scheduler-staging
+
+  podAnnotations:
+    reloader.stakater.com/auto: "true"
+
+  # Staging Alloy scrapes via ServiceMonitor CRDs, not prometheus.io/* annotations.
+  # Same pattern the executor component uses above (executor.serviceMonitors). Without
+  # this block, the block-dispatcher /metrics endpoint is unreachable to Alloy
+  # even with annotations set, so Grafana panels stay empty.
+  serviceMonitors:
+    enabled: true
+    monitors:
+      - name: block-dispatcher-metrics
+        port: http
+        path: /metrics
+        interval: 30s
+        scrapeTimeout: 10s
+
+  resources:
+    limits:
+      memory: 512Mi
+      cpu: 500m
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+  command: ["/bin/sh"]
+  args:
+    - "-c"
+    - |
+      echo "$(date) - [BlockDispatcher] Starting..."
+      tsx block-dispatcher/index.ts
+
+  env:
+    # KeeperHub API connection
+    KEEPERHUB_API_URL:
+      type: kv
+      value: "http://keeperhub-common:3000"
+    INTERNAL_SERVICE_HMAC_SECRET:
+      type: parameterStore
+      name: internal-service-hmac-secret
+      parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+    # AWS/SQS configuration
+    AWS_REGION:
+      type: kv
+      value: "us-east-1"
+    SQS_QUEUE_URL:
+      type: kv
+      value: "https://sqs.us-east-1.amazonaws.com/${AWS_ACCOUNT_ID}/keeperhub-workflow-queue-staging"
+    # Block dispatcher settings
+    RECONCILE_INTERVAL_MS:
+      type: kv
+      value: "30000"
+    # Periodic socket recycle: force-reconnect each ChainMonitor's WSS at this
+    # cadence to guard against half-open / silently degraded upstream sockets.
+    SOCKET_MAX_AGE_MS:
+      type: kv
+      value: "3600000"
+    # Leader election: only the pod holding the Lease opens chain subscriptions
+    # and enqueues. Namespace and holder identity are resolved in-pod (service
+    # account file + hostname), so nothing environment-scoped is hardcoded here.
+    LEADER_ELECTION_ENABLED:
+      type: kv
+      value: "true"
+    LEASE_NAME:
+      type: kv
+      value: "block-dispatcher-leader"
+    # Health check server port
+    HEALTH_PORT:
+      type: kv
+      value: "3000"
+
+  externalSecrets:
+    clusterSecretStoreName: techops-staging
+
+  # HTTP health probe on port 3000
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 3000
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 3000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+metricsCollector:
+  enabled: true
+  nameOverride: common
+  fullnameOverride: keeperhub-metrics-collector-common
+  # Metrics Collector - Staging (TECH-6484)
+  # Single-replica service that serves the DB-sourced Prometheus gauges (the
+  # former /api/metrics/db scrape) off the request-serving pods. Because it is a
+  # single replica with its own release labels, the ServiceMonitor below scrapes
+  # the DB gauges deterministically from exactly one pod -- no hashmod, no
+  # duplicate DB load from the app pods.
+
+  replicaCount: 1
+
+  service:
+    enabled: true
+    name: keeperhub-metrics-collector-staging
+    type: ClusterIP
+    port: 9090
+    containerPort: 9090
+    tls:
+      enabled: false
+
+  ingress:
+    enabled: false
+
+  image:
+    repository: ${ECR_REGISTRY}/keeperhub-metrics-collector-staging
+    tag: collector-${IMAGE_TAG}
+    pullPolicy: Always
+
+  deployment:
+    enabled: true
+    initContainers:
+      - *irsa_preflight
+
+  serviceAccount:
+    create: false
+    name: keeperhub-staging
+
+  podAnnotations:
+    reloader.stakater.com/auto: "true"
+
+  # Scrapes the DB-sourced gauges from this single pod. Named db-metrics so it
+  # reads the same on dashboards as the app monitor it replaces.
+  serviceMonitors:
+    enabled: true
+    monitors:
+      - name: db-metrics
+        port: http
+        path: /metrics
+        interval: 30s
+        scrapeTimeout: 10s
+
+  resources:
+    limits:
+      memory: 512Mi
+      cpu: 500m
+    requests:
+      cpu: 50m
+      memory: 256Mi
+
+  # Startup comes from the Dockerfile CMD (tsx keeperhub-metrics-collector/index.ts);
+  # no helm command/args override -- single source of truth.
+
+  env:
+    DATABASE_URL:
+      type: parameterStore
+      name: db-url
+      parameter_name: /eks/techops-staging/keeperhub/db-url
+    PORT:
+      type: kv
+      value: "9090"
+    METRICS_COLLECTOR:
+      type: kv
+      value: "prometheus"
+    NODE_ENV:
+      type: kv
+      value: "staging"
+
+  externalSecrets:
+    clusterSecretStoreName: techops-staging
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 9090
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 9090
+    initialDelaySeconds: 10
+    periodSeconds: 10

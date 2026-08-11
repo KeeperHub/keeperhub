@@ -1,0 +1,18 @@
+{
+  "name": "@keeperhub/metrics-collector",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Single-replica service that serves the DB-sourced Prometheus gauges (the former /api/metrics/db scrape) off the request-serving pods",
+  "scripts": {
+    "collector": "tsx keeperhub-metrics-collector/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.0",
+    "prom-client": "^15.1.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0"
+  }
+}

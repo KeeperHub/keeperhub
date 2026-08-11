@@ -1,0 +1,55 @@
+# NetworkPolicy enforced by the VPC CNI Network Policy Agent (eBPF) on
+# the keeperhub-sandbox Pod in the prod cluster. See
+# deploy/keeperhub-sandbox/staging/networkpolicy.yaml for the full
+# rationale; this file is the prod-cluster mirror.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keeperhub-sandbox
+  namespace: keeperhub
+  labels:
+    app.kubernetes.io/name: keeperhub-sandbox
+    app.kubernetes.io/instance: keeperhub-sandbox
+    app.kubernetes.io/component: sandbox
+    app.kubernetes.io/part-of: keeperhub
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: keeperhub-sandbox
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keeperhub
+      ports:
+        - protocol: TCP
+          port: 8787
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+      ports:
+        - protocol: TCP
+          port: 443

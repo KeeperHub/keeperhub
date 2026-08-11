@@ -1,0 +1,205 @@
+{
+  "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+  "name": "KeeperHub",
+  "description": "Execution layer for AI agents operating onchain. Discover and call DeFi workflows via MCP and ERC-8004, pay per execution in USDC over x402 on Base or MPP on Tempo. Managed DeFi 24/7 with onchain audit trail.",
+  "image": "https://app.keeperhub.com/keeperhub_logo.png",
+  "keywords": [
+    "keeperhub",
+    "execution",
+    "automation",
+    "workflow",
+    "defi",
+    "agent",
+    "ai-agent",
+    "x402",
+    "mpp",
+    "usdc",
+    "base",
+    "tempo",
+    "stablecoin",
+    "managed-defi",
+    "onchain",
+    "web3",
+    "trading",
+    "rebalance",
+    "swap",
+    "bridge",
+    "stake",
+    "lending",
+    "aave",
+    "safe",
+    "sky-protocol",
+    "audit-trail",
+    "reliability",
+    "erc-8004",
+    "mcp",
+    "a2a"
+  ],
+  "skills": [
+    {
+      "id": "workflow_discovery",
+      "name": "Workflow Discovery",
+      "description": "Search and list KeeperHub-listed DeFi workflows by keyword, protocol, asset, chain, or pricing. Returns name, price, input schema, and supported payment rails (x402, MPP).",
+      "tags": ["discovery", "search", "workflow", "marketplace", "defi"]
+    },
+    {
+      "id": "workflow_invocation",
+      "name": "Workflow Invocation",
+      "description": "Pay per execution and invoke a listed DeFi workflow with structured inputs. Paid workflows settle via x402 USDC on Base or MPP USDC.e on Tempo. Returns transaction hashes and a structured payment receipt.",
+      "tags": ["execution", "x402", "mpp", "usdc", "base", "tempo", "payments"]
+    },
+    {
+      "id": "ai_workflow_generation",
+      "name": "AI Workflow Generation",
+      "description": "Generate a new automation workflow from a natural-language goal, including triggers, conditional logic, and multi-step protocol actions across chains.",
+      "tags": ["ai", "generation", "natural-language", "workflow", "automation"]
+    },
+    {
+      "id": "protocol_actions",
+      "name": "Protocol Actions",
+      "description": "Search and execute Web3 protocol actions (DeFi, governance, NFT, bridging, lending) across supported chains. Aave, Safe, swap routers, lending markets and more.",
+      "tags": [
+        "defi",
+        "web3",
+        "protocol",
+        "onchain",
+        "aave",
+        "safe",
+        "lending",
+        "governance"
+      ]
+    },
+    {
+      "id": "onchain_execution",
+      "name": "Onchain Execution",
+      "description": "Execute token transfers, swaps, bridges, stakes, contract calls, and conditional check-and-execute transactions across Base, Ethereum, Tempo and other supported chains.",
+      "tags": [
+        "transfer",
+        "swap",
+        "bridge",
+        "stake",
+        "contract",
+        "execution",
+        "onchain"
+      ]
+    },
+    {
+      "id": "templates",
+      "name": "Workflow Templates",
+      "description": "Browse curated workflow templates (multisig automation, treasury management, DeFi position management) and deploy them with one call.",
+      "tags": ["template", "deploy", "marketplace", "treasury", "multisig"]
+    },
+    {
+      "id": "execution_monitoring",
+      "name": "Execution Monitoring",
+      "description": "Stream or poll workflow execution status, transaction hashes, gas spent, and per-step logs for debugging and audit. Full onchain audit trail per execution.",
+      "tags": ["monitoring", "status", "logs", "audit", "observability"]
+    },
+    {
+      "id": "reputation_feedback",
+      "name": "Reputation Feedback",
+      "description": "Record ERC-8004 ReputationRegistry feedback for a workflow execution. Wallet-signed and broadcast onchain. Feeds external scorers (Valiron, AgentScore, AgentSign).",
+      "tags": ["reputation", "feedback", "erc-8004", "audit", "trust"]
+    }
+  ],
+  "services": [
+    {
+      "name": "MCP",
+      "endpoint": "https://app.keeperhub.com/.well-known/mcp.json",
+      "version": "2025-06-18",
+      "mcpTools": [
+        "ai_generate_workflow",
+        "call_workflow",
+        "create_project",
+        "create_tag",
+        "create_workflow",
+        "delete_workflow",
+        "deploy_template",
+        "execute_check_and_execute",
+        "execute_contract_call",
+        "execute_protocol_action",
+        "execute_transfer",
+        "execute_workflow",
+        "get_direct_execution_status",
+        "get_execution",
+        "get_execution_logs",
+        "get_execution_status",
+        "get_plugin",
+        "get_spending_limits",
+        "get_template",
+        "get_wallet_integration",
+        "get_workflow",
+        "get_workflow_listing",
+        "list_action_schemas",
+        "list_executions",
+        "list_integrations",
+        "list_projects",
+        "list_tags",
+        "list_workflow",
+        "list_workflows",
+        "prepare_test_pin_data",
+        "search_plugins",
+        "search_protocol_actions",
+        "search_templates",
+        "search_workflows",
+        "tempo_cancel_hold",
+        "tempo_release_hold",
+        "tempo_sign_and_hold",
+        "test_notification",
+        "tools_documentation",
+        "unlist_workflow",
+        "update_workflow",
+        "update_workflow_listing",
+        "validate_cron",
+        "validate_workflow"
+      ]
+    },
+    {
+      "name": "A2A",
+      "endpoint": "https://app.keeperhub.com/.well-known/agent-card.json",
+      "version": "0.3.0"
+    },
+    {
+      "name": "workflows",
+      "endpoint": "https://app.keeperhub.com/api/mcp/workflows"
+    },
+    { "name": "web", "endpoint": "https://app.keeperhub.com" },
+    { "name": "docs", "endpoint": "https://docs.keeperhub.com" },
+    { "name": "ens", "endpoint": "keeperhub.eth" },
+    {
+      "name": "agentWallet",
+      "endpoint": "eip155:1:0xaa70faa583c0889164cfd9b45aa075f6c4388fee"
+    }
+  ],
+  "marketplace": {
+    "model": "multi-creator",
+    "description": "KeeperHub-listed workflows are published by independent creators. Each workflow advertises its own payTo address and per-call price in its 402 PAYMENT-REQUIRED response and at /api/mcp/workflows/<slug>. Per-execution settlement splits between the creator and the platform.",
+    "platformFeePercent": 30,
+    "creatorSharePercent": 70,
+    "platformFeeRecipient": {
+      "base": "eip155:8453:0xaa70faa583c0889164cfd9b45aa075f6c4388fee",
+      "tempo": "eip155:4217:0xaa70faa583c0889164cfd9b45aa075f6c4388fee"
+    }
+  },
+  "payment": {
+    "x402": {
+      "supported": true,
+      "networks": ["base"],
+      "assets": ["USDC"]
+    },
+    "mpp": {
+      "supported": true,
+      "networks": ["tempo"],
+      "assets": ["USDC.e"]
+    }
+  },
+  "supportedTrust": ["reputation"],
+  "x402Support": true,
+  "active": true,
+  "registrations": [
+    {
+      "agentId": "31875",
+      "agentRegistry": "eip155:1:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
+    }
+  ]
+}

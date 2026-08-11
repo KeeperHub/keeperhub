@@ -1,0 +1,44 @@
+{
+  "name": "@keeperhub/solana-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "start:prod": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "e2e:injected": "tsx tests/e2e/injected.ts",
+    "e2e:injected-block": "tsx tests/e2e/injected-block.ts",
+    "e2e:devnet": "tsx tests/e2e/devnet.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1005.0",
+    "@coral-xyz/anchor": "^0.30.1",
+    "@solana/web3.js": "^1.98.4",
+    "ioredis": "^5.4.2",
+    "uuid": "^14.0.0",
+    "ws": "^8.20.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.13",
+    "tsup": "^8.3.5",
+    "tsx": "^4.0.0",
+    "vite": "^8.0.9",
+    "vitest": "4.1.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "ws": ">=8.21.0"
+    }
+  }
+}

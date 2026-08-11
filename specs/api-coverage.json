@@ -1,0 +1,572 @@
+{
+  "endpoints": [
+    {
+      "method": "DELETE",
+      "path": "/api/address-book/{entryId}",
+      "route_file": "app/api/address-book/[entryId]/route.ts",
+      "source": "docs/api/user.md",
+      "line": 255
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/api-keys/{keyId}",
+      "route_file": "app/api/api-keys/[keyId]/route.ts",
+      "source": "docs/api/api-keys.md",
+      "line": 152
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/integrations/{integrationId}",
+      "route_file": "app/api/integrations/[integrationId]/route.ts",
+      "source": "docs/api/integrations.md",
+      "line": 101
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/keys/{keyId}",
+      "route_file": "app/api/keys/[keyId]/route.ts",
+      "source": "docs/api/api-keys.md",
+      "line": 105
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/projects/{projectId}",
+      "route_file": "app/api/projects/[projectId]/route.ts",
+      "source": "docs/api/projects.md",
+      "line": 78
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/tags/{tagId}",
+      "route_file": "app/api/tags/[tagId]/route.ts",
+      "source": "docs/api/tags.md",
+      "line": 76
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/user/rpc-preferences/{chainId}",
+      "route_file": "app/api/user/rpc-preferences/[chainId]/route.ts",
+      "source": "docs/api/user.md",
+      "line": 148
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/workflows/{workflowId}",
+      "route_file": "app/api/workflows/[workflowId]/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 215
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/workflows/{workflowId}/executions",
+      "route_file": "app/api/workflows/[workflowId]/executions/route.ts",
+      "source": "docs/api/executions.md",
+      "line": 311
+    },
+    {
+      "method": "GET",
+      "path": "/api/address-book",
+      "route_file": "app/api/address-book/route.ts",
+      "source": "docs/api/user.md",
+      "line": 222
+    },
+    {
+      "method": "GET",
+      "path": "/api/analytics/networks",
+      "route_file": "app/api/analytics/networks/route.ts",
+      "source": "docs/api/analytics.md",
+      "line": 80
+    },
+    {
+      "method": "GET",
+      "path": "/api/analytics/runs",
+      "route_file": "app/api/analytics/runs/route.ts",
+      "source": "docs/api/analytics.md",
+      "line": 111
+    },
+    {
+      "method": "GET",
+      "path": "/api/analytics/runs/{executionId}/steps",
+      "route_file": "app/api/analytics/runs/[id]/steps/route.ts",
+      "source": "docs/api/analytics.md",
+      "line": 162
+    },
+    {
+      "method": "GET",
+      "path": "/api/analytics/spend-cap",
+      "route_file": "app/api/analytics/spend-cap/route.ts",
+      "source": "docs/api/analytics.md",
+      "line": 188
+    },
+    {
+      "method": "GET",
+      "path": "/api/analytics/stream",
+      "route_file": "app/api/analytics/stream/route.ts",
+      "streaming": true,
+      "source": "docs/api/analytics.md",
+      "line": 207
+    },
+    {
+      "method": "GET",
+      "path": "/api/analytics/summary",
+      "route_file": "app/api/analytics/summary/route.ts",
+      "source": "docs/api/analytics.md",
+      "line": 13
+    },
+    {
+      "method": "GET",
+      "path": "/api/analytics/time-series",
+      "route_file": "app/api/analytics/time-series/route.ts",
+      "source": "docs/api/analytics.md",
+      "line": 53
+    },
+    {
+      "method": "GET",
+      "path": "/api/api-keys",
+      "route_file": "app/api/api-keys/route.ts",
+      "source": "docs/api/api-keys.md",
+      "line": 128
+    },
+    {
+      "method": "GET",
+      "path": "/api/chains",
+      "route_file": "app/api/chains/route.ts",
+      "source": "docs/api/chains.md",
+      "line": 13
+    },
+    {
+      "method": "GET",
+      "path": "/api/chains/{chainId}/abi",
+      "route_file": "app/api/chains/[chainId]/abi/route.ts",
+      "source": "docs/api/chains.md",
+      "line": 142
+    },
+    {
+      "method": "GET",
+      "path": "/api/execute/{executionId}/status",
+      "route_file": "app/api/execute/[executionId]/status/route.ts",
+      "source": "docs/api/direct-execution.md",
+      "line": 615
+    },
+    {
+      "method": "GET",
+      "path": "/api/integrations",
+      "route_file": "app/api/integrations/route.ts",
+      "source": "docs/api/integrations.md",
+      "line": 27
+    },
+    {
+      "method": "GET",
+      "path": "/api/integrations/{integrationId}",
+      "route_file": "app/api/integrations/[integrationId]/route.ts",
+      "source": "docs/api/integrations.md",
+      "line": 58
+    },
+    {
+      "method": "GET",
+      "path": "/api/keys",
+      "route_file": "app/api/keys/route.ts",
+      "source": "docs/api/api-keys.md",
+      "line": 28
+    },
+    {
+      "method": "GET",
+      "path": "/api/mcp/schemas",
+      "route_file": "app/api/mcp/schemas/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 369
+    },
+    {
+      "method": "GET",
+      "path": "/api/projects",
+      "route_file": "app/api/projects/route.ts",
+      "source": "docs/api/projects.md",
+      "line": 13
+    },
+    {
+      "method": "GET",
+      "path": "/api/public-tags",
+      "route_file": "app/api/public-tags/route.ts",
+      "source": "docs/api/tags.md",
+      "line": 88
+    },
+    {
+      "method": "GET",
+      "path": "/api/security/audit",
+      "route_file": "app/api/security/audit/route.ts",
+      "source": "docs/api/index.md",
+      "line": 76
+    },
+    {
+      "method": "GET",
+      "path": "/api/tags",
+      "route_file": "app/api/tags/route.ts",
+      "source": "docs/api/tags.md",
+      "line": 17
+    },
+    {
+      "method": "GET",
+      "path": "/api/user",
+      "route_file": "app/api/user/route.ts",
+      "source": "docs/api/user.md",
+      "line": 15
+    },
+    {
+      "method": "GET",
+      "path": "/api/user/rpc-preferences",
+      "route_file": "app/api/user/rpc-preferences/route.ts",
+      "source": "docs/api/user.md",
+      "line": 89
+    },
+    {
+      "method": "GET",
+      "path": "/api/user/rpc-preferences/{chainId}",
+      "route_file": "app/api/user/rpc-preferences/[chainId]/route.ts",
+      "source": "docs/api/user.md",
+      "line": 125
+    },
+    {
+      "method": "GET",
+      "path": "/api/user/wallet",
+      "route_file": "app/api/user/wallet/route.ts",
+      "source": "docs/api/user.md",
+      "line": 56
+    },
+    {
+      "method": "GET",
+      "path": "/api/user/wallet/balances",
+      "route_file": "app/api/user/wallet/balances/route.ts",
+      "source": "docs/api/user.md",
+      "line": 80
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows",
+      "route_file": "app/api/workflows/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 13
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows/executions/{executionId}/logs",
+      "route_file": "app/api/workflows/executions/[executionId]/logs/route.ts",
+      "source": "docs/api/executions.md",
+      "line": 168
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows/executions/{executionId}/status",
+      "route_file": "app/api/workflows/executions/[executionId]/status/route.ts",
+      "source": "docs/api/executions.md",
+      "line": 46
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows/executions/{executionId}/wait",
+      "route_file": "app/api/workflows/executions/[executionId]/wait/route.ts",
+      "source": "docs/api/executions.md",
+      "line": 125
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows/public",
+      "route_file": "app/api/workflows/public/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 322
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows/{workflowId}",
+      "route_file": "app/api/workflows/[workflowId]/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 51
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows/{workflowId}/code",
+      "route_file": "app/api/workflows/[workflowId]/code/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 287
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows/{workflowId}/download",
+      "route_file": "app/api/workflows/[workflowId]/download/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 279
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows/{workflowId}/executions",
+      "route_file": "app/api/workflows/[workflowId]/executions/route.ts",
+      "source": "docs/api/executions.md",
+      "line": 13
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows/{workflowId}/history",
+      "route_file": "app/api/workflows/[workflowId]/history/route.ts",
+      "source": "docs/api/index.md",
+      "line": 75
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/address-book/{entryId}",
+      "route_file": "app/api/address-book/[entryId]/route.ts",
+      "source": "docs/api/user.md",
+      "line": 247
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/projects/{projectId}",
+      "route_file": "app/api/projects/[projectId]/route.ts",
+      "source": "docs/api/projects.md",
+      "line": 60
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/tags/{tagId}",
+      "route_file": "app/api/tags/[tagId]/route.ts",
+      "source": "docs/api/tags.md",
+      "line": 59
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/user",
+      "route_file": "app/api/user/route.ts",
+      "source": "docs/api/user.md",
+      "line": 40
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/workflows/{workflowId}",
+      "route_file": "app/api/workflows/[workflowId]/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 193
+    },
+    {
+      "method": "POST",
+      "path": "/api/address-book",
+      "route_file": "app/api/address-book/route.ts",
+      "source": "docs/api/user.md",
+      "line": 230
+    },
+    {
+      "method": "POST",
+      "path": "/api/api-keys",
+      "route_file": "app/api/api-keys/route.ts",
+      "source": "docs/api/api-keys.md",
+      "line": 136
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/sign-up/email",
+      "route_file": "app/api/auth/[...all]/route.ts",
+      "source": "docs/api/headless-onboarding.md",
+      "line": 36
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/siwe/nonce",
+      "route_file": "app/api/auth/[...all]/route.ts",
+      "source": "docs/api/headless-onboarding.md",
+      "line": 14
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/siwe/verify",
+      "route_file": "app/api/auth/[...all]/route.ts",
+      "source": "docs/api/headless-onboarding.md",
+      "line": 14
+    },
+    {
+      "method": "POST",
+      "path": "/api/execute/check-and-execute",
+      "route_file": "app/api/execute/check-and-execute/route.ts",
+      "source": "docs/api/direct-execution.md",
+      "line": 383
+    },
+    {
+      "method": "POST",
+      "path": "/api/execute/contract-call",
+      "route_file": "app/api/execute/contract-call/route.ts",
+      "source": "docs/api/direct-execution.md",
+      "line": 327
+    },
+    {
+      "method": "POST",
+      "path": "/api/execute/transfer",
+      "route_file": "app/api/execute/transfer/route.ts",
+      "source": "docs/api/direct-execution.md",
+      "line": 265
+    },
+    {
+      "method": "POST",
+      "path": "/api/executions/{executionId}/cancel",
+      "route_file": "app/api/executions/[executionId]/cancel/route.ts",
+      "source": "docs/api/authentication.md",
+      "line": 80
+    },
+    {
+      "method": "POST",
+      "path": "/api/hub/featured",
+      "route_file": "app/api/hub/featured/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 361
+    },
+    {
+      "method": "POST",
+      "path": "/api/integrations",
+      "route_file": "app/api/integrations/route.ts",
+      "source": "docs/api/integrations.md",
+      "line": 66
+    },
+    {
+      "method": "POST",
+      "path": "/api/integrations/{integrationId}/test",
+      "route_file": "app/api/integrations/[integrationId]/test/route.ts",
+      "source": "docs/api/integrations.md",
+      "line": 107
+    },
+    {
+      "method": "POST",
+      "path": "/api/keys",
+      "route_file": "app/api/keys/route.ts",
+      "source": "docs/api/api-keys.md",
+      "line": 67
+    },
+    {
+      "method": "POST",
+      "path": "/api/organizations/{organizationId}/leave",
+      "route_file": "app/api/organizations/[organizationId]/leave/route.ts",
+      "source": "docs/api/organizations.md",
+      "line": 13
+    },
+    {
+      "method": "POST",
+      "path": "/api/projects",
+      "route_file": "app/api/projects/route.ts",
+      "source": "docs/api/projects.md",
+      "line": 38
+    },
+    {
+      "method": "POST",
+      "path": "/api/public-tags",
+      "route_file": "app/api/public-tags/route.ts",
+      "source": "docs/api/tags.md",
+      "line": 110
+    },
+    {
+      "method": "POST",
+      "path": "/api/tags",
+      "route_file": "app/api/tags/route.ts",
+      "source": "docs/api/tags.md",
+      "line": 42
+    },
+    {
+      "method": "POST",
+      "path": "/api/user/delete",
+      "route_file": "app/api/user/delete/route.ts",
+      "source": "docs/api/user.md",
+      "line": 202
+    },
+    {
+      "method": "POST",
+      "path": "/api/user/forgot-password",
+      "route_file": "app/api/user/forgot-password/route.ts",
+      "source": "docs/api/user.md",
+      "line": 173
+    },
+    {
+      "method": "POST",
+      "path": "/api/user/password",
+      "route_file": "app/api/user/password/route.ts",
+      "source": "docs/api/user.md",
+      "line": 156
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/{workflowId}/execute",
+      "route_file": "app/api/workflow/[workflowId]/execute/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 230
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/create",
+      "route_file": "app/api/workflows/create/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 84
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/{id}/execute",
+      "route_file": "app/api/workflows/[workflowId]/execute/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 184
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/{id}/webhook",
+      "route_file": "app/api/workflows/[workflowId]/webhook/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 184
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/{workflowId}/claim",
+      "route_file": "app/api/workflows/[workflowId]/claim/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 295
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/{workflowId}/duplicate",
+      "route_file": "app/api/workflows/[workflowId]/duplicate/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 271
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/{workflowId}/execute",
+      "route_file": "app/api/workflows/[workflowId]/execute/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 227
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/{workflowId}/simulate",
+      "route_file": "app/api/workflows/[workflowId]/simulate/route.ts",
+      "source": "docs/api/direct-execution.md",
+      "line": 717
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/{workflowId}/webhook",
+      "route_file": "app/api/workflows/[workflowId]/webhook/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 263
+    },
+    {
+      "method": "PUT",
+      "path": "/api/integrations/{integrationId}",
+      "route_file": "app/api/integrations/[integrationId]/route.ts",
+      "source": "docs/api/integrations.md",
+      "line": 84
+    },
+    {
+      "method": "PUT",
+      "path": "/api/user/rpc-preferences/{chainId}",
+      "route_file": "app/api/user/rpc-preferences/[chainId]/route.ts",
+      "source": "docs/api/user.md",
+      "line": 131
+    },
+    {
+      "method": "PUT",
+      "path": "/api/workflows/{workflowId}/go-live",
+      "route_file": "app/api/workflows/[workflowId]/go-live/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 303
+    }
+  ]
+}

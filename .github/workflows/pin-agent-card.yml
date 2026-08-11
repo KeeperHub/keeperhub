@@ -1,0 +1,42 @@
+# Type: reusable | Called by ci-pipeline.yml on prod pushes after deploy-ready.
+# Pins data/agent-registry.json to Pinata and reports drift between the new CID
+# and the on-chain agentURI on the ERC-8004 Identity Registry. Never sends a
+# transaction -- the owner private key stays out of CI. If drift is logged,
+# run scripts/update-agent-uri.ts locally to submit the on-chain update.
+name: pin-agent-card
+
+on:
+  workflow_call: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Pin agent-registry.json to Pinata
+        env:
+          PINATA_JWT: ${{ secrets.PINATA_JWT }}
+        run: pnpm tsx scripts/pin-agent-card.ts

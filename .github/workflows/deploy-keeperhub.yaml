@@ -1,0 +1,394 @@
+# Type: reusable | Called by ci-pipeline.yml
+# Pure deployer: expects images to already exist in ECR (built by build-images.yml).
+# Deploys the whole execution pipeline (app + executor + schedule + block +
+# metrics-collector) as the single atomic `keeperhub` keeperhub-stack release, so
+# all components roll together and roll back together. Supersedes the separate
+# deploy-executor / deploy-scheduler / deploy-metrics-collector workflows.
+# One-time per env: run the adopt-and-cutover runbook before the first stack
+# deploy so the existing standalone releases are adopted into this one.
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        description: 'Pre-built image tag (short SHA).'
+        type: string
+        required: false
+        default: ''
+
+name: deploy-keeperhub
+
+permissions:
+  contents: read
+  id-token: write
+
+# Serialize app deploys per target so two near-simultaneous pushes to the same
+# branch never run `helm upgrade` against the same release at once. Without this
+# the second run fails with "another operation (install/upgrade/rollback) is in
+# progress". cancel-in-progress is false: the second deploy queues behind the
+# first rather than cancelling an in-flight helm operation (cancelling mid-upgrade
+# is what leaves a release stuck in pending-*). Mirrors deploy-executor.yaml.
+concurrency:
+  group: deploy-keeperhub-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+    runs-on: ubuntu-latest
+    env:
+      HELM_FILE: deploy/keeperhub-stack/${{ vars.TO_HELM_VALUES_DIR }}/values.yaml
+      REGION: ${{ vars.TO_REGION }}
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      NAMESPACE: keeperhub
+      SERVICE_NAME: keeperhub
+      SERVICE_ACCOUNT_ROLE_ARN: ${{ vars.TO_SERVICE_ACCOUNT_ROLE_ARN }}
+      EXECUTOR_SERVICE_ACCOUNT_ROLE_ARN: ${{ vars.TO_EXECUTOR_ROLE_ARN }}
+      SCHEDULER_SERVICE_ACCOUNT_ROLE_ARN: ${{ vars.TO_SCHEDULER_ROLE_ARN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Check commit message for skip flags
+        id: skip
+        run: |
+          MSG=$(git log -1 --format=%B)
+          echo "skip_deploy=$([[ "$MSG" == *"[skip deploy]"* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Connect to EKS
+        uses: ./.github/actions/eks-connect
+        with:
+          enabled: ${{ vars.TO_EKS_CONNECT }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Extract commit hash
+        id: vars
+        shell: bash
+        env:
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          if [[ -n "${INPUT_IMAGE_TAG}" ]]; then
+            echo "sha_short=${INPUT_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Replace variables in the Helm values file
+        id: replace-vars
+        if: steps.skip.outputs.skip_deploy != 'true'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+          SERVICE_ACCOUNT_ROLE_ARN: ${{ env.SERVICE_ACCOUNT_ROLE_ARN }}
+          EXECUTOR_SERVICE_ACCOUNT_ROLE_ARN: ${{ env.EXECUTOR_SERVICE_ACCOUNT_ROLE_ARN }}
+          SCHEDULER_SERVICE_ACCOUNT_ROLE_ARN: ${{ env.SCHEDULER_SERVICE_ACCOUNT_ROLE_ARN }}
+          AWS_ACCOUNT_ID: ${{ vars.TO_AWS_ACCOUNT_ID }}
+        run: |
+          sed -i "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g" "$HELM_FILE"
+          sed -i "s|\${IMAGE_TAG}|${IMAGE_TAG}|g" "$HELM_FILE"
+          sed -i "s|\${SERVICE_ACCOUNT_ROLE_ARN}|${SERVICE_ACCOUNT_ROLE_ARN}|g" "$HELM_FILE"
+          sed -i "s|\${EXECUTOR_SERVICE_ACCOUNT_ROLE_ARN}|${EXECUTOR_SERVICE_ACCOUNT_ROLE_ARN}|g" "$HELM_FILE"
+          sed -i "s|\${SCHEDULER_SERVICE_ACCOUNT_ROLE_ARN}|${SCHEDULER_SERVICE_ACCOUNT_ROLE_ARN}|g" "$HELM_FILE"
+          sed -i "s|\${AWS_ACCOUNT_ID}|${AWS_ACCOUNT_ID}|g" "$HELM_FILE"
+
+      - name: Configure kubectl
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.REGION }}
+
+      - name: Ensure namespace exists
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply RBAC for Job Spawner
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          kubectl apply -f deploy/keeperhub-stack/${{ vars.TO_HELM_VALUES_DIR }}/rbac.yaml
+
+      - name: Apply NetworkPolicy for workflow runner egress hardening
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          kubectl apply -f deploy/keeperhub-stack/${{ vars.TO_HELM_VALUES_DIR }}/networkpolicy.yaml
+
+      - name: Apply workflow-runner ServiceAccount
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          kubectl apply -f deploy/keeperhub-stack/${{ vars.TO_HELM_VALUES_DIR }}/runner-sa.yaml
+
+      - name: Deploying Service to Kubernetes with Helm
+        id: deploy
+        if: steps.skip.outputs.skip_deploy != 'true'
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.12
+        with:
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          config-files: ${{ env.HELM_FILE }}
+          chart-path: techops-services/keeperhub-stack
+          namespace: ${{ env.NAMESPACE }}
+          timeout: 15m0s
+          name: ${{ env.SERVICE_NAME }}
+          chart-repository: https://techops-services.github.io/helm-charts
+          version: 0.3.0
+          atomic: true
+
+      - name: Wait for deployment health check
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          HEALTH_URL="http://${SERVICE_NAME}-common.${NAMESPACE}.svc.cluster.local:3000/api/health"
+          echo "Checking ${HEALTH_URL} from inside the cluster..."
+          kubectl run "health-check-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --namespace "${NAMESPACE}" \
+            --restart=Never \
+            --attach \
+            --rm \
+            --quiet \
+            --image=curlimages/curl:8.11.0 \
+            --env="HEALTH_URL=${HEALTH_URL}" \
+            --command -- sh -c '
+              for i in $(seq 1 30); do
+                STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo "000")
+                if [ "$STATUS" = "200" ]; then
+                  echo "Deployment is ready!"
+                  exit 0
+                fi
+                echo "Attempt $i/30: got HTTP $STATUS, waiting 10s..."
+                sleep 10
+              done
+              echo "Deployment did not become ready in time"
+              exit 1
+            '
+
+      - name: Set up Helm
+        if: steps.skip.outputs.skip_deploy != 'true'
+        uses: azure/setup-helm@v5
+
+      - name: Validate IRSA credentials end-to-end
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          helm test "${SERVICE_NAME}" \
+            --namespace "${NAMESPACE}" \
+            --filter "name=${SERVICE_NAME}-common-test-irsa-auth" \
+            --logs
+
+      - name: Seed onboarding workflows
+        if: steps.skip.outputs.skip_deploy != 'true'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+          REGION: ${{ env.REGION }}
+          NAMESPACE: ${{ env.NAMESPACE }}
+          SEED_EMAIL: ${{ vars.ONBOARDING_SEED_EMAIL }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.ref_name }}" == "prod" ]]; then
+            SSM_PATH="/eks/techops-prod/keeperhub/db-url"
+            MIGRATOR_IMAGE="${ECR_REGISTRY}/keeperhub-prod:migrator-${IMAGE_TAG}"
+          else
+            SSM_PATH="/eks/techops-staging/keeperhub/db-url"
+            MIGRATOR_IMAGE="${ECR_REGISTRY}/keeperhub-staging:migrator-${IMAGE_TAG}"
+          fi
+          DATABASE_URL=$(aws ssm get-parameter --name "${SSM_PATH}" --with-decryption --query "Parameter.Value" --output text --region "${REGION}")
+          kubectl delete job keeperhub-onboarding-seed -n "${NAMESPACE}" --ignore-not-found
+          kubectl apply -n "${NAMESPACE}" -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keeperhub-onboarding-seed
+          spec:
+            backoffLimit: 2
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: onboarding-seed
+                    image: ${MIGRATOR_IMAGE}
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - 'pnpm tsx scripts/seed/seed-onboarding-workflows.ts'
+                    env:
+                      - name: DATABASE_URL
+                        value: "${DATABASE_URL}"
+                      - name: ALLOW_REMOTE
+                        value: "1"
+                      - name: SEED_EMAIL
+                        value: "${SEED_EMAIL}"
+          EOF
+          kubectl wait --for=condition=complete job/keeperhub-onboarding-seed -n "${NAMESPACE}" --timeout=120s || true
+          echo "--- onboarding-seed job logs ---"
+          kubectl logs -n "${NAMESPACE}" job/keeperhub-onboarding-seed --tail=30 || true
+
+  # DISABLED: remote E2E tests temporarily disabled while KEEP-1351 stabilises auth/rate-limit infrastructure
+  e2e-playwright-remote:
+    needs: deploy
+    if: ${{ vars.ENABLE_E2E_REMOTE_TESTS == 'true' }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+    env:
+      BASE_URL: ${{ vars.TO_HEALTH_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Setup Node.js, pnpm, and Playwright
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          install-playwright: "true"
+
+      - name: Fetch TEST_API_KEY from Parameter Store
+        run: |
+          TEST_API_KEY=$(aws ssm get-parameter \
+            --name "/eks/techops-staging/keeperhub/test-api-key" \
+            --with-decryption --query "Parameter.Value" --output text \
+            --region us-east-2)
+          echo "::add-mask::$TEST_API_KEY"
+          echo "TEST_API_KEY=$TEST_API_KEY" >> "$GITHUB_ENV"
+
+      - name: Wait for deployment to be ready
+        run: |
+          echo "Waiting for ${{ env.BASE_URL }}/api/health to return 200..."
+          CURL_ARGS=(-s -o /dev/null -w "%{http_code}" -L)
+          if [[ -n "$CF_ACCESS_CLIENT_ID" && -n "$CF_ACCESS_CLIENT_SECRET" ]]; then
+            CURL_ARGS+=(-H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}")
+          fi
+          for i in {1..30}; do
+            STATUS=$(curl "${CURL_ARGS[@]}" "${{ env.BASE_URL }}/api/health" || echo "000")
+            if [[ "$STATUS" == "200" ]]; then
+              echo "Deployment is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: got HTTP $STATUS, waiting 10s..."
+            sleep 10
+          done
+          echo "Deployment did not become ready in time"
+          exit 1
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.TO_CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.TO_CF_ACCESS_CLIENT_SECRET }}
+
+      - name: Probe documented API endpoints
+        # Walks specs/api-coverage.json (committed by the PR-time
+        # check:api-docs guard) and sends a GET to every documented GET
+        # endpoint on the deployed env. We deliberately use GET (not
+        # HEAD): many Next.js App Router handlers and any middleware
+        # that branches on request.method do not implement HEAD, so a
+        # 405 from a healthy GET handler would look like drift.
+        #
+        # Redirects are NOT followed (no curl -L, on purpose): curl
+        # resends custom -H headers - including X-API-Key and the CF
+        # Access secret - across redirects, even cross-host, which would
+        # leak those credentials if BASE_URL ever 30x'd off-origin.
+        #
+        # 404 is treated as drift ONLY for static (parameter-free) paths.
+        # A path-param route (e.g. /api/workflows/{workflowId}) probed
+        # with a fixture id legitimately returns 404 "resource not found"
+        # while the route itself exists and works - indistinguishable from
+        # a missing route file, so we cannot gate a release on it. For
+        # param routes only 5xx and connection failures (000) count as
+        # drift; any 2xx/4xx proves the route is reachable. Static routes
+        # must resolve, so a static 404 is real drift.
+        #
+        # Warn-only on the first deploy after merge so we can see what
+        # fires before it gates a release - flip continue-on-error to
+        # false once a clean run is recorded.
+        continue-on-error: true
+        run: |
+          if [ ! -f specs/api-coverage.json ]; then
+            echo "::error::specs/api-coverage.json not found; PR-time check:api-docs should have produced this"
+            exit 1
+          fi
+          HEADERS=(-H "X-API-Key: ${TEST_API_KEY}")
+          if [[ -n "$CF_ACCESS_CLIENT_ID" && -n "$CF_ACCESS_CLIENT_SECRET" ]]; then
+            HEADERS+=(-H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}")
+          fi
+          FIXTURE="probe-fixture"
+          FAILED=0
+          REACHED=0
+          SKIPPED=$(jq '[.endpoints[] | select(.streaming == true) | .path] | length' specs/api-coverage.json)
+          if [ "$SKIPPED" -gt 0 ]; then
+            echo "Skipping ${SKIPPED} streaming endpoint(s) (text/event-stream; curl would block indefinitely):"
+            jq -r '.endpoints[] | select(.streaming == true) | "  GET \(.path)"' specs/api-coverage.json
+          fi
+          while IFS=$'\t' read -r METHOD PATH_TEMPLATE; do
+            [ "$METHOD" = "GET" ] || continue
+            URL_PATH=$(printf '%s' "$PATH_TEMPLATE" | sed -E "s/\{[^}]+\}/${FIXTURE}/g")
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 10 \
+              "${HEADERS[@]}" \
+              "${{ env.BASE_URL }}${URL_PATH}" || echo "000")
+            HAS_PARAM=0
+            case "$PATH_TEMPLATE" in
+              *"{"*) HAS_PARAM=1 ;;
+            esac
+            case "$STATUS" in
+              200|400|401|403)
+                REACHED=$((REACHED+1))
+                ;;
+              404)
+                if [ "$HAS_PARAM" -eq 1 ]; then
+                  REACHED=$((REACHED+1))
+                  echo "GET ${PATH_TEMPLATE} -> 404 (param route; resource-not-found for a fixture id is expected, route assumed present)"
+                else
+                  FAILED=$((FAILED+1))
+                  echo "::warning::endpoint drift: GET ${PATH_TEMPLATE} returned 404 on ${{ env.BASE_URL }} (static route should resolve)"
+                fi
+                ;;
+              *)
+                FAILED=$((FAILED+1))
+                echo "::warning::endpoint drift: GET ${PATH_TEMPLATE} returned ${STATUS} on ${{ env.BASE_URL }}"
+                ;;
+            esac
+          done < <(jq -r '.endpoints[] | select(.streaming != true) | [.method, .path] | @tsv' specs/api-coverage.json)
+          TOTAL=$((REACHED + FAILED))
+          echo "Reached ${REACHED} documented GET endpoints; ${FAILED} drift; ${TOTAL} probed."
+          # Schema sanity guard: if 0 endpoints were probed at all, the
+          # artifact shape changed (renamed field, empty array, jq filter
+          # silently producing nothing) and the probe is meaningless.
+          # We fail rather than greenlight a deploy with no signal.
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::error::api-coverage probe walked zero endpoints; specs/api-coverage.json may have changed shape"
+            exit 1
+          fi
+          if [ "$FAILED" -gt 0 ]; then
+            exit 1
+          fi
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.TO_CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.TO_CF_ACCESS_CLIENT_SECRET }}
+          TEST_API_KEY: ${{ env.TEST_API_KEY }}
+
+      - name: Run Playwright tests against deployed environment
+        run: pnpm exec playwright test --grep-invert "happy-paths"
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          TEST_API_KEY: ${{ env.TEST_API_KEY }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.TO_CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.TO_CF_ACCESS_CLIENT_SECRET }}
+          CI: true
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-remote-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

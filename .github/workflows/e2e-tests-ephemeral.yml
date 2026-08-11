@@ -1,0 +1,1475 @@
+# Type: reusable | Called by ci-pipeline.yml
+name: E2E Tests Ephemeral
+
+on:
+  workflow_call:
+    inputs:
+      caller_event:
+        description: "Event name from the calling workflow (push, pull_request)"
+        type: string
+        required: false
+        default: ""
+      caller_action:
+        description: "Event action from the calling workflow (labeled, synchronize)"
+        type: string
+        required: false
+        default: ""
+      has_e2e_label:
+        description: "Whether the PR has the run-e2e-tests-ephemeral label"
+        type: boolean
+        required: false
+        default: false
+      label_name:
+        description: "Name of the label that was just added (for labeled events)"
+        type: string
+        required: false
+        default: ""
+      image_tag:
+        description: "ECR image tag (short SHA). When provided, runs app from Docker instead of bare-metal build."
+        type: string
+        required: false
+        default: ""
+      sandbox_image:
+        description: "Full ECR ref of the prebuilt sandbox image. When provided, start-sandbox pulls it instead of building locally."
+        type: string
+        required: false
+        default: ""
+      ecr_registry:
+        description: "ECR registry URL"
+        type: string
+        required: false
+        default: ""
+      ecr_repo:
+        description: "ECR repository name"
+        type: string
+        required: false
+        default: ""
+      ecr_region:
+        description: "AWS region for ECR"
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+  # Listing/downloading the nightly fork-cache artifact (tier1 job);
+  # callers must grant it too or the download falls back to a live fork.
+  actions: read
+
+jobs:
+  should-run:
+    runs-on: ubuntu-latest
+    # Always staging: e2e validates against test credentials, never prod.
+    environment: staging
+    outputs:
+      run-e2e: ${{ steps.check.outputs.run-e2e }}
+    steps:
+      - name: Checkout code
+        if: inputs.caller_event == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Check trigger conditions
+        id: check
+        env:
+          EFFECTIVE_EVENT: ${{ inputs.caller_event || github.event_name }}
+        run: |
+          echo "run-e2e=false" >> "$GITHUB_OUTPUT"
+
+          # Check environment-level kill switch
+          if [[ "${{ vars.ENABLE_E2E_EPHEMERAL_TESTS }}" != "true" ]]; then
+            echo "E2E tests disabled for this environment (ENABLE_E2E_EPHEMERAL_TESTS=${{ vars.ENABLE_E2E_EPHEMERAL_TESTS }})"
+            exit 0
+          fi
+
+          # Check for [skip e2e] flag in commit message (push events only)
+          if [[ "$EFFECTIVE_EVENT" == "push" ]]; then
+            MSG=$(git log -1 --format=%B 2>/dev/null || echo "")
+            if [[ "$MSG" == *"[skip e2e]"* ]]; then
+              echo "Skipping E2E tests: [skip e2e] found in commit message"
+              exit 0
+            fi
+          fi
+
+          if [[ "$EFFECTIVE_EVENT" == "push" || "$EFFECTIVE_EVENT" == "workflow_dispatch" || "$EFFECTIVE_EVENT" == "schedule" ]]; then
+            echo "run-e2e=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$EFFECTIVE_EVENT" == "pull_request" ]]; then
+            # Run if the e2e label is present (covers both labeled and synchronize events)
+            if [[ "${{ inputs.has_e2e_label }}" == "true" ]]; then
+              echo "run-e2e=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  # Production build for the bare-metal path (PRs, workflow_dispatch,
+  # schedule, prod pushes), done once and shared: the e2e vitest and
+  # protocol-coverage jobs download the artifact and start the app from
+  # it instead of each running its own pnpm build. Docker-path runs
+  # (staging pushes provide image_tag) skip this job; those jobs pull
+  # the prebuilt ECR image instead.
+  build-app:
+    needs: should-run
+    if: ${{ needs.should-run.outputs.run-e2e == 'true' && inputs.image_tag == '' }}
+    runs-on: ${{ vars.USE_SELF_HOSTED_RUNNERS == 'true' && inputs.caller_event != 'pull_request' && 'arc-keeperhub-build' || 'ubuntu-latest' }}
+    # Always staging: e2e validates against test credentials, never prod.
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # pnpm build runs discover-plugins itself, so the plain setup is enough.
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Cache Next.js build
+        uses: actions/cache@v6
+        with:
+          path: .next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ hashFiles('**/*.ts', '**/*.tsx') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-
+            ${{ runner.os }}-nextjs-
+
+      # Same env the start-app action's bare-metal build step used when it
+      # lived inside the e2e vitest job, except DATABASE_URL, which must be
+      # ABSENT here: build-time prerenders (app/sitemap.ts, tag pages) fall
+      # back to static-only output when it is unset, but rethrow DB errors
+      # when it is set - by design, so misconfigured real builds fail loud.
+      # This job has no postgres, so absent is correct and matches the
+      # Docker image build, the path production artifacts actually use.
+      - name: Build application
+        run: pnpm build
+        env:
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          CI: true
+          TEST_API_KEY: ${{ secrets.TEST_API_KEY }}
+          NEXT_PUBLIC_BILLING_ENABLED: "true"
+          # Off for e2e: Turnkey Gas Station broadcasts via Turnkey's own
+          # infrastructure, which cannot reach the local anvil fork. Since
+          # 7359f703d ("confirm sponsored tx outcome before falling back to
+          # direct signing"), a sponsored fork write that Turnkey accepts but
+          # cannot confirm raises SponsoredTxPendingError and no longer falls
+          # back to direct signing, so fork writes whose outcome depends on
+          # fabricated state (e.g. ethena unstake after an elapsed-cooldown
+          # cheatcode) fail instead of executing. The fork wallet is already
+          # gas-funded via ensureNativeGas/anvil_setBalance, so direct signing
+          # works; nothing in tests/e2e asserts the sponsored path.
+          NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED: "false"
+          # Inlined into the shared artifact at build time, so the
+          # /api/ai/generate route is ungated in every consumer of the
+          # artifact. The e2e vitest job's api-key-auth suite needs it;
+          # in the protocol job the route is inert only because
+          # ANTHROPIC_API_KEY is unset there.
+          NEXT_PUBLIC_AI_PROMPT_ENABLED: "true"
+          # Production builds assert SANDBOX_BACKEND=remote and SANDBOX_URL is
+          # set (the /.well-known/workflow/v1/step route guard). Consumers
+          # start a real sandbox; this is only the build-guard placeholder.
+          SANDBOX_BACKEND: remote
+          SANDBOX_URL: http://localhost:8787
+
+      # One tarball uploads far faster than .next's thousands of small files
+      # and sidesteps upload-artifact's default hidden-file exclusion (.next
+      # is a dot-directory). cache/ is the incremental-build cache persisted
+      # via actions/cache above; standalone/ is the self-contained deploy
+      # copy that pnpm start never reads. Neither belongs in the artifact.
+      - name: Pack build output
+        run: tar -czf /tmp/next-build.tgz --exclude='.next/cache' --exclude='.next/standalone' .next
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextjs-production-build
+          path: /tmp/next-build.tgz
+          # overwrite: a rerun-all otherwise 409s against the immutable
+          # artifact left by the prior attempt. 3-day retention: a
+          # re-run-failed after a weekend must still find the artifact.
+          overwrite: true
+          retention-days: 3
+
+  # Tier 1 fork simulations: every registry action executed directly
+  # against an anvil mainnet fork (impersonation instead of signing, no
+  # app build), asserting encoding and on-chain semantics with the same
+  # output oracle as the e2e suites. Runs in parallel with the full e2e
+  # jobs and finishes in a fraction of their time; the executed-test
+  # floor guards against silent self-skips. See
+  # specs/protocol-coverage-methodology.md.
+  tier1-simulations:
+    needs: should-run
+    if: needs.should-run.outputs.run-e2e == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    # Sized for the sweep's worst case, not its happy path: the 90s
+    # per-read hang guard (simulate.ts READ_TIMEOUT_MS) across
+    # sequential cold reads through an archive upstream can pass 20
+    # minutes, which would kill the job before the floor report writes.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      # The cache is produced by protocol-nightly.yml, a different
+      # workflow, and actions/download-artifact cannot fetch across
+      # workflows without a concrete run id - list and download through
+      # gh api with github.token instead (the token this repo's other
+      # workflows already use for API access; the cross-workflow
+      # artifact listing itself is new here). Consumption requires
+      # ANVIL_FORK_MAINNET_URL: the cache serves warmed state locally,
+      # but cold reads at a day-old pin need an archive upstream.
+      # Every failure mode (no secret, no fresh staging artifact, API
+      # error, corrupt zip/tar, bad name) exits 0 with empty outputs so
+      # the fork-start step falls back to the live fork.
+      - name: Download latest fork RPC cache
+        id: fork-cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANVIL_FORK_MAINNET_URL: ${{ secrets.ANVIL_FORK_MAINNET_URL }}
+        run: |
+          if [ -z "$ANVIL_FORK_MAINNET_URL" ]; then
+            echo "ANVIL_FORK_MAINNET_URL not set; cold reads at a stale pin need an archive upstream - will start a live fork"
+            exit 0
+          fi
+          # Freshness gates: only a non-expired artifact from the last
+          # 36 hours whose producing run was on staging (a nightly on
+          # the default branch, not a fork-cache job from a topic
+          # branch experiment).
+          cutoff=$(date -u -d '36 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=fork-cache-mainnet&per_page=10" \
+            --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_branch == \"staging\" and .created_at > \"${cutoff}\")] | sort_by(.created_at) | last | .id // empty" \
+            2>/dev/null) || artifact_id=""
+          if [ -z "$artifact_id" ]; then
+            echo "no fresh fork-cache-mainnet artifact from staging; will start a live fork"
+            exit 0
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > fork-cache.zip; then
+            echo "artifact ${artifact_id} download failed; will start a live fork"
+            exit 0
+          fi
+          if ! unzip -o fork-cache.zip -d fork-cache-artifact; then
+            echo "artifact ${artifact_id} unzip failed; will start a live fork"
+            exit 0
+          fi
+          tarball=$(find fork-cache-artifact -maxdepth 1 -name 'fork-cache-mainnet-*.tgz' | head -n 1)
+          block=""
+          if [ -n "$tarball" ]; then
+            block=$(basename "$tarball" .tgz | grep -oE '[0-9]+$') || true
+          fi
+          if [ -z "$tarball" ] || [ -z "$block" ]; then
+            echo "artifact has no fork-cache-mainnet-<block>.tgz; will start a live fork"
+            exit 0
+          fi
+          mkdir -p fork-cache
+          if ! tar -xzf "$tarball" -C fork-cache; then
+            echo "cache tar extraction failed; will start a live fork"
+            rm -rf fork-cache
+            exit 0
+          fi
+          if [ ! -f "fork-cache/rpc/mainnet/${block}/storage.json" ]; then
+            echo "cache tar lacks rpc/mainnet/${block}/storage.json; will start a live fork"
+            rm -rf fork-cache
+            exit 0
+          fi
+          # anvil runs as uid 1000 (foundry) in the container; the
+          # runner user extracting the tar is a different uid.
+          chmod -R a+rX fork-cache
+          echo "using fork cache at pinned block ${block}"
+          echo "dir=fork-cache" >> "$GITHUB_OUTPUT"
+          echo "block=$block" >> "$GITHUB_OUTPUT"
+
+      - name: Start anvil Ethereum mainnet fork
+        run: |
+          CACHE_DIR="${{ steps.fork-cache.outputs.dir }}"
+          if [ -n "$CACHE_DIR" ]; then
+            # Cache-loaded fork: mount the nightly RPC fetch cache at
+            # foundry's cache path and re-pin to the block its values
+            # were fetched at. Everything the nightly sweep touched is
+            # served locally with zero upstream requests, and the fork
+            # starts pristine (the cache holds upstream fetches, not
+            # sweep mutations); cold state lazy-fetches from the
+            # archive upstream at the pin, which the download step
+            # guaranteed is configured. Measured cache behavior is
+            # documented in scripts/protocol-local.sh (start_fork).
+            docker run -d --name keeperhub-test-anvil-fork-mainnet -p 8548:8545 \
+              -v "$PWD/$CACHE_DIR:/home/foundry/.foundry/cache" \
+              --entrypoint anvil ghcr.io/foundry-rs/foundry:latest \
+              --host 0.0.0.0 \
+              --fork-url "$ANVIL_FORK_MAINNET_URL" \
+              --fork-block-number "${{ steps.fork-cache.outputs.block }}" \
+              --chain-id 1 --block-time 1
+          else
+            docker network create keeperhub-network 2>/dev/null || true
+            docker compose --profile test up -d test-anvil-fork-mainnet
+          fi
+          retries=0
+          until curl -sf -X POST http://localhost:8548 \
+                -H "Content-Type: application/json" \
+                -d '{"jsonrpc":"2.0","method":"eth_chainId","id":1}' | grep -q '"0x1"'; do
+            retries=$((retries + 1))
+            if [ "$retries" -ge 30 ]; then
+              echo "anvil mainnet fork did not become ready in 60s"
+              docker logs keeperhub-test-anvil-fork-mainnet || true
+              exit 1
+            fi
+            sleep 2
+          done
+        env:
+          ANVIL_FORK_MAINNET_URL: ${{ secrets.ANVIL_FORK_MAINNET_URL }}
+
+      # Pinned-block fork for protocols whose fixtures bind state
+      # recorded at a specific block (testData.pinnedBlock; pendle - its
+      # markets expire, so live-head bindings rot). The pin is resolved
+      # from the registry via scripts/protocol-pinned-block.ts so a
+      # fixture refresh touches only the protocol's testData. A fixed pin
+      # needs an upstream serving historical state (public endpoints
+      # refuse state reads even a few hundred blocks behind head), so
+      # without the archive secret this step no-ops and the pinned
+      # protocols self-skip (chains.test.ts gates each pinned suite on
+      # PROTOCOL_SIM_RPC_1_PINNED, which stays empty).
+      - name: Start pinned-block anvil fork
+        id: pinned-fork
+        env:
+          ANVIL_FORK_MAINNET_URL: ${{ secrets.ANVIL_FORK_MAINNET_URL }}
+        run: |
+          if [ -z "$ANVIL_FORK_MAINNET_URL" ]; then
+            echo "ANVIL_FORK_MAINNET_URL not set; pinned-block fixtures need an archive upstream - pinned protocols (pendle) will self-skip"
+            exit 0
+          fi
+          pin=$(pnpm tsx scripts/protocol-pinned-block.ts 1)
+          docker run -d --name keeperhub-test-anvil-fork-mainnet-pinned -p 8549:8545 \
+            --entrypoint anvil ghcr.io/foundry-rs/foundry:latest \
+            --host 0.0.0.0 \
+            --fork-url "$ANVIL_FORK_MAINNET_URL" \
+            --fork-block-number "$pin" \
+            --chain-id 1 --block-time 1
+          retries=0
+          until curl -sf -X POST http://localhost:8549 \
+                -H "Content-Type: application/json" \
+                -d '{"jsonrpc":"2.0","method":"eth_chainId","id":1}' | grep -q '"0x1"'; do
+            retries=$((retries + 1))
+            if [ "$retries" -ge 30 ]; then
+              echo "pinned anvil mainnet fork did not become ready in 60s"
+              docker logs keeperhub-test-anvil-fork-mainnet-pinned || true
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "pinned mainnet fork at block ${pin} on :8549"
+          echo "rpc=http://localhost:8549" >> "$GITHUB_OUTPUT"
+
+      # Fail in seconds on a dead fork or upstream instead of as vitest
+      # timeouts. eth_getBalance of the beacon deposit contract forces a
+      # pinned-block upstream fetch: the address is untouched by local
+      # test state and never referenced by the sweep, so it cannot be
+      # served from the mounted cache - the probe validates the archive
+      # upstream at the pin even on a cache-loaded fork. The pinned fork
+      # line is present only when that fork started; the same probe
+      # there validates the archive upstream serves state at the fixture
+      # pin.
+      - name: Fork health probe
+        uses: ./.github/actions/probe-forks
+        with:
+          forks: |
+            mainnet|http://localhost:8548|0x1|0x00000000219ab540356cBB839Cbe05303d7705Fa
+            ${{ steps.pinned-fork.outputs.rpc != '' && 'mainnet-pinned|http://localhost:8549|0x1|0x00000000219ab540356cBB839Cbe05303d7705Fa' || '' }}
+
+      - name: Run Tier 1 simulations (chain 1)
+        run: |
+          pnpm vitest run tests/e2e/vitest/protocol-simulation \
+            --reporter=default --reporter=json --outputFile=sim-results.json
+          # Floor 150: the chain-1 sweep currently executes 229 tests
+          # (2026-07-07, post chronicle/superfluid re-homing); below 150
+          # means suites are self-skipping or a protocol lost its
+          # bindings.
+          pnpm tsx scripts/protocol-coverage-floor.ts sim-results.json 150
+        env:
+          PROTOCOL_SIM_RPC_1: http://localhost:8548
+          PROTOCOL_SIM_RPC_1_PINNED: ${{ steps.pinned-fork.outputs.rpc }}
+
+  # Tier 1 fork simulations on the L2s (Base 8453, Arbitrum One 42161), one
+  # matrix leg per chain so the two sweeps run in parallel on separate
+  # runners and neither extends the chain-1 tier1 budget. Each leg forks its
+  # chain from a public upstream - simulations read forked state and never
+  # mine against the upstream, so a public endpoint is sufficient (override
+  # with the per-chain ANVIL_FORK_*_URL secret for a private one) - then runs
+  # the sweep with only that chain's PROTOCOL_SIM_RPC_<id> set, so
+  # chains.test.ts executes exactly that chain and the executed-test floor is
+  # per-chain. See specs/protocol-coverage-methodology.md.
+  tier1-simulations-l2:
+    name: tier1-simulations-l2 (${{ matrix.name }})
+    needs: should-run
+    if: needs.should-run.outputs.run-e2e == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 20
+    strategy:
+      # One chain's flaky public upstream must not cancel the other leg.
+      fail-fast: false
+      matrix:
+        include:
+          - name: base
+            chain_id: "8453"
+            chain_hex: "0x2105"
+            default_upstream: https://base-rpc.publicnode.com
+            # Floor 15: the Base sweep executes chainlink's price-feed reads
+            # (19) plus ajna's Base reads; below 15 means chainlink is
+            # self-skipping or lost its bindings.
+            floor: "15"
+          - name: arbitrum
+            chain_id: "42161"
+            chain_hex: "0xa4b1"
+            default_upstream: https://arbitrum-one-rpc.publicnode.com
+            # Floor 12: the Arbitrum sweep executes chainlink's price-feed
+            # reads (21, including BTC/ETH); below 12 means self-skipping.
+            floor: "12"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Start anvil ${{ matrix.name }} fork
+        env:
+          ANVIL_FORK_BASE_URL: ${{ secrets.ANVIL_FORK_BASE_URL }}
+          ANVIL_FORK_ARBITRUM_URL: ${{ secrets.ANVIL_FORK_ARBITRUM_URL }}
+          CHAIN_RPC_CONFIG: ${{ secrets.CHAIN_RPC_CONFIG }}
+        run: |
+          # Write-bearing L2 protocols provision balances by storage
+          # fabrication (eth_getStorageAt) and native gas (anvil_setBalance),
+          # which public upstreams reject as archive requests. Prefer the
+          # dedicated secret, then an Alchemy archive upstream derived from
+          # CHAIN_RPC_CONFIG, and only fall back to the public default
+          # (read-only-safe) last.
+          ARCHIVE_FROM_CONFIG=""
+          case "${{ matrix.chain_id }}" in
+            8453) CFG_KEY="base-mainnet" ;;
+            42161) CFG_KEY="arbitrum-mainnet" ;;
+          esac
+          # fallbackRpcUrl is the archive-grade endpoint for both chains (Base
+          # -> Alchemy, Arbitrum -> arb1.arbitrum.io), verified to serve the
+          # storage/account reads fabrication needs; the primary is the
+          # techops load balancer used for reads.
+          # chain-config stores the value gzip-compressed and base64-encoded
+          # behind a KHGZ1 prefix (see update-ssm-parameter.yml). jq cannot read
+          # that, and `// empty` swallows the failure, so a compressed secret
+          # silently degraded the fork to the public default - which is what
+          # made this job flaky. Decode first when the prefix is present.
+          if [ -n "$CHAIN_RPC_CONFIG" ] && [ -n "$CFG_KEY" ]; then
+            case "$CHAIN_RPC_CONFIG" in
+              KHGZ1:*)
+                DECODED_CFG=$(printf '%s' "${CHAIN_RPC_CONFIG#KHGZ1:}" | base64 -d 2>/dev/null | gunzip 2>/dev/null) || DECODED_CFG=""
+                if [ -z "$DECODED_CFG" ]; then
+                  echo "::warning::CHAIN_RPC_CONFIG carries the KHGZ1 prefix but failed to decode; falling back to the public upstream"
+                fi
+                ;;
+              *) DECODED_CFG="$CHAIN_RPC_CONFIG" ;;
+            esac
+            if [ -n "$DECODED_CFG" ]; then
+              # Prefer the archive-grade fallback, but accept the primary so a
+              # config without a fallback still beats the public default.
+              ARCHIVE_FROM_CONFIG=$(printf '%s' "$DECODED_CFG" | jq -r --arg k "$CFG_KEY" \
+                '.[$k].fallbackRpcUrl // .[$k].primaryRpcUrl // empty' 2>/dev/null) || ARCHIVE_FROM_CONFIG=""
+              if [ -z "$ARCHIVE_FROM_CONFIG" ]; then
+                echo "::warning::CHAIN_RPC_CONFIG parsed but has no RPC URL for ${CFG_KEY}; falling back to the public upstream"
+              fi
+            fi
+          elif [ -z "$CHAIN_RPC_CONFIG" ]; then
+            echo "::warning::CHAIN_RPC_CONFIG is empty for this job; the fork will use the public upstream"
+          fi
+          case "${{ matrix.chain_id }}" in
+            8453) UPSTREAM="${ANVIL_FORK_BASE_URL:-${ARCHIVE_FROM_CONFIG:-${{ matrix.default_upstream }}}}" ;;
+            42161) UPSTREAM="${ANVIL_FORK_ARBITRUM_URL:-${ARCHIVE_FROM_CONFIG:-${{ matrix.default_upstream }}}}" ;;
+            *) echo "unknown chain ${{ matrix.chain_id }}"; exit 1 ;;
+          esac
+          # Log which source won, host only - these URLs carry provider API
+          # keys. Without this the job gives no way to tell a credentialed
+          # upstream from the flaky public fallback.
+          if [ -n "$ANVIL_FORK_BASE_URL" ] || [ -n "$ANVIL_FORK_ARBITRUM_URL" ]; then
+            UPSTREAM_SOURCE="ANVIL_FORK_*_URL secret"
+          elif [ -n "$ARCHIVE_FROM_CONFIG" ]; then
+            UPSTREAM_SOURCE="CHAIN_RPC_CONFIG"
+          else
+            UPSTREAM_SOURCE="public default (matrix.default_upstream)"
+          fi
+          echo "fork upstream source: ${UPSTREAM_SOURCE} (host: $(printf '%s' "$UPSTREAM" | sed -E 's#^[a-z]+://([^/]+).*#\1#'))"
+          # Pin a few blocks behind head so a node behind a load-balanced
+          # public upstream already has the block (bash arithmetic parses the
+          # 0x head). See scripts/protocol-local.sh start_fork.
+          HEAD=$(curl -sf -X POST -H 'Content-Type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
+            "$UPSTREAM" | grep -oE '"result":"0x[0-9a-f]+"' | cut -d'"' -f4) || true
+          PIN_ARGS=""
+          if [ -n "$HEAD" ]; then
+            PIN=$((HEAD - 12))
+            PIN_ARGS="--fork-block-number $PIN"
+          fi
+          docker run -d --name keeperhub-test-anvil-fork-${{ matrix.name }} -p 8545:8545 \
+            --entrypoint anvil ghcr.io/foundry-rs/foundry:latest \
+            --host 0.0.0.0 --fork-url "$UPSTREAM" $PIN_ARGS \
+            --chain-id ${{ matrix.chain_id }} --block-time 1
+          retries=0
+          until curl -sf -X POST http://localhost:8545 \
+                -H "Content-Type: application/json" \
+                -d '{"jsonrpc":"2.0","method":"eth_chainId","id":1}' | grep -q '"${{ matrix.chain_hex }}"'; do
+            retries=$((retries + 1))
+            if [ "$retries" -ge 30 ]; then
+              echo "anvil ${{ matrix.name }} fork did not become ready in 60s"
+              docker logs keeperhub-test-anvil-fork-${{ matrix.name }} || true
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "anvil ${{ matrix.name }} fork ready on localhost:8545"
+
+      - name: Run Tier 1 simulations (${{ matrix.name }})
+        run: |
+          pnpm vitest run tests/e2e/vitest/protocol-simulation \
+            --reporter=default --reporter=json --outputFile=sim-results-${{ matrix.name }}.json
+          pnpm tsx scripts/protocol-coverage-floor.ts \
+            sim-results-${{ matrix.name }}.json ${{ matrix.floor }}
+        env:
+          # Only the matrix leg's chain gets an RPC; chains.test.ts skips
+          # every chain whose PROTOCOL_SIM_RPC_<id> is empty, so each leg
+          # runs exactly its one chain and the floor stays per-chain.
+          PROTOCOL_SIM_RPC_8453: ${{ matrix.chain_id == '8453' && 'http://localhost:8545' || '' }}
+          PROTOCOL_SIM_RPC_42161: ${{ matrix.chain_id == '42161' && 'http://localhost:8545' || '' }}
+
+  # Enablement is decided by the should-run job: the environment-level
+  # ENABLE_E2E_EPHEMERAL_TESTS variable is the kill switch, plus the
+  # per-event/label conditions there.
+  e2e-vitest-ephemeral:
+    needs: [should-run, build-app]
+    # build-app is skipped (not failed) on the Docker path, so admit
+    # success or skipped explicitly - a cancelled build-app must not
+    # admit this job, which would only die on artifact-not-found.
+    # !cancelled() overrides the implicit success() that would
+    # otherwise skip this job whenever build-app skips.
+    if: ${{ !cancelled() && needs.should-run.outputs.run-e2e == 'true' && (needs.build-app.result == 'success' || needs.build-app.result == 'skipped') }}
+    runs-on: ${{ vars.USE_SELF_HOSTED_RUNNERS == 'true' && inputs.caller_event != 'pull_request' && 'arc-keeperhub-build' || 'ubuntu-latest' }}
+    # Always staging: e2e validates against test credentials, never prod.
+    environment: staging
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: keeperhub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      localstack:
+        image: localstack/localstack:latest
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: sqs
+          DEBUG: 0
+          EAGER_SERVICE_LOADING: 1
+          LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+        options: >-
+          --health-cmd "curl -sf http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 15s
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # ubuntu-latest ships several GB of preinstalled toolchains this job
+      # never touches (Android SDK, .NET, Haskell/GHC). This job runs an
+      # anvil fork and a sandbox container on top of the base e2e stack --
+      # free the unused space up front rather than risk "no space left on
+      # device" mid-job.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          discover-plugins: "true"
+
+      - name: Download production build
+        if: inputs.image_tag == ''
+        uses: actions/download-artifact@v8
+        with:
+          name: nextjs-production-build
+
+      - name: Unpack production build
+        if: inputs.image_tag == ''
+        run: |
+          tar -xzf next-build.tgz
+          rm next-build.tgz
+
+      - name: Wait for services
+        run: |
+          # Wait for PostgreSQL (max 60s)
+          retries=0
+          until pg_isready -h localhost -p 5432 -U postgres; do
+            retries=$((retries + 1))
+            if [ $retries -ge 30 ]; then
+              echo "PostgreSQL did not become ready in 60s"
+              exit 1
+            fi
+            echo "Waiting for PostgreSQL..."
+            sleep 2
+          done
+
+          # Wait for LocalStack SQS (max 90s)
+          retries=0
+          until curl -s http://localhost:4566/_localstack/health | grep -qE '"sqs":\s*"(available|running)"'; do
+            retries=$((retries + 1))
+            if [ $retries -ge 45 ]; then
+              echo "LocalStack SQS did not become ready in 90s"
+              echo "Health response:"
+              curl -s http://localhost:4566/_localstack/health || true
+              exit 1
+            fi
+            echo "Waiting for LocalStack SQS..."
+            sleep 2
+          done
+          echo "LocalStack SQS is ready"
+
+      - name: Create SQS queue
+        run: |
+          aws --endpoint-url=http://localhost:4566 sqs create-queue \
+            --queue-name keeperhub-workflow-queue \
+            --attributes '{"VisibilityTimeout":"300","MessageRetentionPeriod":"86400","ReceiveMessageWaitTimeSeconds":"20"}'
+          echo "Created SQS queue: keeperhub-workflow-queue"
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+
+      - name: Setup database
+        uses: ./.github/actions/setup-e2e-db
+        with:
+          database_url: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+          chain_rpc_config: ${{ secrets.CHAIN_RPC_CONFIG }}
+          turnkey_api_public_key: ${{ secrets.TURNKEY_API_PUBLIC_KEY }}
+          turnkey_api_private_key: ${{ secrets.TURNKEY_API_PRIVATE_KEY }}
+          turnkey_organization_id: ${{ secrets.TURNKEY_ORGANIZATION_ID }}
+
+      - name: Start application
+        uses: ./.github/actions/start-app
+        with:
+          image_tag: ${{ inputs.image_tag }}
+          ecr_registry: ${{ inputs.ecr_registry }}
+          ecr_repo: ${{ inputs.ecr_repo }}
+          ecr_region: ${{ inputs.ecr_region }}
+          role_arn: ${{ vars.AWS_ROLE_ARN }}
+          database_url: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+          better_auth_secret: ${{ secrets.BETTER_AUTH_SECRET }}
+          test_api_key: ${{ secrets.TEST_API_KEY }}
+          chain_rpc_config: ${{ secrets.CHAIN_RPC_CONFIG }}
+          integration_encryption_key: ${{ secrets.TEST_INTEGRATION_ENCRYPTION_KEY }}
+          turnkey_api_public_key: ${{ secrets.TURNKEY_API_PUBLIC_KEY }}
+          turnkey_api_private_key: ${{ secrets.TURNKEY_API_PRIVATE_KEY }}
+          turnkey_organization_id: ${{ secrets.TURNKEY_ORGANIZATION_ID }}
+          solana_wallet_provisioning_enabled: "true"
+          # NEXT_PUBLIC_AI_PROMPT_ENABLED is baked into the build-app
+          # artifact, so only the runtime AI provider env is set here.
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          ai_model: claude-3-5-haiku-20241022
+          safe_fetch_shadow: "true"
+          # Forward sandbox config to the app container so the production build
+          # does not throw at run-code module load. The sandbox-run-code suite
+          # executes steps through the app, which dispatches code steps to the
+          # sandbox started below.
+          sandbox_backend: remote
+          sandbox_url: http://localhost:8787
+          # Bare-metal path starts from the build-app artifact unpacked above
+          # instead of rebuilding.
+          prebuilt: "true"
+
+      - name: Start anvil mainnet fork for orchestrator integration tests
+        # ANVIL_FORK_MAINNET_URL feeds the compose fork-url (falls back to
+        # publicnode when the secret is unset). The orchestrator fork suite
+        # (safe-roles-orchestrator-fork) mocks its RPC lookup straight to
+        # localhost:8548, so no chains-row patch is needed; the general
+        # suites keep the CHAIN_RPC_CONFIG-seeded live rows they always
+        # effectively used (full-pipeline rewrites the Sepolia row to live
+        # publicnode mid-job regardless).
+        env:
+          ANVIL_FORK_MAINNET_URL: ${{ secrets.ANVIL_FORK_MAINNET_URL }}
+        run: |
+          # Do not point the fork at the platform dRPC URL: fork state
+          # fetches burn through its request quota.
+          #
+          # docker-compose.yml attaches every service to the external
+          # `keeperhub-network`; the ephemeral start-app step uses
+          # `docker run --network host` and never creates it, so compose
+          # bails before bringing the fork up. Create it idempotently.
+          docker network create keeperhub-network 2>/dev/null || true
+          docker compose --profile test up -d --wait test-anvil-fork-mainnet || \
+            docker compose --profile test up -d test-anvil-fork-mainnet
+          # Health-poll the fork up to ~60s -- the wait flag above is best-effort
+          # because the foundry image's healthcheck depends on cast resolving
+          # the upstream RPC over IPv4.
+          retries=0
+          until curl -sf -X POST http://localhost:8548 \
+                -H "Content-Type: application/json" \
+                -d '{"jsonrpc":"2.0","method":"eth_chainId","id":1}' | grep -q '"0x1"'; do
+            retries=$((retries + 1))
+            if [ "$retries" -ge 30 ]; then
+              echo "anvil mainnet fork did not become ready in 60s"
+              docker logs keeperhub-test-anvil-fork-mainnet || true
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "anvil mainnet fork ready on localhost:8548"
+
+      - name: Start code-execution sandbox
+        uses: ./.github/actions/start-sandbox
+        with:
+          image_ref: ${{ inputs.sandbox_image }}
+          aws_role_arn: ${{ vars.AWS_ROLE_ARN }}
+          aws_region: ${{ inputs.ecr_region }}
+
+      - name: Run E2E Vitest tests
+        run: pnpm test:e2e:vitest
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
+          AWS_ENDPOINT_URL: http://localhost:4566
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_REGION: us-east-1
+          TEST_API_KEY: ${{ secrets.TEST_API_KEY }}
+          CHAIN_RPC_CONFIG: ${{ secrets.CHAIN_RPC_CONFIG }}
+          # Live sandbox started by the start-sandbox step above; the
+          # sandbox-run-code suite drives runRemote() against it.
+          SANDBOX_BACKEND: remote
+          SANDBOX_URL: http://localhost:8787
+          # safe-roles-orchestrator-fork calls reconcileSafeRoleFromChain
+          # in-process, so the vitest process (not just the app) needs shadow-mode
+          # SSRF (dev/CI-only opt-in) to reach the localhost anvil fork.
+          SAFE_FETCH_SHADOW: "true"
+
+      - name: Dump e2e execution state
+        if: failure()
+        run: |
+          # Post-mortem for workflow-execution timeouts: execution statuses
+          # distinguish "never picked up" (no step logs) from "hung
+          # mid-step" (a running node row).
+          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d keeperhub_test -c \
+            "SELECT id, status, left(error, 120) AS error, started_at, completed_at FROM workflow_executions ORDER BY started_at DESC NULLS LAST LIMIT 12"
+          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d keeperhub_test -c \
+            "SELECT execution_id, node_name, node_type, status, left(error, 160) AS error, started_at, completed_at FROM workflow_execution_logs ORDER BY started_at DESC NULLS LAST LIMIT 24"
+          # Fork responsiveness probes: a cheap local call, then a state
+          # read that forces an upstream fetch. Slow/failed probes plus
+          # upstream errors in the anvil logs indicate upstream throttling.
+          echo "--- mainnet fork eth_blockNumber:"
+          time curl -sf -m 20 -X POST http://localhost:8548 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}' || echo "PROBE FAILED"
+          echo "--- mainnet fork eth_getCode (beacon deposit contract, forces upstream fetch):"
+          time curl -sf -m 60 -X POST http://localhost:8548 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","method":"eth_getCode","params":["0x00000000219ab540356cBB839Cbe05303d7705Fa","latest"],"id":1}' | head -c 80 || echo "PROBE FAILED"
+          echo ""
+          echo "--- anvil mainnet fork logs:"
+          docker logs keeperhub-test-anvil-fork-mainnet 2>&1 | tail -40 || true
+          echo "--- bare-metal app log tail:"
+          tail -n 150 /tmp/keeperhub-app-baremetal.log 2>/dev/null || echo "(no bare-metal app log)"
+
+      - name: Dump app container logs
+        if: failure() && inputs.image_tag != ''
+        run: docker logs keeperhub-app 2>&1 | tail -200
+
+      - name: Stop app container
+        if: always() && inputs.image_tag != ''
+        run: |
+          docker rm -f keeperhub-app || true
+          rm -f /tmp/keeperhub-app.env
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vitest-e2e-results
+          path: |
+            test-results/
+            coverage/
+          retention-days: 7
+
+  # Per-action protocol-coverage suites (tests/e2e/vitest/protocol-coverage),
+  # split out of e2e-vitest-ephemeral so they run in parallel with the rest
+  # of the e2e stack instead of serially at its tail. The job carries its
+  # own postgres/localstack services, app (from the shared build artifact or
+  # ECR image), sandbox, and the anvil mainnet fork (every fork suite is on
+  # chain 1 since the chronicle/superfluid re-homing; ajna runs against
+  # live Base, reads only).
+  protocol-coverage-ephemeral:
+    name: protocol-coverage-ephemeral (shard ${{ matrix.shard }})
+    needs: [should-run, build-app]
+    # Same gate as e2e-vitest-ephemeral: build-app skipped (Docker path)
+    # or succeeded admits this job; failed or cancelled blocks it.
+    if: ${{ !cancelled() && needs.should-run.outputs.run-e2e == 'true' && (needs.build-app.result == 'success' || needs.build-app.result == 'skipped') }}
+    # The suites share one anvil mainnet fork and one wallet, so they run
+    # serially within a shard (vitest fileParallelism is off). The full sweep
+    # does not fit one runner, so the protocols are split across shards
+    # balanced by measured per-suite direct-sign runtime, keeping the three
+    # heaviest suites (sky, morpho, spark) in separate shards. The
+    # protocol-coverage-floor job merges the shard results and enforces the
+    # executed floor + suite completeness across the whole sweep. Adding a
+    # protocol means adding it to a shard below; the completeness guard fails
+    # the run if a suite is left unassigned. 25 min bounds a hung shard.
+    timeout-minutes: 25
+    strategy:
+      # One slow or flaky shard must not cancel the others, and the floor
+      # job needs every shard's results to judge the sweep.
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+            suites: sky/ethereum pendle/ethereum curve/ethereum rocket-pool/ethereum
+          - shard: 2
+            suites: morpho/ethereum ajna/base uniswap/ethereum lido/ethereum safe/ethereum
+          - shard: 3
+            suites: spark/ethereum superfluid/ethereum chainlink/ethereum chronicle/ethereum
+          - shard: 4
+            suites: ethena/ethereum yearn/ethereum aave-v3/ethereum frax-ether-v2/ethereum wrapped/ethereum
+    runs-on: ${{ vars.USE_SELF_HOSTED_RUNNERS == 'true' && inputs.caller_event != 'pull_request' && 'arc-keeperhub-build' || 'ubuntu-latest' }}
+    # Always staging: e2e validates against test credentials, never prod.
+    environment: staging
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: keeperhub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      localstack:
+        image: localstack/localstack:latest
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: sqs
+          DEBUG: 0
+          EAGER_SERVICE_LOADING: 1
+          LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+        options: >-
+          --health-cmd "curl -sf http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 15s
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # This job runs two anvil forks and a sandbox container on top of the
+      # app stack -- free the unused preinstalled toolchains up front rather
+      # than risk "no space left on device" mid-job.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          discover-plugins: "true"
+
+      - name: Download production build
+        if: inputs.image_tag == ''
+        uses: actions/download-artifact@v8
+        with:
+          name: nextjs-production-build
+
+      - name: Unpack production build
+        if: inputs.image_tag == ''
+        run: |
+          tar -xzf next-build.tgz
+          rm next-build.tgz
+
+      - name: Wait for services
+        run: |
+          # Wait for PostgreSQL (max 60s)
+          retries=0
+          until pg_isready -h localhost -p 5432 -U postgres; do
+            retries=$((retries + 1))
+            if [ $retries -ge 30 ]; then
+              echo "PostgreSQL did not become ready in 60s"
+              exit 1
+            fi
+            echo "Waiting for PostgreSQL..."
+            sleep 2
+          done
+
+          # Wait for LocalStack SQS (max 90s)
+          retries=0
+          until curl -s http://localhost:4566/_localstack/health | grep -qE '"sqs":\s*"(available|running)"'; do
+            retries=$((retries + 1))
+            if [ $retries -ge 45 ]; then
+              echo "LocalStack SQS did not become ready in 90s"
+              echo "Health response:"
+              curl -s http://localhost:4566/_localstack/health || true
+              exit 1
+            fi
+            echo "Waiting for LocalStack SQS..."
+            sleep 2
+          done
+          echo "LocalStack SQS is ready"
+
+      - name: Create SQS queue
+        run: |
+          aws --endpoint-url=http://localhost:4566 sqs create-queue \
+            --queue-name keeperhub-workflow-queue \
+            --attributes '{"VisibilityTimeout":"300","MessageRetentionPeriod":"86400","ReceiveMessageWaitTimeSeconds":"20"}'
+          echo "Created SQS queue: keeperhub-workflow-queue"
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+
+      - name: Setup database
+        uses: ./.github/actions/setup-e2e-db
+        with:
+          database_url: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+          chain_rpc_config: ${{ secrets.CHAIN_RPC_CONFIG }}
+          turnkey_api_public_key: ${{ secrets.TURNKEY_API_PUBLIC_KEY }}
+          turnkey_api_private_key: ${{ secrets.TURNKEY_API_PRIVATE_KEY }}
+          turnkey_organization_id: ${{ secrets.TURNKEY_ORGANIZATION_ID }}
+
+      - name: Start application
+        uses: ./.github/actions/start-app
+        with:
+          image_tag: ${{ inputs.image_tag }}
+          ecr_registry: ${{ inputs.ecr_registry }}
+          ecr_repo: ${{ inputs.ecr_repo }}
+          ecr_region: ${{ inputs.ecr_region }}
+          role_arn: ${{ vars.AWS_ROLE_ARN }}
+          database_url: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+          better_auth_secret: ${{ secrets.BETTER_AUTH_SECRET }}
+          test_api_key: ${{ secrets.TEST_API_KEY }}
+          chain_rpc_config: ${{ secrets.CHAIN_RPC_CONFIG }}
+          integration_encryption_key: ${{ secrets.TEST_INTEGRATION_ENCRYPTION_KEY }}
+          turnkey_api_public_key: ${{ secrets.TURNKEY_API_PUBLIC_KEY }}
+          turnkey_api_private_key: ${{ secrets.TURNKEY_API_PRIVATE_KEY }}
+          turnkey_organization_id: ${{ secrets.TURNKEY_ORGANIZATION_ID }}
+          solana_wallet_provisioning_enabled: "true"
+          # Shadow-mode SSRF so the app's setup workflows can reach the
+          # localhost anvil mainnet fork (chain 1 -> :8548).
+          safe_fetch_shadow: "true"
+          # Forward sandbox config to the app container so the production build
+          # does not throw at run-code module load. The protocol-coverage setup
+          # workflows execute steps through the app, which dispatches code steps
+          # to the sandbox started below.
+          sandbox_backend: remote
+          sandbox_url: http://localhost:8787
+          # Bare-metal path starts from the build-app artifact unpacked above
+          # instead of rebuilding.
+          prebuilt: "true"
+
+      # The cache is produced by protocol-nightly.yml, a different workflow,
+      # and actions/download-artifact cannot fetch across workflows without a
+      # concrete run id - list and download through gh api with github.token
+      # instead. Consumption requires ANVIL_FORK_MAINNET_URL: the cache serves
+      # warmed state locally, but cold reads at a day-old pin need an archive
+      # upstream. Every failure mode (no secret, no fresh staging artifact, API
+      # error, corrupt zip/tar, bad name) exits 0 with empty outputs so the
+      # fork-start step falls back to the live fork. Same mechanism as
+      # tier1-simulations - see that job for the annotated reference.
+      - name: Download latest fork RPC cache
+        id: fork-cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANVIL_FORK_MAINNET_URL: ${{ secrets.ANVIL_FORK_MAINNET_URL }}
+        run: |
+          if [ -z "$ANVIL_FORK_MAINNET_URL" ]; then
+            echo "ANVIL_FORK_MAINNET_URL not set; cold reads at a stale pin need an archive upstream - will start a live fork"
+            exit 0
+          fi
+          # Freshness gates: only a non-expired artifact from the last
+          # 36 hours whose producing run was on staging (a nightly on
+          # the default branch, not a fork-cache job from a topic
+          # branch experiment).
+          cutoff=$(date -u -d '36 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=fork-cache-mainnet&per_page=10" \
+            --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_branch == \"staging\" and .created_at > \"${cutoff}\")] | sort_by(.created_at) | last | .id // empty" \
+            2>/dev/null) || artifact_id=""
+          if [ -z "$artifact_id" ]; then
+            echo "no fresh fork-cache-mainnet artifact from staging; will start a live fork"
+            exit 0
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > fork-cache.zip; then
+            echo "artifact ${artifact_id} download failed; will start a live fork"
+            exit 0
+          fi
+          if ! unzip -o fork-cache.zip -d fork-cache-artifact; then
+            echo "artifact ${artifact_id} unzip failed; will start a live fork"
+            exit 0
+          fi
+          tarball=$(find fork-cache-artifact -maxdepth 1 -name 'fork-cache-mainnet-*.tgz' | head -n 1)
+          block=""
+          if [ -n "$tarball" ]; then
+            block=$(basename "$tarball" .tgz | grep -oE '[0-9]+$') || true
+          fi
+          if [ -z "$tarball" ] || [ -z "$block" ]; then
+            echo "artifact has no fork-cache-mainnet-<block>.tgz; will start a live fork"
+            exit 0
+          fi
+          mkdir -p fork-cache
+          if ! tar -xzf "$tarball" -C fork-cache; then
+            echo "cache tar extraction failed; will start a live fork"
+            rm -rf fork-cache
+            exit 0
+          fi
+          if [ ! -f "fork-cache/rpc/mainnet/${block}/storage.json" ]; then
+            echo "cache tar lacks rpc/mainnet/${block}/storage.json; will start a live fork"
+            rm -rf fork-cache
+            exit 0
+          fi
+          # anvil runs as uid 1000 (foundry) in the container; the
+          # runner user extracting the tar is a different uid.
+          chmod -R a+rX fork-cache
+          echo "using fork cache at pinned block ${block}"
+          echo "dir=fork-cache" >> "$GITHUB_OUTPUT"
+          echo "block=$block" >> "$GITHUB_OUTPUT"
+
+      - name: Start anvil Ethereum mainnet fork
+        # With a fresh cache the fork is pinned to the cache block and serves
+        # warmed state locally; without one it falls back to the live-head
+        # compose fork feeding ANVIL_FORK_MAINNET_URL (publicnode when unset),
+        # matching tier1-simulations.
+        env:
+          ANVIL_FORK_MAINNET_URL: ${{ secrets.ANVIL_FORK_MAINNET_URL }}
+        run: |
+          CACHE_DIR="${{ steps.fork-cache.outputs.dir }}"
+          if [ -n "$CACHE_DIR" ]; then
+            # Cache-loaded fork: mount the nightly RPC fetch cache at foundry's
+            # cache path and re-pin to the block its values were fetched at, so
+            # setup writes run against warmed state with zero upstream requests
+            # (this is what unblocks morpho's long setup chain). Cold state
+            # lazy-fetches from the archive upstream at the pin, which the
+            # download step guaranteed is configured. The app reaches this fork
+            # over --network host at localhost:8548, same as the compose path.
+            docker run -d --name keeperhub-test-anvil-fork-mainnet -p 8548:8545 \
+              -v "$PWD/$CACHE_DIR:/home/foundry/.foundry/cache" \
+              --entrypoint anvil ghcr.io/foundry-rs/foundry:latest \
+              --host 0.0.0.0 \
+              --fork-url "$ANVIL_FORK_MAINNET_URL" \
+              --fork-block-number "${{ steps.fork-cache.outputs.block }}" \
+              --chain-id 1 --block-time 1
+          else
+            docker network create keeperhub-network 2>/dev/null || true
+            docker compose --profile test up -d --wait test-anvil-fork-mainnet || \
+              docker compose --profile test up -d test-anvil-fork-mainnet
+          fi
+          # Health-poll up to ~60s. Chain ID 0x1 confirms we are on the
+          # mainnet fork (not another anvil on the same port).
+          retries=0
+          until curl -sf -X POST http://localhost:8548 \
+                -H "Content-Type: application/json" \
+                -d '{"jsonrpc":"2.0","method":"eth_chainId","id":1}' | grep -q '"0x1"'; do
+            retries=$((retries + 1))
+            if [ "$retries" -ge 30 ]; then
+              echo "anvil Ethereum mainnet fork did not become ready in 60s"
+              docker logs keeperhub-test-anvil-fork-mainnet || true
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "anvil Ethereum mainnet fork ready on localhost:8548"
+          # Patch the test DB so chain 1's primaryRpc points at the local fork.
+          # Without this the app (which reads CHAIN_RPC_CONFIG) would submit
+          # transactions to a real mainnet node rather than the anvil fork.
+          # Postgres runs as a GitHub Actions `services:` container (see
+          # postgres: above), not a docker-compose service, so there is no
+          # "keeperhub-db"-named container to docker exec into -- connect
+          # directly on localhost:5432, same as "Wait for services" above.
+          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d keeperhub_test \
+            -c "UPDATE chains SET default_primary_rpc = 'http://localhost:8548', default_fallback_rpc = NULL WHERE chain_id = 1"
+
+      # Fail in seconds on a dead fork or upstream, before the multi-minute
+      # sandbox build and instead of as 300s vitest timeouts. Probe
+      # address: the beacon deposit contract - it exists upstream and is
+      # untouched by local state, so eth_getBalance forces a pinned-block
+      # upstream fetch.
+      - name: Fork health probe
+        uses: ./.github/actions/probe-forks
+        with:
+          forks: |
+            mainnet|http://localhost:8548|0x1|0x00000000219ab540356cBB839Cbe05303d7705Fa
+
+      - name: Start code-execution sandbox
+        uses: ./.github/actions/start-sandbox
+        with:
+          image_ref: ${{ inputs.sandbox_image }}
+          aws_role_arn: ${{ vars.AWS_ROLE_ARN }}
+          aws_region: ${{ inputs.ecr_region }}
+
+      - name: Run protocol-coverage tests
+        run: |
+          # Re-point chain 1 at the local anvil fork right before the
+          # suites read the row. Defensive in this job (nothing here
+          # rewrites the row after the fork-start patch), but kept so the
+          # suites never depend on step ordering for correct RPCs.
+          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d keeperhub_test \
+            -c "UPDATE chains SET default_primary_rpc = 'http://localhost:8548', default_fallback_rpc = NULL WHERE chain_id = 1"
+          # Run only this shard's suites (assigned in the matrix above). The
+          # executed floor and suite completeness are enforced across the
+          # whole sweep by the protocol-coverage-floor job, which merges
+          # every shard's JSON, since a single shard cannot judge either.
+          SUITES=""
+          for suite in $SUITE_DIRS; do
+            SUITES="$SUITES tests/e2e/vitest/protocol-coverage/$suite/coverage.test.ts"
+          done
+          # Bound the sweep just under the job's timeout-minutes (25) with a
+          # shell timeout so a hung shard exits NON-ZERO (a failure) rather than
+          # being cancelled by timeout-minutes. A timeout-minutes cancellation
+          # is reported as "cancelled", which slips past deploy's !failure()
+          # guard; a real failure blocks deploy. The 2-minute headroom lets the
+          # failure/dump/upload steps still run before the job cap.
+          set +e
+          timeout --signal=SIGTERM --kill-after=30s 23m \
+            pnpm vitest run $SUITES \
+              --reporter=default --reporter=json --outputFile="protocol-results-${SHARD}.json"
+          code=$?
+          set -e
+          if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+            echo "::error::protocol-coverage shard ${SHARD} exceeded 23m and was killed; failing the shard so a hung protocol gate blocks deploy instead of being silently cancelled at the job timeout."
+          fi
+          # A kill can leave no results JSON (reporter flushes on completion) or
+          # a truncated one. Leave a parseable empty result so the floor job
+          # fails cleanly on "shard suites missing" rather than crashing on a
+          # JSON parse error. The shard still exits non-zero below, so deploy is
+          # blocked either way.
+          if [ "$code" -ne 0 ] && { [ ! -s "protocol-results-${SHARD}.json" ] || ! jq empty "protocol-results-${SHARD}.json" >/dev/null 2>&1; }; then
+            echo '{"testResults":[]}' > "protocol-results-${SHARD}.json"
+          fi
+          exit "$code"
+        env:
+          SHARD: ${{ matrix.shard }}
+          SUITE_DIRS: ${{ matrix.suites }}
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
+          AWS_ENDPOINT_URL: http://localhost:4566
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_REGION: us-east-1
+          TEST_API_KEY: ${{ secrets.TEST_API_KEY }}
+          CHAIN_RPC_CONFIG: ${{ secrets.CHAIN_RPC_CONFIG }}
+          # Funder EOA for protocol-coverage suites on live (non-fork)
+          # chains; only ajna on Base still gates on it, and it never
+          # spends (reads only). When unset that suite skips cleanly.
+          TESTNET_FUNDER_PK: ${{ secrets.TESTNET_FUNDER_PK }}
+          # Archive-node URL for the Ethereum mainnet anvil fork started
+          # above. When set, protocol-coverage suites for chain 1 (morpho,
+          # wrapped, lido, ethena, curve, chainlink, spark, yearn, uniswap,
+          # pendle, sky, aave-v3, frax-ether-v2, rocket-pool, safe,
+          # chronicle, superfluid) run for real. When unset those suites
+          # skip cleanly and the floor above drops accordingly.
+          ANVIL_FORK_MAINNET_URL: ${{ secrets.ANVIL_FORK_MAINNET_URL }}
+          # Non-empty only when the fork-cache download produced a warmed,
+          # pinned cache (set = its `dir` output). morpho gates on this in
+          # addition to ANVIL_FORK_MAINNET_URL: its setup write chain is the
+          # longest in the registry and only fits the shard budget against
+          # warmed state, so on a cache miss (live cold fork) it self-skips
+          # instead of blowing the shard timeout. The other chain-1 suites
+          # run fine cold and stay gated on ANVIL_FORK_MAINNET_URL alone.
+          PROTOCOL_FORK_CACHED: ${{ steps.fork-cache.outputs.dir != '' && '1' || '' }}
+          # PR-gate/nightly split: PR-triggered runs shrink each phase to
+          # its first runnable action (run-fixture.ts) and the floor
+          # derivation above switches to the representatives floor with
+          # it; schedule (protocol-nightly
+          # passes caller_event: schedule), push, and workflow_dispatch runs
+          # keep the full sweep. Same caller_event-with-fallback the
+          # should-run job uses for its EFFECTIVE_EVENT gate. The PR label
+          # gate itself already lives in should-run, so event type is the
+          # only condition needed here.
+          PROTOCOL_E2E_REPRESENTATIVES: ${{ (inputs.caller_event || github.event_name) == 'pull_request' && '1' || '' }}
+
+      - name: Dump protocol-coverage execution state
+        if: failure()
+        run: |
+          # Post-mortem for protocol-coverage setup timeouts: execution
+          # statuses distinguish "never picked up" (no step logs) from
+          # "hung mid-step" (a running node row), and the chains rows show
+          # whether the fork patches were still in effect.
+          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d keeperhub_test -c \
+            "SELECT id, status, left(error, 120) AS error, started_at, completed_at FROM workflow_executions ORDER BY started_at DESC NULLS LAST LIMIT 12"
+          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d keeperhub_test -c \
+            "SELECT execution_id, node_name, node_type, status, left(error, 160) AS error, started_at, completed_at FROM workflow_execution_logs ORDER BY started_at DESC NULLS LAST LIMIT 24"
+          PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d keeperhub_test -c \
+            "SELECT chain_id, default_primary_rpc, default_fallback_rpc FROM chains WHERE chain_id = 1"
+          # Fork responsiveness probes: a cheap local call, then a state
+          # read that forces an upstream fetch. Slow/failed probes plus
+          # upstream errors in the anvil logs indicate upstream throttling.
+          echo "--- mainnet fork eth_blockNumber:"
+          time curl -sf -m 20 -X POST http://localhost:8548 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}' || echo "PROBE FAILED"
+          echo "--- mainnet fork eth_getCode (beacon deposit contract, forces upstream fetch):"
+          time curl -sf -m 60 -X POST http://localhost:8548 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","method":"eth_getCode","params":["0x00000000219ab540356cBB839Cbe05303d7705Fa","latest"],"id":1}' | head -c 80 || echo "PROBE FAILED"
+          echo ""
+          echo "--- anvil mainnet fork logs:"
+          docker logs keeperhub-test-anvil-fork-mainnet 2>&1 | tail -20 || true
+          echo "--- bare-metal app log tail:"
+          tail -n 150 /tmp/keeperhub-app-baremetal.log 2>/dev/null || echo "(no bare-metal app log)"
+
+      - name: Dump app container logs
+        if: failure() && inputs.image_tag != ''
+        run: docker logs keeperhub-app 2>&1 | tail -200
+
+      - name: Stop app container
+        if: always() && inputs.image_tag != ''
+        run: |
+          docker rm -f keeperhub-app || true
+          rm -f /tmp/keeperhub-app.env
+
+      # Always upload this shard's JSON so protocol-coverage-floor can merge
+      # it, even when a shard fails: the floor and completeness guards need
+      # every shard's results to judge the sweep.
+      - name: Upload shard results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: protocol-coverage-shard-${{ matrix.shard }}
+          path: protocol-results-${{ matrix.shard }}.json
+          retention-days: 7
+
+      - name: Upload debug bundle
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: protocol-coverage-debug-${{ matrix.shard }}
+          path: |
+            protocol-results-${{ matrix.shard }}.json
+            test-results/
+            coverage/
+          retention-days: 7
+
+  # Merge the sharded protocol-coverage results and enforce the sweep-wide
+  # guards: the executed-test floor (suites self-skip when infra gates are
+  # absent, so a green shard can mean "ran nothing") and suite completeness
+  # (a suite left out of every shard's list would silently vanish).
+  #
+  # Runs whenever e2e is meant to run, even if a shard FAILED or was cancelled
+  # (e.g. hit its timeout) - a cancelled shard uploads no/partial results, so
+  # completeness sees its suites missing and fails here. This is the deploy
+  # gate: without it, a timed-out shard is "cancelled" not "failed", which
+  # slips past deploy's !failure() guard and lets the sweep ship uncovered.
+  protocol-coverage-floor:
+    needs: [should-run, protocol-coverage-ephemeral]
+    if: ${{ !cancelled() && needs.should-run.outputs.run-e2e == 'true' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Download shard results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: protocol-coverage-shard-*
+          path: shard-results
+          merge-multiple: true
+
+      - name: Enforce floor and suite completeness
+        env:
+          ANVIL_FORK_MAINNET_URL: ${{ secrets.ANVIL_FORK_MAINNET_URL }}
+          PROTOCOL_E2E_REPRESENTATIVES: ${{ (inputs.caller_event || github.event_name) == 'pull_request' && '1' || '' }}
+        run: |
+          # Suite completeness first: a coverage.test.ts left out of every
+          # shard's list would silently vanish from the sweep.
+          pnpm tsx scripts/protocol-coverage-completeness.ts shard-results/*.json
+          # Executed-test floor: every suite self-skips when its infra gates
+          # are absent, so a green run can mean "ran nothing" (that is how
+          # coverage silently collapsed to ~35 executed tests). Fails when
+          # merged executed tests drop below the floor; publishes run/skip
+          # counts to the step summary.
+          #
+          # Derivation (2026-07-07, from planPhaseFixtures - see
+          # specs/protocol-coverage-methodology.md). Representatives mode
+          # executes exactly one action per runnable (suite, phase) pair:
+          # 21 pairs across the 16 active mainnet-fork suites (morpho is
+          # hard-skipped; safe/chronicle/sky and others have no runnable
+          # write) plus ajna's single read pair = 22. Full mode executes
+          # every runnable action: 207 on the mainnet suites + 25 ajna
+          # reads = 232; floor 200 leaves margin for individual fixtures
+          # moving to documented skips without a same-PR floor bump.
+          # Without ANVIL_FORK_MAINNET_URL every mainnet suite self-skips
+          # and only ajna runs (25 reads, 1 representative), so the floor
+          # drops with the gate instead of failing the job spuriously.
+          if [ -n "${ANVIL_FORK_MAINNET_URL:-}" ]; then
+            if [ "${PROTOCOL_E2E_REPRESENTATIVES:-}" = "1" ]; then FLOOR=22; else FLOOR=200; fi
+          else
+            if [ "${PROTOCOL_E2E_REPRESENTATIVES:-}" = "1" ]; then FLOOR=1; else FLOOR=20; fi
+          fi
+          pnpm tsx scripts/protocol-coverage-floor.ts shard-results/*.json "$FLOOR"
+
+  # Playwright E2E tests (browser-based, single worker, serial within the suite).
+  # Runs in parallel with the Vitest job (each has its own ephemeral Postgres).
+  e2e-playwright-ephemeral:
+    needs: [should-run]
+    if: ${{ always() && needs.should-run.outputs.run-e2e == 'true' && !failure() }}
+    runs-on: ${{ vars.USE_SELF_HOSTED_RUNNERS == 'true' && inputs.caller_event != 'pull_request' && 'arc-keeperhub-build' || 'ubuntu-latest' }}
+    # Always staging: e2e validates against test credentials, never prod.
+    environment: staging
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: keeperhub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # This job builds the app bare-metal AND installs browser binaries on
+      # top of the full service stack - the most disk-hungry job here.
+      # Measured ENOSPC mid-build twice on 2026-07-07; free the unused
+      # preinstalled toolchains up front like the vitest and protocol jobs.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Setup Node.js, pnpm, and Playwright
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          install-playwright: "true"
+          discover-plugins: "true"
+
+      - name: Setup database
+        uses: ./.github/actions/setup-e2e-db
+        with:
+          database_url: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+          chain_rpc_config: ${{ secrets.CHAIN_RPC_CONFIG }}
+          turnkey_api_public_key: ${{ secrets.TURNKEY_API_PUBLIC_KEY }}
+          turnkey_api_private_key: ${{ secrets.TURNKEY_API_PRIVATE_KEY }}
+          turnkey_organization_id: ${{ secrets.TURNKEY_ORGANIZATION_ID }}
+
+      # The credential-bundle suite executes real workflow step bundles, which
+      # the app dispatches to a code-execution sandbox. Without it the step
+      # endpoint 500s and the run never reaches a terminal status. Mirror the
+      # vitest job, which already runs a sandbox for its execution suites.
+      - name: Start code-execution sandbox
+        uses: ./.github/actions/start-sandbox
+        with:
+          image_ref: ${{ inputs.sandbox_image }}
+          aws_role_arn: ${{ vars.AWS_ROLE_ARN }}
+          aws_region: ${{ inputs.ecr_region }}
+
+      - name: Start application
+        uses: ./.github/actions/start-app
+        with:
+          image_tag: ${{ inputs.image_tag }}
+          ecr_registry: ${{ inputs.ecr_registry }}
+          ecr_repo: ${{ inputs.ecr_repo }}
+          ecr_region: ${{ inputs.ecr_region }}
+          role_arn: ${{ vars.AWS_ROLE_ARN }}
+          database_url: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+          better_auth_secret: ${{ secrets.BETTER_AUTH_SECRET }}
+          test_api_key: ${{ secrets.TEST_API_KEY }}
+          chain_rpc_config: ${{ secrets.CHAIN_RPC_CONFIG }}
+          integration_encryption_key: ${{ secrets.TEST_INTEGRATION_ENCRYPTION_KEY }}
+          turnkey_api_public_key: ${{ secrets.TURNKEY_API_PUBLIC_KEY }}
+          turnkey_api_private_key: ${{ secrets.TURNKEY_API_PRIVATE_KEY }}
+          turnkey_organization_id: ${{ secrets.TURNKEY_ORGANIZATION_ID }}
+          solana_wallet_provisioning_enabled: "true"
+          load_test_bypass_token: ${{ secrets.LOAD_TEST_BYPASS_TOKEN }}
+          # Enable testEndpointsEnabled() so the strict-signin/start credential
+          # rate-limit bypass honors playwright's X-Test-API-Key header (the
+          # suite signs in repeatedly as a few shared users). Scoped to this job.
+          include_test_endpoints: "true"
+          allow_test_endpoints: "true"
+          # Point the app's step-bundle execution at the sandbox started above.
+          # The Docker path needs these forwarded explicitly; the bare-metal path
+          # already hardcodes the same values.
+          sandbox_backend: remote
+          sandbox_url: http://localhost:8787
+
+      - name: Run Playwright tests
+        run: pnpm test:e2e
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          INTEGRATION_ENCRYPTION_KEY: ${{ secrets.TEST_INTEGRATION_ENCRYPTION_KEY }}
+          CI: true
+          TEST_API_KEY: ${{ secrets.TEST_API_KEY }}
+          # Start application step above runs `pnpm build && pnpm start`
+          # (production), so back-forward-hydration.test.ts must assert
+          # the prod-mode contract (no reload-driven recovery). Without
+          # this var, the test defaults to dev-mode assertions and fails
+          # against the prod server.
+          NEXT_BUILD_MODE: production
+          # Sent as the x-load-test-mfa-bypass header by playwright.config.ts so
+          # e2e sign-in clears the mandatory-MFA enrollment gate (auth.setup).
+          LOAD_TEST_BYPASS_TOKEN: ${{ secrets.LOAD_TEST_BYPASS_TOKEN }}
+
+      - name: Dump app container logs
+        if: failure() && inputs.image_tag != ''
+        run: docker logs keeperhub-app 2>&1 | tail -200
+
+      - name: Stop app container
+        if: always() && inputs.image_tag != ''
+        run: |
+          docker rm -f keeperhub-app || true
+          rm -f /tmp/keeperhub-app.env
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-ephemeral
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+      - name: Upload screenshots
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-screenshots-ephemeral
+          path: test-results/**/*.png
+          retention-days: 7

@@ -1,0 +1,204 @@
+# Workflow Executor for PR environments
+#
+# Polls the PR's LocalStack SQS for all trigger types (schedule, block, event)
+# and dispatches workflows into the PR namespace. By default uses the
+# staging-baseline executor image (executor-latest), but when the PR carries
+# the deploy-pr-executor label the CI builds a PR-specific image and the
+# template is rendered with EXECUTOR_IMAGE_TAG=${sha_short} (see
+# .github/workflows/deploy-pr-environment.yaml).
+#
+# Variables substituted by envsubst at deploy time:
+#   ${PR_NUMBER}, ${ECR_REGISTRY}, ${IMAGE_TAG}, ${EXECUTOR_IMAGE_TAG},
+#   ${RUNNER_IMAGE_TAG}
+
+replicaCount: 1
+
+service:
+  enabled: true
+  name: keeperhub-executor-pr-${PR_NUMBER}
+  type: ClusterIP
+  port: 3080
+  containerPort: 3080
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-executor-staging
+  tag: executor-${EXECUTOR_IMAGE_TAG}
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+
+serviceAccount:
+  create: false
+  name: keeperhub-pr-${PR_NUMBER}
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+serviceMonitors:
+  enabled: false
+
+resources:
+  limits:
+    memory: 512Mi
+    cpu: 300m
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+command: ["/bin/sh"]
+args:
+  - "-c"
+  - |
+    echo "$(date) - [Executor] Starting..."
+    tsx keeperhub-executor/index.ts
+
+env:
+  DATABASE_URL:
+    type: kv
+    value: "postgresql://keeperhub:${ENCODED_DB_PASSWORD}@keeperhub-pr-${PR_NUMBER}-db-rw.pr-${PR_NUMBER}.svc.cluster.local:5432/keeperhub"
+  INTEGRATION_ENCRYPTION_KEY:
+    type: parameterStore
+    name: integration-encryption-key
+    parameter_name: /eks/techops-staging/keeperhub/integration-encryption-key
+  KEEPERHUB_API_URL:
+    type: kv
+    value: "http://keeperhub-pr-${PR_NUMBER}-common:3000"
+  INTERNAL_SERVICE_HMAC_SECRET:
+    type: parameterStore
+    name: internal-service-hmac-secret
+    parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+  AWS_REGION:
+    type: kv
+    value: "us-east-1"
+  AWS_ENDPOINT_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566"
+  SQS_QUEUE_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566/000000000000/keeperhub-workflow-queue"
+  SQS_DLQ_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566/000000000000/keeperhub-workflow-queue-dlq"
+  # The workflow steps run in a per-execution Job using RUNNER_IMAGE, so the
+  # runner must carry the PR's executor.workflow.ts changes to exercise them.
+  # The deploy-pr-executor label builds a PR runner (workflow-runner-<sha>) from
+  # the same Dockerfile as the executor; without the label, RUNNER_IMAGE_TAG
+  # stays workflow-runner-latest (staging), mirroring how the executor falls
+  # back to executor-latest.
+  RUNNER_IMAGE:
+    type: kv
+    value: "${ECR_REGISTRY}/keeperhub-staging:${RUNNER_IMAGE_TAG}"
+  # Code Node sandbox. Forwarded into runner Job pods via
+  # RUNNER_SYSTEM_ENV_VARS in keeperhub-executor/runner-env.ts. Without
+  # both set the runner trips the NODE_ENV=production assertion at
+  # plugins/code/steps/run-code.ts module load and the workflow never
+  # progresses. Each PR gets its own sandbox release in pr-${PR_NUMBER}
+  # (deploy/pr-environment/sandbox.template.yaml); the staging sandbox
+  # NetworkPolicy denies cross-namespace ingress.
+  SANDBOX_BACKEND:
+    type: kv
+    value: "remote"
+  SANDBOX_URL:
+    type: kv
+    value: "http://keeperhub-sandbox-pr-${PR_NUMBER}-common.pr-${PR_NUMBER}.svc.cluster.local:8787"
+  IMAGE_PULL_POLICY:
+    type: kv
+    value: "Always"
+  K8S_NAMESPACE:
+    type: kv
+    value: "pr-${PR_NUMBER}"
+  # Hardened runner Job pods use a dedicated zero-RBAC SA (created by
+  # deploy/pr-environment/runner-sa.template.yaml) and pull secrets via
+  # secretKeyRef. In the PR env the executor Helm release is
+  # executor-pr-${PR_NUMBER}, so its External Secrets land as
+  # executor-pr-${PR_NUMBER}-common-<slug>; point the runner there.
+  RUNNER_SERVICE_ACCOUNT:
+    type: kv
+    value: "keeperhub-workflow-runner"
+  RUNNER_SECRET_PREFIX:
+    type: kv
+    value: "executor-pr-${PR_NUMBER}-common"
+  HEALTH_PORT:
+    type: kv
+    value: "3080"
+  JOB_TTL_SECONDS:
+    type: kv
+    value: "120"
+  JOB_ACTIVE_DEADLINE:
+    type: kv
+    value: "300"
+  # Ephemeral-storage guardrail for runner Job pods (mirrored by the runner's
+  # /tmp emptyDir sizeLimit). Runners use ~2 MiB each, so the 1Gi limit is a
+  # runaway-/tmp guard. Retune if a PR workflow legitimately needs a larger /tmp.
+  RUNNER_EPHEMERAL_STORAGE_REQUEST:
+    type: kv
+    value: "64Mi"
+  RUNNER_EPHEMERAL_STORAGE_LIMIT:
+    type: kv
+    value: "1Gi"
+  EXECUTION_MODE:
+    type: kv
+    value: "isolated"
+  METRICS_COLLECTOR:
+    type: kv
+    value: "prometheus"
+  WORKFLOW_RUNNER_COLLECT_MONITORING:
+    type: kv
+    value: "false"
+  # Required by assertTurnkeyEnvForActiveWallets at startup when the DB has
+  # any active turnkey wallets; missing these would crash-loop the executor.
+  TURNKEY_API_PUBLIC_KEY:
+    type: parameterStore
+    name: turnkey-api-public-key
+    parameter_name: /eks/techops-staging/keeperhub/turnkey-api-public-key
+  TURNKEY_API_PRIVATE_KEY:
+    type: parameterStore
+    name: turnkey-api-private-key
+    parameter_name: /eks/techops-staging/keeperhub/turnkey-api-private-key
+  CHAIN_RPC_CONFIG:
+    type: parameterStore
+    name: chain-rpc-config
+    parameter_name: /eks/techops-staging/keeperhub/chain-rpc-config
+  ETHERSCAN_API_KEY:
+    type: parameterStore
+    name: etherscan-api-key
+    parameter_name: /eks/techops-staging/keeperhub/etherscan-api-key
+  NEXT_PUBLIC_BILLING_ENABLED:
+    type: kv
+    value: "true"
+  GAS_CREDITS_FREE_CENTS:
+    type: kv
+    value: "100"
+  GAS_CREDITS_PRO_CENTS:
+    type: kv
+    value: "500"
+  GAS_CREDITS_BUSINESS_CENTS:
+    type: kv
+    value: "2500"
+  GAS_CREDITS_ENTERPRISE_CENTS:
+    type: kv
+    value: "10000"
+
+externalSecrets:
+  clusterSecretStoreName: techops-staging
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 3080
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 3080
+  initialDelaySeconds: 10
+  periodSeconds: 10

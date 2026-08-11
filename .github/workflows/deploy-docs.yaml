@@ -1,0 +1,85 @@
+# Type: standalone | Builds and deploys the docs site.
+# The build step lives in the reusable build-docs-image.yml so PR validation
+# (pr-docs-site-build.yaml) can exercise the same Dockerfile + build inputs
+# without pushing to ECR. This file owns the prod deploy: helm upgrade with
+# the freshly built image.
+on:
+  push:
+    branches:
+      - prod
+    paths:
+      - 'docs/**'
+      - 'docs-site/**'
+      - 'deploy/docs-site/**'
+      - '.github/workflows/build-docs-image.yml'
+      - '.github/workflows/deploy-docs.yaml'
+  workflow_dispatch:
+
+name: deploy-keeperhub-docs
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-docs-image.yml
+    with:
+      push: true
+    secrets: inherit
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/prod' && 'prod' || 'staging' }}
+    env:
+      HELM_FILE: deploy/docs-site/${{ github.ref == 'refs/heads/prod' && 'prod' || 'staging' }}/values.yaml
+      REGION: ${{ vars.TO_REGION }}
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      NAMESPACE: keeperhub
+      SERVICE_NAME: keeperhub-docs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Connect to EKS
+        uses: ./.github/actions/eks-connect
+        with:
+          enabled: ${{ vars.TO_EKS_CONNECT }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          region: ${{ env.REGION }}
+
+      - name: Replace variables in the Helm values file
+        id: replace-vars
+        env:
+          ECR_REGISTRY: ${{ needs.build.outputs.ecr_registry }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          sed -i 's|${ECR_REGISTRY}|'"$ECR_REGISTRY"'|g' $HELM_FILE
+          sed -i 's|${IMAGE_TAG}|'"$IMAGE_TAG"'|g' $HELM_FILE
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.REGION }}
+
+      - name: Deploying Docs to Kubernetes with Helm
+        id: deploy
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.12
+        with:
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          config-files: ${{ env.HELM_FILE }}
+          chart-path: techops-services/common
+          namespace: ${{ env.NAMESPACE }}
+          timeout: 5m0s
+          name: ${{ env.SERVICE_NAME }}
+          chart-repository: https://techops-services.github.io/helm-charts
+          version: 0.2.1
+          atomic: true

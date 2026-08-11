@@ -1,0 +1,105 @@
+name: Behaviour change or new feature
+description: Propose something KeeperHub should do that it does not do today.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every issue carries three things: a **reason** it matters, a **scope**
+        it is bounded to, and a **plan** for what happens next. All three are
+        required. The plan is your proposal - triage may replace it, and will
+        say so in a comment before accepting.
+
+        Lead with what you are trying to do, not with what to build. The problem
+        is stable; the solution is negotiable, and we may know a cheaper one.
+
+        Wait for the `accepted` label before writing code. See
+        [ISSUES.md](https://github.com/KeeperHub/keeperhub/blob/staging/ISSUES.md).
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before filing
+      options:
+        - label: I searched open and closed issues for this proposal.
+          required: true
+        - label: I checked the docs and the current behaviour on `staging`.
+          required: true
+        - label: This is one change, not several. (Several means several issues.)
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Reason: what you cannot do today"
+      description: >-
+        The concrete task that is blocked or awkward, and what you do instead.
+        Real usage beats a hypothetical - if this came out of building
+        something, describe that.
+    validations:
+      required: true
+
+  - type: textarea
+    id: cost
+    attributes:
+      label: "Reason: what the workaround costs"
+      description: >-
+        If a workaround exists, what it costs you - time, reliability, an
+        invariant you cannot hold. That cost is the size of the problem, and it
+        is what this gets weighed against. If there is no workaround at all, say
+        so.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: "Scope: what this touches, and what it does not"
+      description: >-
+        The surfaces this changes and the ones it deliberately leaves alone.
+        Then confirm it is one change: if any part could ship, deploy, and be
+        correct with another part reverted, those are separate issues - list
+        them and file the rest separately.
+    validations:
+      required: true
+
+  - type: textarea
+    id: plan
+    attributes:
+      label: "Plan: what you propose"
+      description: >-
+        The change as you would build it, including the API or UI shape and what
+        happens to existing callers. Triage may replace this with a different
+        approach and will say so before accepting. If you are proposing the
+        problem rather than a solution, say what you would need to determine to
+        choose one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Plan: alternatives you considered"
+      description: >-
+        Including doing nothing, and including approaches you rejected and why.
+        A rejected alternative with a reason is often the most useful thing in
+        the issue - it stops triage re-deriving it.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: breaking
+    attributes:
+      label: "Scope: compatibility"
+      description: Tick anything the plan above would touch. Each one turns this into a decision rather than a fix.
+      options:
+        - label: Changes an existing response shape, status code, CLI flag, or default.
+          required: false
+        - label: Adds, removes, or upgrades a dependency.
+          required: false
+        - label: Changes database schema or requires a migration.
+          required: false
+        - label: Touches authentication, permissions, validation, or spend limits.
+          required: false
+        - label: Changes pricing, plan limits, or anything a user is charged.
+          required: false

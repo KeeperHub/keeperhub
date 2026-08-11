@@ -1,0 +1,89 @@
+{
+  "1": {
+    "eth-usd-read": {
+      "to": "0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E",
+      "data": "0x57de26a4",
+      "skipped": false
+    },
+    "eth-usd-read-with-age": {
+      "to": "0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E",
+      "data": "0x393e5ede",
+      "skipped": false
+    },
+    "btc-usd-read": {
+      "to": "0x24C392CDbF32Cf911B258981a66d5541d85269ce",
+      "data": "0x57de26a4",
+      "skipped": false
+    },
+    "btc-usd-read-with-age": {
+      "to": "0x24C392CDbF32Cf911B258981a66d5541d85269ce",
+      "data": "0x393e5ede",
+      "skipped": false
+    },
+    "dai-usd-read": {
+      "to": "",
+      "data": "0x57de26a4",
+      "skipped": true
+    },
+    "dai-usd-read-with-age": {
+      "to": "",
+      "data": "0x393e5ede",
+      "skipped": true
+    },
+    "usdc-usd-read": {
+      "to": "0xCe701340261a3dc3541C5f8A6d2bE689381C8fCC",
+      "data": "0x57de26a4",
+      "skipped": false
+    },
+    "usdc-usd-read-with-age": {
+      "to": "0xCe701340261a3dc3541C5f8A6d2bE689381C8fCC",
+      "data": "0x393e5ede",
+      "skipped": false
+    },
+    "usdt-usd-read": {
+      "to": "0x7084a627a22b2de99E18733DC5aAF40993FA405C",
+      "data": "0x57de26a4",
+      "skipped": false
+    },
+    "usdt-usd-read-with-age": {
+      "to": "0x7084a627a22b2de99E18733DC5aAF40993FA405C",
+      "data": "0x393e5ede",
+      "skipped": false
+    },
+    "link-usd-read": {
+      "to": "",
+      "data": "0x57de26a4",
+      "skipped": true
+    },
+    "link-usd-read-with-age": {
+      "to": "",
+      "data": "0x393e5ede",
+      "skipped": true
+    },
+    "read": {
+      "to": "0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E",
+      "data": "0x57de26a4",
+      "skipped": false
+    },
+    "try-read": {
+      "to": "0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E",
+      "data": "0x10b07b71",
+      "skipped": false
+    },
+    "read-with-age": {
+      "to": "0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E",
+      "data": "0x393e5ede",
+      "skipped": false
+    },
+    "try-read-with-age": {
+      "to": "0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E",
+      "data": "0xceed3ef2",
+      "skipped": false
+    },
+    "self-kiss": {
+      "to": "",
+      "data": "0xc529a6790000000000000000000000000000000000000000000000000000000000000000",
+      "skipped": true
+    }
+  }
+}

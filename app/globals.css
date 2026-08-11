@@ -1,0 +1,580 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-anek-latin);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-keeperhub-green: var(--keeperhub-green);
+  --color-keeperhub-green-dark: var(--keeperhub-green-dark);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(0.9842 0.0034 247.86);
+  --foreground: oklch(0.2101 0.0318 264.66);
+  --card: oklch(0.9683 0.0069 247.9);
+  --card-foreground: oklch(0.2101 0.0318 264.66);
+  --popover: oklch(0.9683 0.0069 247.9);
+  --popover-foreground: oklch(0.2101 0.0318 264.66);
+  --primary: oklch(0.2101 0.0318 264.66);
+  --primary-foreground: oklch(0.9842 0.0034 247.86);
+  --secondary: oklch(0.9842 0.0034 247.86);
+  --secondary-foreground: oklch(0.2101 0.0318 264.66);
+  --muted: oklch(0.9288 0.0126 255.51);
+  --muted-foreground: oklch(0.5544 0.0407 257.42);
+  --accent: oklch(0.9288 0.0126 255.51);
+  --accent-foreground: oklch(0.2101 0.0318 264.66);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.9288 0.0126 255.51);
+  --input: oklch(0.9288 0.0126 255.51);
+  --ring: oklch(0.7107 0.0351 256.79);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.9842 0.0034 247.86);
+  --sidebar-foreground: oklch(0.5544 0.0407 257.42);
+  --sidebar-primary: oklch(0.2101 0.0318 264.66);
+  --sidebar-primary-foreground: oklch(0.9842 0.0034 247.86);
+  --sidebar-accent: oklch(0.9683 0.0069 247.9);
+  --sidebar-accent-foreground: oklch(0.2101 0.0318 264.66);
+  --sidebar-border: oklch(0.9288 0.0126 255.51);
+  --sidebar-ring: oklch(0.7107 0.0351 256.79);
+  --keeperhub-green: oklch(0.8671 0.2514 147.76);
+  --keeperhub-green-dark: oklch(0.7402 0.2136 147.89);
+
+  /* --- Hub surfaces (dark-only, used on /hub and protocol pages) --- */
+  --color-hub-card: #1a2230;
+  --color-hub-icon-bg: #2a3342;
+  --color-hub-icon-bg-hover: #354155;
+  --color-hub-gradient-center: #243548;
+  --color-hub-overlay: #171f2e;
+  --color-hub-node-bg: #3d4f63;
+
+  /* --- Accent (green brand) --- */
+  --color-text-accent: #09fd67;
+  --color-bg-accent: #09fd671a;
+  --color-border-accent: #09fd67;
+}
+
+.dark {
+  --background: oklch(0.2101 0.0318 264.66);
+  --foreground: oklch(0.9288 0.0126 255.51);
+  --card: oklch(0.2795 0.0368 260.03);
+  --card-foreground: oklch(0.9288 0.0126 255.51);
+  --popover: oklch(0.2795 0.0368 260.03);
+  --popover-foreground: oklch(0.9288 0.0126 255.51);
+  --primary: oklch(0.9288 0.0126 255.51);
+  --primary-foreground: oklch(0.2101 0.0318 264.66);
+  --secondary: oklch(0.2101 0.0318 264.66);
+  --secondary-foreground: oklch(0.9288 0.0126 255.51);
+  --muted: oklch(0.3717 0.0392 257.29);
+  --muted-foreground: oklch(0.5544 0.0407 257.42);
+  --accent: oklch(0.3717 0.0392 257.29);
+  --accent-foreground: oklch(0.9288 0.0126 255.51);
+  --destructive: oklch(0.65 0.25 29);
+  --border: oklch(0.3717 0.0392 257.29);
+  --input: oklch(0.3717 0.0392 257.29);
+  --ring: oklch(0.4455 0.0374 257.28);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.2101 0.0318 264.66);
+  --sidebar-foreground: oklch(0.5544 0.0407 257.42);
+  --sidebar-primary: oklch(0.9288 0.0126 255.51);
+  --sidebar-primary-foreground: oklch(0.2101 0.0318 264.66);
+  --sidebar-accent: oklch(0.2101 0.0318 264.66);
+  --sidebar-accent-foreground: oklch(0.9288 0.0126 255.51);
+  --sidebar-border: oklch(0.3717 0.0392 257.29);
+  --sidebar-ring: oklch(0.4455 0.0374 257.28);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-family: var(--font-anek-latin), sans-serif;
+  }
+  html,
+  body {
+    @apply overflow-hidden;
+  }
+  /* Geist Mono ligates "..." into a single ellipsis glyph, which mangles
+     truncated addresses and hashes (e.g. 0x1479...E38E renders as one dot).
+     Disable ligatures on monospace text so the literal characters render. */
+  .font-mono {
+    font-feature-settings:
+      "liga" 0,
+      "calt" 0;
+    font-variant-ligatures: none;
+  }
+}
+
+.thin-scrollbar {
+  scrollbar-gutter: stable;
+}
+.thin-scrollbar::-webkit-scrollbar {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  width: 4px !important;
+  height: 4px !important;
+}
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background-color: color-mix(
+    in oklch,
+    var(--color-muted-foreground) 60%,
+    transparent
+  ) !important;
+  border-radius: 9999px !important;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(
+    in oklch,
+    var(--color-muted-foreground) 85%,
+    transparent
+  ) !important;
+}
+
+/* Global scrollbar override: style every native scrollbar app-wide so panels
+   that don't opt into .thin-scrollbar don't fall back to the default bar. */
+* {
+  scrollbar-width: thin !important;
+  scrollbar-color: color-mix(
+      in oklch,
+      var(--color-muted-foreground) 60%,
+      transparent
+    )
+    transparent !important;
+}
+*::-webkit-scrollbar {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  width: 4px !important;
+  height: 4px !important;
+}
+*::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: color-mix(
+    in oklch,
+    var(--color-muted-foreground) 60%,
+    transparent
+  ) !important;
+  border-radius: 9999px !important;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(
+    in oklch,
+    var(--color-muted-foreground) 85%,
+    transparent
+  ) !important;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent !important;
+}
+
+/* This layer is by next-forge */
+@layer base {
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    @apply border-border;
+  }
+  * {
+    @apply min-w-0;
+  }
+  html {
+    text-rendering: optimizelegibility;
+  }
+  body {
+    @apply min-h-dvh;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    @apply text-muted-foreground;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    @apply cursor-pointer;
+  }
+}
+
+/* start custom keeperhub code */
+@keyframes flyout-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+/* end keeperhub code */
+
+@keyframes dashdraw {
+  from {
+    stroke-dashoffset: 10;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* React Flow attribution styling */
+.react-flow__attribution {
+  background: transparent !important;
+  padding: 2px 4px !important;
+  font-size: 10px !important;
+  opacity: 0.4 !important;
+}
+
+.dark .react-flow__attribution {
+  background: transparent !important;
+  color: var(--muted-foreground) !important;
+}
+
+.dark .react-flow__attribution a {
+  color: var(--muted-foreground) !important;
+}
+
+/* React Flow pane cursor */
+.react-flow__pane {
+  cursor: grab !important;
+}
+
+.react-flow__pane:active {
+  cursor: grabbing !important;
+}
+
+/* React Flow node and edge cursor */
+.react-flow__node {
+  cursor: pointer !important;
+}
+
+/* When dragging a node, show grabbing cursor */
+.react-flow__node.dragging {
+  cursor: grabbing !important;
+}
+
+.react-flow__edge {
+  cursor: pointer !important;
+}
+
+/* React Flow handle positioning and styling */
+.react-flow__handle {
+  width: 12px !important;
+  height: 12px !important;
+  border: 2px solid var(--border) !important;
+  background: var(--primary) !important;
+  cursor: crosshair !important;
+  z-index: 20 !important;
+}
+
+/* Increase hit area on mobile without changing visual size */
+@media (max-width: 768px) {
+  .react-flow__handle::after {
+    content: "" !important;
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    width: 44px !important;
+    height: 44px !important;
+  }
+}
+
+.react-flow__handle-left {
+  left: -0.5px !important;
+}
+
+.react-flow__handle-right {
+  right: -0.5px !important;
+}
+
+/* start custom keeperhub code */
+.add-step-connector line {
+  stroke: var(--border);
+  transition: stroke 150ms;
+}
+
+.add-step-button:hover + .add-step-connector line {
+  stroke: var(--primary);
+}
+
+.template-badge {
+  background-color: var(--color-badge-blue-bg);
+  color: var(--color-badge-blue-text) !important;
+  border-radius: 3px;
+  font-weight: 500;
+  box-shadow: inset 0 0 0 1px var(--color-badge-blue-border);
+}
+
+.dark .template-badge {
+  color: var(--color-badge-blue-text-dark) !important;
+}
+/* end keeperhub code */
+
+/* Safe area support for mobile devices */
+@supports (height: 100dvh) {
+  html,
+  body {
+    height: 100dvh;
+  }
+}
+
+/* Safe area support for mobile devices */
+@media (max-width: 768px) {
+  .workflow-controls-panel {
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 5.5rem) !important;
+  }
+}
+
+/* Statuspage embedded widget overrides */
+#statuspage-widget .sp-widget {
+  font-family: var(--font-anek-latin), sans-serif !important;
+  font-size: 0.875rem !important;
+}
+
+#statuspage-widget .sp-button {
+  background-color: var(--card) !important;
+  color: var(--card-foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  box-shadow:
+    0 4px 6px -1px oklch(0 0 0 / 0.3),
+    0 2px 4px -2px oklch(0 0 0 / 0.2) !important;
+  font-family: var(--font-anek-latin), sans-serif !important;
+  font-size: 0.875rem !important;
+  font-weight: 500 !important;
+}
+
+#statuspage-widget .sp-button:hover {
+  background-color: var(--accent) !important;
+  border-color: var(--ring) !important;
+}
+
+#statuspage-widget .sp-dialog {
+  background-color: var(--popover) !important;
+  color: var(--popover-foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  box-shadow:
+    0 10px 15px -3px oklch(0 0 0 / 0.3),
+    0 4px 6px -4px oklch(0 0 0 / 0.2) !important;
+  font-family: var(--font-anek-latin), sans-serif !important;
+}
+
+#statuspage-widget .sp-dialog .sp-title {
+  color: var(--foreground) !important;
+  font-weight: 600 !important;
+  font-size: 0.9375rem !important;
+}
+
+#statuspage-widget .sp-dialog .sp-status {
+  color: var(--muted-foreground) !important;
+  font-size: 0.8125rem !important;
+}
+
+#statuspage-widget .sp-dialog a,
+#statuspage-widget .sp-button a {
+  color: var(--keeperhub-green) !important;
+}
+
+#statuspage-widget .sp-dialog a:hover,
+#statuspage-widget .sp-button a:hover {
+  color: var(--keeperhub-green-dark) !important;
+}
+
+/* Operational status dot — match KeeperHub green */
+#statuspage-widget .sp-indicator.sp-operational,
+#statuspage-widget .sp-status-dot.operational {
+  background-color: #09fd67 !important;
+  box-shadow: 0 0 0 3px #09fd671a !important;
+}
+
+/* Degraded/incident status dots */
+#statuspage-widget .sp-indicator.sp-degraded,
+#statuspage-widget .sp-status-dot.degraded {
+  background-color: oklch(0.828 0.189 84.429) !important;
+}
+
+#statuspage-widget .sp-indicator.sp-incident,
+#statuspage-widget .sp-status-dot.incident,
+#statuspage-widget .sp-indicator.sp-critical {
+  background-color: var(--destructive) !important;
+}
+
+#statuspage-widget .sp-dialog hr,
+#statuspage-widget .sp-dialog .sp-separator {
+  border-color: var(--border) !important;
+}
+
+#statuspage-widget .sp-dialog .sp-component-name {
+  color: var(--foreground) !important;
+}
+
+#statuspage-widget .sp-dialog .sp-component-status {
+  color: var(--muted-foreground) !important;
+  font-size: 0.75rem !important;
+}
+
+/* driver.js onboarding popover - dark, rounded, matched to the app surfaces.
+   Selectors are doubled (`.driver-popover.driver-popover`) / scoped under the
+   popover so they out-specify driver.css's own same-class rules - otherwise the
+   win depends on CSS bundle order and the default white surface can leak in. */
+.driver-popover.driver-popover {
+  background-color: var(--background);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  box-shadow: none;
+  font-family: var(--font-sans), sans-serif;
+  max-width: 22rem;
+  padding: 1.125rem;
+}
+
+.driver-popover.driver-popover * {
+  font-family: var(--font-sans), sans-serif;
+}
+
+.driver-popover .driver-popover-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--foreground);
+}
+
+.driver-popover .driver-popover-description {
+  margin-top: 0.375rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.driver-popover .driver-popover-arrow-side-top.driver-popover-arrow {
+  border-top-color: var(--background);
+}
+
+.driver-popover .driver-popover-arrow-side-bottom.driver-popover-arrow {
+  border-bottom-color: var(--background);
+}
+
+.driver-popover .driver-popover-arrow-side-left.driver-popover-arrow {
+  border-left-color: var(--background);
+}
+
+.driver-popover .driver-popover-arrow-side-right.driver-popover-arrow {
+  border-right-color: var(--background);
+}
+
+.driver-popover .driver-popover-footer {
+  margin-top: 0.875rem;
+  gap: 0.5rem;
+}
+
+.driver-popover .driver-popover-footer button {
+  font-size: 0.8rem;
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  padding: 0.4rem 0.75rem;
+  text-shadow: none;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.driver-popover .driver-popover-next-btn {
+  background-color: var(--keeperhub-green);
+  color: var(--primary-foreground);
+  border: 1px solid var(--keeperhub-green);
+}
+
+.driver-popover .driver-popover-next-btn:hover {
+  background-color: var(--keeperhub-green-dark);
+  border-color: var(--keeperhub-green-dark);
+}
+
+.driver-popover .driver-popover-prev-btn {
+  background-color: transparent;
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+}
+
+.driver-popover .driver-popover-prev-btn:hover {
+  background-color: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.driver-popover .driver-popover-close-btn {
+  color: var(--muted-foreground);
+  transition: color 0.15s ease;
+}
+
+.driver-popover .driver-popover-close-btn:hover {
+  color: var(--foreground);
+}
+
+/* While a driver tour is active, Radix popper portals (Select / Popover /
+   Dropdown option lists) render at the end of <body>, outside the highlighted
+   element. driver.css's blanket `.driver-active * { pointer-events: none }`
+   then makes their options unclickable, and the z-index 10000 overlay tints
+   them. Tour steps that edit form fields (the network and address selectors on
+   the balance node) need those lists usable, so re-enable interaction and lift
+   the portal above the overlay. Scoped to `.driver-active`, so it only applies
+   mid-tour. */
+.driver-active [data-radix-popper-content-wrapper],
+.driver-active [data-radix-popper-content-wrapper] * {
+  pointer-events: auto !important;
+}
+
+.driver-active [data-radix-popper-content-wrapper] {
+  z-index: 1000000001 !important;
+}

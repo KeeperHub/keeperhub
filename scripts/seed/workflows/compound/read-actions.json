@@ -1,0 +1,250 @@
+{
+  "protocol": "compound",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "Protocol Test: Compound V3 Read Actions",
+  "description": "Tests all Compound V3 read actions on Ethereum mainnet (USDC market)",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 450 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "compound-get-balance",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Get Base Balance",
+        "description": "Get base asset balance of the Comet contract itself",
+        "type": "action",
+        "config": {
+          "actionType": "compound/get-balance",
+          "network": "1",
+          "contractAddress": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+          "account": "0xc3d688B66703497DAA19211EEdff47f25384cdc3"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "compound-get-collateral-balance",
+      "type": "action",
+      "position": { "x": 450, "y": 150 },
+      "data": {
+        "label": "Get Collateral Balance",
+        "description": "Get WETH collateral balance of the Comet contract",
+        "type": "action",
+        "config": {
+          "actionType": "compound/get-collateral-balance",
+          "network": "1",
+          "contractAddress": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+          "account": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+          "asset": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "compound-get-borrow-balance",
+      "type": "action",
+      "position": { "x": 450, "y": 300 },
+      "data": {
+        "label": "Get Borrow Balance",
+        "description": "Get borrow balance of the Comet contract",
+        "type": "action",
+        "config": {
+          "actionType": "compound/get-borrow-balance",
+          "network": "1",
+          "contractAddress": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+          "account": "0xc3d688B66703497DAA19211EEdff47f25384cdc3"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "compound-get-utilization",
+      "type": "action",
+      "position": { "x": 450, "y": 450 },
+      "data": {
+        "label": "Get Utilization",
+        "description": "Get current utilization rate of the USDC market",
+        "type": "action",
+        "config": {
+          "actionType": "compound/get-utilization",
+          "network": "1",
+          "contractAddress": "0xc3d688B66703497DAA19211EEdff47f25384cdc3"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "compound-get-supply-rate",
+      "type": "action",
+      "position": { "x": 450, "y": 600 },
+      "data": {
+        "label": "Get Supply Rate",
+        "description": "Get supply rate at ~85% utilization",
+        "type": "action",
+        "config": {
+          "actionType": "compound/get-supply-rate",
+          "network": "1",
+          "contractAddress": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+          "utilization": "850000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "compound-get-borrow-rate",
+      "type": "action",
+      "position": { "x": 450, "y": 750 },
+      "data": {
+        "label": "Get Borrow Rate",
+        "description": "Get borrow rate at ~85% utilization",
+        "type": "action",
+        "config": {
+          "actionType": "compound/get-borrow-rate",
+          "network": "1",
+          "contractAddress": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+          "utilization": "850000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "compound-get-total-supply",
+      "type": "action",
+      "position": { "x": 450, "y": 900 },
+      "data": {
+        "label": "Get Total Supply",
+        "description": "Get total supply of the USDC market",
+        "type": "action",
+        "config": {
+          "actionType": "compound/get-total-supply",
+          "network": "1",
+          "contractAddress": "0xc3d688B66703497DAA19211EEdff47f25384cdc3"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "compound-get-total-borrow",
+      "type": "action",
+      "position": { "x": 450, "y": 1050 },
+      "data": {
+        "label": "Get Total Borrow",
+        "description": "Get total borrow of the USDC market",
+        "type": "action",
+        "config": {
+          "actionType": "compound/get-total-borrow",
+          "network": "1",
+          "contractAddress": "0xc3d688B66703497DAA19211EEdff47f25384cdc3"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "compound-is-liquidatable",
+      "type": "action",
+      "position": { "x": 450, "y": 1200 },
+      "data": {
+        "label": "Is Liquidatable",
+        "description": "Check if the Comet contract address is liquidatable",
+        "type": "action",
+        "config": {
+          "actionType": "compound/is-liquidatable",
+          "network": "1",
+          "contractAddress": "0xc3d688B66703497DAA19211EEdff47f25384cdc3",
+          "account": "0xc3d688B66703497DAA19211EEdff47f25384cdc3"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "compound-get-num-assets",
+      "type": "action",
+      "position": { "x": 450, "y": 1350 },
+      "data": {
+        "label": "Get Number of Assets",
+        "description": "Get the number of collateral assets in the USDC market",
+        "type": "action",
+        "config": {
+          "actionType": "compound/get-num-assets",
+          "network": "1",
+          "contractAddress": "0xc3d688B66703497DAA19211EEdff47f25384cdc3"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-to-compound-get-balance",
+      "source": "node-1",
+      "target": "compound-get-balance",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-compound-get-collateral-balance",
+      "source": "node-1",
+      "target": "compound-get-collateral-balance",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-compound-get-borrow-balance",
+      "source": "node-1",
+      "target": "compound-get-borrow-balance",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-compound-get-utilization",
+      "source": "node-1",
+      "target": "compound-get-utilization",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-compound-get-supply-rate",
+      "source": "node-1",
+      "target": "compound-get-supply-rate",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-compound-get-borrow-rate",
+      "source": "node-1",
+      "target": "compound-get-borrow-rate",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-compound-get-total-supply",
+      "source": "node-1",
+      "target": "compound-get-total-supply",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-compound-get-total-borrow",
+      "source": "node-1",
+      "target": "compound-get-total-borrow",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-compound-is-liquidatable",
+      "source": "node-1",
+      "target": "compound-is-liquidatable",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-compound-get-num-assets",
+      "source": "node-1",
+      "target": "compound-get-num-assets",
+      "type": "animated"
+    }
+  ]
+}

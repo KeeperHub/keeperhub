@@ -1,0 +1,97 @@
+{
+  "protocol": "chronicle",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "MCP Test: Chronicle Read All Oracle Actions",
+  "description": "Test all 4 Chronicle read actions against ETH/USD oracle on mainnet",
+  "oracleAddress": "0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E",
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 250 },
+      "data": {
+        "type": "trigger",
+        "label": "Manual Trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle",
+        "description": "Run manually"
+      }
+    },
+    {
+      "id": "read-1",
+      "type": "action",
+      "position": { "x": 400, "y": 100 },
+      "data": {
+        "type": "action",
+        "label": "Chronicle: Read Oracle Value",
+        "description": "Read ETH/USD price",
+        "config": {
+          "actionType": "chronicle/read",
+          "network": "1",
+          "contractAddress": "0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"oracle\",\"functionName\":\"read\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "read-2",
+      "type": "action",
+      "position": { "x": 400, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "Chronicle: Try Read Oracle Value",
+        "description": "Try read ETH/USD price (no revert)",
+        "config": {
+          "actionType": "chronicle/try-read",
+          "network": "1",
+          "contractAddress": "0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"oracle\",\"functionName\":\"tryRead\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "read-3",
+      "type": "action",
+      "position": { "x": 400, "y": 400 },
+      "data": {
+        "type": "action",
+        "label": "Chronicle: Read Oracle Value with Age",
+        "description": "Read ETH/USD price with timestamp",
+        "config": {
+          "actionType": "chronicle/read-with-age",
+          "network": "1",
+          "contractAddress": "0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"oracle\",\"functionName\":\"readWithAge\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "read-4",
+      "type": "action",
+      "position": { "x": 400, "y": 550 },
+      "data": {
+        "type": "action",
+        "label": "Chronicle: Try Read Oracle Value with Age",
+        "description": "Try read ETH/USD price with timestamp (no revert)",
+        "config": {
+          "actionType": "chronicle/try-read-with-age",
+          "network": "1",
+          "contractAddress": "0x46ef0071b1E2fF6B42d36e5A177EA43Ae5917f4E",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"oracle\",\"functionName\":\"tryReadWithAge\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger-1", "target": "read-1" },
+    { "id": "e2", "source": "trigger-1", "target": "read-2" },
+    { "id": "e3", "source": "trigger-1", "target": "read-3" },
+    { "id": "e4", "source": "trigger-1", "target": "read-4" }
+  ]
+}

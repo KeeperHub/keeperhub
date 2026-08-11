@@ -1,0 +1,257 @@
+{
+  "protocol": "ethena",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "Protocol Test: Ethena Read Actions",
+  "description": "Tests all Ethena read actions on Ethereum mainnet",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 500 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-vault-asset",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Vault Underlying Asset",
+        "description": "Get the underlying asset address (USDe) of the sUSDe vault",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/vault-asset",
+          "network": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-vault-total-assets",
+      "type": "action",
+      "position": { "x": 450, "y": 150 },
+      "data": {
+        "label": "Vault Total Assets",
+        "description": "Get total USDe assets held by sUSDe vault",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/vault-total-assets",
+          "network": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-vault-total-supply",
+      "type": "action",
+      "position": { "x": 450, "y": 300 },
+      "data": {
+        "label": "Vault Total Supply",
+        "description": "Get total sUSDe shares minted",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/vault-total-supply",
+          "network": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-vault-balance",
+      "type": "action",
+      "position": { "x": 450, "y": 450 },
+      "data": {
+        "label": "Vault Share Balance",
+        "description": "Check sUSDe share balance of Morpho (known large holder)",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/vault-balance",
+          "network": "1",
+          "account": "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-vault-convert-to-assets",
+      "type": "action",
+      "position": { "x": 450, "y": 600 },
+      "data": {
+        "label": "Convert Shares to Assets",
+        "description": "Convert 1 sUSDe share to its USDe value",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/vault-convert-to-assets",
+          "network": "1",
+          "shares": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-vault-convert-to-shares",
+      "type": "action",
+      "position": { "x": 450, "y": 750 },
+      "data": {
+        "label": "Convert Assets to Shares",
+        "description": "Convert 1 USDe to its sUSDe share equivalent",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/vault-convert-to-shares",
+          "network": "1",
+          "assets": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-vault-preview-deposit",
+      "type": "action",
+      "position": { "x": 450, "y": 900 },
+      "data": {
+        "label": "Preview Vault Deposit",
+        "description": "Preview shares received for depositing 1 USDe",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/vault-preview-deposit",
+          "network": "1",
+          "assets": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-vault-preview-redeem",
+      "type": "action",
+      "position": { "x": 450, "y": 1050 },
+      "data": {
+        "label": "Preview Vault Redeem",
+        "description": "Preview assets received for redeeming 1 sUSDe share",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/vault-preview-redeem",
+          "network": "1",
+          "shares": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-vault-max-deposit",
+      "type": "action",
+      "position": { "x": 450, "y": 1200 },
+      "data": {
+        "label": "Max Vault Deposit",
+        "description": "Get maximum deposit amount for an address",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/vault-max-deposit",
+          "network": "1",
+          "receiver": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-vault-max-withdraw",
+      "type": "action",
+      "position": { "x": 450, "y": 1350 },
+      "data": {
+        "label": "Max Vault Withdraw",
+        "description": "Get maximum withdraw amount for an owner",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/vault-max-withdraw",
+          "network": "1",
+          "owner": "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-cooldown-duration",
+      "type": "action",
+      "position": { "x": 850, "y": 0 },
+      "data": {
+        "label": "Get Cooldown Duration",
+        "description": "Get the current cooldown period in seconds",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/get-cooldown-duration",
+          "network": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-cooldown-status",
+      "type": "action",
+      "position": { "x": 850, "y": 150 },
+      "data": {
+        "label": "Get Cooldown Status",
+        "description": "Get cooldown status for an address (expect zeros for non-staker)",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/get-cooldown-status",
+          "network": "1",
+          "account": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-usde-balance",
+      "type": "action",
+      "position": { "x": 850, "y": 300 },
+      "data": {
+        "label": "Get USDe Balance",
+        "description": "Check USDe balance of sUSDe vault (known large holder)",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/get-usde-balance",
+          "network": "1",
+          "account": "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "ethena-ena-balance",
+      "type": "action",
+      "position": { "x": 850, "y": 450 },
+      "data": {
+        "label": "Get ENA Balance",
+        "description": "Check ENA token balance of an address",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/get-ena-balance",
+          "network": "1",
+          "account": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e-trigger-to-vault-asset", "source": "node-1", "target": "ethena-vault-asset", "type": "animated" },
+    { "id": "e-trigger-to-vault-total-assets", "source": "node-1", "target": "ethena-vault-total-assets", "type": "animated" },
+    { "id": "e-trigger-to-vault-total-supply", "source": "node-1", "target": "ethena-vault-total-supply", "type": "animated" },
+    { "id": "e-trigger-to-vault-balance", "source": "node-1", "target": "ethena-vault-balance", "type": "animated" },
+    { "id": "e-trigger-to-vault-convert-to-assets", "source": "node-1", "target": "ethena-vault-convert-to-assets", "type": "animated" },
+    { "id": "e-trigger-to-vault-convert-to-shares", "source": "node-1", "target": "ethena-vault-convert-to-shares", "type": "animated" },
+    { "id": "e-trigger-to-vault-preview-deposit", "source": "node-1", "target": "ethena-vault-preview-deposit", "type": "animated" },
+    { "id": "e-trigger-to-vault-preview-redeem", "source": "node-1", "target": "ethena-vault-preview-redeem", "type": "animated" },
+    { "id": "e-trigger-to-vault-max-deposit", "source": "node-1", "target": "ethena-vault-max-deposit", "type": "animated" },
+    { "id": "e-trigger-to-vault-max-withdraw", "source": "node-1", "target": "ethena-vault-max-withdraw", "type": "animated" },
+    { "id": "e-trigger-to-cooldown-duration", "source": "node-1", "target": "ethena-cooldown-duration", "type": "animated" },
+    { "id": "e-trigger-to-cooldown-status", "source": "node-1", "target": "ethena-cooldown-status", "type": "animated" },
+    { "id": "e-trigger-to-usde-balance", "source": "node-1", "target": "ethena-usde-balance", "type": "animated" },
+    { "id": "e-trigger-to-ena-balance", "source": "node-1", "target": "ethena-ena-balance", "type": "animated" }
+  ]
+}

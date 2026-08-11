@@ -1,0 +1,1877 @@
+{
+  "recordedAt": "2026-05-16T06:00:00.000Z",
+  "recordedFromEnv": "production",
+  "workflowCount": 21,
+  "workflows": [
+    {
+      "id": "ytnpxvaaymld9md2mlr49",
+      "slug": "stablecoin-yield-compare-base",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "aave-supply-rate",
+          "type": "action",
+          "data": {
+            "label": "Aave V3 Supply Rate",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "8453",
+              "contractAddress": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+              "abi": "[]",
+              "abiFunction": "getReserveData",
+              "args": ["0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"]
+            }
+          }
+        },
+        {
+          "id": "compound-supply-rate",
+          "type": "action",
+          "data": {
+            "label": "Compound V3 Supply Rate",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "8453",
+              "contractAddress": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+              "abi": "[]",
+              "abiFunction": "getSupplyRate",
+              "args": []
+            }
+          }
+        },
+        {
+          "id": "morpho-supply-rate",
+          "type": "action",
+          "data": {
+            "label": "Morpho Steakhouse Supply Rate",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "8453",
+              "contractAddress": "0xBeEf010F9CB27031Ad51E3333F9aF9c6B1228e5e",
+              "abi": "[]",
+              "abiFunction": "totalAssets",
+              "args": []
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Combine Rates",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "aave-supply-rate"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "compound-supply-rate"
+        },
+        {
+          "id": "e3",
+          "source": "trigger-1",
+          "target": "morpho-supply-rate"
+        },
+        {
+          "id": "e4",
+          "source": "aave-supply-rate",
+          "target": "combine-1"
+        },
+        {
+          "id": "e5",
+          "source": "compound-supply-rate",
+          "target": "combine-1"
+        },
+        {
+          "id": "e6",
+          "source": "morpho-supply-rate",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "outputMapping": {
+        "rates": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "lwmi2d6rf22fiu7l572z6",
+      "slug": "defi-position-aggregator-base",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "aave-position",
+          "type": "action",
+          "data": {
+            "label": "Aave V3 Position",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "8453",
+              "contractAddress": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+              "abi": "[]",
+              "abiFunction": "getUserAccountData",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        },
+        {
+          "id": "compound-position",
+          "type": "action",
+          "data": {
+            "label": "Compound V3 Position",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "8453",
+              "contractAddress": "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+              "abi": "[]",
+              "abiFunction": "balanceOf",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        },
+        {
+          "id": "lido-position",
+          "type": "action",
+          "data": {
+            "label": "Lido wstETH Position",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "8453",
+              "contractAddress": "0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452",
+              "abi": "[]",
+              "abiFunction": "balanceOf",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Aggregate Positions",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "aave-position"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "compound-position"
+        },
+        {
+          "id": "e3",
+          "source": "trigger-1",
+          "target": "lido-position"
+        },
+        {
+          "id": "e4",
+          "source": "aave-position",
+          "target": "combine-1"
+        },
+        {
+          "id": "e5",
+          "source": "compound-position",
+          "target": "combine-1"
+        },
+        {
+          "id": "e6",
+          "source": "lido-position",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "walletAddress": {
+            "type": "string"
+          }
+        },
+        "required": ["walletAddress"]
+      },
+      "outputMapping": {
+        "positions": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "5667q8uw1rq4y723t548n",
+      "slug": "defi-position-aggregator-ethereum",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "aave-eth-position",
+          "type": "action",
+          "data": {
+            "label": "Aave V3 Mainnet Position",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+              "abi": "[]",
+              "abiFunction": "getUserAccountData",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        },
+        {
+          "id": "spark-position",
+          "type": "action",
+          "data": {
+            "label": "Spark Position",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0xC13e21B648A5Ee794902342038FF3aDAB66BE987",
+              "abi": "[]",
+              "abiFunction": "getUserAccountData",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        },
+        {
+          "id": "rocket-position",
+          "type": "action",
+          "data": {
+            "label": "Rocket Pool rETH",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0xae78736Cd615f374D3085123A210448E74Fc6393",
+              "abi": "[]",
+              "abiFunction": "balanceOf",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Aggregate Positions",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "aave-eth-position"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "spark-position"
+        },
+        {
+          "id": "e3",
+          "source": "trigger-1",
+          "target": "rocket-position"
+        },
+        {
+          "id": "e4",
+          "source": "aave-eth-position",
+          "target": "combine-1"
+        },
+        {
+          "id": "e5",
+          "source": "spark-position",
+          "target": "combine-1"
+        },
+        {
+          "id": "e6",
+          "source": "rocket-position",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "walletAddress": {
+            "type": "string"
+          }
+        },
+        "required": ["walletAddress"]
+      },
+      "outputMapping": {
+        "positions": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "tok4pr9v2nm8a1bx3yz07",
+      "slug": "token-approval-scanner",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "usdc-allowance",
+          "type": "action",
+          "data": {
+            "label": "USDC Allowance",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "abi": "[]",
+              "abiFunction": "allowance",
+              "args": [
+                "{{@trigger-1:Trigger.walletAddress}}",
+                "{{@trigger-1:Trigger.spenderAddress}}"
+              ]
+            }
+          }
+        },
+        {
+          "id": "dai-allowance",
+          "type": "action",
+          "data": {
+            "label": "DAI Allowance",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+              "abi": "[]",
+              "abiFunction": "allowance",
+              "args": [
+                "{{@trigger-1:Trigger.walletAddress}}",
+                "{{@trigger-1:Trigger.spenderAddress}}"
+              ]
+            }
+          }
+        },
+        {
+          "id": "weth-allowance",
+          "type": "action",
+          "data": {
+            "label": "WETH Allowance",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "abi": "[]",
+              "abiFunction": "allowance",
+              "args": [
+                "{{@trigger-1:Trigger.walletAddress}}",
+                "{{@trigger-1:Trigger.spenderAddress}}"
+              ]
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Combine Allowances",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "usdc-allowance"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "dai-allowance"
+        },
+        {
+          "id": "e3",
+          "source": "trigger-1",
+          "target": "weth-allowance"
+        },
+        {
+          "id": "e4",
+          "source": "usdc-allowance",
+          "target": "combine-1"
+        },
+        {
+          "id": "e5",
+          "source": "dai-allowance",
+          "target": "combine-1"
+        },
+        {
+          "id": "e6",
+          "source": "weth-allowance",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "walletAddress": {
+            "type": "string"
+          },
+          "spenderAddress": {
+            "type": "string"
+          }
+        },
+        "required": ["walletAddress", "spenderAddress"]
+      },
+      "outputMapping": {
+        "allowances": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "uni3qt8r5fp2z9ws6xb14",
+      "slug": "uniswap-v3-pool-stats",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "pool-slot0",
+          "type": "action",
+          "data": {
+            "label": "Pool Slot0",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+              "abi": "[]",
+              "abiFunction": "slot0",
+              "args": []
+            }
+          }
+        },
+        {
+          "id": "pool-liquidity",
+          "type": "action",
+          "data": {
+            "label": "Pool Liquidity",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+              "abi": "[]",
+              "abiFunction": "liquidity",
+              "args": []
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Combine Stats",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "pool-slot0"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "pool-liquidity"
+        },
+        {
+          "id": "e3",
+          "source": "pool-slot0",
+          "target": "combine-1"
+        },
+        {
+          "id": "e4",
+          "source": "pool-liquidity",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "outputMapping": {
+        "stats": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "weth8b3sz6mx5kd1fg092",
+      "slug": "weth-base-balance-checker",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "weth-balance",
+          "type": "action",
+          "data": {
+            "label": "WETH Balance on Base",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "8453",
+              "contractAddress": "0x4200000000000000000000000000000000000006",
+              "abi": "[]",
+              "abiFunction": "balanceOf",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "weth-balance"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "walletAddress": {
+            "type": "string"
+          }
+        },
+        "required": ["walletAddress"]
+      },
+      "outputMapping": {
+        "balance": "weth-balance"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "liq7wd4nq8rv2sp0yh315",
+      "slug": "aave-liquidation-risk-watcher",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Schedule Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Schedule",
+              "cron": "*/15 * * * *"
+            }
+          }
+        },
+        {
+          "id": "health-factor",
+          "type": "action",
+          "data": {
+            "label": "Get Health Factor",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+              "abi": "[]",
+              "abiFunction": "getUserAccountData",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        },
+        {
+          "id": "condition-1",
+          "type": "action",
+          "data": {
+            "label": "Health Factor Check",
+            "type": "action",
+            "config": {
+              "actionType": "Condition",
+              "conditions": [
+                {
+                  "left": "{{@health-factor:Get Health Factor.healthFactor}}",
+                  "operator": "lt",
+                  "right": "1200000000000000000"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "health-factor"
+        },
+        {
+          "id": "e2",
+          "source": "health-factor",
+          "target": "condition-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "walletAddress": {
+            "type": "string"
+          }
+        },
+        "required": ["walletAddress"]
+      },
+      "outputMapping": {
+        "riskStatus": "condition-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "orccl9xe7qm3bk2tn468a",
+      "slug": "chainlink-oracle-price-feed",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "eth-usd-price",
+          "type": "action",
+          "data": {
+            "label": "ETH/USD Price",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
+              "abi": "[]",
+              "abiFunction": "latestRoundData",
+              "args": []
+            }
+          }
+        },
+        {
+          "id": "btc-usd-price",
+          "type": "action",
+          "data": {
+            "label": "BTC/USD Price",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0xF4030086522a5BeEA4988F8ca5B36DBC97Bee88b",
+              "abi": "[]",
+              "abiFunction": "latestRoundData",
+              "args": []
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Combine Prices",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "eth-usd-price"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "btc-usd-price"
+        },
+        {
+          "id": "e3",
+          "source": "eth-usd-price",
+          "target": "combine-1"
+        },
+        {
+          "id": "e4",
+          "source": "btc-usd-price",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "outputMapping": {
+        "prices": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "gov5sc2pa4fu8xy9ez731",
+      "slug": "governance-proposal-scanner",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Schedule Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Schedule",
+              "cron": "0 * * * *"
+            }
+          }
+        },
+        {
+          "id": "proposal-count",
+          "type": "action",
+          "data": {
+            "label": "Proposal Count",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0xEC568fffba86c094cf06b22134B23074DFE2252c",
+              "abi": "[]",
+              "abiFunction": "proposalCount",
+              "args": []
+            }
+          }
+        },
+        {
+          "id": "proposal-state",
+          "type": "action",
+          "data": {
+            "label": "Proposal State",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0xEC568fffba86c094cf06b22134B23074DFE2252c",
+              "abi": "[]",
+              "abiFunction": "state",
+              "args": ["{{@trigger-1:Trigger.proposalId}}"]
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "proposal-count"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "proposal-state"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "proposalId": {
+            "type": "string"
+          }
+        },
+        "required": ["proposalId"]
+      },
+      "outputMapping": {
+        "proposalState": "proposal-state"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "yld9kw6bh3xm1vs4er852",
+      "slug": "yield-curve-monitor",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Schedule Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Schedule",
+              "cron": "0 */4 * * *"
+            }
+          }
+        },
+        {
+          "id": "aave-borrow-rate",
+          "type": "action",
+          "data": {
+            "label": "Aave USDC Borrow Rate",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+              "abi": "[]",
+              "abiFunction": "getReserveData",
+              "args": ["0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"]
+            }
+          }
+        },
+        {
+          "id": "aave-eth-borrow-rate",
+          "type": "action",
+          "data": {
+            "label": "Aave WETH Borrow Rate",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+              "abi": "[]",
+              "abiFunction": "getReserveData",
+              "args": ["0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"]
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Combine Rates",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "aave-borrow-rate"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "aave-eth-borrow-rate"
+        },
+        {
+          "id": "e3",
+          "source": "aave-borrow-rate",
+          "target": "combine-1"
+        },
+        {
+          "id": "e4",
+          "source": "aave-eth-borrow-rate",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "outputMapping": {
+        "yieldCurve": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "mev2xs7qn9dp3fw6ah014",
+      "slug": "mev-aware-swap-quote",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "uniswap-quote",
+          "type": "action",
+          "data": {
+            "label": "Uniswap V3 Quote",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
+              "abi": "[]",
+              "abiFunction": "quoteExactInputSingle",
+              "args": [
+                "{{@trigger-1:Trigger.tokenIn}}",
+                "{{@trigger-1:Trigger.tokenOut}}",
+                "3000",
+                "{{@trigger-1:Trigger.amountIn}}",
+                "0"
+              ]
+            }
+          }
+        },
+        {
+          "id": "http-1",
+          "type": "action",
+          "data": {
+            "label": "MEV Protection Check",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://api.flashbots.net/v1/mev-share/history",
+              "method": "GET"
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Combine Quote",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "uniswap-quote"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "http-1"
+        },
+        {
+          "id": "e3",
+          "source": "uniswap-quote",
+          "target": "combine-1"
+        },
+        {
+          "id": "e4",
+          "source": "http-1",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tokenIn": {
+            "type": "string"
+          },
+          "tokenOut": {
+            "type": "string"
+          },
+          "amountIn": {
+            "type": "string"
+          }
+        },
+        "required": ["tokenIn", "tokenOut", "amountIn"]
+      },
+      "outputMapping": {
+        "quote": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "brdg4ht8qz2vy5xr9np67",
+      "slug": "bridge-optimizer-quote",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "stargate-quote",
+          "type": "action",
+          "data": {
+            "label": "Stargate Bridge Quote",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://api.stargate.finance/v2/bus-rides",
+              "method": "GET"
+            }
+          }
+        },
+        {
+          "id": "across-quote",
+          "type": "action",
+          "data": {
+            "label": "Across Protocol Quote",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://across.to/api/suggested-fees",
+              "method": "GET"
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Compare Quotes",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "stargate-quote"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "across-quote"
+        },
+        {
+          "id": "e3",
+          "source": "stargate-quote",
+          "target": "combine-1"
+        },
+        {
+          "id": "e4",
+          "source": "across-quote",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "sourceChain": {
+            "type": "string"
+          },
+          "destChain": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string"
+          }
+        },
+        "required": ["sourceChain", "destChain", "amount"]
+      },
+      "outputMapping": {
+        "bridgeQuotes": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "tvl6zp9rn3ks8wy1mx425",
+      "slug": "protocol-tvl-tracker",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Schedule Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Schedule",
+              "cron": "0 0 * * *"
+            }
+          }
+        },
+        {
+          "id": "aave-tvl",
+          "type": "action",
+          "data": {
+            "label": "Aave V3 TVL",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://api.llama.fi/tvl/aave",
+              "method": "GET"
+            }
+          }
+        },
+        {
+          "id": "uniswap-tvl",
+          "type": "action",
+          "data": {
+            "label": "Uniswap TVL",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://api.llama.fi/tvl/uniswap",
+              "method": "GET"
+            }
+          }
+        },
+        {
+          "id": "compound-tvl",
+          "type": "action",
+          "data": {
+            "label": "Compound TVL",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://api.llama.fi/tvl/compound",
+              "method": "GET"
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Combine TVL",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "aave-tvl"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "uniswap-tvl"
+        },
+        {
+          "id": "e3",
+          "source": "trigger-1",
+          "target": "compound-tvl"
+        },
+        {
+          "id": "e4",
+          "source": "aave-tvl",
+          "target": "combine-1"
+        },
+        {
+          "id": "e5",
+          "source": "uniswap-tvl",
+          "target": "combine-1"
+        },
+        {
+          "id": "e6",
+          "source": "compound-tvl",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "outputMapping": {
+        "tvl": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "erc20t5qb1rx7cw9fz083",
+      "slug": "erc20-transfer-monitor",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Event Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Event",
+              "eventName": "Transfer",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "network": "1"
+            }
+          }
+        },
+        {
+          "id": "condition-1",
+          "type": "action",
+          "data": {
+            "label": "Large Transfer Filter",
+            "type": "action",
+            "config": {
+              "actionType": "Condition",
+              "conditions": [
+                {
+                  "left": "{{@trigger-1:Trigger.value}}",
+                  "operator": "gte",
+                  "right": "1000000000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "http-1",
+          "type": "action",
+          "data": {
+            "label": "Log Transfer",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://hooks.zapier.com/hooks/catch/example",
+              "method": "POST",
+              "body": "{\"from\": \"{{@trigger-1:Trigger.from}}\", \"to\": \"{{@trigger-1:Trigger.to}}\", \"value\": \"{{@trigger-1:Trigger.value}}\"}"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "condition-1"
+        },
+        {
+          "id": "e2",
+          "source": "condition-1",
+          "target": "http-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "outputMapping": null,
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "arbwl3ng8se6bk5hp2740",
+      "slug": "arbitrum-gas-price-tracker",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Schedule Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Schedule",
+              "cron": "*/5 * * * *"
+            }
+          }
+        },
+        {
+          "id": "arb-gas",
+          "type": "action",
+          "data": {
+            "label": "Arbitrum Gas Price",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://api.arbiscan.io/api?module=gastracker&action=gasoracle",
+              "method": "GET"
+            }
+          }
+        },
+        {
+          "id": "eth-gas",
+          "type": "action",
+          "data": {
+            "label": "Ethereum Gas Price",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://api.etherscan.io/api?module=gastracker&action=gasoracle",
+              "method": "GET"
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Combine Gas Prices",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "arb-gas"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "eth-gas"
+        },
+        {
+          "id": "e3",
+          "source": "arb-gas",
+          "target": "combine-1"
+        },
+        {
+          "id": "e4",
+          "source": "eth-gas",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": null,
+      "outputMapping": {
+        "gasPrices": "combine-1"
+      },
+      "isListed": false,
+      "workflowType": "read"
+    },
+    {
+      "id": "ldo7st4yx2nv9pk8qr561",
+      "slug": "lido-staking-stats",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "lido-apr",
+          "type": "action",
+          "data": {
+            "label": "Lido APR",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://eth-api.lido.fi/v1/protocol/steth/apr/last",
+              "method": "GET"
+            }
+          }
+        },
+        {
+          "id": "steth-balance",
+          "type": "action",
+          "data": {
+            "label": "stETH Balance",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
+              "abi": "[]",
+              "abiFunction": "balanceOf",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Combine Staking Stats",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "lido-apr"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "steth-balance"
+        },
+        {
+          "id": "e3",
+          "source": "lido-apr",
+          "target": "combine-1"
+        },
+        {
+          "id": "e4",
+          "source": "steth-balance",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "walletAddress": {
+            "type": "string"
+          }
+        },
+        "required": ["walletAddress"]
+      },
+      "outputMapping": {
+        "stakingStats": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "ens3fw6uh9am2vs5gq847",
+      "slug": "ens-name-resolver",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "ens-resolve",
+          "type": "action",
+          "data": {
+            "label": "ENS Name Lookup",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://api.thegraph.com/subgraphs/name/ensdomains/ens",
+              "method": "POST",
+              "body": "{\"query\": \"{ domains(where: {name: \\\"{{@trigger-1:Trigger.ensName}}\\\"}) { resolvedAddress { id } } }\"}"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "ens-resolve"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ensName": {
+            "type": "string"
+          }
+        },
+        "required": ["ensName"]
+      },
+      "outputMapping": {
+        "address": "ens-resolve"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "nftf8bq2zr5xd4cw7ey09",
+      "slug": "nft-floor-price-tracker",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Schedule Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Schedule",
+              "cron": "0 */2 * * *"
+            }
+          }
+        },
+        {
+          "id": "floor-price",
+          "type": "action",
+          "data": {
+            "label": "NFT Floor Price",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://api.opensea.io/api/v2/collections/{{@trigger-1:Trigger.collectionSlug}}/stats",
+              "method": "GET"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "floor-price"
+        }
+      ],
+      "inputSchema": null,
+      "outputMapping": {
+        "floorPrice": "floor-price"
+      },
+      "isListed": false,
+      "workflowType": "read"
+    },
+    {
+      "id": "aisum9kd7wb4xq3hp6r25",
+      "slug": "ai-defi-summary",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "market-data",
+          "type": "action",
+          "data": {
+            "label": "Fetch Market Data",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin,usd-coin&vs_currencies=usd",
+              "method": "GET"
+            }
+          }
+        },
+        {
+          "id": "ai-summarize",
+          "type": "action",
+          "data": {
+            "label": "AI Summary",
+            "type": "action",
+            "config": {
+              "actionType": "ai/generate-text",
+              "model": "claude-3-5-sonnet-20241022",
+              "prompt": "Summarize this DeFi market data: {{@market-data:Fetch Market Data.output}}. The user's focus areas are @ethereum and @bitcoin holdings."
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "market-data"
+        },
+        {
+          "id": "e2",
+          "source": "market-data",
+          "target": "ai-summarize"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "outputMapping": {
+        "summary": "ai-summarize"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "wal0mc5jx8tn2fp4ys693",
+      "slug": "wallet-health-report",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "eth-balance",
+          "type": "action",
+          "data": {
+            "label": "ETH Balance",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "abi": "[]",
+              "abiFunction": "balanceOf",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        },
+        {
+          "id": "usdc-balance",
+          "type": "action",
+          "data": {
+            "label": "USDC Balance",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "abi": "[]",
+              "abiFunction": "balanceOf",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        },
+        {
+          "id": "aave-health",
+          "type": "action",
+          "data": {
+            "label": "Aave Health Factor",
+            "type": "action",
+            "config": {
+              "actionType": "web3/read-contract",
+              "network": "1",
+              "contractAddress": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+              "abi": "[]",
+              "abiFunction": "getUserAccountData",
+              "args": ["{{@trigger-1:Trigger.walletAddress}}"]
+            }
+          }
+        },
+        {
+          "id": "combine-1",
+          "type": "action",
+          "data": {
+            "label": "Wallet Health Report",
+            "type": "action",
+            "config": {
+              "actionType": "Collect"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "eth-balance"
+        },
+        {
+          "id": "e2",
+          "source": "trigger-1",
+          "target": "usdc-balance"
+        },
+        {
+          "id": "e3",
+          "source": "trigger-1",
+          "target": "aave-health"
+        },
+        {
+          "id": "e4",
+          "source": "eth-balance",
+          "target": "combine-1"
+        },
+        {
+          "id": "e5",
+          "source": "usdc-balance",
+          "target": "combine-1"
+        },
+        {
+          "id": "e6",
+          "source": "aave-health",
+          "target": "combine-1"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "walletAddress": {
+            "type": "string"
+          }
+        },
+        "required": ["walletAddress"]
+      },
+      "outputMapping": {
+        "report": "combine-1"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    },
+    {
+      "id": "free0jk9wr5tp7xs4nb16",
+      "slug": "eth-price-free",
+      "nodes": [
+        {
+          "id": "trigger-1",
+          "type": "trigger",
+          "data": {
+            "label": "Manual Trigger",
+            "type": "trigger",
+            "config": {
+              "triggerType": "Manual"
+            }
+          }
+        },
+        {
+          "id": "eth-price",
+          "type": "action",
+          "data": {
+            "label": "ETH Price",
+            "type": "action",
+            "config": {
+              "actionType": "HTTP Request",
+              "url": "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd",
+              "method": "GET"
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "trigger-1",
+          "target": "eth-price"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "outputMapping": {
+        "price": "eth-price"
+      },
+      "isListed": true,
+      "workflowType": "read"
+    }
+  ]
+}

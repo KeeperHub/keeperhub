@@ -1,0 +1,58 @@
+{
+  "protocol": "sky",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Sky Approve DAI + Convert DAI to USDS",
+  "description": "Approve DAI for Sky DaiUsds converter then convert 5 DAI to USDS on mainnet",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "approve-dai",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Approve DAI for Converter",
+        "type": "action",
+        "config": {
+          "actionType": "web3/approve-token",
+          "network": "1",
+          "tokenConfig": "{\"mode\":\"custom\",\"customToken\":{\"address\":\"0x6B175474E89094C44Da98b954EedeAC495271d0F\",\"symbol\":\"DAI\"}}",
+          "spenderAddress": "0x3225737a9Bbb6473CB4a45b7244ACa2BeFdB276A",
+          "amount": "max"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "convert-dai-usds",
+      "type": "action",
+      "position": { "x": 544, "y": 0 },
+      "data": {
+        "label": "Convert DAI to USDS",
+        "type": "action",
+        "config": {
+          "actionType": "sky/convert-dai-to-usds",
+          "network": "1",
+          "usr": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9",
+          "amount": "5000000000000000000"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "approve-dai", "type": "animated" },
+    { "id": "e2", "source": "approve-dai", "target": "convert-dai-usds", "type": "animated" }
+  ]
+}

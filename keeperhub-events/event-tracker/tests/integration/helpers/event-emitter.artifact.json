@@ -1,0 +1,39 @@
+{
+  "abi": [
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "sender",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "value",
+          "type": "uint256"
+        }
+      ],
+      "name": "Emitted",
+      "type": "event"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "value",
+          "type": "uint256"
+        }
+      ],
+      "name": "emitEvent",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    }
+  ],
+  "bytecode": "0x6080604052348015600e575f5ffd5b5061015a8061001c5f395ff3fe608060405234801561000f575f5ffd5b5060043610610029575f3560e01c80634d43bec91461002d575b5f5ffd5b610047600480360381019061004291906100d1565b610049565b005b3373ffffffffffffffffffffffffffffffffffffffff167f6d7747ff9aaba238de658957a12a32c8a94f6ec3aa0508441fe400ca79ed457c8260405161008f919061010b565b60405180910390a250565b5f5ffd5b5f819050919050565b6100b08161009e565b81146100ba575f5ffd5b50565b5f813590506100cb816100a7565b92915050565b5f602082840312156100e6576100e561009a565b5b5f6100f3848285016100bd565b91505092915050565b6101058161009e565b82525050565b5f60208201905061011e5f8301846100fc565b9291505056fea264697066735822122087893d49c0919be12adefcd6a6754c05c0b61835978659251ac36645323890cc64736f6c63430008220033",
+  "source": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\ncontract EventEmitter {\n    event Emitted(address indexed sender, uint256 value);\n    function emitEvent(uint256 value) external { emit Emitted(msg.sender, value); }\n}",
+  "solcVersion": "0.8.34+commit.80d5c536.Emscripten.clang"
+}

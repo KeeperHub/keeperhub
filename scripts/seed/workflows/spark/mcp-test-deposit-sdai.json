@@ -1,0 +1,58 @@
+{
+  "protocol": "spark",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Spark Approve DAI + Deposit sDAI",
+  "description": "Approve DAI for sDAI vault then deposit 3 DAI into sDAI on mainnet",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "approve-dai",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Approve DAI for sDAI",
+        "type": "action",
+        "config": {
+          "actionType": "web3/approve-token",
+          "network": "1",
+          "tokenConfig": "{\"mode\":\"custom\",\"customToken\":{\"address\":\"0x6B175474E89094C44Da98b954EedeAC495271d0F\",\"symbol\":\"DAI\"}}",
+          "spenderAddress": "0x83F20F44975D03b1b09e64809B757c47f942BEeA",
+          "amount": "max"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "deposit-sdai",
+      "type": "action",
+      "position": { "x": 544, "y": 0 },
+      "data": {
+        "label": "Deposit DAI to sDAI",
+        "type": "action",
+        "config": {
+          "actionType": "spark/vault-deposit",
+          "network": "1",
+          "assets": "3000000000000000000",
+          "receiver": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "approve-dai", "type": "animated" },
+    { "id": "e2", "source": "approve-dai", "target": "deposit-sdai", "type": "animated" }
+  ]
+}

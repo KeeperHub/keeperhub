@@ -1,0 +1,21 @@
+{
+  "name": "@keeperhub/sandbox",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node dist/sandbox/src/index.js",
+    "build": "tsc && cp ../lib/ssrf-blocklist.json dist/lib/ssrf-blocklist.json",
+    "test:smoke": "SANDBOX_PORT=18787 node dist/sandbox/src/index.js & PID=$!; TRIES=0; until curl -sf http://localhost:18787/healthz; do sleep 1; TRIES=$((TRIES+1)); if [ $TRIES -ge 10 ]; then kill $PID; exit 1; fi; done && kill $PID",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write ."
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "typescript": "^5",
+    "vitest": "^4.1.2"
+  }
+}

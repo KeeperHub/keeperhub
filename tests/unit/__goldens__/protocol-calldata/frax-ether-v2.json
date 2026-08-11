@@ -1,0 +1,24 @@
+{
+  "1": {
+    "mint": {
+      "to": "0x7Bc6bad540453360F744666D625fec0ee1320cA3",
+      "data": "0x1aa97739",
+      "skipped": false
+    },
+    "mint-and-give": {
+      "to": "0x7Bc6bad540453360F744666D625fec0ee1320cA3",
+      "data": "0xd3f0a72d0000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "mint-and-stake": {
+      "to": "0x7Bc6bad540453360F744666D625fec0ee1320cA3",
+      "data": "0x4dcd45470000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "mint-paused": {
+      "to": "0x7Bc6bad540453360F744666D625fec0ee1320cA3",
+      "data": "0xf9c80493",
+      "skipped": false
+    }
+  }
+}

@@ -1,0 +1,209 @@
+{
+  "protocol": "sky",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "Protocol Test: Sky Write Actions",
+  "description": "Tests all Sky write actions on Ethereum mainnet (requires funded wallet)",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 400 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "sky-vault-deposit",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Vault Deposit",
+        "description": "Deposit USDS into sUSDS vault",
+        "type": "action",
+        "config": {
+          "actionType": "sky/vault-deposit",
+          "network": "1",
+          "assets": "1000000000000000000",
+          "receiver": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "sky-vault-withdraw",
+      "type": "action",
+      "position": { "x": 450, "y": 150 },
+      "data": {
+        "label": "Vault Withdraw",
+        "description": "Withdraw USDS from sUSDS vault",
+        "type": "action",
+        "config": {
+          "actionType": "sky/vault-withdraw",
+          "network": "1",
+          "assets": "1000000000000000000",
+          "receiver": "0x0000000000000000000000000000000000000001",
+          "owner": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "sky-vault-redeem",
+      "type": "action",
+      "position": { "x": 450, "y": 300 },
+      "data": {
+        "label": "Vault Redeem",
+        "description": "Redeem sUSDS shares for USDS",
+        "type": "action",
+        "config": {
+          "actionType": "sky/vault-redeem",
+          "network": "1",
+          "shares": "1000000000000000000",
+          "receiver": "0x0000000000000000000000000000000000000001",
+          "owner": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "sky-approve-usds",
+      "type": "action",
+      "position": { "x": 450, "y": 450 },
+      "data": {
+        "label": "Approve USDS",
+        "description": "Approve spender to transfer USDS",
+        "type": "action",
+        "config": {
+          "actionType": "sky/approve-usds",
+          "network": "1",
+          "spender": "0x0000000000000000000000000000000000000001",
+          "amount": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "sky-approve-dai",
+      "type": "action",
+      "position": { "x": 450, "y": 600 },
+      "data": {
+        "label": "Approve DAI",
+        "description": "Approve spender to transfer DAI",
+        "type": "action",
+        "config": {
+          "actionType": "sky/approve-dai",
+          "network": "1",
+          "spender": "0x0000000000000000000000000000000000000001",
+          "amount": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "sky-convert-dai-to-usds",
+      "type": "action",
+      "position": { "x": 450, "y": 750 },
+      "data": {
+        "label": "Convert DAI to USDS",
+        "description": "Convert DAI to USDS via DaiUsdsConverter",
+        "type": "action",
+        "config": {
+          "actionType": "sky/convert-dai-to-usds",
+          "network": "1",
+          "usr": "0x0000000000000000000000000000000000000001",
+          "amount": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "sky-convert-usds-to-dai",
+      "type": "action",
+      "position": { "x": 450, "y": 900 },
+      "data": {
+        "label": "Convert USDS to DAI",
+        "description": "Convert USDS to DAI via DaiUsdsConverter",
+        "type": "action",
+        "config": {
+          "actionType": "sky/convert-usds-to-dai",
+          "network": "1",
+          "usr": "0x0000000000000000000000000000000000000001",
+          "amount": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "sky-convert-mkr-to-sky",
+      "type": "action",
+      "position": { "x": 450, "y": 1050 },
+      "data": {
+        "label": "Convert MKR to SKY",
+        "description": "Convert MKR to SKY via MkrSkyConverter",
+        "type": "action",
+        "config": {
+          "actionType": "sky/convert-mkr-to-sky",
+          "network": "1",
+          "usr": "0x0000000000000000000000000000000000000001",
+          "mkrAmt": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-to-sky-vault-deposit",
+      "source": "node-1",
+      "target": "sky-vault-deposit",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-sky-vault-withdraw",
+      "source": "node-1",
+      "target": "sky-vault-withdraw",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-sky-vault-redeem",
+      "source": "node-1",
+      "target": "sky-vault-redeem",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-sky-approve-usds",
+      "source": "node-1",
+      "target": "sky-approve-usds",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-sky-approve-dai",
+      "source": "node-1",
+      "target": "sky-approve-dai",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-sky-convert-dai-to-usds",
+      "source": "node-1",
+      "target": "sky-convert-dai-to-usds",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-sky-convert-usds-to-dai",
+      "source": "node-1",
+      "target": "sky-convert-usds-to-dai",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-sky-convert-mkr-to-sky",
+      "source": "node-1",
+      "target": "sky-convert-mkr-to-sky",
+      "type": "animated"
+    }
+  ]
+}

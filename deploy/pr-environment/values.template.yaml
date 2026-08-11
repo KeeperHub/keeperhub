@@ -1,0 +1,541 @@
+# Helm values template for PR environments
+# Variables to be replaced: ${PR_NUMBER}, ${ECR_REGISTRY}, ${IMAGE_TAG}, ${ENCODED_DB_PASSWORD}
+# ENCODED_DB_PASSWORD is the percent-encoded form of DB_PASSWORD, computed at CI time.
+
+shared_env: &shared_env
+  NODE_EXTRA_CA_CERTS:
+    type: kv
+    value: "/etc/ssl/certs/rds-combined-ca-bundle.pem"
+  DATABASE_URL:
+    type: kv
+    value: "postgresql://keeperhub:${ENCODED_DB_PASSWORD}@keeperhub-pr-${PR_NUMBER}-db-rw.pr-${PR_NUMBER}.svc.cluster.local:5432/keeperhub"
+  WORKFLOW_POSTGRES_URL:
+    type: kv
+    value: "postgresql://keeperhub:${ENCODED_DB_PASSWORD}@keeperhub-pr-${PR_NUMBER}-db-rw.pr-${PR_NUMBER}.svc.cluster.local:5432/keeperhub"
+  CHAIN_RPC_CONFIG:
+    type: parameterStore
+    name: chain-rpc-config
+    parameter_name: /eks/techops-staging/keeperhub/chain-rpc-config
+  # KEEP-988: PR environments exercise the Solana rollout end to end, so
+  # provision EVM + Solana wallets at signup (mirrors staging).
+  SOLANA_WALLET_PROVISIONING_ENABLED:
+    type: kv
+    value: "true"
+
+replicaCount: 1
+
+service:
+  enabled: true
+  name: keeperhub-pr-${PR_NUMBER}
+  port: 3000
+  type: ClusterIP
+  containerPort: 3000
+  tls:
+    enabled: true
+    issuerName: cloudflare
+
+ingress:
+  enabled: true
+  hosts:
+    - app-pr-${PR_NUMBER}.keeperhub.com
+  annotations:
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls.options: traefik-cloudflare-origin-pull@kubernetescrd
+
+httpWwwRedirect:
+  enabled: false
+httpBasicAuth:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-staging
+  tag: app-${IMAGE_TAG}
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+  initContainers:
+    - name: db-migration
+      image: "${ECR_REGISTRY}/keeperhub-staging:migrator-${IMAGE_TAG}"
+      command:
+        - /bin/sh
+        - -c
+      args:
+        - |
+          set -e
+          echo "Setting up workflow postgres tables..."
+          pnpm exec workflow-postgres-setup
+          echo "Running database migrations..."
+          pnpm db:migrate
+          echo "Seeding chains and tokens..."
+          pnpm db:seed
+          echo "Migrations and seeding completed successfully"
+      env:
+        <<: *shared_env
+        TURNKEY_API_PUBLIC_KEY:
+          type: parameterStore
+          name: turnkey-api-public-key
+          parameter_name: /eks/techops-staging/keeperhub/turnkey-api-public-key
+        TURNKEY_API_PRIVATE_KEY:
+          type: parameterStore
+          name: turnkey-api-private-key
+          parameter_name: /eks/techops-staging/keeperhub/turnkey-api-private-key
+        TURNKEY_ORGANIZATION_ID:
+          type: parameterStore
+          name: turnkey-organization-id
+          parameter_name: /eks/techops-staging/keeperhub/turnkey-organization-id
+
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: ${SERVICE_ACCOUNT_ROLE_ARN}
+  name: keeperhub-pr-${PR_NUMBER}
+  rules:
+    - apiGroups: ["batch"]
+      resources: ["jobs"]
+      verbs: ["create", "get", "list", "watch", "delete"]
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["pods/log"]
+      verbs: ["get"]
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+serviceMonitors:
+  enabled: false
+
+resources:
+  limits:
+    memory: 2Gi
+  requests:
+    cpu: 1m
+    memory: 256Mi
+
+env:
+  <<: *shared_env
+  LOG_LEVEL:
+    type: kv
+    value: "debug"
+  METRICS_COLLECTOR:
+    type: kv
+    value: "prometheus"
+  RPC_PROBE_INTERVAL_MS:
+    type: kv
+    value: "30000"
+  RPC_PROBE_TIMEOUT_MS:
+    type: kv
+    value: "5000"
+  NODE_OPTIONS:
+    type: kv
+    value: "--enable-source-maps --trace-warnings --trace-uncaught --trace-exit"
+  NODE_ENV:
+    type: kv
+    value: "development"
+  HOSTNAME:
+    type: kv
+    value: "0.0.0.0"
+  WORKFLOW_TARGET_WORLD:
+    type: kv
+    value: "@workflow/world-postgres"
+  NEXT_PUBLIC_API_URL:
+    type: kv
+    value: "http://localhost:3000"
+  BETTER_AUTH_URL:
+    type: kv
+    value: "https://app-pr-${PR_NUMBER}.keeperhub.com"
+  # Auth and social providers (GitHub, Google)
+  NEXT_PUBLIC_AUTH_PROVIDERS:
+    type: kv
+    value: "email,github,google"
+  GITHUB_CLIENT_ID:
+    type: parameterStore
+    name: github-client-id
+    parameter_name: /eks/techops-staging/keeperhub/github-client-id
+  GITHUB_CLIENT_SECRET:
+    type: parameterStore
+    name: github-client-secret
+    parameter_name: /eks/techops-staging/keeperhub/github-client-secret
+  NEXT_PUBLIC_GITHUB_CLIENT_ID:
+    type: parameterStore
+    name: next-public-github-client-id
+    parameter_name: /eks/techops-staging/keeperhub/github-client-id
+  GOOGLE_CLIENT_ID:
+    type: parameterStore
+    name: google-client-id
+    parameter_name: /eks/techops-staging/keeperhub/google-client-id
+  GOOGLE_CLIENT_SECRET:
+    type: parameterStore
+    name: google-client-secret
+    parameter_name: /eks/techops-staging/keeperhub/google-client-secret
+  NEXT_PUBLIC_GOOGLE_CLIENT_ID:
+    type: parameterStore
+    name: next-public-google-client-id
+    parameter_name: /eks/techops-staging/keeperhub/google-client-id
+  # Cloudflare Turnstile (signup captcha). PR envs use Cloudflare's public
+  # always-pass test keys rather than the real staging keys: real site keys
+  # are bound to a hostname allowlist, and PR deploys get ephemeral hostnames
+  # that are not on it, so the real widget would fail with a domain mismatch.
+  # The test keys are domain-agnostic and always pass. The site key is also
+  # baked into the client bundle at build time (deploy-pr-environment.yaml);
+  # this runtime entry covers server-side reads.
+  NEXT_PUBLIC_TURNSTILE_SITE_KEY:
+    type: kv
+    value: "1x00000000000000000000AA"
+  TURNSTILE_SECRET_KEY:
+    type: kv
+    value: "1x0000000000000000000000000000000AA"
+  # Opt PR deploys into enforcing the captcha plugin (otherwise skipped where
+  # admin test endpoints are enabled). Lets us exercise the Turnstile
+  # flow (with the always-pass test keys above) before prod. Disables the
+  # X-Test-API-Key signup bypass.
+  TURNSTILE_ENFORCE:
+    type: kv
+    value: "true"
+  BETTER_AUTH_SECRET:
+    type: parameterStore
+    name: better-auth-secret
+    parameter_name: /eks/techops-staging/keeperhub/better-auth-secret
+  OAUTH_JWT_SECRET:
+    type: parameterStore
+    name: oauth-jwt-secret
+    parameter_name: /eks/techops-staging/keeperhub/oauth-jwt-secret
+  MCP_SESSION_SECRET:
+    type: parameterStore
+    name: mcp-session-secret
+    parameter_name: /eks/techops-staging/keeperhub/mcp-session-secret
+  REDIS_HOST:
+    type: parameterStore
+    name: redis-host
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-host
+  REDIS_PORT:
+    type: parameterStore
+    name: redis-port
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-port
+  REDIS_PASSWORD:
+    type: parameterStore
+    name: redis-password
+    parameter_name: /eks/techops-staging/keeperhub-events/redis-password
+  REDIS_KEY_PREFIX:
+    type: kv
+    value: "pr-${PR_NUMBER}"
+  OPENAI_API_KEY:
+    type: parameterStore
+    name: openai-api-key
+    parameter_name: /eks/techops-staging/keeperhub/openai-api-key
+  AI_MODEL:
+    type: kv
+    value: "gpt-4o-mini"
+  TURNKEY_API_PUBLIC_KEY:
+    type: parameterStore
+    name: turnkey-api-public-key
+    parameter_name: /eks/techops-staging/keeperhub/turnkey-api-public-key
+  TURNKEY_API_PRIVATE_KEY:
+    type: parameterStore
+    name: turnkey-api-private-key
+    parameter_name: /eks/techops-staging/keeperhub/turnkey-api-private-key
+  TURNKEY_ORGANIZATION_ID:
+    type: parameterStore
+    name: turnkey-organization-id
+    parameter_name: /eks/techops-staging/keeperhub/turnkey-organization-id
+  INTEGRATION_ENCRYPTION_KEY:
+    type: parameterStore
+    name: integration-encryption-key
+    parameter_name: /eks/techops-staging/keeperhub/integration-encryption-key
+  ETHERSCAN_API_KEY:
+    type: parameterStore
+    name: etherscan-api-key
+    parameter_name: /eks/techops-staging/keeperhub/etherscan-api-key
+  SENDGRID_API_KEY:
+    type: parameterStore
+    name: sendgrid-api-key
+    parameter_name: /eks/techops-staging/keeperhub/sendgrid-api-key
+  FROM_ADDRESS:
+    type: kv
+    value: "noreply@keeperhub.com"
+  SENTRY_DSN:
+    type: parameterStore
+    name: sentry-dsn
+    parameter_name: /eks/techops-staging/keeperhub/sentry-dsn
+  NEXT_PUBLIC_SENTRY_DSN:
+    type: parameterStore
+    name: next-public-sentry-dsn
+    parameter_name: /eks/techops-staging/keeperhub/next-public-sentry-dsn
+  SENTRY_ORG:
+    type: parameterStore
+    name: sentry-org
+    parameter_name: /eks/techops-staging/keeperhub/sentry-org
+  SENTRY_PROJECT:
+    type: parameterStore
+    name: sentry-project
+    parameter_name: /eks/techops-staging/keeperhub/sentry-project
+  SENTRY_AUTH_TOKEN:
+    type: parameterStore
+    name: sentry-auth-token
+    parameter_name: /eks/techops-staging/keeperhub/sentry-auth-token
+  FEEDBACK_SERVICE_URL:
+    type: kv
+    value: "http://keeperhub-feedback-common.keeperhub:3001/api/feedback"
+  FEEDBACK_API_KEY:
+    type: parameterStore
+    name: feedback-api-key
+    parameter_name: /eks/techops-staging/keeperhub-feedback/feedback-api-key
+  # Billing (Stripe)
+  NEXT_PUBLIC_BILLING_ENABLED:
+    type: kv
+    value: "true"
+  NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED:
+    type: kv
+    value: "true"
+  STRIPE_SECRET_KEY:
+    type: parameterStore
+    name: stripe-secret-key
+    parameter_name: /eks/techops-staging/keeperhub/stripe-secret-key
+  STRIPE_WEBHOOK_SECRET:
+    type: parameterStore
+    name: stripe-webhook-secret
+    parameter_name: /eks/techops-staging/keeperhub/stripe-webhook-secret
+  STRIPE_PRICE_PRO_25K_MONTHLY:
+    type: parameterStore
+    name: stripe-price-pro-25k-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-25k-monthly
+  STRIPE_PRICE_PRO_25K_YEARLY:
+    type: parameterStore
+    name: stripe-price-pro-25k-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-25k-yearly
+  STRIPE_PRICE_PRO_50K_MONTHLY:
+    type: parameterStore
+    name: stripe-price-pro-50k-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-50k-monthly
+  STRIPE_PRICE_PRO_50K_YEARLY:
+    type: parameterStore
+    name: stripe-price-pro-50k-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-50k-yearly
+  STRIPE_PRICE_PRO_100K_MONTHLY:
+    type: parameterStore
+    name: stripe-price-pro-100k-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-100k-monthly
+  STRIPE_PRICE_PRO_100K_YEARLY:
+    type: parameterStore
+    name: stripe-price-pro-100k-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-pro-100k-yearly
+  STRIPE_PRICE_BUSINESS_250K_MONTHLY:
+    type: parameterStore
+    name: stripe-price-business-250k-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-250k-monthly
+  STRIPE_PRICE_BUSINESS_250K_YEARLY:
+    type: parameterStore
+    name: stripe-price-business-250k-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-250k-yearly
+  STRIPE_PRICE_BUSINESS_500K_MONTHLY:
+    type: parameterStore
+    name: stripe-price-business-500k-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-500k-monthly
+  STRIPE_PRICE_BUSINESS_500K_YEARLY:
+    type: parameterStore
+    name: stripe-price-business-500k-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-500k-yearly
+  STRIPE_PRICE_BUSINESS_1M_MONTHLY:
+    type: parameterStore
+    name: stripe-price-business-1m-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-1m-monthly
+  STRIPE_PRICE_BUSINESS_1M_YEARLY:
+    type: parameterStore
+    name: stripe-price-business-1m-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-business-1m-yearly
+  STRIPE_PRICE_ENTERPRISE_MONTHLY:
+    type: parameterStore
+    name: stripe-price-enterprise-monthly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-enterprise-monthly
+  STRIPE_PRICE_ENTERPRISE_YEARLY:
+    type: parameterStore
+    name: stripe-price-enterprise-yearly
+    parameter_name: /eks/techops-staging/keeperhub/stripe-price-enterprise-yearly
+  INTERNAL_SERVICE_HMAC_SECRET:
+    type: parameterStore
+    name: internal-service-hmac-secret
+    parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+  AGENTIC_WALLET_HMAC_KMS_KEY:
+    type: parameterStore
+    name: agentic-wallet-hmac-kms-key
+    parameter_name: /eks/techops-staging/keeperhub/agentic-wallet-hmac-kms-key
+  TEST_API_KEY:
+    type: parameterStore
+    name: test-api-key
+    parameter_name: /eks/techops-staging/keeperhub/test-api-key
+  ALLOW_TEST_ENDPOINTS:
+    type: kv
+    value: "true"
+  KH_ADMIN_SECRET:
+    type: parameterStore
+    name: kh-admin-secret
+    parameter_name: /eks/techops-staging/keeperhub/kh-admin-secret
+  # Gas credit caps per plan (cents, server-only)
+  GAS_CREDITS_FREE_CENTS:
+    type: kv
+    value: "100"
+  GAS_CREDITS_PRO_CENTS:
+    type: kv
+    value: "500"
+  GAS_CREDITS_BUSINESS_CENTS:
+    type: kv
+    value: "2500"
+  GAS_CREDITS_ENTERPRISE_CENTS:
+    type: kv
+    value: "10000"
+  # Pay As You Go: per-execution USDC price and per-chain treasury (8453 =
+  # Base). Empty price or unset treasury disables charging, which is what left
+  # the billing page showing "not available in this environment" with no
+  # per-execution price.
+  PAYG_EXECUTION_PRICE_USDC:
+    type: kv
+    value: "0.01"
+  PAYG_TREASURY_ADDRESS_8453:
+    type: parameterStore
+    name: payg-treasury-address-8453
+    parameter_name: /eks/techops-staging/keeperhub/payg-treasury-address-8453
+  # x402 settlement for the charges above. Without these the page reports
+  # pay-as-you-go as available and then every charge fails at settlement, so
+  # they belong with the two vars above rather than apart from them.
+  BASE_RPC_URL:
+    type: kv
+    value: "https://mainnet.base.org"
+  X402_FACILITATOR_URL:
+    type: kv
+    value: "https://api.cdp.coinbase.com/platform/v2/x402"
+  CDP_API_KEY_ID:
+    type: parameterStore
+    name: cdp-api-key-id
+    parameter_name: /eks/techops-staging/keeperhub/cdp-api-key-id
+  CDP_API_KEY_SECRET:
+    type: parameterStore
+    name: cdp-api-key-secret
+    parameter_name: /eks/techops-staging/keeperhub/cdp-api-key-secret
+  SIMPLE_ACCOUNT_7702_ADDRESS:
+    type: parameterStore
+    name: simple-account-7702-address
+    parameter_name: /eks/techops-staging/keeperhub/simple-account-7702-address
+  # PR-specific SQS configuration (using LocalStack)
+  AWS_REGION:
+    type: kv
+    value: "us-east-1"
+  AWS_ENDPOINT:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566"
+  SQS_QUEUE_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566/000000000000/keeperhub-workflow-queue"
+  # Code Node sandbox - per-PR release in this namespace
+  # (deploy/pr-environment/sandbox.template.yaml). The web pod sets
+  # NODE_ENV=development above so the assertion at run-code.ts is
+  # dormant here; we still set both vars to mirror staging and so any
+  # code path that does honor them works without surprise.
+  SANDBOX_BACKEND:
+    type: kv
+    value: "remote"
+  SANDBOX_URL:
+    type: kv
+    value: "http://keeperhub-sandbox-pr-${PR_NUMBER}-common.pr-${PR_NUMBER}.svc.cluster.local:8787"
+
+externalSecrets:
+  clusterSecretStoreName: techops-staging
+
+livenessProbe:
+  initialDelaySeconds: 15
+  periodSeconds: 30
+  tcpSocket:
+    port: 3000
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  tcpSocket:
+    port: 3000
+
+cronjob:
+  enabled: true
+  jobs:
+    - name: reaper
+      image:
+        repository: ${ECR_REGISTRY}/keeperhub-staging
+        tag: app-${IMAGE_TAG}
+        imagePullPolicy: Always
+      schedule: "* * * * *" # every minute
+      command: ["/bin/sh"]
+      args:
+        - "/app/deploy/scripts/reaper.sh"
+        - "http://keeperhub-pr-${PR_NUMBER}-common:3000/api/internal/reaper"
+      env:
+        INTERNAL_SERVICE_HMAC_SECRET:
+          type: parameterStore
+          name: internal-service-hmac-secret
+          parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "10m"
+        limits:
+          memory: "32Mi"
+          cpu: "10m"
+      concurrencyPolicy: Forbid
+      successfulJobsHistoryLimit: 3
+      failedJobsHistoryLimit: 3
+      restartPolicy: OnFailure
+      backoffLimit: 2
+    - name: tempo-broadcast-due
+      image:
+        repository: ${ECR_REGISTRY}/keeperhub-staging
+        tag: app-${IMAGE_TAG}
+        imagePullPolicy: Always
+      schedule: "* * * * *" # every minute (faster than prod for PR validation)
+      command: ["/bin/sh"]
+      args:
+        - "/app/deploy/scripts/reaper.sh"
+        - "http://keeperhub-pr-${PR_NUMBER}-common:3000/api/internal/tempo/broadcast-due"
+      env:
+        INTERNAL_SERVICE_HMAC_SECRET:
+          type: parameterStore
+          name: internal-service-hmac-secret
+          parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "10m"
+        limits:
+          memory: "32Mi"
+          cpu: "10m"
+      concurrencyPolicy: Forbid
+      successfulJobsHistoryLimit: 3
+      failedJobsHistoryLimit: 3
+      restartPolicy: OnFailure
+      backoffLimit: 2
+    - name: security-behavioral-scan
+      image:
+        repository: ${ECR_REGISTRY}/keeperhub-staging
+        tag: app-${IMAGE_TAG}
+        imagePullPolicy: Always
+      schedule: "* * * * *" # every minute (faster than prod for PR validation)
+      command: ["/bin/sh"]
+      args:
+        - "/app/deploy/scripts/reaper.sh"
+        - "http://keeperhub-pr-${PR_NUMBER}-common:3000/api/cron/security-behavioral-scan"
+      env:
+        INTERNAL_SERVICE_HMAC_SECRET:
+          type: parameterStore
+          name: internal-service-hmac-secret
+          parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "10m"
+        limits:
+          memory: "32Mi"
+          cpu: "10m"
+      concurrencyPolicy: Forbid
+      successfulJobsHistoryLimit: 3
+      failedJobsHistoryLimit: 3
+      restartPolicy: OnFailure
+      backoffLimit: 2

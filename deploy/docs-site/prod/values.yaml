@@ -1,0 +1,71 @@
+replicaCount: 2
+
+service:
+  enabled: true
+  name: keeperhub-docs
+  port: 3000
+  type: ClusterIP
+  containerPort: 3000
+  tls:
+    enabled: true
+    issuerName: cloudflare
+
+ingress:
+  enabled: true
+  hosts:
+    - docs.keeperhub.com
+  annotations:
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls.options: traefik-cloudflare-origin-pull@kubernetescrd
+
+httpWwwRedirect:
+  enabled: false
+httpBasicAuth:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-docs-prod
+  tag: "${IMAGE_TAG}"
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+
+serviceAccount:
+  create: false
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 10m
+    memory: 128Mi
+
+env:
+  NODE_ENV:
+    type: kv
+    value: "production"
+  HOSTNAME:
+    type: kv
+    value: "0.0.0.0"
+  NODE_OPTIONS:
+    type: kv
+    value: "--max-old-space-size=350"
+
+livenessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 30
+  httpGet:
+    path: /
+    port: 3000
+readinessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 30
+  httpGet:
+    path: /
+    port: 3000

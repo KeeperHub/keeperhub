@@ -1,0 +1,40 @@
+{
+  "name": "Superfluid grant-flow-operator demo (KEEP-415)",
+  "description": "On-chain write demo: grant create-permission on fUSDCx via the CFAv1Forwarder. Exercises the full keeperhub -> Superfluid write pipeline.",
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "type": "trigger",
+        "label": "",
+        "config": { "triggerType": "Manual" },
+        "status": "idle",
+        "description": ""
+      }
+    },
+    {
+      "id": "step-1",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "type": "action",
+        "label": "",
+        "config": {
+          "actionType": "superfluid/grant-flow-operator",
+          "network": "11155111",
+          "token": "0xb598E6C621618a9f63788816ffb50Ee2862D443B",
+          "flowOperator": "0x0000000000000000000000000000000000000001",
+          "permissions": "1",
+          "flowRateAllowance": "0",
+          "integrationId": "t6xtd727ow2up79uy6v0y",
+          "_protocolMeta": "{\"protocolSlug\":\"superfluid\",\"contractKey\":\"cfaForwarder\",\"functionName\":\"updateFlowOperatorPermissions\",\"actionType\":\"write\"}"
+        },
+        "status": "idle",
+        "description": ""
+      }
+    }
+  ],
+  "edges": [{ "id": "e1", "source": "trigger-1", "target": "step-1" }]
+}

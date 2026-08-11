@@ -1,0 +1,908 @@
+# =============================================================================
+# KeeperHub Docker Compose
+#
+# Profiles:
+#   dev              - Full development stack (app + db + localstack + redis +
+#                      workers: dispatcher, executor, reaper, event-tracker,
+#                      block-dispatcher, sandbox). Use when exercising end-to-end
+#                      workflow execution.
+#   dev-min          - Minimal dev stack (app + db + localstack + redis only).
+#                      Workers excluded. Faster boot, less compile contention
+#                      from concurrent worker traffic. Use for UI development,
+#                      route smoke tests, and when running two app containers.
+#   minikube         - Hybrid mode (services in Docker, executor in Minikube)
+#   prod             - Production-ready containers
+#   test             - Isolated E2E test stack (separate DB, ports, volumes)
+#   profile-workflows - Workflow profiling tools (js-sandbox for WASM fuel calibration)
+#
+# Usage:
+#   docker compose --profile dev up -d              # Development with workers
+#   docker compose --profile dev-min up -d          # App + infra only
+#   docker compose --profile minikube up -d         # Hybrid mode
+#   docker compose --profile test up -d             # E2E test environment
+#   docker compose --profile profile-workflows up -d # Profiling tools
+#   make hybrid-setup                               # Full hybrid setup
+#
+# Notes:
+#   - The app-dev image bakes node_modules at build time. After a
+#     pnpm-lock.yaml change run: docker compose build app-dev
+#   - APP_DEV_PORT env var lets you run a second app-dev on a different
+#     host port (e.g. APP_DEV_PORT=3001 docker compose up app-dev) so
+#     two worktrees can serve concurrently from this same compose file.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Primitives (from .env or defaults)
+# -----------------------------------------------------------------------------
+x-primitives:
+  db_name: &db_name "${POSTGRES_DB:-keeperhub}"
+  db_user: &db_user "${POSTGRES_USER:-postgres}"
+  db_password: &db_password "${POSTGRES_PASSWORD:-postgres}"
+  aws_region: &aws_region "us-east-1"
+  aws_access_key: &aws_access_key "test"
+  aws_secret_key: &aws_secret_key "test"
+
+# -----------------------------------------------------------------------------
+# Environment Groups
+# -----------------------------------------------------------------------------
+x-env-db: &env_db
+  POSTGRES_USER: *db_user
+  POSTGRES_PASSWORD: *db_password
+  POSTGRES_DB: *db_name
+
+x-env-db-connection: &env_db_connection
+  DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-keeperhub}
+  # Workflow DevKit world. Same in-cluster Postgres as the app DB.
+  # sslmode=disable since the local Postgres image has no SSL configured.
+  WORKFLOW_POSTGRES_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-keeperhub}?sslmode=disable
+
+x-env-aws: &env_aws
+  AWS_REGION: *aws_region
+  AWS_ACCESS_KEY_ID: *aws_access_key
+  AWS_SECRET_ACCESS_KEY: *aws_secret_key
+  # Use host.minikube.internal so URLs work from both host and Minikube
+  AWS_ENDPOINT_URL: http://host.minikube.internal:4566
+  # AWS IRSA env vars only make sense in EKS pods; clear them here so the
+  # app doesn't try to read /var/run/secrets/.../token (which doesn't exist
+  # in this container).
+  AWS_WEB_IDENTITY_TOKEN_FILE: ""
+  AWS_ROLE_ARN: ""
+
+x-env-sqs: &env_sqs
+  SQS_QUEUE_URL: http://host.minikube.internal:4566/000000000000/keeperhub-workflow-queue
+
+x-env-service-keys: &env_service_keys
+  # Shared HMAC signing secret for internal service-to-service auth. Local-dev
+  # default (base64 of 32 bytes); the hmac-seed service inserts this same value
+  # into the internal_service_hmac_secrets store so signed requests verify.
+  INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
+
+# -----------------------------------------------------------------------------
+# Services
+# -----------------------------------------------------------------------------
+services:
+  # ===========================================================================
+  # Database
+  # ===========================================================================
+  db:
+    image: postgres:16-alpine
+    # container_name removed to allow worktrees to share or run independently
+    hostname: db
+    restart: unless-stopped
+    environment:
+      <<: *env_db
+    ports:
+      - "5433:5432" # External 5433 to avoid host port conflicts, internal 5432
+    volumes:
+      - keeperhub_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - dev
+      - dev-min
+      - minikube
+      - prod
+      - profile-workflows
+
+  # ===========================================================================
+  # LocalStack (SQS)
+  # ===========================================================================
+  localstack:
+    image: localstack/localstack:3.8.1
+    # container_name removed to allow worktrees to share or run independently
+    hostname: localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=sqs
+      - DEBUG=0
+      - SQS_ENDPOINT_STRATEGY=path
+      # Use host.minikube.internal so queue URLs work from both host and Minikube
+      - LOCALSTACK_HOST=host.minikube.internal:4566
+    volumes:
+      - ./deploy/local/hybrid/init-localstack.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
+      - keeperhub_localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs list-queues || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    profiles:
+      - dev
+      - dev-min
+      - minikube
+
+  # ===========================================================================
+  # KeeperHub App (Next.js)
+  # ===========================================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    image: keeperhub:latest
+    container_name: keeperhub-app
+    hostname: keeperhub
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      <<: [*env_db_connection, *env_aws, *env_sqs]
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - prod
+
+  # Development app with hot reload
+  app-dev:
+    # Build the `dev` Dockerfile stage instead of starting from a bare
+    # node:alpine and running `pnpm install` at container start. Baking
+    # node_modules into the image:
+    #   - eliminates the 1-3 min runtime install on every container start
+    #   - lets two app-dev containers run concurrently without racing on a
+    #     shared keeperhub_node_modules volume
+    #   - makes start-up deterministic (no partial-install failures like
+    #     missing transitive packages from a half-completed pnpm install)
+    # Rebuild explicitly with `docker compose build app-dev` whenever
+    # pnpm-lock.yaml changes.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    # container_name intentionally omitted so multiple worktrees can each
+    # run app-dev under their own compose project name (e.g.
+    # keep-470-app-dev-1 vs chore-dev-env-app-dev-1). Combine with
+    # APP_DEV_PORT to give each its own host port.
+    hostname: keeperhub
+    working_dir: /app
+    ports:
+      - "${APP_DEV_PORT:-3000}:3000"
+    # Volume layout:
+    #   - source bind-mounted for hot reload
+    #   - anonymous volume on /app/node_modules to preserve the baked
+    #     image content past the source bind-mount overlay
+    #   - anonymous volume on /app/.next so turbopack's filesystem cache
+    #     writes hit container-local storage instead of the bind-mounted
+    #     host fs (turbopack reports "Slow filesystem detected" with
+    #     5s+ benchmarks on the host fs through the bind mount, which
+    #     compounds with the workflow DevKit's per-route bundle work)
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    env_file:
+      - .env
+    environment:
+      <<: [*env_db_connection, *env_aws, *env_sqs, *env_service_keys]
+      HOSTNAME: "0.0.0.0"
+      # 6GB heap leaves headroom on top of the 8GB container cap for
+      # Turbopack's bundler, which crashes a 3GB heap on cold compile.
+      NODE_OPTIONS: "--max-old-space-size=6144"
+      METRICS_COLLECTOR: prometheus
+      # /etc/hosts in this container resolves `localhost` to `::1` first,
+      # but the Next.js dev server only binds IPv4 (0.0.0.0:3000). Node's
+      # fetch() tries IPv6 first and dies with "fetch failed" on connect-
+      # refused before falling back to IPv4. The workflow DevKit's
+      # graphile worker uses fetch() to dispatch /.well-known/workflow/v1/*
+      # routes back into this same Next.js process, so without this override
+      # all workflow runs sit at status=pending until the worker hits its
+      # 5-minute timeout. Pinning to the IPv4 loopback bypasses DNS.
+      WORKFLOW_LOCAL_BASE_URL: "http://127.0.0.1:3000"
+      # Route UI-triggered executions through the standalone executor via SQS
+      # so /.well-known/workflow/v1/step is never compiled in dev. The executor
+      # runs all steps in-process (tsc-compiled, no turbopack), bypassing the
+      # DevKit's embedded graphile worker which deadlocks on the 91-step bundle.
+      WORKFLOW_DISPATCH_VIA_EXECUTOR: "1"
+      # Override the minikube-targeted anchor URLs with the in-container hostnames
+      # so the SQS client can reach localstack from within the app-dev container.
+      AWS_ENDPOINT_URL: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/keeperhub-workflow-queue
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+          # Turbopack + workflow DevKit's deferred builder both report
+          # "Available parallelism of 2 is less than needed 4". Bump to 4.
+          cpus: "4.0"
+    depends_on:
+      db:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    # Source is bind-mounted, so a baked Dockerfile CMD would point at
+    # stale files. Re-declare the dev command here so it always reads
+    # the live host source.
+    command: pnpm dev --hostname 0.0.0.0
+    profiles:
+      - dev
+      - dev-min
+      - minikube
+
+  # ===========================================================================
+  # Sandbox
+  # Standalone sandbox HTTP service for the Code workflow node. Main app
+  # dispatches via SANDBOX_BACKEND=remote + SANDBOX_URL=http://localhost:8787.
+  # Default local dev keeps SANDBOX_BACKEND unset (=local) so the in-pod
+  # child_process path runs without this container.
+  # ===========================================================================
+  sandbox:
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile
+    image: keeperhub-sandbox:latest
+    container_name: keeperhub-sandbox
+    hostname: sandbox
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      NODE_ENV: production
+      SANDBOX_PORT: "8787"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8787/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - dev
+      - minikube
+      - prod
+
+  # ===========================================================================
+  # Schedule Dispatcher
+  # Runs every minute to check for due schedules and send messages to SQS
+  # ===========================================================================
+  dispatcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: schedule-dispatcher
+    image: keeperhub-dispatcher:latest
+    container_name: keeperhub-dispatcher
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      <<: *env_db_connection
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/keeperhub-workflow-queue
+      KEEPERHUB_API_URL: http://app-dev:3000
+      INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
+    depends_on:
+      db:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      app-dev:
+        condition: service_started
+    # Run dispatcher every minute using a simple loop
+    # (Docker doesn't have native cron, so we simulate it)
+    command: |
+      sh -c 'while true; do
+        echo "[Dispatcher] Running at $$(date)"
+        tsx schedule-dispatcher/index.ts
+        echo "[Dispatcher] Sleeping 60s..."
+        sleep 60
+      done'
+    profiles:
+      - dev
+      - minikube
+
+  # ===========================================================================
+  # Unified Executor
+  # Polls SQS for all trigger types and executes workflows
+  # (in-process for web2/read-only, K8s Jobs for web3 writes)
+  # ===========================================================================
+  executor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: executor
+    image: keeperhub-executor:latest
+    container_name: keeperhub-executor
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      <<: *env_db_connection
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/keeperhub-workflow-queue
+      INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
+      INTEGRATION_ENCRYPTION_KEY: ${INTEGRATION_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      HEALTH_PORT: "3080"
+      TURNKEY_API_PUBLIC_KEY: ${TURNKEY_API_PUBLIC_KEY:-}
+      TURNKEY_API_PRIVATE_KEY: ${TURNKEY_API_PRIVATE_KEY:-}
+      TURNKEY_ORGANIZATION_ID: ${TURNKEY_ORGANIZATION_ID:-}
+      # Run steps directly in the executor process instead of K8s Jobs.
+      # In dev there is no Kubernetes; in-process bypasses the isolation overhead
+      # and lets the executor run on a plain Docker Compose stack.
+      EXECUTION_MODE: in-process
+    depends_on:
+      db:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      app-dev:
+        condition: service_started
+    profiles:
+      - dev
+      - dev-min
+
+  # ===========================================================================
+  # Internal-service HMAC secret seeder (one-shot)
+  # Ensures the schema exists (idempotent db:push) and inserts the shared HMAC
+  # signing secret under caller "*shared*" so locally-signed internal requests
+  # (reaper, execution-digest, executor, scheduler) verify against the app's
+  # DB-backed secret store. Re-runs are a no-op (duplicate insert is ignored).
+  # ===========================================================================
+  hmac-seed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    env_file:
+      - .env
+    environment:
+      <<: *env_db_connection
+      INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "pnpm db:push;
+      printf '%s' \"$$INTERNAL_SERVICE_HMAC_SECRET\" |
+      pnpm tsx scripts/seed-internal-service-hmac.ts || true"
+    profiles:
+      - dev
+      - dev-min
+      - minikube
+
+  # ===========================================================================
+  # Reaper (stale execution cleanup)
+  # Runs every 10 minutes to mark stuck workflow executions as timed out
+  # ===========================================================================
+  reaper:
+    image: alpine:3.20
+    container_name: keeperhub-reaper
+    restart: unless-stopped
+    environment:
+      INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
+    volumes:
+      - ./deploy/scripts:/scripts:ro
+    depends_on:
+      app-dev:
+        condition: service_started
+      hmac-seed:
+        condition: service_completed_successfully
+    command: |
+      sh -c 'apk add --no-cache curl openssl >/dev/null;
+        while true; do
+          echo "[Reaper] Running at $$(date)"
+          sh /scripts/reaper.sh http://app-dev:3000/api/internal/reaper || echo "[Reaper] Failed"
+          echo ""
+          echo "[Reaper] Sleeping 600s..."
+          sleep 600
+        done'
+    profiles:
+      - dev
+      - minikube
+
+  # ===========================================================================
+  # Execution Digest
+  # Triggers the scheduled execution-digest email job. The endpoint
+  # self-throttles via its own daily/weekly due-logic, so polling more often
+  # than the real schedule only affects how soon a due digest is sent.
+  # ===========================================================================
+  execution-digest:
+    image: alpine:3.20
+    container_name: keeperhub-execution-digest
+    restart: unless-stopped
+    environment:
+      INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
+    volumes:
+      - ./deploy/scripts:/scripts:ro
+    depends_on:
+      app-dev:
+        condition: service_started
+      hmac-seed:
+        condition: service_completed_successfully
+    command: |
+      sh -c 'apk add --no-cache curl openssl >/dev/null;
+        while true; do
+          echo "[ExecutionDigest] Running at $$(date)"
+          sh /scripts/digest-cron.sh http://app-dev:3000/api/internal/execution-digest || echo "[ExecutionDigest] Failed"
+          echo ""
+          echo "[ExecutionDigest] Sleeping 3600s..."
+          sleep 3600
+        done'
+    profiles:
+      - dev
+      - minikube
+
+  # ===========================================================================
+  # Tempo Broadcast Due (held payments)
+  # Broadcasts scheduled Tempo held payments whose broadcastAt has arrived,
+  # expires lapsed ones, and reconciles already-broadcast ones. The endpoint is
+  # idempotent and self-scoping, so polling often only affects how soon a due
+  # payment is released.
+  # ===========================================================================
+  tempo-broadcast-due:
+    image: alpine:3.20
+    container_name: keeperhub-tempo-broadcast-due
+    restart: unless-stopped
+    environment:
+      INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
+    volumes:
+      - ./deploy/scripts:/scripts:ro
+    depends_on:
+      app-dev:
+        condition: service_started
+      hmac-seed:
+        condition: service_completed_successfully
+    command: |
+      sh -c 'apk add --no-cache curl openssl >/dev/null;
+        while true; do
+          echo "[TempoBroadcastDue] Running at $$(date)"
+          sh /scripts/reaper.sh http://app-dev:3000/api/internal/tempo/broadcast-due || echo "[TempoBroadcastDue] Failed"
+          echo ""
+          echo "[TempoBroadcastDue] Sleeping 60s..."
+          sleep 60
+        done'
+    profiles:
+      - dev
+      - minikube
+
+  # ===========================================================================
+  # Event Tracker (keeperhub-events)
+  # Monitors blockchain events and routes to SQS for unified executor
+  # ===========================================================================
+  event-tracker:
+    build:
+      context: ./keeperhub-events
+      dockerfile: event-tracker/Dockerfile
+    container_name: keeperhub-event-tracker
+    restart: unless-stopped
+    environment:
+      WATCH_MODE: "true"
+      KEEPERHUB_API_URL: http://keeperhub:3000
+      INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_TOKEN_USERNAME: ${JWT_TOKEN_USERNAME:-}
+      JWT_TOKEN_PASSWORD: ${JWT_TOKEN_PASSWORD:-}
+      ETHERSCAN_API_KEY: ${ETHERSCAN_API_KEY:-}
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/keeperhub-workflow-queue
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localstack:4566
+      NODE_ENV: development
+    depends_on:
+      redis:
+        condition: service_started
+      localstack:
+        condition: service_healthy
+      app-dev:
+        condition: service_started
+    profiles:
+      - dev
+      - minikube
+
+  # ===========================================================================
+  # Solana Tracker (keeperhub-events/solana-tracker)
+  # Unified Solana ingestion for event + block triggers; routes to the same SQS
+  # queue as event-tracker. Serves an HTTP health server on HEALTH_PORT.
+  # ===========================================================================
+  solana-tracker:
+    build:
+      context: ./keeperhub-events
+      dockerfile: solana-tracker/Dockerfile
+    container_name: keeperhub-solana-tracker
+    restart: unless-stopped
+    environment:
+      HEALTH_PORT: "3001"
+      LOG_LEVEL: info
+      KEEPERHUB_API_URL: http://keeperhub:3000
+      INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/keeperhub-workflow-queue
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localstack:4566
+      NODE_ENV: development
+    depends_on:
+      redis:
+        condition: service_started
+      localstack:
+        condition: service_healthy
+      app-dev:
+        condition: service_started
+    profiles:
+      - dev
+      - minikube
+
+  # ===========================================================================
+  # Block Dispatcher (keeperhub-scheduler)
+  # Monitors blockchain blocks and routes matching workflows to SQS
+  # ===========================================================================
+  block-dispatcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: block-dispatcher
+    image: keeperhub-block:latest
+    container_name: keeperhub-block
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      KEEPERHUB_API_URL: http://app-dev:3000
+      INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/keeperhub-workflow-queue
+      RECONCILE_INTERVAL_MS: "30000"
+      HEALTH_PORT: "3000"
+    depends_on:
+      localstack:
+        condition: service_healthy
+      app-dev:
+        condition: service_started
+    profiles:
+      - dev
+      - minikube
+
+  # ===========================================================================
+  # Database Migrator (one-shot)
+  # ===========================================================================
+  migrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrator
+    image: keeperhub-migrator:latest
+    container_name: keeperhub-migrator
+    environment:
+      <<: *env_db_connection
+    depends_on:
+      db:
+        condition: service_healthy
+    command: pnpm db:migrate
+    profiles:
+      - migrator
+
+  # ===========================================================================
+  # Workflow Profiling Tools
+  # ===========================================================================
+
+  # JS Sandbox for WASM fuel calibration
+  # Uses Spidermonkey compiled to WASM for deterministic instruction counting
+  # See: scripts/runtime/workflow_runtime_analysis/calibrate-wasm-fuel.ts
+  js-sandbox:
+    image: forbeslindesay/secure-js-sandbox:latest
+    container_name: keeperhub-js-sandbox
+    hostname: js-sandbox
+    ports:
+      - "3001:3000"  # External 3001 to avoid conflict with app on 3000
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - profile-workflows
+
+  # ===========================================================================
+  # Redis (for caching)
+  # ===========================================================================
+  redis:
+    image: valkey/valkey:latest
+    container_name: keeperhub-redis
+    hostname: redis
+    ports:
+      - 6379:6379
+    restart: unless-stopped
+    profiles:
+      - dev
+      - dev-min
+      - minikube
+
+  # ===========================================================================
+  # E2E Test Services
+  # Isolated test stack with separate ports, DB, and volumes
+  # Usage: docker compose --profile test up -d
+  # ===========================================================================
+
+  test-db:
+    image: postgres:16-alpine
+    container_name: keeperhub-test-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-workflow_builder_test}
+    ports:
+      - "5434:5432"
+    volumes:
+      - keeperhub_test_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - test
+
+  test-localstack:
+    image: localstack/localstack:latest
+    container_name: keeperhub-test-localstack
+    ports:
+      - "4567:4566"
+    environment:
+      - SERVICES=sqs
+      - DEBUG=0
+      # Recent localstack/localstack:latest builds require an auth token
+      # even for community-edition use; without it the container exits 55.
+      # CI passes the team token from GH secrets; local dev needs the var
+      # set in the host shell or .env to use the test profile.
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - test
+
+  test-localstack-init:
+    image: amazon/aws-cli:latest
+    container_name: keeperhub-test-localstack-init
+    depends_on:
+      test-localstack:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        aws --endpoint-url=http://test-localstack:4566 sqs create-queue \
+          --queue-name keeperhub-workflow-queue
+        echo "SQS queue created"
+    profiles:
+      - test
+
+  test-anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    container_name: keeperhub-test-anvil
+    ports:
+      - "8546:8545"
+    entrypoint: anvil
+    command:
+      - --host
+      - 0.0.0.0
+      - --block-time
+      - "1"
+      - --chain-id
+      - "31337"
+    healthcheck:
+      test: ["CMD-SHELL", "cast block-number --rpc-url http://localhost:8545 > /dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles:
+      - test
+
+  # Ethereum mainnet fork for the fork-based e2e suites: the
+  # protocol-coverage chain-1 suites and the Safe + Zodiac Roles
+  # orchestrator tests (real contract bytes at the canonical addresses).
+  # Set ANVIL_FORK_MAINNET_URL to a private node that serves historical
+  # state for higher rate limits and consistent block pinning.
+  test-anvil-fork-mainnet:
+    image: ghcr.io/foundry-rs/foundry:latest
+    container_name: keeperhub-test-anvil-fork-mainnet
+    ports:
+      - "8548:8545"
+    entrypoint: anvil
+    command:
+      - --host
+      - 0.0.0.0
+      - --fork-url
+      - ${ANVIL_FORK_MAINNET_URL:-https://ethereum-rpc.publicnode.com}
+      - --chain-id
+      - "1"
+      - --block-time
+      - "1"
+    healthcheck:
+      test: ["CMD-SHELL", "cast block-number --rpc-url http://localhost:8545 > /dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    profiles:
+      - test
+
+  test-redis:
+    image: valkey/valkey:latest
+    container_name: keeperhub-test-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles:
+      - test
+
+  test-app:
+    image: node:22-alpine
+    container_name: keeperhub-test-app
+    working_dir: /app
+    ports:
+      - "3001:3000"
+    volumes:
+      - .:/app
+      - keeperhub_test_node_modules:/app/node_modules
+    environment:
+      <<: *env_service_keys
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@test-db:5432/${POSTGRES_DB:-workflow_builder_test}
+      AWS_ENDPOINT_URL: http://test-localstack:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_QUEUE_URL: http://test-localstack:4566/000000000000/keeperhub-workflow-queue
+      KEEPERHUB_URL: http://localhost:3000
+      HOSTNAME: "0.0.0.0"
+    depends_on:
+      test-db:
+        condition: service_healthy
+      test-localstack-init:
+        condition: service_completed_successfully
+    command: sh -c "npm install -g pnpm && pnpm install && pnpm db:push && pnpm dev --hostname 0.0.0.0"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    profiles:
+      - test
+
+  test-dispatcher:
+    image: node:22-alpine
+    container_name: keeperhub-test-dispatcher
+    working_dir: /app
+    volumes:
+      - .:/app
+      - keeperhub_test_node_modules:/app/node_modules
+    environment:
+      KEEPERHUB_API_URL: http://test-app:3000
+      INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
+      AWS_ENDPOINT_URL: http://test-localstack:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_QUEUE_URL: http://test-localstack:4566/000000000000/keeperhub-workflow-queue
+      HEALTH_PORT: "3060"
+    depends_on:
+      test-app:
+        condition: service_healthy
+    command: sh -c "npm install -g pnpm && npx tsx keeperhub-scheduler/schedule-dispatcher/index.ts"
+    profiles:
+      - test
+
+  test-executor:
+    image: node:22-alpine
+    container_name: keeperhub-test-executor
+    working_dir: /app
+    volumes:
+      - .:/app
+      - keeperhub_test_node_modules:/app/node_modules
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@test-db:5432/${POSTGRES_DB:-workflow_builder_test}
+      AWS_ENDPOINT_URL: http://test-localstack:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_QUEUE_URL: http://test-localstack:4566/000000000000/keeperhub-workflow-queue
+      KEEPERHUB_URL: http://test-app:3000
+    depends_on:
+      test-app:
+        condition: service_healthy
+    command: sh -c "npm install -g pnpm && npx tsx keeperhub-executor/index.ts"
+    profiles:
+      - test
+
+  test-runner:
+    image: node:22-alpine
+    container_name: keeperhub-test-runner
+    working_dir: /app
+    volumes:
+      - .:/app
+      - keeperhub_test_node_modules:/app/node_modules
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@test-db:5432/${POSTGRES_DB:-workflow_builder_test}
+      AWS_ENDPOINT_URL: http://test-localstack:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_QUEUE_URL: http://test-localstack:4566/000000000000/keeperhub-workflow-queue
+      KEEPERHUB_URL: http://test-app:3000
+      FULL_E2E: "true"
+    depends_on:
+      test-app:
+        condition: service_healthy
+      test-dispatcher:
+        condition: service_started
+      test-executor:
+        condition: service_started
+    command: sh -c "npm install -g pnpm && pnpm install && pnpm test:e2e:schedule:full"
+    profiles:
+      - test
+
+# =============================================================================
+# Volumes
+# External volumes allow worktrees to share the same Docker infrastructure
+# =============================================================================
+volumes:
+  keeperhub_db_data:
+    name: keeperhub_db_data
+    external: true
+  keeperhub_node_modules:
+    name: keeperhub_node_modules
+    external: true
+  keeperhub_localstack_data:
+    name: keeperhub_localstack_data
+    external: true
+  keeperhub_test_db_data:
+    name: keeperhub_test_db_data
+  keeperhub_test_localstack_data:
+    name: keeperhub_test_localstack_data
+  keeperhub_test_node_modules:
+    name: keeperhub_test_node_modules
+
+# =============================================================================
+# Networks
+# External network allows worktrees to share the same Docker network
+# =============================================================================
+networks:
+  default:
+    name: keeperhub-network
+    external: true

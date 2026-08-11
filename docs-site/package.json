@@ -1,0 +1,39 @@
+{
+  "name": "keeperhub-docs",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "postbuild": "pagefind --site .next/server/app --output-path public/_pagefind",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "16.2.12",
+    "nextra": "^4.0.0",
+    "nextra-theme-docs": "^4.0.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.18",
+    "pagefind": "^1.5.2",
+    "typescript": "^5.7.0"
+  },
+  "packageManager": "pnpm@10.33.3",
+  "pnpm": {
+    "overrides": {
+      "lodash-es": "^4.18.1",
+      "uuid@11": "^11.1.1",
+      "postcss": "^8.5.23",
+      "mermaid": ">=11.16.1",
+      "@xmldom/xmldom": ">=0.9.10",
+      "dompurify": ">=3.4.13",
+      "brace-expansion": ">=5.0.9",
+      "nanoid@<3.3.17": "^3.3.17",
+      "sharp": ">=0.35.0"
+    }
+  }
+}

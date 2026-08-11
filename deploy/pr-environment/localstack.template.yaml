@@ -1,0 +1,117 @@
+# LocalStack for SQS in PR environment
+# Variables to be replaced: ${PR_NUMBER}, ${LOCALSTACK_AUTH_TOKEN}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: localstack-init
+  namespace: pr-${PR_NUMBER}
+data:
+  init-sqs.sh: |
+    #!/bin/bash
+    echo "Creating SQS queues..."
+    awslocal sqs create-queue \
+      --queue-name keeperhub-workflow-queue-dlq \
+      --attributes MessageRetentionPeriod=1209600
+    awslocal sqs create-queue \
+      --queue-name keeperhub-workflow-queue \
+      --attributes VisibilityTimeout=300
+    echo "SQS queues created successfully"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: localstack
+  namespace: pr-${PR_NUMBER}
+  labels:
+    app: localstack
+    pr: pr-${PR_NUMBER}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: localstack
+      pr: pr-${PR_NUMBER}
+  template:
+    metadata:
+      labels:
+        app: localstack
+        pr: pr-${PR_NUMBER}
+    spec:
+      containers:
+        - name: localstack
+          image: localstack/localstack:4.14.0
+          ports:
+            - containerPort: 4566
+              name: edge
+          env:
+            - name: LOCALSTACK_AUTH_TOKEN
+              value: "${LOCALSTACK_AUTH_TOKEN}"
+            - name: SERVICES
+              value: "sqs"
+            - name: DEBUG
+              value: "0"
+            - name: PERSISTENCE
+              value: "0"
+            - name: AWS_ACCESS_KEY_ID
+              value: "test"
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "test"
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-1"
+          volumeMounts:
+            - name: init-scripts
+              mountPath: /etc/localstack/init/ready.d
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          startupProbe:
+            httpGet:
+              path: /_localstack/health
+              port: 4566
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /_localstack/health
+              port: 4566
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /_localstack/health
+              port: 4566
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: localstack-init
+            defaultMode: 0755
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: localstack
+  namespace: pr-${PR_NUMBER}
+  labels:
+    app: localstack
+    pr: pr-${PR_NUMBER}
+spec:
+  selector:
+    app: localstack
+    pr: pr-${PR_NUMBER}
+  ports:
+    - port: 4566
+      targetPort: 4566
+      name: edge
+  type: ClusterIP

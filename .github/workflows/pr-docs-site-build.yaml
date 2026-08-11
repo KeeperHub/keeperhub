@@ -1,0 +1,112 @@
+# Type: orchestrator | Calls build-docs-image.yml for PR validation
+# Validates that the docs-site image builds on every PR that touches
+# docs-site/, docs/, or this workflow. Prod deploys still happen via
+# deploy-docs.yaml on push to prod (which calls the same reusable with
+# push: true).
+name: PR Docs Site Build
+
+on:
+  pull_request:
+    paths:
+      - 'docs-site/**'
+      - 'docs/**'
+      - '.github/workflows/build-docs-image.yml'
+      - '.github/workflows/pr-docs-site-build.yaml'
+
+# Cancel an in-progress build when a new commit lands on the same PR.
+# Docs builds are stateless and only the latest commit's result matters.
+concurrency:
+  group: pr-docs-site-build-${{ github.ref }}
+  cancel-in-progress: true
+
+# build-docs-image.yml declares id-token: write (it assumes an AWS role on the
+# push path). A called workflow cannot request more permissions than its caller,
+# so omitting it here makes the whole run fail at startup - which reports no
+# check at all, silently disabling this gate. The PR path never touches AWS.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-docs-image.yml
+    with:
+      push: false
+
+  # The "Edit this page" links are built from a branch name hardcoded in
+  # theme.config.tsx, and nothing downstream notices when that name goes wrong.
+  # It pointed at `main` for roughly seven months while every link 404'd.
+  #
+  # Note that `main` was never deleted - it still exists, it had simply stopped
+  # receiving docs. So "does the branch exist" would have passed throughout the
+  # outage and is not the property worth asserting. What matters is whether the
+  # configured branch actually carries the docs the links point into, which is
+  # checked here by resolving the base branch's docs paths - minus the ones
+  # this merge deletes - against it.
+  #
+  # Uses git rather than the contents API: no rate limit, no token, and one
+  # fetch instead of one request per page.
+  edit-link-target:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert docsRepositoryBase resolves to a branch carrying the docs
+        run: |
+          set -euo pipefail
+          config=docs-site/theme.config.tsx
+
+          # The property is split across lines by the formatter, so match the
+          # URL anywhere in the file rather than anchoring on the key.
+          url=$(grep -oE 'https://github\.com/[^"]+/edit/[^"]+' "$config" | head -n1)
+          if [ -z "$url" ]; then
+            echo "::error file=$config::could not find a .../edit/... URL to check"
+            exit 1
+          fi
+          echo "docsRepositoryBase: $url"
+
+          rest=${url#https://github.com/}
+          # Assumes the branch name contains no slash; a slashed branch makes
+          # the branch/path split ambiguous from the URL alone. The fetch below
+          # then fails loudly rather than passing silently.
+          branch=$(echo "$rest" | cut -d/ -f4)
+          path=$(echo "$rest" | cut -d/ -f5-)
+          base="${GITHUB_BASE_REF}"
+          echo "configured branch: $branch, docs path: $path, PR base: $base"
+
+          if [ ! -d "$path" ]; then
+            echo "::error file=$config::path '$path' is not a directory in this repo - every edit link 404s"
+            exit 1
+          fi
+
+          # Both refs in one fetch so they cannot straddle a merge landing
+          # between two separate calls.
+          if ! git fetch --no-tags --depth=1 origin \
+                "+refs/heads/$branch:refs/remotes/editlink/configured" \
+                "+refs/heads/$base:refs/remotes/editlink/base" 2>/dev/null; then
+            echo "::error file=$config::branch '$branch' does not exist on origin - every edit link 404s"
+            exit 1
+          fi
+
+          missing=0
+          checked=0
+          while read -r file; do
+            # `actions/checkout` checks out refs/pull/N/merge, so the working
+            # tree is the post-merge result. Files this merge deletes are never
+            # deployed and their edit links never render, so they are not the
+            # configured branch's job to carry. Without this skip, a docs
+            # restructure on the configured branch fails every release PR into
+            # prod - including the one that would bring prod back in line.
+            [ -f "$file" ] || continue
+            checked=$((checked + 1))
+            if ! git cat-file -e "refs/remotes/editlink/configured:$file" 2>/dev/null; then
+              missing=$((missing + 1))
+              [ "$missing" -le 10 ] && echo "  missing on $branch: $file"
+            fi
+          done < <(git ls-tree -r --name-only refs/remotes/editlink/base -- "$path")
+
+          echo "checked $checked docs files against '$branch': $missing missing"
+          if [ "$missing" -gt 0 ]; then
+            echo "::error file=$config::'$branch' is missing $missing of $checked docs files - those edit links 404"
+            exit 1
+          fi

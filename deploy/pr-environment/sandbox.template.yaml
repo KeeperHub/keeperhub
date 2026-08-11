@@ -1,0 +1,141 @@
+# Helm values template for the per-PR keeperhub-sandbox release.
+#
+# One sandbox per PR namespace. Mirrors the staging sandbox shape from
+# deploy/keeperhub-sandbox/staging/values.yaml; differs only in name,
+# release name suffix, and the use of the rolling sandbox-latest tag.
+# Per-PR sandbox source changes would be a follow-up (label-driven build
+# the same way deploy-pr-executor builds executor images).
+#
+# Variables substituted by envsubst at deploy time:
+#   ${PR_NUMBER}, ${ECR_REGISTRY}
+#
+# apply order (deploy-pr-environment.yaml handles this automatically):
+#   1. kubectl apply -f sandbox-sa.template.yaml (rendered)
+#   2. kubectl apply -f sandbox-networkpolicy.template.yaml (rendered)
+#   3. helm upgrade --install keeperhub-sandbox-pr-${PR_NUMBER} ... -f this-file
+#   4. kubectl patch deployment --patch-file sandbox-pod-hardening-patch.template.yaml (rendered)
+#
+# Sandbox intentionally has:
+#   - ZERO externalSecrets (no AWS creds, no DB, no Turnkey, no Stripe)
+#   - no IRSA annotation (see sandbox-sa.template.yaml)
+#   - automountServiceAccountToken: false at BOTH SA and Pod level
+#   - no RoleBinding targeting keeperhub-sandbox-pr-${PR_NUMBER}
+#   - distroless runtime image (no /bin/sh, no busybox, no commands)
+#   - readOnlyRootFilesystem with an in-memory tmpfs at /tmp
+#   - all Linux capabilities dropped, runAsNonRoot, seccomp RuntimeDefault
+#   - NetworkPolicy that denies all egress except kube-dns and public 443
+#   - NetworkPolicy that only accepts ingress from this PR's own namespace
+
+replicaCount: 1
+
+service:
+  enabled: true
+  name: keeperhub-sandbox-pr-${PR_NUMBER}
+  port: 8787
+  type: ClusterIP
+  containerPort: 8787
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-sandbox-staging
+  tag: sandbox-latest
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+  # /tmp must remain writable while the rest of the root filesystem is
+  # read-only (see securityContext.readOnlyRootFilesystem below). Node
+  # uses /tmp for v8 compile cache and any user-code tempfile writes.
+  # The chart only renders sizeLimit here; the medium: Memory override
+  # (so /tmp is backed by tmpfs rather than node disk) is applied via
+  # sandbox-pod-hardening-patch.template.yaml because the chart template
+  # strips the medium field.
+  volumes:
+    - name: tmp
+      mountPath: /tmp
+      emptyDir:
+        sizeLimit: 64Mi
+
+# Use the pre-created SA from sandbox-sa.template.yaml so
+# automountServiceAccountToken: false is set at the SA object level
+# (chart doesn't expose that toggle).
+serviceAccount:
+  create: false
+  name: keeperhub-sandbox-pr-${PR_NUMBER}
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+env:
+  NODE_ENV:
+    type: kv
+    value: "production"
+  SANDBOX_PORT:
+    type: kv
+    value: "8787"
+
+# Pod-level security: matches staging exactly so every environment
+# (minikube validation, pr-<N>, staging, prod) shares the same posture.
+# The chart wires this into spec.template.spec.securityContext.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security: dropped to the smallest viable surface.
+# readOnlyRootFilesystem: true requires the tmpfs /tmp volume above.
+# capabilities.drop: [ALL] is safe because the sandbox only listens
+# on TCP 8787, which it gets via the chart's containerPort spec - no
+# capability is needed to bind a high port as non-root.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Pin the sandbox Pod to the dedicated Karpenter NodePool whose nodes
+# carry a stripped IAM role (no SSM, no S3, no SecretsManager, no KMS).
+# The NodePool is shared across all sandbox releases including PR
+# sandboxes - that is the whole point of the isolation story.
+nodeSelector:
+  node-role.keeperhub.io/sandbox-only: "true"
+
+tolerations:
+  - key: node-role.keeperhub.io/sandbox-only
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8787
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: 8787
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3
