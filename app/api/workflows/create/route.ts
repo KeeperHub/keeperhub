@@ -153,21 +153,29 @@ export async function POST(request: Request) {
     nodes = sanitized.nodes;
     edges = sanitized.edges;
 
-    // Do NOT auto-derive workflowType from content here, unlike the PATCH
-    // handler and lib/mcp/listing.ts. Those two gate the flip-to-"write" on
-    // `willBeListed` (only enforcing/ratcheting it for a workflow that is or
-    // is about to be listed); this route never sets `isListed` at all, so a
-    // freshly created row can never be `willBeListed` -- applying the same
-    // reasoning here means never flipping.
+    // Do NOT auto-derive workflowType from content here. Correction: the
+    // PATCH handler does NOT gate this on `willBeListed` -- it calls
+    // deriveWorkflowType unconditionally (route.ts:671-686); only the
+    // *validation* gates (MISSING_WRITE_ACTION, SLUG_REQUIRED, etc.) are
+    // willBeListed-conditional. The real reason to leave this "read" is
+    // provenance, not listing state:
     //
-    // Flipping unconditionally on create used to plant an ungated "write"
-    // value into deriveWorkflowType's up-only ratchet (PATCH always passes
-    // the row's *current* workflowType as its fallback when re-deriving). A
-    // template created with a write node, then edited via PATCH to remove
-    // that node, could never fall back to "read": the row stayed "write"
-    // with no write node, and listing later failed MISSING_WRITE_ACTION on a
-    // workflow that was never actually verified write-capable
-    // (lib/mcp/listing.ts:262-264 documents this as a curator-only case).
+    // deriveWorkflowType's up-only ratchet (PATCH always passes the row's
+    // *current* workflowType as its fallback when re-deriving) is
+    // intentional and unconditional -- it protects a curator's deliberate
+    // `workflowType: "write"` pin on an unlisted draft (set via
+    // lib/mcp/listing.ts's update_workflow_listing, while its write node is
+    // still being built; see the "unlisted draft may still carry a write
+    // type without one" comment there and
+    // tests/integration/workflow-listing-lifecycle.test.ts:354-367) from
+    // being clobbered by an unrelated edit. The schema has no column to
+    // distinguish that deliberate pin from a value this route derived on its
+    // own, so flipping unconditionally on create plants an ungated "write"
+    // indistinguishable from a real pin: a template created with a write
+    // node, then edited via PATCH to remove that node, could never fall back
+    // to "read" (the row stays "write" with no write node), and listing
+    // later fails MISSING_WRITE_ACTION on a workflow that was never actually
+    // verified write-capable.
     //
     // Leave new workflows "read" (the column default). The first real
     // content-changing PATCH, or the listing action itself, re-derives from
