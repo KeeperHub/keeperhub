@@ -362,22 +362,25 @@ async function getDirectCounts(
   durationCount: number;
   totalGasWei: string;
 }> {
-  const result = await db
-    .select({
-      success: sql<number>`SUM(CASE WHEN ${directExecutions.status} = 'completed' THEN 1 ELSE 0 END)`,
-      error: sql<number>`SUM(CASE WHEN ${directExecutions.status} = 'failed' THEN 1 ELSE 0 END)`,
-      durationSum: sql<number>`COALESCE(SUM(EXTRACT(EPOCH FROM (${directExecutions.completedAt} - ${directExecutions.createdAt})) * 1000), 0)`,
-      durationCount: sql<number>`SUM(CASE WHEN ${directExecutions.completedAt} IS NOT NULL THEN 1 ELSE 0 END)`,
-      totalGasWei: sql<string>`COALESCE(SUM(CAST(${directExecutions.gasUsedWei} AS NUMERIC)), 0)::text`,
-    })
-    .from(directExecutions)
-    .where(
-      and(
-        eq(directExecutions.organizationId, organizationId),
-        gte(directExecutions.createdAt, rangeStart),
-        lt(directExecutions.createdAt, rangeEnd)
-      )
-    );
+  const [result, sponsoredWei] = await Promise.all([
+    db
+      .select({
+        success: sql<number>`SUM(CASE WHEN ${directExecutions.status} = 'completed' THEN 1 ELSE 0 END)`,
+        error: sql<number>`SUM(CASE WHEN ${directExecutions.status} = 'failed' THEN 1 ELSE 0 END)`,
+        durationSum: sql<number>`COALESCE(SUM(EXTRACT(EPOCH FROM (${directExecutions.completedAt} - ${directExecutions.createdAt})) * 1000), 0)`,
+        durationCount: sql<number>`SUM(CASE WHEN ${directExecutions.completedAt} IS NOT NULL THEN 1 ELSE 0 END)`,
+        totalGasWei: sql<string>`COALESCE(SUM(CAST(${directExecutions.gasUsedWei} AS NUMERIC)), 0)::text`,
+      })
+      .from(directExecutions)
+      .where(
+        and(
+          eq(directExecutions.organizationId, organizationId),
+          gte(directExecutions.createdAt, rangeStart),
+          lt(directExecutions.createdAt, rangeEnd)
+        )
+      ),
+    getSponsoredGasForDirectWindow(organizationId, rangeStart, rangeEnd),
+  ]);
 
   const row = result[0];
   const success = Number(row?.success) || 0;
@@ -390,8 +393,43 @@ async function getDirectCounts(
     error,
     durationSum: Number(row?.durationSum) || 0,
     durationCount: Number(row?.durationCount) || 0,
-    totalGasWei: row?.totalGasWei ?? "0",
+    // Wallet-side only: direct_executions.gas_used_wei sums every execution
+    // regardless of who paid, and a sponsored one now carries its real wei
+    // cost (KEEP fix in sponsored-transaction-manager.ts) instead of ~0, so
+    // that cost is subtracted back out here to avoid double-counting it
+    // against sponsoredGasWei (getSponsoredGasTotal) in the Gas Spent KPI.
+    totalGasWei: excludeSponsoredWei(row?.totalGasWei ?? "0", sponsoredWei),
   };
+}
+
+/**
+ * Sum of gas_credit_usage.gas_cost_wei for direct executions created in this
+ * org's window -- the sponsored slice of getDirectCounts' gasUsedWei total,
+ * scoped by the same organizationId + createdAt range so it lines up with
+ * that total and can be subtracted straight out of it (excludeSponsoredWei).
+ */
+async function getSponsoredGasForDirectWindow(
+  organizationId: string,
+  rangeStart: Date,
+  rangeEnd: Date
+): Promise<string> {
+  const result = await db
+    .select({
+      totalWei: sql<string>`COALESCE(SUM(CAST(${gasCreditUsage.gasCostWei} AS NUMERIC)), 0)::text`,
+    })
+    .from(gasCreditUsage)
+    .innerJoin(
+      directExecutions,
+      eq(gasCreditUsage.executionId, directExecutions.id)
+    )
+    .where(
+      and(
+        eq(directExecutions.organizationId, organizationId),
+        gte(directExecutions.createdAt, rangeStart),
+        lt(directExecutions.createdAt, rangeEnd)
+      )
+    );
+  return result[0]?.totalWei ?? "0";
 }
 
 function getActiveWorkflowCount(
@@ -513,6 +551,23 @@ function addBigIntStrings(a: string, b: string): string {
   return (BigInt(a || "0") + BigInt(b || "0")).toString();
 }
 
+/**
+ * Wallet-side gas total, excluding whatever KeeperHub sponsorship already
+ * paid for over the same window. `grossWei` sums every step/execution in the
+ * window indiscriminately (sponsored + wallet); `sponsoredWei` is the
+ * matching gas_credit_usage total for that same set of rows. Floors at zero
+ * so a pre-KEEP-fix row whose gas_used_wei still holds raw gas units
+ * (smaller than its own sponsored wei cost) can't push the KPI negative --
+ * that mixed-unit historical data is a separate, un-migrated known gap.
+ */
+export function excludeSponsoredWei(
+  grossWei: string,
+  sponsoredWei: string
+): string {
+  const wallet = BigInt(grossWei || "0") - BigInt(sponsoredWei || "0");
+  return (wallet < BigInt(0) ? BigInt(0) : wallet).toString();
+}
+
 async function getWorkflowGasTotal(
   organizationId: string,
   rangeStart: Date,
@@ -530,11 +585,61 @@ async function getWorkflowGasTotal(
   // is the correct axis, and it matches every other summary metric, which is
   // already keyed to run start. Boundary-straddling runs can reattribute by the
   // gap between run start and a late step; immaterial at dashboard granularity.
+  //
+  // This run-level rollup sums every step regardless of who paid, so a run
+  // with a sponsored step now carries that step's real wei cost instead of
+  // ~0 (KEEP fix in sponsored-transaction-manager.ts). getSponsoredGasForWorkflowWindow
+  // sums the matching gas_credit_usage rows for the same runs, subtracted out
+  // below so this total isn't double-counted against sponsoredGasWei
+  // (getSponsoredGasTotal) in the Gas Spent KPI.
+  const [grossResult, sponsoredWei] = await Promise.all([
+    db
+      .select({
+        totalGas: sql<string>`COALESCE(SUM(CAST(${workflowExecutions.gasUsedWei} AS NUMERIC)), 0)::text`,
+      })
+      .from(workflowExecutions)
+      .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+      .where(
+        and(
+          eq(workflows.organizationId, organizationId),
+          projectId ? eq(workflows.projectId, projectId) : undefined,
+          gte(workflowExecutions.startedAt, rangeStart),
+          lt(workflowExecutions.startedAt, rangeEnd)
+        )
+      ),
+    getSponsoredGasForWorkflowWindow(
+      organizationId,
+      rangeStart,
+      rangeEnd,
+      projectId
+    ),
+  ]);
+
+  return excludeSponsoredWei(grossResult[0]?.totalGas ?? "0", sponsoredWei);
+}
+
+/**
+ * Sum of gas_credit_usage.gas_cost_wei for workflow runs started in this
+ * org/project's window -- the sponsored slice of getWorkflowGasTotal's
+ * run-level gasUsedWei rollup, scoped by the same organizationId/projectId +
+ * started_at range so it lines up with that total and can be subtracted
+ * straight out of it (excludeSponsoredWei).
+ */
+async function getSponsoredGasForWorkflowWindow(
+  organizationId: string,
+  rangeStart: Date,
+  rangeEnd: Date,
+  projectId?: string
+): Promise<string> {
   const result = await db
     .select({
-      totalGas: sql<string>`COALESCE(SUM(CAST(${workflowExecutions.gasUsedWei} AS NUMERIC)), 0)::text`,
+      totalWei: sql<string>`COALESCE(SUM(CAST(${gasCreditUsage.gasCostWei} AS NUMERIC)), 0)::text`,
     })
-    .from(workflowExecutions)
+    .from(gasCreditUsage)
+    .innerJoin(
+      workflowExecutions,
+      eq(gasCreditUsage.executionId, workflowExecutions.id)
+    )
     .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
     .where(
       and(
@@ -544,8 +649,7 @@ async function getWorkflowGasTotal(
         lt(workflowExecutions.startedAt, rangeEnd)
       )
     );
-
-  return result[0]?.totalGas ?? "0";
+  return result[0]?.totalWei ?? "0";
 }
 
 /**
