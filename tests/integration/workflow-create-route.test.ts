@@ -255,7 +255,20 @@ describe("POST /api/workflows/create action config validation", () => {
     expect(mockInsert).toHaveBeenCalled();
   });
 
-  it('derives workflowType "write" from a write-contract node on create', async () => {
+  // Regression coverage for #2011's CHANGES_REQUESTED: create must NOT
+  // auto-flip workflowType to "write", even when the payload has a
+  // write-contract node. Doing so used to plant an ungated "write" value
+  // into deriveWorkflowType's up-only ratchet -- PATCH always re-derives
+  // from the row's *current* workflowType, so a later edit removing the
+  // write node could never fall the row back to "read", and listing it
+  // afterward failed MISSING_WRITE_ACTION even though the workflow was
+  // never actually verified write-capable. This route never sets
+  // `isListed`, so a freshly created row can never be a listing candidate
+  // (the `willBeListed` condition the PATCH handler gates its own flip on)
+  // -- mirroring that reasoning here means create always stays "read" and
+  // lets the first real content-changing PATCH, or the listing action
+  // itself, derive "write" once it's actually gated.
+  it('keeps workflowType "read" on create even with a write-contract node', async () => {
     const mockReturning = vi.fn().mockResolvedValue([
       {
         id: "wf-1",
@@ -293,7 +306,37 @@ describe("POST /api/workflows/create action config validation", () => {
 
     expect(response.status).not.toBe(422);
     expect(mockValues).toHaveBeenCalledWith(
-      expect.objectContaining({ workflowType: "write" })
+      expect.objectContaining({ workflowType: "read" })
+    );
+  });
+
+  it('keeps workflowType "read" on create with no write-action node', async () => {
+    const mockReturning = vi.fn().mockResolvedValue([
+      {
+        id: "wf-2",
+        name: "Untitled Workflow",
+        enabled: false,
+        createdAt: new Date("2024-01-01"),
+        updatedAt: new Date("2024-01-01"),
+      },
+    ]);
+    const mockValues = vi.fn().mockReturnValue({ returning: mockReturning });
+    mockInsert.mockReturnValue({ values: mockValues });
+
+    const response = await POST(
+      request(
+        workflowBody([
+          baseActionNode({
+            actionType: "discord/send-message",
+            discordMessage: "hello",
+          }),
+        ])
+      )
+    );
+
+    expect(response.status).not.toBe(422);
+    expect(mockValues).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowType: "read" })
     );
   });
 });

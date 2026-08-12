@@ -2,7 +2,6 @@ import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { NextResponse } from "next/server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { deriveWorkflowType } from "@/lib/mcp/calldata";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { recordWorkflowCreatedFromSource } from "@/lib/metrics/collectors/prometheus";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
@@ -154,12 +153,26 @@ export async function POST(request: Request) {
     nodes = sanitized.nodes;
     edges = sanitized.edges;
 
-    // Auto-derive workflowType from content via the shared helper
-    // (lib/mcp/calldata.ts::deriveWorkflowType), matching the PATCH handler
-    // and lib/mcp/listing.ts. There is no "requested type" field on this
-    // endpoint's body, so "read" is passed as the fallback -- the workflows
-    // table default a create with no callable write node would otherwise get.
-    const workflowType = deriveWorkflowType(nodes, "read");
+    // Do NOT auto-derive workflowType from content here, unlike the PATCH
+    // handler and lib/mcp/listing.ts. Those two gate the flip-to-"write" on
+    // `willBeListed` (only enforcing/ratcheting it for a workflow that is or
+    // is about to be listed); this route never sets `isListed` at all, so a
+    // freshly created row can never be `willBeListed` -- applying the same
+    // reasoning here means never flipping.
+    //
+    // Flipping unconditionally on create used to plant an ungated "write"
+    // value into deriveWorkflowType's up-only ratchet (PATCH always passes
+    // the row's *current* workflowType as its fallback when re-deriving). A
+    // template created with a write node, then edited via PATCH to remove
+    // that node, could never fall back to "read": the row stayed "write"
+    // with no write node, and listing later failed MISSING_WRITE_ACTION on a
+    // workflow that was never actually verified write-capable
+    // (lib/mcp/listing.ts:262-264 documents this as a curator-only case).
+    //
+    // Leave new workflows "read" (the column default). The first real
+    // content-changing PATCH, or the listing action itself, re-derives from
+    // live nodes at the point it's actually gated.
+    const workflowType: "read" | "write" = "read";
 
     // A 201 from this endpoint does not mean the workflow will run. The gate
     // below is an AUTHORIZATION check on integrationId, not an existence
