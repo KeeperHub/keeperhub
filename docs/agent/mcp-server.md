@@ -145,7 +145,7 @@ The server registers more than 30 tools. Call `tools_documentation` (or `list_ac
 | `get_workflow` | Get a single workflow by ID, including nodes, edges, and configuration. |
 | `create_workflow` | Create a workflow with nodes and edges. Created disabled by default; pass `enabled=true` to make schedule, event, block, or webhook triggers fire immediately. Pass `idempotency_key` so cold-start retries are safe. |
 | `update_workflow` | Update a workflow's name, description, nodes, edges, project/tag assignment, or enabled state. Set `enabled=false` to stop triggers without deleting the workflow. |
-| `delete_workflow` | Permanently delete a workflow. This action is irreversible. |
+| `delete_workflow` | Permanently delete a workflow. This action is irreversible. A workflow with execution history rejects a plain delete with 409 -- pass `force: true` to also delete its executions in the same call. |
 | `validate_workflow` | Check a workflow's structural and Web3-specific correctness before creating or executing it. |
 | `prepare_test_pin_data` | Return the JSON Schema each node expects as pin data, so an agent can construct valid test inputs. |
 | `validate_cron` | Validate a cron expression or interval schedule before wiring a schedule trigger. |

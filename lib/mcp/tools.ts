@@ -804,17 +804,26 @@ export function registerTools(
 
   server.tool(
     "delete_workflow",
-    "Delete a workflow by ID. This action is irreversible.",
+    "Delete a workflow by ID. This action is irreversible. A workflow that has ever executed rejects a plain delete with 409 -- pass force=true to also delete its execution history in the same call.",
     {
       workflowId: z.string().describe("The workflow ID to delete"),
+      force: z
+        .boolean()
+        .optional()
+        .describe(
+          "Required to delete a workflow that has execution history. Also soft-deletes its executions and hard-deletes their step logs. Ignored (and unnecessary) for a workflow with no executions."
+        ),
     },
     { title: "Delete Workflow", readOnlyHint: false, destructiveHint: true },
     withScopeCheck("delete_workflow", scope, async (args) =>
       withToolLogging("delete_workflow", undefined, async () => {
+        const path = args.force
+          ? `/api/workflows/${args.workflowId}?force=true`
+          : `/api/workflows/${args.workflowId}`;
         const data = await callApi(
           internalApiBaseUrl,
           authHeader,
-          `/api/workflows/${args.workflowId}`,
+          path,
           "DELETE"
         );
         return {

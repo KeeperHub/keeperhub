@@ -953,7 +953,7 @@ export async function DELETE(
       return NextResponse.json(
         {
           error:
-            "Workflow has execution history. Delete executions first before deleting the workflow.",
+            "Workflow has execution history. Pass force=true to also delete its execution history in the same call.",
           hasExecutions: true,
         },
         { status: 409 }
@@ -1036,7 +1036,7 @@ export async function DELETE(
       return NextResponse.json(
         {
           error:
-            "Workflow has execution history. Delete executions first before deleting the workflow.",
+            "Workflow has execution history. Pass force=true to also delete its execution history in the same call.",
         },
         { status: 409 }
       );
