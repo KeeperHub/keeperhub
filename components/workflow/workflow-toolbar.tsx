@@ -27,6 +27,7 @@ import { ButtonGroup } from "@/components/ui/button-group";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
 import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
+import { ManualRunInputOverlay } from "@/components/overlays/manual-run-input-overlay";
 import { Switch } from "@/components/ui/switch";
 import { WalletToolbarButton } from "@/components/workflow/wallet-toolbar-button";
 import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
@@ -43,6 +44,7 @@ import type { IntegrationType } from "@/lib/types/integration";
 import { cn } from "@/lib/utils";
 import { evaluateShowWhen, type ShowWhen } from "@/lib/workflow/editor/show-when";
 import { runWorkflowValidationPreflight } from "@/lib/workflow/editor/run-validation";
+import { hasManualRunInputs } from "@/lib/workflow/editor/manual-run-input";
 import { ensureSavedBeforeRun } from "@/lib/workflow/run-preflight";
 import {
   addNodeAtom,
@@ -446,6 +448,7 @@ function getMissingIntegrations(
 
 type ExecuteTestWorkflowParams = {
   workflowId: string;
+  input: Record<string, unknown>;
   nodes: WorkflowNode[];
   updateNodeData: (update: {
     id: string;
@@ -460,6 +463,7 @@ type ExecuteTestWorkflowParams = {
 
 async function executeTestWorkflow({
   workflowId,
+  input,
   nodes,
   updateNodeData,
   pollingIntervalRef,
@@ -485,7 +489,7 @@ async function executeTestWorkflow({
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ input: {} }),
+      body: JSON.stringify({ input }),
     });
 
     if (!response.ok) {
@@ -618,6 +622,7 @@ function useWorkflowHandlers({
   const [isPreflighting, setIsPreflighting] = useState(false);
   const setRunsRefreshTrigger = useSetAtom(runsRefreshTriggerAtom);
   const previewVersion = useAtomValue(previewVersionAtom);
+  const inputSchema = useAtomValue(currentWorkflowInputSchemaAtom);
 
   // Cleanup polling interval on unmount
   useEffect(
@@ -656,7 +661,9 @@ function useWorkflowHandlers({
     await saveWorkflow();
   };
 
-  const startWorkflowExecution = async () => {
+  const startWorkflowExecution = async (
+    input: Record<string, unknown> = {}
+  ) => {
     if (!currentWorkflowId) {
       return;
     }
@@ -672,6 +679,7 @@ function useWorkflowHandlers({
     setIsExecuting(true);
     await executeTestWorkflow({
       workflowId: currentWorkflowId,
+      input,
       nodes,
       updateNodeData,
       pollingIntervalRef,
@@ -681,6 +689,22 @@ function useWorkflowHandlers({
       onExecutionStarted: () => setRunsRefreshTrigger((c) => c + 1),
     });
     // Don't set executing to false here - let polling handle it
+  };
+
+  const collectInputAndStartWorkflow = async () => {
+    const hasManualTrigger = nodes.some(
+      (node) =>
+        node.data.type === "trigger" &&
+        (node.data.config?.triggerType ?? "Manual") === "Manual"
+    );
+    if (hasManualTrigger && hasManualRunInputs(inputSchema)) {
+      openOverlay(ManualRunInputOverlay, {
+        inputSchema: inputSchema ?? {},
+        onSubmit: startWorkflowExecution,
+      });
+      return;
+    }
+    await startWorkflowExecution();
   };
 
   const executeWorkflow = async () => {
@@ -731,7 +755,7 @@ function useWorkflowHandlers({
             onRunAnyway,
           });
         },
-        onStartWorkflowExecution: startWorkflowExecution,
+        onStartWorkflowExecution: collectInputAndStartWorkflow,
         onError: (message) => toast.error(message),
       });
     } finally {
