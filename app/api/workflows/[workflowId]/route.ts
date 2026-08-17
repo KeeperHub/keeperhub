@@ -1035,8 +1035,9 @@ export async function DELETE(
     if (cause && typeof cause === "object" && "code" in cause && cause.code === "23503") {
       return NextResponse.json(
         {
-          error:
-            "Workflow has execution history. Pass force=true to also delete its execution history in the same call.",
+          error: force
+            ? "Workflow has execution history that was inserted concurrently with this delete. Retry the request."
+            : "Workflow has execution history. Pass force=true to also delete its execution history in the same call.",
         },
         { status: 409 }
       );
