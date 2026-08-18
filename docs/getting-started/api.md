@@ -47,6 +47,13 @@ from wallet sign-in instead. See [Headless Onboarding](/api/headless-onboarding)
 Your organization's Turnkey wallet is provisioned on signup. Eligible transactions on supported
 EVM mainnets and testnets may use the organization's monthly sponsored-gas allowance.
 
+To find the address that signs and funds your executions, `GET /api/user/wallet` returns the
+Turnkey wallet for your organization, including `walletAddress` (EVM) and `solanaAddress`
+(Solana). `GET /api/integrations` returns the same signer as a web3 integration with a canonical
+EIP-55 checksummed `address` field, which API consumers should prefer when an address must be
+compared exactly. Both endpoints accept the same `Authorization: Bearer $KEEPERHUB_KEY` header as
+every other agent route. See [User API](/api/user) and [Integrations](/api/integrations).
+
 Sponsorship pays the **network fee**, not the value moved. A workflow that sends 0.1 ETH still
 needs 0.1 ETH in the wallet, and an ERC-20 transfer still needs the token balance. Sponsorship
 also requires the sender to be the wallet rather than a Safe, the transaction to use the public

@@ -75,6 +75,12 @@ four above. Treat anything other than `success` as a failure. Checking only for 
 For a one-off transfer or contract call with no workflow around it, use the direct execution
 tools: `execute_transfer`, `execute_contract_call`, `execute_protocol_action`.
 
+**Know the wallet that signs.** Broadcasts come from your organization's Turnkey wallet, not your
+own. Discover it over REST with `GET /api/user/wallet` (`walletAddress` for EVM, `solanaAddress`
+for Solana) or `GET /api/integrations` (canonical EIP-55 checksummed `address`), or over MCP with
+`list_integrations` and `get_wallet_integration`. Fund that address on the target network before a
+first write. See [User API](/api/user) and [Integrations](/api/integrations).
+
 Always preflight:
 
 1. Call the tool with `simulate: true`.
