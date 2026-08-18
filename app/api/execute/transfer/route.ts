@@ -64,6 +64,23 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
+  // The dry-run flag lives in the request body (`simulate: true`), never in
+  // the query string. A `?simulate=...` parameter is rejected rather than
+  // silently ignored: a caller that believes the query made a dry run could
+  // otherwise broadcast for real. #1959
+  const query = new URL(request.url).searchParams;
+  if (query.has("simulate")) {
+    return NextResponse.json(
+      {
+        error: "unsupported_param",
+        details:
+          '`simulate` is only accepted in the request body (`{"simulate":true}`), not as a query parameter. A query flag is never honoured.',
+        field: "simulate",
+      },
+      { status: HttpStatus.BAD_REQUEST }
+    );
+  }
+
   const simulateFlag = parseSimulateFlag(body);
   if (!simulateFlag.ok) {
     return NextResponse.json(
