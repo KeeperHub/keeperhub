@@ -911,6 +911,9 @@ export async function DELETE(
   request: Request,
   context: { params: Promise<{ workflowId: string }> }
 ) {
+  const { searchParams } = new URL(request.url);
+  const force = searchParams.get("force") === "true";
+
   try {
     const { workflowId } = await context.params;
 
@@ -941,9 +944,6 @@ export async function DELETE(
     }
 
     // Check for existing executions before deleting
-    const { searchParams } = new URL(request.url);
-    const force = searchParams.get("force") === "true";
-
     const hasExecutions = await db.query.workflowExecutions.findFirst({
       where: eq(workflowExecutions.workflowId, workflowId),
       columns: { id: true },
