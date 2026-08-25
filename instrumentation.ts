@@ -117,21 +117,8 @@ export async function register() {
         );
       }
 
-      // Inject the world instead of letting the SDK resolve it. createWorld()
-      // in @workflow/core does `require(process.env.WORKFLOW_TARGET_WORLD)`,
-      // a computed specifier no bundler or file tracer can follow, so the
-      // standalone build had to be told about world-postgres and its whole
-      // dependency tree by hand via outputFileTracingIncludes + .npmrc hoists.
-      // The specifier below is a literal, so the tracer resolves it and pulls
-      // the tree in on its own. setWorld() populates both the world cache and
-      // the build-time handler cache, so getWorld()/getWorldHandlers() calls
-      // elsewhere in the SDK never reach the dynamic require.
-      const [{ createWorld }, { setWorld }] = await Promise.all([
-        import("@workflow/world-postgres"),
-        import("workflow/runtime"),
-      ]);
-      const world = createWorld();
-      setWorld(world);
+      const { getWorld } = await import("workflow/runtime");
+      const world = getWorld();
       if (world.start) {
         await world.start();
         console.log("[Workflow] Postgres World initialized");
