@@ -87,6 +87,20 @@ x-env-service-keys: &env_service_keys
 # .github/workflows/e2e-tests-ephemeral.yml, which starts the same forks
 # on the cache-hit path while these services serve the cache-miss path.
 # Override FOUNDRY_IMAGE to try a different anvil without editing files.
+# Every service that bind-mounts the repository runs as the host user rather
+# than root. A root container writes root-owned files into the mount -
+# node_modules, .next, build output - which the host user then cannot delete:
+# GNOME strands them in ~/.local/share/Trash/expunged/ on empty, and 104 GB of
+# stale checkouts accumulated there before this was noticed (2026-07-08). It
+# also breaks ordinary tooling: a containerised vitest run as the host user
+# fails with EACCES against a root-owned node_modules.
+#
+# HOST_UID/HOST_GID default to 1000, which is correct for a single-user Linux
+# desktop. Set them in .env if your account differs. CI does not start any of
+# these services - it starts only test-anvil, test-localstack and test-redis,
+# none of which mount the repo - so the default is not load-bearing there.
+x-host-user: &host_user "${HOST_UID:-1000}:${HOST_GID:-1000}"
+
 x-foundry-image: &foundry_image ${FOUNDRY_IMAGE:-ghcr.io/foundry-rs/foundry:v1.7.1@sha256:8347b728d5d393dac1c018691b36f506d23b9dcd78341d40ea0fcb11c3a19cdd}
 
 # -----------------------------------------------------------------------------
@@ -173,6 +187,7 @@ services:
 
   # Development app with hot reload
   app-dev:
+    user: *host_user
     # Build the `dev` Dockerfile stage instead of starting from a bare
     # node:alpine and running `pnpm install` at container start. Baking
     # node_modules into the image:
@@ -382,6 +397,7 @@ services:
   # DB-backed secret store. Re-runs are a no-op (duplicate insert is ignored).
   # ===========================================================================
   hmac-seed:
+    user: *host_user
     build:
       context: .
       dockerfile: Dockerfile
@@ -821,6 +837,7 @@ services:
       - test
 
   test-app:
+    user: *host_user
     image: node:22-alpine
     container_name: keeperhub-test-app
     working_dir: /app
@@ -855,6 +872,7 @@ services:
       - test
 
   test-dispatcher:
+    user: *host_user
     image: node:22-alpine
     container_name: keeperhub-test-dispatcher
     working_dir: /app
@@ -878,6 +896,7 @@ services:
       - test
 
   test-executor:
+    user: *host_user
     image: node:22-alpine
     container_name: keeperhub-test-executor
     working_dir: /app
@@ -900,6 +919,7 @@ services:
       - test
 
   test-runner:
+    user: *host_user
     image: node:22-alpine
     container_name: keeperhub-test-runner
     working_dir: /app
