@@ -516,7 +516,9 @@ jobs:
           # dedicated secret, then an Alchemy archive upstream derived from
           # CHAIN_RPC_CONFIG, and only fall back to the public default
           # (read-only-safe) last.
-          ARCHIVE_FROM_CONFIG=""
+          CFG_FALLBACK=""
+          CFG_PRIMARY=""
+          DECODED_CFG=""
           case "${{ matrix.chain_id }}" in
             8453) CFG_KEY="base-mainnet" ;;
             42161) CFG_KEY="arbitrum-mainnet" ;;
@@ -541,11 +543,16 @@ jobs:
               *) DECODED_CFG="$CHAIN_RPC_CONFIG" ;;
             esac
             if [ -n "$DECODED_CFG" ]; then
-              # Prefer the archive-grade fallback, but accept the primary so a
-              # config without a fallback still beats the public default.
-              ARCHIVE_FROM_CONFIG=$(printf '%s' "$DECODED_CFG" | jq -r --arg k "$CFG_KEY" \
-                '.[$k].fallbackRpcUrl // .[$k].primaryRpcUrl // empty' 2>/dev/null) || ARCHIVE_FROM_CONFIG=""
-              if [ -z "$ARCHIVE_FROM_CONFIG" ]; then
+              # Keep both URLs as separate candidates. Collapsing them here
+              # hid the fact that whichever one is listed first can rot: the
+              # comment above still says the fallback is Alchemy, but Base's
+              # fallback is now dRPC, and the job kept selecting it while it
+              # timed out.
+              CFG_FALLBACK=$(printf '%s' "$DECODED_CFG" | jq -r --arg k "$CFG_KEY" \
+                '.[$k].fallbackRpcUrl // empty' 2>/dev/null) || CFG_FALLBACK=""
+              CFG_PRIMARY=$(printf '%s' "$DECODED_CFG" | jq -r --arg k "$CFG_KEY" \
+                '.[$k].primaryRpcUrl // empty' 2>/dev/null) || CFG_PRIMARY=""
+              if [ -z "$CFG_FALLBACK" ] && [ -z "$CFG_PRIMARY" ]; then
                 echo "::warning::CHAIN_RPC_CONFIG parsed but has no RPC URL for ${CFG_KEY}; falling back to the public upstream"
               fi
             fi
@@ -553,20 +560,50 @@ jobs:
             echo "::warning::CHAIN_RPC_CONFIG is empty for this job; the fork will use the public upstream"
           fi
           case "${{ matrix.chain_id }}" in
-            8453) UPSTREAM="${ANVIL_FORK_BASE_URL:-${ARCHIVE_FROM_CONFIG:-${{ matrix.default_upstream }}}}" ;;
-            42161) UPSTREAM="${ANVIL_FORK_ARBITRUM_URL:-${ARCHIVE_FROM_CONFIG:-${{ matrix.default_upstream }}}}" ;;
+            8453)
+              SECRET_URL="$ANVIL_FORK_BASE_URL"
+              # USDC. Its balance mapping is one of the slots fabrication reads.
+              PROBE_ADDR="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" ;;
+            42161)
+              SECRET_URL="$ANVIL_FORK_ARBITRUM_URL"
+              PROBE_ADDR="0xaf88d065e77c8cC2239327C5EDb3A432268e5831" ;;
             *) echo "unknown chain ${{ matrix.chain_id }}"; exit 1 ;;
           esac
-          # Log which source won, host only - these URLs carry provider API
-          # keys. Without this the job gives no way to tell a credentialed
-          # upstream from the flaky public fallback.
-          if [ -n "$ANVIL_FORK_BASE_URL" ] || [ -n "$ANVIL_FORK_ARBITRUM_URL" ]; then
-            UPSTREAM_SOURCE="ANVIL_FORK_*_URL secret"
-          elif [ -n "$ARCHIVE_FROM_CONFIG" ]; then
-            UPSTREAM_SOURCE="CHAIN_RPC_CONFIG"
-          else
-            UPSTREAM_SOURCE="public default (matrix.default_upstream)"
+          # Probe each candidate with eth_getStorageAt - the call the balance
+          # fabrication depends on - and take the first that answers.
+          # Selecting blind is what makes this job flaky: anvil discovers a
+          # dead upstream only mid-test, and surfaces it as "missing revert
+          # data" or "operation timed out", which reads like a contract bug
+          # rather than an infrastructure one.
+          #
+          # What this does and does not guarantee: it rejects an upstream that
+          # is unreachable, erroring, or slow enough to time out - the failure
+          # seen on 2026-08-25, where dRPC timed out fetching USDC storage. It
+          # does NOT certify archive capability, because a read 12 blocks back
+          # is still recent enough for non-archive nodes to serve. Ordering
+          # therefore still matters for archive depth; the probe only stops a
+          # broken upstream from being chosen over a working one.
+          UPSTREAM=""
+          UPSTREAM_SOURCE=""
+          for cand in "secret:$SECRET_URL" "config-fallback:$CFG_FALLBACK" \
+                      "config-primary:$CFG_PRIMARY" "public-default:${{ matrix.default_upstream }}"; do
+            label="${cand%%:*}"
+            url="${cand#*:}"
+            [ -n "$url" ] || continue
+            if curl -sf --max-time 10 -X POST "$url" -H 'Content-Type: application/json' \
+                 --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getStorageAt\",\"params\":[\"$PROBE_ADDR\",\"0x0\",\"latest\"]}" \
+                 2>/dev/null | grep -q '"result"'; then
+              UPSTREAM="$url"
+              UPSTREAM_SOURCE="$label"
+              break
+            fi
+            echo "::warning::fork upstream '${label}' failed the eth_getStorageAt probe; trying the next candidate"
+          done
+          if [ -z "$UPSTREAM" ]; then
+            echo "::error::no fork upstream answered eth_getStorageAt for chain ${{ matrix.chain_id }}; refusing to start a fork that will fail mid-test"
+            exit 1
           fi
+          # Host only - these URLs carry provider API keys.
           echo "fork upstream source: ${UPSTREAM_SOURCE} (host: $(printf '%s' "$UPSTREAM" | sed -E 's#^[a-z]+://([^/]+).*#\1#'))"
           # Pin a few blocks behind head so a node behind a load-balanced
           # public upstream already has the block (bash arithmetic parses the
