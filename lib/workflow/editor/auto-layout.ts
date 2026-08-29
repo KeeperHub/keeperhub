@@ -1,3 +1,5 @@
+import { partitionByBackEdges } from "@/lib/workflow/editor/back-edges";
+
 // Local structural types instead of importing @xyflow/react, so this pure
 // layout helper can also run server-side (e.g. seeding onboarding workflow
 // fixtures). Real @xyflow/react Node/Edge are structural supersets, so editor
@@ -501,12 +503,17 @@ export function computeAutoLayout(
   const realNodes = nodes.filter((n) => n.type !== "add");
   const realNodeIds = new Set(realNodes.map((n) => n.id));
 
-  const forwardEdges = edges.filter(
+  // Loop-back edges are dropped along with the For Each `loop` handle: both
+  // point at a node the layout has already placed, and counting them toward its
+  // in-degree leaves it waiting on an arrival the sweep never makes, so it and
+  // everything behind it fall out of the columns into the disconnected pile.
+  const layoutEdges = edges.filter(
     (e) =>
       realNodeIds.has(e.source) &&
       realNodeIds.has(e.target) &&
       e.sourceHandle !== "loop"
   );
+  const { forwardEdges } = partitionByBackEdges(realNodes, layoutEdges);
 
   const graph = buildGraph(realNodes, forwardEdges);
   const roots = findRoots(realNodes, graph.inDegree);
