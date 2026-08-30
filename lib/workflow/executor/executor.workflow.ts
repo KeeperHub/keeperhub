@@ -12,6 +12,7 @@ import {
   logSystemError,
   logSystemWarn,
   logUserError,
+  logWarn,
 } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
 import {
@@ -79,6 +80,10 @@ import {
   TemplateResolutionError,
   type TemplateResolutionTracker,
 } from "@/lib/workflow/executor/template-resolution";
+import {
+  isMissingReference,
+  makeMissingReference,
+} from "@/lib/workflow/nodes/condition/missing-reference";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 import { safeEvaluateCondition } from "@/lib/workflow/nodes/condition/safe-eval";
 import {
@@ -179,7 +184,7 @@ const ARRAY_ACCESS_PATTERN = /^([^[]+)\[(\d+)\]$/;
  * through plain objects and arrays. Display-only; never fed back into eval.
  */
 function formatConditionValueForDisplay(value: unknown): unknown {
-  if (value === undefined) {
+  if (value === undefined || isMissingReference(value)) {
     return "undefined";
   }
   if (Array.isArray(value)) {
@@ -236,6 +241,51 @@ export type WorkflowExecutionInput = {
 };
 
 /**
+ * Walk a field path that failed to resolve and describe where it broke, in the
+ * same terms the resolver used to throw in. Returned to the caller so a
+ * mistyped reference is reported on the condition's output instead of being
+ * lost when the path resolves to undefined.
+ */
+function describeMissingFieldPath(data: unknown, fieldPath: string): string {
+  let current: unknown = data;
+
+  for (const segment of fieldPath.split(".")) {
+    if (current === null || current === undefined) {
+      return `"${fieldPath}" could not be resolved: "${segment}" was read from ${current === null ? "null" : "undefined"}.`;
+    }
+    if (typeof current !== "object") {
+      return `"${fieldPath}" could not be resolved: "${segment}" was read from a ${typeof current}.`;
+    }
+
+    const container = current as Record<string, unknown>;
+    const arrayMatch = segment.match(ARRAY_ACCESS_PATTERN);
+    if (arrayMatch) {
+      const [, key, indexStr] = arrayMatch;
+      const index = Number.parseInt(indexStr, 10);
+      if (!(key in container)) {
+        return `"${fieldPath}": "${key}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}`;
+      }
+      const arr = container[key];
+      if (!Array.isArray(arr)) {
+        return `"${fieldPath}": "${key}" is not an array. Cannot access [${index}].`;
+      }
+      if (index < 0 || index >= arr.length) {
+        return `"${fieldPath}": "${segment}" is out of range (array length ${arr.length}). Use index 0 to ${arr.length - 1}.`;
+      }
+      current = arr[index];
+      continue;
+    }
+
+    if (!(segment in container)) {
+      return `"${fieldPath}": "${segment}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}`;
+    }
+    current = container[segment];
+  }
+
+  return `"${fieldPath}" could not be resolved.`;
+}
+
+/**
  * Helper to replace template variables in conditions
  */
 function replaceTemplateVariable(
@@ -246,7 +296,8 @@ function replaceTemplateVariable(
   evalContext: Record<string, unknown>,
   varCounter: { value: number },
   nodeMap?: ReadonlyMap<string, unknown>,
-  executionResults?: Record<string, ExecutionResult>
+  executionResults?: Record<string, ExecutionResult>,
+  unresolvedFields?: string[]
 ): string {
   const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
   const output = outputs[sanitizedNodeId];
@@ -277,10 +328,13 @@ function replaceTemplateVariable(
   if (!fieldPath) {
     value = output.data;
   } else if (output.data === null || output.data === undefined) {
-    // KEEP-1284: Throw error when node data is null/undefined
-    throw new Error(
-      `Condition references "${rest}" but the node output data is ${output.data === null ? "null" : "undefined"}. Ensure the referenced node produces valid output.`
-    );
+    // A node that produced no data is the same situation as a field that is
+    // not there: bind undefined so a presence guard can handle it, and report
+    // the path. Only a reference to a node with no output entry at all still
+    // throws, since that is a broken reference rather than an empty result.
+    const detail = `"${rest}": the node output data is ${output.data === null ? "null" : "undefined"}.`;
+    unresolvedFields?.push(detail);
+    value = makeMissingReference(detail);
   } else {
     // Wrapper-aware lookup: matches resolveFromOutputData's three-shape walk
     // (top-level → { data: ... } → { result: ... }) so paths like
@@ -297,53 +351,15 @@ function replaceTemplateVariable(
       return varName;
     }
 
-    const fields = fieldPath.split(".");
-    // biome-ignore lint/suspicious/noExplicitAny: Dynamic data traversal
-    let current: any = output.data;
-
-    for (const segment of fields) {
-      if (current === null || current === undefined) {
-        throw new Error(
-          `Condition references field "${fieldPath}" but it could not be resolved. Check that the field path is correct.`
-        );
-      }
-      if (typeof current !== "object") {
-        throw new Error(
-          `Condition references field "${fieldPath}" but it could not be resolved. Check that the field path is correct.`
-        );
-      }
-
-      const arrayMatch = segment.match(ARRAY_ACCESS_PATTERN);
-      if (arrayMatch) {
-        const [, key, indexStr] = arrayMatch;
-        const index = Number.parseInt(indexStr, 10);
-        if (!(key in current)) {
-          throw new Error(
-            `Condition references field "${fieldPath}" but "${key}" does not exist on the data. Available fields: ${Object.keys(current).join(", ") || "(none)"}`
-          );
-        }
-        const arr = current[key];
-        if (!Array.isArray(arr)) {
-          throw new Error(
-            `Condition references field "${fieldPath}" but "${key}" is not an array. Cannot access [${index}].`
-          );
-        }
-        if (index < 0 || index >= arr.length) {
-          throw new Error(
-            `Condition references field "${fieldPath}" but "${segment}" is out of range (array length ${arr.length}). Use index 0 to ${arr.length - 1}.`
-          );
-        }
-        current = arr[index];
-      } else {
-        if (!(segment in current)) {
-          throw new Error(
-            `Condition references field "${fieldPath}" but "${segment}" does not exist on the data. Available fields: ${Object.keys(current).join(", ") || "(none)"}`
-          );
-        }
-        current = current[segment];
-      }
-    }
-    value = current;
+    // Absent path resolves to undefined rather than throwing. Every reference
+    // in the expression is resolved before the expression runs, so throwing
+    // here also defeats a guard the author wrote for exactly this case: in
+    // `a !== undefined && a == b`, the `&&` never gets to short-circuit
+    // because `a` is resolved before evaluation starts. The path is reported
+    // on the step output so a mistyped field is still visible in the run.
+    const detail = describeMissingFieldPath(output.data, fieldPath);
+    unresolvedFields?.push(detail);
+    value = makeMissingReference(detail);
   }
 
   const varName = `__v${varCounter.value}`;
@@ -358,12 +374,16 @@ type ConditionEvalResult = {
   // The expression with each {{...}} reference replaced by its resolved value,
   // so observability shows what was actually compared (e.g. "0x1..." == "0x6...").
   resolvedExpression?: string;
+  // Field paths that were not present on their node's output and so resolved
+  // to undefined. The branch is still taken on the evaluated result; this
+  // carries the diagnostic so a mistyped path is visible in the run detail.
+  unresolvedFields?: string[];
 };
 
 // Render a resolved value as it should appear inside the resolved expression:
 // strings quoted, numbers/booleans/null bare, undefined as the keyword.
 function renderConditionLiteral(value: unknown): string {
-  if (value === undefined) {
+  if (value === undefined || isMissingReference(value)) {
     return "undefined";
   }
   if (typeof value === "bigint") {
@@ -422,6 +442,7 @@ export function evaluateConditionExpression(
       let transformedExpression = conditionExpression;
       const templatePattern = /\{\{@([^:]+):([^}]+)\}\}/g;
       const varCounter = { value: 0 };
+      const unresolvedFields: string[] = [];
 
       transformedExpression = transformedExpression.replace(
         templatePattern,
@@ -434,7 +455,8 @@ export function evaluateConditionExpression(
             evalContext,
             varCounter,
             nodeMap,
-            executionResults
+            executionResults,
+            unresolvedFields
           );
           // Store the resolved value with a readable key (the display text
           // from the template), preserving the null/undefined distinction so a
@@ -492,7 +514,17 @@ export function evaluateConditionExpression(
       // Only reads the resolved __v/__b values and applies allowlisted
       // operators and methods.
       const result = safeEvaluateCondition(transformedExpression, evalContext);
-      return { result: Boolean(result), resolvedValues, resolvedExpression };
+      if (unresolvedFields.length > 0) {
+        logWarn("[Condition] Reference(s) resolved to undefined", {
+          unresolved: unresolvedFields.join(" | "),
+        });
+      }
+      return {
+        result: Boolean(result),
+        resolvedValues,
+        resolvedExpression,
+        ...(unresolvedFields.length > 0 ? { unresolvedFields } : {}),
+      };
     } catch (error) {
       // KEEP-1284: Re-throw errors about missing data - these should not be silently swallowed
       if (
@@ -648,6 +680,7 @@ async function executeActionStep(input: {
     let resolvedValues: Record<string, unknown> = {};
     let resolvedExpression: string | undefined;
     let evaluationError: string | undefined;
+    let unresolvedFields: string[] | undefined;
 
     try {
       const result = evaluateConditionExpression(
@@ -659,6 +692,7 @@ async function executeActionStep(input: {
       evaluatedCondition = result.result;
       resolvedValues = result.resolvedValues;
       resolvedExpression = result.resolvedExpression;
+      unresolvedFields = result.unresolvedFields;
     } catch (error) {
       evaluationError = error instanceof Error ? error.message : String(error);
     }
@@ -676,6 +710,7 @@ async function executeActionStep(input: {
       values:
         Object.keys(resolvedValues).length > 0 ? resolvedValues : undefined,
       _evaluationError: evaluationError,
+      unresolvedFields,
       _context: context,
     });
   }
@@ -848,8 +883,12 @@ function replaceConfigTemplate(
       : [];
   console.log("[Template] Output data top-level keys:", dataKeys);
 
-  const resolved = resolveFromOutputData(data, fieldPath);
-  if (resolved === undefined || resolved === null) {
+  // Checked walk (the same one the Condition path uses) so a key that exists
+  // but holds null/undefined resolves to that value. Inferring "missing" from a
+  // nullish result conflated the two and failed the action on a path that was
+  // present and legitimately empty.
+  const checked = resolveFromOutputDataChecked(data, fieldPath);
+  if (!checked.found) {
     if (hasNestedDataShape(data)) {
       const innerKeys = Object.keys(data.data as Record<string, unknown>);
       console.log("[Template] Trying inner output.data, keys:", innerKeys);
@@ -866,6 +905,7 @@ function replaceConfigTemplate(
     return "";
   }
 
+  const resolved = checked.value;
   console.log(
     "[Template] Resolved, type:",
     typeof resolved,
@@ -1055,8 +1095,10 @@ function resolveStoredCodeRef(
   const fieldPath = rest.includes(".")
     ? rest.substring(rest.indexOf(".") + 1).trim()
     : "";
-  const resolved = resolveFromOutputData(data, fieldPath);
-  if (resolved === undefined || resolved === null) {
+  // Checked walk: a key that exists holding null/undefined is a real value and
+  // renders as the `null` literal, not an unresolved reference.
+  const checked = resolveFromOutputDataChecked(data, fieldPath);
+  if (!checked.found) {
     recordUnresolved(tracker, {
       token: full,
       reason: "no-path",
@@ -1064,7 +1106,7 @@ function resolveStoredCodeRef(
     });
     return "null";
   }
-  return formatCodeValue(resolved);
+  return formatCodeValue(checked.value);
 }
 
 function resolveDisplayCodeRef(
