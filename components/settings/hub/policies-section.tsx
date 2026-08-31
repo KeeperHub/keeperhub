@@ -25,6 +25,7 @@ import { PolicyDecisions } from "./policies/policy-decisions";
 import { PolicyEditor } from "./policies/policy-editor";
 import { PolicySimulator } from "./policies/policy-simulator";
 import { SectionHeader, SettingsCard } from "./section";
+import { useSettingsContext } from "./settings-context";
 import { FormSkeleton } from "./skeletons";
 
 /**
@@ -135,6 +136,12 @@ export function PoliciesSection(): React.ReactElement {
     remove,
     clearFeedback,
   } = usePolicies();
+  // Reading policy is open to admins, changing it is not. Without this an
+  // admin gets a working editor and finds out the server refuses only when
+  // they press save, which reads as a broken page rather than a rule.
+  const { isOwner, roleLoading } = useSettingsContext();
+  const canEdit = isOwner && !roleLoading;
+
   const [editing, setEditing] = useState<OrganizationPolicySummary | null>(
     null
   );
@@ -183,7 +190,7 @@ export function PoliciesSection(): React.ReactElement {
       <SettingsCard
         action={
           <Button
-            disabled={saving}
+            disabled={saving || !canEdit}
             onClick={() => {
               clearFeedback();
               setComposing(true);
@@ -196,6 +203,14 @@ export function PoliciesSection(): React.ReactElement {
         description="A new policy starts in monitor mode: it records what it would have blocked without blocking anything. Turn enforcement on once the decisions look right."
         title="Policies"
       >
+        {!(loading || roleLoading || canEdit) && (
+          <Alert className="mb-3">
+            <AlertDescription>
+              You can read this organization's policies. Only the owner can
+              change them.
+            </AlertDescription>
+          </Alert>
+        )}
         {loading && <FormSkeleton rows={3} />}
         {!loading && policies.length === 0 && (
           <p className="text-muted-foreground text-sm">
@@ -207,7 +222,7 @@ export function PoliciesSection(): React.ReactElement {
           <div className="flex flex-col gap-2">
             {policies.map((policy) => (
               <PolicyRow
-                disabled={saving}
+                disabled={saving || !canEdit}
                 key={policy.id}
                 onEdit={() => openForEdit(policy)}
                 onRemove={() => remove(policy.id)}
