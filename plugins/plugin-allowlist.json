@@ -15,6 +15,7 @@
     "telegram",
     "tempo",
     "web3",
-    "webhook"
+    "webhook",
+    "pyth"
   ]
 }
