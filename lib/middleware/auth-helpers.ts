@@ -638,14 +638,29 @@ async function withPolicyGate<T>(
   if (!(userId && organizationId)) {
     return context;
   }
-  const { policyRefusalFor } = await import("./policy-gate");
-  const refusal = await policyRefusalFor(request, {
-    organizationId,
-    userId,
-    authMethod: (context as unknown as { authMethod?: AuthMethod }).authMethod,
-    apiKeyId: (context as unknown as { apiKeyId?: string | null }).apiKeyId,
-  });
-  return refusal ?? context;
+  try {
+    const { policyRefusalFor } = await import("./policy-gate");
+    const refusal = await policyRefusalFor(request, {
+      organizationId,
+      userId,
+      authMethod: (context as unknown as { authMethod?: AuthMethod })
+        .authMethod,
+      apiKeyId: (context as unknown as { apiKeyId?: string | null }).apiKeyId,
+    });
+    return refusal ?? context;
+  } catch {
+    // The gate could not reach a decision. Letting this escape makes the route
+    // report a fault of its own, which is both wrong about the cause and, for a
+    // route that catches broadly, a way for an unreachable policy to end up
+    // looking like a server error instead of a refusal. A check that cannot run
+    // refuses, the same as one that runs and refuses.
+    return {
+      error:
+        "This action could not be checked against the policy that governs it",
+      code: "policy_denied",
+      status: 403,
+    };
+  }
 }
 
 export async function getDualAuthContext(
