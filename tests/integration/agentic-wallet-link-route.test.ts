@@ -20,6 +20,12 @@
 import { createHash, createHmac } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Policy has its own suites, including one against a real database. Here it
+// must not stand between the request and the behaviour under test.
+vi.mock("@/lib/middleware/org-context", () => ({
+  getOrgContext: async () => ({ organization: null }),
+}));
+
 const TEST_SECRET =
   "cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe";
 
