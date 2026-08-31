@@ -38,10 +38,21 @@ import {
   users,
 } from "@/lib/db/schema";
 import { policyRefusalFor } from "@/lib/middleware/policy-gate";
-import { POLICY_SCHEMA_VERSION } from "@/lib/policy";
+import {
+  Capability,
+  FactProvenance,
+  FactState,
+  POLICY_SCHEMA_VERSION,
+  PolicyCheckpoint,
+  PolicyOutcome,
+  PolicyRole,
+  PrincipalKind,
+} from "@/lib/policy";
 import { enforceAgenticWalletPolicy } from "@/lib/policy/agentic-wallet";
 import { enforceDirectNodePolicy } from "@/lib/policy/direct-execution";
+import { enforcePolicy } from "@/lib/policy/guard";
 import { invalidateAllPolicies } from "@/lib/policy/store";
+import { triggerTypeOf } from "@/lib/workflow/trigger-type";
 import { signTempoTx } from "@/plugins/tempo/steps/tempo-tx-core";
 
 const shouldSkip = process.env.SKIP_INFRA_TESTS === "true";
@@ -50,6 +61,9 @@ const id = () => crypto.randomBytes(11).toString("base64url");
 
 const BLOCKED = "0x1111111111111111111111111111111111111111";
 const PERMITTED = "0x2222222222222222222222222222222222222222";
+// Its own target, so the trigger rule below governs only these reads and does
+// not silently claim every read the other cases make.
+const TRIGGER_TARGET = "0x3333333333333333333333333333333333333333";
 const TEMPO_CHAIN = 4217;
 
 describe.skipIf(shouldSkip)("policy, wired", () => {
@@ -124,6 +138,29 @@ describe.skipIf(shouldSkip)("policy, wired", () => {
               effect: "deny",
               capability: ["asset.transfer.token"],
               condition: { counterparty: { in: [BLOCKED] } },
+            },
+          ],
+        },
+      },
+      {
+        id: id(),
+        organizationId: orgId,
+        name: "Reads only on manual runs",
+        enabled: true,
+        enforcement: "enforce",
+        createdBy: userId,
+        document: {
+          schemaVersion: POLICY_SCHEMA_VERSION,
+          name: "Reads only on manual runs",
+          enforcement: "enforce",
+          manages: [`kh:chain/*/contract/${TRIGGER_TARGET}/**`],
+          statements: [
+            {
+              sid: "manual-runs-only",
+              effect: "allow",
+              capability: ["contract.read"],
+              resource: [`kh:chain/*/contract/${TRIGGER_TARGET}/fn/*`],
+              condition: { triggerType: { eq: "manual" } },
             },
           ],
         },
@@ -271,6 +308,89 @@ describe.skipIf(shouldSkip)("policy, wired", () => {
         config: { network: "8453", contractAddress: PERMITTED },
       });
       expect(refusal).toBeNull();
+    });
+  });
+
+  describe("a rule scoped to how the run started", () => {
+    const UNKNOWN = { state: FactState.UNKNOWN } as const;
+    const known = (value: unknown) =>
+      ({
+        state: FactState.KNOWN,
+        value,
+        provenance: FactProvenance.AUTHORITATIVE,
+      }) as const;
+
+    /** The nodes a workflow would carry for a given trigger. */
+    const nodesFor = (declared: string) => [
+      { data: { type: "trigger", config: { triggerType: declared } } },
+      {
+        data: { type: "action", config: { actionType: "web3/read-contract" } },
+      },
+    ];
+
+    async function outcomeFor(declared: string): Promise<PolicyOutcome> {
+      // The real mapper, so this covers nodes to trigger fact to stored policy
+      // to decision rather than asserting the fact by hand.
+      const resolved = triggerTypeOf(nodesFor(declared));
+      const verdict = await enforcePolicy({
+        principal: {
+          kind: PrincipalKind.MEMBER,
+          userId,
+          organizationId: orgId,
+          role: PolicyRole.MEMBER,
+        },
+        organizationId: orgId,
+        capability: Capability.CONTRACT_READ,
+        checkpoint: PolicyCheckpoint.NODE,
+        facts: {
+          capability: Capability.CONTRACT_READ,
+          resource: known(
+            `kh:chain/1/contract/${TRIGGER_TARGET}/fn/0x18160ddd`
+          ),
+          chainId: known(1),
+          contractAddress: UNKNOWN,
+          selector: UNKNOWN,
+          protocolSlug: UNKNOWN,
+          assets: UNKNOWN,
+          counterparties: UNKNOWN,
+          nativeValueWei: UNKNOWN,
+          usdValue: UNKNOWN,
+          unbounded: UNKNOWN,
+          gasPriceGwei: UNKNOWN,
+          gasLimit: UNKNOWN,
+          signerMode: UNKNOWN,
+          triggerType: resolved ? known(resolved) : UNKNOWN,
+          workflowId: UNKNOWN,
+          workflowTags: UNKNOWN,
+          projectId: UNKNOWN,
+          sourceIp: UNKNOWN,
+          httpHost: UNKNOWN,
+          httpUrl: UNKNOWN,
+          httpMethod: UNKNOWN,
+          resourceId: UNKNOWN,
+        },
+      } as never);
+      return verdict.decision.outcome;
+    }
+
+    it("permits the run a person started", async () => {
+      expect(await outcomeFor("Manual")).toBe(PolicyOutcome.ALLOW);
+    });
+
+    it.each([
+      "Schedule",
+      "Webhook",
+      "Event",
+      "Block",
+      "Transfer",
+    ])("refuses a %s run", async (declared) => {
+      // Block and Transfer are the two that used to report themselves as
+      // manual, so a rule keeping automation out let them straight through.
+      expect(await outcomeFor(declared)).toBe(PolicyOutcome.DENY);
+    });
+
+    it("refuses a trigger nothing recognises rather than assuming a person", async () => {
+      expect(await outcomeFor("SomethingAddedLater")).toBe(PolicyOutcome.DENY);
     });
   });
 
