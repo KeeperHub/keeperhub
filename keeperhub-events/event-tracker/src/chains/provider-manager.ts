@@ -125,6 +125,22 @@ export const GETLOGS_MAX_BLOCK_SPAN = 25;
  * rather than silent.
  */
 export const GETLOGS_MAX_CATCHUP_BLOCKS = 5_000;
+/**
+ * How far back the mark may be rewound when a height is delivered a second
+ * time.
+ *
+ * `newHeads` re-announcing a height the mark has already passed means the
+ * chain reorganised: the logs at that height may not be the ones already
+ * dispatched. Rewinding makes the next drain re-cover the range, and the
+ * dedup layer drops whatever is unchanged - which is the behaviour dedup was
+ * built for, its own header naming reorg replay alongside reconnects and pod
+ * restarts.
+ *
+ * Bounded because a rewind is re-fetching: a stray very old height must not be
+ * able to schedule thousands of blocks of re-reads. Anything deeper than this
+ * is a chain failure rather than an ordinary reorg, and is logged instead.
+ */
+export const REORG_REWIND_MAX_BLOCKS = 32;
 /** EWMA smoothing factor for the inter-block interval. */
 const BLOCK_INTERVAL_EWMA_ALPHA = 0.2;
 /**
@@ -438,6 +454,22 @@ interface ChainEntry {
    */
   draining: boolean;
   /**
+   * The `to` of the range the in-flight drain is serving, or null when no
+   * drain is in flight. Its `eth_getLogs` was issued before anything
+   * announced since, so every height up to here is already spoken for by a
+   * request that cannot contain a later reorg - which is what makes it, and
+   * not the mark alone, the boundary `rewindForReorg` measures against.
+   */
+  drainingTo: number | null;
+  /**
+   * Lowest `blockNumber - 1` a re-announcement has asked the mark to rewind
+   * to, or null when nothing is pending. Recorded rather than applied on the
+   * spot: a drain in flight commits its own `to` when it finishes, so a mark
+   * moved backwards underneath it is overwritten and the re-fetch is lost.
+   * The next drain applies this, taking whichever of the two is lower.
+   */
+  pendingRewindTo: number | null;
+  /**
    * Consecutive `eth_getLogs` timeouts on the current connection, reset by
    * any range that returns and by every fresh connection. A socket that
    * answers heartbeat pings but never answers `eth_getLogs` passes every
@@ -482,6 +514,12 @@ interface ChainStats {
   blocksCovered: number;
   ranges: number;
   logsDispatched: number;
+  /** Blocks abandoned by the catch-up bound rather than fetched. */
+  blocksSkipped: number;
+  /** Times a re-announced height rewound the mark. */
+  reorgRewinds: number;
+  /** Times a re-announced height was too deep to rewind to, so was dropped. */
+  reorgRewindsRefused: number;
   getLogsCallsTotal: number;
 }
 
@@ -492,6 +530,9 @@ function newChainStats(): ChainStats {
     blocksCovered: 0,
     ranges: 0,
     logsDispatched: 0,
+    blocksSkipped: 0,
+    reorgRewinds: 0,
+    reorgRewindsRefused: 0,
     getLogsCallsTotal: 0,
   };
 }
@@ -858,6 +899,8 @@ export class ChainProviderManager {
       lastRequestAt: null,
       catchUpTimer: null,
       draining: false,
+      drainingTo: null,
+      pendingRewindTo: null,
       consecutiveGetLogsTimeouts: 0,
       lastCreateError: null,
       disconnectHandlers: new Set(),
@@ -1053,6 +1096,8 @@ export class ChainProviderManager {
       entry.lastBlockAt = now;
       if (entry.headBlock === null || blockNumber > entry.headBlock) {
         entry.headBlock = blockNumber;
+      } else {
+        this.rewindForReorg(entry, blockNumber);
       }
       await this.drain(entry);
     };
@@ -1184,6 +1229,19 @@ export class ChainProviderManager {
       entry.lastProcessedBlock = entry.headBlock - 1;
     }
 
+    // Apply anything a re-announcement asked for while the mark was held by a
+    // drain. Taken as a minimum, not an assignment: the drain that finished
+    // in the meantime may have advanced the mark past the rewind, and a
+    // rewind that is already behind the mark must not push it forward.
+    const pendingRewindTo = entry.pendingRewindTo;
+    if (pendingRewindTo !== null) {
+      entry.pendingRewindTo = null;
+      entry.lastProcessedBlock = Math.min(
+        entry.lastProcessedBlock,
+        pendingRewindTo,
+      );
+    }
+
     const behind = entry.headBlock - entry.lastProcessedBlock;
     if (behind <= 0) {
       return;
@@ -1192,6 +1250,10 @@ export class ChainProviderManager {
       logger.warn(
         `[ChainProviderManager] chain=${entry.chainId} ${behind} blocks behind head; skipping to ${entry.headBlock} without fetching logs for the gap`,
       );
+      // Counted, not only logged: a chain that repeatedly falls behind and
+      // skips is otherwise indistinguishable in aggregation from one keeping
+      // up, and skipping is the one path here that loses events on purpose.
+      entry.stats.blocksSkipped += behind - 1;
       entry.lastProcessedBlock = entry.headBlock - 1;
     }
 
@@ -1219,6 +1281,7 @@ export class ChainProviderManager {
     // cannot hold `draining`. Dispatch is not bounded, so a handler that never
     // settles still can.
     entry.draining = true;
+    entry.drainingTo = to;
     try {
       entry.lastRequestAt = Date.now();
       // The mark advances only on success. A failed range stays owed, so the
@@ -1228,17 +1291,74 @@ export class ChainProviderManager {
       }
     } finally {
       entry.draining = false;
+      entry.drainingTo = null;
     }
 
     // More owed than one request could take, the head moved while the request
-    // was in flight, or the range failed and is still owed.
+    // was in flight, the range failed and is still owed, or a re-announcement
+    // arrived during the request. The last of those is why the mark alone is
+    // not the condition: this drain just advanced it to `to`, so a rewind
+    // recorded underneath it would otherwise wait for the next block - which
+    // on a chain that has gone quiet may be a long way off.
     if (
       entry.headBlock !== null &&
       entry.lastProcessedBlock !== null &&
-      entry.lastProcessedBlock < entry.headBlock
+      (entry.lastProcessedBlock < entry.headBlock ||
+        entry.pendingRewindTo !== null)
     ) {
       this.armCatchUp(entry, GETLOGS_MIN_INTERVAL_MS);
     }
+  }
+
+  /**
+   * Re-announcement of a height already covered: the chain reorganised and
+   * the logs dispatched for that height may no longer be the ones on chain.
+   * Record a rewind so the next drain re-covers from there.
+   *
+   * Serving each height once and never again would silently drop the replaced
+   * logs - a per-block loop re-fetched every push, and dedup existed to
+   * suppress the duplicates that produced. Re-covering restores that, with the
+   * duplicates still going to dedup and the depth bounded.
+   *
+   * "Covered" is the mark *or* the end of the range a drain is part way
+   * through, whichever is higher. A height inside an in-flight range is not
+   * owed in any useful sense: that request went out before this announcement,
+   * so it carries the pre-reorg logs, and its commit moves the mark past the
+   * height without anything ever fetching the replacement.
+   */
+  private rewindForReorg(entry: ChainEntry, blockNumber: number): void {
+    const mark = entry.lastProcessedBlock;
+    if (mark === null) {
+      return;
+    }
+    const covered =
+      entry.drainingTo === null ? mark : Math.max(mark, entry.drainingTo);
+    if (blockNumber > covered) {
+      // Nothing has requested it yet, so the next drain fetches it post-reorg
+      // on its own.
+      return;
+    }
+    const depth = covered - blockNumber + 1;
+    if (depth > REORG_REWIND_MAX_BLOCKS) {
+      // Counted for the same reason as `blocksSkipped`: this is the other
+      // path that drops events on purpose, and a chain sitting in it - an
+      // upstream announcing heights far below what has been served - would
+      // otherwise be indistinguishable in aggregation from a healthy one.
+      // Logged once per stats interval rather than per block, since that
+      // chain re-announces on every block and the counter carries the rest.
+      entry.stats.reorgRewindsRefused += 1;
+      if (entry.stats.reorgRewindsRefused === 1) {
+        logger.warn(
+          `[ChainProviderManager] chain=${entry.chainId} block=${blockNumber} re-announced ${depth} blocks below the mark; deeper than REORG_REWIND_MAX_BLOCKS, not re-fetching`,
+        );
+      }
+      return;
+    }
+    entry.stats.reorgRewinds += 1;
+    entry.pendingRewindTo =
+      entry.pendingRewindTo === null
+        ? blockNumber - 1
+        : Math.min(entry.pendingRewindTo, blockNumber - 1);
   }
 
   /** Schedule the next drain. Idempotent: an armed timer is left alone. */
@@ -1508,6 +1628,15 @@ export class ChainProviderManager {
       // fresh error on the new provider gets silently dropped.
       entry.reconnectPromise = null;
       entry.isReconnecting = false;
+      // Only now can a drain run. Anything owed from before the drop still is
+      // - `lastProcessedBlock` survives a reconnect - so schedule the
+      // catch-up here rather than inside `reconnect()`, where the flag is
+      // still set. Scheduled rather than awaited: a drain dispatches to
+      // handlers that may each sleep seconds of jitter, and awaiting it would
+      // hold the chain reconnecting long after the socket was healthy.
+      if (!this.isDestroyed && entry.provider && entry.subscribers.size > 0) {
+        this.armCatchUp(entry, GETLOGS_MIN_INTERVAL_MS);
+      }
     }
   }
 
@@ -1579,13 +1708,10 @@ export class ChainProviderManager {
     if (entry.subscribers.size > 0) {
       this.attachBlockListener(entry);
       this.startHeartbeat(entry);
-      // Schedule rather than await. Anything owed from before the drop is
-      // still owed - `lastProcessedBlock` survived - and a drain dispatches
-      // logs to handlers that may each sleep seconds of jitter, so awaiting
-      // it here would hold `isReconnecting` true long after the connection
-      // was healthy, reporting the chain degraded and blocking every
-      // `getOrCreateProvider` behind it.
-      this.armCatchUp(entry, GETLOGS_MIN_INTERVAL_MS);
+      // The catch-up for anything owed from before the drop is armed by
+      // `reconnectLoop` once `isReconnecting` clears, not here: `drain`
+      // refuses to run while that flag is set, so a timer armed at this point
+      // would fire into a guard and the work would be dropped.
     }
   }
 
@@ -1750,7 +1876,12 @@ export class ChainProviderManager {
   private logStats(): void {
     for (const entry of this.chains.values()) {
       const stats = entry.stats;
-      if (stats.getLogsCalls === 0 && stats.getLogsErrors === 0) {
+      if (
+        stats.getLogsCalls === 0 &&
+        stats.getLogsErrors === 0 &&
+        stats.blocksSkipped === 0 &&
+        stats.reorgRewindsRefused === 0
+      ) {
         continue;
       }
       const interval =
@@ -1762,13 +1893,16 @@ export class ChainProviderManager {
           ? Math.max(0, entry.headBlock - entry.lastProcessedBlock)
           : 0;
       logger.log(
-        `[ChainProviderManager] getlogs-stats chain=${entry.chainId} blockIntervalMs=${interval} minRequestIntervalMs=${GETLOGS_MIN_INTERVAL_MS} statsIntervalMs=${STATS_LOG_INTERVAL_MS} getLogsCalls=${stats.getLogsCalls} getLogsErrors=${stats.getLogsErrors} blocksCovered=${stats.blocksCovered} ranges=${stats.ranges} blocksBehindHead=${behind} logsDispatched=${stats.logsDispatched} getLogsCallsTotal=${stats.getLogsCallsTotal}`,
+        `[ChainProviderManager] getlogs-stats chain=${entry.chainId} blockIntervalMs=${interval} minRequestIntervalMs=${GETLOGS_MIN_INTERVAL_MS} statsIntervalMs=${STATS_LOG_INTERVAL_MS} getLogsCalls=${stats.getLogsCalls} getLogsErrors=${stats.getLogsErrors} blocksCovered=${stats.blocksCovered} ranges=${stats.ranges} blocksSkipped=${stats.blocksSkipped} reorgRewinds=${stats.reorgRewinds} reorgRewindsRefused=${stats.reorgRewindsRefused} blocksBehindHead=${behind} logsDispatched=${stats.logsDispatched} getLogsCallsTotal=${stats.getLogsCallsTotal}`,
       );
       stats.getLogsCalls = 0;
       stats.getLogsErrors = 0;
       stats.blocksCovered = 0;
       stats.ranges = 0;
       stats.logsDispatched = 0;
+      stats.blocksSkipped = 0;
+      stats.reorgRewinds = 0;
+      stats.reorgRewindsRefused = 0;
     }
   }
 

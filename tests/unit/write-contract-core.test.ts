@@ -75,9 +75,16 @@ vi.mock("@/lib/utils/id", () => ({
   generateId: () => mockGenerateId(),
 }));
 
-vi.mock("@/lib/utils", async () =>
-  (await import("../mocks/step-mocks")).utilsGetErrorMessage()
-);
+// Spread the real module so applyFailOnError's resolveFailOnError and
+// redactAllUrls run for real; only getErrorMessage is stubbed, as before.
+vi.mock("@/lib/utils", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/utils")>("@/lib/utils");
+  return {
+    ...actual,
+    ...(await import("../mocks/step-mocks")).utilsGetErrorMessage(),
+  };
+});
 
 vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: vi.fn().mockReturnValue(1),
@@ -133,6 +140,7 @@ vi.mock("@/lib/web3/chain-adapter", () => ({
 
 vi.mock("@/lib/web3/decode-revert-error", () => ({
   formatContractError: vi.fn().mockReturnValue("contract error"),
+  classifyRevert: vi.fn().mockReturnValue({ kind: "unknown" }),
 }));
 
 vi.mock("@/lib/web3/gas-defaults", () => ({
@@ -211,11 +219,14 @@ import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { RpcRelayTransportError } from "@/lib/rpc/providers/transport-error";
 import { parsePriorityFeeGwei } from "@/lib/web3/gas-defaults";
+import { OnChainPendingError } from "@/lib/web3/onchain-revert";
 // Import mocks for assertion
 import { initializeWalletSigner } from "@/lib/web3/wallet-helpers";
-
 // Import SUT after all mocks
-import { writeContractCore } from "@/plugins/web3/steps/write-contract-core";
+import {
+  applyFailOnError,
+  writeContractCore,
+} from "@/plugins/web3/steps/write-contract-core";
 
 const VALID_ABI = JSON.stringify([
   {
@@ -534,5 +545,80 @@ describe("writeContractCore RPC resolution failure", () => {
     if (!result.success) {
       expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
     }
+  });
+});
+
+describe("writeContractCore broadcast with an unreadable receipt", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+  });
+
+  it("classifies the send as SYSTEM so failOnError cannot soften it", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new OnChainPendingError({
+        message: "Transaction sent but receipt not available",
+        transactionHash: "0xpending",
+      })
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.transactionHash).toBe("0xpending");
+      expect(result.errorClass).toBe(ExecutionErrorType.SYSTEM);
+    }
+
+    // Without a class, applyFailOnError reports the step as a success while
+    // the transaction may still mine: the node continues as though the write
+    // never happened, and the operator never learns otherwise.
+    const softened = applyFailOnError(result, false);
+    expect(softened.success).toBe(false);
+    expect(softened).toEqual(result);
+  });
+
+  it("keeps a relay-determined class rather than overwriting it with SYSTEM", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new RpcRelayTransportError("RPC failed on primary endpoint: timeout")
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+    }
+  });
+
+  it("leaves an ordinary send failure unclassified and softenable", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(new Error("nonce too low"));
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBeUndefined();
+    }
+    expect(applyFailOnError(result, false).success).toBe(true);
   });
 });

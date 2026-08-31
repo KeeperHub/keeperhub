@@ -267,7 +267,24 @@ async function handleResult(
   if (!success) {
     const errorMsg =
       output && "error" in output ? String(output.error) : "Execution failed";
-    await failExecution(executionId, errorMsg);
+    // A failure that already reached the chain carries its hash, so the
+    // execution records which transaction failed and what the chain said about
+    // it. failExecution decides from that receipt whether this is terminal or
+    // a broadcast that may still land, and its verdict is authoritative for
+    // the status this reports, in place of the hardcoded "failed" it replaces.
+    // The transport code stays UNPROCESSABLE_ENTITY either way, grouping an
+    // unconfirmed transaction with a failed one exactly as the verified-success
+    // branch below already does.
+    const transactionHash =
+      output && typeof output.transactionHash === "string"
+        ? output.transactionHash
+        : undefined;
+    const chainId =
+      output && typeof output.chainId === "number" ? output.chainId : undefined;
+    const settled = await failExecution(executionId, errorMsg, {
+      transactionHash,
+      chainId,
+    });
     // The step ran (possibly broadcasting): finalize as failed so a retry
     // replays the failure instead of re-executing.
     return recordIdempotentResponse(
@@ -275,8 +292,9 @@ async function handleResult(
       NextResponse.json(
         {
           executionId,
-          status: "failed",
+          status: settled.status,
           error: errorMsg,
+          ...(transactionHash ? { transactionHash } : {}),
           ...(retryCount > 0 ? { retryCount } : {}),
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }

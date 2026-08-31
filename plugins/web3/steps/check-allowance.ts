@@ -2,6 +2,7 @@ import "server-only";
 
 import { ethers } from "ethers";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
+import { rawToUi, resolveForDisplay } from "@/lib/web3/ui-multiplier";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
@@ -101,6 +102,12 @@ async function stepHandler(
   const adapter = getChainAdapter(chainId);
 
   try {
+    const uiMultiplier = await resolveForDisplay(
+      (op) => adapter.executeWithFailover(rpcManager, op),
+      chainId,
+      tokenAddress
+    );
+
     const [allowanceRaw, decimals, symbol] = await adapter.executeWithFailover(
       rpcManager,
       (provider) => {
@@ -114,7 +121,21 @@ async function stepHandler(
     );
 
     const decimalsNum = Number(decimals);
-    const allowance = ethers.formatUnits(allowanceRaw, decimalsNum);
+    // Reported in the same units the approve step accepts, so a user can
+    // compare what they granted against what is left without converting.
+    // `allowanceRaw` keeps the on-chain value, which is what transferFrom
+    // actually spends.
+    //
+    // MaxUint256 is left alone. Approve treats "max" as a sentinel rather than
+    // a quantity, so scaling it here would report a number that is not an
+    // allowance and that no longer equals the value a workflow compares
+    // against when deciding whether to re-approve.
+    const allowance = ethers.formatUnits(
+      allowanceRaw === ethers.MaxUint256
+        ? allowanceRaw
+        : rawToUi(allowanceRaw, uiMultiplier),
+      decimalsNum
+    );
 
     return {
       success: true,

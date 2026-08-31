@@ -550,13 +550,7 @@ const DEFAULT_CHAINS: NewChain[] = [
       type: "fallback",
     }),
     isTestnet: getChainConfigValue("robinhood-mainnet", "isTestnet", false),
-    // Unlike every other chain here, the hardcoded default is false rather than
-    // true. production.json disables this chain explicitly, so the default is
-    // only reached where CHAIN_RPC_CONFIG is absent or fails to parse -- and on
-    // a parse failure the seed falls back to hardcoded defaults throughout,
-    // which with a `true` default would silently enable mainnet in production.
-    // Flip this to true alongside the production.json entry, not before.
-    isEnabled: getChainConfigValue("robinhood-mainnet", "isEnabled", false),
+    isEnabled: getChainConfigValue("robinhood-mainnet", "isEnabled", true),
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "robinhood-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "robinhood-mainnet" }),

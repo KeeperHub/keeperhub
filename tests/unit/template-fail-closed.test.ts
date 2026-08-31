@@ -162,6 +162,79 @@ describe("processCodeTemplates strict integration", () => {
   });
 });
 
+describe("present-but-empty field paths resolve instead of failing", () => {
+  const nullableOutputs = {
+    trigger: {
+      label: "Trigger",
+      data: { ts: null, note: undefined, nested: { inner: null } },
+    },
+  };
+
+  it("resolves a key that exists holding null to the empty string", () => {
+    const tracker = createTracker();
+    const result = processTemplates(
+      { ts: "{{@trigger:Trigger.ts}}" },
+      nullableOutputs,
+      tracker
+    );
+    expect(result.ts).toBe("");
+    expect(tracker.unresolved).toHaveLength(0);
+  });
+
+  it("resolves a key that exists holding undefined", () => {
+    const tracker = createTracker();
+    const result = processTemplates(
+      { note: "{{@trigger:Trigger.note}}" },
+      nullableOutputs,
+      tracker
+    );
+    expect(result.note).toBe("");
+    expect(tracker.unresolved).toHaveLength(0);
+  });
+
+  it("resolves a nested key that exists holding null", () => {
+    const tracker = createTracker();
+    const result = processTemplates(
+      { inner: "{{@trigger:Trigger.nested.inner}}" },
+      nullableOutputs,
+      tracker
+    );
+    expect(result.inner).toBe("");
+    expect(tracker.unresolved).toHaveLength(0);
+  });
+
+  it("still records no-path when the key is genuinely absent", () => {
+    const tracker = createTracker();
+    processTemplates(
+      { missing: "{{@trigger:Trigger.notAKey}}" },
+      nullableOutputs,
+      tracker
+    );
+    expect(tracker.unresolved[0]?.reason).toBe("no-path");
+  });
+
+  it("renders a present null as the null literal in code nodes", () => {
+    const tracker = createTracker();
+    const out = processCodeTemplates(
+      "const x = {{@trigger:Trigger.ts}};",
+      nullableOutputs,
+      tracker
+    );
+    expect(out).toBe("const x = null;");
+    expect(tracker.unresolved).toHaveLength(0);
+  });
+
+  it("still records no-path in code nodes when the key is absent", () => {
+    const tracker = createTracker();
+    processCodeTemplates(
+      "const x = {{@trigger:Trigger.notAKey}};",
+      nullableOutputs,
+      tracker
+    );
+    expect(tracker.unresolved[0]?.reason).toBe("no-path");
+  });
+});
+
 describe("processCodeTemplates: refs in comments are documentation, not deps", () => {
   const codeOutputs = {
     src: { label: "Src", data: { value: 42, addr: "0xabc" } },

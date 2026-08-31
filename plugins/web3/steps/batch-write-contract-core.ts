@@ -48,7 +48,11 @@ import {
   parsePriorityFeeGwei,
   resolveGasLimitOverrides,
 } from "@/lib/web3/gas-defaults";
-import { isOnChainRevertError, revertedTransactionHash } from "@/lib/web3/onchain-revert";
+import {
+  broadcastTransactionHash,
+  isOnChainPendingError,
+  isOnChainRevertError,
+} from "@/lib/web3/onchain-revert";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import type { TransactionContext } from "@/lib/web3/transaction-manager";
 import { withNonceSession } from "@/lib/web3/transaction-manager";
@@ -726,13 +730,18 @@ export async function batchWriteContractCore(
       };
     } catch (error) {
       const rejection = classifyRevert(error, revertIface);
-      const errorClass = rpcRelayErrorClass(error);
-      const revertedHash = revertedTransactionHash(error);
+      // Set so a failOnError=false node cannot soften an unresolved in-flight
+      // send into success. A relay-determined class is the more specific
+      // answer, so it wins.
+      const errorClass =
+        rpcRelayErrorClass(error) ??
+        (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
+      const broadcastHash = broadcastTransactionHash(error);
       const base = {
         success: false as const,
         error: formatContractError(error, revertIface),
         ...(errorClass ? { errorClass } : {}),
-        ...(revertedHash ? { transactionHash: revertedHash, chainId } : {}),
+        ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
       };
       // aggregate3 is atomic, so a confirmed on-chain revert (receipt status

@@ -12,14 +12,16 @@
  * targets past its seed and silently terminated, leaving the Condition node
  * absent from the execution trace.
  *
- * The map choice now lives in one place: `resolveNestedForEachEdgeMap`, which
- * takes both candidate maps and returns the one the nested scan must use.
- * These tests reproduce the recursive handoff around it — run
- * `identifyLoopBody` on the outer loop, feed its real `bodyEdgesBySource` and
- * the global map to the resolver, then run `identifyLoopBody` on the inner
- * loop with whatever came back. Return the outer map from the resolver and
- * the inner-body assertions below fail, which is the guard the earlier
- * direct-call tests did not provide.
+ * The executor does not call `resolveNestedForEachEdgeMap`; it passes the
+ * workflow-global map to `identifyLoopBody` directly. So these tests cover
+ * `identifyLoopBody`, not the executor: they pin its behaviour on the 2-level
+ * and 3-level topologies below, running each nested scan on the map the
+ * resolver returns so the map under test is named explicitly. The depth-3
+ * root-cause case demonstrates the mechanism directly: it chains each level's
+ * own partial map and asserts the depth-3 body is lost.
+ *
+ * Not covered here: no test drives `executeWorkflow`, so the executor's own
+ * map choice at its `identifyLoopBody` call is outside this file.
  */
 import { describe, expect, it, vi } from "vitest";
 

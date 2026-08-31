@@ -13,6 +13,7 @@ import {
   logSystemError,
   logSystemWarn,
   logUserError,
+  logWarn,
 } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
 import {
@@ -84,6 +85,10 @@ import {
   TemplateResolutionError,
   type TemplateResolutionTracker,
 } from "@/lib/workflow/executor/template-resolution";
+import {
+  isMissingReference,
+  makeMissingReference,
+} from "@/lib/workflow/nodes/condition/missing-reference";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 import { safeEvaluateCondition } from "@/lib/workflow/nodes/condition/safe-eval";
 import {
@@ -185,7 +190,7 @@ const ARRAY_ACCESS_PATTERN = /^([^[]+)\[(\d+)\]$/;
  * through plain objects and arrays. Display-only; never fed back into eval.
  */
 function formatConditionValueForDisplay(value: unknown): unknown {
-  if (value === undefined) {
+  if (value === undefined || isMissingReference(value)) {
     return "undefined";
   }
   if (Array.isArray(value)) {
@@ -242,6 +247,51 @@ export type WorkflowExecutionInput = {
 };
 
 /**
+ * Walk a field path that failed to resolve and describe where it broke, in the
+ * same terms the resolver used to throw in. Returned to the caller so a
+ * mistyped reference is reported on the condition's output instead of being
+ * lost when the path resolves to undefined.
+ */
+function describeMissingFieldPath(data: unknown, fieldPath: string): string {
+  let current: unknown = data;
+
+  for (const segment of fieldPath.split(".")) {
+    if (current === null || current === undefined) {
+      return `"${fieldPath}" could not be resolved: "${segment}" was read from ${current === null ? "null" : "undefined"}.`;
+    }
+    if (typeof current !== "object") {
+      return `"${fieldPath}" could not be resolved: "${segment}" was read from a ${typeof current}.`;
+    }
+
+    const container = current as Record<string, unknown>;
+    const arrayMatch = segment.match(ARRAY_ACCESS_PATTERN);
+    if (arrayMatch) {
+      const [, key, indexStr] = arrayMatch;
+      const index = Number.parseInt(indexStr, 10);
+      if (!(key in container)) {
+        return `"${fieldPath}": "${key}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}.`;
+      }
+      const arr = container[key];
+      if (!Array.isArray(arr)) {
+        return `"${fieldPath}": "${key}" is not an array. Cannot access [${index}].`;
+      }
+      if (index < 0 || index >= arr.length) {
+        return `"${fieldPath}": "${segment}" is out of range (array length ${arr.length}). Use index 0 to ${arr.length - 1}.`;
+      }
+      current = arr[index];
+      continue;
+    }
+
+    if (!(segment in container)) {
+      return `"${fieldPath}": "${segment}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}.`;
+    }
+    current = container[segment];
+  }
+
+  return `"${fieldPath}" could not be resolved.`;
+}
+
+/**
  * Helper to replace template variables in conditions
  */
 function replaceTemplateVariable(
@@ -252,7 +302,8 @@ function replaceTemplateVariable(
   evalContext: Record<string, unknown>,
   varCounter: { value: number },
   nodeMap?: ReadonlyMap<string, unknown>,
-  executionResults?: Record<string, ExecutionResult>
+  executionResults?: Record<string, ExecutionResult>,
+  unresolvedFields?: string[]
 ): string {
   const sanitizedNodeId = nodeId.replace(/[^a-zA-Z0-9]/g, "_");
   const output = outputs[sanitizedNodeId];
@@ -283,10 +334,13 @@ function replaceTemplateVariable(
   if (!fieldPath) {
     value = output.data;
   } else if (output.data === null || output.data === undefined) {
-    // KEEP-1284: Throw error when node data is null/undefined
-    throw new Error(
-      `Condition references "${rest}" but the node output data is ${output.data === null ? "null" : "undefined"}. Ensure the referenced node produces valid output.`
-    );
+    // A node that produced no data is the same situation as a field that is
+    // not there: bind undefined so a presence guard can handle it, and report
+    // the path. Only a reference to a node with no output entry at all still
+    // throws, since that is a broken reference rather than an empty result.
+    const detail = `"${rest}": the node output data is ${output.data === null ? "null" : "undefined"}.`;
+    unresolvedFields?.push(detail);
+    value = makeMissingReference(detail);
   } else {
     // Wrapper-aware lookup: matches resolveFromOutputData's three-shape walk
     // (top-level → { data: ... } → { result: ... }) so paths like
@@ -303,53 +357,15 @@ function replaceTemplateVariable(
       return varName;
     }
 
-    const fields = fieldPath.split(".");
-    // biome-ignore lint/suspicious/noExplicitAny: Dynamic data traversal
-    let current: any = output.data;
-
-    for (const segment of fields) {
-      if (current === null || current === undefined) {
-        throw new Error(
-          `Condition references field "${fieldPath}" but it could not be resolved. Check that the field path is correct.`
-        );
-      }
-      if (typeof current !== "object") {
-        throw new Error(
-          `Condition references field "${fieldPath}" but it could not be resolved. Check that the field path is correct.`
-        );
-      }
-
-      const arrayMatch = segment.match(ARRAY_ACCESS_PATTERN);
-      if (arrayMatch) {
-        const [, key, indexStr] = arrayMatch;
-        const index = Number.parseInt(indexStr, 10);
-        if (!(key in current)) {
-          throw new Error(
-            `Condition references field "${fieldPath}" but "${key}" does not exist on the data. Available fields: ${Object.keys(current).join(", ") || "(none)"}`
-          );
-        }
-        const arr = current[key];
-        if (!Array.isArray(arr)) {
-          throw new Error(
-            `Condition references field "${fieldPath}" but "${key}" is not an array. Cannot access [${index}].`
-          );
-        }
-        if (index < 0 || index >= arr.length) {
-          throw new Error(
-            `Condition references field "${fieldPath}" but "${segment}" is out of range (array length ${arr.length}). Use index 0 to ${arr.length - 1}.`
-          );
-        }
-        current = arr[index];
-      } else {
-        if (!(segment in current)) {
-          throw new Error(
-            `Condition references field "${fieldPath}" but "${segment}" does not exist on the data. Available fields: ${Object.keys(current).join(", ") || "(none)"}`
-          );
-        }
-        current = current[segment];
-      }
-    }
-    value = current;
+    // Absent path resolves to undefined rather than throwing. Every reference
+    // in the expression is resolved before the expression runs, so throwing
+    // here also defeats a guard the author wrote for exactly this case: in
+    // `a !== undefined && a == b`, the `&&` never gets to short-circuit
+    // because `a` is resolved before evaluation starts. The path is reported
+    // on the step output so a mistyped field is still visible in the run.
+    const detail = describeMissingFieldPath(output.data, fieldPath);
+    unresolvedFields?.push(detail);
+    value = makeMissingReference(detail);
   }
 
   const varName = `__v${varCounter.value}`;
@@ -364,12 +380,16 @@ type ConditionEvalResult = {
   // The expression with each {{...}} reference replaced by its resolved value,
   // so observability shows what was actually compared (e.g. "0x1..." == "0x6...").
   resolvedExpression?: string;
+  // Field paths that were not present on their node's output and so resolved
+  // to undefined. The branch is still taken on the evaluated result; this
+  // carries the diagnostic so a mistyped path is visible in the run detail.
+  unresolvedFields?: string[];
 };
 
 // Render a resolved value as it should appear inside the resolved expression:
 // strings quoted, numbers/booleans/null bare, undefined as the keyword.
 function renderConditionLiteral(value: unknown): string {
-  if (value === undefined) {
+  if (value === undefined || isMissingReference(value)) {
     return "undefined";
   }
   if (typeof value === "bigint") {
@@ -428,6 +448,7 @@ export function evaluateConditionExpression(
       let transformedExpression = conditionExpression;
       const templatePattern = /\{\{@([^:]+):([^}]+)\}\}/g;
       const varCounter = { value: 0 };
+      const unresolvedFields: string[] = [];
 
       transformedExpression = transformedExpression.replace(
         templatePattern,
@@ -440,7 +461,8 @@ export function evaluateConditionExpression(
             evalContext,
             varCounter,
             nodeMap,
-            executionResults
+            executionResults,
+            unresolvedFields
           );
           // Store the resolved value with a readable key (the display text
           // from the template), preserving the null/undefined distinction so a
@@ -498,7 +520,17 @@ export function evaluateConditionExpression(
       // Only reads the resolved __v/__b values and applies allowlisted
       // operators and methods.
       const result = safeEvaluateCondition(transformedExpression, evalContext);
-      return { result: Boolean(result), resolvedValues, resolvedExpression };
+      if (unresolvedFields.length > 0) {
+        logWarn("[Condition] Reference(s) resolved to undefined", {
+          unresolved: unresolvedFields.join(" | "),
+        });
+      }
+      return {
+        result: Boolean(result),
+        resolvedValues,
+        resolvedExpression,
+        ...(unresolvedFields.length > 0 ? { unresolvedFields } : {}),
+      };
     } catch (error) {
       // KEEP-1284: Re-throw errors about missing data - these should not be silently swallowed
       if (
@@ -711,6 +743,7 @@ async function runActionStep(input: ActionStepInput) {
     let resolvedValues: Record<string, unknown> = {};
     let resolvedExpression: string | undefined;
     let evaluationError: string | undefined;
+    let unresolvedFields: string[] | undefined;
 
     try {
       const result = evaluateConditionExpression(
@@ -722,6 +755,7 @@ async function runActionStep(input: ActionStepInput) {
       evaluatedCondition = result.result;
       resolvedValues = result.resolvedValues;
       resolvedExpression = result.resolvedExpression;
+      unresolvedFields = result.unresolvedFields;
     } catch (error) {
       evaluationError = error instanceof Error ? error.message : String(error);
     }
@@ -739,6 +773,7 @@ async function runActionStep(input: ActionStepInput) {
       values:
         Object.keys(resolvedValues).length > 0 ? resolvedValues : undefined,
       _evaluationError: evaluationError,
+      unresolvedFields,
       _context: context,
     });
   }
@@ -911,8 +946,12 @@ function replaceConfigTemplate(
       : [];
   console.log("[Template] Output data top-level keys:", dataKeys);
 
-  const resolved = resolveFromOutputData(data, fieldPath);
-  if (resolved === undefined || resolved === null) {
+  // Checked walk (the same one the Condition path uses) so a key that exists
+  // but holds null/undefined resolves to that value. Inferring "missing" from a
+  // nullish result conflated the two and failed the action on a path that was
+  // present and legitimately empty.
+  const checked = resolveFromOutputDataChecked(data, fieldPath);
+  if (!checked.found) {
     if (hasNestedDataShape(data)) {
       const innerKeys = Object.keys(data.data as Record<string, unknown>);
       console.log("[Template] Trying inner output.data, keys:", innerKeys);
@@ -929,6 +968,7 @@ function replaceConfigTemplate(
     return "";
   }
 
+  const resolved = checked.value;
   console.log(
     "[Template] Resolved, type:",
     typeof resolved,
@@ -1118,8 +1158,10 @@ function resolveStoredCodeRef(
   const fieldPath = rest.includes(".")
     ? rest.substring(rest.indexOf(".") + 1).trim()
     : "";
-  const resolved = resolveFromOutputData(data, fieldPath);
-  if (resolved === undefined || resolved === null) {
+  // Checked walk: a key that exists holding null/undefined is a real value and
+  // renders as the `null` literal, not an unresolved reference.
+  const checked = resolveFromOutputDataChecked(data, fieldPath);
+  if (!checked.found) {
     recordUnresolved(tracker, {
       token: full,
       reason: "no-path",
@@ -1127,7 +1169,7 @@ function resolveStoredCodeRef(
     });
     return "null";
   }
-  return formatCodeValue(resolved);
+  return formatCodeValue(checked.value);
 }
 
 function resolveDisplayCodeRef(
@@ -1594,6 +1636,218 @@ function nextBodyTargets(
 }
 
 /**
+ * Direct nested For Each node ids reachable inside `forEachNodeId`'s own
+ * body, ignoring Collect nodes entirely. Mirrors `identifyLoopBody`'s BFS
+ * (same seeding, same depth tracking via `computeNextDepth`/
+ * `nextBodyTargets`) so it agrees on what counts as "inside this loop's
+ * body," but never resolves or conflicts on a Collect, so it never throws.
+ * Used to order loops outer-before-inner ahead of the Collect-ownership
+ * check (#2157).
+ */
+function findDirectNestedForEachIds(
+  forEachNodeId: string,
+  edgesBySource: Map<string, string[]>,
+  nodeMap: Map<string, WorkflowNode>,
+  edgesBySourceHandle?: EdgesBySourceHandle
+): string[] {
+  const handleMap = edgesBySourceHandle?.get(forEachNodeId);
+  const loopTargets = handleMap?.get("loop") ?? [];
+  const doneTargets = handleMap?.get("done") ?? [];
+  const isHandleAware = loopTargets.length > 0 || doneTargets.length > 0;
+  const seedTargets = isHandleAware
+    ? loopTargets
+    : (edgesBySource.get(forEachNodeId) ?? []);
+
+  const nestedForEachIds: string[] = [];
+  const visited = new Set<string>();
+  const queue: Array<{ nodeId: string; depth: number }> = seedTargets.map(
+    (id) => ({ nodeId: id, depth: 0 })
+  );
+
+  while (queue.length > 0) {
+    const entry = queue.shift();
+    if (!entry || visited.has(entry.nodeId)) {
+      continue;
+    }
+    visited.add(entry.nodeId);
+
+    const node = nodeMap.get(entry.nodeId);
+    if (!node) {
+      continue;
+    }
+
+    const actionType = node.data.config?.actionType as string | undefined;
+    const isCollect = node.data.type === "action" && actionType === "Collect";
+    const isForEach = node.data.type === "action" && actionType === "For Each";
+
+    if (isCollect && entry.depth === 0) {
+      continue;
+    }
+    if (isForEach) {
+      nestedForEachIds.push(entry.nodeId);
+    }
+
+    const nextDepth = computeNextDepth(isForEach, isCollect, entry.depth);
+    for (const nextId of nextBodyTargets(
+      entry.nodeId,
+      isForEach,
+      edgesBySource,
+      edgesBySourceHandle
+    )) {
+      queue.push({ nodeId: nextId, depth: nextDepth });
+    }
+  }
+
+  return nestedForEachIds;
+}
+
+/**
+ * The single wording for "two For Each loops resolve the same Collect",
+ * shared by `claimCollectOwner` and `identifyLoopBody`'s in-BFS check so one
+ * mis-wire reads the same however it is detected.
+ *
+ * It states only what either site has established: both loops resolve this
+ * Collect. Neither site tests ancestry, so neither may claim one loop
+ * encloses the other - non-nested sibling loops wired to a shared Collect
+ * reach this message too, and which loop is named first only reflects
+ * processing order.
+ */
+function collectOwnershipConflictMessage(
+  collectNodeId: string,
+  forEachId: string,
+  claimedBy: string
+): string {
+  return (
+    `For Each "${forEachId}" resolves Collect "${collectNodeId}", but it ` +
+    `already belongs to For Each "${claimedBy}". Two For Each loops ` +
+    "cannot share the same Collect node."
+  );
+}
+
+/**
+ * Record `forEachId` as the owner of `collectNodeId` in `claimedCollectOwners`,
+ * or throw if it is already claimed by a different loop.
+ *
+ * `identifyLoopBody`'s own ownership check (#2157) only fires while its
+ * depth-0 body BFS is walking -- it never sees a Collect resolved via the
+ * done-handle target loop, since that path doesn't go through the BFS. This
+ * closes that gap: every Collect a loop resolves, in-body or on the done
+ * handle, is claimed through this function, so two loops resolving the same
+ * Collect by any route are still caught, in case the ordering that
+ * `orderForEachNodesOuterFirst` establishes were ever wrong.
+ */
+export function claimCollectOwner(
+  claimedCollectOwners: Map<string, string>,
+  collectNodeId: string,
+  forEachId: string
+): void {
+  const claimedBy = claimedCollectOwners.get(collectNodeId);
+  if (claimedBy && claimedBy !== forEachId) {
+    throw new Error(
+      collectOwnershipConflictMessage(collectNodeId, forEachId, claimedBy)
+    );
+  }
+  claimedCollectOwners.set(collectNodeId, forEachId);
+}
+
+/**
+ * Order For Each node ids so every loop appears before any loop nested
+ * inside it. The Collect-ownership check in `identifyLoopBody` (#2157) only
+ * attributes a conflict to the right loop if an ancestor's Collect is
+ * already claimed by the time a descendant's scan reaches it -- processing
+ * in the wrong order lets a descendant claim an unclaimed ancestor Collect
+ * first, then blames the ancestor when it later tries to claim its own.
+ *
+ * Built from `findDirectNestedForEachIds` via a parent map, then a
+ * breadth-first walk from root loops (no parent among the given ids) down
+ * through children. Any id never reached (should not happen for a valid
+ * workflow DAG - a nesting cycle leaves every loop parented) is appended
+ * after the walk, in its original relative order, so it still gets
+ * validated.
+ *
+ * `findDirectNestedForEachIds` descends transitively in legacy (no
+ * sourceHandle) graphs, so one child can be reported by several enclosing
+ * loops: in `L1 -> L2 -> L3` a grandparent lists its grandchild alongside
+ * the real parent. Taking the first reporter would let the grandparent win
+ * and order `L3` before `L2`, inverting the very invariant this function
+ * exists to establish. So the reporters of a child are walked keeping the
+ * deepest one seen: a candidate that the current best encloses replaces it,
+ * leaving the nearest enclosing loop as the parent.
+ */
+export function orderForEachNodesOuterFirst(
+  forEachNodeIds: string[],
+  edgesBySource: Map<string, string[]>,
+  nodeMap: Map<string, WorkflowNode>,
+  edgesBySourceHandle?: EdgesBySourceHandle
+): string[] {
+  const nestedOf = new Map<string, string[]>();
+  for (const id of forEachNodeIds) {
+    nestedOf.set(
+      id,
+      findDirectNestedForEachIds(
+        id,
+        edgesBySource,
+        nodeMap,
+        edgesBySourceHandle
+      )
+    );
+  }
+
+  const candidateParentsOf = new Map<string, string[]>();
+  for (const id of forEachNodeIds) {
+    for (const childId of nestedOf.get(id) ?? []) {
+      const candidates = candidateParentsOf.get(childId);
+      if (candidates) {
+        candidates.push(id);
+      } else {
+        candidateParentsOf.set(childId, [id]);
+      }
+    }
+  }
+
+  const parentOf = new Map<string, string>();
+  for (const [childId, candidates] of candidateParentsOf) {
+    let nearest = candidates[0];
+    for (const candidate of candidates) {
+      if ((nestedOf.get(nearest) ?? []).includes(candidate)) {
+        nearest = candidate;
+      }
+    }
+    parentOf.set(childId, nearest);
+  }
+
+  const childrenOf = new Map<string, string[]>();
+  for (const [childId, parentId] of parentOf) {
+    if (!childrenOf.has(parentId)) {
+      childrenOf.set(parentId, []);
+    }
+    childrenOf.get(parentId)?.push(childId);
+  }
+
+  const roots = forEachNodeIds.filter((id) => !parentOf.has(id));
+  const ordered: string[] = [];
+  const visited = new Set<string>();
+  const queue: string[] = [...roots];
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (!id || visited.has(id)) {
+      continue;
+    }
+    visited.add(id);
+    ordered.push(id);
+    queue.push(...(childrenOf.get(id) ?? []));
+  }
+
+  for (const id of forEachNodeIds) {
+    if (!visited.has(id)) {
+      ordered.push(id);
+    }
+  }
+
+  return ordered;
+}
+
+/**
  * Identify the loop body subgraph between a For Each node and its paired
  * Collect node.
  *
@@ -1612,12 +1866,20 @@ function nextBodyTargets(
  *
  * In both modes the BFS uses depth tracking so nested For Each / Collect
  * pairs are correctly stepped over.
+ *
+ * `claimedCollectOwners`, when supplied, maps a Collect node id to the
+ * forEachNodeId that already resolved it as its own. If this scan's depth-0
+ * Collect is claimed by a *different* loop, it throws immediately naming
+ * both loops (#2157) instead of either colliding with a same-scan double
+ * Collect (below) or silently adopting the other loop's Collect as its own.
+ * Callers that omit the map get today's unqualified behavior unchanged.
  */
 export function identifyLoopBody(
   forEachNodeId: string,
   edgesBySource: Map<string, string[]>,
   nodeMap: Map<string, WorkflowNode>,
-  edgesBySourceHandle?: EdgesBySourceHandle
+  edgesBySourceHandle?: EdgesBySourceHandle,
+  claimedCollectOwners?: Map<string, string>
 ): LoopBodyInfo {
   const bodyNodeIds: string[] = [];
   const bodyEdgesBySource = new Map<string, string[]>();
@@ -1673,6 +1935,12 @@ export function identifyLoopBody(
     // post-iteration time whether to fire the in-body Collect (legacy) or
     // the done-handle Collect (canonical).
     if (isCollect && depth === 0) {
+      const claimedBy = claimedCollectOwners?.get(nodeId);
+      if (claimedBy && claimedBy !== forEachNodeId) {
+        throw new Error(
+          collectOwnershipConflictMessage(nodeId, forEachNodeId, claimedBy)
+        );
+      }
       if (collectNodeId && collectNodeId !== nodeId) {
         throw new Error(
           "For Each node has multiple in-body Collect nodes at the same " +
@@ -1748,20 +2016,14 @@ export function identifyLoopBody(
 }
 
 /**
- * Pick the edge map a nested For Each's body scan must run against.
+ * Pick the edge map a nested For Each's body scan must run against: always
+ * the workflow-global map, never the outer loop's `bodyEdgesBySource`. Why
+ * the outer map is wrong is recorded at the `identifyLoopBody` call inside
+ * `handleForEachExecution`, where the executor makes that choice inline.
  *
- * The outer loop's `bodyEdgesBySource` only holds edges its own BFS walked,
- * and that BFS stops at a handle-aware nested For Each - it resumes at the
- * inner loop's `done` chain and never descends into the inner `loop` branch.
- * So the outer map has no entry for any edge living purely inside the inner
- * body. Forwarding it to the nested scan leaves every inner body node
- * dangling at the seed, which is issue #2049: the inner Condition never ran.
- *
- * The nested scan therefore runs against the workflow-global map. The outer
- * map is taken as an argument rather than ignored at the call site so this
- * function is the single place the choice is made, and so a test can pin it:
- * return `outerBodyEdgesBySource` here and the nested-handoff regression
- * tests fail.
+ * Nothing in the executor calls this function, so it is off that path. It
+ * still takes both maps so the tests can state the choice explicitly,
+ * naming the map that is rejected rather than asserting its absence.
  */
 export function resolveNestedForEachEdgeMap(maps: {
   globalEdgesBySource: Map<string, string[]>;
@@ -1993,25 +2255,57 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   // For Each body nodes run through runBodyNode, not executeNode, so they never
   // reach attemptedNodes and would otherwise all read as orphans. Their failures
   // are already accounted for by the For Each node's failedIterations.
+  //
+  // This loop also validates Collect ownership across nested For Each loops
+  // (#2157): a nested loop's body scan must not resolve to an ancestor's
+  // Collect, whether by colliding with it mid-scan or silently adopting it
+  // when the nested loop has no Collect of its own. Loops are processed
+  // outer-before-inner (`orderForEachNodesOuterFirst`) so an ancestor's
+  // Collect is claimed in `claimedCollectOwners` before any descendant's
+  // scan can check against it -- the wrong order would attribute a real
+  // conflict to the wrong loop. This pass runs before the first step
+  // executes, so a mis-wired workflow fails at start-up rather than mid-run.
   const loopBodyNodeIds = new Set<string>();
-  for (const node of nodes) {
-    if (
-      node.data.type !== "action" ||
-      node.data.config?.actionType !== "For Each"
-    ) {
-      continue;
-    }
+  const claimedCollectOwners = new Map<string, string>();
+  const forEachNodeIds = nodes
+    .filter(
+      (n) =>
+        n.data.type === "action" && n.data.config?.actionType === "For Each"
+    )
+    .map((n) => n.id);
+  const orderedForEachNodeIds = orderForEachNodesOuterFirst(
+    forEachNodeIds,
+    edgesBySource,
+    nodeMap,
+    edgesBySourceHandle
+  );
+  for (const forEachId of orderedForEachNodeIds) {
     const body = identifyLoopBody(
-      node.id,
+      forEachId,
       edgesBySource,
       nodeMap,
-      edgesBySourceHandle
+      edgesBySourceHandle,
+      claimedCollectOwners
     );
     for (const bodyNodeId of body.bodyNodeIds) {
       loopBodyNodeIds.add(bodyNodeId);
     }
     if (body.collectNodeId) {
       loopBodyNodeIds.add(body.collectNodeId);
+      claimCollectOwner(claimedCollectOwners, body.collectNodeId, forEachId);
+    }
+    // Every done-handle Collect, not just the promoted `doneCollectNodeId`:
+    // `identifyLoopBody` stops promoting at the first Collect among the done
+    // targets, so claiming only that one would leave a second done-handle
+    // Collect unowned and free for another loop to adopt.
+    for (const doneEntryNodeId of body.doneEntryNodeIds) {
+      const doneEntryNode = nodeMap.get(doneEntryNodeId);
+      if (
+        doneEntryNode?.data.type === "action" &&
+        doneEntryNode.data.config?.actionType === "Collect"
+      ) {
+        claimCollectOwner(claimedCollectOwners, doneEntryNodeId, forEachId);
+      }
     }
   }
 
@@ -2273,10 +2567,6 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           currentOutputs: scopedOutputs,
           currentResults: bodyResults,
           currentVisited: bodyVisited,
-          currentEdgesBySource: resolveNestedForEachEdgeMap({
-            globalEdgesBySource: edgesBySource,
-            outerBodyEdgesBySource: bodyEdgesBySource,
-          }),
           continueAfterCollect: async (collectId) => {
             const nextNodes = bodyEdgesBySource.get(collectId) ?? [];
             for (const next of nextNodes) {
@@ -2322,7 +2612,6 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     currentOutputs: NodeOutputs;
     currentResults: Record<string, ExecutionResult>;
     currentVisited: Set<string>;
-    currentEdgesBySource: Map<string, string[]>;
     /**
      * Dispatch downstream of a Collect node once iterations finish. Used for
      * both the canonical `done`-handle Collect and legacy in-body Collect.
@@ -2351,7 +2640,6 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       currentOutputs,
       currentResults,
       currentVisited,
-      currentEdgesBySource,
       continueAfterCollect,
       continueWithDoneTargets,
     } = params;
@@ -2366,6 +2654,13 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     const itemsToProcess = resolvedArray.slice(0, maxIterations);
 
     // 2. Identify body subgraph
+    //
+    // An outer loop's BFS stops at a handle-aware nested For Each and never
+    // descends into the inner `loop` branch, so an outer `bodyEdgesBySource`
+    // has no entry for edges living purely inside the inner body; passing one
+    // here leaves every inner body node dangling at its seed, which is issue
+    // #2049: the inner Condition never ran. The nested scan therefore runs
+    // against the workflow-global `edgesBySource`.
     const {
       bodyNodeIds,
       collectNodeId,
@@ -2375,7 +2670,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       bodyEdgesBySourceHandle,
     } = identifyLoopBody(
       forEachNodeId,
-      currentEdgesBySource,
+      edgesBySource,
       nodeMap,
       edgesBySourceHandle
     );
@@ -3063,7 +3358,6 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
             currentOutputs: outputs,
             currentResults: results,
             currentVisited: visited,
-            currentEdgesBySource: edgesBySource,
             continueAfterCollect: async (collectId) => {
               const nextNodes = edgesBySource.get(collectId) ?? [];
               await executeReadyDownstream(collectId, nextNodes, visited);

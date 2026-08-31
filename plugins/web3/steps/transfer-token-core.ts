@@ -47,7 +47,10 @@ import {
 import { resolveGasLimitOverrides } from "@/lib/web3/gas-defaults";
 import { isSponsorshipSupported } from "@/lib/web3/turnkey-sponsorship-config";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
-import { revertedTransactionHash } from "@/lib/web3/onchain-revert";
+import {
+  broadcastTransactionHash,
+  isOnChainPendingError,
+} from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
@@ -57,6 +60,11 @@ import {
   type TransactionContext,
   withNonceSession,
 } from "@/lib/web3/transaction-manager";
+import {
+  convertAmountForWrite,
+  rawToUi,
+  resolveForWrite,
+} from "@/lib/web3/ui-multiplier";
 
 export type TransferTokenCoreInput = {
   network: string;
@@ -442,7 +450,26 @@ export async function transferTokenCore(
           ]);
         }
       );
-      const amountRaw = ethers.parseUnits(amount, Number(decimals));
+      // `amount` is in the units the holder is shown. On an ERC-8056 token
+      // those are UI units and `transfer` takes raw ones, so convert down.
+      // Identity for every ordinary ERC-20. Refuses rather than guessing: an
+      // unscaled fallback here would move several times the intended amount.
+      const multiplier = await resolveForWrite(
+        (op) => rpcManager.executeWithFailover(op),
+        chainId,
+        tokenAddress
+      );
+      if (!multiplier.ok) {
+        return { success: false, error: getErrorMessage(multiplier.error) };
+      }
+      const converted = convertAmountForWrite(
+        ethers.parseUnits(amount, Number(decimals)),
+        multiplier.multiplier
+      );
+      if (!converted.ok) {
+        return { success: false, error: converted.error };
+      }
+      const amountRaw = converted.raw;
 
       const sponsoredResult = await executeSponsoredContractTransaction({
         organizationId,
@@ -570,10 +597,35 @@ export async function transferTokenCore(
 
       const decimalsNum = Number(decimals);
 
+      // `amount` is in the units the holder is shown. On an ERC-8056 token
+      // those are UI units and `transfer` takes raw ones, so the typed amount
+      // converts down and the on-chain balance converts up before the two are
+      // compared. Identity for every ordinary ERC-20. Refuses rather than
+      // guessing: an unscaled fallback would move several times the ask.
+      const multiplierResult = await resolveForWrite(
+        (op) => rpcManager.executeWithFailover(op),
+        chainId,
+        tokenAddress
+      );
+      if (!multiplierResult.ok) {
+        return {
+          success: false,
+          error: getErrorMessage(multiplierResult.error),
+        };
+      }
+      const uiMultiplier = multiplierResult.multiplier;
+
       // Convert amount to raw units
       let amountRaw: bigint;
       try {
-        amountRaw = ethers.parseUnits(amount, decimalsNum);
+        const converted = convertAmountForWrite(
+          ethers.parseUnits(amount, decimalsNum),
+          uiMultiplier
+        );
+        if (!converted.ok) {
+          return { success: false, error: converted.error };
+        }
+        amountRaw = converted.raw;
       } catch (error) {
         return {
           success: false,
@@ -583,7 +635,12 @@ export async function transferTokenCore(
 
       // Check balance before transfer
       if (balance < amountRaw) {
-        const balanceFormatted = ethers.formatUnits(balance, decimalsNum);
+        // Report the shortfall in the same units the caller asked in, or the
+        // message compares a UI figure against a raw one and reads as nonsense.
+        const balanceFormatted = ethers.formatUnits(
+          rawToUi(balance, uiMultiplier),
+          decimalsNum
+        );
         return {
           success: false,
           error: `Insufficient ${symbol} balance. Have: ${balanceFormatted}, Need: ${amount}`,
@@ -683,7 +740,11 @@ export async function transferTokenCore(
         }
       );
       const rejection = classifyRevert(error, contract.interface);
-      const errorClass = rpcRelayErrorClass(error);
+      // Attributed as a system fault so the execution log records a fault
+      // domain for it; a relay-determined class is more specific, so it wins.
+      const errorClass =
+        rpcRelayErrorClass(error) ??
+        (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
       return {
         success: false,
         error: formatContractError(
@@ -693,8 +754,8 @@ export async function transferTokenCore(
         ),
         ...(errorClass ? { errorClass } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
-        ...(revertedTransactionHash(error)
-          ? { transactionHash: revertedTransactionHash(error), chainId }
+        ...(broadcastTransactionHash(error)
+          ? { transactionHash: broadcastTransactionHash(error), chainId }
           : {}),
       };
     }

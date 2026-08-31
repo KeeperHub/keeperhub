@@ -18,6 +18,10 @@ import {
   decodeRevertReason,
   extractRevertData,
 } from "@/lib/web3/decode-revert-error";
+import {
+  convertAmountForWrite,
+  resolveForWrite,
+} from "@/lib/web3/ui-multiplier";
 import { getOrganizationWalletAddress } from "@/lib/web3/wallet-helpers";
 import { parseTokenAddress } from "@/plugins/web3/steps/transfer-token-core";
 
@@ -867,6 +871,38 @@ export async function simulateTokenTransfer(
       `Invalid amount for ${decimals} decimals: ${input.amount}`
     );
   }
+
+  // The dry run has to interpret the request exactly as the broadcast will.
+  // /api/execute/transfer routes the same body here on simulate and to
+  // transferTokenCore on send, so an unconverted amount would simulate a
+  // different transaction than the one that gets signed - on an ERC-8056 token,
+  // one several times larger.
+  const multiplier = await resolveForWrite(
+    (op) => rpc.executeWithFailover(op),
+    chainId,
+    resolvedTokenAddress
+  );
+  if (!multiplier.ok) {
+    return failure(
+      from,
+      resolvedTokenAddress,
+      BigInt(0),
+      getErrorMessage(multiplier.error)
+    );
+  }
+  const convertedAmount = convertAmountForWrite(
+    amountUnits,
+    multiplier.multiplier
+  );
+  if (!convertedAmount.ok) {
+    return failure(
+      from,
+      resolvedTokenAddress,
+      BigInt(0),
+      convertedAmount.error
+    );
+  }
+  amountUnits = convertedAmount.raw;
 
   // No ceiling check here: this delegates to simulateContractCall below,
   // which applies it once for both entrances.

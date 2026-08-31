@@ -2,6 +2,7 @@ import "server-only";
 
 import { ethers } from "ethers";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
+import { rawToUi, resolveForDisplay } from "@/lib/web3/ui-multiplier";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
@@ -68,7 +69,8 @@ async function fetchStringOrBytes32(
 async function fetchTokenBalance(
   provider: ethers.JsonRpcProvider,
   walletAddress: string,
-  tokenAddress: string
+  tokenAddress: string,
+  uiMultiplier: bigint
 ): Promise<TokenBalanceInfo> {
   const contract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
 
@@ -80,7 +82,14 @@ async function fetchTokenBalance(
   ]);
 
   const decimalsNum = Number(decimals);
-  const balance = ethers.formatUnits(balanceRaw, decimalsNum);
+  // On an ERC-8056 token the holder is shown the scaled balance, so report
+  // that. `balanceRaw` stays the unscaled on-chain value it has always been:
+  // it is what a transfer moves, and a caller comparing it against an explorer
+  // needs it to keep meaning the same thing.
+  const balance = ethers.formatUnits(
+    rawToUi(balanceRaw, uiMultiplier),
+    decimalsNum
+  );
 
   return {
     balance,
@@ -124,9 +133,19 @@ async function checkEvmTokenBalance(
   const adapter = getChainAdapter(chainId);
 
   try {
+    // Resolved through failover in its own right, rather than pinned to the
+    // single provider the balance read happens to land on. A multiplier read
+    // that quietly failed while the balance succeeded on a retry would report
+    // a scaled token's balance understated, as a success.
+    const uiMultiplier = await resolveForDisplay(
+      (op) => adapter.executeWithFailover(rpcManager, op),
+      chainId,
+      tokenAddress
+    );
     const balance = await adapter.executeWithFailover(
       rpcManager,
-      async (provider) => fetchTokenBalance(provider, address, tokenAddress)
+      async (provider) =>
+        fetchTokenBalance(provider, address, tokenAddress, uiMultiplier)
     );
     const addressLink = await adapter.getAddressUrl(address);
 

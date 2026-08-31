@@ -339,11 +339,17 @@ jobs:
           docker logs sandbox
           exit 1
 
+      # Invoke vitest directly rather than via `pnpm test:unit`: that script
+      # already carries a `tests/unit` positional, and vitest ORs positionals
+      # as filters, so `pnpm test:unit <file>` selected all 565 files under
+      # tests/unit rather than the one file. code-run-code.test.ts is the only
+      # suite that reaches the remote sandbox (the other sandbox tests serve
+      # their own loopback servers), so the rest were a duplicate of test-unit.
       - name: Run unit tests against remote sandbox
         env:
           SANDBOX_BACKEND: remote
           SANDBOX_URL: http://localhost:8787
-        run: pnpm test:unit tests/unit/code-run-code.test.ts
+        run: pnpm exec vitest run tests/unit/code-run-code.test.ts
 
       - name: Dump sandbox logs on failure
         if: failure()

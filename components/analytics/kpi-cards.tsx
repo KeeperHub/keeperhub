@@ -33,7 +33,7 @@ import { cn } from "@/lib/utils";
 
 function formatDuration(ms: number | null): string {
   if (ms === null) {
-    return "--";
+    return "-";
   }
   if (ms < 1000) {
     return `${Math.round(ms)}ms`;

@@ -134,7 +134,7 @@ beforeEach(() => {
   mocks.createExecution.mockResolvedValue({ executionId: "ex1" });
   mocks.markRunning.mockResolvedValue(undefined);
   mocks.completeExecution.mockResolvedValue({ status: "completed" });
-  mocks.failExecution.mockResolvedValue(undefined);
+  mocks.failExecution.mockResolvedValue({ status: "failed" });
   mocks.setRetryCount.mockResolvedValue(undefined);
   mocks.redactInput.mockImplementation(
     (input: Record<string, unknown>) => input
@@ -334,5 +334,60 @@ describe("POST /api/execute/node reserved-field gating", () => {
     );
 
     expect([200, 202]).toContain(response.status);
+  });
+});
+
+describe("POST /api/execute/node broadcast hash on a failed step", () => {
+  it("hands the step's hash to failExecution and reports its verdict", async () => {
+    // The adapter threw after broadcasting, so the step returns the hash with
+    // success: false. Sibling routes already forward it; this one used to drop
+    // it and stamp a terminal failure, leaving the transaction on-chain and
+    // outside the reconciler's unconfirmed-with-a-hash scan.
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "Transaction sent but receipt not available",
+      transactionHash: "0xpending",
+      chainId: 1,
+    });
+    mocks.failExecution.mockResolvedValue({ status: "unconfirmed" });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.failExecution).toHaveBeenCalledWith(
+      "ex1",
+      "Transaction sent but receipt not available",
+      expect.objectContaining({ transactionHash: "0xpending", chainId: 1 })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("unconfirmed");
+    expect(body.transactionHash).toBe("0xpending");
+    // The route groups an unconfirmed transaction with a failed one at the
+    // transport layer, same as its verified-success branch; only the body
+    // distinguishes them.
+    expect(response.status).toBe(422);
+  });
+
+  it("still reports a pre-broadcast failure as terminal with no hash", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "insufficient funds",
+    });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("failed");
+    expect(body.transactionHash).toBeUndefined();
   });
 });

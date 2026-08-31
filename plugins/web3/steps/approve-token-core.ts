@@ -43,7 +43,10 @@ import {
 import { resolveGasLimitOverrides } from "@/lib/web3/gas-defaults";
 import { isSponsorshipSupported } from "@/lib/web3/turnkey-sponsorship-config";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
-import { revertedTransactionHash } from "@/lib/web3/onchain-revert";
+import {
+  broadcastTransactionHash,
+  isOnChainPendingError,
+} from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
@@ -53,6 +56,10 @@ import {
   type TransactionContext,
   withNonceSession,
 } from "@/lib/web3/transaction-manager";
+import {
+  convertAmountForWrite,
+  resolveForWrite,
+} from "@/lib/web3/ui-multiplier";
 import { parseTokenAddress } from "./transfer-token-core";
 
 export type ApproveTokenCoreInput = {
@@ -324,7 +331,26 @@ export async function approveTokenCore(
         amountRaw = ethers.MaxUint256;
         approvedAmountDisplay = "unlimited";
       } else {
-        amountRaw = ethers.parseUnits(amount, Number(decimals));
+        // An allowance is spent by transferFrom in raw units, so an amount the
+        // user expressed in the units they were shown converts down the same
+        // way a transfer does. Identity for every ordinary ERC-20. "max" never
+        // reaches here: MaxUint256 is a sentinel, not a quantity.
+        const multiplier = await resolveForWrite(
+          (op) => rpcManager.executeWithFailover(op),
+          chainId,
+          tokenAddress
+        );
+        if (!multiplier.ok) {
+          return { success: false, error: getErrorMessage(multiplier.error) };
+        }
+        const converted = convertAmountForWrite(
+          ethers.parseUnits(amount, Number(decimals)),
+          multiplier.multiplier
+        );
+        if (!converted.ok) {
+          return { success: false, error: converted.error };
+        }
+        amountRaw = converted.raw;
         approvedAmountDisplay = amount;
       }
 
@@ -476,8 +502,26 @@ export async function approveTokenCore(
         amountRaw = ethers.MaxUint256;
         approvedAmountDisplay = "unlimited";
       } else {
+        const multiplier = await resolveForWrite(
+          (op) => rpcManager.executeWithFailover(op),
+          chainId,
+          tokenAddress
+        );
+        if (!multiplier.ok) {
+          return { success: false, error: getErrorMessage(multiplier.error) };
+        }
         try {
-          amountRaw = ethers.parseUnits(amount, decimalsNum);
+          // Same conversion as the sponsored branch above: an allowance is
+          // spent in raw units, so a UI amount converts down. Identity for
+          // every ordinary ERC-20.
+          const converted = convertAmountForWrite(
+            ethers.parseUnits(amount, decimalsNum),
+            multiplier.multiplier
+          );
+          if (!converted.ok) {
+            return { success: false, error: converted.error };
+          }
+          amountRaw = converted.raw;
           approvedAmountDisplay = amount;
         } catch (error) {
           return {
@@ -600,7 +644,11 @@ export async function approveTokenCore(
         }
       );
       const rejection = classifyRevert(error, contract.interface);
-      const errorClass = rpcRelayErrorClass(error);
+      // Attributed as a system fault so the execution log records a fault
+      // domain for it; a relay-determined class is more specific, so it wins.
+      const errorClass =
+        rpcRelayErrorClass(error) ??
+        (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
       return {
         success: false,
         error: formatContractError(
@@ -610,8 +658,8 @@ export async function approveTokenCore(
         ),
         ...(errorClass ? { errorClass } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
-        ...(revertedTransactionHash(error)
-          ? { transactionHash: revertedTransactionHash(error), chainId }
+        ...(broadcastTransactionHash(error)
+          ? { transactionHash: broadcastTransactionHash(error), chainId }
           : {}),
       };
     }

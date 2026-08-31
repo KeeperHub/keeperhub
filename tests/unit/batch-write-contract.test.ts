@@ -164,7 +164,10 @@ vi.mock("ethers", async () => {
 
 import { ethers } from "ethers";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import { OnChainRevertError } from "@/lib/web3/onchain-revert";
+import {
+  OnChainPendingError,
+  OnChainRevertError,
+} from "@/lib/web3/onchain-revert";
 import {
   applyBatchFailOnError,
   type BatchWriteContractCoreInput,
@@ -933,6 +936,36 @@ describe("batch-write-contract - failOnError softening", () => {
     // aborting the workflow, matching write-contract-core's own carve-out.
     const softened = applyBatchFailOnError(result, false);
     expect(softened.success).toBe(true);
+  });
+
+  it("refuses to soften a broadcast whose receipt could not be read", async () => {
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new OnChainPendingError({
+        message: "Transaction sent but receipt not available",
+        transactionHash: "0xpending",
+      })
+    );
+
+    const result = await batchWriteContractCore(baseInput({}));
+    expect(result.success).toBe(false);
+    if (result.success) {
+      throw new Error("expected failure");
+    }
+    expect(result.transactionHash).toBe("0xpending");
+    expect(result.errorClass).toBe(ExecutionErrorType.SYSTEM);
+    // Unlike the confirmed revert above, nothing about the sub-calls is known:
+    // the batch may still mine, so it must not report them as reverted.
+    expect(result.results).toBeUndefined();
+    expect(result.totalCalls).toBeUndefined();
+
+    // This local copy of the softening rule is a second implementation of the
+    // same carve-out, so it needs its own guard: without the SYSTEM class it
+    // would continue the workflow as though the batch never happened while
+    // the transaction is still in flight.
+    const softened = applyBatchFailOnError(result, false);
+    expect(softened.success).toBe(false);
+    expect(softened).toBe(result);
   });
 });
 

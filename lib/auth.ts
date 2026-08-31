@@ -44,6 +44,10 @@ import {
 import { revokeRefreshTokensForUserOrg } from "@/lib/mcp/oauth-store";
 import { recordAuditEvent } from "@/lib/security/audit-log";
 import {
+  CLIENT_IP_HEADERS,
+  CLIENT_IP_TRUSTED_PROXIES,
+} from "@/lib/security/client-ip";
+import {
   assessCountryTrust,
   assessLoginRisk,
   serializeRiskFlags,
@@ -1319,18 +1323,30 @@ export const auth = betterAuth({
   advanced: {
     // Use secure cookies in production (HTTPS only)
     useSecureCookies: process.env.NODE_ENV === "production",
-    // Resolve the client IP from CF-Connecting-IP, not the default
-    // X-Forwarded-For. better-auth's getIp takes the leftmost XFF value;
-    // Cloudflare appends the real client IP to any client-supplied XFF rather
-    // than stripping it, so the leftmost value is attacker-controlled and the
-    // /sign-up/email rate limit above would be trivially bypassable via XFF
-    // spoofing. CF-Connecting-IP is set by Cloudflare's edge and cannot be
-    // forged by the client. All envs sit behind Cloudflare with origin-pull,
-    // so this header is always present. Swap if the edge ever changes (e.g.
-    // X-Real-IP for nginx).
+    // start custom keeperhub code //
+    // Resolve the client IP from CF-Connecting-IP, not better-auth's default
+    // X-Forwarded-For. Cloudflare appends the real client IP to any client-supplied
+    // XFF rather than stripping it, so a caller can prepend whatever it likes.
+    // CF-Connecting-IP is set at Cloudflare's edge and cannot be forged. All
+    // KeeperHub envs sit behind Cloudflare with origin-pull, so it is always present.
+    //
+    // The list is the default rather than the only option, because a deployment
+    // KeeperHub does not run has no Cloudflare and so resolves no address at all:
+    // every rate limit collapses onto one shared bucket and the session row records
+    // an empty string. Such a deployment names its own header via CLIENT_IP_HEADERS.
+    // See lib/security/client-ip.ts.
+    //
+    // better-auth refuses a header carrying more than one comma-separated hop unless
+    // trustedProxies names the hops, so a caller cannot prepend a spoofed address to
+    // whatever header is configured. Passing the option only when the operator set it
+    // keeps the single-hop rule in force everywhere else, including here.
     ipAddress: {
-      ipAddressHeaders: ["CF-Connecting-IP"],
+      ipAddressHeaders: [...CLIENT_IP_HEADERS],
+      ...(CLIENT_IP_TRUSTED_PROXIES.length > 0
+        ? { trustedProxies: [...CLIENT_IP_TRUSTED_PROXIES] }
+        : {}),
     },
+    // end keeperhub code //
   },
   trustedOrigins: [...TRUSTED_ORIGINS],
   plugins,
