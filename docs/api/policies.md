@@ -10,6 +10,12 @@ platform. The same rule applies to a workflow node, a direct API call, the MCP
 server and the CLI, because the check sits at the points where work happens
 rather than at each entry point.
 
+Every way of starting a workflow reaches the same executor, so a rule applies
+the same whether a person pressed Run or a schedule, a webhook, a chain event,
+a new block or a transfer started it. Every way of signing reaches the same
+check, so a rule about an address holds whether the transaction was assembled
+by a workflow, by a direct call, or by a payment path that builds its own.
+
 Reading policy requires the admin or owner role. Changing policy requires the
 owner role.
 
@@ -172,7 +178,7 @@ Conditions in a statement are combined with AND, which is what most rules want.
 | `counterparty`, `spender`, `recipient` | who receives, with the role they play |
 | `chainId`, `selector`, `unbounded` | the call itself |
 | `gasPriceGwei`, `gasLimit` | execution cost |
-| `triggerType` | how the run started |
+| `triggerType` | how the run started: `manual`, `scheduled`, `webhook`, `event`, `block`, `transfer` |
 | `actor`, `actorRole`, `actorId`, `authMethod` | who is acting |
 | `signerMode` | how it is signed |
 | `timeWindow`, `dayOfWeek` | when, in UTC |
@@ -249,6 +255,11 @@ applies to any edit, including one that tightens a rule, so use it where being
 able to review a change matters more than applying it at once.
 
 A policy marked `protected` cannot be relaxed or deleted through the API.
+Relaxing means disabling it, moving it out of enforcement, or replacing its
+document. The flag can only be set directly in the database at present: no
+endpoint accepts it, so a policy created through the API is never protected,
+and one that is protected cannot be unprotected through the API either. The
+second approver the refusal message points at is not built yet.
 
 ## Endpoints
 
@@ -370,6 +381,9 @@ cannot be pinned in advance, so it is left ungranted rather than given a guess.
 
 - Postconditions can be written into a document but are not yet checked after
   an action completes.
+- A workflow simulation reads contracts without consulting policy. It moves no
+  value, but a rule refusing reads of a contract does not stop a simulation
+  reading it.
 - An agentic wallet is governed only once it is linked, because linking is what
   records the organization answerable for it. One provisioned and never linked
   belongs to nobody, so no rule reaches it.
