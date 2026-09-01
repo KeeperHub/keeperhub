@@ -685,6 +685,8 @@ async function executeActionStep(input: ActionStepInput) {
     nodeId: context.nodeId,
     workflowId: context.workflowId,
     triggerType: context.triggerType,
+    // So a refusal shows the node the reader recognises rather than a slug.
+    nodeName: context.nodeName,
   });
   if (policyVerdict.blocked) {
     return {

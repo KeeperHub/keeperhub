@@ -12,6 +12,7 @@ import "server-only";
  * recipient supplied by an upstream node, do not exist any earlier.
  */
 
+import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { PolicyCheckpoint, type PolicyRole, PrincipalKind } from "@/lib/policy";
 import { resolveCallCapability } from "@/lib/policy/catalog/call-capability";
 import { explainDenial } from "@/lib/policy/errors";
@@ -26,6 +27,7 @@ import { withUsdValue } from "@/lib/policy/price";
 import type { Principal } from "@/lib/policy/types";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getOrgRole } from "@/lib/security/org-role";
+import { logStepCompleteDb, logStepStartDb } from "./logging";
 
 export type PolicyCheckInput = {
   actionType: string;
@@ -36,6 +38,8 @@ export type PolicyCheckInput = {
   nodeId?: string;
   workflowId?: string;
   triggerType?: string;
+  /** Shown on the failed step, so a reader sees the node they recognise. */
+  nodeName?: string;
 };
 
 export type PolicyCheckResult = {
@@ -157,17 +161,51 @@ export async function policyCheckStep(
     workflowId: input.workflowId,
   });
 
+  const message = verdict.blocked
+    ? explainDenial({
+        reason: verdict.decision.reason,
+        organizationId: input.organizationId,
+      })
+    : "";
+
+  // A refusal happens before the node runs, so no step row exists yet, and
+  // everything a reader sees about a run is built from step rows. Without this
+  // a blocked run looked like one that had simply finished early: no failed
+  // step, no message, nothing saying a rule refused it. The decision was in the
+  // policy log the whole time, which is worse, because the place somebody
+  // actually looks said nothing was wrong.
+  if (verdict.blocked && input.executionId && input.nodeId) {
+    try {
+      const started = await logStepStartDb({
+        executionId: input.executionId,
+        nodeId: input.nodeId,
+        nodeName: input.nodeName ?? input.actionType,
+        nodeType: input.actionType,
+        input: input.config,
+      });
+      await logStepCompleteDb({
+        logId: started.logId,
+        startTime: started.startTime,
+        status: "error",
+        error: message,
+        executionId: input.executionId,
+      });
+    } catch (loggingError) {
+      logSystemError(
+        ErrorCategory.WORKFLOW_ENGINE,
+        "[Policy] Could not record a refusal as a step",
+        loggingError,
+        { nodeId: input.nodeId }
+      );
+    }
+  }
+
   return {
     blocked: verdict.blocked,
     // Why, and where to look, and nothing about which rule decided. This text
     // reaches whoever ran the workflow, and a member who cannot read policy
     // must not learn its contents by being refused by it.
-    message: verdict.blocked
-      ? explainDenial({
-          reason: verdict.decision.reason,
-          organizationId: input.organizationId,
-        })
-      : "",
+    message,
     reason: verdict.decision.reason,
     outcome: verdict.decision.outcome,
     reservations: verdict.reservations ?? [],
