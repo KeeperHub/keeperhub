@@ -43,6 +43,7 @@ function PolicyRow({
   disabled,
   expanded,
   onToggleExpanded,
+  children,
   onToggleEnforcement,
   onToggleEnabled,
   onEdit,
@@ -52,6 +53,7 @@ function PolicyRow({
   disabled: boolean;
   expanded: boolean;
   onToggleExpanded: () => void;
+  children: React.ReactNode;
   onToggleEnforcement: (next: PolicyEnforcementMode) => void;
   onToggleEnabled: (next: boolean) => void;
   onEdit: () => void;
@@ -145,7 +147,7 @@ function PolicyRow({
         </div>
       </div>
 
-      {expanded && <PolicyOverview document={policy.document} />}
+      {expanded && children}
     </div>
   );
 }
@@ -177,6 +179,67 @@ export function PoliciesSection(): React.ReactElement {
   const [fallbackReasons, setFallbackReasons] = useState<string[]>([]);
   const [draft, setDraft] = useState<PolicyDocument | null>(null);
 
+  /**
+   * The editor, wherever it belongs.
+   *
+   * Editing a policy renders this inside that policy's own card, because an
+   * editor that opens somewhere else leaves the reader scrolling to find what
+   * they just pressed Edit on. Composing a new one has no card to sit in, so it
+   * gets its own.
+   */
+  const renderEditor = () =>
+    mode === "builder" ? (
+      <PolicyBuilder
+        draft={draft}
+        modeToggle={
+          <EditorModeToggle
+            builderDisabled={fallbackReasons.length > 0}
+            mode={mode}
+            onChange={setMode}
+          />
+        }
+        onCancel={closeEditor}
+        onDraftChange={setDraft}
+        onSave={async (document) => {
+          const ok = editing
+            ? await update(editing.id, { document })
+            : await create(document);
+          if (ok) {
+            closeEditor();
+          }
+        }}
+        policy={editing}
+        saving={saving}
+        violations={violations}
+        warnings={warnings}
+      />
+    ) : (
+      <PolicyEditor
+        draft={draft}
+        fallbackReasons={fallbackReasons}
+        modeToggle={
+          <EditorModeToggle
+            builderDisabled={fallbackReasons.length > 0}
+            mode={mode}
+            onChange={setMode}
+          />
+        }
+        onCancel={closeEditor}
+        onDraftChange={setDraft}
+        onSave={async (document) => {
+          const ok = editing
+            ? await update(editing.id, { document })
+            : await create(document);
+          if (ok) {
+            closeEditor();
+          }
+        }}
+        policy={editing}
+        saving={saving}
+        violations={violations}
+      />
+    );
+
   const closeEditor = useCallback(() => {
     setEditing(null);
     setComposing(false);
@@ -203,6 +266,9 @@ export function PoliciesSection(): React.ReactElement {
       setFallbackReasons(reasons);
       setMode(reasons.length > 0 ? "source" : "builder");
       setEditing(policy);
+      // Open the card being edited, so the editor appears where it was asked
+      // for rather than somewhere else on the page.
+      setExpandedId(policy.id);
     },
     [clearFeedback]
   );
@@ -264,7 +330,13 @@ export function PoliciesSection(): React.ReactElement {
                   )
                 }
                 policy={policy}
-              />
+              >
+                {editing?.id === policy.id ? (
+                  renderEditor()
+                ) : (
+                  <PolicyOverview document={policy.document} />
+                )}
+              </PolicyRow>
             ))}
           </div>
         )}
@@ -280,58 +352,7 @@ export function PoliciesSection(): React.ReactElement {
         )}
       </SettingsCard>
 
-      {(composing || editing) &&
-        (mode === "builder" ? (
-          <PolicyBuilder
-            draft={draft}
-            modeToggle={
-              <EditorModeToggle
-                builderDisabled={fallbackReasons.length > 0}
-                mode={mode}
-                onChange={setMode}
-              />
-            }
-            onCancel={closeEditor}
-            onDraftChange={setDraft}
-            onSave={async (document) => {
-              const ok = editing
-                ? await update(editing.id, { document })
-                : await create(document);
-              if (ok) {
-                closeEditor();
-              }
-            }}
-            policy={editing}
-            saving={saving}
-            violations={violations}
-            warnings={warnings}
-          />
-        ) : (
-          <PolicyEditor
-            draft={draft}
-            fallbackReasons={fallbackReasons}
-            modeToggle={
-              <EditorModeToggle
-                builderDisabled={fallbackReasons.length > 0}
-                mode={mode}
-                onChange={setMode}
-              />
-            }
-            onCancel={closeEditor}
-            onDraftChange={setDraft}
-            onSave={async (document) => {
-              const ok = editing
-                ? await update(editing.id, { document })
-                : await create(document);
-              if (ok) {
-                closeEditor();
-              }
-            }}
-            policy={editing}
-            saving={saving}
-            violations={violations}
-          />
-        ))}
+      {composing && renderEditor()}
 
       <PolicySimulator />
 

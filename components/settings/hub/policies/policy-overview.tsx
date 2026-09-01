@@ -50,6 +50,15 @@ export function PolicyOverview({
         ))}
       </div>
 
+      <details className="group">
+        <summary className="cursor-pointer text-muted-foreground text-xs hover:text-foreground">
+          The document itself
+        </summary>
+        <pre className="mt-2 max-h-80 overflow-auto rounded-md border border-border bg-muted/40 p-3 text-xs">
+          <code>{JSON.stringify(document, null, 2)}</code>
+        </pre>
+      </details>
+
       {undrawable.length > 0 && (
         <p className="text-muted-foreground text-xs">
           {undrawable.length} rule{undrawable.length === 1 ? "" : "s"} cannot be
