@@ -1,0 +1,101 @@
+name: Fork Build Notice
+
+# A pull request from a fork cannot get the credentials `build` uses for the
+# image registry cache and the staging build configuration: GitHub passes no
+# secrets, no OIDC token and no environment variables to fork runs. So
+# pr-checks.yml builds fork pull requests without them. The result is a real
+# compile check, but slower and with empty public build args, and every
+# workflow run on a fork pull request waits for a maintainer's approval
+# first. This job says so once, on the pull request, so a slow or waiting
+# `build` is not read by the contributor as their mistake.
+#
+# Only fires for fork pull requests that touch build inputs, judged with the
+# same relevance filter as the build job in pr-checks.yml. Keep the two in
+# step. One comment per pull request, found by its marker and edited in
+# place, reduced to a one-line note if the pull request stops touching build
+# inputs.
+#
+# SAFETY: pull_request_target runs with the base repository's token, which
+# here can write to pull requests so the job can leave its comment. The job
+# never checks out, builds, or executes pull request code. It reads the
+# changed-file list and its own comment through the API and writes nothing
+# but that comment. Do not add a checkout step to this file.
+
+on:
+  pull_request_target:
+    # labeled/unlabeled let a maintainer re-run this on an existing pull
+    # request without a push; the comment is edited in place, so a rerun
+    # costs nothing and notifies nobody.
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+    branches:
+      - staging
+      - prod
+
+concurrency:
+  group: fork-build-notice-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  fork-build-notice:
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Explain the fork build once
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Same filter as "Check for build-relevant changes" in pr-checks.yml.
+          relevant=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate -q '.[].filename' \
+            | grep -vE '^(docs/|specs/|\.github/|.*\.md$)' | head -n1 || true)
+
+          marker='<!-- fork-build-notice -->'
+          id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("<!-- fork-build-notice -->")) | .id' \
+            2>/dev/null | head -n1 || true)
+
+          # A comment failure must never fail this job: the notice is a
+          # courtesy, not a check.
+          write() {
+            local body
+            body=$(printf '%s\n%s\n' "$marker" "$1")
+            if [ -n "$id" ]; then
+              jq -n --arg body "$body" '{body: $body}' \
+                | gh api -X PATCH "repos/$REPO/issues/comments/$id" --input - >/dev/null \
+                || echo "::warning::Could not update the fork-build-notice comment."
+            else
+              jq -n --arg body "$body" '{body: $body}' \
+                | gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" --input - >/dev/null \
+                || echo "::warning::Could not create the fork-build-notice comment."
+            fi
+          }
+
+          if [ -z "$relevant" ]; then
+            echo "No build inputs changed; nothing to explain."
+            if [ -n "$id" ]; then
+              write "This pull request no longer touches build inputs, so the note about the fork build does not apply."
+            fi
+            exit 0
+          fi
+
+          md="### About the \`build\` check on this pull request"$'\n\n'
+          md+="This pull request comes from a fork, so GitHub does not pass it the "
+          md+="credentials \`build\` normally uses for our image registry cache and "
+          md+="staging build configuration. The build still runs and still compiles "
+          md+="the image, so a red \`build\` here is real; it just takes longer than "
+          md+="on team branches."$'\n\n'
+          md+="Every workflow run on a pull request from a fork also waits for a "
+          md+="maintainer to approve it, so checks can sit at \"awaiting approval\" "
+          md+="for a while after each push. Nothing is needed from you for either "
+          md+="of these."
+
+          printf '%s\n' "$md"
+          write "$md"
