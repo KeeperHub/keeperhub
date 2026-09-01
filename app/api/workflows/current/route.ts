@@ -15,6 +15,16 @@ import {
   validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
 
+import { ArnSegment, Capability, PolicyRole } from "@/lib/policy";
+import { enforceControlPlane } from "@/lib/policy/control-plane";
+import { getOrgRole } from "@/lib/security/org-role";
+
+/** The caller's role, defaulting to the least authority when it is unknown. */
+async function orgRoleOf(userId: string, organizationId: string): Promise<PolicyRole> {
+  const role = await getOrgRole(userId, organizationId);
+  return (role as PolicyRole | null) ?? PolicyRole.MEMBER;
+}
+
 const CURRENT_WORKFLOW_NAME = "~~__CURRENT__~~";
 
 export async function GET(request: Request) {
@@ -131,6 +141,20 @@ export async function POST(request: Request) {
         formatActionConfigValidationResponse(actionConfigValidation),
         { status: 422 }
       );
+    }
+
+    // Saving a draft creates a workflow, which is a governed change like any
+    // other. After the validations above, which need no policy to decide, and
+    // before anything is written.
+    const policyRefusal = await enforceControlPlane({
+      organizationId,
+      userId: session.user.id,
+      role: await orgRoleOf(session.user.id, organizationId),
+      capability: Capability.WORKFLOW_CREATE,
+      resource: { type: ArnSegment.WORKFLOW, id: "new" },
+    });
+    if (policyRefusal) {
+      return policyRefusal;
     }
 
     const featureGuard = await enforceWorkflowFeatures(

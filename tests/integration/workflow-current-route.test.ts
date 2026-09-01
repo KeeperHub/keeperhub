@@ -58,6 +58,14 @@ vi.mock("@/lib/logging", () => ({
 
 import { POST } from "@/app/api/workflows/current/route";
 
+vi.mock("server-only", () => ({}));
+// Policy has its own suites, including one against a real database. Here it
+// must not stand between the request and the behaviour under test.
+vi.mock("@/lib/policy/control-plane", () => ({
+  enforceControlPlane: async () => null,
+  decideControlPlane: async () => ({ blocked: false, reason: "unmanaged" }),
+}));
+
 function request(nodes: unknown[]): Request {
   return new Request("http://localhost:3000/api/workflows/current", {
     method: "POST",
