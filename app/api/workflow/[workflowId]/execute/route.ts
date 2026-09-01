@@ -34,6 +34,10 @@ import { getWorkflowAccess } from "@/lib/workflow/access";
 import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
 import { executeWorkflowInBackground } from "@/lib/workflow/execute-in-background";
 import { loadWorkflowForExecution } from "@/lib/workflow/load-for-execution";
+import {
+  type ExecuteBody,
+  resolveExecutionInput,
+} from "@/lib/workflow/resolve-execution-input";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Workflow execution requires complex error handling and validation
@@ -194,18 +198,19 @@ export async function POST(
       );
     }
 
-    // Parse request body from the captured raw bytes. Preserves the original
-    // "missing or invalid body becomes empty input" contract.
-    type ExecuteBody = { input?: unknown; executionId?: string };
-    let body: ExecuteBody = {};
-    if (rawBody) {
-      try {
-        body = JSON.parse(rawBody) as ExecuteBody;
-      } catch {
-        body = {};
-      }
+    // Parse request body from the captured raw bytes. See
+    // lib/workflow/resolve-execution-input.ts (KEEP-1931) for why an
+    // unrecognized top-level field is rejected with a 400 hint rather than
+    // silently folded into input.
+    const resolved = resolveExecutionInput(rawBody);
+    if (!resolved.ok) {
+      return NextResponse.json(
+        { error: resolved.error, field: resolved.field },
+        { status: HttpStatus.BAD_REQUEST }
+      );
     }
-    const input = (body.input as Record<string, unknown> | undefined) ?? {};
+    const { input } = resolved;
+    const body: ExecuteBody = resolved.rawParsed;
 
     // Idempotency: a retry with the same key + body replays the original
     // executionId instead of starting the workflow again. Scoped per workflow.

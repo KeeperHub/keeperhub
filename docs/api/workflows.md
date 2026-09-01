@@ -18,12 +18,12 @@ Returns every workflow unless `limit` is supplied.
 
 ### Query Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `projectId` | string | Optional. Filter workflows by project ID |
-| `tagId` | string | Optional. Filter workflows by tag ID |
-| `limit` | number | Optional. Page size, 1 to 200. Omit for the complete list |
-| `offset` | number | Optional. Rows to skip, from 0. Requires `limit` |
+| Parameter   | Type   | Description                                               |
+| ----------- | ------ | --------------------------------------------------------- |
+| `projectId` | string | Optional. Filter workflows by project ID                  |
+| `tagId`     | string | Optional. Filter workflows by tag ID                      |
+| `limit`     | number | Optional. Page size, 1 to 200. Omit for the complete list |
+| `offset`    | number | Optional. Rows to skip, from 0. Requires `limit`          |
 
 `limit` must be a whole number from 1 to 200. `offset` must be a whole number of
 0 or more, because offset 0 is the first page. Values outside those ranges,
@@ -179,20 +179,18 @@ Named-protocol actions (`aave-v3/supply`, etc.) hide most of the plumbing behind
       }
     }
   ],
-  "edges": [
-    { "id": "e", "source": "trigger-1", "target": "step-1" }
-  ]
+  "edges": [{ "id": "e", "source": "trigger-1", "target": "step-1" }]
 }
 ```
 
 Field-name gotchas the strict validator will reject:
 
-| UI label | API field name | Notes |
-|---|---|---|
-| Function | `abiFunction` | Not `function`, `method`, or `functionName`. See the note below on `functionName`. |
-| Function Arguments | `functionArgs` | A JSON-encoded array **string** (`"[\"0x…\"]"`), not a raw array. Templates inside the string are resolved before `JSON.parse`. |
-| Web3 Connection | `web3Connection` | Sender routing: `"default"` (org policy), `"eoa"` (force the Turnkey EOA), or `"safe:<safeWalletId>"`. The signing wallet is your org's Turnkey wallet, resolved automatically. |
-| Contract ABI | `abi` | JSON-encoded string, not a raw array — same shape convention as `functionArgs`. |
+| UI label           | API field name   | Notes                                                                                                                                                                           |
+| ------------------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Function           | `abiFunction`    | Not `function`, `method`, or `functionName`. See the note below on `functionName`.                                                                                              |
+| Function Arguments | `functionArgs`   | A JSON-encoded array **string** (`"[\"0x…\"]"`), not a raw array. Templates inside the string are resolved before `JSON.parse`.                                                 |
+| Web3 Connection    | `web3Connection` | Sender routing: `"default"` (org policy), `"eoa"` (force the Turnkey EOA), or `"safe:<safeWalletId>"`. The signing wallet is your org's Turnkey wallet, resolved automatically. |
+| Contract ABI       | `abi`            | JSON-encoded string, not a raw array — same shape convention as `functionArgs`.                                                                                                 |
 
 A warning on `functionName` and `args`: the save-time validator accepts them, because workflows persisted before a field rename still carry that shape and have to stay re-savable. The runtime does not translate them. A workflow that uses `functionName` will therefore save without complaint and then fail at execution with ``Missing `abiFunction` in the step config``. Always send `abiFunction` and `functionArgs`.
 
@@ -252,7 +250,7 @@ Manually trigger a workflow execution. The singular form `POST /api/workflow/{wo
 }
 ```
 
-The `input` field is optional. It maps to the workflow's trigger input and is passed to the first node of the run.
+The `input` field is optional. It maps to the workflow's trigger input and is passed to the first node of the run. Input fields must be nested under `input` -- a request body with fields at the top level instead (e.g. `{"amount": "1"}` rather than `{"input": {"amount": "1"}}`) is rejected with a 400 naming the unrecognized field, rather than silently binding nothing.
 
 ### Example
 
@@ -341,11 +339,11 @@ Returns all public workflows with optional filtering.
 
 ### Query Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `featured` | boolean | Optional. Filter for featured workflows (`?featured=true`) |
-| `featuredProtocol` | string | Optional. Filter for protocol-featured workflows (e.g., `?featuredProtocol=sky`) |
-| `tag` | string | Optional. Filter by public tag slug (e.g., "defi", "nft") |
+| Parameter          | Type    | Description                                                                      |
+| ------------------ | ------- | -------------------------------------------------------------------------------- |
+| `featured`         | boolean | Optional. Filter for featured workflows (`?featured=true`)                       |
+| `featuredProtocol` | string  | Optional. Filter for protocol-featured workflows (e.g., `?featuredProtocol=sky`) |
+| `tag`              | string  | Optional. Filter by public tag slug (e.g., "defi", "nft")                        |
 
 ### Response
 
@@ -434,6 +432,7 @@ Returns the complete registry of available workflow actions, triggers, and templ
 ```
 
 > **Note on Action Types:** The keys in the `actions` object are the values to use in `config.actionType` when creating workflow nodes.
+>
 > - **Plugin actions** use a `{pluginType}/{slug}` format (e.g., `"web3/check-balance"`, `"aave-v3/supply"`).
 > - **System actions** use Pascal-case with spaces between words (e.g., `"Condition"`, `"For Each"`, `"HTTP Request"`). System actions do not have a `requiresCredentials` field.
 > - **Triggers** are listed under the `triggers` key (not `actions`) and their values map to `config.triggerType` on trigger nodes.
