@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -75,6 +75,47 @@ describe("control-plane route coverage", () => {
     expect(stale, `Stale manifest entries:\n  ${stale.join("\n  ")}`).toEqual(
       []
     );
+  });
+
+  it("runs the check on every route it claims to govern", () => {
+    // The manifest saying a route is governed is a claim about the running
+    // system, not a label. A route whose auth does not pass through a resolver
+    // that calls the gate is one policy never sees, and the manifest asserting
+    // otherwise is worse than it saying nothing: it reads as covered.
+    const gatedResolvers = [
+      "getDualAuthContext",
+      "resolveOrganizationId",
+      "resolveCreatorContext",
+      "validateSafeAdmin",
+      // resolveCaller resolves through getDualAuthContext, so it inherits it.
+      "resolveCaller",
+      "validateSafeOwner",
+      // A route whose auth is its own calls the check itself.
+      "enforceControlPlane",
+    ];
+
+    const ungated: string[] = [];
+    for (const [pattern, methods] of Object.entries(CONTROL_PLANE_ROUTES)) {
+      const governed = Object.entries(methods).filter(
+        ([, governance]) => governance?.kind === "governed"
+      );
+      if (governed.length === 0) {
+        continue;
+      }
+      const file = join(API_ROOT, `${pattern.replace("/api", "")}/route.ts`);
+      if (!existsSync(file)) {
+        continue;
+      }
+      const source = readFileSync(file, "utf8");
+      if (!gatedResolvers.some((resolver) => source.includes(resolver))) {
+        ungated.push(pattern);
+      }
+    }
+
+    expect(
+      ungated,
+      `These routes are declared governed but nothing checks them:\n  ${ungated.join("\n  ")}`
+    ).toEqual([]);
   });
 
   it("resolves a concrete path to its capability", () => {

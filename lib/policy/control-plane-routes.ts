@@ -113,6 +113,23 @@ const AT_SIGNER = "moves value, governed at the signing check";
 const PERSONAL = "a person's own account, not an organization resource";
 const PLATFORM = "platform operator surface, above organization policy";
 const READ_ONLY = "changes nothing an organization owns";
+/**
+ * The one place policy deliberately does not reach.
+ *
+ * A rule that could refuse a policy edit can be written so that no one can undo
+ * it, and the organization is locked out of its own guardrails for good. Owner
+ * plus an audit record is the bar here instead, which is the exception the
+ * model names rather than an oversight.
+ */
+const POLICY_ESCAPE_HATCH =
+  "editing policy stays reachable by the owner, or a bad rule locks an organization out of its own rules";
+/**
+ * Reached before there is an organization answerable for the wallet, which is
+ * recorded at link time. Policy is written by an organization, so there is
+ * nobody to ask yet.
+ */
+const NO_ORGANIZATION_YET =
+  "runs before the wallet belongs to an organization, so no rule can reach it";
 
 export const CONTROL_PLANE_ROUTES: Readonly<
   Record<string, Partial<Record<HttpMutation, RouteGovernance>>>
@@ -159,26 +176,21 @@ export const CONTROL_PLANE_ROUTES: Readonly<
   // Signs a transaction to the reputation registry, so it is governed where
   // it signs rather than here.
   "/api/agentic-wallet/feedback": { POST: ungoverned(AT_SIGNER) },
-  "/api/agentic-wallet/link": { POST: governed(Capability.WALLET_UPDATE) },
+  "/api/agentic-wallet/link": { POST: ungoverned(NO_ORGANIZATION_YET) },
   "/api/agentic-wallet/provision": {
-    POST: creates(Capability.WALLET_CREATE, ArnSegment.WALLET),
+    POST: ungoverned(NO_ORGANIZATION_YET),
   },
   "/api/agentic-wallet/rotate-hmac": {
-    POST: governed(Capability.WALLET_UPDATE),
+    POST: ungoverned(NO_ORGANIZATION_YET),
   },
   "/api/agentic-wallet/sign": { POST: ungoverned(AT_SIGNER) },
 
   "/api/ai/generate": { POST: ungoverned("drafts a document, saves nothing") },
 
-  "/api/api-keys": {
-    POST: creates(Capability.APIKEY_CREATE, ArnSegment.APIKEY),
-  },
-  "/api/api-keys/[keyId]": {
-    DELETE: governed(Capability.APIKEY_DELETE, {
-      type: ArnSegment.APIKEY,
-      param: "keyId",
-    }),
-  },
+  // A `wfb_` key belongs to a person and is used to fire their own webhook
+  // triggers. The organization credential is /api/keys, which is governed.
+  "/api/api-keys": { POST: ungoverned(PERSONAL) },
+  "/api/api-keys/[keyId]": { DELETE: ungoverned(PERSONAL) },
   "/api/keys": { POST: creates(Capability.APIKEY_CREATE, ArnSegment.APIKEY) },
   "/api/keys/[keyId]": {
     DELETE: governed(Capability.APIKEY_DELETE, {
@@ -288,17 +300,11 @@ export const CONTROL_PLANE_ROUTES: Readonly<
     PUT: unmapped("MFA enforcement has no capability yet"),
   },
   "/api/organizations/[organizationId]/policies": {
-    POST: creates(Capability.POLICY_UPDATE, ArnSegment.POLICY),
+    POST: ungoverned(POLICY_ESCAPE_HATCH),
   },
   "/api/organizations/[organizationId]/policies/[policyId]": {
-    PATCH: governed(Capability.POLICY_UPDATE, {
-      type: ArnSegment.POLICY,
-      param: "policyId",
-    }),
-    DELETE: governed(Capability.POLICY_UPDATE, {
-      type: ArnSegment.POLICY,
-      param: "policyId",
-    }),
+    PATCH: ungoverned(POLICY_ESCAPE_HATCH),
+    DELETE: ungoverned(POLICY_ESCAPE_HATCH),
   },
   "/api/organizations/[organizationId]/policies/simulate": {
     POST: ungoverned(READ_ONLY),
@@ -419,8 +425,10 @@ export const CONTROL_PLANE_ROUTES: Readonly<
     PATCH: governed(Capability.WORKFLOW_UPDATE, workflowRef),
     DELETE: governed(Capability.WORKFLOW_DELETE, workflowRef),
   },
+  // Retired. The handler takes no request and answers 410, so there is nothing
+  // to govern.
   "/api/workflows/[workflowId]/claim": {
-    POST: governed(Capability.WORKFLOW_UPDATE, workflowRef),
+    POST: ungoverned("claiming is retired and the route only answers 410"),
   },
   "/api/workflows/[workflowId]/duplicate": {
     POST: creates(Capability.WORKFLOW_CREATE, ArnSegment.WORKFLOW),
