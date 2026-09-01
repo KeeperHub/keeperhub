@@ -278,6 +278,17 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
+  // KEEP-1927: abiFunction is the workflow web3 action node's name for this
+  // same value; accept it as an alias so payloads copied between the two
+  // layers bind without a rename. Keyed on the key being absent rather than on
+  // its value being usable, which is the same test the conflict check in
+  // _lib/schemas applies: a body carrying both keys is never filled in here,
+  // and a differing pair is rejected there (400) instead of broadcasting under
+  // one of the two names.
+  if (!("functionName" in body) && "abiFunction" in body) {
+    body.functionName = body.abiFunction;
+  }
+
   const simulateFlag = parseSimulateFlag(body);
   if (!simulateFlag.ok) {
     return NextResponse.json(

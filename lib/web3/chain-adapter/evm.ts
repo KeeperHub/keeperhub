@@ -4,6 +4,7 @@ import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
 import {
+  isOnChainPendingError,
   OnChainPendingError,
   OnChainRevertError,
 } from "@/lib/web3/onchain-revert";
@@ -353,6 +354,110 @@ export class EvmChainAdapter implements ChainAdapter {
     });
   }
 
+  // Confirm through ethers `tx.wait()`, converting its post-broadcast throws
+  // into the carriers the finalizer understands (#2177).
+  //
+  // `tx.wait()` with no argument runs at confirms = 1, and at that setting
+  // ethers never resolves null: it returns a receipt, keeps waiting, or throws.
+  // So the genuine "broadcast, outcome unreadable" cases on this path arrive as
+  // throws, and an unclassified throw loses the hash: the row is stamped
+  // terminally failed with a null transaction_hash, outside the reconciler
+  // scan. That is #2020, on the path that carries most traffic.
+  private async waitForReceiptViaEthers(
+    tx: ethers.TransactionResponse
+  ): Promise<ethers.TransactionReceipt> {
+    try {
+      const receipt = await tx.wait();
+      if (receipt) {
+        return receipt;
+      }
+      // Unreachable against real ethers at confirms = 1; kept because the
+      // declared type allows null and an explicit wait(0) caller could reach it.
+      throw new OnChainPendingError({
+        message: "Transaction sent but receipt not available",
+        transactionHash: tx.hash,
+      });
+    } catch (error) {
+      // The module's own duck-typed guard, not `instanceof`: onchain-revert is
+      // `server-only` and can be instantiated in more than one module registry,
+      // where the classes are distinct and `instanceof` silently misses.
+      if (isOnChainPendingError(error)) {
+        throw error;
+      }
+      const code = (error as { code?: string } | null)?.code;
+
+      // A detected revert is a SETTLED failure, not an unknown one, so it goes
+      // to the revert path: the row is closed rather than left to reconcile.
+      if (code === "CALL_EXCEPTION") {
+        const reverted = (error as { receipt?: ethers.TransactionReceipt })
+          .receipt;
+        throw new OnChainRevertError({
+          message: `Transaction ${reverted?.hash ?? tx.hash} reverted on-chain (${getErrorMessage(error)})`,
+          transactionHash: reverted?.hash ?? tx.hash,
+          blockNumber: reverted?.blockNumber,
+        });
+      }
+
+      if (code === "TRANSACTION_REPLACED") {
+        const replaced = error as {
+          cancelled?: boolean;
+          reason?: string;
+          receipt?: ethers.TransactionReceipt;
+        };
+        // `cancelled` is mechanical in ethers (provider.ts): it is true for
+        // reason "replaced" or "cancelled", false for "repriced".
+        //
+        // repriced: same work, same nonce, higher fee. The replacement receipt
+        // IS our result, so fall through to the normal status checks instead of
+        // failing. The hash worth recording is the replacement one — the
+        // original hash will never confirm, and a row carrying it could never
+        // be resolved by any scan.
+        if (replaced.cancelled === false && replaced.receipt) {
+          return replaced.receipt;
+        }
+        // replaced / cancelled: our transaction was not executed and never will
+        // be, because the nonce is spent by something else. That is conclusive,
+        // not unknown. Routing it to pending would create a row the reconciler
+        // can never close — #2020 entered from the other end.
+        //
+        // The hash on the error stays OURS. The replacement is a transaction
+        // we did not send and it usually succeeded, so recording its hash
+        // would let the finalizer re-verify a stranger's receipt: `verified:
+        // true` off the status alone, and the reconciler settles this
+        // execution `completed`.
+        // The replacement hash belongs in the message, where it still tells
+        // whoever reads the row which transaction took the nonce, and `reason`
+        // stays there too because "cancelled" and "replaced" mean different
+        // things to that reader.
+        //
+        // Only an explicit `cancelled` is conclusive. An absent one is a shape
+        // we do not recognise, and unknown shapes take the pending default
+        // below for the same reason unknown codes do.
+        if (typeof replaced.cancelled === "boolean") {
+          const landed = replaced.receipt?.hash ?? tx.hash;
+          throw new OnChainRevertError({
+            message: `Transaction ${tx.hash} was ${replaced.reason ?? "replaced"} by ${landed}; its effects cannot be assured`,
+            transactionHash: tx.hash,
+            blockNumber: replaced.receipt?.blockNumber,
+          });
+        }
+      }
+
+      // Everything else — provider, network, TIMEOUT, BAD_DATA out of the
+      // receipt read or the block listener — is genuinely unknown.
+      //
+      // Unknown CODES default here too, deliberately: if a future ethers
+      // version adds a code we do not classify, treating it as terminal
+      // re-creates #2020 for that code, while treating it as pending costs
+      // only a row the reconciler resolves. Cheap in one direction, expensive
+      // in the other.
+      throw new OnChainPendingError({
+        message: `Transaction sent but receipt could not be read (${getErrorMessage(error)})`,
+        transactionHash: tx.hash,
+      });
+    }
+  }
+
   private async confirmTransaction(
     tx: ethers.TransactionResponse,
     session: NonceSession,
@@ -370,7 +475,7 @@ export class EvmChainAdapter implements ChainAdapter {
 
     const receipt = TEMPO_CHAIN_IDS.has(this.chainId)
       ? await this.waitForReceiptByHash(tx, options)
-      : await tx.wait();
+      : await this.waitForReceiptViaEthers(tx);
     if (!receipt) {
       // The transaction is on the network -- the nonce manager was handed its
       // hash a few lines above -- we simply could not read its outcome. That is

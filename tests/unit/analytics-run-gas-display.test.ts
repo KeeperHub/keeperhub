@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { runGasDisplay } from "@/components/analytics/runs-table";
+import {
+  runGasComposed,
+  runGasDisplay,
+} from "@/components/analytics/runs-table";
 import type { UnifiedRun } from "@/lib/analytics/types";
 import { createChainDisplay } from "@/lib/hooks/use-chain-display";
 
@@ -69,7 +72,7 @@ describe("runGasDisplay", () => {
 
   it("composes a run that genuinely spent on two chains", () => {
     expect(
-      runGasDisplay(
+      runGasComposed(
         run({
           networks: [BASE, POLYGON],
           gasNetworks: [BASE, POLYGON],
@@ -77,14 +80,14 @@ describe("runGasDisplay", () => {
           network: BASE,
         })
       )
-    ).toBe("Composed");
+    ).toBe(true);
   });
 
   it("composes ledger-only gas that cannot be attributed to one chain", () => {
     // No step rollup names a chain, and the run touched two, so there is no
     // token to render the sponsored amount in.
     expect(
-      runGasDisplay(
+      runGasComposed(
         run({
           networks: [BASE, POLYGON],
           gasNetworks: [],
@@ -92,7 +95,20 @@ describe("runGasDisplay", () => {
           network: BASE,
         })
       )
-    ).toBe("Composed");
+    ).toBe(true);
+  });
+
+  it("does not compose a run whose gas landed on one chain", () => {
+    expect(
+      runGasComposed(
+        run({
+          networks: [BASE, POLYGON],
+          gasNetworks: [BASE],
+          gasUsedWei: ONE_TENTH,
+          network: BASE,
+        })
+      )
+    ).toBe(false);
   });
 
   it("borrows the run's chain for ledger-only gas on a single-chain run", () => {
@@ -108,6 +124,18 @@ describe("runGasDisplay", () => {
     ).toBe("0.10 POL");
   });
 
+  it("renders no amount for a read-only run that touched several chains", () => {
+    // The bug this guards: reading three targeted chains as a multi-chain
+    // spend labelled every read-only cross-chain run "Composed".
+    const readOnly = run({
+      networks: [BASE, POLYGON, AVALANCHE],
+      gasNetworks: [],
+      network: BASE,
+    });
+    expect(runGasComposed(readOnly)).toBe(false);
+    expect(runGasDisplay(readOnly)).toBe("-");
+  });
+
   it("renders no amount for a run that failed before broadcast", () => {
     expect(
       runGasDisplay(
@@ -118,7 +146,7 @@ describe("runGasDisplay", () => {
           network: BASE,
         })
       )
-    ).toBe("--");
+    ).toBe("-");
   });
 
   it("denominates a run on a chain the sponsorship table does not cover", () => {

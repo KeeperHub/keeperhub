@@ -252,13 +252,45 @@ export async function POST(
     let createdHere = false;
 
     if (executionId) {
-      // Verify execution exists and is in running state
+      // Scheduler may pre-create a pending row and hand the id back here.
+      // Refuse terminal / in-flight reuse before PAYG so a retry cannot
+      // charge again or start a second DevKit run.
       const existingExecution = await db.query.workflowExecutions.findFirst({
         where: eq(workflowExecutions.id, executionId),
       });
 
       if (existingExecution) {
-        // Use existing execution
+        const existingStatus = existingExecution.status;
+        if (
+          existingStatus === "success" ||
+          existingStatus === "error" ||
+          existingStatus === "cancelled"
+        ) {
+          return recordIdempotentResponse(
+            idem,
+            NextResponse.json(
+              {
+                error: "Execution already completed",
+                code: "execution_already_terminal",
+                executionId,
+                status: existingStatus,
+              },
+              { status: HttpStatus.CONFLICT }
+            ),
+            "release"
+          );
+        }
+        if (existingStatus === "running") {
+          return recordIdempotentResponse(
+            idem,
+            NextResponse.json({
+              executionId,
+              status: "running",
+            }),
+            "success"
+          );
+        }
+        // pending (scheduler handoff) — continue: charge + start once
         console.log("[API] Using existing execution:", executionId);
       } else {
         // Create new execution with provided ID

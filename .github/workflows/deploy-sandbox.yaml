@@ -96,6 +96,13 @@ jobs:
           fi
           echo "sandbox-${IMAGE_TAG} exists in ${SANDBOX_ECR_NAME}"
 
+      # SANDBOX_COMMIT_TAG is set HERE and nowhere else. This workflow deploys the
+      # sandbox by its per-commit tag, because the Helm step below substitutes
+      # ${IMAGE_TAG} into deploy/keeperhub-sandbox/<env>/values.yaml. It runs only
+      # when the sandbox inputs really change, about once or twice a month, so the
+      # tag count on the image stays bounded. The pipeline bake in build-images.yml
+      # runs on every push and must NOT set it. See the comment on the variable in
+      # docker-bake.hcl for what happens when it does. KEEP-1259.
       - name: Build and push sandbox image
         if: steps.skip.outputs.skip_build != 'true'
         uses: docker/bake-action@v7
@@ -103,6 +110,7 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           SANDBOX_ECR_REPO: ${{ env.SANDBOX_ECR_NAME }}
           IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+          SANDBOX_COMMIT_TAG: sandbox-${{ steps.vars.outputs.sha_short }}
           ENVIRONMENT_TAG: ${{ env.ENVIRONMENT_TAG }}
         with:
           files: docker-bake.hcl
