@@ -1,0 +1,1 @@
+Smoke test for the credential-free fork build path (pull request from a fork).
