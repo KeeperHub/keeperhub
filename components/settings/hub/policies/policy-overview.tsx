@@ -1,9 +1,13 @@
 "use client";
 
+import { ExternalLink } from "lucide-react";
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { unrepresentable } from "@/lib/policy/catalog";
 import type { PolicyDocument } from "@/lib/policy/types";
 import { initialStatements } from "@/lib/policy/ui";
+import { resourceLink } from "@/lib/policy/ui/resource-link";
+import { useSettingsContext } from "../settings-context";
 import { RuleSummary } from "./builder/rule-summary";
 
 /**
@@ -14,11 +18,54 @@ import { RuleSummary } from "./builder/rule-summary";
  * who is not allowed to edit at all. This is the same description the builder
  * shows while a rule is being written, so the two cannot drift.
  */
+/**
+ * An identifier, as a link where the platform has a page for the thing.
+ *
+ * A rule names what it governs by identifier, which leaves a reader holding an
+ * opaque string. Where there is somewhere to go, this makes it one click rather
+ * than a search; where there is not, it stays plain text rather than becoming a
+ * link that goes nowhere.
+ */
+function Identifier({
+  value,
+  organizationId,
+}: {
+  value: string;
+  organizationId: string | null;
+}): React.ReactElement {
+  const link = resourceLink(value, organizationId);
+  if (!link) {
+    return <code className="text-xs">{value}</code>;
+  }
+  if (link.external) {
+    return (
+      <a
+        className="inline-flex items-center gap-1 underline underline-offset-2 hover:text-foreground"
+        href={link.href}
+        rel="noopener"
+        target="_blank"
+      >
+        <code className="text-xs">{value}</code>
+        <ExternalLink aria-hidden="true" className="size-3" />
+      </a>
+    );
+  }
+  return (
+    <Link
+      className="underline underline-offset-2 hover:text-foreground"
+      href={link.href}
+    >
+      <code className="text-xs">{value}</code>
+    </Link>
+  );
+}
+
 export function PolicyOverview({
   document,
 }: {
   document: PolicyDocument;
 }): React.ReactElement {
+  const { organizationId } = useSettingsContext();
   const rules = initialStatements(document);
   const undrawable = document.statements.filter(
     (statement) => unrepresentable(statement) !== null
@@ -31,7 +78,7 @@ export function PolicyOverview({
         <div className="flex flex-wrap gap-1">
           {document.manages.map((scope) => (
             <Badge key={scope} variant="outline">
-              <code className="text-xs">{scope}</code>
+              <Identifier organizationId={organizationId} value={scope} />
             </Badge>
           ))}
         </div>
@@ -40,6 +87,29 @@ export function PolicyOverview({
           unless a rule below permits it.
         </p>
       </div>
+
+      {document.statements.some(
+        (statement) => (statement.resource ?? []).length > 0
+      ) && (
+        <div className="flex flex-col gap-1">
+          <span className="font-medium text-xs">What it names</span>
+          <div className="flex flex-wrap gap-2">
+            {[
+              ...new Set(
+                document.statements.flatMap(
+                  (statement) => statement.resource ?? []
+                )
+              ),
+            ].map((identifier) => (
+              <Identifier
+                key={identifier}
+                organizationId={organizationId}
+                value={identifier}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-col gap-2">
         <span className="font-medium text-xs">
