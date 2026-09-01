@@ -1,5 +1,6 @@
 "use client";
 
+import { ChevronRight } from "lucide-react";
 import { useCallback, useState } from "react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -23,6 +24,7 @@ import { PolicyBuilder } from "./policies/builder/policy-builder";
 import { PolicyCatalogProvider } from "./policies/policy-context";
 import { PolicyDecisions } from "./policies/policy-decisions";
 import { PolicyEditor } from "./policies/policy-editor";
+import { PolicyOverview } from "./policies/policy-overview";
 import { PolicySimulator } from "./policies/policy-simulator";
 import { SectionHeader, SettingsCard } from "./section";
 import { useSettingsContext } from "./settings-context";
@@ -39,6 +41,8 @@ import { FormSkeleton } from "./skeletons";
 function PolicyRow({
   policy,
   disabled,
+  expanded,
+  onToggleExpanded,
   onToggleEnforcement,
   onToggleEnabled,
   onEdit,
@@ -46,6 +50,8 @@ function PolicyRow({
 }: {
   policy: OrganizationPolicySummary;
   disabled: boolean;
+  expanded: boolean;
+  onToggleExpanded: () => void;
   onToggleEnforcement: (next: PolicyEnforcementMode) => void;
   onToggleEnabled: (next: boolean) => void;
   onEdit: () => void;
@@ -55,71 +61,91 @@ function PolicyRow({
   const pending = new Date(policy.effectiveAt).getTime() > Date.now();
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
-      <div className="flex min-w-0 flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium text-sm">{policy.name}</span>
-          <Badge variant={enforcing ? "default" : "secondary"}>
-            {enforcing ? "Enforcing" : "Monitoring"}
-          </Badge>
-          {!policy.enabled && <Badge variant="outline">Disabled</Badge>}
-          {policy.protected && <Badge variant="outline">Protected</Badge>}
-          {pending && (
-            <Badge variant="outline">
-              Takes effect {new Date(policy.effectiveAt).toLocaleString()}
+    <div className="flex flex-col gap-3 rounded-lg border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <button
+          aria-expanded={expanded}
+          className="flex min-w-0 flex-1 cursor-pointer flex-col gap-1 text-left"
+          onClick={onToggleExpanded}
+          type="button"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <ChevronRight
+              aria-hidden="true"
+              className={`size-3.5 text-muted-foreground transition-transform ${
+                expanded ? "rotate-90" : ""
+              }`}
+            />
+            <span className="font-medium text-sm">{policy.name}</span>
+            <Badge variant={enforcing ? "default" : "secondary"}>
+              {enforcing ? "Enforcing" : "Monitoring"}
             </Badge>
-          )}
+            {!policy.enabled && <Badge variant="outline">Disabled</Badge>}
+            {policy.protected && <Badge variant="outline">Protected</Badge>}
+            {pending && (
+              <Badge variant="outline">
+                Takes effect {new Date(policy.effectiveAt).toLocaleString()}
+              </Badge>
+            )}
+          </div>
+          <p className="text-muted-foreground text-xs">
+            {policy.coverage
+              ? `Binds ${policy.coverage.score}% of the available guards. `
+              : ""}
+            {policy.description ??
+              `Governs ${policy.document.manages.length} scope${
+                policy.document.manages.length === 1 ? "" : "s"
+              }, ${policy.document.statements.length} statement${
+                policy.document.statements.length === 1 ? "" : "s"
+              }.`}
+          </p>
+        </button>
+
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">Enforce</span>
+            <Switch
+              aria-label={`Enforce ${policy.name}`}
+              checked={enforcing}
+              disabled={disabled || !policy.enabled}
+              onCheckedChange={(next) =>
+                onToggleEnforcement(
+                  next
+                    ? PolicyEnforcementMode.ENFORCE
+                    : PolicyEnforcementMode.MONITOR
+                )
+              }
+            />
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">Enabled</span>
+            <Switch
+              aria-label={`Enable ${policy.name}`}
+              checked={policy.enabled}
+              disabled={disabled}
+              onCheckedChange={onToggleEnabled}
+            />
+          </div>
+          <Button
+            disabled={disabled}
+            onClick={onEdit}
+            size="sm"
+            variant="ghost"
+          >
+            Edit
+          </Button>
+          <Button
+            disabled={disabled || policy.protected}
+            onClick={onRemove}
+            size="sm"
+            variant="ghost"
+          >
+            Remove
+          </Button>
         </div>
-        <p className="text-muted-foreground text-xs">
-          {policy.coverage
-            ? `Binds ${policy.coverage.score}% of the available guards. `
-            : ""}
-          {policy.description ??
-            `Governs ${policy.document.manages.length} scope${
-              policy.document.manages.length === 1 ? "" : "s"
-            }, ${policy.document.statements.length} statement${
-              policy.document.statements.length === 1 ? "" : "s"
-            }.`}
-        </p>
       </div>
 
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">Enforce</span>
-          <Switch
-            aria-label={`Enforce ${policy.name}`}
-            checked={enforcing}
-            disabled={disabled || !policy.enabled}
-            onCheckedChange={(next) =>
-              onToggleEnforcement(
-                next
-                  ? PolicyEnforcementMode.ENFORCE
-                  : PolicyEnforcementMode.MONITOR
-              )
-            }
-          />
-        </div>
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">Enabled</span>
-          <Switch
-            aria-label={`Enable ${policy.name}`}
-            checked={policy.enabled}
-            disabled={disabled}
-            onCheckedChange={onToggleEnabled}
-          />
-        </div>
-        <Button disabled={disabled} onClick={onEdit} size="sm" variant="ghost">
-          Edit
-        </Button>
-        <Button
-          disabled={disabled || policy.protected}
-          onClick={onRemove}
-          size="sm"
-          variant="ghost"
-        >
-          Remove
-        </Button>
-      </div>
+      {expanded && <PolicyOverview document={policy.document} />}
     </div>
   );
 }
@@ -146,6 +172,7 @@ export function PoliciesSection(): React.ReactElement {
     null
   );
   const [composing, setComposing] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [mode, setMode] = useState<EditorMode>("builder");
   const [fallbackReasons, setFallbackReasons] = useState<string[]>([]);
   const [draft, setDraft] = useState<PolicyDocument | null>(null);
@@ -223,12 +250,18 @@ export function PoliciesSection(): React.ReactElement {
             {policies.map((policy) => (
               <PolicyRow
                 disabled={saving || !canEdit}
+                expanded={expandedId === policy.id}
                 key={policy.id}
                 onEdit={() => openForEdit(policy)}
                 onRemove={() => remove(policy.id)}
                 onToggleEnabled={(next) => update(policy.id, { enabled: next })}
                 onToggleEnforcement={(next) =>
                   update(policy.id, { enforcement: next })
+                }
+                onToggleExpanded={() =>
+                  setExpandedId((current) =>
+                    current === policy.id ? null : policy.id
+                  )
                 }
                 policy={policy}
               />
