@@ -168,11 +168,30 @@ export function explainDenial(input: {
   reason: PolicyDecisionReason;
   organizationId?: string;
 }): string {
-  const base = POLICY_DENIAL_MESSAGE[input.reason];
-  if (!input.organizationId) {
-    return base;
+  // No URL in the text. This string is written to a step, a log line and an
+  // API response, and one of those paths strips every URL from a web3 step's
+  // error because a URL there is normally an RPC endpoint. The reader was left
+  // with a redaction placeholder where the help was meant to be. The reader
+  // also cannot click a sentence, so where to go belongs in the surface showing
+  // the failure, next to a link it can actually render.
+  return POLICY_DENIAL_MESSAGE[input.reason];
+}
+
+/**
+ * Whether this text is one of the refusals above.
+ *
+ * The messages are a closed set this module owns, so a caller showing a failed
+ * step can tell a policy refusal from any other error without guessing at the
+ * wording, and offer the way to the rules that caused it.
+ */
+export function isPolicyDenialMessage(
+  text: string | null | undefined
+): boolean {
+  if (!text) {
+    return false;
   }
-  return `${base} Review your organization's policies at ${policyPageLink({
-    organizationId: input.organizationId,
-  })}`;
+  const trimmed = text.trim();
+  return Object.values(POLICY_DENIAL_MESSAGE).some(
+    (message) => message === trimmed
+  );
 }

@@ -51,6 +51,9 @@ import {
 import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
+import { isPolicyDenialMessage } from "@/lib/policy/errors";
+import { useOrganization } from "@/lib/hooks/use-organization";
+import Link from "next/link";
 
 type ExecutionLog = {
   id: string;
@@ -831,6 +834,11 @@ function ExecutionLogEntry({
   isLast: boolean;
   middleContent?: React.ReactNode;
 }) {
+  // Read here rather than threaded through every caller: this entry is rendered
+  // from several places, including inside a For Each group, and a prop for one
+  // link would have to cross all of them.
+  const { organization } = useOrganization();
+
   return (
     <div className="relative flex gap-3" key={log.id}>
       {/* Timeline connector */}
@@ -912,6 +920,19 @@ function ExecutionLogEntry({
                 <pre className="overflow-auto rounded-lg border border-red-500/20 bg-red-500/5 p-3 font-mono text-red-600 text-xs leading-relaxed">
                   {log.error}
                 </pre>
+                {/* A refusal is the organization's own rules working, so the
+                    reader is sent to them rather than left to search. The link
+                    lives here, not in the message: the message is written to
+                    logs and API responses where a URL is stripped, and a
+                    sentence cannot be clicked. */}
+                {isPolicyDenialMessage(log.error) && organization?.id && (
+                  <Link
+                    className="mt-2 inline-block text-red-600 text-xs underline underline-offset-2 hover:text-red-500"
+                    href={`/settings/${organization.id}/policies`}
+                  >
+                    Review your organization's policies
+                  </Link>
+                )}
               </CollapsibleSection>
             )}
             {!(log.input || log.output || log.error || middleContent) && (

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PolicyDecisionReason } from "@/lib/policy";
 import {
   explainDenial,
+  isPolicyDenialMessage,
   POLICY_DENIAL_MESSAGE,
   policyPageLink,
 } from "@/lib/policy/errors";
@@ -18,26 +19,42 @@ describe("what a blocked run tells the reader", () => {
     ).toContain("no remaining allowance");
   });
 
-  it("links absolutely, so it is clickable outside the app too", () => {
-    // A denial is read in an execution log, an email, an agent's reply or a CLI
-    // transcript as often as in the app. A path alone works in one of those.
+  it("puts no URL in the message", () => {
+    // The same string is written to a step, a log line and an API response, and
+    // one of those paths strips every URL from a web3 step's error, because a
+    // URL there is normally an RPC endpoint. Embedding one left the reader with
+    // a redaction placeholder where the help should have been.
     const message = explainDenial({
       reason: PolicyDecisionReason.EXPLICIT_DENY,
       organizationId: ORG,
     });
-    expect(message).toMatch(/https?:\/\/\S+\/settings\/[^/]+\/policies/);
+    expect(message).not.toMatch(/https?:\/\//);
   });
 
-  it("carries the reason and the link, and nothing else", () => {
+  it("carries the reason and nothing else", () => {
     // Pinning the whole string is what stops a rule name, a condition or an
     // amount being appended later.
     for (const reason of Object.values(PolicyDecisionReason)) {
       expect(explainDenial({ reason, organizationId: ORG })).toBe(
-        `${POLICY_DENIAL_MESSAGE[reason]} Review your organization's policies at ${policyPageLink(
-          { organizationId: ORG }
-        )}`
+        POLICY_DENIAL_MESSAGE[reason]
       );
     }
+  });
+
+  it("still builds an absolute link for a surface that can render one", () => {
+    // Where to go did not disappear, it moved to the caller, which can show it
+    // as something clickable rather than a sentence.
+    expect(policyPageLink({ organizationId: ORG })).toMatch(
+      /https?:\/\/\S+\/settings\/[^/]+\/policies/
+    );
+  });
+
+  it("recognises its own refusals, so a caller can offer the way back", () => {
+    for (const reason of Object.values(PolicyDecisionReason)) {
+      expect(isPolicyDenialMessage(POLICY_DENIAL_MESSAGE[reason])).toBe(true);
+    }
+    expect(isPolicyDenialMessage("execution reverted")).toBe(false);
+    expect(isPolicyDenialMessage(null)).toBe(false);
   });
 
   it("never names the rule that decided", () => {
