@@ -35,3 +35,31 @@ same: wait a few minutes and try the run again.
 
 If a coded error keeps happening for the same workflow, contact support and
 include the code and the time of the run.
+
+## Action failures with structured codes (not PREFIX-NNNN)
+
+Some action failures are shown with their full, actionable message **and** a
+machine-readable failure code. The most common one on sponsored-capable networks:
+
+### `insufficient_balance`
+
+**What happened**: the transaction needed native gas (or native value) that the
+sending wallet did not hold at broadcast time.
+
+**Why it often appears on sponsored networks**: sponsorship is attempted first
+and silently falls back to direct signing whenever an eligibility condition is
+not met -- gas credits exhausted for the period, an unsupported network, a Safe
+sender, a private-mempool route, or a blocked RPC. The first thing the fallback
+does is check the wallet's native balance, and that is where the run stops.
+
+**What to do**:
+
+1. Fund the wallet address named in the message with at least the stated
+   shortfall amount, then retry, **or**
+2. restore the sponsorship conditions (gas credits on the billing page,
+   supported network, direct-wallet sender, public mempool) so the next
+   attempt is sponsored again -- the wallet then needs no native balance for
+   the gas fee.
+
+See [Gas Management -- When sponsorship falls back](/wallet-management/gas)
+for the full eligibility list.

@@ -72,6 +72,12 @@ When a workflow does not behave as expected, the Runs panel provides the informa
 3. Verify contract function parameters
 4. Wait for pending transactions to clear
 
+> **Gas-sponsored workflows**: if the error reads `Insufficient ETH balance ...
+> Fund <address> ...`, sponsorship silently fell back to wallet-paid gas (see
+> [Gas Management](/wallet-management/gas)). Fund the address named in the
+> message or restore the sponsorship conditions, then retry. Failure code:
+> `insufficient_balance` (see [Run Error Codes](/keeper-runs/error-codes)).
+
 ### Slow Execution Times
 
 **Symptoms**: Runs complete but take longer than expected.

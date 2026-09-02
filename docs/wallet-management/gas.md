@@ -94,6 +94,31 @@ Workflows that route through a Safe (Sender ON) are not gas sponsored. The spons
 
 Sponsored gas is metered in USD against your plan's monthly gas credit cap (shown on the billing page). Mainnet usage counts against the cap; testnet usage is not charged. When the cap is reached, sponsorship pauses for the rest of the period and transactions pay gas from the wallet.
 
+### When sponsorship falls back
+
+Sponsorship is attempted first and falls back to direct signing (your wallet pays
+the gas) whenever any eligibility condition above is not met. The fallback is
+silent by design -- the run continues -- but the operator-visible result depends
+on your wallet balance:
+
+- **Wallet holds native gas**: the run completes, paid from your wallet. Nothing
+  in the run output tells you sponsorship was skipped, so if you expected
+  sponsored gas, check your remaining gas credits on the billing page.
+- **Wallet has no native gas**: the transaction fails before broadcast with a
+  structured error:
+
+  ```
+  Insufficient ETH balance. Have: 0.0, Need: 0.000000231. Fund
+  0x26833b05be49036d4de306b1f4fba7713cc84de5 with at least 0.000000231 ETH
+  on this chain and retry.
+  ```
+
+  The failure code is `insufficient_balance` (see [Run Error Codes](/keeper-runs/error-codes)).
+  The address named in the message is the wallet to fund; the amount is the exact
+  shortfall. Funding that address and retrying is sufficient -- or restore the
+  sponsorship conditions (gas credits, supported network, direct-wallet sender,
+  public mempool) so the next attempt is sponsored again.
+
 ## FAQ
 
 ### What happens if I leave the gas limit empty?
