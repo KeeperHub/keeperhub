@@ -1,15 +1,21 @@
 import "server-only";
 
+import { fetchCredentials } from "@/lib/credential-fetcher";
 import { safeFetch } from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
-import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
-import { resolvePythFeedId } from "./get-price";
+import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
+import type { PythCredentials } from "../credentials";
+import {
+  getPythBaseUrl,
+  getPythHeaders,
+  resolvePythFeedId,
+} from "./pyth-core";
 
 export type GetPythUpdateDataResult =
   | {
       success: true;
       updateData: string[];
-      encoding: "hex" | "base64";
+      encoding: string;
       feedIds: string[];
       updateDataCount: number;
     }
@@ -20,10 +26,14 @@ export type GetPythUpdateDataCoreInput = {
   encoding?: "hex" | "base64";
 };
 
-export type GetPythUpdateDataInput = StepInput & GetPythUpdateDataCoreInput;
+export type GetPythUpdateDataInput = StepInput &
+  GetPythUpdateDataCoreInput & {
+    integrationId?: string;
+  };
 
 async function stepHandler(
-  input: GetPythUpdateDataCoreInput
+  input: GetPythUpdateDataInput,
+  credentials: PythCredentials
 ): Promise<GetPythUpdateDataResult> {
   if (!input.feedIds || input.feedIds.trim() === "") {
     return {
@@ -32,31 +42,40 @@ async function stepHandler(
     };
   }
 
+  const apiKey = credentials.PYTH_API_KEY;
+  const endpointUrl = credentials.PYTH_ENDPOINT_URL;
+
   const rawList = input.feedIds.split(",").map((s) => s.trim()).filter(Boolean);
-  const resolvedIds = rawList.map((item) => resolvePythFeedId(item));
-  const encoding = input.encoding ?? "hex";
+  const resolvedIds: string[] = [];
+  for (const item of rawList) {
+    resolvedIds.push(await resolvePythFeedId(item, apiKey, endpointUrl));
+  }
+
+  const requestedEncoding = input.encoding ?? "hex";
 
   try {
+    const baseUrl = getPythBaseUrl(endpointUrl);
+    const headers = getPythHeaders(apiKey);
+
     const queryParams = new URLSearchParams();
-    queryParams.append("encoding", encoding);
+    queryParams.append("encoding", requestedEncoding);
     for (const id of resolvedIds) {
       queryParams.append("ids[]", id);
     }
 
-    const url = `https://hermes.pyth.network/v2/updates/price/latest?${queryParams.toString()}`;
+    const url = `${baseUrl}/v2/updates/price/latest?${queryParams.toString()}`;
 
     const response = await safeFetch(url, {
       plugin: "pyth",
       method: "GET",
-      headers: {
-        Accept: "application/json",
-      },
+      headers,
     });
 
     if (!response.ok) {
+      const statusMsg = response.statusText ? ` ${response.statusText}` : "";
       return {
         success: false,
-        error: `Pyth Hermes API returned status ${response.status}: ${response.statusText}`,
+        error: `Pyth Hermes API returned status ${response.status}${statusMsg}`,
       };
     }
 
@@ -74,8 +93,10 @@ async function stepHandler(
       };
     }
 
+    const actualEncoding = json.binary.encoding || requestedEncoding;
+
     const formattedData = json.binary.data.map((item) => {
-      if (encoding === "hex" && !item.startsWith("0x")) {
+      if (actualEncoding === "hex" && !item.startsWith("0x") && !item.startsWith("0X")) {
         return `0x${item}`;
       }
       return item;
@@ -84,7 +105,7 @@ async function stepHandler(
     return {
       success: true,
       updateData: formattedData,
-      encoding,
+      encoding: actualEncoding,
       feedIds: resolvedIds,
       updateDataCount: formattedData.length,
     };
@@ -101,7 +122,17 @@ export async function getUpdateDataStep(
 ): Promise<GetPythUpdateDataResult> {
   "use step";
 
-  return withStepLogging(input, () => stepHandler(input));
+  const credentials = input.integrationId
+    ? ((await fetchCredentials(input.integrationId, {
+        organizationId: input._context?.organizationId ?? null,
+      })) as PythCredentials)
+    : {};
+
+  return runPluginStep(
+    { pluginName: "pyth", actionName: "get-update-data" },
+    input,
+    () => stepHandler(input, credentials)
+  );
 }
 
 export const _integrationType = "pyth";

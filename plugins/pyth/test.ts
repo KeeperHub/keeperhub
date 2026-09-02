@@ -1,15 +1,24 @@
-export async function testPyth(_credentials: Record<string, string>): Promise<{
+import type { PythCredentials } from "./credentials";
+import { getPythBaseUrl, getPythHeaders } from "./steps/pyth-core";
+
+export async function testPyth(credentials: PythCredentials): Promise<{
   success: boolean;
   error?: string;
 }> {
   try {
-    const res = await fetch("https://hermes.pyth.network/v2/price_feeds?query=ETH");
+    const baseUrl = getPythBaseUrl(credentials.PYTH_ENDPOINT_URL);
+    const headers = getPythHeaders(credentials.PYTH_API_KEY);
+    const res = await fetch(`${baseUrl}/v2/price_feeds?query=ETH`, {
+      headers,
+    });
+
     if (!res.ok) {
       return {
         success: false,
-        error: `Pyth Hermes API check failed with status ${res.status}`,
+        error: `Pyth Hermes API connection failed with status ${res.status}: ${res.statusText}`,
       };
     }
+
     return {
       success: true,
     };

@@ -1,6 +1,20 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+
+vi.mock("@/lib/workflow/executor/step-handler", () => ({
+  runPluginStep: (
+    _options: unknown,
+    input: unknown,
+    fn: (input: unknown) => unknown
+  ) => fn(input),
+  withStepLogging: (_input: unknown, fn: () => unknown) => fn(),
+}));
+
+const mockFetchCredentials = vi.fn();
+vi.mock("@/lib/credential-fetcher", () => ({
+  fetchCredentials: (...args: unknown[]) => mockFetchCredentials(...args),
+}));
 
 const { safeFetch } = vi.hoisted(() => ({ safeFetch: vi.fn() }));
 vi.mock("@/lib/safe-fetch", () => ({
@@ -8,12 +22,14 @@ vi.mock("@/lib/safe-fetch", () => ({
 }));
 
 import pythPlugin from "@/plugins/pyth";
+import { getPriceStep } from "@/plugins/pyth/steps/get-price";
+import { getUpdateDataStep } from "@/plugins/pyth/steps/get-update-data";
 import {
-  getPriceStep,
+  deriveBaseAndQuote,
   parsePythPrice,
   resolvePythFeedId,
-} from "@/plugins/pyth/steps/get-price";
-import { getUpdateDataStep } from "@/plugins/pyth/steps/get-update-data";
+  WELL_KNOWN_FEEDS,
+} from "@/plugins/pyth/steps/pyth-core";
 import { searchPriceFeedsStep } from "@/plugins/pyth/steps/search-price-feeds";
 
 function mockFetchOnce(
@@ -37,13 +53,20 @@ function lastFetchUrl(): string {
   return String(calls.at(-1)?.[0]);
 }
 
+function lastFetchHeaders(): Record<string, string> {
+  const calls = safeFetch.mock.calls;
+  const opts = calls.at(-1)?.[1] as { headers?: Record<string, string> };
+  return opts?.headers ?? {};
+}
+
 describe("Pyth Network Plugin Definition", () => {
   it("has correct plugin metadata", () => {
     expect(pythPlugin.type).toBe("pyth");
     expect(pythPlugin.label).toBe("Pyth Network");
-    expect(pythPlugin.requiresCredentials).toBe(false);
+    expect(pythPlugin.requiresCredentials).toBe(true);
     expect(pythPlugin.egress).toBe("fixed-host");
     expect(pythPlugin.actions.length).toBe(3);
+    expect(pythPlugin.formFields.length).toBe(2);
   });
 
   it("registers expected action slugs", () => {
@@ -54,47 +77,70 @@ describe("Pyth Network Plugin Definition", () => {
   });
 });
 
-describe("Pyth Feed ID Resolution & Math", () => {
-  it("resolves well-known symbols to feed IDs", () => {
-    expect(resolvePythFeedId("ETH")).toBe(
-      "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace"
+describe("Pyth Feed ID Resolution & Math Helpers", () => {
+  it("resolves accurate well-known symbols to feed IDs from catalogue", async () => {
+    expect(await resolvePythFeedId("ETH")).toBe(WELL_KNOWN_FEEDS.ETH);
+    expect(await resolvePythFeedId("ETH/USD")).toBe(
+      WELL_KNOWN_FEEDS["ETH/USD"]
     );
-    expect(resolvePythFeedId("ETH/USD")).toBe(
-      "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace"
+    expect(await resolvePythFeedId("BTC/USD")).toBe(
+      WELL_KNOWN_FEEDS["BTC/USD"]
     );
-    expect(resolvePythFeedId("BTC/USD")).toBe(
-      "0xe62df6e22cc06fd0407e5e28cd33db5482645587149c9672d1e716d561230664"
+    expect(await resolvePythFeedId("SOL/USD")).toBe(
+      WELL_KNOWN_FEEDS["SOL/USD"]
     );
-    expect(resolvePythFeedId("SOL/USD")).toBe(
-      "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d"
+    expect(await resolvePythFeedId("USDT/USD")).toBe(
+      WELL_KNOWN_FEEDS["USDT/USD"]
     );
+    expect(await resolvePythFeedId("LINK/USD")).toBe(
+      WELL_KNOWN_FEEDS["LINK/USD"]
+    );
+    expect(await resolvePythFeedId("ARB/USD")).toBe(
+      WELL_KNOWN_FEEDS["ARB/USD"]
+    );
+    expect(await resolvePythFeedId("OP/USD")).toBe(WELL_KNOWN_FEEDS["OP/USD"]);
   });
 
-  it("formats 0x prefix on custom feed hex IDs", () => {
+  it("formats 0x prefix on custom feed hex IDs", async () => {
     const rawHex =
-      "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
-    expect(resolvePythFeedId(rawHex)).toBe(`0x${rawHex}`);
-
-    const prefixedHex =
-      "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
-    expect(resolvePythFeedId(prefixedHex)).toBe(prefixedHex);
+      "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
+    expect(await resolvePythFeedId(rawHex)).toBe(`0x${rawHex}`);
   });
 
   it("correctly converts raw integer string and negative exponent to price float", () => {
-    // 345000000000 * 10^-8 = 3450
     expect(parsePythPrice("345000000000", -8)).toBe(3450);
-
-    // 123456789 * 10^-5 = 1234.56789
     expect(parsePythPrice("123456789", -5)).toBeCloseTo(1234.567_89, 5);
+    expect(parsePythPrice("invalid", -8)).toBeNull();
+  });
+
+  it("derives base and quote from symbol correctly", () => {
+    expect(deriveBaseAndQuote("Crypto.ETH/USD")).toEqual({
+      base: "ETH",
+      quote: "USD",
+    });
+    expect(deriveBaseAndQuote("BTC/USD")).toEqual({
+      base: "BTC",
+      quote: "USD",
+    });
+    expect(deriveBaseAndQuote("SOL")).toEqual({ base: "SOL", quote: "USD" });
   });
 });
 
 describe("Pyth Step Functions", () => {
+  beforeEach(() => {
+    mockFetchCredentials.mockReset();
+    mockFetchCredentials.mockResolvedValue({});
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("getPriceStep fetches and formats price correctly", async () => {
+  it("getPriceStep fetches and formats price correctly with Authorization header", async () => {
+    mockFetchCredentials.mockResolvedValue({
+      PYTH_API_KEY: "test_secret_key",
+    });
+
     mockFetchOnce({
       parsed: [
         {
@@ -115,7 +161,10 @@ describe("Pyth Step Functions", () => {
       ],
     });
 
-    const result = await getPriceStep({ feedId: "ETH/USD" });
+    const result = await getPriceStep({
+      feedId: "ETH/USD",
+      integrationId: "int-1",
+    });
 
     expect(result.success).toBe(true);
     if (result.success) {
@@ -131,9 +180,29 @@ describe("Pyth Step Functions", () => {
     expect(lastFetchUrl()).toContain(
       "https://hermes.pyth.network/v2/updates/price/latest"
     );
+    expect(lastFetchHeaders().Authorization).toBe("Bearer test_secret_key");
   });
 
-  it("getUpdateDataStep fetches VAA binary payload", async () => {
+  it("getPriceStep fails cleanly on non-numeric price without fabricating zero", async () => {
+    mockFetchOnce({
+      parsed: [
+        {
+          id: "0xabc",
+          price: { price: "invalid", conf: "100", expo: -8, publish_time: 123 },
+          ema_price: { price: "100", conf: "100", expo: -8, publish_time: 123 },
+        },
+      ],
+    });
+
+    const result = await getPriceStep({ feedId: "ETH/USD" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("non-numeric price data");
+    }
+  });
+
+  it("getUpdateDataStep fetches VAA binary payload and respects response encoding", async () => {
     mockFetchOnce({
       binary: {
         encoding: "hex",
@@ -154,14 +223,13 @@ describe("Pyth Step Functions", () => {
     }
   });
 
-  it("searchPriceFeedsStep returns matching metadata", async () => {
+  it("searchPriceFeedsStep returns matching metadata and separate counts", async () => {
     mockFetchOnce([
       {
         id: "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
         attributes: {
           symbol: "Crypto.ETH/USD",
           asset_type: "crypto",
-          base: "ETH",
           quote_currency: "USD",
         },
       },
@@ -174,8 +242,11 @@ describe("Pyth Step Functions", () => {
 
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.count).toBe(1);
+      expect(result.matchingCount).toBe(1);
+      expect(result.returnedCount).toBe(1);
       expect(result.feeds[0].symbol).toBe("Crypto.ETH/USD");
+      expect(result.feeds[0].base).toBe("ETH");
+      expect(result.feeds[0].quote).toBe("USD");
       expect(result.feeds[0].id).toBe(
         "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace"
       );

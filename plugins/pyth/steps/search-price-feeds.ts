@@ -1,8 +1,15 @@
 import "server-only";
 
+import { fetchCredentials } from "@/lib/credential-fetcher";
 import { safeFetch } from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
-import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
+import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
+import type { PythCredentials } from "../credentials";
+import {
+  deriveBaseAndQuote,
+  getPythBaseUrl,
+  getPythHeaders,
+} from "./pyth-core";
 
 export type PythFeedMetaData = {
   id: string;
@@ -16,7 +23,8 @@ export type SearchPythPriceFeedsResult =
   | {
       success: true;
       feeds: PythFeedMetaData[];
-      count: number;
+      matchingCount: number;
+      returnedCount: number;
     }
   | { success: false; error: string };
 
@@ -25,12 +33,22 @@ export type SearchPythPriceFeedsCoreInput = {
   assetType?: string;
 };
 
-export type SearchPythPriceFeedsInput = StepInput & SearchPythPriceFeedsCoreInput;
+export type SearchPythPriceFeedsInput = StepInput &
+  SearchPythPriceFeedsCoreInput & {
+    integrationId?: string;
+  };
 
 async function stepHandler(
-  input: SearchPythPriceFeedsCoreInput
+  input: SearchPythPriceFeedsInput,
+  credentials: PythCredentials
 ): Promise<SearchPythPriceFeedsResult> {
+  const apiKey = credentials.PYTH_API_KEY;
+  const endpointUrl = credentials.PYTH_ENDPOINT_URL;
+
   try {
+    const baseUrl = getPythBaseUrl(endpointUrl);
+    const headers = getPythHeaders(apiKey);
+
     const queryParams = new URLSearchParams();
     if (input.query && input.query.trim() !== "") {
       queryParams.append("query", input.query.trim());
@@ -39,20 +57,19 @@ async function stepHandler(
       queryParams.append("asset_type", input.assetType.trim());
     }
 
-    const url = `https://hermes.pyth.network/v2/price_feeds?${queryParams.toString()}`;
+    const url = `${baseUrl}/v2/price_feeds?${queryParams.toString()}`;
 
     const response = await safeFetch(url, {
       plugin: "pyth",
       method: "GET",
-      headers: {
-        Accept: "application/json",
-      },
+      headers,
     });
 
     if (!response.ok) {
+      const statusMsg = response.statusText ? ` ${response.statusText}` : "";
       return {
         success: false,
-        error: `Pyth API returned status ${response.status}: ${response.statusText}`,
+        error: `Pyth API returned status ${response.status}${statusMsg}`,
       };
     }
 
@@ -61,7 +78,6 @@ async function stepHandler(
       attributes?: {
         symbol?: string;
         asset_type?: string;
-        base?: string;
         quote_currency?: string;
       };
     }>;
@@ -73,21 +89,31 @@ async function stepHandler(
       };
     }
 
-    const feeds: PythFeedMetaData[] = json.slice(0, 50).map((item) => {
-      const feedId = item.id.startsWith("0x") ? item.id : `0x${item.id}`;
+    const matchingCount = json.length;
+    const sliced = json.slice(0, 50);
+
+    const feeds: PythFeedMetaData[] = sliced.map((item) => {
+      const feedId = item.id.startsWith("0x")
+        ? item.id.toLowerCase()
+        : `0x${item.id.toLowerCase()}`;
+
+      const rawSymbol = item.attributes?.symbol ?? "Unknown";
+      const { base, quote } = deriveBaseAndQuote(rawSymbol);
+
       return {
         id: feedId,
-        symbol: item.attributes?.symbol ?? "Unknown",
+        symbol: rawSymbol,
         assetType: item.attributes?.asset_type ?? "crypto",
-        base: item.attributes?.base ?? "",
-        quote: item.attributes?.quote_currency ?? "USD",
+        base,
+        quote: item.attributes?.quote_currency ?? quote,
       };
     });
 
     return {
       success: true,
       feeds,
-      count: feeds.length,
+      matchingCount,
+      returnedCount: feeds.length,
     };
   } catch (error) {
     return {
@@ -102,7 +128,17 @@ export async function searchPriceFeedsStep(
 ): Promise<SearchPythPriceFeedsResult> {
   "use step";
 
-  return withStepLogging(input, () => stepHandler(input));
+  const credentials = input.integrationId
+    ? ((await fetchCredentials(input.integrationId, {
+        organizationId: input._context?.organizationId ?? null,
+      })) as PythCredentials)
+    : {};
+
+  return runPluginStep(
+    { pluginName: "pyth", actionName: "search-price-feeds" },
+    input,
+    () => stepHandler(input, credentials)
+  );
 }
 
 export const _integrationType = "pyth";

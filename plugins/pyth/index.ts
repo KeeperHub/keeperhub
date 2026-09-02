@@ -7,7 +7,7 @@ import { registerIntegration } from "@/plugins/registry-core";
 import { PythIcon } from "./icon";
 
 const pythPlugin: IntegrationPlugin = {
-  type: "pyth" as any,
+  type: "pyth",
   egress: "fixed-host",
   label: "Pyth Network",
   description:
@@ -15,17 +15,31 @@ const pythPlugin: IntegrationPlugin = {
 
   icon: PythIcon,
 
-  requiresCredentials: false,
+  requiresCredentials: true,
 
   formFields: [
     {
-      id: "info",
-      label: "Pyth Network Hermes API",
-      type: "text",
-      placeholder: "No configuration needed",
-      configKey: "info",
-      helpText:
-        "The Pyth Network Hermes REST API is public and requires no authentication. Actions call https://hermes.pyth.network directly.",
+      id: "apiKey",
+      label: "Pyth API Key",
+      type: "password",
+      placeholder: "pyth_...",
+      configKey: "PYTH_API_KEY",
+      envVar: "PYTH_API_KEY",
+      helpText: "Authentication key for Pyth Hermes REST API requests.",
+      helpLink: {
+        text: "pyth.network/developers",
+        url: "https://pyth.network/developers",
+      },
+    },
+    {
+      id: "endpointUrl",
+      label: "Hermes Endpoint URL",
+      type: "url",
+      placeholder: "https://hermes.pyth.network",
+      defaultValue: "https://hermes.pyth.network",
+      configKey: "PYTH_ENDPOINT_URL",
+      envVar: "PYTH_ENDPOINT_URL",
+      helpText: "Custom Pyth Hermes service endpoint URL.",
     },
   ],
 
@@ -45,6 +59,8 @@ const pythPlugin: IntegrationPlugin = {
       category: "Pyth Network",
       stepFunction: "getPriceStep",
       stepImportPath: "get-price",
+      requiresCredentials: true,
+      docUrl: "https://docs.keeperhub.com/plugins/pyth#get-latest-price",
       outputFields: [
         querySuccessOutput(),
         {
@@ -102,6 +118,8 @@ const pythPlugin: IntegrationPlugin = {
       category: "Pyth Network",
       stepFunction: "getUpdateDataStep",
       stepImportPath: "get-update-data",
+      requiresCredentials: true,
+      docUrl: "https://docs.keeperhub.com/plugins/pyth#get-price-update-data-vaa",
       outputFields: [
         querySuccessOutput(),
         {
@@ -154,6 +172,8 @@ const pythPlugin: IntegrationPlugin = {
       category: "Pyth Network",
       stepFunction: "searchPriceFeedsStep",
       stepImportPath: "search-price-feeds",
+      requiresCredentials: true,
+      docUrl: "https://docs.keeperhub.com/plugins/pyth#search-price-feeds",
       outputFields: [
         querySuccessOutput(),
         {
@@ -161,8 +181,12 @@ const pythPlugin: IntegrationPlugin = {
           description: "Array of Pyth feed metadata objects [{ id, symbol, assetType, base, quote }]",
         },
         {
-          field: "count",
-          description: "Total number of matching price feeds returned",
+          field: "matchingCount",
+          description: "Total number of matching price feeds returned by Pyth API",
+        },
+        {
+          field: "returnedCount",
+          description: "Number of feed records returned in this step output",
         },
         queryErrorOutput(),
       ],
@@ -184,8 +208,10 @@ const pythPlugin: IntegrationPlugin = {
             { value: "crypto", label: "Crypto" },
             { value: "equity", label: "Equity" },
             { value: "fx", label: "FX / Currencies" },
+            { value: "commodities", label: "Commodities" },
             { value: "metal", label: "Metals" },
-            { value: "rates", label: "Interest Rates" },
+            { value: "crypto_redemption_rate", label: "Crypto Redemption Rate" },
+            { value: "crypto_index", label: "Crypto Index" },
           ],
           defaultValue: "",
           helpTip: "Filter search results by asset class.",
