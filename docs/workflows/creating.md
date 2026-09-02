@@ -132,6 +132,8 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 
 **When to use `doesNotExist` vs `isNull` / `isUndefined`:** `exists` and `doesNotExist` treat null and undefined the same, which is the right choice for most checks (for example, a node output field that may or may not be present). Reach for `isNull`, `isNotNull`, `isUndefined`, or `isNotUndefined` only when you need to tell null and undefined apart, since these match one but not the other.
 
+**Referencing a field that may be absent:** the existence operators are also the only ones that accept a field path that is not present on the upstream output at all. Every other operator fails the run when the path is missing, so that a mistyped reference is caught rather than quietly satisfying a comparison. Put an existence operator in the first clause of an AND group to guard the clauses after it. See [Runtime resolution](/workflows/templating#runtime-resolution) in the templating reference for the full rules.
+
 **When to use soft vs strict equality:** Use `==` (soft equals) when comparing values that may differ in type, such as a string `"0"` against a number `0`. Use `===` (equals) when you need exact type matching. Most blockchain data arrives as strings, so soft equality is the default for new conditions.
 
 #### Expression Mode

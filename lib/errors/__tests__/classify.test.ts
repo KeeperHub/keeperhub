@@ -240,23 +240,26 @@ describe("classifyExecutionError", () => {
       expect(r.errorType).toBe("user");
     });
 
-    it.each([
-      "URL is required",
-      "HTTP request failed: URL is required",
-    ])("keeps %s as validation + user (config fault, not transport)", (input) => {
-      const r = classifyExecutionError(input);
-      expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
-      expect(r.errorType).toBe("user");
-    });
+    it.each(["URL is required", "HTTP request failed: URL is required"])(
+      "keeps %s as validation + user (config fault, not transport)",
+      (input) => {
+        const r = classifyExecutionError(input);
+        expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
+        expect(r.errorType).toBe("user");
+      }
+    );
 
     it.each([
       "Failed to send webhook: fetch failed: getaddrinfo EAI_AGAIN events.pagerduty.com",
       "HTTP request failed: fetch failed: getaddrinfo ENOTFOUND api.example.com",
-    ])("keeps DNS-resolution failure %s as user (configured host does not resolve)", (input) => {
-      const r = classifyExecutionError(input);
-      expect(r.errorCategory).toBe(ErrorCategory.EXTERNAL_SERVICE);
-      expect(r.errorType).toBe("user");
-    });
+    ])(
+      "keeps DNS-resolution failure %s as user (configured host does not resolve)",
+      (input) => {
+        const r = classifyExecutionError(input);
+        expect(r.errorCategory).toBe(ErrorCategory.EXTERNAL_SERVICE);
+        expect(r.errorType).toBe("user");
+      }
+    );
   });
 
   describe("external: third-party dependency failures", () => {
@@ -290,32 +293,41 @@ describe("classifyExecutionError", () => {
       "RPC failed on both endpoints. Primary: insufficient funds for intrinsic transaction cost. Fallback: insufficient funds for intrinsic transaction cost",
       "Token transfer failed: insufficient funds for gas * price + value",
       "insufficient funds for intrinsic transaction cost (transaction={}, code=INSUFFICIENT_FUNDS, version=6.13.4)",
-    ])("attributes an unfunded sender to the wallet, not the RPC: %s", (input) => {
-      const r = classifyExecutionError(input);
-      expect(r.errorCategory).toBe(ErrorCategory.TRANSACTION);
-      expect(r.errorType).toBe("user");
-      expect(r.code).toBeNull();
-    });
+    ])(
+      "attributes an unfunded sender to the wallet, not the RPC: %s",
+      (input) => {
+        const r = classifyExecutionError(input);
+        expect(r.errorCategory).toBe(ErrorCategory.TRANSACTION);
+        expect(r.errorType).toBe("user");
+        expect(r.code).toBeNull();
+      }
+    );
 
     it.each([
       '[SolanaChainAdapter] Simulation failed: {"InsufficientFundsForRent":{"account_index":1}}',
       "Solana RPC failed on both endpoints. Primary: Attempt to debit an account but found no record of a prior credit",
-    ])("attributes a Solana fee payer that cannot pay to the wallet: %s", (input) => {
-      const r = classifyExecutionError(input);
-      expect(r.errorCategory).toBe(ErrorCategory.TRANSACTION);
-      expect(r.errorType).toBe("user");
-      expect(r.code).toBeNull();
-    });
+    ])(
+      "attributes a Solana fee payer that cannot pay to the wallet: %s",
+      (input) => {
+        const r = classifyExecutionError(input);
+        expect(r.errorCategory).toBe(ErrorCategory.TRANSACTION);
+        expect(r.errorType).toBe("user");
+        expect(r.code).toBeNull();
+      }
+    );
 
     it.each([
       "Safe deploy failed: the deployer wallet has no native balance to pay gas. Top up and retry.",
       "Safe deploy failed: Not enough gas to execute Safe transaction (Safe error GS010). Top up the wallet's native balance and retry.",
-    ])("attributes a Safe that cannot pay for its own deploy to the wallet: %s", (input) => {
-      const r = classifyExecutionError(input);
-      expect(r.errorCategory).toBe(ErrorCategory.TRANSACTION);
-      expect(r.errorType).toBe("user");
-      expect(r.code).toBeNull();
-    });
+    ])(
+      "attributes a Safe that cannot pay for its own deploy to the wallet: %s",
+      (input) => {
+        const r = classifyExecutionError(input);
+        expect(r.errorCategory).toBe(ErrorCategory.TRANSACTION);
+        expect(r.errorType).toBe("user");
+        expect(r.code).toBeNull();
+      }
+    );
 
     it("still pages when an endpoint could not be reached at all", () => {
       const r = classifyExecutionError(

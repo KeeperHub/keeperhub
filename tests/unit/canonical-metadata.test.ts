@@ -39,11 +39,12 @@ describe("canonical URLs on crawlable routes", () => {
     );
   });
 
-  it.each(CRAWLABLE_ROUTE_FILES)("$route declares its own alternates", ({
-    file,
-  }) => {
-    expect(source(file)).toContain("alternates");
-  });
+  it.each(CRAWLABLE_ROUTE_FILES)(
+    "$route declares its own alternates",
+    ({ file }) => {
+      expect(source(file)).toContain("alternates");
+    }
+  );
 
   it("points /hub at itself, not the homepage", () => {
     expect(source("app/hub/page.tsx")).toContain(

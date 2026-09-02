@@ -9,8 +9,10 @@ before the pull request. **[ISSUES.md](ISSUES.md) is the policy** - what needs a
 issue, what goes straight to a pull request, and what happens after you file one.
 
 The short version: open an issue, wait for the `accepted` label, then reference
-it in your pull request title (`fix: #1978 description`). Typos, broken links,
-formatting, and docs corrected to match existing behaviour skip all of that.
+it from your pull request - in the title (`fix: #1978 description`), as
+`Closes #1978` in the description, or in an `issue-1978` branch name. Typos,
+broken links, formatting, and docs corrected to match existing behaviour skip
+all of that.
 
 ## Table of Contents
 
@@ -82,6 +84,11 @@ make hybrid-down      # Teardown
    git checkout -b feat/KEEP-123-description
    ```
 
+   That is the team's shape, with the Linear ticket in the branch name. Outside
+   contributors have no ticket: name the branch after the issue
+   (`fix/issue-1978-description`) or however you like, and put the issue number
+   in the pull request title.
+
 2. Make your changes and test thoroughly
 
 3. Run quality checks:
@@ -115,7 +122,7 @@ make hybrid-down      # Teardown
 
 ### PR Guidelines
 
-1. **Title**: Conventional commit format carrying the reference, `<type>: #<issue> <description>` or `<type>(scope): #<issue> <description>`. Internal work uses its Linear code in the same position (`feat: KEEP-1234 description`); outside contributions use the GitHub issue number (`fix: #1978 description`). Enforced by the `pr-title-check` and `pr-issue-link` workflows
+1. **Title**: Conventional commit format, `<type>: <description>` or `<type>(scope): <description>`, enforced by the `pr-title-check` workflow. Outside contributions put the accepted issue number after the type (`fix: #1978 description`); the `pr-issue-link` check also accepts `Closes #1978` in the description or an `issue-1978` branch name, and fails a pull request that has none of them with a comment saying what is missing. Internal work carries its Linear ticket in the branch name instead (`feat/KEEP-1234-description`)
 2. **Base branch**: Always target `staging`
 3. **Description**: Explain what and why, not just how
 4. **Scope**: One change per pull request. If a part of it could ship and be correct with the rest reverted, split it

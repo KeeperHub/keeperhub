@@ -250,6 +250,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     reserved: isSolanaTransfer
       ? { kind: "solana", valueLamports: reservedValueLamports }
       : { kind: "evm", valueWei: reservedValueWei },
+    paygOverflow: executionGuard.limitResult?.paygOverflow === true,
   });
   if (!reserve.allowed) {
     // Pre-broadcast gating failure: release so the same key can be retried.

@@ -192,57 +192,57 @@ beforeEach(() => {
   mockReadContractCore.mockResolvedValue({ success: true, result: "1" });
 });
 
-describe.each(ROUTES)("idempotency 409 bodies, as $name emits them", ({
-  post: handler,
-  request,
-}) => {
-  it("ships retryable true on an in-flight duplicate", async () => {
-    mockBeginIdempotentFromRequest.mockResolvedValue({ kind: "in_progress" });
+describe.each(ROUTES)(
+  "idempotency 409 bodies, as $name emits them",
+  ({ post: handler, request }) => {
+    it("ships retryable true on an in-flight duplicate", async () => {
+      mockBeginIdempotentFromRequest.mockResolvedValue({ kind: "in_progress" });
 
-    const res = await handler(request());
-    const body = (await res.json()) as { code?: string; retryable?: boolean };
+      const res = await handler(request());
+      const body = (await res.json()) as { code?: string; retryable?: boolean };
 
-    expect(res.status).toBe(409);
-    expect(body.code).toBe("idempotency_in_progress");
-    expect(body.retryable).toBe(true);
-  });
-
-  it("ships retryable false on a key reused with a different body", async () => {
-    mockBeginIdempotentFromRequest.mockResolvedValue({
-      kind: "conflict",
-      originalResourceId: "exec_1",
+      expect(res.status).toBe(409);
+      expect(body.code).toBe("idempotency_in_progress");
+      expect(body.retryable).toBe(true);
     });
 
-    const res = await handler(request());
-    const body = (await res.json()) as {
-      code?: string;
-      retryable?: boolean;
-      originalExecutionId?: string;
-    };
+    it("ships retryable false on a key reused with a different body", async () => {
+      mockBeginIdempotentFromRequest.mockResolvedValue({
+        kind: "conflict",
+        originalResourceId: "exec_1",
+      });
 
-    expect(res.status).toBe(409);
-    expect(body.code).toBe("idempotency_conflict");
-    expect(body.retryable).toBe(false);
-    expect(body.originalExecutionId).toBe("exec_1");
-  });
+      const res = await handler(request());
+      const body = (await res.json()) as {
+        code?: string;
+        retryable?: boolean;
+        originalExecutionId?: string;
+      };
 
-  // The status is identical on both, so a caller that reads only the status
-  // cannot tell an in-flight request from a spent key. This is the assertion
-  // the whole change exists for.
-  it("gives the two the same status and opposite dispositions", async () => {
-    mockBeginIdempotentFromRequest.mockResolvedValue({ kind: "in_progress" });
-    const inFlight = await handler(request());
-    const inFlightBody = (await inFlight.json()) as { retryable?: boolean };
-
-    mockBeginIdempotentFromRequest.mockResolvedValue({
-      kind: "conflict",
-      originalResourceId: null,
+      expect(res.status).toBe(409);
+      expect(body.code).toBe("idempotency_conflict");
+      expect(body.retryable).toBe(false);
+      expect(body.originalExecutionId).toBe("exec_1");
     });
-    const conflict = await handler(request());
-    const conflictBody = (await conflict.json()) as { retryable?: boolean };
 
-    expect(inFlight.status).toBe(conflict.status);
-    expect(inFlightBody.retryable).toBe(true);
-    expect(conflictBody.retryable).toBe(false);
-  });
-});
+    // The status is identical on both, so a caller that reads only the status
+    // cannot tell an in-flight request from a spent key. This is the assertion
+    // the whole change exists for.
+    it("gives the two the same status and opposite dispositions", async () => {
+      mockBeginIdempotentFromRequest.mockResolvedValue({ kind: "in_progress" });
+      const inFlight = await handler(request());
+      const inFlightBody = (await inFlight.json()) as { retryable?: boolean };
+
+      mockBeginIdempotentFromRequest.mockResolvedValue({
+        kind: "conflict",
+        originalResourceId: null,
+      });
+      const conflict = await handler(request());
+      const conflictBody = (await conflict.json()) as { retryable?: boolean };
+
+      expect(inFlight.status).toBe(conflict.status);
+      expect(inFlightBody.retryable).toBe(true);
+      expect(conflictBody.retryable).toBe(false);
+    });
+  }
+);

@@ -24,6 +24,7 @@ vi.mock("@/lib/security/trusted-proxies", () => ({
 vi.mock("@/lib/db", async () => await vi.importActual("@/lib/db"));
 
 import { POST } from "@/app/api/user/forgot-password/route";
+import { CREDENTIAL_ACCOUNT_ISSUER } from "@/lib/auth/account-issuer";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -82,6 +83,7 @@ async function seedUserWithCredentials(): Promise<Seeded> {
     id: accountId,
     accountId: userId,
     providerId: "credential",
+    issuer: CREDENTIAL_ACCOUNT_ISSUER,
     userId,
     password: "pre-reset-hash",
     createdAt: now,

@@ -1682,4 +1682,174 @@ describe("PATCH /api/workflows/[workflowId] — workflowType auto-flip", () => {
     expect(response.status).toBe(200);
     expect(capturedSet.data?.workflowType).toBeUndefined();
   });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // KEEP-1187: the auto-flip above is correct while a workflow is a draft
+  // and wrong once it is published. On a listed row workflowType is part of
+  // the call contract external callers have already paid against, so the
+  // flip is frozen and the edit that would cause it is rejected instead.
+  // ───────────────────────────────────────────────────────────────────────
+
+  const READ_ONLY_NODE = {
+    id: "webhook-1",
+    type: "action",
+    data: {
+      type: "action",
+      config: {
+        actionType: "webhook/send-webhook",
+        webhookUrl: "https://example.com",
+        webhookMethod: "POST",
+      },
+    },
+  };
+
+  function makeListedRead(overrides: Record<string, unknown> = {}) {
+    return makeWorkflow({
+      isListed: true,
+      listedSlug: "live-read",
+      listedAt: new Date(),
+      inputSchema: { type: "object" },
+      priceUsdcPerCall: "1.00",
+      workflowType: "read",
+      nodes: [],
+      ...overrides,
+    });
+  }
+
+  it("KEEP-1187: rejects WORKFLOW_TYPE_FROZEN when a listed 'read' workflow gains a write node", async () => {
+    mockWorkflowsFindFirst.mockResolvedValue(makeListedRead());
+
+    const response = await PATCH(
+      createRequest("PATCH", { nodes: [WRITE_CONTRACT_NODE], edges: [] }),
+      { params: mockParams }
+    );
+
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.error).toBe("WORKFLOW_TYPE_FROZEN");
+    expect(data.message).toContain("'read'");
+    expect(data.message).toContain("'write'");
+    // The row must be left alone entirely — no type flip, and no
+    // listingVersion bump advertising a change that was refused.
+    expect(mockUpdateReturning).not.toHaveBeenCalled();
+    expect(capturedSet.data).toBeNull();
+  });
+
+  it("KEEP-1187: the same edit succeeds and re-derives once the workflow is unlisted", async () => {
+    // Acceptance path the 422 message points the owner at: unlist, then save.
+    // listedSlug/listedAt survive unlisting, so the row is unmistakably a
+    // previously-published one rather than a fresh draft.
+    mockWorkflowsFindFirst.mockResolvedValue(
+      makeListedRead({ isListed: false })
+    );
+    mockUpdateReturning.mockResolvedValue([
+      makeListedRead({
+        isListed: false,
+        workflowType: "write",
+        nodes: [WRITE_CONTRACT_NODE],
+      }),
+    ]);
+
+    const response = await PATCH(
+      createRequest("PATCH", { nodes: [WRITE_CONTRACT_NODE], edges: [] }),
+      { params: mockParams }
+    );
+
+    expect(response.status).toBe(200);
+    expect(capturedSet.data?.workflowType).toBe("write");
+  });
+
+  it("KEEP-1187: unlisting in the same PATCH that adds the write node re-derives", async () => {
+    // The unlist-and-clean-up bypass the other listed-workflow gates already
+    // grant: the post-patch state never reaches the bazaar, so there is no
+    // published contract left to protect.
+    mockWorkflowsFindFirst.mockResolvedValue(makeListedRead());
+    mockUpdateReturning.mockResolvedValue([
+      makeListedRead({
+        isListed: false,
+        workflowType: "write",
+        nodes: [WRITE_CONTRACT_NODE],
+      }),
+    ]);
+
+    const response = await PATCH(
+      createRequest("PATCH", {
+        isListed: false,
+        nodes: [WRITE_CONTRACT_NODE],
+        edges: [],
+      }),
+      { params: mockParams }
+    );
+
+    expect(response.status).toBe(200);
+    expect(capturedSet.data?.workflowType).toBe("write");
+  });
+
+  it("KEEP-1187: listing a 'read' row whose nodes already imply write still derives on the publish PATCH", async () => {
+    // The freeze must not swallow the publish event itself. Listing is the
+    // moment the contract is minted, so deriving here is what the curator
+    // publish path (lib/mcp/listing.ts::listWorkflow) does too — blocking it
+    // would strand the row with a type its own nodes contradict.
+    mockWorkflowsFindFirst.mockResolvedValue(
+      makeListedRead({ isListed: false, nodes: [WRITE_CONTRACT_NODE] })
+    );
+    mockUpdateReturning.mockResolvedValue([
+      makeListedRead({
+        workflowType: "write",
+        nodes: [WRITE_CONTRACT_NODE],
+      }),
+    ]);
+
+    const response = await PATCH(createRequest("PATCH", { isListed: true }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(capturedSet.data?.workflowType).toBe("write");
+  });
+
+  it("KEEP-1187: a listed 'write' workflow losing its write node is still rejected", async () => {
+    // The mirror direction. deriveWorkflowType never demotes to "read", so
+    // this never reached the freeze — MISSING_WRITE_ACTION owns it, and the
+    // two gates together close both directions on a listed row.
+    mockWorkflowsFindFirst.mockResolvedValue(
+      makeListedRead({
+        listedSlug: "live-write",
+        workflowType: "write",
+        nodes: [WRITE_CONTRACT_NODE],
+      })
+    );
+
+    const response = await PATCH(
+      createRequest("PATCH", { nodes: [READ_ONLY_NODE], edges: [] }),
+      { params: mockParams }
+    );
+
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.error).toBe("MISSING_WRITE_ACTION");
+    expect(mockUpdateReturning).not.toHaveBeenCalled();
+  });
+
+  it("KEEP-1187: an edit that does not touch nodes on a diverged listed row neither flips nor bumps", async () => {
+    // A listed row whose stored type already disagreed with its nodes before
+    // this PATCH (set out-of-band, or by a path that does not derive). The
+    // rename must go through untouched: repairing the type would republish a
+    // different contract as a side effect of a rename, and rejecting would
+    // leave the owner unable to edit their own workflow at all.
+    mockWorkflowsFindFirst.mockResolvedValue(
+      makeListedRead({ nodes: [WRITE_CONTRACT_NODE] })
+    );
+    mockUpdateReturning.mockResolvedValue([
+      makeListedRead({ nodes: [WRITE_CONTRACT_NODE], name: "Renamed" }),
+    ]);
+
+    const response = await PATCH(createRequest("PATCH", { name: "Renamed" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(capturedSet.data?.workflowType).toBeUndefined();
+    expect(capturedSet.data?.listingVersion).toBeUndefined();
+  });
 });

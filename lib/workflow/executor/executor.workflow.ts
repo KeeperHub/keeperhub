@@ -263,7 +263,7 @@ function describeMissingFieldPath(data: unknown, fieldPath: string): string {
       const [, key, indexStr] = arrayMatch;
       const index = Number.parseInt(indexStr, 10);
       if (!(key in container)) {
-        return `"${fieldPath}": "${key}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}`;
+        return `"${fieldPath}": "${key}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}.`;
       }
       const arr = container[key];
       if (!Array.isArray(arr)) {
@@ -277,7 +277,7 @@ function describeMissingFieldPath(data: unknown, fieldPath: string): string {
     }
 
     if (!(segment in container)) {
-      return `"${fieldPath}": "${segment}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}`;
+      return `"${fieldPath}": "${segment}" does not exist on the data. Available fields: ${Object.keys(container).join(", ") || "(none)"}.`;
     }
     current = container[segment];
   }
@@ -394,6 +394,23 @@ function renderConditionLiteral(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/**
+ * The chain a Block/Event/Transfer trigger watches, as the text form the
+ * execution log's `network` column holds. That config is the only place an
+ * on-chain trigger names its chain, so without logging it a run whose later
+ * steps name no chain of their own reaches /analytics with no Network at all.
+ * A trigger with no chain (Manual, Schedule, Webhook) yields undefined.
+ */
+// Exported for testing
+export function triggerConfigNetwork(
+  config: Record<string, unknown>
+): string | undefined {
+  const raw = config.network;
+  return typeof raw === "string" || typeof raw === "number"
+    ? String(raw)
+    : undefined;
 }
 
 /**
@@ -1020,7 +1037,13 @@ function computeCommentRanges(code: string): [number, number][] {
       i++;
       continue;
     }
-    if (c === '"' || c === "'" || c === "`") {
+    // "\u0060" is a backtick, written as an escape on purpose. A raw backtick
+    // here is unpaired within this file, and @workflow/builders' directive
+    // detector pairs backticks with a regex that ignores string context. One
+    // unpaired tick desynchronizes it for the rest of the file and blanks the
+    // "use workflow" directive in executeWorkflow below, so the function ships
+    // untransformed and start() rejects it at runtime. See KEEP-1302.
+    if (c === '"' || c === "'" || c === "\u0060") {
       stringDelim = c;
       i++;
       continue;
@@ -3043,6 +3066,10 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           timestamp: Date.now(),
           triggeredAt: new Date().toISOString(),
         };
+        // Gas burned by the transaction that fired an on-chain trigger. Held
+        // apart from triggerData so it reaches the log as its own field rather
+        // than as trigger output a template could read.
+        let triggerGasUsed: string | undefined;
 
         // Handle webhook mock request for test runs
         if (
@@ -3091,6 +3118,21 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
               } catch {
                 // Non-critical: skip explorer links if lookup fails
               }
+
+              if (typeof triggerData.transactionHash === "string") {
+                try {
+                  const { fetchTriggerTransactionGas } = await import(
+                    "@/lib/workflow/nodes/trigger-gas/step"
+                  );
+                  triggerGasUsed =
+                    (await fetchTriggerTransactionGas(
+                      triggerData.transactionHash,
+                      config.network as string | number
+                    )) ?? undefined;
+                } catch {
+                  // Non-critical: the trigger simply reports no gas.
+                }
+              }
             }
           } else if (
             triggerType === "Schedule" &&
@@ -3118,6 +3160,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         // Execute trigger step (handles logging internally)
         const triggerResult = await triggerStep({
           triggerData,
+          network: triggerConfigNetwork(config),
+          triggerGasUsed,
           _context: triggerContext,
         });
 
