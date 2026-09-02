@@ -6,26 +6,69 @@ import {
   detectListingTriggerType,
   normalizeTriggerInput,
 } from "@/lib/mcp/trigger-input-schema";
+import { resolveProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
+// Protocol registration is an import side effect: each definition module calls
+// registerProtocol at load. Nothing else in the /mcp/w/[slug] route's graph
+// pulls this barrel, so without it resolveProtocolMeta's registry lookup finds
+// nothing and every protocol node falls back to its cached _protocolMeta
+// alone. lib/execute/stablecoin-cap.ts carries the same import for the same
+// reason, after an empty registry silently voided its allowlist.
+import "@/protocols";
 
-function getNodeActionType(node: unknown): unknown {
+type NodeAction = { actionType: unknown; protocolMeta: unknown };
+
+function getNodeAction(node: unknown): NodeAction {
   if (node === null || typeof node !== "object" || !("data" in node)) {
-    return;
+    return { actionType: undefined, protocolMeta: undefined };
   }
   const { data } = node as { data?: unknown };
   if (data === null || typeof data !== "object") {
-    return;
+    return { actionType: undefined, protocolMeta: undefined };
   }
   const config =
     "config" in data ? (data as Record<string, unknown>).config : undefined;
-  const configActionType =
-    config !== null && typeof config === "object" && "actionType" in config
-      ? (config as Record<string, unknown>).actionType
+  const configRecord =
+    config !== null && typeof config === "object"
+      ? (config as Record<string, unknown>)
       : undefined;
   const legacyActionType =
     "actionType" in data
       ? (data as Record<string, unknown>).actionType
       : undefined;
-  return configActionType ?? legacyActionType;
+  return {
+    actionType: configRecord?.actionType ?? legacyActionType,
+    protocolMeta: configRecord?._protocolMeta,
+  };
+}
+
+/**
+ * True for a protocol action node whose action writes on chain.
+ *
+ * Protocol action types are `<protocol>/<action-slug>` (sky/approve-usds,
+ * lido/wsteth-wrap), so they match none of the literal names in
+ * hasIrreversibleEffect's allowlist and none of isWriteActionType's
+ * write-contract/protocol-write substrings. The sky-staking onboarding
+ * listing is built from two of them and advertised readOnlyHint true while
+ * executing an ERC-20 approval and a vault deposit from the org wallet.
+ *
+ * resolveProtocolMeta is the resolver protocolWriteStep already uses to pick
+ * the contract function, so the annotation and the execution path cannot
+ * disagree about what an action does. It reads the registry first, which
+ * covers every registered protocol including ones added after this code, and
+ * falls back to the node's cached _protocolMeta so a node whose protocol is
+ * absent from this process's registry still classifies.
+ */
+function isProtocolWriteNode({
+  actionType,
+  protocolMeta,
+}: NodeAction): boolean {
+  const meta = resolveProtocolMeta({
+    ...(typeof actionType === "string" ? { _actionType: actionType } : {}),
+    ...(typeof protocolMeta === "string"
+      ? { _protocolMeta: protocolMeta }
+      : {}),
+  });
+  return meta?.actionType === "write";
 }
 
 // Broader than workflowType === "write": also catches actions that
@@ -36,7 +79,12 @@ function getNodeActionType(node: unknown): unknown {
 // transaction or send a message the caller cannot recall, so the annotations
 // need this separate, wider check rather than reusing workflowType.
 function hasMutatingNode(nodes: unknown[]): boolean {
-  return nodes.some((node) => hasIrreversibleEffect(getNodeActionType(node)));
+  return nodes.some((node) => {
+    const action = getNodeAction(node);
+    return (
+      hasIrreversibleEffect(action.actionType) || isProtocolWriteNode(action)
+    );
+  });
 }
 
 type ApiResponse = Record<string, unknown>;

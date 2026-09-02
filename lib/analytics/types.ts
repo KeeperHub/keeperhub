@@ -135,10 +135,47 @@ export type NetworkBreakdown = {
   errorCount: number;
 };
 
-export type RunsFilters = {
+/**
+ * Server-side filters the runs listing accepts. Every dimension is a set, so a
+ * reader can hold several values of one dimension open at once (all three error
+ * statuses, two networks). Values inside a dimension OR together; the
+ * dimensions AND together.
+ */
+/**
+ * How a run's on-chain cost was met. "sponsored" is a run with a leg KeeperHub
+ * covered from gas credit; "wallet" is a run that spent more than the credit
+ * covered, so the org's own funds paid for part of it; "free" is a run that
+ * only read, or never reached a broadcast.
+ *
+ * Sponsored and wallet deliberately overlap. A run that starts sponsored and
+ * falls back to direct signing genuinely is both, and filing it under only one
+ * would hide it from the other filter.
+ */
+export type GasSpend = "sponsored" | "wallet" | "free";
+
+export type RunQueryFilters = {
+  statuses?: NormalizedStatus[];
+  gas?: GasSpend[];
+  sources?: RunSource[];
+  networks?: string[];
+  /** Inclusive lower bound on run duration, in milliseconds. */
+  durationMinMs?: number;
+  /** Exclusive upper bound on run duration, in milliseconds. */
+  durationMaxMs?: number;
+  /** Matches a workflow name or a run id, case-insensitively. */
+  search?: string;
+};
+
+/**
+ * Run count per normalized status over the current window, used for the counts
+ * beside each option in the status filter. Counted with every other filter
+ * applied but with the status filter itself lifted, so a count answers "how
+ * many rows would ticking this add", not "how many are showing now".
+ */
+export type StatusFacets = Partial<Record<NormalizedStatus, number>>;
+
+export type RunsFilters = RunQueryFilters & {
   range: TimeRange;
-  status?: NormalizedStatus;
-  source?: RunSource;
   cursor?: string;
   limit?: number;
   customStart?: string;

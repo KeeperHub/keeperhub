@@ -62,7 +62,17 @@ function initializeTurnkeySigner(
   );
 
   const signer = new TurnkeySigner({
-    client: config.client,
+    // @turnkey/ethers 1.3.39 pins the v8 Turnkey SDK line (@turnkey/sdk-server 8.x,
+    // @turnkey/core 2.x) as direct dependencies, so its TConfig["client"] union
+    // names v8 client types while this app is on @turnkey/sdk-server 5.x. The two
+    // are structurally incompatible (v8's TurnkeyClient carries ~128 methods the v5
+    // TurnkeyApiClient lacks), but the signer only ever calls getPrivateKey,
+    // signRawPayload and signTransaction, all of which the v5 client implements
+    // with the same request/response shapes. Cast until the SDK is moved to v8,
+    // which is a major bump and out of scope for a minor-and-patch update.
+    client: config.client as unknown as ConstructorParameters<
+      typeof TurnkeySigner
+    >[0]["client"],
     organizationId: config.organizationId,
     signWith: config.signWith,
   });

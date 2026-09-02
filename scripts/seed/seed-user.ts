@@ -21,6 +21,7 @@ import { randomBytes, scrypt } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { CREDENTIAL_ACCOUNT_ISSUER } from "../../lib/auth/account-issuer";
 import { getDatabaseUrl } from "../../lib/db/connection-utils";
 import { accounts, users } from "../../lib/db/schema";
 import { generateId } from "../../lib/utils/id";
@@ -123,6 +124,7 @@ async function main(): Promise<void> {
         id: accountId,
         accountId: userId,
         providerId: "credential",
+        issuer: CREDENTIAL_ACCOUNT_ISSUER,
         userId,
         password: hash,
         createdAt: now,

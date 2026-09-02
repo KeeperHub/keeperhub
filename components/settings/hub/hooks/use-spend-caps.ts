@@ -53,7 +53,9 @@ export function useSpendCaps(): SpendCapsState {
           // Read the saved value back rather than patching a copy, so the
           // cache other sections read from holds what the server has.
           await refetch();
-          toast.success(base ? "Cap saved" : "Cap cleared");
+          toast.success(
+            base ? "Cap saved" : "Cap cleared - the platform default applies"
+          );
           return;
         }
         toast.error(

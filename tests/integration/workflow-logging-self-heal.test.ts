@@ -218,6 +218,41 @@ describe("logStepCompleteDb self-heal (KEEP-431 follow-up)", () => {
       );
     });
 
+    it("clears the error classification columns on the flipped row", async () => {
+      executionRow = {
+        status: "error",
+        error: "Step did not record completion",
+        completedAt: new Date(),
+        startedAt: new Date(Date.now() - 1000),
+      };
+      allLogs = [
+        { nodeId: "trigger", status: "success" },
+        { nodeId: "combine", status: "success" },
+      ];
+
+      await logStepCompleteDb({
+        logId: "log_combine",
+        startTime: Date.now() - 200,
+        status: "success",
+        output: {},
+        outputRaw: {},
+        executionId,
+      });
+
+      // Leaving these set labels a success row with the spurious failure that
+      // was just healed away, which reads as a failed run downstream.
+      const flip = getWorkflowStatusFlip();
+      expect(flip?.set).toEqual(
+        expect.objectContaining({
+          status: "success",
+          error: null,
+          errorCategory: null,
+          errorType: null,
+          errorCode: null,
+        })
+      );
+    });
+
     it("clears stale error from success rows after flip", async () => {
       executionRow = {
         status: "error",

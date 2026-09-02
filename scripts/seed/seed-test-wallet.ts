@@ -33,6 +33,7 @@ import { hashPassword } from "better-auth/crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { CREDENTIAL_ACCOUNT_ISSUER } from "../../lib/auth/account-issuer";
 import { getDatabaseUrl } from "../../lib/db/connection-utils";
 import {
   accounts,
@@ -119,6 +120,7 @@ async function ensureCredentialAccount(db: Db, userId: string): Promise<void> {
     id: generateId(),
     accountId: userId,
     providerId: "credential",
+    issuer: CREDENTIAL_ACCOUNT_ISSUER,
     userId,
     password: hashedPassword,
     createdAt: new Date(),

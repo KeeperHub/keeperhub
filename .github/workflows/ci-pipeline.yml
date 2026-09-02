@@ -137,27 +137,43 @@ jobs:
           # staging. It is derived from APP_ECR_NAME so the account and prefix
           # still come from the environment.
           SANDBOX_ECR_NAME="keeperhub-sandbox-${APP_ECR_NAME##*-}"
-          MISSING=false
-          for pair in "${APP_ECR_NAME}:app" "${SANDBOX_ECR_NAME}:sandbox"; do
-            repo="${pair%%:*}"; prefix="${pair##*:}"
-            if aws ecr describe-images \
-                 --repository-name "${repo}" \
-                 --image-ids "imageTag=${prefix}-${SHA}" \
+          if ! aws ecr describe-images \
+                 --repository-name "${APP_ECR_NAME}" \
+                 --image-ids "imageTag=app-${SHA}" \
                  --region "${REGION}" >/dev/null 2>&1; then
-              echo "${repo}:${prefix}-${SHA} found"
-            else
-              echo "::error::${repo}:${prefix}-${SHA} is absent. e2e cannot reuse the staging build for this release. Re-run the staging pipeline for ${SHA} so the image is rebuilt, then re-run this release."
-              MISSING=true
-            fi
-          done
-          if [[ "${MISSING}" == "true" ]]; then
+            echo "::error::${APP_ECR_NAME}:app-${SHA} is absent. e2e cannot reuse the staging build for this release. Re-run the staging pipeline for ${SHA} so the image is rebuilt, then re-run this release."
             exit 1
           fi
+          echo "${APP_ECR_NAME}:app-${SHA} found"
+          # The sandbox resolves by digest from sandbox-latest, NOT by a
+          # per-commit tag. KEEP-1259 stopped the pipeline bake writing
+          # sandbox-<sha>, because the sandbox digest does not change between
+          # commits and ECR caps one image at 1000 tags.
+          #
+          # This is the one place the release reads a moving tag, so state the
+          # trade-off plainly. The app half above stays pinned to the exact
+          # staging commit this release merges. The sandbox half is whatever
+          # sandbox-latest points at when this job runs, which differs from the
+          # release commit's sandbox only when a sandbox change lands on staging
+          # between the release merge and this run. deploy-sandbox fires once or
+          # twice a month, so that window is small, and the gate below still
+          # fails closed rather than falling through to a local build.
+          SANDBOX_DIGEST=$(aws ecr describe-images \
+            --repository-name "${SANDBOX_ECR_NAME}" \
+            --image-ids imageTag=sandbox-latest \
+            --region "${REGION}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text 2>/dev/null || true)
+          if [[ -z "${SANDBOX_DIGEST}" || "${SANDBOX_DIGEST}" == "None" ]]; then
+            echo "::error::Could not resolve ${SANDBOX_ECR_NAME}:sandbox-latest to a digest. Every sandbox bake pushes that tag, so its absence means the repository was emptied or this job cannot read it. Run the deploy-sandbox workflow on staging to republish the image, then re-run this release."
+            exit 1
+          fi
+          echo "${SANDBOX_ECR_NAME}:sandbox-latest resolves to ${SANDBOX_DIGEST}"
           {
             echo "image_tag=${SHA}"
             echo "ecr_repo=${APP_ECR_NAME}"
             echo "ecr_region=${REGION}"
-            echo "sandbox_image=${REGISTRY}/${SANDBOX_ECR_NAME}:sandbox-${SHA}"
+            echo "sandbox_image=${REGISTRY}/${SANDBOX_ECR_NAME}@${SANDBOX_DIGEST}"
           } >> "$GITHUB_OUTPUT"
 
   # Ephemeral e2e tests.

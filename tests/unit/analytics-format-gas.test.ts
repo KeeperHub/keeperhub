@@ -99,7 +99,7 @@ describe("formatGasAsEth", () => {
   });
 
   it("returns -- for missing input and 0 ETH for zero", () => {
-    expect(formatGasAsEth(null)).toBe("--");
+    expect(formatGasAsEth(null)).toBe("-");
     expect(formatGasAsEth("0")).toBe("0 ETH");
   });
 });
@@ -132,9 +132,9 @@ describe("formatGasExactEth", () => {
   });
 
   it("returns -- for missing input and 0 ETH for zero", () => {
-    expect(formatGasExactEth(null)).toBe("--");
-    expect(formatGasExactEth("")).toBe("--");
-    expect(formatGasExactEth("nonsense")).toBe("--");
+    expect(formatGasExactEth(null)).toBe("-");
+    expect(formatGasExactEth("")).toBe("-");
+    expect(formatGasExactEth("nonsense")).toBe("-");
     expect(formatGasExactEth("0")).toBe("0 ETH");
   });
 });

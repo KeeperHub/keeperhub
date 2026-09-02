@@ -342,6 +342,8 @@ describe("runtime condition evaluation", () => {
     });
 
     it("should throw error when referenced field is undefined", () => {
+      // Unguarded comparison: the absent path is rejected. A presence operator
+      // is what makes it evaluate instead -- see condition-absent-field-paths.
       const expression = "{{@node1:Label.missingField}} > 100";
       const outputs = {
         node1: { label: "Label", data: { existingField: 42 } },

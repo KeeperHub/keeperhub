@@ -252,15 +252,27 @@ jobs:
         if: steps.changes.outputs.relevant == 'true'
         uses: docker/setup-buildx-action@v4
 
+      # A pull request from a fork gets no secrets, no OIDC token and no
+      # environment variables, so these two steps cannot succeed on one and
+      # are skipped instead. Bake then runs with ECR_REGISTRY empty, which
+      # docker-bake.hcl turns into no registry tags and no registry cache:
+      # the build is a plain compile check, slower and with empty public
+      # build args. fork-build-notice.yml tells the contributor why.
       - name: Configure AWS credentials
-        if: steps.changes.outputs.relevant == 'true' && github.actor != 'dependabot[bot]'
+        if: >-
+          steps.changes.outputs.relevant == 'true'
+          && github.actor != 'dependabot[bot]'
+          && github.event.pull_request.head.repo.full_name == github.repository
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.TO_REGION }}
 
       - name: Login to AWS ECR
-        if: steps.changes.outputs.relevant == 'true' && github.actor != 'dependabot[bot]'
+        if: >-
+          steps.changes.outputs.relevant == 'true'
+          && github.actor != 'dependabot[bot]'
+          && github.event.pull_request.head.repo.full_name == github.repository
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 

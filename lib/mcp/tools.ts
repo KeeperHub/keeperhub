@@ -2418,7 +2418,7 @@ export function registerMetaTools(
   // Meta-tool 2: Execute any protocol action by actionType
   server.tool(
     "execute_protocol_action",
-    "Execute a DeFi protocol action directly. Use search_protocol_actions first to discover available actions and their required parameters. The actionType follows the format 'protocol/action-slug' (e.g., 'chronicle/eth-usd-read', 'aave-v3/supply', 'morpho/get-position'). Pass all required parameters in the params object.",
+    "Execute a DeFi protocol action directly. Use search_protocol_actions first to discover available actions and their required parameters. The actionType follows the format 'protocol/action-slug' (e.g., 'chronicle/eth-usd-read', 'aave-v3/supply', 'morpho/get-position'). Pass all required parameters in the params object. For writes, pass idempotency_key and retry with the same key when the previous attempt's outcome is unknown (e.g. after a timeout).",
     {
       actionType: z
         .string()
@@ -2430,6 +2430,7 @@ export function registerMetaTools(
         .describe(
           "Action parameters as key-value pairs (e.g., {network: '1', address: '0x...'}). Use search_protocol_actions to discover required params."
         ),
+      idempotency_key: IDEMPOTENCY_KEY_ARG,
     },
     // actionType selects both reads (chronicle/eth-usd-read) and writes
     // (aave-v3/supply) through one entry point, and a static annotation
@@ -2467,7 +2468,7 @@ export function registerMetaTools(
           `/api/execute/${integration}/${slug}`,
           "POST",
           args.params as Record<string, unknown>,
-          undefined,
+          args.idempotency_key,
           NO_MCP_FETCH_TIMEOUT
         );
 

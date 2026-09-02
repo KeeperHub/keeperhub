@@ -8,6 +8,28 @@ function parseSqsHmacMode(value: string | undefined): SqsHmacMode {
   return value === "off" || value === "enforce" ? value : "warn";
 }
 
+// Fraction of the pod's active deadline handed to the runner's drain watchdog.
+// The remaining third is the budget for logging the leak and writing the
+// terminal execution status before the pod is killed.
+const DRAIN_TIMEOUT_FRACTION = 2 / 3;
+
+// The drain watchdog must fire while the pod is still alive. Once
+// activeDeadlineSeconds expires the pod is SIGKILLed, so a drain timeout at or
+// past the deadline never fires: no leak log, no terminal status, and the
+// execution row is orphaned "running" until the reaper closes it half an hour
+// later. Deriving it from the deadline keeps the two from ever being equal
+// again, and an explicit override is clamped to the same rule.
+function resolveDrainTimeoutMs(deadlineSeconds: number): number {
+  const ceilingMs = Math.floor(
+    deadlineSeconds * DRAIN_TIMEOUT_FRACTION * 1000
+  );
+  const override = Number(process.env.KH_EXECUTOR_DRAIN_TIMEOUT_MS);
+  if (Number.isFinite(override) && override > 0) {
+    return Math.min(override, ceilingMs);
+  }
+  return ceilingMs;
+}
+
 // Parse a non-negative integer env var, falling back on unset/blank/non-numeric.
 // Unlike `Number(x) || fallback`, this honours an explicit 0 rather than
 // treating it as falsy.
@@ -71,10 +93,13 @@ export const CONFIG = {
   // Finished runner pods hold their /tmp emptyDir + logs on the node until the
   // TTL controller deletes them. Kept short so a busy node reclaims that disk in
   // minutes rather than accumulating an hour of churn (the DiskPressure flap on
-  // 2026-07-07). activeDeadlineSeconds caps a live run at 300s, so 300s here means
-  // a pod is gone ~5 min after it finishes.
+  // 2026-07-07). This is time after a pod finishes, so it is independent of
+  // activeDeadlineSeconds: 300s here means a pod is gone ~5 min after it ends.
   jobTtlSeconds: Number(process.env.JOB_TTL_SECONDS) || 300,
   jobActiveDeadline: Number(process.env.JOB_ACTIVE_DEADLINE) || 300,
+  jobDrainTimeoutMs: resolveDrainTimeoutMs(
+    Number(process.env.JOB_ACTIVE_DEADLINE) || 300
+  ),
   maxConcurrentJobs: Number(process.env.MAX_CONCURRENT_JOBS) || 1,
 
   keeperhubApiUrl: process.env.KEEPERHUB_API_URL || "http://localhost:3000",

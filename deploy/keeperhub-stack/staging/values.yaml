@@ -121,7 +121,10 @@ app:
             set -e
             echo "Setting up workflow postgres tables..."
             export WORKFLOW_POSTGRES_URL=$(tsx scripts/encode-pg-url.ts)
-            pnpm exec workflow-postgres-setup
+            # Called by path, not through the `bootstrap` bin: .npmrc public-hoists
+            # @workflow/* and hoisted packages land bins in the root .bin, so a sibling
+            # gaining that generic name would silently shadow this (KEEP-1299).
+            node node_modules/@workflow/world-postgres/bin/setup.js
             echo "Running database migrations..."
             pnpm db:migrate
             echo "Seeding chains..."
@@ -954,9 +957,13 @@ executor:
     JOB_TTL_SECONDS:
       type: kv
       value: "120"
+    # Hard cap on a single runner pod. A workflow that iterates a large
+    # collection (dozens of items, several nodes each) does not fit in 300s, and
+    # the pod is SIGKILLed mid-run with no error recorded. The drain watchdog is
+    # derived as two thirds of this value, so raising it raises both together.
     JOB_ACTIVE_DEADLINE:
       type: kv
-      value: "300"
+      value: "600"
     # Ephemeral-storage guardrail for runner Job pods (mirrored by the runner's
     # /tmp emptyDir sizeLimit). Live staging runners use ~2 MiB each, so the 1Gi
     # limit is a runaway-/tmp guard, not the disk-pressure fix (that is node image

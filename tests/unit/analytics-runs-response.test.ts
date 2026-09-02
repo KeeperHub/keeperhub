@@ -49,7 +49,7 @@ describe("normalizeRunsResponse", () => {
   it("renders the gas cell of a normalized stale run without throwing", () => {
     const [run] = normalizeRunsResponse(LEGACY_RESPONSE).runs;
 
-    expect(runGasDisplay(run)).toBe("--");
+    expect(runGasDisplay(run)).toBe("-");
   });
 
   it("leaves a current response untouched", () => {

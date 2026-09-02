@@ -680,7 +680,27 @@ export async function PATCH(
     );
     const workflowTypeChanged =
       resolvedWorkflowType !== existingWorkflow.workflowType;
-    if (workflowTypeChanged) {
+    // Derive freely until the workflow is published, freeze it afterwards.
+    // Once a row is listed its workflowType is part of a call contract that
+    // external, possibly paying, callers already depend on, so an ordinary
+    // editor save must not change it as a side effect — the
+    // WORKFLOW_TYPE_FROZEN gate below rejects the edits that would.
+    //
+    // The freeze deliberately does not cover the PATCH that does the listing
+    // (`isTransitioningToListed`): that request is the publish event itself,
+    // there is no prior contract to protect, and the curator publish path
+    // (lib/mcp/listing.ts::listWorkflow) derives at exactly the same moment.
+    //
+    // A row that is already listed and whose stored type already disagreed
+    // with its nodes before this PATCH still reaches here with
+    // workflowTypeChanged true when the PATCH does not touch nodes. It is
+    // left as-is rather than silently repaired: repairing would republish a
+    // different contract on the back of an unrelated edit, and rejecting
+    // would lock the owner out of renaming their own workflow.
+    const isWorkflowTypeFrozen =
+      !isTransitioningToUnlisted && existingWorkflow.isListed === true;
+    const workflowTypePersisted = workflowTypeChanged && !isWorkflowTypeFrozen;
+    if (workflowTypePersisted) {
       updateData.workflowType = resolvedWorkflowType;
     }
 
@@ -724,6 +744,31 @@ export async function PATCH(
         updateData.inputSchema !== undefined
           ? updateData.inputSchema
           : existingWorkflow.inputSchema;
+
+      // Freezing workflowType on a listed row is the mirror of
+      // MISSING_WRITE_ACTION below: that gate stops a listed "write" from
+      // losing the write node its type promises, this one stops a listed
+      // "read" from gaining one. Without it, adding a write node to a listed,
+      // priced "read" workflow silently reclassified the row — the call route
+      // switched from executing the workflow with the owner's wallet to
+      // returning unsigned calldata the caller must sign and send, and the
+      // advertised x402 output example, the OpenAPI response shape and
+      // readOnlyHint changed with it — leaving a listingVersion bump as the
+      // only signal to callers.
+      //
+      // `checkNodes` is what keeps this to edits that introduce the change.
+      // On a frozen (already-listed) row it means `updateData.nodes !== undefined`,
+      // since isTransitioningToListed is false there by construction; a
+      // divergence that pre-dates the PATCH is handled at the derive above.
+      if (isWorkflowTypeFrozen && checkNodes && workflowTypeChanged) {
+        return NextResponse.json(
+          {
+            error: "WORKFLOW_TYPE_FROZEN",
+            message: `Listed workflows cannot change workflowType. This edit would change it from '${existingWorkflow.workflowType}' to '${resolvedWorkflowType}', which changes what POST /api/mcp/workflows/<slug>/call returns for callers of the published listing. Revert the change, or unlist the workflow before saving these changes.`,
+          },
+          { status: 422 }
+        );
+      }
 
       // Gate ordering matches the publish path (lib/mcp/listing.ts::listWorkflow):
       // write-action -> bare-@ -> input-schema. Same DB state therefore yields
@@ -775,15 +820,18 @@ export async function PATCH(
 
     // Bump listingVersion when a listed (or about-to-be-listed) workflow has
     // its schema-defining fields changed via this route — including an
-    // auto-flip of workflowType. Keeps per-workflow MCP consumers in sync
-    // without a dedicated version endpoint.
+    // auto-flip of workflowType on the PATCH that lists it. Keeps per-workflow
+    // MCP consumers in sync without a dedicated version endpoint. The flip is
+    // keyed to what was persisted, not to what was derived: on a frozen row
+    // the derived type is discarded, so a bump there would advertise a change
+    // that did not happen.
     if (
       willBeListed &&
       (body.nodes !== undefined ||
         body.edges !== undefined ||
         body.inputSchema !== undefined ||
         body.outputMapping !== undefined ||
-        workflowTypeChanged)
+        workflowTypePersisted)
     ) {
       updateData.listingVersion = sql`${workflows.listingVersion} + 1`;
     }

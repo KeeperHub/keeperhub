@@ -649,6 +649,172 @@ describe("Direct Execution API", () => {
       expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
     });
 
+    it("accepts abiFunction as an alias for functionName (KEEP-1927)", async () => {
+      setupPassingGuards();
+      mocks.readContractCore.mockResolvedValue({
+        success: true,
+        result: "1000000",
+      });
+
+      const { functionName, ...bodyWithoutFunctionName } = validReadBody;
+      const body = { ...bodyWithoutFunctionName, abiFunction: functionName };
+
+      const response = await contractCallPOST(
+        postRequest("/contract-call", body)
+      );
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.result).toBe("1000000");
+      expect(mocks.readContractCore).toHaveBeenCalledWith(
+        expect.objectContaining({ abiFunction: "balanceOf" })
+      );
+    });
+
+    it("accepts functionName and abiFunction together when they agree", async () => {
+      setupPassingGuards();
+      mocks.readContractCore.mockResolvedValue({
+        success: true,
+        result: "1000000",
+      });
+
+      const body = {
+        ...validReadBody,
+        abiFunction: validReadBody.functionName,
+      };
+
+      const response = await contractCallPOST(
+        postRequest("/contract-call", body)
+      );
+
+      expect(response.status).toBe(200);
+      expect(mocks.readContractCore).toHaveBeenCalledWith(
+        expect.objectContaining({ abiFunction: "balanceOf" })
+      );
+    });
+
+    it("rejects functionName and abiFunction when they disagree (KEEP-1927)", async () => {
+      setupPassingGuards();
+
+      const body = { ...validReadBody, abiFunction: "someOtherFunction" };
+
+      const response = await contractCallPOST(
+        postRequest("/contract-call", body)
+      );
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.field).toBe("abiFunction");
+      expect(data.details).toContain("balanceOf");
+      expect(data.details).toContain("someOtherFunction");
+      expect(mocks.readContractCore).not.toHaveBeenCalled();
+    });
+
+    it("rejects an empty functionName alongside a usable abiFunction", async () => {
+      // An empty functionName is present, so it is not filled in from the
+      // alias: the caller named the function twice and the two names differ.
+      setupPassingGuards();
+
+      const body = {
+        ...validReadBody,
+        functionName: "",
+        abiFunction: "balanceOf",
+      };
+
+      const response = await contractCallPOST(
+        postRequest("/contract-call", body)
+      );
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.field).toBe("abiFunction");
+      expect(data.details).toContain("balanceOf");
+      expect(mocks.readContractCore).not.toHaveBeenCalled();
+    });
+
+    it("rejects an empty abiFunction alongside a usable functionName", async () => {
+      setupPassingGuards();
+
+      const body = { ...validReadBody, abiFunction: "" };
+
+      const response = await contractCallPOST(
+        postRequest("/contract-call", body)
+      );
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.field).toBe("abiFunction");
+      expect(data.details).toContain("balanceOf");
+      expect(mocks.readContractCore).not.toHaveBeenCalled();
+    });
+
+    it("rejects a non-string functionName alongside a differing abiFunction", async () => {
+      // The write path is the one that matters here: filling functionName in
+      // over a non-string would broadcast the alias's function under a name
+      // the caller never sent.
+      setupPassingGuards();
+
+      const body = {
+        ...validWriteBody,
+        functionName: 123,
+        abiFunction: "transfer",
+      };
+
+      const response = await contractCallPOST(
+        postRequest("/contract-call", body)
+      );
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.field).toBe("abiFunction");
+      expect(data.details).toContain("123");
+      expect(data.details).toContain("transfer");
+      expect(mocks.writeContractCore).not.toHaveBeenCalled();
+      expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+    });
+
+    it("treats surrounding whitespace as agreement, not a conflict", async () => {
+      setupPassingGuards();
+      mocks.readContractCore.mockResolvedValue({
+        success: true,
+        result: "1000000",
+      });
+
+      const body = { ...validReadBody, abiFunction: "balanceOf " };
+
+      const response = await contractCallPOST(
+        postRequest("/contract-call", body)
+      );
+
+      expect(response.status).toBe(200);
+      expect(mocks.readContractCore).toHaveBeenCalledWith(
+        expect.objectContaining({ abiFunction: "balanceOf" })
+      );
+    });
+
+    it("accepts abiFunction as an alias on the write path", async () => {
+      setupPassingGuards();
+      mocks.writeContractCore.mockResolvedValue({
+        success: true,
+        transactionHash: "0xwrite",
+        transactionLink: "https://etherscan.io/tx/0xwrite",
+      });
+
+      const { functionName, ...bodyWithoutFunctionName } = validWriteBody;
+      const body = { ...bodyWithoutFunctionName, abiFunction: functionName };
+
+      const response = await contractCallPOST(
+        postRequest("/contract-call", body)
+      );
+
+      expect(response.status).toBe(202);
+      const data = await response.json();
+      expect(data.transactionHash).toBe("0xwrite");
+      expect(mocks.writeContractCore).toHaveBeenCalledWith(
+        expect.objectContaining({ abiFunction: "transfer" })
+      );
+    });
+
     it("returns 202 for write call with execution record", async () => {
       setupPassingGuards();
       mocks.writeContractCore.mockResolvedValue({
@@ -1106,46 +1272,44 @@ describe("Direct Execution API", () => {
         outputType: "bytes32",
         observed: FIXED_BYTES_VALUE,
       },
-    ])("preserves case-insensitive $label equality checks", async ({
-      functionName,
-      outputName,
-      outputType,
-      observed,
-    }) => {
-      setupPassingGuards();
-      mocks.readContractCore.mockResolvedValue({
-        success: true,
-        result: { [outputName]: observed },
-      });
+    ])(
+      "preserves case-insensitive $label equality checks",
+      async ({ functionName, outputName, outputType, observed }) => {
+        setupPassingGuards();
+        mocks.readContractCore.mockResolvedValue({
+          success: true,
+          result: { [outputName]: observed },
+        });
 
-      const response = await checkAndExecutePOST(
-        postRequest("/check-and-execute", {
-          ...validBody,
-          functionName,
-          functionArgs: "[]",
-          abi: JSON.stringify([
-            {
-              type: "function",
-              name: functionName,
-              stateMutability: "view",
-              inputs: [],
-              outputs: [{ name: outputName, type: outputType }],
-            },
-          ]),
-          condition: { operator: "neq", value: observed.toLowerCase() },
-        })
-      );
+        const response = await checkAndExecutePOST(
+          postRequest("/check-and-execute", {
+            ...validBody,
+            functionName,
+            functionArgs: "[]",
+            abi: JSON.stringify([
+              {
+                type: "function",
+                name: functionName,
+                stateMutability: "view",
+                inputs: [],
+                outputs: [{ name: outputName, type: outputType }],
+              },
+            ]),
+            condition: { operator: "neq", value: observed.toLowerCase() },
+          })
+        );
 
-      expect(response.status).toBe(200);
-      const data = await response.json();
-      expect(data).toMatchObject({
-        executed: false,
-        conditionResult: { met: false, observedValue: observed },
-      });
-      expect(mocks.readContractCore).toHaveBeenCalledOnce();
-      expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
-      expect(mocks.writeContractCore).not.toHaveBeenCalled();
-    });
+        expect(response.status).toBe(200);
+        const data = await response.json();
+        expect(data).toMatchObject({
+          executed: false,
+          conditionResult: { met: false, observedValue: observed },
+        });
+        expect(mocks.readContractCore).toHaveBeenCalledOnce();
+        expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+        expect(mocks.writeContractCore).not.toHaveBeenCalled();
+      }
+    );
 
     it.each([
       { label: "address", outputType: "address", target: OWNER_ADDRESS },
@@ -1154,40 +1318,40 @@ describe("Direct Execution API", () => {
         outputType: "bytes32",
         target: FIXED_BYTES_VALUE,
       },
-    ])("rejects ordering operators for a $label output before reading", async ({
-      outputType,
-      target,
-    }) => {
-      setupPassingGuards();
+    ])(
+      "rejects ordering operators for a $label output before reading",
+      async ({ outputType, target }) => {
+        setupPassingGuards();
 
-      const response = await checkAndExecutePOST(
-        postRequest("/check-and-execute", {
-          ...validBody,
-          functionName: "checkValue",
-          functionArgs: "[]",
-          abi: JSON.stringify([
-            {
-              type: "function",
-              name: "checkValue",
-              stateMutability: "view",
-              inputs: [],
-              outputs: [{ name: "value", type: outputType }],
-            },
-          ]),
-          condition: { operator: "gt", value: target },
-        })
-      );
+        const response = await checkAndExecutePOST(
+          postRequest("/check-and-execute", {
+            ...validBody,
+            functionName: "checkValue",
+            functionArgs: "[]",
+            abi: JSON.stringify([
+              {
+                type: "function",
+                name: "checkValue",
+                stateMutability: "view",
+                inputs: [],
+                outputs: [{ name: "value", type: outputType }],
+              },
+            ]),
+            condition: { operator: "gt", value: target },
+          })
+        );
 
-      expect(response.status).toBe(400);
-      const data = await response.json();
-      expect(data.error).toBe(
-        "Unsupported condition operator for check output"
-      );
-      expect(data.field).toBe("condition.operator");
-      expect(mocks.readContractCore).not.toHaveBeenCalled();
-      expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
-      expect(mocks.writeContractCore).not.toHaveBeenCalled();
-    });
+        expect(response.status).toBe(400);
+        const data = await response.json();
+        expect(data.error).toBe(
+          "Unsupported condition operator for check output"
+        );
+        expect(data.field).toBe("condition.operator");
+        expect(mocks.readContractCore).not.toHaveBeenCalled();
+        expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+        expect(mocks.writeContractCore).not.toHaveBeenCalled();
+      }
+    );
 
     it("validates an auto-resolved check ABI before reading or writing", async () => {
       setupPassingGuards();

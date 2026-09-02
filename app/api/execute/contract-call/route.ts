@@ -140,7 +140,8 @@ async function handleWriteCall(
   resolvedAbi: string,
   organizationId: string,
   apiKeyId: string,
-  idem: IdempotencyOutcome | null
+  idem: IdempotencyOutcome | null,
+  paygOverflow: boolean
 ): Promise<NextResponse> {
   const walletError = await requireWallet(organizationId);
   if (walletError) {
@@ -168,6 +169,7 @@ async function handleWriteCall(
     network: body.network as string,
     input: redactedInput,
     reserved: { kind: "evm", valueWei: parsedValue.valueWei },
+    paygOverflow,
   });
   if (!reserve.allowed) {
     return recordIdempotentResponse(
@@ -276,6 +278,17 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: "Invalid JSON body" },
       { status: HttpStatus.BAD_REQUEST }
     );
+  }
+
+  // KEEP-1927: abiFunction is the workflow web3 action node's name for this
+  // same value; accept it as an alias so payloads copied between the two
+  // layers bind without a rename. Keyed on the key being absent rather than on
+  // its value being usable, which is the same test the conflict check in
+  // _lib/schemas applies: a body carrying both keys is never filled in here,
+  // and a differing pair is rejected there (400) instead of broadcasting under
+  // one of the two names.
+  if (!("functionName" in body) && "abiFunction" in body) {
+    body.functionName = body.abiFunction;
   }
 
   const simulateFlag = parseSimulateFlag(body);
@@ -407,7 +420,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       resolvedAbi,
       apiKeyCtx.organizationId,
       apiKeyCtx.apiKeyId,
-      idem
+      idem,
+      executionGuard.limitResult?.paygOverflow === true
     ),
     rateLimit
   );

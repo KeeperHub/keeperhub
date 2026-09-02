@@ -183,23 +183,26 @@ describe("createWorkflowMcpServer", () => {
     ["web3/approve-token"],
     ["web3/transfer-funds"],
     ["web3/transfer-token"],
-  ])("readOnlyHint is false for a read-typed workflow whose only node is %s", (actionType) => {
-    createWorkflowMcpServer({
-      slug: "aave-position-monitor",
-      listing: {
-        ...baseListing,
-        workflowType: "read",
-        nodes: [{ data: { config: { actionType } } }],
-      },
-      internalApiBaseUrl: "http://localhost:3000",
-      authHeader: "Bearer kh_test",
-    });
+  ])(
+    "readOnlyHint is false for a read-typed workflow whose only node is %s",
+    (actionType) => {
+      createWorkflowMcpServer({
+        slug: "aave-position-monitor",
+        listing: {
+          ...baseListing,
+          workflowType: "read",
+          nodes: [{ data: { config: { actionType } } }],
+        },
+        internalApiBaseUrl: "http://localhost:3000",
+        authHeader: "Bearer kh_test",
+      });
 
-    const config = mockRegisterTool.mock.calls[0][1] as {
-      annotations: { readOnlyHint: boolean };
-    };
-    expect(config.annotations.readOnlyHint).toBe(false);
-  });
+      const config = mockRegisterTool.mock.calls[0][1] as {
+        annotations: { readOnlyHint: boolean };
+      };
+      expect(config.annotations.readOnlyHint).toBe(false);
+    }
+  );
 
   it("readOnlyHint stays true for a read-typed workflow whose only node reads", () => {
     createWorkflowMcpServer({

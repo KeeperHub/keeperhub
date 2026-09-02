@@ -33,6 +33,46 @@ function hasChainInput(record: Record<string, unknown>): boolean {
   return isNonEmptyString(record.chainId) || isNonEmptyString(record.network);
 }
 
+// KEEP-1927: functionName is canonical on direct-exec routes; abiFunction is
+// the workflow web3 action node's name for the same value. Either counts as
+// present. A mismatched pair is caller error rather than something to resolve
+// for them: this endpoint broadcasts, and two names that are both in the ABI
+// (e.g. "transfer" vs "transferFrom") describe two different transactions,
+// only one of which is what the caller meant.
+function hasFunctionNameInput(record: Record<string, unknown>): boolean {
+  return (
+    isNonEmptyString(record.functionName) ||
+    isNonEmptyString(record.abiFunction)
+  );
+}
+
+function trimmedText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : String(value);
+}
+
+// Conflict is keyed on the keys being present, not on their values being
+// usable strings, because the contract-call route fills functionName in from
+// abiFunction under the same test. A functionName the route cannot use ("" or
+// a non-string) is still the caller's stated intent, so it conflicts with a
+// differing abiFunction instead of being quietly overwritten.
+function functionNameConflict(
+  record: Record<string, unknown>
+): ExecuteErrorResponse | null {
+  if (!("functionName" in record && "abiFunction" in record)) {
+    return null;
+  }
+  const functionName = trimmedText(record.functionName);
+  const abiFunction = trimmedText(record.abiFunction);
+  if (functionName === abiFunction) {
+    return null;
+  }
+  return {
+    error: "Conflicting field values",
+    field: "abiFunction",
+    details: `functionName and abiFunction disagree ('${functionName}' vs '${abiFunction}'); send one, or the same value in both. functionName is canonical.`,
+  };
+}
+
 function requiredFieldError(field: string): ExecuteErrorResponse {
   return {
     error: "Missing required field",
@@ -146,8 +186,13 @@ export const contractCallInputSchema = objectBase.superRefine((record, ctx) => {
     addError(ctx, chainFieldError);
     return;
   }
-  if (!isNonEmptyString(record.functionName)) {
+  if (!hasFunctionNameInput(record)) {
     addError(ctx, requiredFieldError("functionName"));
+    return;
+  }
+  const conflict = functionNameConflict(record);
+  if (conflict) {
+    addError(ctx, conflict);
     return;
   }
   if ("functionArgs" in record && typeof record.functionArgs !== "string") {
