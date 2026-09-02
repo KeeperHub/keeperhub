@@ -186,6 +186,7 @@ async function prepareExecution(
     const paygCharge = await chargePaygIfBillable({
       organizationId: workflow.organizationId,
       executionId: execution.id,
+      paygOverflow: executionGuard.limitResult?.paygOverflow === true,
     });
     if (paygCharge.applicable && !paygCharge.ok) {
       await db

@@ -15,6 +15,7 @@ import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import type {
   ExecutionLimitExceeded,
   ExecutionOverageAllowed,
+  ExecutionPaygOverflow,
   ExecutionWithinLimits,
 } from "@/lib/billing/plans-server";
 import { checkExecutionLimit } from "@/lib/billing/plans-server";
@@ -56,6 +57,7 @@ describe("enforceExecutionLimit", () => {
     const withinLimits: ExecutionWithinLimits = {
       allowed: true,
       isOverage: false,
+      paygOverflow: false,
       debtExecutions: 0,
       effectiveLimit: 25_000,
     };
@@ -74,6 +76,7 @@ describe("enforceExecutionLimit", () => {
     const overageAllowed: ExecutionOverageAllowed = {
       allowed: true,
       isOverage: true,
+      paygOverflow: false,
       limit: 25_000,
       used: 30_000,
       overageRate: 2,
@@ -87,6 +90,29 @@ describe("enforceExecutionLimit", () => {
     expect(result.blocked).toBe(false);
     if (!result.blocked) {
       expect(result.limitResult).toEqual(overageAllowed);
+    }
+  });
+
+  // The charge point bills off this verdict rather than counting again, so the
+  // distinction between an in-bucket run and an overflow run has to survive.
+  it("passes the pay-as-you-go overflow verdict through", async () => {
+    vi.mocked(isBillingEnabled).mockReturnValue(true);
+    const overflow: ExecutionPaygOverflow = {
+      allowed: true,
+      isOverage: false,
+      paygOverflow: true,
+      limit: 5000,
+      used: 5000,
+      debtExecutions: 0,
+      effectiveLimit: 5000,
+    };
+    vi.mocked(checkExecutionLimit).mockResolvedValue(overflow);
+
+    const result = await enforceExecutionLimit("org_1");
+
+    expect(result.blocked).toBe(false);
+    if (!result.blocked) {
+      expect(result.limitResult?.paygOverflow).toBe(true);
     }
   });
 

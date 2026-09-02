@@ -62,7 +62,7 @@ describe("GET /api/analytics/runs status filter", () => {
     expect(getUnifiedRuns).toHaveBeenCalledWith(
       "org_from_jwt",
       expect.anything(),
-      expect.objectContaining({ status: "system_error" })
+      expect.objectContaining({ statuses: ["system_error"] })
     );
   });
 
@@ -72,7 +72,7 @@ describe("GET /api/analytics/runs status filter", () => {
     expect(getUnifiedRuns).toHaveBeenCalledWith(
       "org_from_jwt",
       expect.anything(),
-      expect.objectContaining({ status: "external_error" })
+      expect.objectContaining({ statuses: ["external_error"] })
     );
   });
 
@@ -88,18 +88,35 @@ describe("GET /api/analytics/runs status filter", () => {
       expect(getUnifiedRuns).toHaveBeenLastCalledWith(
         "org_from_jwt",
         expect.anything(),
-        expect.objectContaining({ status })
+        expect.objectContaining({ statuses: [status] })
       );
     }
   });
 
-  it("drops an unknown status to undefined", async () => {
+  it("drops an unknown status rather than narrowing on it", async () => {
     await GET(oauthRequest("bogus"));
+
+    const [, , options] = vi.mocked(getUnifiedRuns).mock.calls[0] ?? [];
+    expect(options?.statuses).toBeUndefined();
+  });
+
+  it("forwards every status of a multi-select as one union", async () => {
+    const params = new URLSearchParams();
+    params.append("status", "error");
+    params.append("status", "external_error");
+    params.append("status", "system_error");
+    await GET({
+      method: "GET",
+      headers: new Headers({ Authorization: "Bearer fake-jwt" }),
+      nextUrl: { searchParams: params },
+    } as unknown as NextRequest);
 
     expect(getUnifiedRuns).toHaveBeenCalledWith(
       "org_from_jwt",
       expect.anything(),
-      expect.objectContaining({ status: undefined })
+      expect.objectContaining({
+        statuses: ["error", "external_error", "system_error"],
+      })
     );
   });
 });
@@ -144,7 +161,7 @@ describe("GET /api/analytics/runs auth", () => {
     expect(getUnifiedRuns).toHaveBeenCalledWith(
       "org_from_jwt",
       expect.anything(),
-      expect.objectContaining({ status: "success" })
+      expect.objectContaining({ statuses: ["success"] })
     );
   });
 });

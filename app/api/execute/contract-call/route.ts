@@ -140,7 +140,8 @@ async function handleWriteCall(
   resolvedAbi: string,
   organizationId: string,
   apiKeyId: string,
-  idem: IdempotencyOutcome | null
+  idem: IdempotencyOutcome | null,
+  paygOverflow: boolean
 ): Promise<NextResponse> {
   const walletError = await requireWallet(organizationId);
   if (walletError) {
@@ -168,6 +169,7 @@ async function handleWriteCall(
     network: body.network as string,
     input: redactedInput,
     reserved: { kind: "evm", valueWei: parsedValue.valueWei },
+    paygOverflow,
   });
   if (!reserve.allowed) {
     return recordIdempotentResponse(
@@ -418,7 +420,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       resolvedAbi,
       apiKeyCtx.organizationId,
       apiKeyCtx.apiKeyId,
-      idem
+      idem,
+      executionGuard.limitResult?.paygOverflow === true
     ),
     rateLimit
   );

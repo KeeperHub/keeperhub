@@ -16,10 +16,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { memo, useState } from "react";
-import {
-  Node,
-  type SourceHandleConfig,
-} from "@/components/ai-elements/node";
+import { Node } from "@/components/ai-elements/node";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { NodeLabel } from "@/components/workflow/nodes/node-label";
 import {
@@ -27,6 +24,10 @@ import {
   integrationsLoadedAtom,
 } from "@/lib/integrations-store";
 import { cn } from "@/lib/utils";
+import {
+  CONDITION_SOURCE_HANDLES,
+  FOR_EACH_SOURCE_HANDLES,
+} from "@/lib/workflow/source-handles";
 import {
   executionLogsAtom,
   pendingIntegrationNodesAtom,
@@ -71,16 +72,6 @@ const getModelDisplayName = (modelId: string): string => {
   };
   return modelNames[modelId] || modelId;
 };
-
-const FOR_EACH_SOURCE_HANDLES: SourceHandleConfig[] = [
-  { id: "done", label: "done", topPercent: 30 },
-  { id: "loop", label: "loop", topPercent: 70 },
-];
-
-const CONDITION_SOURCE_HANDLES: SourceHandleConfig[] = [
-  { id: "true", label: "true", topPercent: 30 },
-  { id: "false", label: "false", topPercent: 70 },
-];
 
 // System action labels (non-plugin actions)
 const SYSTEM_ACTION_LABELS: Record<string, string> = {

@@ -27,6 +27,12 @@
  * context. The leaked promises are NOT cancelled (no AbortController plumbing
  * here) -- they continue running in the background and the platform-level
  * workflow timeout will eventually clean them up.
+ *
+ * The timeout MUST stay below the runner pod's activeDeadlineSeconds. At or
+ * past it the pod is SIGKILLed before `onTimeout` runs, so the leak is never
+ * logged, no terminal status is written, and the execution row is orphaned
+ * "running" until the reaper closes it. The k8s-job dispatcher derives the env
+ * var from the deadline for exactly this reason (see config.ts).
  */
 
 const DEFAULT_DRAIN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes

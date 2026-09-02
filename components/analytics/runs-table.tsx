@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { MouseEvent, ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,22 +21,30 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { buildRunsQuery } from "@/lib/analytics/runs-query";
 import {
   normalizeRunsResponse,
   type WireRunsResponse,
 } from "@/lib/analytics/runs-response";
+import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
 import type {
   NormalizedStatus,
   StepLog,
   UnifiedRun,
 } from "@/lib/analytics/types";
 import {
+  analyticsCustomEndAtom,
+  analyticsCustomStartAtom,
+  analyticsDurationFilterAtom,
+  analyticsGasFiltersAtom,
   analyticsLoadingAtom,
+  analyticsNetworkFiltersAtom,
+  analyticsProjectIdAtom,
   analyticsRangeAtom,
   analyticsRunsAtom,
   analyticsSearchAtom,
-  analyticsSourceFilterAtom,
-  analyticsStatusFilterAtom,
+  analyticsSourceFiltersAtom,
+  analyticsStatusFiltersAtom,
 } from "@/lib/atoms/analytics";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";
 import type { ChainDisplay } from "@/lib/hooks/use-chain-display";
@@ -48,7 +56,6 @@ import {
 import { cn } from "@/lib/utils";
 import { ProjectDrawer } from "./project-drawer";
 
-const WHITESPACE_RE = /\s+/;
 const LEADING_ZEROS_RE = /^0+(?=\d)/;
 const TRAILING_ZEROS_RE = /0+$/;
 const NON_DIGIT_RE = /\D/;
@@ -234,28 +241,6 @@ function formatTimeAgo(dateString: string): string {
   return `${days}d ago`;
 }
 
-const STATUS_STYLES: Record<NormalizedStatus, string> = {
-  success:
-    "bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20",
-  error: "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20",
-  system_error:
-    "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20",
-  external_error:
-    "bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20",
-  cancelled:
-    "bg-orange-500/10 text-orange-700 dark:text-orange-400 border-orange-500/20",
-  // Refused before it started: neutral, not a failure colour.
-  skipped: "bg-muted text-muted-foreground border-border",
-  running: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20",
-  pending: "bg-gray-500/10 text-gray-700 dark:text-gray-400 border-gray-500/20",
-} as const;
-
-const STATUS_LABELS: Partial<Record<NormalizedStatus, string>> = {
-  system_error: "System Error",
-  external_error: "External",
-  skipped: "Skipped",
-};
-
 // The four outcome badges a user cannot tell apart from the label alone. Each
 // one answers "whose fault is it and what do I do about it".
 const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
@@ -272,10 +257,10 @@ const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
 function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
   const badge = (
     <Badge
-      className={cn("capitalize", STATUS_STYLES[status])}
+      className={cn("capitalize", STATUS_DISPLAY[status].badge)}
       variant="outline"
     >
-      {STATUS_LABELS[status] ?? status}
+      {STATUS_DISPLAY[status].label}
     </Badge>
   );
 
@@ -713,9 +698,15 @@ export function RunsTable(): ReactNode {
   const [runsData, setRunsData] = useAtom(analyticsRunsAtom);
   const loading = useAtomValue(analyticsLoadingAtom);
   const range = useAtomValue(analyticsRangeAtom);
-  const statusFilter = useAtomValue(analyticsStatusFilterAtom);
-  const sourceFilter = useAtomValue(analyticsSourceFilterAtom);
+  const statuses = useAtomValue(analyticsStatusFiltersAtom);
+  const sources = useAtomValue(analyticsSourceFiltersAtom);
+  const networks = useAtomValue(analyticsNetworkFiltersAtom);
+  const gas = useAtomValue(analyticsGasFiltersAtom);
+  const duration = useAtomValue(analyticsDurationFilterAtom);
   const search = useAtomValue(analyticsSearchAtom);
+  const projectId = useAtomValue(analyticsProjectIdAtom);
+  const customStart = useAtomValue(analyticsCustomStartAtom);
+  const customEnd = useAtomValue(analyticsCustomEndAtom);
   const router = useRouter();
   const searchParams = useSearchParams();
   const [pageLoading, setPageLoading] = useState(false);
@@ -737,20 +728,21 @@ export function RunsTable(): ReactNode {
       router.replace(url.pathname + url.search, { scroll: false });
 
       try {
-        const params = new URLSearchParams({
+        const query = buildRunsQuery({
           range,
-          page: String(newPage),
+          statuses,
+          sources,
+          networks,
+          gas,
+          duration,
+          search,
+          projectId,
+          customStart,
+          customEnd,
+          page: newPage,
         });
-        if (statusFilter) {
-          params.set("status", statusFilter);
-        }
-        if (sourceFilter) {
-          params.set("source", sourceFilter);
-        }
 
-        const response = await fetch(
-          `/api/analytics/runs?${params.toString()}`
-        );
+        const response = await fetch(`/api/analytics/runs?${query}`);
         if (response.ok) {
           const data = (await response.json()) as WireRunsResponse;
           setRunsData(normalizeRunsResponse(data));
@@ -763,7 +755,20 @@ export function RunsTable(): ReactNode {
         setPageLoading(false);
       }
     },
-    [range, statusFilter, sourceFilter, setRunsData, router]
+    [
+      range,
+      statuses,
+      sources,
+      networks,
+      gas,
+      duration,
+      search,
+      projectId,
+      customStart,
+      customEnd,
+      setRunsData,
+      router,
+    ]
   );
 
   // Restore page from URL ?page= param once after initial data load
@@ -779,23 +784,10 @@ export function RunsTable(): ReactNode {
     });
   }, [urlPage, runsData, handlePageChange]);
 
-  const allRuns = runsData?.runs ?? [];
-
-  const runs = useMemo((): UnifiedRun[] => {
-    const query = search.trim().toLowerCase();
-    if (!query) {
-      return allRuns;
-    }
-    const terms = query.split(WHITESPACE_RE);
-    return allRuns.filter((run) => {
-      const name = (run.workflowName ?? run.directType ?? "").toLowerCase();
-      const network = (run.network ?? "").toLowerCase();
-      const status = run.status.toLowerCase();
-      const id = run.id.toLowerCase();
-      const searchable = `${name} ${network} ${status} ${id}`;
-      return terms.every((term) => searchable.includes(term));
-    });
-  }, [allRuns, search]);
+  // Every filter, search included, now narrows the query, so the page the
+  // server returned is the page to render. Filtering it again here would make
+  // the row count disagree with the pagination total.
+  const runs = runsData?.runs ?? [];
 
   const isEmpty = runs.length === 0;
   const isReady = !(loading && isEmpty);

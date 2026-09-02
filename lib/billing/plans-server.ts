@@ -186,6 +186,7 @@ export async function checkFeatureAccess(
 export type ExecutionWithinLimits = {
   allowed: true;
   isOverage: false;
+  paygOverflow: false;
   debtExecutions: number;
   effectiveLimit: number;
 };
@@ -194,9 +195,27 @@ export type ExecutionWithinLimits = {
 export type ExecutionOverageAllowed = {
   allowed: true;
   isOverage: true;
+  paygOverflow: false;
   limit: number;
   used: number;
   overageRate: number;
+  debtExecutions: number;
+  effectiveLimit: number;
+};
+
+/**
+ * Free plan past its included limit -- execution proceeds only because PAYG
+ * charges it per execution downstream. The counterpart of the executor's
+ * PAYG_OVERFLOW_REASON: it is what tells the charge point this run is billable,
+ * so the verdict is computed once here rather than re-derived after the
+ * execution row is written.
+ */
+export type ExecutionPaygOverflow = {
+  allowed: true;
+  isOverage: false;
+  paygOverflow: true;
+  limit: number;
+  used: number;
   debtExecutions: number;
   effectiveLimit: number;
 };
@@ -211,9 +230,14 @@ export type ExecutionLimitExceeded = {
   effectiveLimit: number;
 };
 
-export type ExecutionLimitResult =
+/** Every verdict that lets the execution proceed. */
+export type ExecutionLimitAllowed =
   | ExecutionWithinLimits
   | ExecutionOverageAllowed
+  | ExecutionPaygOverflow;
+
+export type ExecutionLimitResult =
+  | ExecutionLimitAllowed
   | ExecutionLimitExceeded;
 
 /**
@@ -222,7 +246,9 @@ export type ExecutionLimitResult =
  * Returns one of:
  * - allowed + not overage (within limits or unlimited plan)
  * - allowed + overage (paid plan with overage enabled, will be billed later)
- * - not allowed (free plan limit exceeded)
+ * - allowed + paygOverflow (free plan past its included limit, charged per
+ *   execution downstream)
+ * - not allowed (free plan limit exceeded with billing off, or unpaid debt)
  *
  * NOTE: This is a point-in-time check (TOCTOU). The caller does not hold a lock,
  * so concurrent requests may each pass the check before any execution is recorded.
@@ -242,6 +268,7 @@ export async function checkExecutionLimit(
     return {
       allowed: true,
       isOverage: false,
+      paygOverflow: false,
       debtExecutions: 0,
       effectiveLimit: -1,
     };
@@ -287,6 +314,7 @@ export async function checkExecutionLimit(
       return {
         allowed: true,
         isOverage: false,
+        paygOverflow: false,
         debtExecutions,
         effectiveLimit,
       };
@@ -295,6 +323,7 @@ export async function checkExecutionLimit(
       return {
         allowed: true,
         isOverage: true,
+        paygOverflow: false,
         limit: limits.maxExecutionsPerMonth,
         used,
         overageRate: planDef.overage.ratePerThousand,
@@ -310,6 +339,9 @@ export async function checkExecutionLimit(
         return {
           allowed: true,
           isOverage: false,
+          paygOverflow: true,
+          limit: limits.maxExecutionsPerMonth,
+          used,
           debtExecutions,
           effectiveLimit,
         };

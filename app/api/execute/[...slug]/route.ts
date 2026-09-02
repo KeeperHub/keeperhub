@@ -258,6 +258,7 @@ async function executeProtocolAction(
     network,
     input: redactInput(withRejectedSignerOverride(body, body)),
     reserved: { kind: "evm", valueWei: parsedValue.valueWei },
+    paygOverflow: executionGuard.limitResult?.paygOverflow === true,
   });
   if (!reserve.allowed) {
     return recordIdempotentResponse(

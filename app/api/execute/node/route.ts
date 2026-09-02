@@ -682,6 +682,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         parsedValue.kind === "solana"
           ? { kind: "solana", valueLamports: parsedValue.valueLamports }
           : { kind: "evm", valueWei: parsedValue.valueWei },
+      paygOverflow: executionGuard.limitResult?.paygOverflow === true,
     });
     if (!reserve.allowed) {
       return applyRateLimitHeaders(

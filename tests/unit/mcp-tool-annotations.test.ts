@@ -24,6 +24,7 @@ import {
   createWorkflowMcpServer,
   type WorkflowListing,
 } from "@/lib/mcp/workflow-server";
+import { ONBOARDING_WORKFLOW_FIXTURES } from "@/scripts/seed/fixtures/onboarding-workflows";
 
 type ToolAnnotations = {
   title?: string;
@@ -197,6 +198,26 @@ function actionNode(id: string, actionType: string): unknown {
   };
 }
 
+/** A protocol action node as the seeder writes it: action type plus the
+ *  cached _protocolMeta blob computeProtocolMeta serialises. */
+function protocolActionNode(
+  id: string,
+  actionType: string,
+  protocolMeta?: string
+): unknown {
+  return {
+    id,
+    type: "action",
+    data: {
+      type: "action",
+      config: {
+        actionType,
+        ...(protocolMeta === undefined ? {} : { _protocolMeta: protocolMeta }),
+      },
+    },
+  };
+}
+
 function listingAnnotations(
   overrides: Partial<WorkflowListing>
 ): ToolAnnotations {
@@ -306,6 +327,74 @@ describe("per-listing workflow MCP server annotations", () => {
     const annotation = listingAnnotations({
       workflowType: "read" as const,
       nodes: [actionNode("n1", actionType)],
+    });
+    expect(annotation.readOnlyHint).toBe(false);
+    expect(annotation.destructiveHint).toBe(true);
+  });
+
+  // Protocol action types are `<protocol>/<action-slug>`, so they match
+  // neither hasIrreversibleEffect's literal allowlist nor isWriteActionType's
+  // write-contract/protocol-write substrings. sky-staking is the listing this
+  // was found on: a live onboarding fixture that approves USDS and deposits it
+  // into the stUSDS vault from the org wallet, advertised read-only.
+  it("advertises the sky-staking onboarding listing as destructive", () => {
+    const skyStaking = ONBOARDING_WORKFLOW_FIXTURES.find(
+      (fixture) => fixture.listedSlug === "sky-staking"
+    );
+    expect(skyStaking, "sky-staking onboarding fixture").toBeDefined();
+    const annotation = listingAnnotations({
+      workflowType: "read" as const,
+      nodes: skyStaking?.nodes ?? [],
+    });
+    expect(annotation.readOnlyHint).toBe(false);
+    expect(annotation.destructiveHint).toBe(true);
+  });
+
+  // Pins the `import "@/protocols"` in workflow-server.ts. These nodes carry
+  // no cached _protocolMeta, so the registry lookup is the only thing that can
+  // classify them; dropping that import empties the registry and turns every
+  // one of these read-only again, silently.
+  it.each([
+    "sky/approve-usds",
+    "sky/st-usds-vault-deposit",
+  ])("treats a read-typed listing containing %s as destructive without cached metadata", (actionType) => {
+    const annotation = listingAnnotations({
+      workflowType: "read" as const,
+      nodes: [protocolActionNode("n1", actionType)],
+    });
+    expect(annotation.readOnlyHint).toBe(false);
+    expect(annotation.destructiveHint).toBe(true);
+  });
+
+  // The other half of the acceptance criteria: widening the check must not
+  // swallow the protocol reads, which are the bulk of the listed catalogue.
+  it("still advertises a protocol read action as read-only", () => {
+    const annotation = listingAnnotations({
+      workflowType: "read" as const,
+      nodes: [protocolActionNode("n1", "sky/get-usds-balance")],
+    });
+    expect(annotation.readOnlyHint).toBe(true);
+    expect(annotation.destructiveHint).toBe(false);
+  });
+
+  // resolveProtocolMeta falls back to the node's cached blob when the registry
+  // has no such protocol. That fallback is what keeps a listing authored
+  // against a protocol this process does not know from reading as read-only.
+  it("falls back to cached _protocolMeta for an unregistered protocol", () => {
+    const annotation = listingAnnotations({
+      workflowType: "read" as const,
+      nodes: [
+        protocolActionNode(
+          "n1",
+          "somefutureprotocol/vault-deposit",
+          JSON.stringify({
+            protocolSlug: "somefutureprotocol",
+            contractKey: "vault",
+            functionName: "deposit",
+            actionType: "write",
+          })
+        ),
+      ],
     });
     expect(annotation.readOnlyHint).toBe(false);
     expect(annotation.destructiveHint).toBe(true);

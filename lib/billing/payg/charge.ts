@@ -1,15 +1,6 @@
 import "server-only";
 
-import { countMonthlyExecutionsForAdmission } from "@/lib/billing/execution-limit-core";
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
-import {
-  getPlanLimits,
-  PLANS,
-  parsePlanName,
-  parseTierKey,
-} from "@/lib/billing/plans";
-import { getOrgSubscription } from "@/lib/billing/plans-server";
-import { db } from "@/lib/db";
 import { autopayForExecution } from "./autopay";
 import { type PaygBlockReason, paygBlockMessage } from "./errors";
 
@@ -22,40 +13,23 @@ export type PaygChargeMaybe =
   | ({ applicable: true } & PaygChargeResult);
 
 /**
- * Charge an execution only if it is billable under PAYG: billing is on, the org
- * is on the free plan, and it has already used its included monthly executions.
- * For the inline direct-execute routes, which do not know the billing state at
- * the charge point. Executions within the free bucket and non-free plans return
- * `applicable: false` and are not charged.
+ * Charge an execution only if it is billable under PAYG.
+ *
+ * `paygOverflow` is the verdict `checkExecutionLimit` already reached before
+ * this run's row was written: the org is on the free plan and its included
+ * monthly executions were spent before this one. The gate cannot re-derive that here, because the row for the
+ * run being decided is committed by now and a fresh count would include it,
+ * charging the last execution the plan includes. Everything else returns
+ * `applicable: false` and is not charged.
  */
 export async function chargePaygIfBillable(params: {
   organizationId: string;
   executionId: string;
+  paygOverflow: boolean;
 }): Promise<PaygChargeMaybe> {
   // With billing off there is no UI to read or set spend caps, so never move
   // money: the run proceeds unbilled rather than being blocked.
-  if (!isBillingEnabled()) {
-    return { applicable: false };
-  }
-  const sub = await getOrgSubscription(params.organizationId);
-  const plan = parsePlanName(sub?.plan);
-  if (plan !== "free") {
-    return { applicable: false };
-  }
-  const limits = getPlanLimits(
-    plan,
-    parseTierKey(sub?.tier),
-    sub?.planOverrides
-  );
-  const used = await countMonthlyExecutionsForAdmission(
-    db,
-    params.organizationId,
-    {
-      maxExecutionsPerMonth: limits.maxExecutionsPerMonth,
-      overageEnabled: PLANS[plan].overage.enabled,
-    }
-  );
-  if (used < limits.maxExecutionsPerMonth) {
+  if (!(isBillingEnabled() && params.paygOverflow)) {
     return { applicable: false };
   }
   const result = await chargePaygExecution(params);

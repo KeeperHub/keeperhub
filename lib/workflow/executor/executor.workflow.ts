@@ -397,6 +397,23 @@ function renderConditionLiteral(value: unknown): string {
 }
 
 /**
+ * The chain a Block/Event/Transfer trigger watches, as the text form the
+ * execution log's `network` column holds. That config is the only place an
+ * on-chain trigger names its chain, so without logging it a run whose later
+ * steps name no chain of their own reaches /analytics with no Network at all.
+ * A trigger with no chain (Manual, Schedule, Webhook) yields undefined.
+ */
+// Exported for testing
+export function triggerConfigNetwork(
+  config: Record<string, unknown>
+): string | undefined {
+  const raw = config.network;
+  return typeof raw === "string" || typeof raw === "number"
+    ? String(raw)
+    : undefined;
+}
+
+/**
  * Evaluate condition expression with template variable replacement.
  *
  * Security (A-01): The transformed expression is evaluated by a safe AST
@@ -3043,6 +3060,10 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           timestamp: Date.now(),
           triggeredAt: new Date().toISOString(),
         };
+        // Gas burned by the transaction that fired an on-chain trigger. Held
+        // apart from triggerData so it reaches the log as its own field rather
+        // than as trigger output a template could read.
+        let triggerGasUsed: string | undefined;
 
         // Handle webhook mock request for test runs
         if (
@@ -3091,6 +3112,21 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
               } catch {
                 // Non-critical: skip explorer links if lookup fails
               }
+
+              if (typeof triggerData.transactionHash === "string") {
+                try {
+                  const { fetchTriggerTransactionGas } = await import(
+                    "@/lib/workflow/nodes/trigger-gas/step"
+                  );
+                  triggerGasUsed =
+                    (await fetchTriggerTransactionGas(
+                      triggerData.transactionHash,
+                      config.network as string | number
+                    )) ?? undefined;
+                } catch {
+                  // Non-critical: the trigger simply reports no gas.
+                }
+              }
             }
           } else if (
             triggerType === "Schedule" &&
@@ -3118,6 +3154,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         // Execute trigger step (handles logging internally)
         const triggerResult = await triggerStep({
           triggerData,
+          network: triggerConfigNetwork(config),
+          triggerGasUsed,
           _context: triggerContext,
         });
 

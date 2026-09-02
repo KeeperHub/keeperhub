@@ -143,17 +143,19 @@ request. Two small independent fixes are two.
 
 Once your issue carries `accepted`:
 
-1. **Reference the issue in the pull request title**, after the conventional
-   commit type:
+1. **Reference the issue from the pull request.** The title is the place for
+   it, after the conventional commit type:
 
    ```
    fix: #1978 return 403 with a body on public /api/chains
    feat(cli): #2014 add --require-verified to execute status
    ```
 
-   This mirrors the internal `fix: KEEP-1234 description` convention. The
-   `pr-title-check` workflow already accepts this shape; a separate check
-   resolves the issue number and confirms the issue carries `accepted`.
+   `Closes #1978` in the description or an `issue-1978` branch name also
+   satisfies the check; a bare number in a branch name does not. The
+   `pr-title-check` workflow already accepts this title shape; a separate
+   check, `check-issue-link`, resolves the issue number and confirms the issue
+   carries `accepted`.
 
 2. Fill in the pull request template. The description explains what and why -
    the diff already shows how.
@@ -162,8 +164,11 @@ Once your issue carries `accepted`:
 
 Pull requests that need no issue (the list above) are exempt from the check
 automatically when their type is `docs`, `chore`, or `style`. Anything else
-without a reference is failed by CI with instructions. A maintainer can apply
-`no-issue-required` to exempt a pull request the rules did not anticipate.
+without an accepted reference is failed by CI, which leaves a comment on the
+pull request saying what it found and what to do. The check reruns on every
+push and edit, but not when the issue's labels change: once `accepted` lands,
+edit the title or re-run the job. A maintainer can apply `no-issue-required` to
+exempt a pull request the rules did not anticipate.
 
 ## Continuing an existing issue
 

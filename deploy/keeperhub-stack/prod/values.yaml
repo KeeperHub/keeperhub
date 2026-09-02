@@ -1014,9 +1014,13 @@ executor:
     JOB_TTL_SECONDS:
       type: kv
       value: "300"
+    # Hard cap on a single runner pod. A workflow that iterates a large
+    # collection (dozens of items, several nodes each) does not fit in 300s, and
+    # the pod is SIGKILLed mid-run with no error recorded. The drain watchdog is
+    # derived as two thirds of this value, so raising it raises both together.
     JOB_ACTIVE_DEADLINE:
       type: kv
-      value: "300"
+      value: "600"
     # Ephemeral-storage guardrail for runner Job pods (mirrored by the runner's
     # /tmp emptyDir sizeLimit). Runners use ~2 MiB each, so the 1Gi limit is a
     # runaway-/tmp guard, not the disk-pressure fix (that is node image GC + disk

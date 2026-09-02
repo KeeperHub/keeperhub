@@ -35,24 +35,32 @@ export function CapRow({
   }, [cap.cap, cap.decimals]);
 
   const used = fromBase(cap.used, cap.decimals);
-  const pct = cap.cap
-    ? Math.min(
-        100,
-        (Number(used) / Number(fromBase(cap.cap, cap.decimals))) * 100
-      )
-    : 0;
+  // The platform default governs an org that set no cap of its own, so it is
+  // the denominator here too. Showing "no cap" for that state made a request
+  // the default refused look like the dashboard had not reached the API.
+  const limit = cap.cap ?? cap.effectiveCap;
+  const limitDisplay = limit ? fromBase(limit, cap.decimals) : null;
+  const limitNumber = limitDisplay ? Number(limitDisplay) : 0;
+  const pct =
+    limitNumber > 0 ? Math.min(100, (Number(used) / limitNumber) * 100) : 0;
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border p-4">
       <div className="flex items-baseline justify-between gap-4">
         <span className="font-medium text-sm">{cap.label}</span>
         <span className="font-mono text-muted-foreground text-xs">
-          {used} / {cap.cap ? fromBase(cap.cap, cap.decimals) : "no cap"}{" "}
-          {cap.symbol} today
+          {used} / {limitDisplay ?? "-"} {cap.symbol} today
         </span>
       </div>
 
-      {cap.cap && (
+      {cap.usingDefault && limitDisplay && (
+        <p className="text-muted-foreground text-xs">
+          No cap of your own is set, so the platform default of {limitDisplay}{" "}
+          {cap.symbol} per day applies. There is no uncapped setting.
+        </p>
+      )}
+
+      {limitDisplay && (
         <div className="h-1.5 overflow-hidden rounded-full bg-muted">
           <div
             className="h-full rounded-full bg-foreground/70"
@@ -67,7 +75,7 @@ export function CapRow({
           disabled={disabled}
           id={`cap-${cap.id}`}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="No cap"
+          placeholder="Platform default"
           value={input}
         />
         <span className="text-muted-foreground text-xs">

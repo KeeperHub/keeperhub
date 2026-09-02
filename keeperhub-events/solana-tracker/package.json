@@ -20,21 +20,21 @@
     "e2e:devnet": "tsx tests/e2e/devnet.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-sqs": "^3.1005.0",
-    "@coral-xyz/anchor": "^0.30.1",
+    "@aws-sdk/client-sqs": "^3.1120.0",
+    "@coral-xyz/anchor": "^0.32.1",
     "@solana/web3.js": "^1.98.4",
-    "ioredis": "^5.4.2",
-    "uuid": "^14.0.0",
-    "ws": "^8.20.1"
+    "ioredis": "^5.11.1",
+    "uuid": "^14.0.2",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
-    "@types/node": "^24.12.2",
+    "@types/node": "^22.20.1",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.13",
     "tsup": "^8.3.5",
-    "tsx": "^4.0.0",
-    "vite": "^8.0.9",
-    "vitest": "4.1.2"
+    "tsx": "^4.23.12",
+    "vite": "^8.2.2",
+    "vitest": "4.1.11"
   },
   "pnpm": {
     "overrides": {

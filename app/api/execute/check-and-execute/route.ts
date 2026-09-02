@@ -239,7 +239,8 @@ async function executeConditionalWrite(
   apiKeyId: string,
   fullBody: Record<string, unknown>,
   conditionResult: ConditionResult,
-  idem: IdempotencyOutcome | null
+  idem: IdempotencyOutcome | null,
+  paygOverflow: boolean
 ): Promise<NextResponse> {
   const walletError = await requireWallet(organizationId);
   if (walletError) {
@@ -259,6 +260,7 @@ async function executeConditionalWrite(
     // The conditional write never forwards native value (writeContractCore is
     // called without ethValue), so nothing is charged to the value cap here.
     reserved: { kind: "evm", valueWei: "0" },
+    paygOverflow,
   });
   if (!reserve.allowed) {
     return recordIdempotentResponse(
@@ -569,7 +571,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       apiKeyCtx.apiKeyId,
       body,
       conditionResult,
-      idem
+      idem,
+      executionGuard.limitResult?.paygOverflow === true
     ),
     rateLimit
   );

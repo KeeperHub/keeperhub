@@ -1,6 +1,6 @@
 "use client";
 
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -11,10 +11,13 @@ import {
 } from "@/components/ui/tooltip";
 import type { TimeRange } from "@/lib/analytics/types";
 import {
+  analyticsCustomEndAtom,
+  analyticsCustomStartAtom,
   analyticsLastUpdatedAtom,
   analyticsRangeAtom,
 } from "@/lib/atoms/analytics";
 import { cn } from "@/lib/utils";
+import { DateRangeFilter } from "./date-range-filter";
 
 const RANGE_OPTIONS: Array<{ value: TimeRange; label: string }> = [
   { value: "1h", label: "1h" },
@@ -50,6 +53,8 @@ export function AnalyticsHeader({
   onRefetch,
 }: AnalyticsHeaderProps): React.ReactNode {
   const [range, setRange] = useAtom(analyticsRangeAtom);
+  const setCustomStart = useSetAtom(analyticsCustomStartAtom);
+  const setCustomEnd = useSetAtom(analyticsCustomEndAtom);
   const lastUpdated = useAtomValue(analyticsLastUpdatedAtom);
   const [timeAgo, setTimeAgo] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
@@ -85,9 +90,13 @@ export function AnalyticsHeader({
 
   const handleRangeChange = useCallback(
     (value: TimeRange): void => {
+      // A preset and a hand-picked window are the same setting, so choosing one
+      // has to drop the other or the range would keep the stale dates.
+      setCustomStart(null);
+      setCustomEnd(null);
       setRange(value);
     },
-    [setRange]
+    [setRange, setCustomStart, setCustomEnd]
   );
 
   const rangeButtons = useMemo(
@@ -114,6 +123,7 @@ export function AnalyticsHeader({
       <div className="flex items-center gap-3">
         <nav aria-label="Time range" className="flex items-center gap-1">
           {rangeButtons}
+          <DateRangeFilter />
         </nav>
 
         {onRefetch ? (

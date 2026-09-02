@@ -2,11 +2,17 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { isBillingEnabled } from "./feature-flag";
-import { checkExecutionLimit, type ExecutionLimitResult } from "./plans-server";
+import {
+  checkExecutionLimit,
+  type ExecutionLimitAllowed,
+} from "./plans-server";
 
 type GuardAllowed = {
   blocked: false;
-  limitResult: ExecutionLimitResult | null;
+  // Null when the check was skipped (billing off, or no org). Otherwise the
+  // verdict this request was admitted on, which the PAYG charge point reads
+  // instead of re-deriving it from a count that by then includes this run.
+  limitResult: ExecutionLimitAllowed | null;
 };
 
 type GuardBlocked = {

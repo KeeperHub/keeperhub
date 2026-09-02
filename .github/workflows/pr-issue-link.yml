@@ -1,112 +1,257 @@
 name: PR Issue Link
 
-# Runs on pull_request_target so it also runs on fork pull requests, which are
-# the ones this gate exists for. Fork runs of `pull_request` need per-run
-# maintainer approval, which would leave the gate silent exactly where it is
-# needed.
+# Runs on pull_request_target so it also runs on fork pull requests. Fork runs
+# of `pull_request` need per-run maintainer approval, which would leave the
+# gate silent exactly where it is needed.
 #
-# The gate applies to outside contributors only: the job skips when the PR
-# author is an OWNER, MEMBER, or COLLABORATOR (team PRs are tracked in Linear,
-# not GitHub issues). A skipped job still satisfies branch protection.
+# Every pull request into staging or prod must reference the work it belongs
+# to, in its title, its description, or its branch name:
 #
-# SAFETY: pull_request_target runs with the base repository's token. This job
-# therefore never checks out, builds, or executes pull request code. It reads
-# the title, the labels, and the referenced issue through the API and nothing
-# else. Do not add a checkout step to this file.
+#   - a GitHub issue (`#1978`) that exists, is an issue, and carries the
+#     `accepted` label - the issue-first policy in ISSUES.md; or
+#   - a Linear ticket (`KEEP-1234`), which only counts on a team pull
+#     request, since outside contributors cannot have one. Team branches
+#     are named `feat/KEEP-1234-description`, which is also what Linear's
+#     GitHub integration links on. The ticket is matched by shape only;
+#     Linear is not consulted.
+#
+# A pull request is a team pull request when its head branch lives in this
+# repository (only push access can create one) or when the payload's
+# author_association is OWNER, MEMBER or COLLABORATOR. The head-repository
+# test comes first because author_association is computed from what the
+# workflow token can see: a member whose organization membership is private
+# is reported as CONTRIBUTOR, which is why the old author-only skip failed
+# team pull requests.
+#
+# HTML comments are removed from the description before it is searched, so
+# the examples in the pull request template can neither satisfy nor confuse
+# the check. A GitHub issue is taken from the branch name only in an explicit
+# form (issue-1978, issue/1978, gh-1978): a bare number in a branch name is
+# not a reference, and can coincide with an unrelated accepted issue.
+#
+# When the check fails it leaves one comment on the pull request saying what
+# it found and what to do, and edits that same comment on every later run,
+# down to a one-line resolved note once the check passes. When a referenced
+# issue is open and simply not yet accepted, the comment says the wait is on
+# the maintainers and gives the contributor nothing to do. The comment never
+# echoes the title, description or branch name back: they are contributor-
+# controlled text and, rendered as Markdown, could carry mentions or links.
+# The job log keeps them. Issue numbers in the comment sit in code spans so
+# they neither autolink nor leave "mentioned" events on the issues. The
+# concurrency group keeps two overlapping runs (an open followed at once by
+# a label, say) from each creating a comment.
+#
+# The job runs on synchronize as well as open and edit so that a result
+# exists for every head commit. A required status check is evaluated per
+# commit; without synchronize it would sit at "Expected" after each push
+# until someone edited the title. The job never checks out code, so
+# rerunning it is free.
+#
+# SAFETY: pull_request_target runs with the base repository's token, which
+# here can write to pull requests so the job can leave its comment. The job
+# therefore never checks out, builds, or executes pull request code. It
+# reads the title, body, branch name and labels from the event payload and
+# the referenced issue through the API, and writes nothing but its own
+# comment. Do not add a checkout step to this file.
 
 on:
   pull_request_target:
-    types: [opened, edited, reopened, labeled, unlabeled]
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
     branches:
       - staging
       - prod
 
+concurrency:
+  group: pr-issue-link-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   issues: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   check-issue-link:
-    if: >-
-      !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
-      github.event.pull_request.author_association)
     runs-on: ubuntu-latest
 
     steps:
-      - name: Require an accepted issue in the PR title
+      - name: Require an issue or ticket reference
         env:
           # Untrusted input. Passed through the environment and never
           # interpolated into the script body.
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           EXEMPT_LABEL: no-issue-required
           ACCEPTED_LABEL: accepted
-          # Types that never require an issue. Keep in step with the
-          # "not required" list in ISSUES.md.
-          EXEMPT_TYPES: docs chore style
+          LINEAR_TEAM_KEY: KEEP
+          # Types that never require a reference. Keep in step with the
+          # "not required" list in ISSUES.md. release covers the
+          # staging-to-prod pull requests.
+          EXEMPT_TYPES: docs chore style release
         run: |
           set -euo pipefail
 
+          is_team=false
+          if [ -n "$HEAD_REPO" ] && [ "$HEAD_REPO" = "$REPO" ]; then
+            is_team=true
+          fi
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR) is_team=true ;;
+          esac
+
+          # The description is searched with HTML comments removed, so the
+          # pull request template's own examples never become candidates.
+          body=$(printf '%s' "$PR_BODY" | perl -0pe 's/<!--.*?-->//gs')
+
+          # The one comment this check owns on the pull request, found by its
+          # marker. Edited in place if present; created only when asked to.
+          # A comment failure must never change the check result, so every
+          # API write degrades to a warning.
+          marker='<!-- check-issue-link -->'
+          comment() {
+            local body id
+            body=$(printf '%s\n%s\n' "$marker" "$1")
+            id=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+              --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("<!-- check-issue-link -->")) | .id' \
+              2>/dev/null | head -n1 || true)
+            if [ -n "$id" ]; then
+              jq -n --arg body "$body" '{body: $body}' \
+                | gh api -X PATCH "repos/$REPO/issues/comments/$id" --input - >/dev/null \
+                || echo "::warning::Could not update the check-issue-link comment."
+            elif [ "${2:-}" = "create" ]; then
+              jq -n --arg body "$body" '{body: $body}' \
+                | gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" --input - >/dev/null \
+                || echo "::warning::Could not create the check-issue-link comment."
+            fi
+          }
+
+          pass() {
+            echo "$1"
+            comment "Resolved. $1"
+            exit 0
+          }
+
+          # fail <headline> [reasons] [awaiting]. With awaiting set, a referenced
+          # issue is open and simply not yet accepted: the contributor has done
+          # their part, so the comment says the wait is ours and asks nothing.
           fail() {
+            local headline="$1" reasons="${2:-}" awaiting="${3:-}" md
+            if [ -n "$awaiting" ]; then
+              md="### This pull request is waiting on issue triage"$'\n\n'
+            else
+              md="### This pull request needs an issue or ticket reference"$'\n\n'
+            fi
+            md+="$headline"$'\n\n'
+            if [ -n "$reasons" ]; then
+              md+="$(printf '%s' "$reasons" | sed 's/^ */- /')"$'\n\n'
+            fi
+            if [ "$is_team" = true ]; then
+              md+="**Team pull requests** carry the Linear ticket in the branch name, "
+              md+="\`feat/$LINEAR_TEAM_KEY-1234-short-description\`. Rename the branch and "
+              md+="GitHub moves this pull request with it. Referencing an accepted GitHub "
+              md+="issue also works."$'\n\n'
+            fi
+            if [ -n "$awaiting" ]; then
+              md+="**Nothing to do on your side.** The issue is filed and is waiting for a "
+              md+="maintainer to triage it and apply the \`$ACCEPTED_LABEL\` label; that step "
+              md+="is ours, not yours. This check reruns when the pull request is pushed or "
+              md+="edited, not when the issue is labelled, so once \`$ACCEPTED_LABEL\` lands, "
+              md+="re-run the job or edit the title to retrigger it."
+            else
+              md+="**Outside contributions** start with an issue. Open one, wait for a "
+              md+="maintainer to apply the \`$ACCEPTED_LABEL\` label, then put \`#N\` in the "
+              md+="title, for example \`fix: #1978 return 403 with a body on public /api/chains\`. "
+              md+="No issue is needed for typos, broken links, formatting, or docs corrected to "
+              md+="match existing behaviour; retitle with one of: \`$EXEMPT_TYPES\`. Full policy: "
+              md+="[ISSUES.md](https://github.com/$REPO/blob/staging/ISSUES.md)."$'\n\n'
+              md+="This check reruns on every push and edit, but not when the issue changes; "
+              md+="re-run the job or edit the title to retrigger it."
+            fi
+
             echo "----------------------------------------------"
-            echo "  ERROR: $1"
+            echo "  ERROR: $headline"
             echo "----------------------------------------------"
             echo ""
-            echo "  Got title: $PR_TITLE"
+            echo "  Got title:  $PR_TITLE"
+            echo "  Got branch: $HEAD_REF"
             echo ""
-            echo "  KeeperHub takes issues before pull requests. Open an issue,"
-            echo "  wait for a maintainer to apply the '$ACCEPTED_LABEL' label,"
-            echo "  then reference it in this PR's title:"
-            echo ""
-            echo "    fix: #1978 return 403 with a body on public /api/chains"
-            echo "    feat(cli): #2014 add --require-verified to execute status"
-            echo ""
-            echo "  No issue needed for typos, broken links, formatting, or docs"
-            echo "  corrected to match existing behaviour. Retitle as one of:"
-            echo "    $EXEMPT_TYPES"
-            echo ""
-            echo "  Full policy: https://github.com/$REPO/blob/staging/ISSUES.md"
-            echo ""
-            echo "  Already labelled '$ACCEPTED_LABEL'? This check does not rerun"
-            echo "  by itself when the issue changes - re-run the job, or edit"
-            echo "  the PR title to retrigger it."
+            printf '%s\n' "$md"
+            comment "$md" create
+            echo "::error title=check-issue-link::$headline"
             exit 1
           }
 
           if printf '%s' "$PR_LABELS" | grep -qF "\"$EXEMPT_LABEL\""; then
-            echo "Exempt: pull request carries the '$EXEMPT_LABEL' label."
-            exit 0
+            pass "Exempt: pull request carries the '$EXEMPT_LABEL' label."
           fi
 
           pr_type=$(printf '%s' "$PR_TITLE" | sed -nE 's/^([a-zA-Z]+)(\([^)]*\))?!?:.*/\1/p' | tr '[:upper:]' '[:lower:]')
           for exempt in $EXEMPT_TYPES; do
             if [ "$pr_type" = "$exempt" ]; then
-              echo "Exempt: '$pr_type' changes do not require an issue."
-              exit 0
+              pass "Exempt: '$pr_type' changes do not require a reference."
             fi
           done
 
-          issue_number=$(printf '%s' "$PR_TITLE" | grep -oE '#[0-9]+' | head -n1 | tr -d '#')
-          if [ -z "$issue_number" ]; then
-            fail "PR title carries no issue reference."
+          # Every grep below may legitimately match nothing. `|| true` keeps
+          # pipefail from ending the script before fail() can explain why.
+
+          if [ "$is_team" = true ]; then
+            ticket=$(printf '%s\n%s\n%s\n' "$PR_TITLE" "$body" "$HEAD_REF" \
+              | grep -oiE "\b$LINEAR_TEAM_KEY-[0-9]+\b" | head -n1 | tr '[:lower:]' '[:upper:]' || true)
+            if [ -n "$ticket" ]; then
+              pass "References Linear ticket $ticket."
+            fi
           fi
 
-          if ! issue_json=$(gh api "repos/$REPO/issues/$issue_number" 2>/dev/null); then
-            fail "#$issue_number does not resolve to an issue in $REPO."
+          # `#N` in the title or body, plus an explicit issue form in the
+          # branch name (issue-2057, issue/2057, gh-2057). A bare number in a
+          # branch name is not a reference: it can coincide with an unrelated
+          # accepted issue. At most ten distinct candidates are looked up.
+          candidates=$(
+            {
+              printf '%s\n%s\n' "$PR_TITLE" "$body" | grep -oE '#[0-9]+' | tr -d '#' || true
+              printf '%s\n' "$HEAD_REF" | grep -oiE '(^|/)(issue|gh)[-/]?[0-9]+' | grep -oE '[0-9]+$' || true
+            } | awk '!seen[$0]++ { if (++n <= 10) print }'
+          )
+
+          if [ -z "$candidates" ]; then
+            fail "No issue or ticket reference was found in the title, description, or branch name."
           fi
 
-          if printf '%s' "$issue_json" | jq -e '.pull_request' >/dev/null 2>&1; then
-            fail "#$issue_number is a pull request, not an issue."
-          fi
+          reasons=""
+          awaiting=""
+          for n in $candidates; do
+            if ! issue_json=$(gh api "repos/$REPO/issues/$n" 2>/dev/null); then
+              reasons+="  \`#$n\` does not resolve to an issue in $REPO."$'\n'
+              continue
+            fi
+            if printf '%s' "$issue_json" | jq -e '.pull_request' >/dev/null 2>&1; then
+              reasons+="  \`#$n\` is a pull request, not an issue."$'\n'
+              continue
+            fi
+            if ! printf '%s' "$issue_json" | jq -e --arg l "$ACCEPTED_LABEL" \
+              '.labels | map(.name) | index($l)' >/dev/null 2>&1; then
+              state=$(printf '%s' "$issue_json" | jq -r '.state')
+              labels=$(printf '%s' "$issue_json" | jq -r '[.labels[].name] | join(", ")')
+              reasons+="  \`#$n\` is not marked '$ACCEPTED_LABEL' (state: $state; labels: ${labels:-none})."$'\n'
+              # An open issue without the label is in our triage queue, not
+              # the contributor's hands. A closed one is a decision already made.
+              if [ "$state" = "open" ]; then
+                awaiting=true
+              fi
+              continue
+            fi
+            pass "References accepted issue #$n."
+          done
 
-          if ! printf '%s' "$issue_json" | jq -e --arg l "$ACCEPTED_LABEL" \
-            '.labels | map(.name) | index($l)' >/dev/null 2>&1; then
-            state=$(printf '%s' "$issue_json" | jq -r '.state')
-            labels=$(printf '%s' "$issue_json" | jq -r '[.labels[].name] | join(", ")')
-            fail "#$issue_number is not marked '$ACCEPTED_LABEL' (state: $state; labels: ${labels:-none})."
+          if [ -n "$awaiting" ]; then
+            fail "A referenced issue is filed but not yet marked '$ACCEPTED_LABEL'." "$reasons" "$awaiting"
           fi
-
-          echo "PR title references accepted issue #$issue_number."
+          fail "None of the referenced issues can be merged against:" "$reasons"

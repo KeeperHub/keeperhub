@@ -37,7 +37,8 @@ vi.mock("./config", () => ({
     runnerEphemeralStorageRequest: "64Mi",
     runnerEphemeralStorageLimit: "1Gi",
     jobTtlSeconds: 300,
-    jobActiveDeadline: 300,
+    jobActiveDeadline: 600,
+    jobDrainTimeoutMs: 400_000,
     maxConcurrentJobs: 5,
   },
 }));
@@ -416,5 +417,35 @@ describe("createWorkflowJob", () => {
     });
 
     expect(getSubmittedJob().spec?.ttlSecondsAfterFinished).toBe(300);
+  });
+
+  it("gives the drain watchdog a budget that expires before the pod is killed", async () => {
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const job = getSubmittedJob();
+    const drainMs = Number(
+      getEnvVar(getJobEnvVars(job), "KH_EXECUTOR_DRAIN_TIMEOUT_MS")
+    );
+    const deadlineMs = (job.spec?.activeDeadlineSeconds ?? 0) * 1000;
+
+    expect(drainMs).toBe(400_000);
+    expect(drainMs).toBeLessThan(deadlineMs);
+  });
+
+  it("caps the runner heap below the container memory limit", async () => {
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const envVars = getJobEnvVars(getSubmittedJob());
+    expect(getEnvVar(envVars, "NODE_OPTIONS")).toBe("--max-old-space-size=224");
   });
 });

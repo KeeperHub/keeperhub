@@ -16,7 +16,7 @@ export function LimitsSection(): React.ReactElement {
       />
 
       <SettingsCard
-        description="EVM and Solana are capped separately, each in its own currency. Leave a field empty for no cap."
+        description="EVM and Solana are capped separately, each in its own currency. Leave a field empty to fall back to the platform default; there is no uncapped setting."
         title="Daily value caps"
       >
         {loading ? (
