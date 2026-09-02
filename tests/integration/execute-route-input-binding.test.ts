@@ -1,5 +1,5 @@
 /**
- * KEEP-1931: proves the route actually threads resolveExecutionInput's
+ * Proves the route actually threads resolveExecutionInput's
  * output through to executeWorkflowInBackground, and that the 400 conflict
  * response happens before any billing/db side effects. The pure resolution
  * logic itself is unit-tested in tests/unit/resolve-execution-input.test.ts;
@@ -128,7 +128,7 @@ async function callExecute(body: string): Promise<Response> {
   return POST(request, { params: Promise.resolve({ workflowId: "wf_1" }) });
 }
 
-describe("execute route - input binding (KEEP-1931)", () => {
+describe("execute route - input binding", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthenticateInternalService.mockResolvedValue({

@@ -199,7 +199,7 @@ export async function POST(
     }
 
     // Parse request body from the captured raw bytes. See
-    // lib/workflow/resolve-execution-input.ts (KEEP-1931) for the resolution
+    // lib/workflow/resolve-execution-input.ts for the resolution
     // rules -- bare top-level fields bind with a deprecation warning, a
     // mixed or malformed body is a 400.
     const resolved = resolveExecutionInput(rawBody);

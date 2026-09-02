@@ -1,4 +1,4 @@
-// KEEP-1931: top-level fields on POST /api/workflow/{id}/execute used to be
+// Top-level fields on POST /api/workflow/{id}/execute used to be
 // silently discarded unless nested under "input" -- {"amount": "1"} bound
 // nothing, only {"input": {"amount": "1"}} did, and the resulting
 // "Unresolved template reference" error pointed at the workflow definition,
@@ -47,8 +47,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Parses the raw request body and resolves the workflow input, per the
- * KEEP-1931 rules above. Never throws: an invalid or non-object JSON body
+ * Parses the raw request body and resolves the workflow input, per the rules
+ * above. Never throws: an invalid or non-object JSON body
  * resolves to an empty input, matching the route's original "missing or
  * invalid body becomes empty input" contract.
  */

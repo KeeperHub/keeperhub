@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveExecutionInput } from "@/lib/workflow/resolve-execution-input";
 
-describe("resolveExecutionInput (KEEP-1931)", () => {
+describe("resolveExecutionInput", () => {
   it("uses the nested input object when input is sent (unchanged shape)", () => {
     const result = resolveExecutionInput(
       JSON.stringify({ input: { amount: "1" } })
