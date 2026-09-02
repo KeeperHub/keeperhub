@@ -35,5 +35,4 @@ export default {
   webhook: "Webhook",
   hyperliquid: "Hyperliquid",
   robinhood: "Robinhood",
-  pyth: "Pyth Network",
 };
