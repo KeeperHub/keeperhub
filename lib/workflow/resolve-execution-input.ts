@@ -4,17 +4,28 @@
 // "Unresolved template reference" error pointed at the workflow definition,
 // giving no hint the request body shape was wrong.
 //
-// The issue proposed two options: auto-nest top-level fields as input, or
-// reject unrecognized top-level keys with a 400 hint. suisuss's accept
-// comment states a preference for the latter: accepting both shapes means
-// two ways to say the same thing, and the missing error -- not the missing
-// leniency -- was the actual gap. So this rejects, it does not guess: any
-// top-level key other than this route's own recognized keys (input,
-// executionId) is a 400 naming the field and pointing at the "input"
-// nesting, and a present-but-non-object "input" is rejected the same way
-// rather than silently coerced.
+// The rule this file enforces: input fields belong nested under "input".
+// A body with no "input" key and only unrecognized top-level fields is
+// accepted for now -- those fields are bound as input, matching the shape
+// the shipped kh CLI's `workflow_execute` tool already sends (see
+// KeeperHub/cli cmd/serve/tools.go) -- but the response carries a
+// deprecation warning, since silently accepting two shapes for the same
+// thing is the wrong long-term state; a caller that never reads the
+// warning is no worse off than before this fix, since their fields now
+// actually bind instead of being silently dropped. A body that mixes a
+// nested "input" object with stray top-level fields is genuine ambiguity
+// about which the caller meant -- no shipped caller does this today, so
+// it's rejected outright rather than given the same grace period. A
+// present "input" that is neither null nor a plain object (e.g. a string
+// or array) is rejected the same way; null is treated as equivalent to
+// "input" being absent, matching the route's original `?? {}` behavior for
+// that value.
 
 const RECOGNIZED_TOP_LEVEL_KEYS = new Set(["input", "executionId"]);
+const DEPRECATION_WARNING =
+  'Top-level input fields are deprecated; nest them under "input". ' +
+  "This request was accepted, but unrecognized top-level fields will be " +
+  "rejected with a 400 in a future release.";
 
 export type ExecuteBody = {
   input?: unknown;
@@ -26,8 +37,8 @@ export type ResolvedExecutionInput =
   | {
       ok: true;
       input: Record<string, unknown>;
-      executionId?: string;
       rawParsed: ExecuteBody;
+      deprecationWarning?: string;
     }
   | { ok: false; error: string; field: string };
 
@@ -52,21 +63,25 @@ export function resolveExecutionInput(rawBody: string): ResolvedExecutionInput {
     }
   }
 
+  const hasInputKey = "input" in rawParsed && rawParsed.input !== null;
   const unrecognizedKeys = Object.keys(rawParsed).filter(
     (key) => !RECOGNIZED_TOP_LEVEL_KEYS.has(key)
   );
-  if (unrecognizedKeys.length > 0) {
+  const hasStrayTopLevel = unrecognizedKeys.length > 0;
+
+  if (hasInputKey && hasStrayTopLevel) {
     const plural = unrecognizedKeys.length > 1 ? "s" : "";
     return {
       ok: false,
       error:
-        `Unknown top-level field${plural} (${unrecognizedKeys.join(", ")}) -- ` +
-        'did you mean to nest them under "input"?',
-      field: unrecognizedKeys[0],
+        `Ambiguous execution body: both a nested "input" object and ` +
+        `top-level field${plural} (${unrecognizedKeys.join(", ")}) were sent. ` +
+        'Send input fields nested under "input", not both ways at once.',
+      field: "input",
     };
   }
 
-  if ("input" in rawParsed && !isRecord(rawParsed.input)) {
+  if (hasInputKey && !isRecord(rawParsed.input)) {
     return {
       ok: false,
       error: '"input" must be an object when present.',
@@ -74,9 +89,22 @@ export function resolveExecutionInput(rawBody: string): ResolvedExecutionInput {
     };
   }
 
-  const input: Record<string, unknown> = isRecord(rawParsed.input)
-    ? rawParsed.input
+  if (hasStrayTopLevel) {
+    const strayInput: Record<string, unknown> = {};
+    for (const key of unrecognizedKeys) {
+      strayInput[key] = rawParsed[key];
+    }
+    return {
+      ok: true,
+      input: strayInput,
+      rawParsed,
+      deprecationWarning: DEPRECATION_WARNING,
+    };
+  }
+
+  const input: Record<string, unknown> = hasInputKey
+    ? (rawParsed.input as Record<string, unknown>)
     : {};
 
-  return { ok: true, input, executionId: rawParsed.executionId, rawParsed };
+  return { ok: true, input, rawParsed };
 }

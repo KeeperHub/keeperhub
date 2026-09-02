@@ -250,7 +250,7 @@ Manually trigger a workflow execution. The singular form `POST /api/workflow/{wo
 }
 ```
 
-The `input` field is optional. It maps to the workflow's trigger input and is passed to the first node of the run. Input fields must be nested under `input` -- a request body with fields at the top level instead (e.g. `{"amount": "1"}` rather than `{"input": {"amount": "1"}}`) is rejected with a 400 naming the unrecognized field, rather than silently binding nothing.
+The `input` field is optional. It maps to the workflow's trigger input and is passed to the first node of the run. Input fields should be nested under `input`; a body with fields at the top level instead (e.g. `{"amount": "1"}` rather than `{"input": {"amount": "1"}}`) is still accepted and now binds correctly, but the response carries an `X-Deprecation-Warning` header -- support for the unnested shape will be removed in a future release. A body mixing both shapes, or with `input` set to something other than an object, returns a 400. This differs deliberately from the [webhook trigger](#webhook-trigger) route, which takes the entire request body as the input: a webhook carries an external caller's payload that can't be asked to nest itself under `input`, whereas the execute route uses KeeperHub's own envelope and so can require the nested shape.
 
 ### Example
 

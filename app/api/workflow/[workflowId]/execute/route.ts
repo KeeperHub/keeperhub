@@ -199,9 +199,9 @@ export async function POST(
     }
 
     // Parse request body from the captured raw bytes. See
-    // lib/workflow/resolve-execution-input.ts (KEEP-1931) for why an
-    // unrecognized top-level field is rejected with a 400 hint rather than
-    // silently folded into input.
+    // lib/workflow/resolve-execution-input.ts (KEEP-1931) for the resolution
+    // rules -- bare top-level fields bind with a deprecation warning, a
+    // mixed or malformed body is a 400.
     const resolved = resolveExecutionInput(rawBody);
     if (!resolved.ok) {
       return NextResponse.json(
@@ -377,13 +377,17 @@ export async function POST(
     );
 
     // Return immediately with the execution ID
-    return recordIdempotentResponse(
-      idem,
-      NextResponse.json({
-        executionId,
-        status: "running",
-      })
-    );
+    const successResponse = NextResponse.json({
+      executionId,
+      status: "running",
+    });
+    if (resolved.deprecationWarning) {
+      successResponse.headers.set(
+        "X-Deprecation-Warning",
+        resolved.deprecationWarning
+      );
+    }
+    return recordIdempotentResponse(idem, successResponse);
   } catch (error) {
     logSystemError(ErrorCategory.WORKFLOW_ENGINE, "Failed to start workflow execution", error, { endpoint: "/api/workflow/[workflowId]/execute", operation: "post" });
     return NextResponse.json(

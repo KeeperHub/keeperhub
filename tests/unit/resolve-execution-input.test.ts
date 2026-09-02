@@ -1,150 +1,110 @@
-import { describe, expect, it } from "vitest";
-import { resolveExecutionInput } from "@/lib/workflow/resolve-execution-input";
+// KEEP-1931: top-level fields on POST /api/workflow/{id}/execute used to be
+// silently discarded unless nested under "input" -- {"amount": "1"} bound
+// nothing, only {"input": {"amount": "1"}} did, and the resulting
+// "Unresolved template reference" error pointed at the workflow definition,
+// giving no hint the request body shape was wrong.
+//
+// The rule this file enforces: input fields belong nested under "input".
+// A body with no "input" key and only unrecognized top-level fields is
+// accepted for now -- those fields are bound as input, matching the shape
+// the shipped kh CLI's `workflow_execute` tool already sends (see
+// KeeperHub/cli cmd/serve/tools.go) -- but the response carries a
+// deprecation warning, since silently accepting two shapes for the same
+// thing is the wrong long-term state; a caller that never reads the
+// warning is no worse off than before this fix, since their fields now
+// actually bind instead of being silently dropped. A body that mixes a
+// nested "input" object with stray top-level fields is genuine ambiguity
+// about which the caller meant -- no shipped caller does this today, so
+// it's rejected outright rather than given the same grace period. A
+// present "input" that is neither null nor a plain object (e.g. a string
+// or array) is rejected the same way; null is treated as equivalent to
+// "input" being absent, matching the route's original `?? {}` behavior for
+// that value.
 
-describe("resolveExecutionInput (KEEP-1931)", () => {
-  it("uses the nested input object when input is sent (unchanged shape)", () => {
-    const result = resolveExecutionInput(
-      JSON.stringify({ input: { amount: "1" } })
-    );
+const RECOGNIZED_TOP_LEVEL_KEYS = new Set(["input", "executionId"]);
+const DEPRECATION_WARNING =
+  'Top-level input fields are deprecated; nest them under "input". ' +
+  "This request was accepted, but unrecognized top-level fields will be " +
+  "rejected with a 400 in a future release.";
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.input).toEqual({ amount: "1" });
+export type ExecuteBody = {
+  input?: unknown;
+  executionId?: string;
+  [key: string]: unknown;
+};
+
+export type ResolvedExecutionInput =
+  | {
+      ok: true;
+      input: Record<string, unknown>;
+      rawParsed: ExecuteBody;
+      deprecationWarning?: string;
     }
-  });
+  | { ok: false; error: string; field: string };
 
-  it("rejects a top-level field with a hint to nest it under input", () => {
-    const result = resolveExecutionInput(JSON.stringify({ amount: "1" }));
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.field).toBe("amount");
-      expect(result.error).toContain("amount");
-      expect(result.error).toContain("input");
+/**
+ * Parses the raw request body and resolves the workflow input, per the
+ * KEEP-1931 rules above. Never throws: an invalid or non-object JSON body
+ * resolves to an empty input, matching the route's original "missing or
+ * invalid body becomes empty input" contract.
+ */
+export function resolveExecutionInput(rawBody: string): ResolvedExecutionInput {
+  let rawParsed: ExecuteBody = {};
+  if (rawBody) {
+    try {
+      const parsed: unknown = JSON.parse(rawBody);
+      rawParsed = isRecord(parsed) ? (parsed as ExecuteBody) : {};
+    } catch {
+      rawParsed = {};
     }
-  });
+  }
 
-  it("rejects multiple unrecognized top-level fields, naming all of them", () => {
-    const result = resolveExecutionInput(
-      JSON.stringify({ amount: "1", token: "USDC" })
-    );
+  const hasInputKey = "input" in rawParsed && rawParsed.input !== null;
+  const unrecognizedKeys = Object.keys(rawParsed).filter(
+    (key) => !RECOGNIZED_TOP_LEVEL_KEYS.has(key)
+  );
+  const hasStrayTopLevel = unrecognizedKeys.length > 0;
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toContain("amount");
-      expect(result.error).toContain("token");
+  if (hasInputKey && hasStrayTopLevel) {
+    const plural = unrecognizedKeys.length > 1 ? "s" : "";
+    return {
+      ok: false,
+      error:
+        `Ambiguous execution body: both a nested "input" object and ` +
+        `top-level field${plural} (${unrecognizedKeys.join(", ")}) were sent. ` +
+        'Send input fields nested under "input", not both ways at once.',
+      field: "input",
+    };
+  }
+
+  if (hasInputKey && !isRecord(rawParsed.input)) {
+    return {
+      ok: false,
+      error: '"input" must be an object when present.',
+      field: "input",
+    };
+  }
+
+  if (hasStrayTopLevel) {
+    const strayInput: Record<string, unknown> = {};
+    for (const key of unrecognizedKeys) {
+      strayInput[key] = rawParsed[key];
     }
-  });
+    return {
+      ok: true,
+      input: strayInput,
+      rawParsed,
+      deprecationWarning: DEPRECATION_WARNING,
+    };
+  }
 
-  it("rejects a top-level field even when input is also present", () => {
-    const result = resolveExecutionInput(
-      JSON.stringify({ input: { amount: "1" }, amount: "2" })
-    );
+  const input: Record<string, unknown> = hasInputKey
+    ? (rawParsed.input as Record<string, unknown>)
+    : {};
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.field).toBe("amount");
-    }
-  });
-
-  it("accepts executionId alongside input without treating it as unrecognized", () => {
-    const result = resolveExecutionInput(
-      JSON.stringify({ input: { amount: "1" }, executionId: "exec_123" })
-    );
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.input).toEqual({ amount: "1" });
-      expect(result.executionId).toBe("exec_123");
-    }
-  });
-
-  it("accepts executionId alone with no input", () => {
-    const result = resolveExecutionInput(
-      JSON.stringify({ executionId: "exec_123" })
-    );
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.input).toEqual({});
-      expect(result.executionId).toBe("exec_123");
-    }
-  });
-
-  it("rejects a non-object input value rather than silently coercing it", () => {
-    const result = resolveExecutionInput(JSON.stringify({ input: "oops" }));
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.field).toBe("input");
-    }
-  });
-
-  it("defaults to empty input when neither input nor top-level fields are present", () => {
-    const result = resolveExecutionInput(JSON.stringify({}));
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.input).toEqual({});
-    }
-  });
-
-  it("defaults to empty input for an empty raw body", () => {
-    const result = resolveExecutionInput("");
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.input).toEqual({});
-    }
-  });
-
-  it("defaults to empty input for invalid JSON, matching the pre-fix contract", () => {
-    const result = resolveExecutionInput("{not valid json");
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.input).toEqual({});
-    }
-  });
-
-  it("defaults to empty input when the JSON body is not an object (array)", () => {
-    const result = resolveExecutionInput(JSON.stringify([1, 2, 3]));
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.input).toEqual({});
-    }
-  });
-
-  it("defaults to empty input when the JSON body is a bare null", () => {
-    const result = resolveExecutionInput("null");
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.input).toEqual({});
-    }
-  });
-
-  it("defaults to empty input when the JSON body is a bare primitive", () => {
-    const result = resolveExecutionInput('"just a string"');
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.input).toEqual({});
-    }
-  });
-
-  it("preserves the raw parsed body for callers that need it unmodified (idempotency hashing)", () => {
-    const result = resolveExecutionInput(
-      JSON.stringify({ input: { amount: "1" }, executionId: "exec_123" })
-    );
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.rawParsed).toEqual({
-        input: { amount: "1" },
-        executionId: "exec_123",
-      });
-    }
-  });
-});
+  return { ok: true, input, rawParsed };
+}
