@@ -6,8 +6,8 @@
 //
 // The rule this file enforces: input fields belong nested under "input".
 // A body with no "input" key and only unrecognized top-level fields is
-// accepted for now -- those fields are bound as input, matching the shape
-// the shipped kh CLI's `workflow_execute` tool already sends (see
+// accepted for now -- *every* top-level field is bound as input, matching
+// the shape the shipped kh CLI's `workflow_execute` tool already sends (see
 // KeeperHub/cli cmd/serve/tools.go) -- but the response carries a
 // deprecation warning, since silently accepting two shapes for the same
 // thing is the wrong long-term state; a caller that never reads the
@@ -20,12 +20,55 @@
 // or array) is rejected the same way; null is treated as equivalent to
 // "input" being absent, matching the route's original `?? {}` behavior for
 // that value.
+//
+// `executionId` is an envelope field only in the nested shape. In the bare
+// shape there is no envelope -- the caller sent a flat bag of workflow input
+// -- so a field that happens to be named `executionId` is the caller's data
+// and is bound like any other. Treating it as an envelope field there would
+// both silently drop it from the input the workflow sees and feed a
+// caller-controlled string to the execution lookup in the route, which is
+// how a data field turns into a way to address someone else's execution row.
 
 const RECOGNIZED_TOP_LEVEL_KEYS = new Set(["input", "executionId"]);
-const DEPRECATION_WARNING =
-  'Top-level input fields are deprecated; nest them under "input". ' +
-  "This request was accepted, but unrecognized top-level fields will be " +
-  "rejected with a 400 in a future release.";
+
+/**
+ * Deprecation of the bare top-level shape, expressed with the headers this
+ * API already publishes in `app/api/openapi/route.ts` (`x-api-versioning`):
+ * RFC 9745 `Deprecation`, RFC 8594 `Sunset`, and a `Link` at the migration
+ * note. A bespoke header would not be read by a client written against that
+ * published contract.
+ *
+ * Both dates are fixed constants rather than computed from the current time,
+ * so every response carries the same pair for the life of the deprecation.
+ * `tests/unit/resolve-execution-input.test.ts` asserts the gap between them
+ * stays at or above the documented 180-day minimum notice.
+ */
+export const TOP_LEVEL_INPUT_DEPRECATION = {
+  /** The date the deprecation took effect. */
+  effective: "2026-09-03",
+  /** Earliest date the bare shape may start returning 400. */
+  sunset: "2027-03-02",
+  link: "https://docs.keeperhub.com/api/workflows",
+} as const;
+
+function toHttpDate(isoDay: string): string {
+  return new Date(`${isoDay}T00:00:00Z`).toUTCString();
+}
+
+/**
+ * Header pairs announcing the bare-shape deprecation. Applied to every
+ * response the route returns after resolution, not just the one that starts a
+ * run: a caller retrying with an Idempotency-Key otherwise sees the notice
+ * once and never again, which is the opposite of what a migration window is
+ * for.
+ */
+export function topLevelInputDeprecationHeaders(): Array<[string, string]> {
+  return [
+    ["Deprecation", toHttpDate(TOP_LEVEL_INPUT_DEPRECATION.effective)],
+    ["Sunset", toHttpDate(TOP_LEVEL_INPUT_DEPRECATION.sunset)],
+    ["Link", `<${TOP_LEVEL_INPUT_DEPRECATION.link}>; rel="deprecation"`],
+  ];
+}
 
 export type ExecuteBody = {
   input?: unknown;
@@ -38,7 +81,14 @@ export type ResolvedExecutionInput =
       ok: true;
       input: Record<string, unknown>;
       rawParsed: ExecuteBody;
-      deprecationWarning?: string;
+      /**
+       * The envelope `executionId`, when the body carried one *as an envelope
+       * field*. Undefined for the bare shape, where a key of that name is the
+       * caller's own input data. The route must use this rather than reading
+       * `rawParsed.executionId`, which cannot tell the two apart.
+       */
+      executionId?: string;
+      deprecated?: boolean;
     }
   | { ok: false; error: string; field: string };
 
@@ -90,21 +140,45 @@ export function resolveExecutionInput(rawBody: string): ResolvedExecutionInput {
   }
 
   if (hasStrayTopLevel) {
-    const strayInput: Record<string, unknown> = {};
-    for (const key of unrecognizedKeys) {
-      strayInput[key] = rawParsed[key];
-    }
+    // Spread rather than key-by-key assignment, for two reasons.
+    //
+    // Every top-level key binds, including one named `executionId`: there is
+    // no envelope in this shape, so that key is the caller's data. Copying
+    // only the unrecognized keys would drop it from the input the workflow
+    // receives while leaving the route to read it as an envelope field.
+    //
+    // And rest-destructuring creates own properties. `strayInput[key] = ...`
+    // is an assignment, so a `__proto__` key -- which `JSON.parse` does
+    // produce as an own property -- would reach `Object.prototype`'s setter
+    // instead of landing on the object, leaving an input whose
+    // `Object.keys()` is empty while a read by name still resolved through
+    // the prototype.
+    //
+    // `input` is the one key held back. Reaching here with an `input` key at
+    // all means it was null, and a null `input` is the caller writing
+    // envelope syntax -- "I am sending no nested input" -- rather than a data
+    // field that happens to be called input. `executionId` is the opposite:
+    // it only means anything as an envelope field when an envelope exists.
+    const { input: _nullEnvelope, ...bareInput } = rawParsed;
     return {
       ok: true,
-      input: strayInput,
+      input: bareInput,
       rawParsed,
-      deprecationWarning: DEPRECATION_WARNING,
+      deprecated: true,
     };
   }
 
   const input: Record<string, unknown> = hasInputKey
-    ? (rawParsed.input as Record<string, unknown>)
+    ? { ...(rawParsed.input as Record<string, unknown>) }
     : {};
 
-  return { ok: true, input, rawParsed };
+  return {
+    ok: true,
+    input,
+    rawParsed,
+    executionId:
+      typeof rawParsed.executionId === "string"
+        ? rawParsed.executionId
+        : undefined,
+  };
 }

@@ -1,5 +1,5 @@
 import { HttpStatus } from "@/lib/http-status";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { logAnonymousExecutionBlock } from "@/lib/auth-anonymous-guard";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
@@ -37,6 +37,7 @@ import { loadWorkflowForExecution } from "@/lib/workflow/load-for-execution";
 import {
   type ExecuteBody,
   resolveExecutionInput,
+  topLevelInputDeprecationHeaders,
 } from "@/lib/workflow/resolve-execution-input";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 
@@ -212,6 +213,19 @@ export async function POST(
     const { input } = resolved;
     const body: ExecuteBody = resolved.rawParsed;
 
+    // The bare top-level shape is deprecated, and the notice has to ride every
+    // response this handler returns from here on -- replays included. A caller
+    // retrying with an Idempotency-Key would otherwise see it once and never
+    // again, which is the opposite of what a migration window needs.
+    const withDeprecation = (response: NextResponse): NextResponse => {
+      if (resolved.ok && resolved.deprecated) {
+        for (const [name, value] of topLevelInputDeprecationHeaders()) {
+          response.headers.set(name, value);
+        }
+      }
+      return response;
+    };
+
     // Idempotency: a retry with the same key + body replays the original
     // executionId instead of starting the workflow again. Scoped per workflow.
     const idem = await beginIdempotentFromRequest({
@@ -223,7 +237,9 @@ export async function POST(
     if (idem) {
       const early = idempotencyEarlyResponse(idem);
       if (early) {
-        return NextResponse.json(early.body, { status: early.status });
+        return withDeprecation(
+          NextResponse.json(early.body, { status: early.status })
+        );
       }
     }
 
@@ -248,8 +264,11 @@ export async function POST(
     );
 
     // Check if executionId was provided (for scheduled executions)
-    // This allows the executor to pre-create the execution record
-    let executionId = body.executionId;
+    // This allows the executor to pre-create the execution record.
+    // Sourced from the resolver rather than the raw body: in the bare
+    // top-level shape a key named executionId is caller input, not an
+    // envelope field, and must not address an execution row.
+    let executionId = resolved.executionId;
     // Whether this request created the workflow_executions row itself, vs.
     // reusing one that the executor pre-created. The KEEP-556 counter only
     // increments here when we created the row, so the executor-side increment
@@ -261,7 +280,10 @@ export async function POST(
       // Refuse terminal / in-flight reuse before PAYG so a retry cannot
       // charge again or start a second DevKit run.
       const existingExecution = await db.query.workflowExecutions.findFirst({
-        where: eq(workflowExecutions.id, executionId),
+        where: and(
+          eq(workflowExecutions.id, executionId),
+          eq(workflowExecutions.workflowId, workflowId)
+        ),
       });
 
       if (existingExecution) {
@@ -273,14 +295,16 @@ export async function POST(
         ) {
           return recordIdempotentResponse(
             idem,
-            NextResponse.json(
-              {
-                error: "Execution already completed",
-                code: "execution_already_terminal",
-                executionId,
-                status: existingStatus,
-              },
-              { status: HttpStatus.CONFLICT }
+            withDeprecation(
+              NextResponse.json(
+                {
+                  error: "Execution already completed",
+                  code: "execution_already_terminal",
+                  executionId,
+                  status: existingStatus,
+                },
+                { status: HttpStatus.CONFLICT }
+              )
             ),
             "release"
           );
@@ -288,10 +312,12 @@ export async function POST(
         if (existingStatus === "running") {
           return recordIdempotentResponse(
             idem,
-            NextResponse.json({
-              executionId,
-              status: "running",
-            }),
+            withDeprecation(
+              NextResponse.json({
+                executionId,
+                status: "running",
+              })
+            ),
             "success"
           );
         }
@@ -378,9 +404,11 @@ export async function POST(
         .where(eq(workflowExecutions.id, executionId));
       return recordIdempotentResponse(
         idem,
-        NextResponse.json(
-          { error: paygCharge.message, executionId, status: "error" },
-          { status: HttpStatus.PAYMENT_REQUIRED }
+        withDeprecation(
+          NextResponse.json(
+            { error: paygCharge.message, executionId, status: "error" },
+            { status: HttpStatus.PAYMENT_REQUIRED }
+          )
         ),
         "failed"
       );
@@ -410,16 +438,12 @@ export async function POST(
     );
 
     // Return immediately with the execution ID
-    const successResponse = NextResponse.json({
-      executionId,
-      status: "running",
-    });
-    if (resolved.deprecationWarning) {
-      successResponse.headers.set(
-        "X-Deprecation-Warning",
-        resolved.deprecationWarning
-      );
-    }
+    const successResponse = withDeprecation(
+      NextResponse.json({
+        executionId,
+        status: "running",
+      })
+    );
     return recordIdempotentResponse(idem, successResponse);
   } catch (error) {
     logSystemError(ErrorCategory.WORKFLOW_ENGINE, "Failed to start workflow execution", error, { endpoint: "/api/workflow/[workflowId]/execute", operation: "post" });

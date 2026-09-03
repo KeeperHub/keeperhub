@@ -173,7 +173,7 @@ describe("execute route - input binding", () => {
     const response = await callExecute(JSON.stringify({ amount: "1" }));
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("X-Deprecation-Warning")).toBeTruthy();
+    expect(response.headers.get("Deprecation")).toBeTruthy();
     expect(mockExecuteWorkflowInBackground).toHaveBeenCalledWith(
       "exec_1",
       "wf_1",
@@ -194,7 +194,7 @@ describe("execute route - input binding", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("X-Deprecation-Warning")).toBeNull();
+    expect(response.headers.get("Deprecation")).toBeNull();
     expect(mockExecuteWorkflowInBackground).toHaveBeenCalledWith(
       "exec_1",
       "wf_1",
@@ -225,7 +225,7 @@ describe("execute route - input binding", () => {
     const response = await callExecute(JSON.stringify({ input: null }));
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("X-Deprecation-Warning")).toBeNull();
+    expect(response.headers.get("Deprecation")).toBeNull();
     expect(mockExecuteWorkflowInBackground).toHaveBeenCalledWith(
       "exec_1",
       "wf_1",

@@ -311,6 +311,21 @@ const nextConfig = {
           },
         ],
       },
+      {
+        // Deprecation notices are useless to a browser client that cannot read
+        // them: without an explicit expose list, fetch() from another origin
+        // sees only the CORS-safelisted response headers, so RFC 9745
+        // Deprecation and RFC 8594 Sunset are dropped before the caller. Scoped
+        // to /api because that is where the deprecation contract in
+        // app/api/openapi/route.ts applies.
+        source: "/api/:path*",
+        headers: [
+          {
+            key: "Access-Control-Expose-Headers",
+            value: "Deprecation, Sunset, Link",
+          },
+        ],
+      },
       // The kh CLI already checks this header on every response and warns when
       // its own build is older (internal/http/version.go). The client half
       // shipped long ago; nothing was ever sending the header, so the check was
