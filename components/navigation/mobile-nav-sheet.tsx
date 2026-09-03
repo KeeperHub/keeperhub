@@ -26,68 +26,22 @@ import { useSession } from "@/lib/auth-client";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { cn } from "@/lib/utils";
+import {
+  decideMobileNavAction,
+  isMobileNavActive,
+  type MobileNavItem,
+  visibleMobileNavItems,
+} from "./mobile-nav-items";
 
-type MobileNavItem = {
-  id: string;
-  icon: typeof Globe;
-  label: string;
-  href: string;
-  requireAuth: boolean;
-  ownerOnly?: boolean;
-  adminOnly?: boolean;
+const ICONS: Record<string, typeof Globe> = {
+  hub: Globe,
+  workflows: WorkflowIcon,
+  analytics: BarChart3,
+  earnings: DollarSign,
+  "held-payments": Clock,
+  activity: Activity,
+  settings: Settings,
 };
-
-// The read-only monitoring + account destinations. "Workflows" and
-// "Address Book" are flyout/overlay actions in the desktop sidebar (they
-// open panels, not pages) and have no equivalent as a bare link, so they
-// are intentionally not here — the workflow you are monitoring is reachable
-// via its run history and the list via /workflows.
-const MOBILE_NAV_ITEMS: MobileNavItem[] = [
-  { id: "hub", icon: Globe, label: "Hub", href: "/hub", requireAuth: false },
-  {
-    id: "workflows",
-    icon: WorkflowIcon,
-    label: "Workflows",
-    href: "/workflows",
-    requireAuth: false,
-  },
-  {
-    id: "analytics",
-    icon: BarChart3,
-    label: "Analytics",
-    href: "/analytics",
-    requireAuth: true,
-  },
-  {
-    id: "earnings",
-    icon: DollarSign,
-    label: "Earnings",
-    href: "/earnings",
-    requireAuth: true,
-  },
-  {
-    id: "held-payments",
-    icon: Clock,
-    label: "Held Payments",
-    href: "/held-payments",
-    requireAuth: true,
-    ownerOnly: true,
-  },
-  {
-    id: "activity",
-    icon: Activity,
-    label: "Activity",
-    href: "/activity",
-    requireAuth: false,
-  },
-  {
-    id: "settings",
-    icon: Settings,
-    label: "Settings",
-    href: "/settings",
-    requireAuth: true,
-  },
-];
 
 export function MobileNavSheet(): React.ReactNode {
   const [open, setOpen] = useState(false);
@@ -102,18 +56,14 @@ export function MobileNavSheet(): React.ReactNode {
     return null;
   }
 
-  const isActive = (href: string): boolean =>
-    href === "/"
-      ? pathname === "/"
-      : pathname === href || pathname.startsWith(`${href}/`);
-
-  const visible = MOBILE_NAV_ITEMS.filter(
-    (item) => (!item.adminOnly || isAdmin) && (!item.ownerOnly || isOwner)
-  );
+  const visible = visibleMobileNavItems({ isAdmin, isOwner });
 
   const handleNavigate = (item: MobileNavItem): void => {
     setOpen(false);
-    if (item.requireAuth && (!session?.user || isAnonymousUser(session.user))) {
+    const user = session?.user ?? null;
+    if (
+      decideMobileNavAction(item, user, isAnonymousUser).kind === "auth-prompt"
+    ) {
       openAuthPrompt({ action: `nav:${item.id}`, redirectTo: item.href });
       return;
     }
@@ -141,7 +91,8 @@ export function MobileNavSheet(): React.ReactNode {
         </SheetHeader>
         <nav aria-label="Mobile navigation" className="flex flex-col gap-1 p-2">
           {visible.map((item) => {
-            const active = isActive(item.href);
+            const active = isMobileNavActive(item.href, pathname);
+            const Icon = ICONS[item.id] ?? Globe;
             return (
               <button
                 aria-current={active ? "page" : undefined}
@@ -154,7 +105,7 @@ export function MobileNavSheet(): React.ReactNode {
                 onClick={() => handleNavigate(item)}
                 type="button"
               >
-                <item.icon className="size-4 shrink-0 text-muted-foreground" />
+                <Icon className="size-4 shrink-0 text-muted-foreground" />
                 <span className="truncate">{item.label}</span>
               </button>
             );
