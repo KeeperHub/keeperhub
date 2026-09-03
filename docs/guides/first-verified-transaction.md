@@ -95,7 +95,8 @@ Confirm, in order:
 
 ## 6. Simulate
 
-Every execute tool and endpoint takes a `simulate` flag that estimates gas and catches
+Every direct-execution write tool (`execute_transfer`, `execute_contract_call`,
+`execute_check_and_execute`) takes a `simulate` flag that estimates gas and catches
 reverts without signing or broadcasting:
 
 ```json

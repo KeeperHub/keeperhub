@@ -73,7 +73,10 @@ four above. Treat anything other than `success` as a failure. Checking only for 
 ## 4. Write onchain, safely
 
 For a one-off transfer or contract call with no workflow around it, use the direct execution
-tools: `execute_transfer`, `execute_contract_call`, `execute_protocol_action`.
+tools: `execute_transfer`, `execute_contract_call`, `execute_check_and_execute`. The protocol
+action tool (`execute_protocol_action`) has no dry run today — it executes the action when
+called — so preflight it with a read (`search_protocol_actions`, or a view call against the
+protocol) rather than a `simulate: true` pass, which it does not accept.
 
 Always preflight:
 
