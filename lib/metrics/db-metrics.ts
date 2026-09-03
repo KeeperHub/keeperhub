@@ -16,6 +16,7 @@ import {
   eq,
   gte,
   inArray,
+  lt,
   ne,
   notInArray,
   or,
@@ -43,6 +44,7 @@ import {
   organization,
   organizationSubscriptions,
   organizationWallets,
+  pendingTransactions,
   sessions,
   users,
   workflowExecutionLogs,
@@ -373,6 +375,65 @@ export async function getUnconfirmedExecutionCountsFromDb(): Promise<Unconfirmed
     logSystemWarn(
       ErrorCategory.DATABASE,
       "[Metrics] Failed to query unconfirmed execution counts from DB",
+      error
+    );
+    return null;
+  }
+}
+
+// KEEP-1291: how long a `pending` row has to sit before it counts as stuck.
+// Fifteen minutes is well past normal inclusion on every supported chain, so a
+// row over the line is a real backlog rather than ordinary block latency.
+const STUCK_PENDING_TX_THRESHOLD_MS = 15 * 60 * 1000;
+
+export type StuckPendingTransactionCounts = Array<{
+  chainId: number;
+  count: number;
+}>;
+
+/**
+ * Pending transactions that have not moved off `pending` within
+ * STUCK_PENDING_TX_THRESHOLD_MS, grouped by chain.
+ *
+ * KEEP-1291 removed an unreferenced same-nonce fee-escalation implementation
+ * from lib/web3/gas-strategy.ts. Nothing replaced it: a stuck transaction is
+ * still resolved by a human, so the backlog has to be visible. This gauge is
+ * that visibility and is the only consumer of the "stuck" notion.
+ *
+ * Deliberately pure SQL. Confirming a row is genuinely stuck (rather than
+ * merely old) means comparing its nonce against the chain's, which is one RPC
+ * call per wallet - too expensive for a scrape. The precise version is
+ * KEEP-1315; this over-counts rows the reconciler has not yet reaped, which is
+ * the safe direction for an alert.
+ *
+ * Returns null on query error; the caller leaves the gauge untouched so the
+ * last real value stands rather than a misleading 0.
+ */
+export async function getStuckPendingTransactionCountsFromDb(): Promise<StuckPendingTransactionCounts | null> {
+  try {
+    const cutoff = new Date(Date.now() - STUCK_PENDING_TX_THRESHOLD_MS);
+    const rows = await db
+      .select({
+        chainId: pendingTransactions.chainId,
+        count: count(),
+      })
+      .from(pendingTransactions)
+      .where(
+        and(
+          eq(pendingTransactions.status, "pending"),
+          lt(pendingTransactions.submittedAt, cutoff)
+        )
+      )
+      .groupBy(pendingTransactions.chainId);
+
+    return rows.map((row) => ({
+      chainId: row.chainId,
+      count: Number(row.count) || 0,
+    }));
+  } catch (error) {
+    logSystemWarn(
+      ErrorCategory.DATABASE,
+      "[Metrics] Failed to query stuck pending transaction counts from DB",
       error
     );
     return null;

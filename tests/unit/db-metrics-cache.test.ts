@@ -28,6 +28,7 @@ const DEFAULT_DB_RETURNS: Record<string, unknown> = {
   },
   getLastFinishedExecutionAgeSecondsFromDb: null,
   getUnconfirmedExecutionCountsFromDb: { workflow: 0, direct: 0 },
+  getStuckPendingTransactionCountsFromDb: [],
   getWorkflowErrorsByWorkflowFromDb: [],
   getSystemErrorsByCategoryFromDb: [],
   getStepStatsFromDb: {
@@ -164,6 +165,12 @@ const UNCONFIRMED_DIRECT_5_RE =
   /keeperhub_executions_unconfirmed\{kind="direct"\}\s+5(\s|$)/m;
 const UNCONFIRMED_WORKFLOW_ZERO_RE =
   /keeperhub_executions_unconfirmed\{kind="workflow"\}\s+0(\s|$)/m;
+const STUCK_PENDING_CHAIN_1_RE =
+  /keeperhub_web3_pending_transactions_stuck\{chain_id="1"\}\s+4(\s|$)/m;
+const STUCK_PENDING_CHAIN_8453_RE =
+  /keeperhub_web3_pending_transactions_stuck\{chain_id="8453"\}\s+2(\s|$)/m;
+const STUCK_PENDING_CHAIN_1_ANY_RE =
+  /keeperhub_web3_pending_transactions_stuck\{chain_id="1"\}/m;
 
 // MRR series. Label order follows the object passed to .set()
 // (plan, tier, billing_status), but stay tolerant of extra labels.
@@ -620,6 +627,68 @@ describe("keeperhub_executions_unconfirmed gauge", () => {
     const out = await getDbMetrics();
     expect(out).toMatch(UNCONFIRMED_WORKFLOW_3_RE);
     expect(out).not.toMatch(UNCONFIRMED_WORKFLOW_ZERO_RE);
+  });
+});
+
+// KEEP-1291 deleted the unreferenced same-nonce fee-escalation code, so this
+// gauge is the only thing that notices a stuck transaction. It must clear a
+// chain that has drained (otherwise the alert never recovers) while still
+// keeping its last reading through a query error.
+describe("keeperhub_web3_pending_transactions_stuck gauge", () => {
+  const originalTtl = process.env.DB_METRICS_CACHE_TTL_MS;
+
+  beforeEach(() => {
+    __resetDbMetricsCacheForTest();
+    for (const fn of Object.values(dbMocks)) {
+      fn.mockReset();
+    }
+    rebindDefaultDbMockImplementations();
+    process.env.DB_METRICS_CACHE_TTL_MS = "0";
+  });
+
+  afterEach(() => {
+    if (originalTtl === undefined) {
+      delete process.env.DB_METRICS_CACHE_TTL_MS;
+    } else {
+      process.env.DB_METRICS_CACHE_TTL_MS = originalTtl;
+    }
+  });
+
+  it("emits one series per chain from the DB counts", async () => {
+    dbMocks.getStuckPendingTransactionCountsFromDb.mockResolvedValue([
+      { chainId: 1, count: 4 },
+      { chainId: 8453, count: 2 },
+    ]);
+
+    await updateDbMetrics();
+    const out = await getDbMetrics();
+
+    expect(out).toMatch(STUCK_PENDING_CHAIN_1_RE);
+    expect(out).toMatch(STUCK_PENDING_CHAIN_8453_RE);
+  });
+
+  it("drops a chain's series once its backlog clears", async () => {
+    dbMocks.getStuckPendingTransactionCountsFromDb.mockResolvedValue([
+      { chainId: 1, count: 4 },
+    ]);
+    await updateDbMetrics();
+    expect(await getDbMetrics()).toMatch(STUCK_PENDING_CHAIN_1_RE);
+
+    dbMocks.getStuckPendingTransactionCountsFromDb.mockResolvedValue([]);
+    await updateDbMetrics();
+    expect(await getDbMetrics()).not.toMatch(STUCK_PENDING_CHAIN_1_ANY_RE);
+  });
+
+  it("holds the last value when the query returns null", async () => {
+    dbMocks.getStuckPendingTransactionCountsFromDb.mockResolvedValue([
+      { chainId: 1, count: 4 },
+    ]);
+    await updateDbMetrics();
+    expect(await getDbMetrics()).toMatch(STUCK_PENDING_CHAIN_1_RE);
+
+    dbMocks.getStuckPendingTransactionCountsFromDb.mockResolvedValue(null);
+    await updateDbMetrics();
+    expect(await getDbMetrics()).toMatch(STUCK_PENDING_CHAIN_1_RE);
   });
 });
 
