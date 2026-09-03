@@ -36,30 +36,32 @@ same: wait a few minutes and try the run again.
 If a coded error keeps happening for the same workflow, contact support and
 include the code and the time of the run.
 
-## Action failures with structured codes (not PREFIX-NNNN)
+## Action failures with structured codes (simulate responses)
 
-Some action failures are shown with their full, actionable message **and** a
-machine-readable failure code. The most common one on sponsored-capable networks:
+Some action failures carry a machine-readable failure code alongside the
+message. On the run path this applies to the **simulate** surface: `/api/execute/*`
+simulate responses and MCP simulate results return it as `SimulateFailureCode`.
+Run steps themselves surface the plain message only -- branch on the message
+text, not on the code, when reading run logs or run webhooks.
 
-### `insufficient_balance`
+### `insufficient_balance` (simulate responses)
 
-**What happened**: the transaction needed native gas (or native value) that the
-sending wallet did not hold at broadcast time.
+**What happened**: the gas preflight found the sending wallet could not cover
+the transaction before it was broadcast, so nothing was signed or sent.
 
-**Why it often appears on sponsored networks**: sponsorship is attempted first
-and silently falls back to direct signing whenever an eligibility condition is
-not met -- gas credits exhausted for the period, an unsupported network, a Safe
-sender, a private-mempool route, or a blocked RPC. The first thing the fallback
-does is check the wallet's native balance, and that is where the run stops.
+**Message on the run path** (plain text, no code):
 
-**What to do**:
+```
+Insufficient ETH balance. Have: 0.0, Need: 0.000000231. Fund
+0x...orgWallet with at least 0.000000231 ETH on this chain and retry.
+```
 
-1. Fund the wallet address named in the message with at least the stated
-   shortfall amount, then retry, **or**
-2. restore the sponsorship conditions (gas credits on the billing page,
-   supported network, direct-wallet sender, public mempool) so the next
-   attempt is sponsored again -- the wallet then needs no native balance for
-   the gas fee.
+This message is emitted on every direct-signing write path. On a
+sponsorship-eligible network it additionally means sponsorship fell back (see
+[Gas Management -- When sponsorship falls back](/wallet-management/gas)); on
+other setups it simply means the sending wallet cannot cover the gas.
 
-See [Gas Management -- When sponsorship falls back](/wallet-management/gas)
-for the full eligibility list.
+**What to do**: fund the wallet address named in the message with at least the
+stated shortfall, then retry. On Turnkey-managed wallets on sponsored networks,
+restoring the sponsorship conditions (gas credits, supported network,
+direct-wallet sender, public mempool) also fixes the run without funding.

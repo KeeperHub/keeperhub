@@ -97,27 +97,34 @@ Sponsored gas is metered in USD against your plan's monthly gas credit cap (show
 ### When sponsorship falls back
 
 Sponsorship is attempted first and falls back to direct signing (your wallet pays
-the gas) whenever any eligibility condition above is not met. The fallback is
-silent by design -- the run continues -- but the operator-visible result depends
-on your wallet balance:
+the gas) when the attempt returns no sponsored client. A fallback run simply lacks
+the **Gas sponsored** badge that a sponsored run carries in the Runs panel; the
+run output does not say why sponsorship was skipped.
 
-- **Wallet holds native gas**: the run completes, paid from your wallet. Nothing
-  in the run output tells you sponsorship was skipped, so if you expected
-  sponsored gas, check your remaining gas credits on the billing page.
-- **Wallet has no native gas**: the transaction fails before broadcast with a
-  structured error:
+What the fallback does next depends on the wallet balance:
+
+- **Wallet holds native gas**: the run completes, paid from your wallet.
+- **Wallet has no native gas**: the gas preflight runs before the transaction is
+  broadcast and fails the step with:
 
   ```
   Insufficient ETH balance. Have: 0.0, Need: 0.000000231. Fund
-  0x26833b05be49036d4de306b1f4fba7713cc84de5 with at least 0.000000231 ETH
-  on this chain and retry.
+  0x...orgWallet with at least 0.000000231 ETH on this chain and retry.
   ```
 
-  The failure code is `insufficient_balance` (see [Run Error Codes](/keeper-runs/error-codes)).
-  The address named in the message is the wallet to fund; the amount is the exact
-  shortfall. Funding that address and retrying is sufficient -- or restore the
-  sponsorship conditions (gas credits, supported network, direct-wallet sender,
-  public mempool) so the next attempt is sponsored again.
+  Nothing was broadcast at this point, so there is no transaction hash to look
+  up. Fund the address named in the message and retry.
+
+This message is emitted on every direct-signing write path. On a
+sponsorship-eligible network (see the conditions above, plus the Turnkey-managed
+wallet requirement) it additionally means sponsorship fell back -- funding the
+address fixes the run either way.
+
+The eligibility conditions are the user-controllable subset. Sponsorship can
+still be unavailable per organization and wallet even when all of them hold: the
+sponsored client is only created when the organization's active wallet is
+Turnkey-managed (a self-imported wallet never gets a sponsored client), and
+Turnkey can still reject an activity at submission time.
 
 ## FAQ
 
