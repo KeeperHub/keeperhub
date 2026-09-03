@@ -62,9 +62,7 @@ export function visibleMobileNavItems(
   access: NavAccess,
   items: MobileNavItem[] = MOBILE_NAV_ITEMS
 ): MobileNavItem[] {
-  return items.filter(
-    (item) => !item.ownerOnly || access.isOwner
-  );
+  return items.filter((item) => !item.ownerOnly || access.isOwner);
 }
 
 /** Whether a route is the active one for a nav destination. */
