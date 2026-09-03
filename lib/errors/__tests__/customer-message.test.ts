@@ -7,19 +7,21 @@ const NETWORK_MESSAGE =
 const GENERIC_MESSAGE = "Internal error, please wait 5 minutes and try again.";
 
 describe("getCustomerRunErrorMessage", () => {
-  it.each(["success", "running", "pending", "cancelled"])(
-    "returns null for non-error status %s",
-    (status) => {
-      expect(
-        getCustomerRunErrorMessage({
-          status,
-          error: "boom",
-          errorType: "system",
-          errorCategory: "network_rpc",
-        })
-      ).toBeNull();
-    }
-  );
+  it.each([
+    "success",
+    "running",
+    "pending",
+    "cancelled",
+  ])("returns null for non-error status %s", (status) => {
+    expect(
+      getCustomerRunErrorMessage({
+        status,
+        error: "boom",
+        errorType: "system",
+        errorCategory: "network_rpc",
+      })
+    ).toBeNull();
+  });
 
   it("returns the raw error for user-config failures", () => {
     expect(
@@ -65,19 +67,21 @@ describe("getCustomerRunErrorMessage", () => {
     ).toBe(NETWORK_MESSAGE);
   });
 
-  it.each(["infrastructure", "database", "workflow_engine", "unknown"])(
-    "returns the generic message for system %s failures",
-    (errorCategory) => {
-      expect(
-        getCustomerRunErrorMessage({
-          status: "error",
-          error: "something internal",
-          errorType: "system",
-          errorCategory,
-        })
-      ).toBe(GENERIC_MESSAGE);
-    }
-  );
+  it.each([
+    "infrastructure",
+    "database",
+    "workflow_engine",
+    "unknown",
+  ])("returns the generic message for system %s failures", (errorCategory) => {
+    expect(
+      getCustomerRunErrorMessage({
+        status: "error",
+        error: "something internal",
+        errorType: "system",
+        errorCategory,
+      })
+    ).toBe(GENERIC_MESSAGE);
+  });
 
   it("treats null errorType/errorCategory as a generic system failure", () => {
     expect(

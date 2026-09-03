@@ -603,38 +603,35 @@ describe("protocolWriteStep", () => {
       it.each([
         ["view", "view"],
         ["pure", "pure"],
-      ])(
-        "drops ethValue when the resolved function is %s",
-        async (_label, mutability) => {
-          mockResolveProtocolMeta.mockReturnValue(COMPOUND_SUPPLY_META);
-          mockGetProtocol.mockReturnValue(COMPOUND_PROTOCOL);
-          mockResolveAbi.mockResolvedValue({
-            abi: JSON.stringify([
-              {
-                type: "function",
-                name: "supply",
-                stateMutability: mutability,
-                inputs: [],
-                outputs: [],
-              },
-            ]),
-          });
-          mockWriteContractCore.mockResolvedValue({
-            success: true,
-            transactionHash: "0x000",
-            transactionLink: "",
-            gasUsed: "21000",
-          });
+      ])("drops ethValue when the resolved function is %s", async (_label, mutability) => {
+        mockResolveProtocolMeta.mockReturnValue(COMPOUND_SUPPLY_META);
+        mockGetProtocol.mockReturnValue(COMPOUND_PROTOCOL);
+        mockResolveAbi.mockResolvedValue({
+          abi: JSON.stringify([
+            {
+              type: "function",
+              name: "supply",
+              stateMutability: mutability,
+              inputs: [],
+              outputs: [],
+            },
+          ]),
+        });
+        mockWriteContractCore.mockResolvedValue({
+          success: true,
+          transactionHash: "0x000",
+          transactionLink: "",
+          gasUsed: "21000",
+        });
 
-          await protocolWriteStep(makeInput({ ethValue: "0.1" }));
+        await protocolWriteStep(makeInput({ ethValue: "0.1" }));
 
-          const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
-          expect(coreCall.ethValue).toBeUndefined();
-          expect(mockLogUserError).toHaveBeenCalledTimes(1);
-          const labels = (mockLogUserError as Mock).mock.calls[0][3];
-          expect(labels.state_mutability).toBe(mutability);
-        }
-      );
+        const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+        expect(coreCall.ethValue).toBeUndefined();
+        expect(mockLogUserError).toHaveBeenCalledTimes(1);
+        const labels = (mockLogUserError as Mock).mock.calls[0][3];
+        expect(labels.state_mutability).toBe(mutability);
+      });
     });
 
     it("omits _context when input has no _context", async () => {
@@ -806,24 +803,21 @@ describe("protocolWriteStep", () => {
       // Forms a regex would false-positive but parseEther correctly sees as zero:
       ["leading-zero zero", "00"],
       ["leading dot zero", ".0"],
-    ])(
-      "treats ethValue %s as no native value and skips the WETH check",
-      async (_label, ethValue) => {
-        setupUniswapSwap();
+    ])("treats ethValue %s as no native value and skips the WETH check", async (_label, ethValue) => {
+      setupUniswapSwap();
 
-        const result = await protocolWriteStep(
-          makeInput({
-            network: "11155111",
-            ethValue,
-            tokenIn: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            _actionType: "uniswap/swap-exact-input",
-          })
-        );
+      const result = await protocolWriteStep(
+        makeInput({
+          network: "11155111",
+          ethValue,
+          tokenIn: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          _actionType: "uniswap/swap-exact-input",
+        })
+      );
 
-        expect(result.success).toBe(true);
-        expect(mockWriteContractCore).toHaveBeenCalledTimes(1);
-      }
-    );
+      expect(result.success).toBe(true);
+      expect(mockWriteContractCore).toHaveBeenCalledTimes(1);
+    });
 
     it("rejects when ethValue is set but tokenIn is missing", async () => {
       setupUniswapSwap();

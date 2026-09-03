@@ -82,37 +82,34 @@ describe("EvmChainAdapter.readContract — BaseContract name collision", () => {
     vi.clearAllMocks();
   });
 
-  it.each(COLLIDING_NAMES)(
-    "returns the ABI function result for `%s` (bare name), not the contract address",
-    async (name) => {
-      const adapter = createAdapter();
-      const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
-        ["address"],
-        [D3M_JOB_ADDRESS]
-      );
-      const { executeWithFailover, callMock } =
-        createRpcManagerWithCallReturning(encoded);
+  it.each(
+    COLLIDING_NAMES
+  )("returns the ABI function result for `%s` (bare name), not the contract address", async (name) => {
+    const adapter = createAdapter();
+    const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
+      ["address"],
+      [D3M_JOB_ADDRESS]
+    );
+    const { executeWithFailover, callMock } =
+      createRpcManagerWithCallReturning(encoded);
 
-      const result = (await adapter.readContract(
-        { executeWithFailover } as unknown as RpcProviderManagerArg,
-        {
-          contractAddress: SEQUENCER_ADDRESS,
-          abi: buildAbiFor(name) as unknown as ethers.InterfaceAbi,
-          functionKey: name,
-          args: [CRON_D3M_JOB_KEY],
-          isView: true,
-        } as ReadContractRequest
-      )) as string;
+    const result = (await adapter.readContract(
+      { executeWithFailover } as unknown as RpcProviderManagerArg,
+      {
+        contractAddress: SEQUENCER_ADDRESS,
+        abi: buildAbiFor(name) as unknown as ethers.InterfaceAbi,
+        functionKey: name,
+        args: [CRON_D3M_JOB_KEY],
+        isView: true,
+      } as ReadContractRequest
+    )) as string;
 
-      expect(callMock).toHaveBeenCalledTimes(1);
-      expect(ethers.getAddress(result)).toBe(
-        ethers.getAddress(D3M_JOB_ADDRESS)
-      );
-      expect(ethers.getAddress(result)).not.toBe(
-        ethers.getAddress(SEQUENCER_ADDRESS)
-      );
-    }
-  );
+    expect(callMock).toHaveBeenCalledTimes(1);
+    expect(ethers.getAddress(result)).toBe(ethers.getAddress(D3M_JOB_ADDRESS));
+    expect(ethers.getAddress(result)).not.toBe(
+      ethers.getAddress(SEQUENCER_ADDRESS)
+    );
+  });
 
   it("uses staticCall when isView is false (nonpayable read with colliding name)", async () => {
     const adapter = createAdapter();

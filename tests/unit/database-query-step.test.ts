@@ -82,24 +82,21 @@ describe("databaseQueryStep guard wiring", () => {
       "postgres://u:p@ip-10-0-0-5.us-east-2.compute.internal:5432/db",
     ],
     ["mDNS suffix", "postgres://u:p@db.local:5432/db"],
-  ])(
-    "rejects hostname pattern %s before any DNS lookup or socket",
-    async (_label, url) => {
-      mockFetchCredentials.mockResolvedValue({ DATABASE_URL: url });
+  ])("rejects hostname pattern %s before any DNS lookup or socket", async (_label, url) => {
+    mockFetchCredentials.mockResolvedValue({ DATABASE_URL: url });
 
-      const result = (await databaseQueryStep(STEP_INPUT_BASE)) as {
-        success: boolean;
-        error?: string;
-      };
+    const result = (await databaseQueryStep(STEP_INPUT_BASE)) as {
+      success: boolean;
+      error?: string;
+    };
 
-      expect(result.success).toBe(false);
-      expect(result.error).toBe(
-        "Host is not allowed: must resolve to a public address"
-      );
-      expect(mockPostgres).not.toHaveBeenCalled();
-      expect(mockLookup).not.toHaveBeenCalled();
-    }
-  );
+    expect(result.success).toBe(false);
+    expect(result.error).toBe(
+      "Host is not allowed: must resolve to a public address"
+    );
+    expect(mockPostgres).not.toHaveBeenCalled();
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
 
   it("rejects hostname that resolves to a private address", async () => {
     mockFetchCredentials.mockResolvedValue({

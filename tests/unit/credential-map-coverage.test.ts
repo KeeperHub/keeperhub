@@ -86,21 +86,24 @@ describe("credential-map coverage vs step files", () => {
     ).toBeGreaterThan(0);
   });
 
-  it.each(reads)(
-    "$plugin/$file: every credentials.* read is declared in PLUGIN_CREDENTIAL_MAP",
-    ({ plugin, file, keys }) => {
-      const fieldMap = PLUGIN_CREDENTIAL_MAP[plugin];
-      const declaredEnvVars = new Set(Object.values(fieldMap ?? {}));
+  it.each(
+    reads
+  )("$plugin/$file: every credentials.* read is declared in PLUGIN_CREDENTIAL_MAP", ({
+    plugin,
+    file,
+    keys,
+  }) => {
+    const fieldMap = PLUGIN_CREDENTIAL_MAP[plugin];
+    const declaredEnvVars = new Set(Object.values(fieldMap ?? {}));
 
-      const undeclared = keys.filter((key) => !declaredEnvVars.has(key));
-      expect(
-        undeclared,
-        `${file} reads ${undeclared.join(", ")} but PLUGIN_CREDENTIAL_MAP[${plugin}] only declares ${
-          [...declaredEnvVars].join(", ") || "(none)"
-        }. ` +
-          "Either add the formField with the matching envVar in the plugin's index.ts " +
-          "and run 'pnpm discover-plugins', or update the step to read an existing key."
-      ).toEqual([]);
-    }
-  );
+    const undeclared = keys.filter((key) => !declaredEnvVars.has(key));
+    expect(
+      undeclared,
+      `${file} reads ${undeclared.join(", ")} but PLUGIN_CREDENTIAL_MAP[${plugin}] only declares ${
+        [...declaredEnvVars].join(", ") || "(none)"
+      }. ` +
+        "Either add the formField with the matching envVar in the plugin's index.ts " +
+        "and run 'pnpm discover-plugins', or update the step to read an existing key."
+    ).toEqual([]);
+  });
 });

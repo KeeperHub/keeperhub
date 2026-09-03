@@ -27,15 +27,12 @@ describe("MCP session error envelope (KEEP-474)", () => {
     ["session_expired", -32_002, 404],
     ["session_not_initialized", -32_003, 400],
     ["missing_session_id", -32_004, 400],
-  ] as const)(
-    "%s maps to JSON-RPC code %d and HTTP %d",
-    (reason, jsonRpcCode, httpStatus) => {
-      const env = buildSessionErrorEnvelope(reason);
-      expect(env.error.code).toBe(jsonRpcCode);
-      expect(env.error.data.reason).toBe(reason);
-      expect(SESSION_ERROR_DESCRIPTORS[reason].httpStatus).toBe(httpStatus);
-    }
-  );
+  ] as const)("%s maps to JSON-RPC code %d and HTTP %d", (reason, jsonRpcCode, httpStatus) => {
+    const env = buildSessionErrorEnvelope(reason);
+    expect(env.error.code).toBe(jsonRpcCode);
+    expect(env.error.data.reason).toBe(reason);
+    expect(SESSION_ERROR_DESCRIPTORS[reason].httpStatus).toBe(httpStatus);
+  });
 
   it("falls back to session_not_found descriptor for unknown codes", () => {
     const env = buildSessionErrorEnvelope("totally-unknown-code");

@@ -441,43 +441,42 @@ describe("AdaptiveGasStrategy", () => {
     it.each([
       { chainId: 16_602, name: "0G Galileo" },
       { chainId: 16_661, name: "0G Mainnet" },
-    ])(
-      "should enforce $name ($chainId) 4 gwei priority floor",
-      async ({ chainId }) => {
-        const strategy = new AdaptiveGasStrategy();
-        // Provider returns 1.5 gwei tip -- well below 0G's 4 gwei inclusion
-        // threshold. Force volatile path so the conservative branch + clamp
-        // is exercised.
-        const provider = createMockProvider({
-          maxPriorityFeePerGas: BigInt(1.5e9),
-          feeHistory: {
-            baseFeePerGas: [
-              "0x174876e800",
-              "0x2e90edd000",
-              "0x4a817c8000",
-              "0x174876e800",
-              "0x5d21dba000",
-              "0x174876e800",
-              "0x2e90edd000",
-              "0x4a817c8000",
-              "0x174876e800",
-              "0x5d21dba000",
-              "0x2e90edd000",
-            ],
-            reward: new Array(10).fill(["0x3b9aca00"]),
-          },
-        });
+    ])("should enforce $name ($chainId) 4 gwei priority floor", async ({
+      chainId,
+    }) => {
+      const strategy = new AdaptiveGasStrategy();
+      // Provider returns 1.5 gwei tip -- well below 0G's 4 gwei inclusion
+      // threshold. Force volatile path so the conservative branch + clamp
+      // is exercised.
+      const provider = createMockProvider({
+        maxPriorityFeePerGas: BigInt(1.5e9),
+        feeHistory: {
+          baseFeePerGas: [
+            "0x174876e800",
+            "0x2e90edd000",
+            "0x4a817c8000",
+            "0x174876e800",
+            "0x5d21dba000",
+            "0x174876e800",
+            "0x2e90edd000",
+            "0x4a817c8000",
+            "0x174876e800",
+            "0x5d21dba000",
+            "0x2e90edd000",
+          ],
+          reward: new Array(10).fill(["0x3b9aca00"]),
+        },
+      });
 
-        const config = await strategy.getGasConfig(
-          provider as unknown as import("ethers").Provider,
-          BigInt(21_000),
-          chainId
-        );
+      const config = await strategy.getGasConfig(
+        provider as unknown as import("ethers").Provider,
+        BigInt(21_000),
+        chainId
+      );
 
-        expect(config.maxPriorityFeePerGas).toBeGreaterThanOrEqual(BigInt(4e9));
-        expect(config.gasLimit).toBe(BigInt(42_000));
-      }
-    );
+      expect(config.maxPriorityFeePerGas).toBeGreaterThanOrEqual(BigInt(4e9));
+      expect(config.gasLimit).toBe(BigInt(42_000));
+    });
   });
 
   describe("priority fee clamping", () => {

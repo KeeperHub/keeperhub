@@ -69,21 +69,24 @@ const KNOWN_MAPPINGS: ExpectedMapping[] = [
 ];
 
 describe("PLUGIN_CREDENTIAL_MAP", () => {
-  it.each(KNOWN_MAPPINGS)(
-    "$type maps configKey '$configKey' to envVar '$envVar' ($reason)",
-    ({ type, configKey, envVar }) => {
-      const fieldMap = PLUGIN_CREDENTIAL_MAP[type];
-      expect(
-        fieldMap,
-        `PLUGIN_CREDENTIAL_MAP missing entry for "${type}". ` +
-          "Run 'pnpm discover-plugins' to regenerate lib/credential-map.ts."
-      ).toBeDefined();
-      expect(
-        fieldMap?.[configKey],
-        `Expected ${type}.${configKey} -> ${envVar} but got ${fieldMap?.[configKey]}`
-      ).toBe(envVar);
-    }
-  );
+  it.each(
+    KNOWN_MAPPINGS
+  )("$type maps configKey '$configKey' to envVar '$envVar' ($reason)", ({
+    type,
+    configKey,
+    envVar,
+  }) => {
+    const fieldMap = PLUGIN_CREDENTIAL_MAP[type];
+    expect(
+      fieldMap,
+      `PLUGIN_CREDENTIAL_MAP missing entry for "${type}". ` +
+        "Run 'pnpm discover-plugins' to regenerate lib/credential-map.ts."
+    ).toBeDefined();
+    expect(
+      fieldMap?.[configKey],
+      `Expected ${type}.${configKey} -> ${envVar} but got ${fieldMap?.[configKey]}`
+    ).toBe(envVar);
+  });
 
   it("contains every credential field for every registered plugin", async () => {
     const { getAllIntegrations } = await import("@/plugins/registry");
@@ -113,22 +116,25 @@ describe("PLUGIN_CREDENTIAL_MAP", () => {
 });
 
 describe("mapIntegrationConfig (via fetchCredentials)", () => {
-  it.each(KNOWN_MAPPINGS)(
-    "$type returns credentials keyed by envVar '$envVar'",
-    async ({ type, configKey, envVar }) => {
-      const { getIntegrationById } = await import("@/lib/db/integrations");
-      const { fetchCredentials } = await import("@/lib/credential-fetcher");
+  it.each(
+    KNOWN_MAPPINGS
+  )("$type returns credentials keyed by envVar '$envVar'", async ({
+    type,
+    configKey,
+    envVar,
+  }) => {
+    const { getIntegrationById } = await import("@/lib/db/integrations");
+    const { fetchCredentials } = await import("@/lib/credential-fetcher");
 
-      vi.mocked(getIntegrationById).mockResolvedValueOnce({
-        id: "int_test",
-        type,
-        config: { [configKey]: "secret-value" },
-      } as Awaited<ReturnType<typeof getIntegrationById>>);
+    vi.mocked(getIntegrationById).mockResolvedValueOnce({
+      id: "int_test",
+      type,
+      config: { [configKey]: "secret-value" },
+    } as Awaited<ReturnType<typeof getIntegrationById>>);
 
-      const creds = await fetchCredentials("int_test", ORG_PRINCIPAL);
-      expect(creds[envVar]).toBe("secret-value");
-    }
-  );
+    const creds = await fetchCredentials("int_test", ORG_PRINCIPAL);
+    expect(creds[envVar]).toBe("secret-value");
+  });
 
   it("returns empty creds without hitting the DB when integrationId is missing", async () => {
     const { getIntegrationById } = await import("@/lib/db/integrations");

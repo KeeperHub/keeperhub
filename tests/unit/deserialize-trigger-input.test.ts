@@ -37,20 +37,17 @@ function tempoTransferInput(): Record<string, unknown> {
 
 describe("deserializeTriggerInput", () => {
   describe("on-chain event triggers (Event, Transfer)", () => {
-    it.each(["Transfer", "Event"])(
-      "%s: unwraps { value, type } args into real scalars",
-      (triggerType: string) => {
-        const result = deserializeTriggerInput(
-          triggerType,
-          tempoTransferInput()
-        );
-        const args = result.args as Record<string, unknown>;
-        expect(args.value).toBe(BigInt(100_000)); // uint256 -> BigInt
-        expect(args.to).toBe(DEPOSIT); // address -> string as-is
-        expect(args.from).toBe(SENDER);
-        expect(args.memo).toBe(MEMO); // bytes32 -> string as-is
-      }
-    );
+    it.each([
+      "Transfer",
+      "Event",
+    ])("%s: unwraps { value, type } args into real scalars", (triggerType: string) => {
+      const result = deserializeTriggerInput(triggerType, tempoTransferInput());
+      const args = result.args as Record<string, unknown>;
+      expect(args.value).toBe(BigInt(100_000)); // uint256 -> BigInt
+      expect(args.to).toBe(DEPOSIT); // address -> string as-is
+      expect(args.from).toBe(SENDER);
+      expect(args.memo).toBe(MEMO); // bytes32 -> string as-is
+    });
 
     it("maps a missing numeric log field ('undefined') to null", () => {
       const result = deserializeTriggerInput("Transfer", tempoTransferInput());
@@ -116,15 +113,20 @@ describe("deserializeTriggerInput", () => {
   });
 
   describe("non-event triggers pass through untouched", () => {
-    it.each(["Manual", "Schedule", "Webhook", "Block", undefined])(
-      "%s: returns the input by reference with wrappers intact",
-      (triggerType: string | undefined) => {
-        const input = tempoTransferInput();
-        const result = deserializeTriggerInput(triggerType, input);
-        expect(result).toBe(input);
-        const args = result.args as Record<string, { value: unknown }>;
-        expect(args.value.value).toBe("100000");
-      }
-    );
+    it.each([
+      "Manual",
+      "Schedule",
+      "Webhook",
+      "Block",
+      undefined,
+    ])("%s: returns the input by reference with wrappers intact", (triggerType:
+      | string
+      | undefined) => {
+      const input = tempoTransferInput();
+      const result = deserializeTriggerInput(triggerType, input);
+      expect(result).toBe(input);
+      const args = result.args as Record<string, { value: unknown }>;
+      expect(args.value.value).toBe("100000");
+    });
   });
 });

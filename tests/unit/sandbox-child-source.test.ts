@@ -402,18 +402,14 @@ describe("sandbox grandchild redirect following", () => {
   it.each([
     ["/r/imds-hex", "hex-literal IMDS (0xa9fea9fe)"],
     ["/r/imds-mapped", "IPv4-mapped IPv6 IMDS"],
-  ])(
-    "blocks a redirect into a non-canonical IMDS literal via %s (%s)",
-    async (path) => {
-      const outcome = await runSandboxed(
-        getCode(`${base}${path}`),
-        3000,
-        REDIRECT_TEST_SOURCE
-      );
-      expectBlocked(outcome);
-    },
-    10_000
-  );
+  ])("blocks a redirect into a non-canonical IMDS literal via %s (%s)", async (path) => {
+    const outcome = await runSandboxed(
+      getCode(`${base}${path}`),
+      3000,
+      REDIRECT_TEST_SOURCE
+    );
+    expectBlocked(outcome);
+  }, 10_000);
 
   it("blocks a redirect into a cluster hostname", async () => {
     const outcome = await runSandboxed(
@@ -678,14 +674,10 @@ describe("sandbox grandchild validates the dialed URL, not a divergent resource 
       'await fetch("http://[::ffff:169.254.169.254]/")',
       "IPv4-mapped IPv6 -> IMDS",
     ],
-  ])(
-    "blocks non-canonical literal %s (%s)",
-    async (snippet) => {
-      const outcome = await runSandboxed(`return ${snippet};`);
-      expectBlocked(outcome);
-    },
-    10_000
-  );
+  ])("blocks non-canonical literal %s (%s)", async (snippet) => {
+    const outcome = await runSandboxed(`return ${snippet};`);
+    expectBlocked(outcome);
+  }, 10_000);
 
   it("still allows an object resource whose coerced URL is an allowed host (no over-block)", async () => {
     // Negative control: object resources remain usable for legitimate targets.

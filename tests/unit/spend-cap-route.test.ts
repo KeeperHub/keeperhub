@@ -220,17 +220,14 @@ describe("PUT /api/analytics/spend-cap validation", () => {
     ["a negative value", "-1"],
     ["a decimal value", "0.5"],
     ["a non-numeric string", "1e9"],
-  ])(
-    "rejects %s for the Solana cap and writes nothing",
-    async (_label, value) => {
-      const res = await PUT(putRequest({ dailySolanaValueCapLamports: value }));
-      const body = (await res.json()) as Record<string, unknown>;
+  ])("rejects %s for the Solana cap and writes nothing", async (_label, value) => {
+    const res = await PUT(putRequest({ dailySolanaValueCapLamports: value }));
+    const body = (await res.json()) as Record<string, unknown>;
 
-      expect(res.status).toBe(400);
-      expect(body.field).toBe("dailySolanaValueCapLamports");
-      expect(written.calls).toBe(0);
-    }
-  );
+    expect(res.status).toBe(400);
+    expect(body.field).toBe("dailySolanaValueCapLamports");
+    expect(written.calls).toBe(0);
+  });
 
   it("rejects the whole request when one of two fields is malformed", async () => {
     const res = await PUT(

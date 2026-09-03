@@ -201,15 +201,12 @@ describe("assertConnectionUrlIsPublic", () => {
       "postgres://u:p@ip-10-0-0-5.us-east-2.compute.internal:5432/db",
     ],
     ["mDNS suffix", "postgres://u:p@raspberrypi.local:5432/db"],
-  ])(
-    "rejects hostname pattern %s before any DNS lookup",
-    async (_label, url) => {
-      await expect(assertConnectionUrlIsPublic(url)).rejects.toThrow(
-        "Host is not allowed: must resolve to a public address"
-      );
-      expect(mockLookup).not.toHaveBeenCalled();
-    }
-  );
+  ])("rejects hostname pattern %s before any DNS lookup", async (_label, url) => {
+    await expect(assertConnectionUrlIsPublic(url)).rejects.toThrow(
+      "Host is not allowed: must resolve to a public address"
+    );
+    expect(mockLookup).not.toHaveBeenCalled();
+  });
 
   it("rejects hostname that resolves to a private address", async () => {
     mockLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);

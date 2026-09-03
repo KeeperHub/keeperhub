@@ -176,22 +176,21 @@ describe("KEEP-458 builders honour their inputs", () => {
     expect(setup._chainId).toBe("11155111");
   });
 
-  it.each([...TRIGGER_TYPES])(
-    "action workflow with trigger=%s round-trips all metadata",
-    (trigger) => {
-      const built = buildActionWorkflow({
-        protocolSlug: "aave-v3",
-        actionSlug: "supply",
-        chainId: "11155111",
-        trigger,
-        walletAddress: TEST_WALLET,
-      });
-      expect(built._trigger).toBe(trigger);
-      expect(built._phase).toBe("write");
-      expect(built._protocol).toBe("aave-v3");
-      expect(built._chainId).toBe("11155111");
-    }
-  );
+  it.each([
+    ...TRIGGER_TYPES,
+  ])("action workflow with trigger=%s round-trips all metadata", (trigger) => {
+    const built = buildActionWorkflow({
+      protocolSlug: "aave-v3",
+      actionSlug: "supply",
+      chainId: "11155111",
+      trigger,
+      walletAddress: TEST_WALLET,
+    });
+    expect(built._trigger).toBe(trigger);
+    expect(built._phase).toBe("write");
+    expect(built._protocol).toBe("aave-v3");
+    expect(built._chainId).toBe("11155111");
+  });
 });
 
 /**

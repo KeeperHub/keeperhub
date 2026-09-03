@@ -554,31 +554,36 @@ describe("verifyHmacRequest X-KH-Key-Version header", () => {
     }
   });
 
-  it.each(["abc", "0", "-1", "1.5", " ", "1e2", "01"])(
-    "rejects invalid X-KH-Key-Version value %j with 401 Invalid key version",
-    async (badVersion) => {
-      const body = '{"chain":"base"}';
-      // Signature correctness is irrelevant — the version guard fires first.
-      const sig = expectedSig(
-        V1_SECRET,
-        signingString("POST", TEST_PATH, TEST_SUB_ORG, body, FROZEN_NOW_UNIX)
-      );
-      const request = buildRequest({
-        headers: {
-          "X-KH-Sub-Org": TEST_SUB_ORG,
-          "X-KH-Timestamp": FROZEN_NOW_UNIX,
-          "X-KH-Signature": sig,
-          "X-KH-Key-Version": badVersion,
-        },
-      });
-      const result = await verifyHmacRequest(request, body);
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.status).toBe(401);
-        expect(result.error).toBe("Invalid key version");
-      }
+  it.each([
+    "abc",
+    "0",
+    "-1",
+    "1.5",
+    " ",
+    "1e2",
+    "01",
+  ])("rejects invalid X-KH-Key-Version value %j with 401 Invalid key version", async (badVersion) => {
+    const body = '{"chain":"base"}';
+    // Signature correctness is irrelevant — the version guard fires first.
+    const sig = expectedSig(
+      V1_SECRET,
+      signingString("POST", TEST_PATH, TEST_SUB_ORG, body, FROZEN_NOW_UNIX)
+    );
+    const request = buildRequest({
+      headers: {
+        "X-KH-Sub-Org": TEST_SUB_ORG,
+        "X-KH-Timestamp": FROZEN_NOW_UNIX,
+        "X-KH-Signature": sig,
+        "X-KH-Key-Version": badVersion,
+      },
+    });
+    const result = await verifyHmacRequest(request, body);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.status).toBe(401);
+      expect(result.error).toBe("Invalid key version");
     }
-  );
+  });
 
   it("returns ok:false status:404 when pinned X-KH-Key-Version does not exist", async () => {
     const body = '{"chain":"base"}';
