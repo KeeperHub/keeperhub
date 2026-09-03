@@ -133,13 +133,22 @@ vi.mock("@/lib/web3/nonce-manager", () => ({
       walletAddress: string,
       _chainId: number,
       _executionId: string,
-      provider: {
-        getTransactionCount: (addr: string, tag: string) => Promise<number>;
+      // withNonceSession hands over the RpcProviderManager, not a bare
+      // provider, so the session's chain reads get the same per-attempt
+      // timeout and fallback as every other RPC call. Read through the
+      // failover wrapper the way the real chainReader does.
+      rpc: {
+        executeWithFailover: <T>(
+          operation: (provider: {
+            getTransactionCount: (addr: string, tag: string) => Promise<number>;
+          }) => Promise<T>,
+          operationType: "read"
+        ) => Promise<T>;
       }
     ) => {
-      const onChain = await provider.getTransactionCount(
-        walletAddress,
-        "pending"
+      const onChain = await rpc.executeWithFailover(
+        (provider) => provider.getTransactionCount(walletAddress, "pending"),
+        "read"
       );
       nonceCounter.current = onChain;
       sessionMock.walletAddress = walletAddress;

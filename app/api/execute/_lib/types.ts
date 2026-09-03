@@ -59,7 +59,6 @@ export type ExecuteErrorResponse = {
 export type RetryConfig = {
   maxRetries?: number;
   timeoutMs?: number;
-  gasBumpPercent?: number;
 };
 
 export type NodeExecuteRequest = {

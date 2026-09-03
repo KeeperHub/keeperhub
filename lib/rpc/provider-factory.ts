@@ -19,6 +19,7 @@ import {
   type SolanaRpcMetricsCollector,
 } from "@/lib/rpc/providers/solana";
 import { resolveRpcConfig } from "./config-service";
+import { isSolanaChain } from "./solana-chains";
 
 /**
  * Resolve the appropriate RPC metrics collector based on environment.
@@ -85,15 +86,11 @@ async function getFailoverCallback(): Promise<FailoverStateChangeCallback> {
   return cachedFailoverCallback;
 }
 
-// Solana chain IDs (non-EVM)
-const SOLANA_CHAIN_IDS = new Set([101, 103]);
-
-/**
- * Check if a chain ID is a Solana chain
- */
-export function isSolanaChain(chainId: number): boolean {
-  return SOLANA_CHAIN_IDS.has(chainId);
-}
+// Solana chain IDs (non-EVM). The set and the test live in ./solana-chains so
+// callers that cannot take this module's graph (ethers, @solana/web3.js,
+// safeFetch, the db client) can still ask; re-exported here so every existing
+// caller and test mock keeps its import path.
+export { isSolanaChain } from "./solana-chains";
 
 export type GetProviderOptions = {
   chainId: number;

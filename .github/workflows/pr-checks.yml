@@ -198,6 +198,20 @@ jobs:
             exit 1
           fi
 
+  # The job name is the required status check on staging and prod. Keep it as
+  # `typecheck` when changing what it runs: renaming it would leave the ruleset
+  # waiting on a check that no longer reports, blocking every pull request.
+  #
+  # KEEP-1210 compile surface phase 3: this gate runs tsgo (the native
+  # TypeScript port) rather than tsc. The root program is check-dominated -
+  # 45.0s of tsc's 56.1s was checker time - so replacing the checker is what
+  # makes the gate fast, with no change to the code being checked.
+  #
+  # tsc has not been retired. It runs nightly against staging in
+  # nightly-typecheck-tsc.yml, which cross-checks the two compilers and fails
+  # on disagreement. That is the safety net for a tsgo checking gap: this
+  # compiler is a preview, and agreement on real code is evidence, not a
+  # guarantee. Revert this job to `pnpm type-check:tsc` to restore the old gate.
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -209,15 +223,8 @@ jobs:
         with:
           discover-plugins: "true"
 
-      - name: Cache TypeScript build info
-        uses: actions/cache@v6
-        with:
-          path: tsconfig.tsbuildinfo
-          key: ${{ runner.os }}-tsbuildinfo-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ hashFiles('**/*.ts', '**/*.tsx') }}
-          restore-keys: |
-            ${{ runner.os }}-tsbuildinfo-${{ hashFiles('**/pnpm-lock.yaml') }}-
-            ${{ runner.os }}-tsbuildinfo-
-
+      # No tsbuildinfo cache: tsgo does not read or write one. The cold run is
+      # already faster than tsc's warm one.
       - name: Run type check
         run: pnpm type-check
 

@@ -187,6 +187,18 @@ const workflowExecutionsFinishedAgeSeconds = getOrCreateGauge(
   []
 );
 
+// Executions parked in `unconfirmed`: broadcast, but the receipt could not be
+// read at finalize time. Only the execution-reconciler CronJob settles them, so
+// a value that climbs and never comes down means the reconciler is not running
+// or cannot reach the chain. DB-sourced (see getUnconfirmedExecutionCountsFromDb)
+// and labeled by which table the rows live in.
+const executionsUnconfirmed = getOrCreateGauge(
+  dbRegistry,
+  "keeperhub_executions_unconfirmed",
+  "Executions currently in the unconfirmed state (transaction broadcast, receipt not yet readable), by kind (workflow or direct)",
+  ["kind"]
+);
+
 // KEEP-545: the previous DB-sourced gauge `keeperhub_workflow_execution_errors_total`
 // has been removed. It was named with the `_total` counter suffix but was
 // actually a poll-driven gauge that overwrote itself on every scrape with the
@@ -1058,7 +1070,7 @@ export function recordWorkflowExecutionFinished(labels: {
 const workflowExecutionsSkipped = getOrCreateCounter(
   apiRegistry,
   "keeperhub_workflow_executions_skipped_total",
-  "Workflow executions refused before starting, by org_slug and reason (execution_limit, plan_feature, payg_unpaid). Not failures: these runs never executed.",
+  "Workflow executions skipped before starting, by org_slug and reason: plan refusals (execution_limit, plan_feature, payg_unpaid) and lifecycle skips the executor resolves (not_found, deleted, deactivated, org_deactivated, disabled, schedule_invalid). Not failures: these runs never executed.",
   ["org_slug", "reason"]
 );
 
@@ -1765,6 +1777,7 @@ async function refreshDbMetricsNow(): Promise<void> {
     const {
       getWorkflowStatsFromDb,
       getLastFinishedExecutionAgeSecondsFromDb,
+      getUnconfirmedExecutionCountsFromDb,
       getWorkflowErrorsByWorkflowFromDb,
       getSystemErrorsByCategoryFromDb,
       getStepStatsFromDb,
@@ -1783,6 +1796,7 @@ async function refreshDbMetricsNow(): Promise<void> {
     const [
       workflowStats,
       lastFinishedAgeSeconds,
+      unconfirmedCounts,
       errorsByWorkflow,
       systemErrorsByCategoryRows,
       stepStats,
@@ -1800,6 +1814,7 @@ async function refreshDbMetricsNow(): Promise<void> {
     ] = await Promise.all([
       getWorkflowStatsFromDb(),
       getLastFinishedExecutionAgeSecondsFromDb(),
+      getUnconfirmedExecutionCountsFromDb(),
       getWorkflowErrorsByWorkflowFromDb(),
       getSystemErrorsByCategoryFromDb(),
       getStepStatsFromDb(),
@@ -1836,6 +1851,16 @@ async function refreshDbMetricsNow(): Promise<void> {
     // staleness / the alert's no_data_state governs instead of a misleading 0.
     if (lastFinishedAgeSeconds !== null) {
       workflowExecutionsFinishedAgeSeconds.set(lastFinishedAgeSeconds);
+    }
+
+    // Same null handling: on a query error keep the last real backlog size
+    // rather than reporting an empty one.
+    if (unconfirmedCounts !== null) {
+      executionsUnconfirmed.set(
+        { kind: "workflow" },
+        unconfirmedCounts.workflow
+      );
+      executionsUnconfirmed.set({ kind: "direct" }, unconfirmedCounts.direct);
     }
 
     // KEEP-545: the per-org error gauge that used to live here was removed.

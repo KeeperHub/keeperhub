@@ -388,7 +388,7 @@ export function logSystemError(
  * | ---------------------- | ----------- | --------------- | --------- |
  * | logSystemError         | error       | error event     | counter+1 |
  * | logSystemWarn (this)   | warn        | warning event   | none      |
- * | logUserError           | warn        | warning event   | counter+1 |
+ * | logUserError           | warn        | none            | counter+1 |
  *
  * Sentry tag policy:
  *   - error_type is intentionally NOT set. At the call sites where this

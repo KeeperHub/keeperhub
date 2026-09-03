@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const FAILED_LOCK_REGEX =
   /Wallet is saturated: could not acquire the nonce lock/;
@@ -58,8 +58,12 @@ vi.mock("@/lib/logging", () => ({
   logWarn: mockLogWarn,
 }));
 
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 import {
   getNonceManager,
+  NonceLockLostError,
   NonceManager,
   type NonceSession,
   resetNonceManager,
@@ -81,6 +85,16 @@ function createMockProvider(
       .mockResolvedValue(options.transactionReceipt ?? null),
     getTransaction: vi.fn().mockResolvedValue(options.transaction ?? null),
   };
+}
+
+/**
+ * Render a drizzle where-clause to its bound parameters, in order. The schema
+ * is mocked to column-name strings above, so a fence such as
+ * `eq(walletLocks.lockedBy, executionId)` renders as the pair
+ * `["locked_by", executionId]`.
+ */
+function boundParams(where: unknown): unknown[] {
+  return new PgDialect().sqlToQuery(where as SQL).params;
 }
 
 /**
@@ -741,6 +755,414 @@ describe("NonceManager", () => {
       expect(session.currentNonce).toBe(0);
       expect(validation.reconciledCount).toBe(4);
       expect(provider.getTransaction).toHaveBeenCalledTimes(4);
+    });
+  });
+
+  describe("lock heartbeat", () => {
+    const WALLET = "0x1234567890123456789012345678901234567890";
+    const TTL_MS = 4000;
+    const BEAT_MS = TTL_MS / 4;
+
+    // Replace the default UPDATE chain with one whose spies can be inspected.
+    // `updatedRows` is what the fenced heartbeat UPDATE returns: 1 = still the
+    // holder, 0 = the fence no longer matches.
+    function mockLockUpdate(updatedRows: number) {
+      const returning = vi
+        .fn()
+        .mockResolvedValue(updatedRows > 0 ? [{ walletAddress: "0x" }] : []);
+      const where = vi.fn().mockReturnValue({ returning });
+      const set = vi.fn().mockReturnValue({ where });
+      mockUpdate.mockReturnValue({ set });
+      return { set, where };
+    }
+
+    async function startSessionWithTtl(executionId: string) {
+      const manager = new NonceManager({ lockTtlMs: TTL_MS });
+      const { session } = await manager.startSession(
+        WALLET,
+        1,
+        executionId,
+        createMockProvider() as unknown as import("ethers").Provider
+      );
+      return { manager, session };
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("extends expires_at on the holder's fence every quarter TTL", async () => {
+      vi.useFakeTimers();
+      const { manager, session } = await startSessionWithTtl("exec_beat");
+      const { set, where } = mockLockUpdate(1);
+
+      await vi.advanceTimersByTimeAsync(BEAT_MS);
+
+      expect(set).toHaveBeenCalledTimes(1);
+      // The expiry is computed by Postgres when the statement lands, not in JS
+      // when it is built, so a beat delayed on a saturated pool still writes a
+      // full TTL ahead.
+      const { expiresAt } = set.mock.calls[0][0] as { expiresAt: SQL };
+      const rendered = new PgDialect().sqlToQuery(expiresAt);
+      expect(rendered.sql).toContain("NOW()");
+      expect(rendered.params).toEqual([TTL_MS]);
+      expect(boundParams(where.mock.calls[0][0])).toEqual([
+        "wallet_address",
+        WALLET,
+        "chain_id",
+        1,
+        "locked_by",
+        "exec_beat",
+      ]);
+      expect(session.lost).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(BEAT_MS * 2);
+      expect(set).toHaveBeenCalledTimes(3);
+
+      await manager.endSession(session);
+    });
+
+    it("stops the heartbeat when the session ends", async () => {
+      vi.useFakeTimers();
+      const { manager, session } = await startSessionWithTtl("exec_end");
+      expect(vi.getTimerCount()).toBe(1);
+
+      await manager.endSession(session);
+      expect(vi.getTimerCount()).toBe(0);
+
+      const { set } = mockLockUpdate(1);
+      await vi.advanceTimersByTimeAsync(TTL_MS * 2);
+      expect(set).not.toHaveBeenCalled();
+    });
+
+    it("stops the heartbeat when setup fails after the lock is acquired", async () => {
+      vi.useFakeTimers();
+      const manager = new NonceManager({ lockTtlMs: TTL_MS });
+      const provider = createMockProvider();
+      provider.getTransactionCount.mockRejectedValue(new Error("RPC error"));
+
+      await expect(
+        manager.startSession(
+          WALLET,
+          1,
+          "exec_setup_fail",
+          provider as unknown as import("ethers").Provider
+        )
+      ).rejects.toThrow("RPC error");
+
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("marks the session lost and warns once when the fence no longer matches", async () => {
+      vi.useFakeTimers();
+      const { manager, session } = await startSessionWithTtl("exec_loser");
+      const { set } = mockLockUpdate(0);
+
+      await vi.advanceTimersByTimeAsync(BEAT_MS);
+
+      expect(session.lost).toBe(true);
+      expect(mockLogSystemWarn).toHaveBeenCalledTimes(1);
+      expect(mockLogSystemWarn).toHaveBeenCalledWith(
+        "infrastructure",
+        expect.stringContaining("Lock lost"),
+        expect.any(Error),
+        expect.objectContaining({
+          wallet_address: WALLET,
+          chain_id: "1",
+          execution_id: "exec_loser",
+        })
+      );
+      // The heartbeat stops itself: no further extensions, no repeat logs.
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(BEAT_MS * 3);
+      expect(set).toHaveBeenCalledTimes(1);
+      expect(mockLogSystemWarn).toHaveBeenCalledTimes(1);
+
+      await manager.endSession(session);
+    });
+
+    it("keeps beating when an extension errors rather than declaring the lock lost", async () => {
+      vi.useFakeTimers();
+      const { manager, session } = await startSessionWithTtl("exec_db_blip");
+      const returning = vi.fn().mockRejectedValue(new Error("db down"));
+      mockUpdate.mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning }),
+        }),
+      });
+
+      await vi.advanceTimersByTimeAsync(BEAT_MS);
+
+      expect(session.lost).toBe(false);
+      expect(mockLogWarn).toHaveBeenCalledWith(
+        expect.stringContaining("heartbeat failed"),
+        expect.objectContaining({
+          execution_id: "exec_db_blip",
+          error: "db down",
+        })
+      );
+      expect(mockLogSystemWarn).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(1);
+
+      await manager.endSession(session);
+    });
+
+    it("refuses to hand out another nonce once the session is lost", async () => {
+      vi.useFakeTimers();
+      const { manager, session } = await startSessionWithTtl("exec_no_nonce");
+      mockLockUpdate(0);
+
+      // One nonce before the loss, none after.
+      expect(manager.getNextNonce(session)).toBe(5);
+      await vi.advanceTimersByTimeAsync(BEAT_MS);
+
+      expect(session.lost).toBe(true);
+      expect(() => manager.getNextNonce(session)).toThrow(NonceLockLostError);
+
+      await manager.endSession(session);
+    });
+
+    it("does not start a beat while the previous one is still in flight", async () => {
+      vi.useFakeTimers();
+      const { manager, session } = await startSessionWithTtl("exec_slow_db");
+
+      let landFirstBeat: (() => void) | undefined;
+      const returning = vi.fn(
+        () =>
+          new Promise((resolve) => {
+            landFirstBeat = () => resolve([{ walletAddress: "0x" }]);
+          })
+      );
+      mockUpdate.mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning }),
+        }),
+      });
+
+      // Three beats fall due while the first is still waiting on the pool.
+      await vi.advanceTimersByTimeAsync(BEAT_MS * 3);
+      expect(returning).toHaveBeenCalledTimes(1);
+
+      landFirstBeat?.();
+      await vi.advanceTimersByTimeAsync(BEAT_MS);
+      expect(returning).toHaveBeenCalledTimes(2);
+
+      await manager.endSession(session);
+    });
+
+    it("stops beating and marks the session lost after the maximum lifetime", async () => {
+      vi.useFakeTimers();
+      const { manager, session } = await startSessionWithTtl("exec_forever");
+      const { set } = mockLockUpdate(1);
+
+      // MAX_SESSION_TTLS is 5, so the beat due at 5 x TTL gives up instead of
+      // extending: 19 extensions land, the 20th beat stops the heartbeat.
+      await vi.advanceTimersByTimeAsync(TTL_MS * 5);
+
+      expect(set).toHaveBeenCalledTimes(19);
+      expect(session.lost).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(mockLogSystemWarn).toHaveBeenCalledWith(
+        "infrastructure",
+        expect.stringContaining("Session lifetime exceeded"),
+        expect.any(Error),
+        expect.objectContaining({ execution_id: "exec_forever" })
+      );
+      expect(() => manager.getNextNonce(session)).toThrow(NonceLockLostError);
+
+      await manager.endSession(session);
+    });
+
+    it("unrefs the heartbeat timer so it cannot keep the process alive", async () => {
+      const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+      const manager = new NonceManager();
+      const { session } = await manager.startSession(
+        WALLET,
+        1,
+        "exec_unref",
+        createMockProvider() as unknown as import("ethers").Provider
+      );
+
+      const timer = setIntervalSpy.mock.results[0]?.value as NodeJS.Timeout;
+      expect(timer.hasRef()).toBe(false);
+
+      await manager.endSession(session);
+      setIntervalSpy.mockRestore();
+    });
+  });
+
+  describe("session reads through the RPC manager", () => {
+    it("routes the chain reads through executeWithFailover as reads", async () => {
+      const wallet = "0x1234567890123456789012345678901234567890";
+      mockSelect.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([
+              {
+                walletAddress: wallet,
+                chainId: 1,
+                nonce: 4,
+                txHash: "0xmined",
+                status: "pending",
+              },
+              {
+                walletAddress: wallet,
+                chainId: 1,
+                nonce: 5,
+                txHash: "0xinflight",
+                status: "pending",
+                submittedAt: new Date(),
+              },
+            ]),
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      });
+      const provider = createMockProvider({
+        transactionCount: 5,
+        transactionReceipt: { blockNumber: 123 },
+        transaction: { hash: "0xinflight" },
+      });
+      const executeWithFailover = vi.fn(
+        (operation: (p: unknown) => Promise<unknown>, _operationType: string) =>
+          operation(provider)
+      );
+      const rpcManager = {
+        executeWithFailover,
+      } as unknown as RpcProviderManager;
+
+      const manager = new NonceManager();
+      const { session, validation } = await manager.startSession(
+        wallet,
+        1,
+        "exec_failover",
+        rpcManager
+      );
+
+      expect(executeWithFailover.mock.calls.map((call) => call[1])).toEqual([
+        "read",
+        "read",
+        "read",
+      ]);
+      expect(provider.getTransactionCount).toHaveBeenCalledWith(
+        wallet,
+        "pending"
+      );
+      expect(provider.getTransactionReceipt).toHaveBeenCalledWith("0xmined");
+      expect(provider.getTransaction).toHaveBeenCalledWith("0xinflight");
+      expect(validation.chainNonce).toBe(5);
+      expect(validation.reconciledCount).toBe(1);
+
+      await manager.endSession(session);
+    });
+
+    it("does not mark a tx dropped when a different endpoint answered the mempool read", async () => {
+      const wallet = "0x1234567890123456789012345678901234567890";
+      mockSelect.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([
+              {
+                walletAddress: wallet,
+                chainId: 1,
+                nonce: 5,
+                txHash: "0xinflight",
+                status: "pending",
+                submittedAt: new Date(),
+              },
+            ]),
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      });
+
+      // The primary answers getTransactionCount; the fallback answers the
+      // mempool read and has never seen 0xinflight.
+      const primary = createMockProvider({ transactionCount: 5 });
+      const fallback = createMockProvider({ transaction: null });
+      let served = 0;
+      const executeWithFailover = vi.fn(
+        (operation: (p: unknown) => Promise<unknown>) => {
+          served += 1;
+          return operation(served === 1 ? primary : fallback);
+        }
+      );
+      const rpcManager = {
+        executeWithFailover,
+      } as unknown as RpcProviderManager;
+
+      // Any update at this point would be a reconciliation write; the lock was
+      // acquired on the INSERT.
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+      mockUpdate.mockReturnValue({ set });
+
+      const manager = new NonceManager();
+      const { session, validation } = await manager.startSession(
+        wallet,
+        1,
+        "exec_split_view",
+        rpcManager
+      );
+
+      expect(fallback.getTransaction).toHaveBeenCalledWith("0xinflight");
+      expect(set).not.toHaveBeenCalled();
+      expect(validation.reconciledCount).toBe(0);
+      expect(validation.warnings.join("; ")).toContain(
+        "different RPC endpoint answered"
+      );
+
+      await manager.endSession(session);
+    });
+
+    it("still marks a tx dropped when the same endpoint answered both reads", async () => {
+      const wallet = "0x1234567890123456789012345678901234567890";
+      mockSelect.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([
+              {
+                walletAddress: wallet,
+                chainId: 1,
+                nonce: 5,
+                txHash: "0xgone",
+                status: "pending",
+                submittedAt: new Date(),
+              },
+            ]),
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      });
+
+      const primary = createMockProvider({
+        transactionCount: 5,
+        transaction: null,
+      });
+      const rpcManager = {
+        executeWithFailover: vi.fn(
+          (operation: (p: unknown) => Promise<unknown>) => operation(primary)
+        ),
+      } as unknown as RpcProviderManager;
+
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+      mockUpdate.mockReturnValue({ set });
+
+      const manager = new NonceManager();
+      const { session, validation } = await manager.startSession(
+        wallet,
+        1,
+        "exec_single_view",
+        rpcManager
+      );
+
+      expect(set).toHaveBeenCalledWith({ status: "dropped" });
+      expect(validation.reconciledCount).toBe(1);
+
+      await manager.endSession(session);
     });
   });
 

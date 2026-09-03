@@ -302,20 +302,34 @@ describe.skipIf(SKIP)("consume-path claim helpers", () => {
     ).toBe("not_found");
   });
 
-  it("discardPhantomRow deletes a phantom row (intentional skip)", async () => {
+  // Kept rather than deleted: the row reserves its dispatch key, so a later
+  // dispatcher recomputing the same occurrence cannot create a second run.
+  it("discardPhantomRow resolves a phantom row to skipped (intentional skip)", async () => {
     const id = `${PREFIX}discard`;
     await seedExecution(id, "phantom");
 
-    await discardPhantomRow(execDb, id);
+    await discardPhantomRow(execDb, id, {
+      reason: "disabled",
+      error: "Execution skipped: workflow is not executable (disabled).",
+    });
 
-    expect(await readExecution(id)).toBeUndefined();
+    const row = await readExecution(id);
+    expect(row?.status).toBe("skipped");
+    expect(row?.billable).toBe(false);
+    expect(row?.error).toBe(
+      "Execution skipped: workflow is not executable (disabled)."
+    );
+    expect(row?.completedAt).toBeInstanceOf(Date);
   });
 
   it("discardPhantomRow leaves a non-phantom row intact", async () => {
     const id = `${PREFIX}discard_running`;
     await seedExecution(id, "running");
 
-    await discardPhantomRow(execDb, id);
+    await discardPhantomRow(execDb, id, {
+      reason: "disabled",
+      error: "Execution skipped: workflow is not executable (disabled).",
+    });
 
     expect((await readExecution(id))?.status).toBe("running");
   });

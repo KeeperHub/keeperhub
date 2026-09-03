@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, lt, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
 import { walletLocks } from "@/lib/db/schema-extensions";
@@ -62,14 +62,22 @@ export async function reapStaleExecutions(
   )`;
   const noStepLogs = sql`NOT ${hasStepLogs}`;
 
-  // Execution IDs with a recently COMPLETED step (actively progressing) - never
-  // reap these even past the running threshold.
-  const activeExecutionIds = await db
-    .select({ executionId: workflowExecutionLogs.executionId })
-    .from(workflowExecutionLogs)
-    .where(gt(workflowExecutionLogs.completedAt, runningCutoff))
-    .groupBy(workflowExecutionLogs.executionId);
-  const excludeIds = activeExecutionIds.map((row) => row.executionId);
+  // A step that COMPLETED after the running cutoff means the execution is still
+  // progressing - never reap it even past the running threshold.
+  //
+  // This correlates on execution_id, so Postgres probes
+  // idx_exec_logs_execution_id once per reap candidate, and the candidate set is
+  // a handful of rows. The earlier form pre-selected every recently completed
+  // step id in one pass and passed the result to NOT IN. No index covered
+  // completed_at, so that pass sequentially scanned the whole log table - 23M
+  // rows and 22 GB on prod - to return about a thousand ids. It took 150 to 175
+  // seconds on every 10-minute run, and it started failing outright once a 120s
+  // statement_timeout landed on the role.
+  const noRecentlyCompletedStep = sql`NOT EXISTS (
+    SELECT 1 FROM ${workflowExecutionLogs}
+    WHERE ${workflowExecutionLogs.executionId} = ${workflowExecutions.id}
+      AND ${workflowExecutionLogs.completedAt} > ${sql.param(runningCutoff, workflowExecutionLogs.completedAt)}
+  )`;
 
   const staleConditions = or(
     // running, older than the running threshold (default 30 min), not recently
@@ -81,9 +89,7 @@ export async function reapStaleExecutions(
     and(
       eq(workflowExecutions.status, "running"),
       lt(workflowExecutions.startedAt, runningCutoff),
-      excludeIds.length > 0
-        ? notInArray(workflowExecutions.id, excludeIds)
-        : undefined
+      noRecentlyCompletedStep
     ),
     // pending + no step logs, older than the pending threshold -> P-0001.
     and(
@@ -161,12 +167,23 @@ export async function reapStaleExecutions(
         )
       );
 
-    // Release any nonce locks still held by reaped executions so affected
-    // wallets are unwedged immediately instead of waiting for the TTL.
+    // Release nonce locks still held by reaped executions, but only ones that
+    // have already lapsed. A lock whose expires_at is still in the future is
+    // being renewed by a live heartbeat, and clearing it hands the wallet to a
+    // waiter while the holder is mid-write: the waiter reads getTransactionCount
+    // and computes the very nonce the holder is about to broadcast at. A holder
+    // that is genuinely dead stops beating and lapses within one TTL, which is
+    // far inside the (much longer) threshold that got it reaped in the first
+    // place, so nothing that used to be unwedged here stays wedged.
     await db
       .update(walletLocks)
       .set({ lockedBy: null, lockedAt: null, expiresAt: sql`NOW()` })
-      .where(inArray(walletLocks.lockedBy, reapedIds));
+      .where(
+        and(
+          inArray(walletLocks.lockedBy, reapedIds),
+          lt(walletLocks.expiresAt, sql`NOW()`)
+        )
+      );
   }
 
   return reapedIds;

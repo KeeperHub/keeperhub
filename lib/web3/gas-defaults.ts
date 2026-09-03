@@ -4,9 +4,11 @@
  * Two related concerns live here:
  *
  *  1. CHAIN_GAS_DEFAULTS / getChainGasDefaults(chainId)
- *     Display-only multipliers mirroring the hardcoded entries in
- *     gas-strategy.ts. UI code (e.g. gas-limit-multiplier-field.tsx) reads
- *     these to show users what default would apply.
+ *     Display-only gas limit multipliers. Each entry must carry the same
+ *     gasLimitMultiplier as the matching chain in getHardcodedOverrides in
+ *     gas-strategy.ts (kept in sync by hand: that module imports ethers and
+ *     the DB, so it cannot be imported here). /api/gas/estimate returns these
+ *     next to the estimate so clients can show what default would apply.
  *
  *  2. resolveGasLimitOverrides / parsePriorityFeeGwei
  *     Execution-path helpers that turn user-supplied strings into the
@@ -22,7 +24,6 @@
 
 export type ChainGasDefaults = {
   multiplier: number;
-  conservative: number;
 };
 
 /**
@@ -68,30 +69,37 @@ export function parseGasLimitConfig(
 
 const CHAIN_GAS_DEFAULTS: Record<number, ChainGasDefaults> = {
   // Ethereum mainnet
-  1: { multiplier: 2.0, conservative: 2.5 },
+  1: { multiplier: 2.0 },
   // Sepolia testnet
-  11155111: { multiplier: 2.0, conservative: 2.5 },
+  11155111: { multiplier: 2.0 },
   // Arbitrum One
-  42161: { multiplier: 1.5, conservative: 2.0 },
+  42161: { multiplier: 1.5 },
   // Arbitrum Sepolia
-  421614: { multiplier: 1.5, conservative: 2.0 },
+  421614: { multiplier: 1.5 },
   // Base
-  8453: { multiplier: 1.5, conservative: 2.0 },
+  8453: { multiplier: 1.5 },
   // Base Sepolia
-  84532: { multiplier: 1.5, conservative: 2.0 },
+  84532: { multiplier: 1.5 },
   // Polygon
-  137: { multiplier: 2.0, conservative: 2.5 },
+  137: { multiplier: 2.0 },
   // Polygon Amoy testnet
-  80002: { multiplier: 2.0, conservative: 2.5 },
+  80002: { multiplier: 2.0 },
+  // Robinhood Chain
+  4663: { multiplier: 1.5 },
+  // Robinhood Chain testnet
+  46630: { multiplier: 1.5 },
   // 0G Galileo testnet
-  16602: { multiplier: 2.0, conservative: 2.5 },
+  16602: { multiplier: 2.0 },
   // 0G Mainnet
-  16661: { multiplier: 2.0, conservative: 2.5 },
+  16661: { multiplier: 2.0 },
+  // Tempo mainnet
+  4217: { multiplier: 1.5 },
+  // Tempo Moderato testnet
+  42431: { multiplier: 1.5 },
 };
 
 const GLOBAL_DEFAULT: ChainGasDefaults = {
   multiplier: 2.0,
-  conservative: 2.5,
 };
 
 /**

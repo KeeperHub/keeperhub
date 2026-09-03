@@ -8,6 +8,7 @@ import { buildExecTransactionWithRoleCalldata } from "@/lib/safe/zodiac-roles";
 import type { TransactionReceipt } from "@/lib/web3/chain-adapter/types";
 import { getGasStrategy } from "@/lib/web3/gas-strategy";
 import { getNonceManager, type NonceSession } from "@/lib/web3/nonce-manager";
+import { OnChainRevertError } from "@/lib/web3/onchain-revert";
 import {
   NonceConflictError,
   submitSignedTransactionWithFailover,
@@ -67,6 +68,23 @@ function finishOnError(
     err instanceof NonceConflictError ? "nonce-conflict" : "failure"
   );
   throw err;
+}
+
+/**
+ * A mined receipt with status 0 is a reverted transaction. Both Safe routes
+ * are built so that an inner-call failure reverts the whole outer transaction
+ * (execTransaction with safeTxGas=0 and gasPrice=0, execTransactionWithRole
+ * with shouldRevert=true), and `waitForTransaction`, unlike `tx.wait()`,
+ * resolves that receipt instead of throwing, so the status has to be read here.
+ */
+function throwIfReverted(receipt: ethers.TransactionReceipt): void {
+  if (receipt.status === 0) {
+    throw new OnChainRevertError({
+      message: `Transaction ${receipt.hash} reverted on-chain (status 0, block ${receipt.blockNumber})`,
+      transactionHash: receipt.hash,
+      blockNumber: receipt.blockNumber,
+    });
+  }
 }
 
 export async function executeContractCallAsSafe(
@@ -155,6 +173,7 @@ export async function executeContractCallAsSafe(
     if (!receipt) {
       throw new Error("Safe-routed transaction sent but receipt unavailable");
     }
+    throwIfReverted(receipt);
 
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");
@@ -283,6 +302,7 @@ export async function executeContractCallAsRole(
     if (!receipt) {
       throw new Error("Role-routed transaction sent but receipt unavailable");
     }
+    throwIfReverted(receipt);
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");
     return {
@@ -389,6 +409,7 @@ export async function executeNativeTransferAsRole(
         "Role-routed native transfer sent but receipt unavailable"
       );
     }
+    throwIfReverted(receipt);
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");
     return {
@@ -496,6 +517,7 @@ export async function executeNativeTransferAsSafe(
         "Safe-routed native transfer sent but receipt unavailable"
       );
     }
+    throwIfReverted(receipt);
 
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");

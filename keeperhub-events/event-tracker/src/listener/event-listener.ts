@@ -226,7 +226,12 @@ export class EventListener {
 
       const args = extractEventArgs(parsed, this.opts.rawEventsAbi);
       const payload = buildEventPayload(log, parsed, args);
-      await this.sendToSqs(payload);
+      // One key per (workflow, chain, transaction, log): two matching logs in
+      // one transaction are two distinct runs. This is the guard that holds
+      // across a reconnect replay, a reorg re-emit and a crash between the
+      // send and the mark below; the Redis dedup is best-effort and per tx.
+      const dispatchKey = `event:${this.opts.workflowId}:${this.opts.chainId}:${txHash}:${log.index}`;
+      await this.sendToSqs(payload, dispatchKey);
 
       // Mark after the send, and after a refusal too: a refused event is
       // settled, and leaving it unmarked only buys another admission
@@ -248,20 +253,36 @@ export class EventListener {
     }
   }
 
-  private async sendToSqs(payload: unknown): Promise<void> {
+  private async sendToSqs(
+    payload: unknown,
+    dispatchKey: string,
+  ): Promise<void> {
     // KEEP-693: pre-create a phantom row (best-effort) so the run is visible
     // even if it never reaches the executor, and carry its id so the executor
     // upgrades that row instead of inserting.
-    const { executionId, refused } = await createPhantomExecution(
-      this.opts.workflowId,
-      this.opts.userId,
-    );
+    const { executionId, alreadyExisted, refused } =
+      await createPhantomExecution(
+        this.opts.workflowId,
+        this.opts.userId,
+        dispatchKey,
+      );
 
     // Refused on plan grounds: the executor would refuse the same run, and a
     // busy contract would otherwise pay for that round-trip on every match.
     if (refused) {
       logger.log(
         `[EventListener:${this.opts.workflowId}] skipping refused dispatch (${refused})`,
+      );
+      return;
+    }
+
+    // An earlier delivery of this log already created and enqueued the row
+    // (the Redis dedup missed it, or a crash landed between the send and the
+    // mark). Enqueueing again would run it twice; returning lets the caller
+    // mark the event processed.
+    if (alreadyExisted) {
+      logger.log(
+        `[EventListener:${this.opts.workflowId}] skipping duplicate dispatch for ${dispatchKey} (already enqueued)`,
       );
       return;
     }
