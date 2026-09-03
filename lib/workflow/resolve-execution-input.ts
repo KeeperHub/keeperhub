@@ -62,7 +62,7 @@ function toHttpDate(isoDay: string): string {
  * once and never again, which is the opposite of what a migration window is
  * for.
  */
-export function topLevelInputDeprecationHeaders(): Array<[string, string]> {
+export function topLevelInputDeprecationHeaders(): [string, string][] {
   return [
     ["Deprecation", toHttpDate(TOP_LEVEL_INPUT_DEPRECATION.effective)],
     ["Sunset", toHttpDate(TOP_LEVEL_INPUT_DEPRECATION.sunset)],
