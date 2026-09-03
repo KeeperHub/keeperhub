@@ -35,3 +35,33 @@ same: wait a few minutes and try the run again.
 
 If a coded error keeps happening for the same workflow, contact support and
 include the code and the time of the run.
+
+## Action failures with structured codes (simulate responses)
+
+Some action failures carry a machine-readable failure code alongside the
+message. On the run path this applies to the **simulate** surface: `/api/execute/*`
+simulate responses and MCP simulate results return it as `SimulateFailureCode`.
+Run steps themselves surface the plain message only -- branch on the message
+text, not on the code, when reading run logs or run webhooks.
+
+### `insufficient_balance` (simulate responses)
+
+**What happened**: the gas preflight found the sending wallet could not cover
+the transaction before it was broadcast, so nothing was signed or sent.
+
+**Message on the run path** (plain text, no code):
+
+```
+Insufficient ETH balance. Have: 0.0, Need: 0.000000231. Fund
+0x...orgWallet with at least 0.000000231 ETH on this chain and retry.
+```
+
+This message is emitted on every direct-signing write path. On a
+sponsorship-eligible network it additionally means sponsorship fell back (see
+[Gas Management -- When sponsorship falls back](/wallet-management/gas)); on
+other setups it simply means the sending wallet cannot cover the gas.
+
+**What to do**: fund the wallet address named in the message with at least the
+stated shortfall, then retry. On Turnkey-managed wallets on sponsored networks,
+restoring the sponsorship conditions (gas credits, supported network,
+direct-wallet sender, public mempool) also fixes the run without funding.

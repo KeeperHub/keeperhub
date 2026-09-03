@@ -96,6 +96,38 @@ Workflows that route through a Safe (Sender ON) are not gas sponsored. The spons
 
 Sponsored gas is metered in USD against your plan's monthly gas credit cap (shown on the billing page). Mainnet usage counts against the cap; testnet usage is not charged. When the cap is reached, sponsorship pauses for the rest of the period and transactions pay gas from the wallet.
 
+### When sponsorship falls back
+
+Sponsorship is attempted first and falls back to direct signing (your wallet pays
+the gas) when the attempt returns no sponsored client. A fallback run simply lacks
+the **Gas sponsored** badge that a sponsored run carries in the Runs panel; the
+run output does not say why sponsorship was skipped.
+
+What the fallback does next depends on the wallet balance:
+
+- **Wallet holds native gas**: the run completes, paid from your wallet.
+- **Wallet has no native gas**: the gas preflight runs before the transaction is
+  broadcast and fails the step with:
+
+  ```
+  Insufficient ETH balance. Have: 0.0, Need: 0.000000231. Fund
+  0x...orgWallet with at least 0.000000231 ETH on this chain and retry.
+  ```
+
+  Nothing was broadcast at this point, so there is no transaction hash to look
+  up. Fund the address named in the message and retry.
+
+This message is emitted on every direct-signing write path. On a
+sponsorship-eligible network (see the conditions above, plus the Turnkey-managed
+wallet requirement) it additionally means sponsorship fell back -- funding the
+address fixes the run either way.
+
+The eligibility conditions are the user-controllable subset. Sponsorship can
+still be unavailable per organization and wallet even when all of them hold: the
+sponsored client is only created when the organization's active wallet is
+Turnkey-managed (a self-imported wallet never gets a sponsored client), and
+Turnkey can still reject an activity at submission time.
+
 ## FAQ
 
 ### What happens if I leave the gas limit empty?
