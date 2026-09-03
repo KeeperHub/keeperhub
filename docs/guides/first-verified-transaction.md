@@ -95,9 +95,10 @@ Confirm, in order:
 
 ## 6. Simulate
 
-Every direct-execution write tool (`execute_transfer`, `execute_contract_call`,
+Every EVM direct-execution write tool (`execute_transfer`, `execute_contract_call`,
 `execute_check_and_execute`) takes a `simulate` flag that estimates gas and catches
-reverts without signing or broadcasting:
+reverts without signing or broadcasting. Simulation is EVM-only: on Solana chains
+`simulate` is rejected, and a Solana transfer broadcasts directly. For example:
 
 ```json
 {
