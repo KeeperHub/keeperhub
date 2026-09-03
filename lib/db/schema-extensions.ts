@@ -537,8 +537,11 @@ export type NewWalletLock = typeof walletLocks.$inferInsert;
  *
  * Rows that stay `pending` well past their submittedAt are surfaced as the
  * `keeperhub_web3_pending_transactions_stuck` gauge (KEEP-1291) so a backlog
- * can be alerted on. Nothing acts on that signal automatically: there is no
- * same-nonce fee escalation in the codebase, and recovery is a human decision.
+ * can be alerted on. Nothing acts on that signal automatically: no writer of
+ * this table re-prices a transaction it has already recorded, so recovery is a
+ * human decision. (`app/api/execute/_lib/retry.ts` does bump gas at the same
+ * nonce, but only within a single direct-execution request, and it never
+ * writes here - it cannot clear a row that is already stuck.)
  *
  * Status lifecycle: pending -> confirmed | dropped | replaced
  */
