@@ -252,6 +252,25 @@ simulate with the same body you intend to send, then send it once with an
 `Idempotency-Key` so an interrupted client can retry without double-executing,
 then poll `GET /api/execute/{executionId}/status`.
 
+### The IDs in this flow
+
+The responses you read in this section use four different identifiers. They
+are not interchangeable:
+
+| Term | Where it comes from | What it identifies |
+|---|---|---|
+| Workflow ID | `POST /api/workflows/create` or `GET /api/workflows` | The workflow definition itself — its nodes and edges. Stable across every run of that workflow. |
+| Execution ID (`executionId`) | `POST /api/execute/transfer` (or any direct-execution route), or `POST /api/workflows/{workflowId}/execute` | One attempt to run something. `exec_…` when the run is a workflow; the direct-execution routes return an opaque id. Polled via `GET /api/execute/{executionId}/status`. |
+| `transactionHash` | The status response once a broadcast lands | The onchain transaction. One execution can contain several (approve + action), and an execution that never broadcasts has none. |
+| `transactionLink` | The same status response | A block-explorer URL for that `transactionHash` — a convenience, not a separate identifier. |
+
+The rule that keeps them straight: an execution is **one attempt**, a workflow
+is **the definition**, and a transaction is **what actually landed onchain**.
+A `202 Accepted` means KeeperHub queued an execution — it does not mean a
+transaction exists yet. See
+[Zero to a Verified Onchain Transaction](/guides/first-verified-transaction)
+for the full walkthrough of confirming the transaction actually landed.
+
 ## 6. Your first transaction should move zero
 
 A brand-new organization wallet holds nothing, so a first run with a non-zero
