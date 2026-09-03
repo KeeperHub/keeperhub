@@ -172,7 +172,10 @@ app:
             set -e
             echo "Setting up workflow postgres tables..."
             export WORKFLOW_POSTGRES_URL=$(tsx scripts/encode-pg-url.ts)
-            pnpm exec workflow-postgres-setup
+            # Called by path, not through the `bootstrap` bin: .npmrc public-hoists
+            # @workflow/* and hoisted packages land bins in the root .bin, so a sibling
+            # gaining that generic name would silently shadow this (KEEP-1299).
+            node node_modules/@workflow/world-postgres/bin/setup.js
             echo "Running database migrations..."
             pnpm db:migrate
             echo "Seeding chains..."
@@ -671,6 +674,33 @@ app:
         failedJobsHistoryLimit: 3
         restartPolicy: OnFailure
         backoffLimit: 2
+      - name: execution-reconciler
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-prod
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "1-59/2 * * * *" # every 2 minutes, offset by 1 minute per this file's convention; the reconciler only re-reads rows older than 30s
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/cron/execution-reconciler"
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-prod/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
       - name: execution-digest
         image:
           repository: ${ECR_REGISTRY}/keeperhub-prod
@@ -1014,9 +1044,13 @@ executor:
     JOB_TTL_SECONDS:
       type: kv
       value: "300"
+    # Hard cap on a single runner pod. A workflow that iterates a large
+    # collection (dozens of items, several nodes each) does not fit in 300s, and
+    # the pod is SIGKILLed mid-run with no error recorded. The drain watchdog is
+    # derived as two thirds of this value, so raising it raises both together.
     JOB_ACTIVE_DEADLINE:
       type: kv
-      value: "300"
+      value: "600"
     # Ephemeral-storage guardrail for runner Job pods (mirrored by the runner's
     # /tmp emptyDir sizeLimit). Runners use ~2 MiB each, so the 1Gi limit is a
     # runaway-/tmp guard, not the disk-pressure fix (that is node image GC + disk

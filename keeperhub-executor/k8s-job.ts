@@ -118,6 +118,19 @@ export async function createWorkflowJob(params: {
     // below. tsx/esbuild and any plugin temp writes resolve through TMPDIR, so
     // point it there to keep the runner working under the hardened context.
     { name: "TMPDIR", value: "/tmp" },
+    // Node sizes its heap from the host's RAM, not the container's cgroup
+    // limit, so on a large node it grows past the memory limit below and the
+    // kernel SIGKILLs the pod mid-run with no error and no terminal status,
+    // orphaning another execution row. Capping the heap under the limit turns
+    // that silent kill into a recorded JS heap error, and leaves the remainder
+    // for off-heap RSS (the binary, buffers, native memory).
+    { name: "NODE_OPTIONS", value: "--max-old-space-size=224" },
+    // Derived from activeDeadlineSeconds so the drain watchdog always fires
+    // while the pod is alive. See resolveDrainTimeoutMs in config.ts.
+    {
+      name: "KH_EXECUTOR_DRAIN_TIMEOUT_MS",
+      value: String(CONFIG.jobDrainTimeoutMs),
+    },
     // SSRF guard: runner pods enforce by default. safeFetch's shadow-mode
     // opt-in (SAFE_FETCH_SHADOW) is neither injected here nor listed in
     // RUNNER_SYSTEM_ENV_VARS, so a controller's env can never relax the

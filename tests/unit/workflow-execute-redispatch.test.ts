@@ -315,6 +315,7 @@ describe("workflow execute redispatch guard", () => {
     expect(mockChargePaygIfBillable).toHaveBeenCalledWith({
       organizationId: "org_1",
       executionId: "exec_pend",
+      paygOverflow: false,
     });
     expect(mockExecuteWorkflowInBackground).toHaveBeenCalledWith(
       "exec_pend",

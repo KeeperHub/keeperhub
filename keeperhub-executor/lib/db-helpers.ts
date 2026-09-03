@@ -441,31 +441,46 @@ export async function claimPendingForExecution(
 }
 
 /**
- * KEEP-693: delete a pre-created phantom or pending row when the executor
+ * Why the executor intentionally did not run a trigger it was handed. The
+ * workflow lifecycle values mirror loadWorkflowForExecution's reasons; the
+ * schedule value covers a schedule row that is disabled or gone.
+ */
+export type DiscardReason =
+  | "not_found"
+  | "deleted"
+  | "deactivated"
+  | "org_deactivated"
+  | "disabled"
+  | "schedule_invalid";
+
+/**
+ * KEEP-693: resolve a pre-created phantom or pending row when the executor
  * intentionally skips the trigger (workflow not found / not executable /
  * schedule invalid). The trigger correctly did not run, so there is no failure
  * to surface and the reaper must not later age the orphan to a system P-code.
- * The compare-and-set on status IN ('phantom', 'pending') makes it a no-op
- * when there is no id or the row already advanced past these states.
+ *
+ * The row is kept, as 'skipped' and non-billable, rather than deleted. A
+ * delete would release its dispatch key, and the next dispatcher to compute the
+ * same key (an overlapping leader, a catch-up window, a replayed log) could then
+ * create and enqueue a second row for the same occurrence; keeping the row
+ * reserves the key for good and also tells the author why the trigger did not
+ * fire. The compare-and-set on status IN ('phantom', 'pending') makes it a
+ * no-op when there is no id or the row already advanced past these states.
  *
  * Matches 'pending' in addition to 'phantom' because manual-trigger executions
  * are pre-created by the API as 'pending' before being enqueued.
  */
 export async function discardPhantomRow(
   db: PostgresJsDatabase<DbSchema>,
-  executionId: string | undefined
+  executionId: string | undefined,
+  discard: { reason: DiscardReason; error: string }
 ): Promise<void> {
-  if (!executionId) {
-    return;
-  }
-  await db
-    .delete(workflowExecutions)
-    .where(
-      and(
-        eq(workflowExecutions.id, executionId),
-        inArray(workflowExecutions.status, ["phantom", "pending"])
-      )
-    );
+  await resolveToSkipped(db, executionId, {
+    error: discard.error,
+    errorCategory: "configuration",
+    errorType: "user",
+    reason: discard.reason,
+  });
 }
 
 /**
@@ -478,7 +493,8 @@ export async function discardPhantomRow(
  * it never executed, and counting it as a failure skews the success-rate SLI
  * (in a sampled window, refusals read as a 21% error rate against a real 3%).
  * The reason is still recorded on the row so its author sees why it did not
- * fire.
+ * fire. Serves both the billing refusals and, via discardPhantomRow, the
+ * lifecycle skips (workflow or schedule not runnable).
  *
  * Matches 'pending' in addition to 'phantom' because manual-trigger executions
  * are pre-created by the API as 'pending' (not 'phantom') before being enqueued.
@@ -488,7 +504,7 @@ export async function resolveToSkipped(
   executionId: string | undefined,
   fields: {
     error: string;
-    errorCategory: "billing";
+    errorCategory: "billing" | "configuration";
     errorType: "user";
     reason: string;
   }

@@ -110,6 +110,26 @@ let isShuttingDown = false;
 let currentExecutionId: string | null = null;
 let currentScheduleId: string | null = null;
 
+// A SIGTERM that lands while the workflow is finishing lets both the shutdown
+// handler and main()'s finally reach the end of the run. collectCounterDeltas
+// reads absolute counter values with no last-shipped baseline, so a second
+// shipment would re-send everything the first one did: the two paths share one
+// shipment rather than each starting their own.
+let metricsShipment: Promise<void> | null = null;
+
+// The promise for the shutdown the first signal started. main() waits on it
+// instead of returning, because returning runs the top-level process.exit and
+// would kill the pod out from under a shutdown that has not written its
+// terminal status yet - the write whose counters this all exists to ship.
+let shutdownCompletion: Promise<void> | null = null;
+
+function shipMetricsOnce(): Promise<void> {
+  if (!metricsShipment) {
+    metricsShipment = shipMetricsToExecutor();
+  }
+  return metricsShipment;
+}
+
 async function handleGracefulShutdown(signal: string): Promise<void> {
   if (isShuttingDown) {
     console.log(`[Runner] Already shutting down, ignoring ${signal}`);
@@ -148,14 +168,28 @@ async function handleGracefulShutdown(signal: string): Promise<void> {
   } catch (error) {
     console.error("[Runner] Error during graceful shutdown:", error);
   } finally {
+    // The status write above incremented the terminal counters in this
+    // process; they only reach the executor if shipped before exit. Shipping
+    // is bounded by its own fetch timeout, and the forced-exit timer stays
+    // armed until it resolves.
+    await shipMetricsOnce();
     clearTimeout(shutdownTimeout);
     console.log("[Runner] Graceful shutdown complete");
     process.exit(1);
   }
 }
 
-process.on("SIGTERM", () => handleGracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => handleGracefulShutdown("SIGINT"));
+// Keep the FIRST shutdown's promise: a later signal returns the early-exit
+// path, which settles immediately and would release main() while the real
+// shutdown is still mid-flight.
+function onShutdownSignal(signal: string): Promise<void> {
+  const completion = handleGracefulShutdown(signal);
+  shutdownCompletion ??= completion;
+  return completion;
+}
+
+process.on("SIGTERM", () => onShutdownSignal("SIGTERM"));
+process.on("SIGINT", () => onShutdownSignal("SIGINT"));
 
 async function main(): Promise<void> {
   const startTime = Date.now();
@@ -287,8 +321,14 @@ async function main(): Promise<void> {
       console.log("[Runner] Error recorded to database, exiting normally");
     }
   } finally {
-    await shipMetricsToExecutor();
-    if (!isShuttingDown) {
+    if (isShuttingDown) {
+      // The handler owns the rest: it writes the terminal status, ships the
+      // counters that write increments, closes the connection and exits.
+      // Shipping here instead would send the pre-terminal snapshot and, worse,
+      // let main() resolve into process.exit before that write lands.
+      await shutdownCompletion;
+    } else {
+      await shipMetricsOnce();
       await queryClient.end();
       console.log("[Runner] Database connection closed");
     }

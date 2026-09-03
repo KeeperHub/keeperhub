@@ -37,6 +37,11 @@ type ReserveExecutionParams = {
   reserved:
     | { kind: "evm"; valueWei: string }
     | { kind: "solana"; valueLamports: string };
+  // The PAYG verdict this request was admitted on, taken from the guard the
+  // route ran before anything was written. It cannot be re-derived after the
+  // reservation below, because the execution row is committed by then and
+  // counts towards the org's monthly usage.
+  paygOverflow: boolean;
 };
 
 type ReserveResult =
@@ -196,6 +201,7 @@ export async function checkAndReserveExecution(
   const charge = await chargePaygIfBillable({
     organizationId: params.organizationId,
     executionId: reserve.executionId,
+    paygOverflow: params.paygOverflow,
   });
   if (charge.applicable && !charge.ok) {
     await db

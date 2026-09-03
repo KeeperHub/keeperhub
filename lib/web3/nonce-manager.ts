@@ -26,6 +26,7 @@ import {
   logUserError,
   logWarn,
 } from "@/lib/logging";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { sleep } from "@/lib/sleep";
 
 export type NonceSession = {
@@ -34,7 +35,96 @@ export type NonceSession = {
   executionId: string;
   currentNonce: number;
   startedAt: Date;
+  /**
+   * Set once the lock can no longer be proved held: an extension found the row
+   * taken by another execution, or the session outlived MAX_SESSION_TTLS and
+   * the heartbeat gave up. From then on the nonces this session hands out are
+   * not exclusive, and getNextNonce refuses to hand out any more.
+   */
+  lost?: boolean;
 };
+
+/**
+ * Thrown by getNextNonce when the session can no longer prove it holds the
+ * lock. Terminal for the session: the caller must not broadcast, and the
+ * wallet+chain belongs to whoever holds the row now.
+ */
+export class NonceLockLostError extends Error {
+  override readonly name = "NonceLockLostError" as const;
+
+  constructor(
+    session: Pick<NonceSession, "walletAddress" | "chainId" | "executionId">
+  ) {
+    super(
+      `Nonce lock for ${session.walletAddress}:${session.chainId} is no longer held by ${session.executionId}; refusing to allocate a nonce.`
+    );
+  }
+}
+
+/**
+ * What the heartbeat needs from a session. It exists from the moment the lock
+ * is held (before the chain reads that size the session) and is grown into
+ * the NonceSession the caller receives, so `lost` lands on the object they
+ * hold.
+ */
+type LockLease = Pick<
+  NonceSession,
+  "walletAddress" | "chainId" | "executionId" | "lost"
+>;
+
+/**
+ * The session's chain reads, plus which endpoint answered the last one.
+ *
+ * executeWithFailover switches endpoint on a throw or a timeout, so two reads
+ * in the same session can be answered by different nodes holding different
+ * mempools. The reconciler has to know when that happened: "not in the
+ * mempool" is only evidence that a transaction dropped if the node that
+ * answered is the same one whose nonce we are reconciling against.
+ */
+type SessionReader = {
+  read: <T>(operation: (provider: ethers.Provider) => Promise<T>) => Promise<T>;
+  /** The provider that served the most recent read. */
+  lastEndpoint: () => ethers.Provider | null;
+};
+
+/**
+ * Route the session's chain reads through the failover manager when one is
+ * given, so they get the same per-attempt timeout and fallback as every other
+ * RPC call. A bare provider is still accepted for callers that hold one.
+ */
+function chainReader(rpc: RpcProviderManager | ethers.Provider): SessionReader {
+  if ("executeWithFailover" in rpc) {
+    let lastEndpoint: ethers.Provider | null = null;
+    return {
+      read: (operation) =>
+        rpc.executeWithFailover((provider) => {
+          // The provider handed to the attempt that resolves is the one that
+          // answered, so recording it on every attempt leaves the winner.
+          lastEndpoint = provider;
+          return operation(provider);
+        }, "read"),
+      lastEndpoint: () => lastEndpoint,
+    };
+  }
+  return {
+    read: (operation) => operation(rpc),
+    lastEndpoint: () => rpc,
+  };
+}
+
+// Extensions per TTL. At four, an extension lands every quarter of the TTL,
+// so a lock survives two consecutive failed extensions with a quarter of the
+// TTL still to run. The third failure is the knife edge, not the margin: the
+// fourth beat falls due exactly when expires_at passes.
+const HEARTBEATS_PER_TTL = 4;
+
+// Beats stop after this many TTLs, so a session that never ends cannot renew
+// the lock forever. At the default 300s TTL that caps the beating at 25
+// minutes and the lock itself at 30 - the same bound the stale-execution
+// reaper applies to workflow executions. The withdraw route has no reaper at
+// all (its execution ids are not workflow_executions rows), so for that path
+// this is the only upper bound there is.
+const MAX_SESSION_TTLS = 5;
 
 export type ValidationResult = {
   valid: boolean;
@@ -51,14 +141,24 @@ export type NonceManagerOptions = {
 };
 
 const DEFAULT_OPTIONS: Required<NonceManagerOptions> = {
-  // Worst-case credentialed write is ~90s (full RPC failover round). 5min
-  // gives generous headroom; a wedged lock auto-clears at expires_at.
+  // One failover-wrapped RPC call is bounded at 3 attempts x 30s timeout plus
+  // 1s + 2s backoff = 93s per endpoint, 186s for a primary-then-fallback
+  // round (lib/rpc/providers DEFAULT_MAX_RETRIES / DEFAULT_TIMEOUT_MS), and a
+  // write issues several such calls (fee reads, estimateGas, broadcast,
+  // reconcile, receipt wait). With the primary down a single write can hold
+  // the lock for well over this TTL, so the TTL is not sized to outlast a
+  // write. The heartbeat extends expires_at every lockTtlMs / 4 while the
+  // session is open, so the TTL bounds a holder that stopped beating: one
+  // whose process died, or one that hit MAX_SESSION_TTLS. Those two together
+  // bound how long any holder can wedge the wallet+chain at
+  // (MAX_SESSION_TTLS + 1) x lockTtlMs.
   lockTtlMs: 300_000,
-  // 600 * 200ms = 120s acquire budget. Must outwait one full RPC failover
-  // round (~90s per provider including timeouts and exponential backoff),
-  // since preflight failover runs while a legitimate holder still has the
-  // lock. The TTL bounds *stuck* holders; the retry budget bounds the wait
-  // for *legitimate* holders to finish.
+  // 600 * 200ms = 120s acquire budget: how long a waiter tolerates a live
+  // holder before failing with the saturation error below. It covers a
+  // healthy write (seconds) many times over but not a write riding out RPC
+  // failover (several 186s rounds); a waiter then fails loudly rather than
+  // sharing the holder's nonce. The TTL bounds *dead* holders; the retry
+  // budget bounds the wait for *live* ones.
   maxLockRetries: 600,
   lockRetryDelayMs: 200,
 };
@@ -67,6 +167,10 @@ export class NonceManager {
   private readonly lockTtlMs: number;
   private readonly maxLockRetries: number;
   private readonly lockRetryDelayMs: number;
+  private readonly heartbeats = new Map<
+    LockLease,
+    ReturnType<typeof setInterval>
+  >();
 
   constructor(options: NonceManagerOptions = {}) {
     this.lockTtlMs = options.lockTtlMs ?? DEFAULT_OPTIONS.lockTtlMs;
@@ -79,25 +183,37 @@ export class NonceManager {
   /**
    * Start a nonce session for workflow execution.
    * 1. Acquires distributed lock (row-based, with TTL)
-   * 2. Fetches nonce from chain (source of truth)
-   * 3. Validates and reconciles pending transactions
+   * 2. Starts the heartbeat that keeps the lock alive while the session is open
+   * 3. Fetches nonce from chain (source of truth)
+   * 4. Validates and reconciles pending transactions
    */
   async startSession(
     walletAddress: string,
     chainId: number,
     executionId: string,
-    provider: ethers.Provider
+    rpc: RpcProviderManager | ethers.Provider
   ): Promise<{ session: NonceSession; validation: ValidationResult }> {
     const normalizedAddress = walletAddress.toLowerCase();
+    const reader = chainReader(rpc);
 
     await this.acquireLock(normalizedAddress, chainId, executionId);
 
+    const lease: LockLease = {
+      walletAddress: normalizedAddress,
+      chainId,
+      executionId,
+      lost: false,
+    };
+    this.startHeartbeat(lease);
+
     try {
       // Fetch nonce from chain (source of truth)
-      const chainNonce = await provider.getTransactionCount(
-        normalizedAddress,
-        "pending"
+      const chainNonce = await reader.read((provider) =>
+        provider.getTransactionCount(normalizedAddress, "pending")
       );
+      // Every reconciliation verdict below is relative to this nonce, so it is
+      // only sound on the node that produced it.
+      const nonceEndpoint = reader.lastEndpoint();
 
       // Reconcile pending rows against chain state BEFORE computing safeNonce
       // so future-nonce phantom rows (broadcast failed / evicted from mempool)
@@ -106,7 +222,8 @@ export class NonceManager {
         normalizedAddress,
         chainId,
         chainNonce,
-        provider
+        reader,
+        nonceEndpoint
       );
 
       // Advance past any in-flight nonces still pending after reconciliation
@@ -126,13 +243,12 @@ export class NonceManager {
           ? chainNonce
           : Math.max(chainNonce, maxPendingNonce + 1);
 
-      const session: NonceSession = {
-        walletAddress: normalizedAddress,
-        chainId,
-        executionId,
+      // Same object as the lease, so the heartbeat keeps writing to what the
+      // caller holds.
+      const session: NonceSession = Object.assign(lease, {
         currentNonce: safeNonce,
         startedAt: new Date(),
-      };
+      });
 
       console.log(
         `[NonceManager] Session started for ${normalizedAddress}:${chainId}, ` +
@@ -149,6 +265,7 @@ export class NonceManager {
     } catch (error) {
       // Release lock on setup failure so the wallet isn't held by a session
       // that never actually started.
+      this.stopHeartbeat(lease);
       await this.releaseLock(normalizedAddress, chainId, executionId);
       throw error;
     }
@@ -162,7 +279,8 @@ export class NonceManager {
     walletAddress: string,
     chainId: number,
     chainNonce: number,
-    provider: ethers.Provider
+    reader: SessionReader,
+    nonceEndpoint: ethers.Provider | null
   ): Promise<ValidationResult> {
     const warnings: string[] = [];
     let reconciledCount = 0;
@@ -181,7 +299,9 @@ export class NonceManager {
 
     for (const tx of pending) {
       if (tx.nonce < chainNonce) {
-        const receipt = await provider.getTransactionReceipt(tx.txHash);
+        const receipt = await reader.read((provider) =>
+          provider.getTransactionReceipt(tx.txHash)
+        );
 
         if (receipt) {
           await db
@@ -212,14 +332,16 @@ export class NonceManager {
           reconciledCount += 1;
         }
       } else if (tx.nonce === chainNonce) {
-        const mempoolTx = await provider.getTransaction(tx.txHash);
+        const mempoolTx = await reader.read((provider) =>
+          provider.getTransaction(tx.txHash)
+        );
 
         if (mempoolTx) {
           warnings.push(
             `Transaction ${tx.txHash} (nonce ${tx.nonce}) still pending in mempool ` +
               `since ${tx.submittedAt?.toISOString()}`
           );
-        } else {
+        } else if (reader.lastEndpoint() === nonceEndpoint) {
           await db
             .update(pendingTransactions)
             .set({ status: "dropped" })
@@ -234,19 +356,27 @@ export class NonceManager {
             `Transaction ${tx.txHash} (nonce ${tx.nonce}) dropped from mempool`
           );
           reconciledCount += 1;
+        } else {
+          warnings.push(
+            `Transaction ${tx.txHash} (nonce ${tx.nonce}) not found, but a different ` +
+              "RPC endpoint answered than the one that gave us the chain nonce; " +
+              "left pending rather than treated as dropped"
+          );
         }
       } else {
         // tx.nonce > chainNonce: row claims a future nonce. If the tx is no
         // longer in the mempool (broadcast failed / evicted), reap it so the
         // gap with chainNonce doesn't permanently wedge nonce selection.
-        const mempoolTx = await provider.getTransaction(tx.txHash);
+        const mempoolTx = await reader.read((provider) =>
+          provider.getTransaction(tx.txHash)
+        );
 
         if (mempoolTx) {
           warnings.push(
             `Future-nonce tx ${tx.txHash} (nonce ${tx.nonce} > chain nonce ${chainNonce}) ` +
               "still in mempool, queued behind predecessors"
           );
-        } else {
+        } else if (reader.lastEndpoint() === nonceEndpoint) {
           await db
             .update(pendingTransactions)
             .set({ status: "dropped" })
@@ -262,6 +392,17 @@ export class NonceManager {
               "not in mempool, marked dropped"
           );
           reconciledCount += 1;
+        } else {
+          // A node that never saw the broadcast reports every transaction as
+          // absent. Dropping the row on that answer removes nonce N from
+          // maxDbPending and hands it straight back out, so the safe reading
+          // of "a different endpoint answered" is no reading at all: leave the
+          // row pending and let safeNonce step past it.
+          warnings.push(
+            `Future-nonce tx ${tx.txHash} (nonce ${tx.nonce} > chain nonce ${chainNonce}) ` +
+              "not found, but a different RPC endpoint answered than the one that " +
+              "gave us the chain nonce; left pending rather than treated as dropped"
+          );
         }
       }
     }
@@ -289,8 +430,21 @@ export class NonceManager {
   /**
    * Get the next nonce and increment for subsequent transactions.
    * Call this for each transaction in a multi-tx workflow.
+   *
+   * A session that can no longer prove it holds the lock gets no more nonces.
+   * This is a narrowing, not a fence: it closes the window from the moment the
+   * loss is observed to the next allocation, which is the whole window for the
+   * second and later transactions of a session. It does NOT cover a loss
+   * observed after a nonce was already handed out and before that nonce is
+   * broadcast - the gas reads and the broadcast in between can take minutes on
+   * a degraded endpoint. Closing that window needs the pending_transactions row
+   * to be reserved, fenced on locked_by, BEFORE the broadcast rather than
+   * recorded after it, which is a change at every broadcast site.
    */
   getNextNonce(session: NonceSession): number {
+    if (session.lost) {
+      throw new NonceLockLostError(session);
+    }
     const nonce = session.currentNonce;
     session.currentNonce += 1;
     return nonce;
@@ -358,6 +512,9 @@ export class NonceManager {
    * Call when workflow execution completes (success or failure).
    */
   async endSession(session: NonceSession): Promise<void> {
+    // Stop before releasing: a beat landing after the release would find no
+    // row on its fence and report a lock loss that never happened.
+    this.stopHeartbeat(session);
     await this.releaseLock(
       session.walletAddress,
       session.chainId,
@@ -367,6 +524,130 @@ export class NonceManager {
     console.log(
       `[NonceManager] Session ended for ${session.walletAddress}:${session.chainId}, ` +
         `execution=${session.executionId}`
+    );
+  }
+
+  /**
+   * Extend expires_at every lockTtlMs / HEARTBEATS_PER_TTL while the lock is
+   * held. Fenced on locked_by = executionId like releaseLock, so a beat can
+   * never revive a lock another execution has taken over; finding no row to
+   * extend is how the holder learns it lost the lock.
+   */
+  private startHeartbeat(lease: LockLease): void {
+    const deadline = Date.now() + this.lockTtlMs * MAX_SESSION_TTLS;
+    let beatInFlight = false;
+    const timer = setInterval(() => {
+      if (Date.now() >= deadline) {
+        this.giveUpHeartbeat(lease);
+        return;
+      }
+      // Never start a beat while one is still out. On a saturated pool the
+      // beats would otherwise queue up as waiters on the pool that is already
+      // the bottleneck.
+      if (beatInFlight) {
+        return;
+      }
+      beatInFlight = true;
+      // Nobody to throw to from a timer: extendLock reports through the
+      // logger and the lease's `lost` flag instead.
+      this.extendLock(lease)
+        .catch(() => undefined)
+        .finally(() => {
+          beatInFlight = false;
+        });
+    }, this.lockTtlMs / HEARTBEATS_PER_TTL);
+    // A pending beat must never keep the process alive: a process on its way
+    // out is exactly the holder the TTL exists to clear.
+    timer.unref();
+    this.heartbeats.set(lease, timer);
+  }
+
+  private stopHeartbeat(lease: LockLease): void {
+    const timer = this.heartbeats.get(lease);
+    if (timer) {
+      clearInterval(timer);
+      this.heartbeats.delete(lease);
+    }
+  }
+
+  /**
+   * Stop beating for a session that has outlived MAX_SESSION_TTLS. The lock is
+   * still held for up to one more TTL - long enough for an in-flight broadcast
+   * to be recorded - but the session gets no further nonces, because within
+   * that TTL the row becomes takeable and we would have no way to know.
+   */
+  private giveUpHeartbeat(lease: LockLease): void {
+    this.stopHeartbeat(lease);
+    lease.lost = true;
+    logSystemWarn(
+      ErrorCategory.INFRASTRUCTURE,
+      `[NonceManager] Session lifetime exceeded for ${lease.walletAddress}:${lease.chainId}`,
+      new Error(
+        `[NonceManager] Session lifetime exceeded for ${lease.walletAddress}:${lease.chainId}, ` +
+          `holder=${lease.executionId}: heartbeat stopped after ${MAX_SESSION_TTLS} TTLs, ` +
+          "the lock will lapse within one more"
+      ),
+      {
+        wallet_address: lease.walletAddress,
+        chain_id: String(lease.chainId),
+        execution_id: lease.executionId,
+      }
+    );
+  }
+
+  private async extendLock(lease: LockLease): Promise<void> {
+    const { walletAddress, chainId, executionId } = lease;
+    let extended: { walletAddress: string }[];
+    try {
+      extended = await db
+        .update(walletLocks)
+        // NOW(), not a JS Date: the JS value would be fixed when the statement
+        // is built, so a beat that waits 200s on a saturated pool would write
+        // an expiry only lockTtlMs - 200s away. Postgres evaluates NOW() when
+        // the statement actually lands.
+        .set({
+          expiresAt: sql`NOW() + ${this.lockTtlMs} * interval '1 millisecond'`,
+        })
+        .where(
+          and(
+            eq(walletLocks.walletAddress, walletAddress),
+            eq(walletLocks.chainId, chainId),
+            eq(walletLocks.lockedBy, executionId)
+          )
+        )
+        .returning({ walletAddress: walletLocks.walletAddress });
+    } catch (error) {
+      // A beat that errors is not a lost lock: the fence may well still hold,
+      // and the next beat retries with three quarters of the TTL in hand.
+      logWarn("[NonceManager] Lock heartbeat failed", {
+        wallet_address: walletAddress,
+        chain_id: String(chainId),
+        execution_id: executionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    // Extended, or the session ended while this beat was in flight and the
+    // release cleared the row first: nothing to report either way.
+    if (extended.length > 0 || !this.heartbeats.has(lease)) {
+      return;
+    }
+
+    this.stopHeartbeat(lease);
+    lease.lost = true;
+    logSystemWarn(
+      ErrorCategory.INFRASTRUCTURE,
+      `[NonceManager] Lock lost for ${walletAddress}:${chainId}`,
+      new Error(
+        `[NonceManager] Lock lost for ${walletAddress}:${chainId}, ` +
+          `holder=${executionId}: heartbeat found the lock held by another execution`
+      ),
+      {
+        wallet_address: walletAddress,
+        chain_id: String(chainId),
+        execution_id: executionId,
+      }
     );
   }
 

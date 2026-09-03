@@ -10,8 +10,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
-    "@types/node": "^22.15.17",
-    "tsx": "^4.19.2",
+    "@types/node": "^22.20.1",
+    "tsx": "^4.23.12",
     "typescript": "^5.8.3"
   },
   "pnpm": {

@@ -27,6 +27,7 @@ const DEFAULT_DB_RETURNS: Record<string, unknown> = {
     durationCount: 0,
   },
   getLastFinishedExecutionAgeSecondsFromDb: null,
+  getUnconfirmedExecutionCountsFromDb: { workflow: 0, direct: 0 },
   getWorkflowErrorsByWorkflowFromDb: [],
   getSystemErrorsByCategoryFromDb: [],
   getStepStatsFromDb: {
@@ -157,6 +158,12 @@ const FINISHED_AGE_17_RE =
   /keeperhub_workflow_executions_finished_age_seconds\s+17(\s|$)/m;
 const FINISHED_AGE_ZERO_RE =
   /keeperhub_workflow_executions_finished_age_seconds\s+0(\s|$)/m;
+const UNCONFIRMED_WORKFLOW_3_RE =
+  /keeperhub_executions_unconfirmed\{kind="workflow"\}\s+3(\s|$)/m;
+const UNCONFIRMED_DIRECT_5_RE =
+  /keeperhub_executions_unconfirmed\{kind="direct"\}\s+5(\s|$)/m;
+const UNCONFIRMED_WORKFLOW_ZERO_RE =
+  /keeperhub_executions_unconfirmed\{kind="workflow"\}\s+0(\s|$)/m;
 
 // MRR series. Label order follows the object passed to .set()
 // (plan, tier, billing_status), but stay tolerant of extra labels.
@@ -561,6 +568,58 @@ describe("keeperhub_workflow_executions_finished_age_seconds gauge", () => {
     const out = await getDbMetrics();
     expect(out).toMatch(FINISHED_AGE_17_RE);
     expect(out).not.toMatch(FINISHED_AGE_ZERO_RE);
+  });
+});
+
+// The unconfirmed backlog gauge is the only visibility into rows the
+// execution-reconciler has yet to settle, so it carries one series per table
+// and, like the finished-age gauge, keeps its last value across a query error.
+describe("keeperhub_executions_unconfirmed gauge", () => {
+  const originalTtl = process.env.DB_METRICS_CACHE_TTL_MS;
+
+  beforeEach(() => {
+    __resetDbMetricsCacheForTest();
+    for (const fn of Object.values(dbMocks)) {
+      fn.mockReset();
+    }
+    rebindDefaultDbMockImplementations();
+    process.env.DB_METRICS_CACHE_TTL_MS = "0";
+  });
+
+  afterEach(() => {
+    if (originalTtl === undefined) {
+      delete process.env.DB_METRICS_CACHE_TTL_MS;
+    } else {
+      process.env.DB_METRICS_CACHE_TTL_MS = originalTtl;
+    }
+  });
+
+  it("emits one series per kind from the DB counts", async () => {
+    dbMocks.getUnconfirmedExecutionCountsFromDb.mockResolvedValue({
+      workflow: 3,
+      direct: 5,
+    });
+
+    await updateDbMetrics();
+    const out = await getDbMetrics();
+
+    expect(out).toMatch(UNCONFIRMED_WORKFLOW_3_RE);
+    expect(out).toMatch(UNCONFIRMED_DIRECT_5_RE);
+  });
+
+  it("holds the last value (not 0) when the query returns null", async () => {
+    dbMocks.getUnconfirmedExecutionCountsFromDb.mockResolvedValue({
+      workflow: 3,
+      direct: 5,
+    });
+    await updateDbMetrics();
+    expect(await getDbMetrics()).toMatch(UNCONFIRMED_WORKFLOW_3_RE);
+
+    dbMocks.getUnconfirmedExecutionCountsFromDb.mockResolvedValue(null);
+    await updateDbMetrics();
+    const out = await getDbMetrics();
+    expect(out).toMatch(UNCONFIRMED_WORKFLOW_3_RE);
+    expect(out).not.toMatch(UNCONFIRMED_WORKFLOW_ZERO_RE);
   });
 });
 

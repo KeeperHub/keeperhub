@@ -56,10 +56,18 @@ test.describe("Analytics Gas Tracking", () => {
     );
 
     // Filter by workflow source
-    const workflowFilter = page.locator(
-      'nav[aria-label="Source"] button:has-text("Workflow")'
+    const filteredRuns = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/analytics/runs?") &&
+        response.url().includes("source=workflow")
     );
-    await workflowFilter.click();
+    await page.getByTestId("filter-source").click();
+    await page
+      .getByTestId("filter-source-panel")
+      .getByRole("button", { name: "Workflow" })
+      .click();
+    await filteredRuns;
+    await page.keyboard.press("Escape");
 
     // Wait for table to reload after filter
     await expect(page.getByTestId("runs-table")).toHaveAttribute(

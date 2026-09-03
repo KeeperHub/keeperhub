@@ -54,8 +54,6 @@ Git status: !`git status --short`
 
 ## Stage 3: Research
 
-**Orient with the knowledge graph first.** For any issue whose blast radius is unclear, or that touches `lib/` or multiple plugins, run `/understand-chat <subsystem>` (or `/understand-diff` if a WIP diff already exists) before dispatching researchers. The graph answers "what calls X?" and "where does this flow next?" cheaper than a research subagent does, and the researchers can then focus on the actual unknowns.
-
 Spawn parallel KeeperHub **researcher** agents -- one per issue. Each agent
 receives:
 - The issue title and feedback text

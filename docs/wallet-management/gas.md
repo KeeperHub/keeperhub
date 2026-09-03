@@ -25,18 +25,20 @@ The multiplier exists because gas estimates are point-in-time snapshots. Between
 
 Defaults vary by chain type. L2 networks use lower multipliers because their gas estimates tend to be more accurate.
 
-| Chain | Standard Multiplier | Conservative Multiplier |
-|-------|-------------------|----------------------|
-| Ethereum | 2.0x | 2.5x |
-| Polygon | 2.0x | 2.5x |
-| Arbitrum | 1.5x | 2.0x |
-| Base | 1.5x | 2.0x |
+| Network | Multiplier |
+|---------|-----------|
+| Ethereum, Ethereum Sepolia | 2.0x |
+| Polygon, Polygon Amoy | 2.0x |
+| 0G, 0G Galileo | 2.0x |
+| Arbitrum One, Arbitrum Sepolia | 1.5x |
+| Base, Base Sepolia | 1.5x |
+| Robinhood Chain and its testnet | 1.5x |
+| Tempo, Tempo Moderato | 1.5x |
+| Any other EVM network | 2.0x (global default) |
 
-**Standard** multiplier is used for manual triggers and scheduled workflows.
+The same multiplier applies however the workflow was triggered. A manual run, a scheduled run, a webhook, and an event trigger hitting the same contract on the same network all receive the same gas limit.
 
-**Conservative** multiplier is used for time-sensitive triggers (event-based, webhook) where retry opportunity is limited and failing the transaction is more costly.
-
-These defaults are resolved in order: database chain config > hardcoded chain overrides > global default (2.0x / 2.5x).
+These defaults are resolved in order: database chain config > hardcoded chain overrides > global default (2.0x).
 
 ## Gas Limit Override
 
@@ -48,14 +50,14 @@ You can set an absolute gas limit per action node:
 
 ### Field Behavior
 
-- **When empty**: The default 2.0x multiplier is applied to the gas estimate at execution time
+- **When empty**: The chain's default multiplier (see [Default Multipliers](#default-multipliers)) is applied to the gas estimate at execution time
 - **When set**: Your absolute value is used directly as the transaction gas limit, bypassing the multiplier
 
 The field also shows a live gas estimate when enough configuration is filled in (network, contract address, function, etc.). This helps you choose an appropriate gas limit. If your value is below the current estimate, a warning is shown.
 
 ### Example
 
-If the network estimates 100,000 gas for your transaction:
+If the network estimates 100,000 gas for your transaction and the network's default multiplier is 2.0x:
 
 | Gas Limit Setting | Result |
 |-------------------|--------|
@@ -98,11 +100,11 @@ Sponsored gas is metered in USD against your plan's monthly gas credit cap (show
 
 ### What happens if I leave the gas limit empty?
 
-The default 2.0x multiplier is applied to the gas estimate at execution time. For time-sensitive triggers (event-based, webhook), a 2.5x conservative multiplier is used instead.
+The chain's default multiplier is applied to the gas estimate at execution time: 2.0x on most networks, 1.5x on the L2s listed under [Default Multipliers](#default-multipliers). The trigger type has no effect on it.
 
 ### What happens if my gas limit is too low?
 
-The transaction will revert with an "out of gas" error. You will still pay for the gas consumed up to the limit. KeeperHub's retry logic may re-attempt with the default multiplier.
+The transaction is mined but reverts with an "out of gas" error, and you still pay for the gas consumed up to the limit. KeeperHub does not retry it: the run fails and reports the revert, including the transaction hash. Raise or clear the gas limit and run the workflow again.
 
 ### What happens if my gas limit is too high?
 

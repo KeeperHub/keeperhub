@@ -2,7 +2,7 @@ import "dotenv/config";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { UnifiedRun } from "../../../lib/analytics/types";
+import type { StepLog, UnifiedRun } from "../../../lib/analytics/types";
 import {
   organization,
   users,
@@ -10,6 +10,7 @@ import {
   workflowExecutions,
   workflows,
 } from "../../../lib/db/schema";
+import { gasCreditUsage } from "../../../lib/db/schema-extensions";
 
 // vitest runs in Node, not an SSR context.
 vi.mock("server-only", () => ({}));
@@ -38,6 +39,10 @@ const LEGACY_ID = `${PREFIX}exec_legacy`;
 const LEGACY_GAS_ID = `${PREFIX}exec_legacy_gas`;
 /** Same shape as LEGACY_ID, reserved for the backfill to repair in place. */
 const BACKFILL_ID = `${PREFIX}exec_backfill`;
+/** A run whose only record of spend is the sponsorship ledger, not a step. */
+const SPONSORED_ID = `${PREFIX}exec_sponsored`;
+/** An event-triggered run: trigger, a write that pays its own gas, a read. */
+const STEPS_ID = `${PREFIX}exec_steps`;
 
 // Log ids are the backfill's keyset cursor, so they are chosen, not incidental:
 // the backfill case runs one batch from the cursor below, and every other
@@ -58,8 +63,13 @@ describe.skipIf(SKIP)("run network on a pre-broadcast failure", () => {
     options?: { limit?: number }
   ) => Promise<{ runs: UnifiedRun[] }>;
   let applyBatch: (afterId: string, batchSize: number) => Promise<number>;
+  let getStepLogs: (
+    executionId: string,
+    organizationId: string
+  ) => Promise<StepLog[]>;
 
   async function cleanup(): Promise<void> {
+    await queryClient`DELETE FROM gas_credit_usage WHERE execution_id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflow_execution_logs WHERE execution_id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflow_executions WHERE id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflows WHERE id LIKE ${`${PREFIX}%`}`;
@@ -124,6 +134,8 @@ describe.skipIf(SKIP)("run network on a pre-broadcast failure", () => {
         execution(LEGACY_ID, "Insufficient BASE balance"),
         execution(LEGACY_GAS_ID),
         execution(BACKFILL_ID, "Insufficient BASE balance"),
+        execution(SPONSORED_ID),
+        { ...execution(STEPS_ID), totalSteps: "3", completedSteps: "3" },
       ]);
 
     // Two row shapes matter here, and they are seeded separately on purpose.
@@ -214,9 +226,75 @@ describe.skipIf(SKIP)("run network on a pre-broadcast failure", () => {
         network: null,
         gasUsedWei: null,
       },
+      {
+        id: `${PREFIX}log_steps_a_trigger`,
+        executionId: STEPS_ID,
+        nodeId: "trigger-1",
+        nodeName: "Event",
+        nodeType: "trigger",
+        status: "success",
+        input: { network: "8453" },
+        output: { triggerGasUsed: "77000" },
+        startedAt: now,
+        network: "8453",
+        gasUsedWei: null,
+      },
+      {
+        id: `${PREFIX}log_steps_b_write`,
+        executionId: STEPS_ID,
+        nodeId: "write-1",
+        nodeName: "Write contract",
+        nodeType: "web3/write-contract",
+        status: "success",
+        input: { network: "8453" },
+        output: { gasUsed: "41000" },
+        startedAt: now,
+        network: "8453",
+        gasUsedWei: "41000",
+      },
+      {
+        id: `${PREFIX}log_steps_c_read`,
+        executionId: STEPS_ID,
+        nodeId: "read-1",
+        nodeName: "Read contract",
+        nodeType: "web3/read-contract",
+        status: "success",
+        input: { network: "8453" },
+        startedAt: now,
+        network: "8453",
+        gasUsedWei: null,
+      },
+      {
+        id: `${PREFIX}log_sponsored`,
+        executionId: SPONSORED_ID,
+        nodeId: "call-1",
+        nodeName: "Contract call",
+        nodeType: "web3",
+        status: "success",
+        input: {},
+        startedAt: now,
+        network: null,
+        gasUsedWei: null,
+      },
     ]);
 
-    ({ getUnifiedRuns } = await import("@/lib/analytics/queries"));
+    // The sponsored leg: KeeperHub paid, so the chain and the cost are in the
+    // ledger and nowhere else on this run.
+    await db.insert(gasCreditUsage).values({
+      id: `${PREFIX}ledger_sponsored`,
+      organizationId: ORG_ID,
+      chainId: 8453,
+      txHash: `0x${"a".repeat(64)}`,
+      executionId: SPONSORED_ID,
+      gasUsed: "21000",
+      gasPriceWei: "1000000000",
+      gasCostWei: "50000",
+      gasCostMicroUsd: "1",
+      ethPriceUsd: "3000",
+      createdAt: now,
+    });
+
+    ({ getUnifiedRuns, getStepLogs } = await import("@/lib/analytics/queries"));
     ({ applyBatch } = await import(
       "@/scripts/lib/exec-log-network-gas-backfill"
     ));
@@ -272,6 +350,45 @@ describe.skipIf(SKIP)("run network on a pre-broadcast failure", () => {
     expect(run.network).toBe("base");
     // The COALESCE arm feeds gasNetworks too, not just the scalar network.
     expect(run.gasNetworks).toEqual(["base"]);
+  });
+
+  it("names the chain a ledger-only sponsored run spent on", async () => {
+    const run = await runById(SPONSORED_ID);
+    // No step logged a chain or any gas, so before the ledger was read this run
+    // had a cost to show and no chain to denominate it in.
+    expect(run.gasUsedWei).toBeNull();
+    expect(run.gasCostWei).toBe("50000");
+    expect(run.gasNetworks).toEqual(["8453"]);
+    expect(run.networks).toEqual(["8453"]);
+    expect(run.network).toBe("8453");
+  });
+
+  it("shows per-node gas the organization's own wallet paid for", async () => {
+    const steps = await getStepLogs(STEPS_ID, ORG_ID);
+    const byNode = new Map(steps.map((step) => [step.nodeId, step]));
+
+    // The write spent gas and nothing sponsored it, so the ledger holds no row
+    // for it. Its own receipt is the only record, and reading the ledger alone
+    // left this cell empty.
+    expect(byNode.get("write-1")?.gasCostWei).toBe("41000");
+    expect(byNode.get("write-1")?.sponsored).toBe(false);
+
+    // A read makes no transaction, so no gas is the right answer, not a gap.
+    expect(byNode.get("read-1")?.gasCostWei).toBeNull();
+    // The event's own transaction: shown on the trigger row, and not sponsored,
+    // because whoever emitted the event paid for it.
+    expect(byNode.get("trigger-1")?.network).toBe("8453");
+    expect(byNode.get("trigger-1")?.gasCostWei).toBe("77000");
+    expect(byNode.get("trigger-1")?.sponsored).toBe(false);
+  });
+
+  it("keeps the triggering transaction's gas out of the run's own total", async () => {
+    const run = await runById(STEPS_ID);
+    // Only the write's 41000. Counting the trigger's 77000 here would report a
+    // third party's spend as the organization's own, and the Gas Spent KPI
+    // derives the wallet share from this figure.
+    expect(run.gasUsedWei).toBe("41000");
+    expect(run.gasNetworks).toEqual(["8453"]);
   });
 
   it("backfills a gas-free legacy row, so the read moves onto the column", async () => {

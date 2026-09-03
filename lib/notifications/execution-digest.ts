@@ -119,6 +119,8 @@ export type SkippedWorkflow = {
 export type OrgExecutionDigest = {
   total: number;
   success: number;
+  // Every failed run in the window, platform failures included, so the digest
+  // rates a run the same way the analytics dashboard does.
   error: number;
   // Runs the platform refused before they started, over the plan's execution
   // limit or on a gated action. They never ran, so they are reported on their
@@ -166,9 +168,9 @@ export async function getOrgExecutionDigest(
     .select({
       total: sql<number>`SUM(CASE WHEN ${workflowExecutions.status} <> 'skipped' THEN 1 ELSE 0 END)`,
       success: sql<number>`SUM(CASE WHEN ${workflowExecutions.status} = 'success' THEN 1 ELSE 0 END)`,
-      error: sql<number>`SUM(CASE WHEN ${workflowExecutions.status} = 'error' THEN 1 ELSE 0 END)`,
+      error: sql<number>`SUM(CASE WHEN ${inArray(workflowExecutions.status, [...ERROR_STATUSES])} THEN 1 ELSE 0 END)`,
       skipped: sql<number>`SUM(CASE WHEN ${workflowExecutions.status} = 'skipped' THEN 1 ELSE 0 END)`,
-      distinctWorkflows: sql<number>`COUNT(DISTINCT ${workflowExecutions.workflowId})`,
+      distinctWorkflows: sql<number>`COUNT(DISTINCT CASE WHEN ${workflowExecutions.status} <> 'skipped' THEN ${workflowExecutions.workflowId} END)`,
       transactionCount: sql<number>`COALESCE(SUM(CASE WHEN jsonb_typeof(${workflowExecutions.transactionHashes}) = 'array' THEN jsonb_array_length(${workflowExecutions.transactionHashes}) ELSE 0 END), 0)`,
       gasUsedWei: sql<string>`COALESCE(SUM(${workflowExecutions.gasUsedWei}), 0)`,
     })
