@@ -396,11 +396,10 @@ export type StuckPendingTransactionCounts = Array<{
  * STUCK_PENDING_TX_THRESHOLD_MS, grouped by chain.
  *
  * KEEP-1291 removed an unreferenced same-nonce fee-escalation implementation
- * from lib/web3/gas-strategy.ts. Nothing replaced it for these rows - the
- * in-request gas bumping in app/api/execute/_lib/retry.ts never writes to this
- * table - so a stuck transaction is resolved by a human and the backlog has to
- * be visible. This gauge is that visibility and the only consumer of the
- * "stuck" notion.
+ * from lib/web3/gas-strategy.ts. Nothing replaced it, and nothing else in the
+ * codebase re-prices a transaction at the same nonce, so a stuck transaction
+ * is resolved by a human and the backlog has to be visible. This gauge is that
+ * visibility and the only consumer of the "stuck" notion.
  *
  * Deliberately pure SQL. Confirming a row is genuinely stuck (rather than
  * merely old) means comparing its nonce against the chain's, which is one RPC

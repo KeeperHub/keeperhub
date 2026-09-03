@@ -122,7 +122,7 @@ Broadcast transactions that never reached a terminal state. Declared directly on
 
 Counted in SQL alone: no RPC call is made to check whether a row sits at the wallet's current chain nonce, so the value includes transactions that have in fact confirmed but whose row the reconciler has not yet updated. It over-counts rather than under-counts, which is the safe direction for an alert. The nonce-accurate version is KEEP-1315.
 
-Nothing reacts to this gauge automatically. KEEP-1291 removed an unreferenced same-nonce fee-escalation implementation from `lib/web3/gas-strategy.ts` and nothing replaced it for these rows, so a stuck transaction is resolved by a human. (`app/api/execute/_lib/retry.ts` bumps gas at the same nonce within a single direct-execution request, but it never writes to `pending_transactions` and cannot clear a row that is already stuck.) The Grafana alert rule lives in the infra repo.
+Nothing reacts to this gauge automatically. KEEP-1291 removed an unreferenced same-nonce fee-escalation implementation from `lib/web3/gas-strategy.ts`, and nothing anywhere in the codebase re-prices a transaction at the same nonce, so a stuck transaction is resolved by a human. (`app/api/execute/_lib/retry.ts` retries a failed step and computes a gas-bump multiplier, but neither of its call sites accepts the overrides argument, so the multiplier is discarded; KEEP-1293 removes that plumbing.) The Grafana alert rule lives in the infra repo.
 
 Series are reset on every refresh, so a chain that drains its backlog stops emitting rather than pinning its last non-zero value. A failed query leaves the previous reading in place instead of reporting a misleading 0.
 
