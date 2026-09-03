@@ -17,22 +17,6 @@ const OWNER = { isAdmin: true, isOwner: true };
 const ADMIN = { isAdmin: true, isOwner: false };
 const MEMBER = { isAdmin: false, isOwner: false };
 
-// Mirrors the real lib/is-anonymous semantics: null/undefined or an
-// Anonymous/temp-* user is anonymous.
-const isAnonymous = (
-  u: { name?: string | null; email?: string | null } | null | undefined
-): boolean => {
-  if (!u) {
-    return true;
-  }
-  return (
-    u.name === "Anonymous" ||
-    Boolean(u.email?.includes("@http://")) ||
-    Boolean(u.email?.includes("@https://")) ||
-    Boolean(u.email?.startsWith("temp-"))
-  );
-};
-
 function ids(items: MobileNavItem[]): string[] {
   return items.map((i) => i.id);
 }
@@ -71,6 +55,65 @@ describe("visibleMobileNavItems", () => {
     // Address Book is an overlay on desktop and has no page to route to on
     // mobile; it must not appear as a dead link.
     expect(ids(MOBILE_NAV_ITEMS)).not.toContain("address-book");
+  });
+
+  // Parity invariants with the desktop sidebar (components/navigation-sidebar.tsx
+  // NAV_ITEMS). The sidebar cannot be imported here (it pulls the React/Sentry
+  // tree), so these assert the rules that keep the two lists honest: any page
+  // destination the sidebar owns must exist on mobile with the same auth
+  // gating, and flyout-only (href: null) sidebar entries must never leak in.
+  it("covers every routable page destination the desktop sidebar owns", () => {
+    // Desktop NAV_ITEMS routable ids (href !== null): hub, analytics,
+    // earnings, held-payments, activity + settings (SETTINGS_NAV_ITEM).
+    const desktopRoutable = [
+      "hub",
+      "analytics",
+      "earnings",
+      "held-payments",
+      "activity",
+      "settings",
+    ];
+    for (const id of desktopRoutable) {
+      expect(
+        MOBILE_NAV_ITEMS.find((i) => i.id === id),
+        `mobile nav is missing the desktop page destination "${id}"`
+      ).toBeDefined();
+    }
+  });
+
+  it("matches the desktop sidebar's requireAuth gating per shared destination", () => {
+    // From NAV_ITEMS / SETTINGS_NAV_ITEM in navigation-sidebar.tsx:
+    // hub, workflows, activity are requireAuth: false; analytics, earnings,
+    // held-payments, settings are requireAuth: true.
+    const desktopGating: Record<string, boolean> = {
+      hub: false,
+      workflows: false,
+      analytics: true,
+      earnings: true,
+      "held-payments": true,
+      activity: false,
+      settings: true,
+    };
+    for (const item of MOBILE_NAV_ITEMS) {
+      expect(
+        desktopGating[item.id],
+        `no desktop-sidebar entry known for mobile item "${item.id}"`
+      ).toBeDefined();
+      expect(item.requireAuth, `${item.id} requireAuth diverges from sidebar`).toBe(
+        desktopGating[item.id]
+      );
+    }
+  });
+
+  it("keeps owner-only gating aligned with the desktop sidebar", () => {
+    // held-payments is the sole ownerOnly destination in NAV_ITEMS.
+    const hp = MOBILE_NAV_ITEMS.find((i) => i.id === "held-payments");
+    expect(hp?.ownerOnly).toBe(true);
+    for (const item of MOBILE_NAV_ITEMS) {
+      if (item.id !== "held-payments") {
+        expect(item.ownerOnly).toBeUndefined();
+      }
+    }
   });
 });
 
@@ -113,7 +156,7 @@ describe("decideMobileNavAction", () => {
 
   it("signed-in user routes everywhere", () => {
     for (const item of MOBILE_NAV_ITEMS) {
-      expect(decideMobileNavAction(item, signedIn, isAnonymous)).toEqual({
+      expect(decideMobileNavAction(item, signedIn)).toEqual({
         kind: "route",
       });
     }
@@ -122,17 +165,17 @@ describe("decideMobileNavAction", () => {
   it("signed-out user is auth-prompted on requireAuth destinations", () => {
     const analytics = itemById("analytics");
     const hub = itemById("hub");
-    expect(decideMobileNavAction(analytics, signedOut, isAnonymous)).toEqual({
+    expect(decideMobileNavAction(analytics, signedOut)).toEqual({
       kind: "auth-prompt",
     });
-    expect(decideMobileNavAction(hub, signedOut, isAnonymous)).toEqual({
+    expect(decideMobileNavAction(hub, signedOut)).toEqual({
       kind: "route",
     });
   });
 
   it("anonymous user is treated like signed-out on requireAuth destinations", () => {
     const analytics = itemById("analytics");
-    expect(decideMobileNavAction(analytics, anonymous, isAnonymous)).toEqual({
+    expect(decideMobileNavAction(analytics, anonymous)).toEqual({
       kind: "auth-prompt",
     });
   });
