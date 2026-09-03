@@ -23,6 +23,7 @@ import {
   releaseReservations,
   settleReservations,
 } from "@/lib/policy/limits";
+import { isInternalAddress } from "@/lib/policy/network-match";
 import { withUsdValue } from "@/lib/policy/price";
 import type { Principal } from "@/lib/policy/types";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
@@ -109,6 +110,33 @@ async function resolveRunPrincipal(
  * a platform fault and would page somebody every time a customer's own rule did
  * its job.
  */
+
+/** An IPv4 dotted quad or anything carrying a colon, which means IPv6. */
+const LITERAL_ADDRESS = /^[0-9.]+$|:/;
+
+/**
+ * Whether the platform will refuse this target no matter what policy says.
+ *
+ * Read from the literal the author wrote, because that is all that is known
+ * before the step runs.
+ */
+function isPlatformBlockedTarget(config: Record<string, unknown>): boolean {
+  const endpoint = config.endpoint ?? config.url;
+  if (typeof endpoint !== "string" || endpoint.trim() === "") {
+    return false;
+  }
+  let host: string;
+  try {
+    host = new URL(endpoint).hostname;
+  } catch {
+    return false;
+  }
+  const bare =
+    host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  // A hostname is not an address; leave it to the guard, which resolves it.
+  return LITERAL_ADDRESS.test(bare) && isInternalAddress(bare);
+}
+
 export async function policyCheckStep(
   input: PolicyCheckInput
 ): Promise<PolicyCheckResult> {
@@ -120,6 +148,20 @@ export async function policyCheckStep(
     // Treating it as blocked would stop unrelated work every time a plugin is
     // added; the registry test is what stops a write-capable action sitting
     // here unnoticed.
+    return { blocked: false, message: "" };
+  }
+
+  // A target the platform refuses outright is not a policy question. The SSRF
+  // guard inside the step blocks a private or link-local address for every
+  // organization, whatever any rule says, and it reports which host, which
+  // resolved address and why. Refusing here first would replace that with
+  // "blocked by an organization policy", which is both less useful and untrue
+  // about the cause: the rule is not what stopped it.
+  //
+  // Only a literal address is decided here. A hostname that resolves to
+  // something internal cannot be known without DNS, and the guard catches that
+  // at request time regardless.
+  if (isPlatformBlockedTarget(input.config)) {
     return { blocked: false, message: "" };
   }
 
