@@ -33,11 +33,17 @@ vi.mock("drizzle-orm", () => ({
   sql: () => ({}),
 }));
 
-vi.mock("@/lib/utils", () => ({
-  getErrorMessage: (e: unknown) => (e instanceof Error ? e.message : String(e)),
-  resolveFailOnError: (failOnError: unknown) =>
-    failOnError !== false && failOnError !== "false",
-}));
+vi.mock("@/lib/utils", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/utils")>("@/lib/utils");
+  return {
+    ...actual,
+    getErrorMessage: (e: unknown) =>
+      e instanceof Error ? e.message : String(e),
+    resolveFailOnError: (failOnError: unknown) =>
+      failOnError !== false && failOnError !== "false",
+  };
+});
 
 vi.mock("@/lib/utils/id", () => ({
   generateId: () => "test-unique-id",

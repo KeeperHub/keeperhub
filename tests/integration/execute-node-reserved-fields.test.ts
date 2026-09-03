@@ -75,10 +75,15 @@ vi.mock("@/app/api/execute/_lib/action-resolver", () => ({
   resolveAction: mocks.resolveAction,
 }));
 
-vi.mock("@/lib/utils", () => ({
-  getErrorMessage: (err: unknown) =>
-    err instanceof Error ? err.message : String(err),
-}));
+vi.mock("@/lib/utils", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/utils")>("@/lib/utils");
+  return {
+    ...actual,
+    getErrorMessage: (err: unknown) =>
+      err instanceof Error ? err.message : String(err),
+  };
+});
 
 vi.mock("@/lib/db/schema", () => ({
   integrations: { id: "id", organizationId: "organizationId" },

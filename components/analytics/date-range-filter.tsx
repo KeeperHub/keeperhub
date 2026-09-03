@@ -212,6 +212,11 @@ export function DateRangeFilter(): ReactNode {
           // the transitions, so this deliberately does nothing.
           onSelect={NOOP}
           selected={selected}
+          // Two months side by side each pad their grid with the neighbour's
+          // days, so the end of September appeared in both panels, once as its
+          // own date and once as October's padding - and a selected range lit
+          // up in both places.
+          showOutsideDays={false}
         />
       </PopoverContent>
     </Popover>

@@ -153,12 +153,17 @@ vi.mock("@/lib/rpc/provider-factory", () => ({
 // ---------------------------------------------------------------------------
 // Mock: @/lib/utils
 // ---------------------------------------------------------------------------
-vi.mock("@/lib/utils", () => ({
-  getErrorMessage: vi.fn(
-    (error: unknown) =>
-      (error as { message?: string })?.message ?? String(error)
-  ),
-}));
+vi.mock("@/lib/utils", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/utils")>("@/lib/utils");
+  return {
+    ...actual,
+    getErrorMessage: vi.fn(
+      (error: unknown) =>
+        (error as { message?: string })?.message ?? String(error)
+    ),
+  };
+});
 
 import type { NormalizedTransaction } from "@/lib/explorer";
 // ---------------------------------------------------------------------------
@@ -312,7 +317,7 @@ describe("queryTransactionsCore", () => {
     const result = await queryTransactionsCore(defaultInput());
 
     expect(result.success).toBe(true);
-    if (!result.success) {
+    if (!(result.success && result.transactions)) {
       return;
     }
 
@@ -383,7 +388,7 @@ describe("queryTransactionsCore", () => {
     });
 
     expect(result.success).toBe(true);
-    if (!result.success) {
+    if (!(result.success && result.transactions)) {
       return;
     }
 
@@ -417,7 +422,7 @@ describe("queryTransactionsCore", () => {
     });
 
     expect(result.success).toBe(true);
-    if (!result.success) {
+    if (!(result.success && result.transactions)) {
       return;
     }
 
@@ -445,7 +450,7 @@ describe("queryTransactionsCore", () => {
     });
 
     expect(result.success).toBe(true);
-    if (!result.success) {
+    if (!(result.success && result.transactions)) {
       return;
     }
 

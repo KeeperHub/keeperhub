@@ -12,6 +12,11 @@ import { getSolanaProvider } from "@/lib/rpc/provider-factory";
 import type { SolanaProviderManager } from "@/lib/rpc/providers/solana";
 import { getErrorMessage } from "@/lib/utils";
 import {
+  applyReadFailOnError,
+  type ReadDestinationFailure,
+  type ReadFailOnErrorInput,
+} from "./read-fail-on-error-core";
+import {
   type AnchorEventDecoder,
   createEventDecoder,
 } from "@/lib/web3/anchor-events";
@@ -34,7 +39,7 @@ export const NULL_TX_RETRY_DELAY_MS = 1000;
 const INTEGER_STRING_RE = /^\d+$/;
 const BASE58_SIGNATURE_RE = /^[1-9A-HJ-NP-Za-km-z]{64,90}$/;
 
-export type QuerySolanaProgramEventsCoreInput = {
+export type QuerySolanaProgramEventsCoreInput = ReadFailOnErrorInput & {
   network: string;
   programId: string;
   idl?: string;
@@ -59,17 +64,35 @@ export type SolanaProgramEvent = {
 export type QuerySolanaProgramEventsResult =
   | {
       success: true;
-      events: SolanaProgramEvent[];
+      // Null when failOnError=false softened a failed query into a success
+      // value so the workflow continues; `error` carries the reason. Null
+      // rather than an empty list so a downstream node cannot read a failed
+      // query as "no events in range".
+      events: SolanaProgramEvent[] | null;
       oldestSignature: string | null;
       newestSignature: string | null;
-      signatureCount: number;
-      eventCount: number;
-      truncated: boolean;
+      signatureCount: number | null;
+      eventCount: number | null;
+      truncated: boolean | null;
       nextBeforeSignature: string | null;
-      failedSignatureCount: number;
-      otherEventNamesSeen: string[];
+      failedSignatureCount: number | null;
+      otherEventNamesSeen: string[] | null;
+      error?: string;
     }
-  | { success: false; error: string };
+  | (ReadDestinationFailure & { success: false; error: string });
+
+/** Data fields a softened query reports, so a soft failure never looks like an empty result set. */
+const SOFT_QUERY_FIELDS = {
+  events: null,
+  oldestSignature: null,
+  newestSignature: null,
+  signatureCount: null,
+  eventCount: null,
+  truncated: null,
+  nextBeforeSignature: null,
+  failedSignatureCount: null,
+  otherEventNamesSeen: null,
+} as const;
 
 function parseSignatureLookback(
   input: number | string | undefined
@@ -142,12 +165,18 @@ type ResolvedQuery = {
 
 function resolveQueryContext(
   input: QuerySolanaProgramEventsCoreInput
-): { success: true; value: ResolvedQuery } | { success: false; error: string } {
+):
+  | { success: true; value: ResolvedQuery }
+  | (ReadDestinationFailure & { success: false; error: string }) {
   let programKey: PublicKey;
   try {
     programKey = new PublicKey(input.programId);
   } catch {
-    return { success: false, error: `Invalid program ID: ${input.programId}` };
+    return {
+      success: false,
+      destinationError: true,
+      error: `Invalid program ID: ${input.programId}`,
+    };
   }
 
   const beforeCheck = validateSignatureCursor(
@@ -188,7 +217,11 @@ function resolveQueryContext(
   try {
     chainId = getChainIdFromNetwork(input.network);
   } catch (error) {
-    return { success: false, error: getErrorMessage(error) };
+    return {
+      success: false,
+      destinationError: true,
+      error: getErrorMessage(error),
+    };
   }
 
   return {
@@ -404,9 +437,19 @@ async function mapWithConcurrency<T, R>(
 export async function queryProgramEventsCore(
   input: QuerySolanaProgramEventsCoreInput
 ): Promise<QuerySolanaProgramEventsResult> {
+  return applyReadFailOnError(
+    await queryProgramEventsInner(input),
+    input.failOnError,
+    SOFT_QUERY_FIELDS
+  );
+}
+
+async function queryProgramEventsInner(
+  input: QuerySolanaProgramEventsCoreInput
+): Promise<QuerySolanaProgramEventsResult> {
   const resolved = resolveQueryContext(input);
   if (!resolved.success) {
-    return { success: false, error: resolved.error };
+    return resolved;
   }
   const { programKey, decoder, lookback, chainId } = resolved.value;
   const eventName = input.eventName;
@@ -417,7 +460,11 @@ export async function queryProgramEventsCore(
   try {
     rpcManager = await getSolanaProvider({ chainId, userId });
   } catch (error) {
-    return { success: false, error: getErrorMessage(error) };
+    return {
+      success: false,
+      destinationError: true,
+      error: getErrorMessage(error),
+    };
   }
 
   let signatures: ConfirmedSignatureInfo[];
@@ -433,10 +480,8 @@ export async function queryProgramEventsCore(
     signatures = page.signatures;
     truncated = page.truncated;
   } catch (error) {
-    return {
-      success: false,
-      error: `Signature lookup failed: ${getErrorMessage(error)}`,
-    };
+    const message = `Signature lookup failed: ${getErrorMessage(error)}`;
+    return { success: false, error: message };
   }
 
   if (signatures.length === 0) {

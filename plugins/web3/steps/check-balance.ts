@@ -13,18 +13,26 @@ import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-hand
 import { getErrorMessage } from "@/lib/utils";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import { validateChainAddress } from "@/lib/web3/validate-chain-address";
+import {
+  applyReadFailOnError,
+  type ReadDestinationFailure,
+  type ReadFailOnErrorInput,
+} from "./read-fail-on-error-core";
 
 type CheckBalanceResult =
   | {
       success: true;
-      balance: string;
-      balanceWei: string;
+      // Null when failOnError=false softened a failed read into a success
+      // value so the workflow continues; `error` carries the reason.
+      balance: string | null;
+      balanceWei: string | null;
       address: string;
       addressLink: string;
+      error?: string;
     }
-  | { success: false; error: string };
+  | (ReadDestinationFailure & { success: false; error: string });
 
-export type CheckBalanceCoreInput = {
+export type CheckBalanceCoreInput = ReadFailOnErrorInput & {
   network: string;
   address: string;
 };
@@ -72,6 +80,7 @@ async function stepHandler(
     );
     return {
       success: false,
+      destinationError: true,
       error: getErrorMessage(error),
     };
   }
@@ -90,6 +99,7 @@ async function stepHandler(
     );
     return {
       success: false,
+      destinationError: true,
       error: isSolana
         ? `Invalid Solana address: ${address}`
         : `Invalid Ethereum address: ${address}`,
@@ -115,6 +125,7 @@ async function stepHandler(
       );
       return {
         success: false,
+      destinationError: true,
         error: getErrorMessage(error),
       };
     }
@@ -147,10 +158,8 @@ async function stepHandler(
         chain_id: String(chainId),
       }
     );
-    return {
-      success: false,
-      error: `Failed to check balance: ${getErrorMessage(error)}`,
-    };
+    const message = `Failed to check balance: ${getErrorMessage(error)}`;
+    return { success: false, error: message };
   }
 }
 
@@ -171,7 +180,13 @@ export async function checkBalanceStep(
   return runPluginStep(
     { pluginName: "web3", actionName: "check-balance" },
     enrichedInput,
-    () => stepHandler(input)
+    async () =>
+      applyReadFailOnError(await stepHandler(input), input.failOnError, {
+        balance: null,
+        balanceWei: null,
+        address: input.address,
+        addressLink: "",
+      })
   );
 }
 

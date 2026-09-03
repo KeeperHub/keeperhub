@@ -10,9 +10,14 @@ import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
+import {
+  applyReadFailOnError,
+  type ReadDestinationFailure,
+  type ReadFailOnErrorInput,
+} from "./read-fail-on-error-core";
 import { parseTokenAddress } from "./transfer-token-core";
 
-export type CheckAllowanceCoreInput = {
+export type CheckAllowanceCoreInput = ReadFailOnErrorInput & {
   network: string;
   tokenConfig: string | Record<string, unknown>;
   ownerAddress: string;
@@ -25,11 +30,14 @@ export type CheckAllowanceInput = StepInput & CheckAllowanceCoreInput;
 type CheckAllowanceResult =
   | {
       success: true;
-      allowance: string;
-      allowanceRaw: string;
-      symbol: string;
+      // Null when failOnError=false softened a failed read into a success
+      // value so the workflow continues; `error` carries the reason.
+      allowance: string | null;
+      allowanceRaw: string | null;
+      symbol: string | null;
+      error?: string;
     }
-  | { success: false; error: string };
+  | (ReadDestinationFailure & { success: false; error: string });
 
 async function stepHandler(
   input: CheckAllowanceInput
@@ -47,7 +55,8 @@ async function stepHandler(
       error,
       { plugin_name: "web3", action_name: "check-allowance" }
     );
-    return { success: false, error: getErrorMessage(error) };
+    return { success: false,
+      destinationError: true, error: getErrorMessage(error) };
   }
 
   // Parse token address from config
@@ -96,7 +105,8 @@ async function stepHandler(
         chain_id: String(chainId),
       }
     );
-    return { success: false, error: getErrorMessage(error) };
+    return { success: false,
+      destinationError: true, error: getErrorMessage(error) };
   }
 
   const adapter = getChainAdapter(chainId);
@@ -154,10 +164,8 @@ async function stepHandler(
         chain_id: String(chainId),
       }
     );
-    return {
-      success: false,
-      error: `Failed to check allowance: ${getErrorMessage(error)}`,
-    };
+    const message = `Failed to check allowance: ${getErrorMessage(error)}`;
+    return { success: false, error: message };
   }
 }
 
@@ -165,13 +173,18 @@ async function stepHandler(
  * Check Allowance Step
  * Reads ERC20 allowance(owner, spender) to check the current spending approval
  */
-// biome-ignore lint/suspicious/useAwait: "use step" directive requires async
 export async function checkAllowanceStep(
   input: CheckAllowanceInput
 ): Promise<CheckAllowanceResult> {
   "use step";
 
-  return withStepLogging(input, () => stepHandler(input));
+  return withStepLogging(input, async () =>
+    applyReadFailOnError(await stepHandler(input), input.failOnError, {
+      allowance: null,
+      allowanceRaw: null,
+      symbol: null,
+    })
+  );
 }
 
 checkAllowanceStep.maxRetries = 0;

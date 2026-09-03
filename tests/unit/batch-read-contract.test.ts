@@ -1184,3 +1184,87 @@ describe("batch-read-contract - total call limit", () => {
     expect(result.error).toContain("5001");
   });
 });
+
+// ─── failOnError ────────────────────────────────────────────────────────────
+
+describe("batch-read-contract - failOnError", () => {
+  type SoftResult = {
+    success: boolean;
+    results: unknown[] | null;
+    totalCalls: number | null;
+    error?: string;
+  };
+
+  const uniformInput = {
+    inputMode: "uniform",
+    network: "ethereum",
+    abi: JSON.stringify(ERC20_ABI),
+    contractAddress: VALID_ADDRESS,
+    abiFunction: "balanceOf",
+    argsList: JSON.stringify([[VALID_ADDRESS]]),
+  };
+
+  it("softens a failed multicall when the toggle is off", async () => {
+    setupRpcMocks();
+    mockStaticCall.mockRejectedValueOnce(new Error("RPC timeout"));
+
+    const result = (await runBatch({
+      ...uniformInput,
+      failOnError: false,
+    })) as SoftResult;
+
+    expect(result.success).toBe(true);
+    // Null, not []: a batch that never executed must not look like a batch
+    // whose calls all returned nothing.
+    expect(result.results).toBeNull();
+    expect(result.totalCalls).toBeNull();
+    expect(result.error).toContain("RPC timeout");
+  });
+
+  it("softens a failed multicall in mixed mode too", async () => {
+    setupRpcMocks();
+    mockStaticCall.mockRejectedValueOnce(new Error("RPC timeout"));
+
+    const result = (await runBatch({
+      inputMode: "mixed",
+      calls: JSON.stringify([
+        {
+          network: "ethereum",
+          contractAddress: VALID_ADDRESS,
+          abiFunction: "balanceOf",
+          abi: JSON.stringify(ERC20_ABI),
+          args: [VALID_ADDRESS],
+        },
+      ]),
+      failOnError: false,
+    })) as SoftResult;
+
+    expect(result.success).toBe(true);
+    expect(result.results).toBeNull();
+  });
+
+  it("still hard-fails an unresolved RPC config when the toggle is off", async () => {
+    mockGetChainIdFromNetwork.mockReturnValue(1);
+    mockGetRpcProvider.mockRejectedValue(new Error("RPC config not found"));
+
+    const result = (await runBatch({
+      ...uniformInput,
+      failOnError: false,
+    })) as SoftResult;
+
+    expect(result.success).toBe(false);
+  });
+
+  it("softens a malformed ABI, which is payload not destination", async () => {
+    setupRpcMocks();
+
+    const result = (await runBatch({
+      ...uniformInput,
+      abi: "not json",
+      failOnError: false,
+    })) as SoftResult;
+
+    expect(result.success).toBe(true);
+    expect(result.results).toBeNull();
+  });
+});

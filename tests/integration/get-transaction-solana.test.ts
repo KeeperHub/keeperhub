@@ -95,10 +95,15 @@ vi.mock("@/lib/workflow/executor/step-handler", async () =>
   (await import("../mocks/step-mocks")).stepHandlerPassthrough()
 );
 
-vi.mock("@/lib/utils", () => ({
-  getErrorMessage: (error: { message?: string }) =>
-    error?.message ?? String(error),
-}));
+vi.mock("@/lib/utils", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/utils")>("@/lib/utils");
+  return {
+    ...actual,
+    getErrorMessage: (error: { message?: string }) =>
+      error?.message ?? String(error),
+  };
+});
 
 import { getTransactionStep } from "@/plugins/web3/steps/get-transaction";
 
@@ -201,6 +206,60 @@ describe("getTransactionStep - Solana", () => {
     if (!result.success) {
       expect(result.error).toContain("Invalid transaction hash format");
     }
+    expect(mockConnectionGetTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("getTransactionStep - failOnError", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("softens a not-found lookup when the toggle is off", async () => {
+    mockConnectionGetTransaction.mockResolvedValue(null);
+
+    const result = await getTransactionStep({
+      network: "solana-devnet",
+      transactionHash: VALID_SIGNATURE,
+      failOnError: false,
+      _context: context(),
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.hash).toBeNull();
+    expect(result.from).toBeNull();
+    expect(result.error).toContain("Transaction not found");
+  });
+
+  it("softens a failed lookup when the toggle is off", async () => {
+    mockConnectionGetTransaction.mockRejectedValue(new Error("RPC down"));
+
+    const result = await getTransactionStep({
+      network: "solana-devnet",
+      transactionHash: VALID_SIGNATURE,
+      failOnError: false,
+      _context: context(),
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.error).toContain("Failed to fetch transaction");
+  });
+
+  it("still hard-fails an invalid signature when the toggle is off", async () => {
+    const result = await getTransactionStep({
+      network: "solana-devnet",
+      transactionHash: "not a valid base58 signature",
+      failOnError: false,
+      _context: context(),
+    });
+
+    expect(result.success).toBe(false);
     expect(mockConnectionGetTransaction).not.toHaveBeenCalled();
   });
 });

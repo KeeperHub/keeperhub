@@ -10,6 +10,11 @@ import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
 import {
+  applyReadFailOnError,
+  type ReadDestinationFailure,
+  type ReadFailOnErrorInput,
+} from "@/plugins/web3/steps/read-fail-on-error-core";
+import {
   type AbiOutputParam,
   structureAbiOutputs,
 } from "@/plugins/web3/steps/structure-abi-result";
@@ -26,10 +31,20 @@ type CallResult = {
 };
 
 type BatchReadContractResult =
-  | { success: true; results: CallResult[]; totalCalls: number }
-  | { success: false; error: string };
+  | {
+      success: true;
+      // Null when failOnError=false softened a failed batch into a success
+      // value so the workflow continues; `error` carries the reason. Null
+      // rather than an empty list so a downstream node cannot read a failed
+      // batch as "every call returned nothing". A single call reverting is
+      // already isolated into its own `results` entry and is unaffected.
+      results: CallResult[] | null;
+      totalCalls: number | null;
+      error?: string;
+    }
+  | (ReadDestinationFailure & { success: false; error: string });
 
-export type BatchReadContractCoreInput = {
+export type BatchReadContractCoreInput = ReadFailOnErrorInput & {
   network?: string;
   abi?: string;
   inputMode?: string;
@@ -625,7 +640,7 @@ async function executeUniformMode(
 
   const chainRpc = await resolveChainRpc(network, userId);
   if (chainRpc.error !== undefined) {
-    return { success: false, error: chainRpc.error };
+    return { success: false, destinationError: true, error: chainRpc.error };
   }
 
   const { results, error: batchError } = await executeMulticallBatches(
@@ -707,7 +722,7 @@ async function executeMixedMode(
     results: CallResult[];
     group: IndexedEncodedCall[];
   };
-  type GroupFailure = { ok: false; error: string };
+  type GroupFailure = { ok: false; error: string; destinationError?: true };
   type GroupOutcome = GroupSuccess | GroupFailure;
 
   // Execute all network groups in parallel
@@ -718,7 +733,7 @@ async function executeMixedMode(
     groupEntries.map(async ([networkKey, group]): Promise<GroupOutcome> => {
       const chainRpc = await resolveChainRpc(networkKey, userId);
       if (chainRpc.error !== undefined) {
-        return { ok: false, error: chainRpc.error };
+        return { ok: false, error: chainRpc.error, destinationError: true };
       }
 
       const batchResult = await executeMulticallBatches(
@@ -737,7 +752,9 @@ async function executeMixedMode(
 
   for (const outcome of groupOutcomes) {
     if (!outcome.ok) {
-      return { success: false, error: outcome.error };
+      return outcome.destinationError
+        ? { success: false, destinationError: true, error: outcome.error }
+        : { success: false, error: outcome.error };
     }
     for (const [resultIdx, groupCall] of outcome.group.entries()) {
       allResults[groupCall.originalIndex] = outcome.results[resultIdx];
@@ -775,7 +792,11 @@ export async function batchReadContractStep(
   return runPluginStep(
     { pluginName: "web3", actionName: "batch-read-contract" },
     input,
-    stepHandler
+    async (i) =>
+      applyReadFailOnError(await stepHandler(i), i.failOnError, {
+        results: null,
+        totalCalls: null,
+      })
   );
 }
 

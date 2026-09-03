@@ -135,3 +135,46 @@ describe("readSolanaAccountCore", () => {
     );
   });
 });
+
+describe("readSolanaAccountCore - failOnError", () => {
+  let mockAdapter: {
+    executeWithSolanaFailover: ReturnType<typeof vi.fn>;
+    getAddressUrl: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAdapter = {
+      executeWithSolanaFailover: vi
+        .fn()
+        .mockRejectedValue(new Error("RPC down")),
+      getAddressUrl: vi.fn().mockResolvedValue(""),
+    };
+    vi.mocked(getChainAdapter).mockReturnValue(mockAdapter as never);
+  });
+
+  it("softens a failed read into exists:null when the toggle is off", async () => {
+    const result = await readSolanaAccountCore({
+      network: "solana-devnet",
+      accountAddress: ADDRESS,
+      failOnError: false,
+    });
+
+    // exists must not be false: a read that never completed cannot report the
+    // account as absent.
+    expect(result).toMatchObject({ success: true, exists: null });
+    expect((result as { error: string }).error).toContain(
+      "Failed to read account"
+    );
+  });
+
+  it("still hard-fails an invalid address when the toggle is off", async () => {
+    const result = await readSolanaAccountCore({
+      network: "solana-devnet",
+      accountAddress: "not-a-pubkey!!",
+      failOnError: false,
+    });
+
+    expect(result).toMatchObject({ success: false });
+  });
+});

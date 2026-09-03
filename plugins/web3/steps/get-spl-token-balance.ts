@@ -21,6 +21,11 @@ import { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
 import { parseSolanaMintAccount } from "@/lib/web3/solana-mint";
 import { validateChainAddress } from "@/lib/web3/validate-chain-address";
 import {
+  applyReadFailOnError,
+  type ReadDestinationFailure,
+  type ReadFailOnErrorInput,
+} from "./read-fail-on-error-core";
+import {
   getTokenAddress,
   parseTokenConfig,
   type TokenBalanceInfo,
@@ -45,21 +50,25 @@ const MAX_METADATA_SYMBOL_LENGTH = 10;
 const DISALLOWED_METADATA_CHARS =
   /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
 
-export type GetSplTokenBalanceCoreInput = TokenConfigSource & {
-  network: string;
-  address: string;
-};
+export type GetSplTokenBalanceCoreInput = TokenConfigSource &
+  ReadFailOnErrorInput & {
+    network: string;
+    address: string;
+  };
 
 export type GetSplTokenBalanceInput = StepInput & GetSplTokenBalanceCoreInput;
 
 type GetSplTokenBalanceResult =
   | {
       success: true;
-      balance: TokenBalanceInfo;
+      // Null when failOnError=false softened a failed read into a success
+      // value so the workflow continues; `error` carries the reason.
+      balance: TokenBalanceInfo | null;
       address: string;
       addressLink: string;
+      error?: string;
     }
-  | { success: false; error: string };
+  | (ReadDestinationFailure & { success: false; error: string });
 
 /**
  * Read a borsh string (u32 LE length prefix + utf8 bytes) at offset,
@@ -255,6 +264,7 @@ async function stepHandler(
     );
     return {
       success: false,
+      destinationError: true,
       error: getErrorMessage(error),
     };
   }
@@ -357,10 +367,8 @@ async function stepHandler(
         chain_id: String(chainId),
       }
     );
-    return {
-      success: false,
-      error: `Failed to check token balance: ${getErrorMessage(error)}`,
-    };
+    const message = `Failed to check token balance: ${getErrorMessage(error)}`;
+    return { success: false, error: message };
   }
 }
 
@@ -376,7 +384,12 @@ export async function getSplTokenBalanceStep(
   return runPluginStep(
     { pluginName: "web3", actionName: "get-spl-token-balance" },
     input,
-    stepHandler
+    async (i) =>
+      applyReadFailOnError(await stepHandler(i), i.failOnError, {
+        balance: null,
+        address: i.address,
+        addressLink: "",
+      })
   );
 }
 

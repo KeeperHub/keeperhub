@@ -18,12 +18,11 @@ import type {
 } from "@/lib/analytics/types";
 import {
   analyticsDurationFilterAtom,
+  analyticsFacetsAtom,
   analyticsGasFiltersAtom,
   analyticsNetworkFiltersAtom,
-  analyticsNetworksAtom,
   analyticsSearchAtom,
   analyticsSourceFiltersAtom,
-  analyticsStatusFacetsAtom,
   analyticsStatusFiltersAtom,
 } from "@/lib/atoms/analytics";
 import { sortChainsByName } from "@/lib/chains/sort-chains";
@@ -32,6 +31,7 @@ import {
   useChainDisplay,
 } from "@/lib/hooks/use-chain-display";
 import { FilterCheckbox, FilterPopover, FilterRadio } from "./filter-popover";
+import { useLazyFacet } from "./use-lazy-facet";
 
 type StatusGroup = {
   key: string;
@@ -92,7 +92,7 @@ function toggle<T>(values: T[], value: T): T[] {
 
 function StatusFilter(): ReactNode {
   const [statuses, setStatuses] = useAtom(analyticsStatusFiltersAtom);
-  const facets = useAtomValue(analyticsStatusFacetsAtom);
+  const facets = useAtomValue(analyticsFacetsAtom).statusCounts;
 
   const toggleMember = useCallback(
     (value: NormalizedStatus): void => {
@@ -205,25 +205,26 @@ function SourceFilter(): ReactNode {
 
 function NetworkFilter(): ReactNode {
   const [networks, setNetworks] = useAtom(analyticsNetworkFiltersAtom);
-  const breakdown = useAtomValue(analyticsNetworksAtom);
+  const counts = useAtomValue(analyticsFacetsAtom).networkCounts;
+  const loadCounts = useLazyFacet("network");
   const chains = useChainDisplay();
   const clear = useCallback((): void => setNetworks([]), [setNetworks]);
 
-  // Chains the window actually saw. A chain with no runs in the window is not
-  // an option, because selecting it could only return nothing. Ordered through
-  // the same comparator the chain picker on a web3 node uses, so the two lists
-  // read the same way.
+  // Every chain the window's runs touched, not only the ones that spent gas.
+  // Sourcing these from the gas breakdown meant a chain the org merely reads
+  // on, or whose gas was never recorded, was missing from the filter entirely.
+  // Ordered through the comparator the chain picker on a web3 node shares.
   const options = useMemo(
     () =>
       sortChainsByName(
-        breakdown.map((entry) => ({
-          value: entry.network,
-          label: chains.name(entry.network),
-          count: entry.executionCount,
+        Object.entries(counts).map(([network, count]) => ({
+          value: network,
+          label: chains.name(network),
+          count,
         })),
         (option) => option.label
       ),
-    [breakdown, chains]
+    [counts, chains]
   );
 
   const selectAll = useCallback(
@@ -235,6 +236,7 @@ function NetworkFilter(): ReactNode {
     <FilterPopover
       label="Network"
       onClear={clear}
+      onOpen={loadCounts}
       onSelectAll={options.length > 0 ? selectAll : undefined}
       selectedCount={networks.length}
     >
@@ -286,12 +288,10 @@ const ALL_GAS: GasSpend[] = GAS_GROUPS.flatMap((group) =>
   group.members.map((member) => member.value)
 );
 
-/**
- * Whether a run spent anything on chain. Sponsored runs count as paid: the org
- * drew on gas credit for them, so they are not free.
- */
 function GasFilter(): ReactNode {
   const [gas, setGas] = useAtom(analyticsGasFiltersAtom);
+  const counts = useAtomValue(analyticsFacetsAtom).gasCounts;
+  const loadCounts = useLazyFacet("gas");
   const clear = useCallback((): void => setGas([]), [setGas]);
   const selectAll = useCallback((): void => setGas(ALL_GAS), [setGas]);
 
@@ -312,6 +312,7 @@ function GasFilter(): ReactNode {
     <FilterPopover
       label="Gas"
       onClear={clear}
+      onOpen={loadCounts}
       onSelectAll={selectAll}
       selectedCount={gas.length}
     >
@@ -322,6 +323,10 @@ function GasFilter(): ReactNode {
           <div key={group.key}>
             <FilterCheckbox
               checked={selected.length === members.length}
+              count={members.reduce(
+                (sum, value) => sum + (counts[value] ?? 0),
+                0
+              )}
               indeterminate={
                 selected.length > 0 && selected.length < members.length
               }
@@ -332,6 +337,7 @@ function GasFilter(): ReactNode {
               group.members.map((member) => (
                 <FilterCheckbox
                   checked={gas.includes(member.value)}
+                  count={counts[member.value] ?? 0}
                   indented
                   key={member.value}
                   label={member.label}
@@ -469,10 +475,10 @@ export function RunsFilters(): ReactNode {
         <SearchBox />
         <div className="h-5 w-px bg-border" />
         <StatusFilter />
-        <NetworkFilter />
-        <DurationFilter />
-        <GasFilter />
         <SourceFilter />
+        <DurationFilter />
+        <NetworkFilter />
+        <GasFilter />
         <ClearAllButton />
       </div>
     </ChainDisplayProvider>

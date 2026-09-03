@@ -76,6 +76,24 @@ export function contractAddressField(): ActionConfigField {
   };
 }
 
+/**
+ * The "Fail workflow on error" toggle shared by the web3 read actions. When
+ * off, a failed on-chain read hands the next node a soft error instead of
+ * failing the run, so one bad item inside a For Each loop does not abort it.
+ * See softenReadFailure in plugins/web3/steps/read-fail-on-error-core.ts for
+ * which failures qualify.
+ */
+export function readFailOnErrorField(): ActionConfigField {
+  return {
+    defaultValue: "true",
+    helpTip:
+      "When off, a failed read passes a soft error to the next node instead of failing the run, so one bad item in a For Each loop does not abort it. This covers the call itself and the ABI, function and arguments you send. Only problems that leave the step with nowhere to call - an invalid address, an unknown network, or unresolved RPC config - still fail the run, matching HTTP Request, which softens every response but refuses to soften an unusable URL.",
+    key: "failOnError",
+    label: "Fail workflow on error",
+    type: "fail-on-error-switch",
+  };
+}
+
 export function transactionLinkOutput(): OutputField {
   return {
     description: "Explorer link to view the transaction",
@@ -85,7 +103,8 @@ export function transactionLinkOutput(): OutputField {
 
 export function checkErrorOutput(): OutputField {
   return {
-    description: "Error message if the check failed",
+    description:
+      "Error message if the check failed. Also set when failOnError is off and a failed read was softened into success=true.",
     field: "error",
   };
 }
@@ -120,7 +139,8 @@ export function tempoChainIdOutput(): OutputField {
 
 export function balanceCheckSuccessOutput(): OutputField {
   return {
-    description: "Whether the balance check succeeded",
+    description:
+      "Whether the balance check succeeded. Also true when failOnError is off and a failed read was softened; the balance fields are null and `error` is set.",
     field: "success",
   };
 }

@@ -167,10 +167,15 @@ vi.mock("@/lib/metrics/instrumentation/plugin", async () =>
   (await import("../mocks/step-mocks")).pluginMetricsPassthrough()
 );
 
-vi.mock("@/lib/utils", () => ({
-  getErrorMessage: (error: { message?: string }) =>
-    error?.message ?? String(error),
-}));
+vi.mock("@/lib/utils", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/utils")>("@/lib/utils");
+  return {
+    ...actual,
+    getErrorMessage: (error: { message?: string }) =>
+      error?.message ?? String(error),
+  };
+});
 
 import { checkTokenBalanceStep } from "@/plugins/web3/steps/check-token-balance";
 import { getSplTokenBalanceStep } from "@/plugins/web3/steps/get-spl-token-balance";
@@ -254,7 +259,7 @@ describe("getSplTokenBalanceStep", () => {
     const result = await getSplTokenBalanceStep(input());
 
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.balance) {
       expect(result.balance.balance).toBe("5");
       expect(result.balance.balanceRaw).toBe("5000000");
       expect(result.balance.decimals).toBe(6);
@@ -286,7 +291,7 @@ describe("getSplTokenBalanceStep", () => {
     });
 
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.balance) {
       expect(result.balance.balance).toBe("1");
     }
     expect(mockUnpackMint).toHaveBeenCalledWith(
@@ -305,7 +310,7 @@ describe("getSplTokenBalanceStep", () => {
     const result = await getSplTokenBalanceStep(input());
 
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.balance) {
       expect(result.balance.balance).toBe("0");
       expect(result.balance.balanceRaw).toBe("0");
     }
@@ -341,7 +346,7 @@ describe("getSplTokenBalanceStep", () => {
     });
 
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.balance) {
       expect(result.balance.symbol).toBe("USDC");
       expect(result.balance.name).toBe("USD Coin");
     }
@@ -375,7 +380,7 @@ describe("getSplTokenBalanceStep", () => {
     });
 
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.balance) {
       expect(result.balance.symbol).toBe("???");
       expect(result.balance.name).toBe("Unknown");
     }
@@ -395,7 +400,7 @@ describe("getSplTokenBalanceStep", () => {
     });
 
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.balance) {
       expect(result.balance.tokenAddress).toBe(MINT);
       expect(result.balance.balance).toBe("3");
     }
@@ -415,7 +420,7 @@ describe("getSplTokenBalanceStep", () => {
     });
 
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.balance) {
       expect(result.balance.balance).toBe("1");
       expect(result.balance.symbol).toBe("???");
       expect(result.balance.name).toBe("Unknown");
@@ -438,7 +443,7 @@ describe("getSplTokenBalanceStep", () => {
     });
 
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.balance) {
       expect(result.balance.symbol).toBe("USDC");
       expect(result.balance.name).toBe("USD Coin");
     }
@@ -546,5 +551,47 @@ describe("checkTokenBalanceStep - Solana rejection", () => {
       expect(result.error).toContain("Get SPL Token Balance");
     }
     expect(mockConnectionGetAccountInfo).not.toHaveBeenCalled();
+  });
+});
+
+describe("getSplTokenBalanceStep - failOnError", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSolanaProvider.mockResolvedValue({
+      executeWithFailover: vi.fn(),
+    });
+    mockGetAssociatedTokenAddressSync.mockReturnValue(new PublicKey(ATA));
+  });
+
+  it("softens a failed read when the toggle is off", async () => {
+    mockConnectionGetAccountInfo.mockRejectedValueOnce(
+      new Error("RPC timeout")
+    );
+
+    const result = await getSplTokenBalanceStep({
+      ...input(),
+      failOnError: false,
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    // Null, not a zero balance: a read that never completed must not report
+    // the wallet as empty.
+    expect(result.balance).toBeNull();
+    expect(result.error).toContain("Failed to check token balance");
+  });
+
+  it("still hard-fails a Solana rejection on the EVM action when the toggle is off", async () => {
+    const result = await checkTokenBalanceStep({
+      network: "solana-devnet",
+      address: WALLET,
+      tokenConfig: MINT,
+      failOnError: false,
+      _context: { ...context(), nodeType: "check-token-balance" },
+    });
+
+    expect(result.success).toBe(false);
   });
 });

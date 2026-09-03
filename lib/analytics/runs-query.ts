@@ -1,5 +1,11 @@
 import { type DurationPresetId, durationPreset } from "./duration-presets";
-import type { GasSpend, NormalizedStatus, RunSource, TimeRange } from "./types";
+import type {
+  FacetDimension,
+  GasSpend,
+  NormalizedStatus,
+  RunSource,
+  TimeRange,
+} from "./types";
 
 export type RunsQueryInput = {
   range: TimeRange;
@@ -16,6 +22,8 @@ export type RunsQueryInput = {
   page?: number;
   /** Drop the status dimension, for the facet request that counts each status. */
   omitStatus?: boolean;
+  /** Which facet counts to ask for; the server defaults to status alone. */
+  dimensions?: FacetDimension[];
 };
 
 /**
@@ -48,6 +56,10 @@ export function buildRunsQuery(input: RunsQueryInput): string {
   }
   if (preset?.maxMs !== undefined) {
     params.set("durationMax", String(preset.maxMs));
+  }
+
+  for (const dimension of input.dimensions ?? []) {
+    params.append("dimension", dimension);
   }
 
   const search = input.search?.trim();

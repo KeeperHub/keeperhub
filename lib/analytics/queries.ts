@@ -46,9 +46,11 @@ import {
 } from "./time-range";
 import type {
   AnalyticsSummary,
+  FacetDimension,
   GasSpend,
   NetworkBreakdown,
   NormalizedStatus,
+  RunFacets,
   RunQueryFilters,
   RunSource,
   StatusFacets,
@@ -186,12 +188,11 @@ function directStatusesCondition(statuses: NormalizedStatus[]): SQL {
  * same COALESCE(column, JSONB) the listing reads them through. EXISTS keeps a
  * run that touched any selected chain without multiplying it per matching step.
  */
-function workflowNetworkCondition(networks: string[], logsFrom: Date): SQL {
+function workflowNetworkCondition(networks: string[], scope: LogScope): SQL {
   return sql`${workflowExecutions.id} IN (
     SELECT ${workflowExecutionLogs.executionId}
-      FROM ${workflowExecutionLogs}
-     WHERE ${gte(workflowExecutionLogs.startedAt, logsFrom)}
-       AND COALESCE(${workflowExecutionLogs.network}, ${logInputField("network")}) IN (${sql.join(
+    ${scopedLogs(scope)}
+       AND ${stepNetwork} IN (${sql.join(
          networks.map((network) => sql`${network}`),
          sql`, `
        )})
@@ -234,6 +235,55 @@ const filterStepGasWei = sql`COALESCE(${workflowExecutionLogs.gasUsedWei}, CAST(
 const filterStepSponsored = sql`${workflowExecutionLogs.outputRaw}->>'sponsored' = 'true'`;
 
 /**
+ * The chain a step ran on. The denormalised column is only populated on rows
+ * the executor wrote after it was added, and on what the backfill has reached,
+ * so the JSONB it was derived from is still the answer for everything older.
+ * Every reader has to use this same expression: matching on it while listing
+ * options from the bare column offers a filter a chain it will then match, and
+ * hides every chain whose column was never filled.
+ */
+const stepNetwork = sql`COALESCE(${workflowExecutionLogs.network}, ${logInputField("network")})`;
+
+/**
+ * What a log subquery is allowed to see. These subqueries used to be bounded by
+ * nothing but the window's lower edge, so each one aggregated every tenant's
+ * step logs and paid the de-TOAST and JSONB parse of `output` / `output_raw` on
+ * all of them. On a table whose bulk is TOAST that is CPU, not IO, and enough
+ * concurrent page loads accumulate into backends that never finish.
+ */
+type LogScope = {
+  organizationId: string;
+  rangeStart: Date;
+  rangeEnd: Date;
+  projectId?: string;
+};
+
+/**
+ * FROM + WHERE for a scoped read of the step logs. The joins narrow the scan to
+ * one organization's executions inside the window before any JSONB is touched,
+ * and the caller appends its own predicates with AND.
+ */
+function scopedLogs(scope: LogScope): SQL {
+  const project = scope.projectId
+    ? sql` AND scoped_wf.project_id = ${scope.projectId}`
+    : sql``;
+  // Bound as ISO text: a raw template has no column to map a Date through, the
+  // way the drizzle comparison helpers do.
+  const from = scope.rangeStart.toISOString();
+  const to = scope.rangeEnd.toISOString();
+  return sql`
+      FROM ${workflowExecutionLogs}
+      JOIN ${workflowExecutions} AS scoped_exec
+        ON scoped_exec.id = ${workflowExecutionLogs.executionId}
+      JOIN ${workflows} AS scoped_wf
+        ON scoped_wf.id = scoped_exec.workflow_id
+     WHERE scoped_wf.organization_id = ${scope.organizationId}
+       AND scoped_exec.started_at >= ${from}
+       AND scoped_exec.started_at < ${to}
+       AND ${workflowExecutionLogs.startedAt} >= ${from}${project}`;
+}
+
+/**
  * Gas facts per execution, aggregated once over the window.
  *
  * These were correlated subqueries on workflow_executions.id, so the planner
@@ -248,7 +298,7 @@ const filterStepSponsored = sql`${workflowExecutionLogs.outputRaw}->>'sponsored'
  * inside the window has started_at >= the window start; and a step may finish
  * after the window closes, so there is no upper bound to apply.
  */
-function workflowGasTotals(logsFrom: Date): SQL {
+function workflowGasTotals(scope: LogScope): SQL {
   return sql`(
     SELECT ${workflowExecutionLogs.executionId} AS execution_id,
            COALESCE(SUM(${filterStepGasWei}), 0) AS step_gas_wei,
@@ -257,8 +307,7 @@ function workflowGasTotals(logsFrom: Date): SQL {
              ${filterStepGasWei} > 0
              AND ${workflowExecutionLogs.outputRaw}->>'sponsored' IS DISTINCT FROM 'true'
            ), false) AS unsponsored_gas_step
-      FROM ${workflowExecutionLogs}
-     WHERE ${gte(workflowExecutionLogs.startedAt, logsFrom)}
+    ${scopedLogs(scope)}
      GROUP BY ${workflowExecutionLogs.executionId}
   )`;
 }
@@ -268,13 +317,21 @@ function workflowGasTotals(logsFrom: Date): SQL {
  * execution_id is nullable, and a NULL reaching a NOT IN below would make the
  * whole predicate answer NULL, so the rows are dropped here at the source.
  */
-const workflowLedgerTotals = sql`(
-  SELECT ${gasCreditUsage.executionId} AS execution_id,
-         COALESCE(SUM(CAST(${gasCreditUsage.gasCostWei} AS NUMERIC)), 0) AS sponsored_gas_wei
-    FROM ${gasCreditUsage}
-   WHERE ${gasCreditUsage.executionId} IS NOT NULL
-   GROUP BY ${gasCreditUsage.executionId}
-)`;
+function workflowLedgerTotals(scope: LogScope): SQL {
+  return sql`(
+    SELECT ${gasCreditUsage.executionId} AS execution_id,
+           COALESCE(SUM(CAST(${gasCreditUsage.gasCostWei} AS NUMERIC)), 0) AS sponsored_gas_wei
+      FROM ${gasCreditUsage}
+     WHERE ${gasCreditUsage.executionId} IS NOT NULL
+       AND ${gasCreditUsage.organizationId} = ${scope.organizationId}
+       -- Lower bound only, for the same reason the step scan has none: the
+       -- charge is written when it settles, which can be after the window
+       -- closes for a run that started just inside it. An upper bound here
+       -- would drop that row and refile a sponsored run as wallet or free.
+       AND ${gasCreditUsage.createdAt} >= ${scope.rangeStart.toISOString()}
+     GROUP BY ${gasCreditUsage.executionId}
+  )`;
+}
 
 /**
  * One predicate per gas category. Sponsored is "gas credit covered a leg";
@@ -283,7 +340,7 @@ const workflowLedgerTotals = sql`(
  * run with no step rows at all - absent from the aggregate rather than present
  * with a zero - still reads as free.
  */
-function workflowGasCondition(value: GasSpend, logsFrom: Date): SQL {
+function workflowGasCondition(value: GasSpend, scope: LogScope): SQL {
   if (value === "sponsored") {
     // Only the marker decides this one, so it reads output_raw directly rather
     // than paying for the gas rollup - and its JSONB decode - that the other
@@ -291,17 +348,16 @@ function workflowGasCondition(value: GasSpend, logsFrom: Date): SQL {
     return sql`(
       ${workflowExecutions.id} IN (
         SELECT ${workflowExecutionLogs.executionId}
-          FROM ${workflowExecutionLogs}
-         WHERE ${gte(workflowExecutionLogs.startedAt, logsFrom)}
+        ${scopedLogs(scope)}
            AND ${filterStepSponsored}
       )
       OR ${workflowExecutions.id} IN (
-        SELECT s.execution_id FROM ${workflowLedgerTotals} AS s
+        SELECT s.execution_id FROM ${workflowLedgerTotals(scope)} AS s
          WHERE s.sponsored_gas_wei > 0
       )
     )`;
   }
-  const totals = workflowGasTotals(logsFrom);
+  const totals = workflowGasTotals(scope);
   if (value === "wallet") {
     // Both signals have to agree there is an unsponsored share: a step that
     // burned gas without the sponsored marker, and a total the ledger did not
@@ -310,7 +366,7 @@ function workflowGasCondition(value: GasSpend, logsFrom: Date): SQL {
     return sql`${workflowExecutions.id} IN (
       SELECT g.execution_id
         FROM ${totals} AS g
-        LEFT JOIN ${workflowLedgerTotals} AS s ON s.execution_id = g.execution_id
+        LEFT JOIN ${workflowLedgerTotals(scope)} AS s ON s.execution_id = g.execution_id
        WHERE g.unsponsored_gas_step
          AND g.step_gas_wei > COALESCE(s.sponsored_gas_wei, 0)
     )`;
@@ -321,7 +377,7 @@ function workflowGasCondition(value: GasSpend, logsFrom: Date): SQL {
        WHERE g.step_gas_wei > 0 OR g.sponsored_step
     )
     AND ${workflowExecutions.id} NOT IN (
-      SELECT s.execution_id FROM ${workflowLedgerTotals} AS s
+      SELECT s.execution_id FROM ${workflowLedgerTotals(scope)} AS s
        WHERE s.sponsored_gas_wei > 0
     )
   )`;
@@ -363,7 +419,7 @@ function gasCondition(
  */
 function workflowFilterConditions(
   filters: RunQueryFilters,
-  rangeStart: Date,
+  scope: LogScope,
   skipStatuses = false
 ): SQL[] {
   const conditions: SQL[] = [];
@@ -373,7 +429,7 @@ function workflowFilterConditions(
   }
   const networks = filters.networks ?? [];
   if (networks.length > 0) {
-    conditions.push(workflowNetworkCondition(networks, rangeStart));
+    conditions.push(workflowNetworkCondition(networks, scope));
   }
   if (filters.durationMinMs !== undefined) {
     conditions.push(
@@ -390,7 +446,7 @@ function workflowFilterConditions(
     conditions.push(workflowSearchCondition(search));
   }
   const gas = gasCondition(filters.gas ?? [], (value) =>
-    workflowGasCondition(value, rangeStart)
+    workflowGasCondition(value, scope)
   );
   if (gas) {
     conditions.push(gas);
@@ -1296,7 +1352,14 @@ async function fetchWorkflowRuns(
     isNull(workflowExecutions.deletedAt),
   ];
 
-  conditions.push(...workflowFilterConditions(filters, rangeStart));
+  conditions.push(
+    ...workflowFilterConditions(filters, {
+      organizationId,
+      rangeStart,
+      rangeEnd,
+      projectId,
+    })
+  );
 
   if (cursor) {
     conditions.push(lt(workflowExecutions.startedAt, new Date(cursor)));
@@ -1573,7 +1636,14 @@ async function getWorkflowRunsTotal(
   if (projectId) {
     conditions.push(eq(workflows.projectId, projectId));
   }
-  conditions.push(...workflowFilterConditions(filters, rangeStart));
+  conditions.push(
+    ...workflowFilterConditions(filters, {
+      organizationId,
+      rangeStart,
+      rangeEnd,
+      projectId,
+    })
+  );
   const result = await db
     .select({ count: count() })
     .from(workflowExecutions)
@@ -1626,21 +1696,25 @@ END`;
  * status filter. Every other filter applies; the status filter itself does not,
  * so a count says how many runs ticking that status would bring in.
  */
-export function getStatusFacets(
+export function getRunFacets(
   organizationId: string,
   range: TimeRange,
   options: RunQueryFilters & {
     customStart?: string;
     customEnd?: string;
     projectId?: string;
+    /** Which counts to compute; only status is cheap enough to poll for. */
+    dimensions?: FacetDimension[];
   } = {}
-): Promise<StatusFacets> {
-  const { customStart, customEnd, projectId, ...filters } = options;
+): Promise<RunFacets> {
+  const { customStart, customEnd, projectId, dimensions, ...filters } = options;
+  const wanted = new Set<FacetDimension>(dimensions ?? ["status"]);
   const compute = () =>
-    computeStatusFacets(
+    computeRunFacets(
       organizationId,
       range,
       filters,
+      wanted,
       customStart,
       customEnd,
       projectId
@@ -1651,14 +1725,23 @@ export function getStatusFacets(
     return compute();
   }
   return cachedAnalytics(
-    analyticsCacheKey("facets", [organizationId, range, projectId]),
+    analyticsCacheKey("facets", [
+      organizationId,
+      range,
+      projectId,
+      [...wanted].sort().join("+"),
+    ]),
     compute
   );
 }
 
 function hasFilters(filters: RunQueryFilters): boolean {
   return Boolean(
-    (filters.sources?.length ?? 0) > 0 ||
+    // Statuses reach this call for the network and gas dimensions, which do not
+    // lift them - and the cache key does not name them, so a status-filtered
+    // count must not be stored under, or served from, the unfiltered key.
+    (filters.statuses?.length ?? 0) > 0 ||
+      (filters.sources?.length ?? 0) > 0 ||
       (filters.networks?.length ?? 0) > 0 ||
       filters.durationMinMs !== undefined ||
       filters.durationMaxMs !== undefined ||
@@ -1667,22 +1750,120 @@ function hasFilters(filters: RunQueryFilters): boolean {
   );
 }
 
-async function computeStatusFacets(
+async function computeRunFacets(
   organizationId: string,
   range: TimeRange,
   filters: RunQueryFilters,
+  dimensions: Set<FacetDimension>,
   customStart?: string,
   customEnd?: string,
   projectId?: string
-): Promise<StatusFacets> {
+): Promise<RunFacets> {
   const rangeStart = getTimeRangeStart(range, customStart);
   const rangeEnd = customEnd ? new Date(customEnd) : new Date();
   const wanted = resolveSources(filters.sources, projectId);
 
+  // Both of these read the step logs, the table that took prod down when the
+  // run filters walked it too eagerly, so neither is computed unless asked for.
+  const [networkCounts, gasCounts] = await Promise.all([
+    dimensions.has("network")
+      ? computeNetworkFacets(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          projectId
+        )
+      : {},
+    dimensions.has("gas")
+      ? computeGasFacets(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          projectId
+        )
+      : {},
+  ]);
+
+  const workflowRows =
+    wanted.workflow && dimensions.has("status")
+      ? await db
+          .select({ status: workflowNormalizedStatus, value: count() })
+          .from(workflowExecutions)
+          .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+          .where(
+            and(
+              eq(workflows.organizationId, organizationId),
+              projectId ? eq(workflows.projectId, projectId) : undefined,
+              gte(workflowExecutions.startedAt, rangeStart),
+              lt(workflowExecutions.startedAt, rangeEnd),
+              isNull(workflowExecutions.deletedAt),
+              ...workflowFilterConditions(
+                filters,
+                { organizationId, rangeStart, rangeEnd, projectId },
+                true
+              )
+            )
+          )
+          // Group by the select ordinal: the CASE carries a bound parameter, and
+          // repeating the expression here would bind a second placeholder that
+          // Postgres does not recognise as the same expression.
+          .groupBy(sql`1`)
+      : [];
+
+  const directRows =
+    wanted.direct && dimensions.has("status")
+      ? await db
+          .select({ status: directNormalizedStatus, value: count() })
+          .from(directExecutions)
+          .where(
+            and(
+              eq(directExecutions.organizationId, organizationId),
+              gte(directExecutions.createdAt, rangeStart),
+              lt(directExecutions.createdAt, rangeEnd),
+              ...directFilterConditions(filters, true)
+            )
+          )
+          .groupBy(sql`1`)
+      : [];
+
+  const statusCounts: StatusFacets = {};
+  for (const row of [...workflowRows, ...directRows]) {
+    const status = row.status as NormalizedStatus;
+    statusCounts[status] =
+      (statusCounts[status] ?? 0) + (Number(row.value) || 0);
+  }
+  return { statusCounts, networkCounts, gasCounts };
+}
+
+/**
+ * Distinct chains the window's runs touched, counted per run rather than per
+ * step. Deliberately not the gas breakdown: that one only counts steps that
+ * spent gas, so a chain the org only reads on - or one whose gas was never
+ * recorded - never appeared as an option to filter by.
+ */
+async function computeNetworkFacets(
+  organizationId: string,
+  rangeStart: Date,
+  rangeEnd: Date,
+  filters: RunQueryFilters,
+  projectId?: string
+): Promise<Record<string, number>> {
+  const wanted = resolveSources(filters.sources, projectId);
+  const withoutNetworks: RunQueryFilters = { ...filters, networks: undefined };
+
   const workflowRows = wanted.workflow
     ? await db
-        .select({ status: workflowNormalizedStatus, value: count() })
-        .from(workflowExecutions)
+        .select({
+          network: sql<string | null>`${stepNetwork}`,
+          value: sql<number>`COUNT(DISTINCT ${workflowExecutions.id})`,
+        })
+        .from(workflowExecutionLogs)
+        .innerJoin(
+          workflowExecutions,
+          eq(workflowExecutionLogs.executionId, workflowExecutions.id)
+        )
         .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
         .where(
           and(
@@ -1691,36 +1872,77 @@ async function computeStatusFacets(
             gte(workflowExecutions.startedAt, rangeStart),
             lt(workflowExecutions.startedAt, rangeEnd),
             isNull(workflowExecutions.deletedAt),
-            ...workflowFilterConditions(filters, rangeStart, true)
+            sql`${stepNetwork} IS NOT NULL`,
+            ...workflowFilterConditions(withoutNetworks, {
+              organizationId,
+              rangeStart,
+              rangeEnd,
+              projectId,
+            })
           )
         )
-        // Group by the select ordinal: the CASE carries a bound parameter, and
-        // repeating the expression here would bind a second placeholder that
-        // Postgres does not recognise as the same expression.
+        // Ordinal, because the expression carries bound parameters that would
+        // bind a second time and stop matching the select.
         .groupBy(sql`1`)
     : [];
 
   const directRows = wanted.direct
     ? await db
-        .select({ status: directNormalizedStatus, value: count() })
+        .select({ network: directExecutions.network, value: count() })
         .from(directExecutions)
         .where(
           and(
             eq(directExecutions.organizationId, organizationId),
             gte(directExecutions.createdAt, rangeStart),
             lt(directExecutions.createdAt, rangeEnd),
-            ...directFilterConditions(filters, true)
+            isNotNull(directExecutions.network),
+            ...directFilterConditions(withoutNetworks)
           )
         )
-        .groupBy(sql`1`)
+        .groupBy(directExecutions.network)
     : [];
 
-  const facets: StatusFacets = {};
+  const counts: Record<string, number> = {};
   for (const row of [...workflowRows, ...directRows]) {
-    const status = row.status as NormalizedStatus;
-    facets[status] = (facets[status] ?? 0) + (Number(row.value) || 0);
+    if (!row.network) {
+      continue;
+    }
+    counts[row.network] = (counts[row.network] ?? 0) + (Number(row.value) || 0);
   }
-  return facets;
+  return counts;
+}
+
+/**
+ * How many runs sit in each gas bucket. Counted one bucket at a time because
+ * sponsored and wallet overlap, so a single grouped pass cannot express them.
+ */
+async function computeGasFacets(
+  organizationId: string,
+  rangeStart: Date,
+  rangeEnd: Date,
+  filters: RunQueryFilters,
+  projectId?: string
+): Promise<Partial<Record<GasSpend, number>>> {
+  const withoutGas: RunQueryFilters = { ...filters, gas: undefined };
+  const values: GasSpend[] = ["sponsored", "wallet", "free"];
+
+  const totals = await Promise.all(
+    values.map((value) =>
+      getUnifiedRunsTotal(
+        organizationId,
+        rangeStart,
+        rangeEnd,
+        { ...withoutGas, gas: [value] },
+        projectId
+      )
+    )
+  );
+
+  const counts: Partial<Record<GasSpend, number>> = {};
+  for (const [index, value] of values.entries()) {
+    counts[value] = totals[index];
+  }
+  return counts;
 }
 
 async function getUnifiedRunsTotal(
@@ -1774,10 +1996,6 @@ export async function getStepLogs(
   executionId: string,
   organizationId: string
 ): Promise<StepLog[]> {
-  // Both read the denormalised column first and the JSONB second, matching the
-  // runs table, so a row the backfill has reached and one it has not resolve
-  // the same way.
-  const stepNetwork = sql`COALESCE(${workflowExecutionLogs.network}, ${logInputField("network")})`;
   // `triggerGasUsed` is the last arm on purpose: it is the fee on the
   // transaction that fired an on-chain trigger, which the keeper did not send.
   // It is deliberately absent from `gasUsed` so no rollup counts it as the

@@ -237,7 +237,7 @@ describe("queryProgramEventsCore", () => {
     });
 
     expect(result.success).toBe(true);
-    if (!result.success) {
+    if (!(result.success && result.events)) {
       return;
     }
     expect(result.events).toHaveLength(2);
@@ -271,7 +271,7 @@ describe("queryProgramEventsCore", () => {
     });
 
     expect(result.success).toBe(true);
-    if (!result.success) {
+    if (!(result.success && result.events)) {
       return;
     }
     expect(result.events).toHaveLength(1);
@@ -304,7 +304,7 @@ describe("queryProgramEventsCore", () => {
     });
 
     expect(result.success).toBe(true);
-    if (!result.success) {
+    if (!(result.success && result.events)) {
       return;
     }
     expect(result.events).toHaveLength(1);
@@ -602,5 +602,64 @@ describe("queryProgramEventsCore", () => {
       expect.anything(),
       expect.objectContaining({ limit: DEFAULT_SIGNATURE_LOOKBACK })
     );
+  });
+});
+
+describe("queryProgramEventsCore - failOnError", () => {
+  type SoftResult = {
+    success: boolean;
+    events: unknown[] | null;
+    signatureCount: number | null;
+    error?: string;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetChainIdFromNetwork.mockReturnValue(101);
+    mockGetSolanaProvider.mockResolvedValue({
+      executeWithFailover: mockExecuteWithFailover,
+    });
+    mockDbSelect.mockReturnValue({
+      from: () => ({
+        where: () => ({ limit: () => Promise.resolve([]) }),
+      }),
+    });
+    mockGetSignaturesForAddress.mockRejectedValue(new Error("RPC down"));
+  });
+
+  it("softens a failed signature lookup when the toggle is off", async () => {
+    const result = (await queryProgramEventsCore({
+      network: "solana",
+      programId: PROGRAM_ID,
+      idl: JSON.stringify(IDL),
+      failOnError: false,
+    })) as SoftResult;
+
+    expect(result.success).toBe(true);
+    // Null, not []: a lookup that never completed must not look like
+    // "no events in range".
+    expect(result.events).toBeNull();
+    expect(result.signatureCount).toBeNull();
+    expect(result.error).toContain("Signature lookup failed");
+  });
+
+  it("hard-fails the same lookup by default", async () => {
+    const result = (await queryProgramEventsCore({
+      network: "solana",
+      programId: PROGRAM_ID,
+      idl: JSON.stringify(IDL),
+    })) as SoftResult;
+
+    expect(result.success).toBe(false);
+  });
+
+  it("still hard-fails an invalid program id when the toggle is off", async () => {
+    const result = (await queryProgramEventsCore({
+      network: "solana",
+      programId: "not-a-valid-pubkey",
+      failOnError: false,
+    })) as SoftResult;
+
+    expect(result.success).toBe(false);
   });
 });
