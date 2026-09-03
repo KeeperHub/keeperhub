@@ -1,4 +1,5 @@
 import type { LucideIcon } from "lucide-react";
+import { isAnonymousUser } from "@/lib/is-anonymous";
 
 export type MobileNavItem = {
   id: string;
@@ -9,7 +10,6 @@ export type MobileNavItem = {
   href: string;
   requireAuth: boolean;
   ownerOnly?: boolean;
-  adminOnly?: boolean;
 };
 
 // The read-only monitoring + account destinations. "Workflows" and
@@ -17,6 +17,15 @@ export type MobileNavItem = {
 // open panels, not pages) and have no equivalent as a bare link, so they
 // are intentionally not here — the workflow you are monitoring is reachable
 // via its run history and the list via /workflows.
+//
+// Source-of-truth note: the desktop sidebar (components/navigation-sidebar.tsx)
+// keeps its own NAV_ITEMS because it renders flyouts (null hrefs) that have no
+// mobile equivalent, and because its NavItemDef carries a Lucide icon — the
+// mobile module deliberately keeps icons out so tests import zero React
+// runtime. The two lists intentionally diverge only where desktop has a
+// flyout/overlay where mobile routes to the underlying page (workflows) or has
+// no page at all (address-book). The parity test below asserts the invariants
+// that must hold for the shared page destinations.
 export const MOBILE_NAV_ITEMS: MobileNavItem[] = [
   { id: "hub", label: "Hub", href: "/hub", requireAuth: false },
   {
@@ -54,8 +63,7 @@ export function visibleMobileNavItems(
   items: MobileNavItem[] = MOBILE_NAV_ITEMS
 ): MobileNavItem[] {
   return items.filter(
-    (item) =>
-      (!item.adminOnly || access.isAdmin) && (!item.ownerOnly || access.isOwner)
+    (item) => !item.ownerOnly || access.isOwner
   );
 }
 
@@ -81,10 +89,9 @@ export type SessionUser = {
  */
 export function decideMobileNavAction(
   item: MobileNavItem,
-  sessionUser: SessionUser | null | undefined,
-  isAnonymous: (user: SessionUser | null | undefined) => boolean
+  sessionUser: SessionUser | null | undefined
 ): NavDecision {
-  if (item.requireAuth && isAnonymous(sessionUser)) {
+  if (item.requireAuth && isAnonymousUser(sessionUser)) {
     return { kind: "auth-prompt" };
   }
   return { kind: "route" };

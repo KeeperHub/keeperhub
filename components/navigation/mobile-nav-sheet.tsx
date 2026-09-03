@@ -24,7 +24,6 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useSession } from "@/lib/auth-client";
 import { useActiveMember } from "@/lib/hooks/use-organization";
-import { isAnonymousUser } from "@/lib/is-anonymous";
 import { cn } from "@/lib/utils";
 import {
   decideMobileNavAction,
@@ -50,20 +49,25 @@ export function MobileNavSheet(): React.ReactNode {
   const isMobile = useIsMobile();
   const { data: session } = useSession();
   const { openAuthPrompt } = useAuthPrompt();
-  const { isAdmin, isOwner } = useActiveMember();
+  const { isAdmin, isOwner, isLoading: memberLoading } = useActiveMember();
 
   if (!isMobile) {
     return null;
   }
 
-  const visible = visibleMobileNavItems({ isAdmin, isOwner });
+  // While the active-org membership is still loading, isOwner is false, which
+  // would make an owner-only destination (Held Payments) pop in after the fact.
+  // Render the non-owner set during the load; the owner set appears in the
+  // next render once the member record resolves. The only item that can appear
+  // later is one the user is entitled to see, so nothing flashes wrongly.
+  const visible = memberLoading
+    ? visibleMobileNavItems({ isAdmin: false, isOwner: false })
+    : visibleMobileNavItems({ isAdmin, isOwner });
 
   const handleNavigate = (item: MobileNavItem): void => {
     setOpen(false);
     const user = session?.user ?? null;
-    if (
-      decideMobileNavAction(item, user, isAnonymousUser).kind === "auth-prompt"
-    ) {
+    if (decideMobileNavAction(item, user).kind === "auth-prompt") {
       openAuthPrompt({ action: `nav:${item.id}`, redirectTo: item.href });
       return;
     }
