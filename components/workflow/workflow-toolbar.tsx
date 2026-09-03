@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
+import { MobileNavSheet } from "@/components/navigation/mobile-nav-sheet";
 import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
 import { Switch } from "@/components/ui/switch";
@@ -1991,8 +1992,9 @@ export const WorkflowToolbar = ({
     return (
       <div className={containerClassName}>
         <VersionPreviewBanner />
-        {/* Left side: Logo + Menu + Org Switcher */}
+        {/* Left side: Mobile nav + Logo + Menu + Org Switcher */}
         <div className={leftSectionClassName}>
+          <MobileNavSheet />
           {(() => {
             const CustomLogo = getCustomLogo();
             return CustomLogo ? (
