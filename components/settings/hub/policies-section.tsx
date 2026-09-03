@@ -375,7 +375,11 @@ export function PoliciesSection(): React.ReactElement {
           </div>
         )}
 
-        {!loading && <Pager meta={meta} onPage={setPage} unit="policies" />}
+        {!loading && (
+          <div className="mt-4 border-t pt-4">
+            <Pager meta={meta} onPage={setPage} unit="policies" />
+          </div>
+        )}
 
         {warnings.length > 0 && (
           <Alert className="mt-3">

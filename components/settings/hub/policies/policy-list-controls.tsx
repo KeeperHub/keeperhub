@@ -25,7 +25,7 @@ export function PolicySearch({
   searching: boolean;
 }): React.ReactElement {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="mb-4 flex flex-col gap-1.5">
       <div className="relative">
         <Search
           aria-hidden="true"
