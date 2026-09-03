@@ -30,13 +30,12 @@ describe("IP matching", () => {
     expect(ipInAnyCidr(ip, denied)).toBe(true);
   });
 
-  it.each([
-    ["8.8.8.8"],
-    ["::ffff:8.8.8.8"],
-    ["2001:db8::1"],
-  ])("leaves the public address %s alone", (ip) => {
-    expect(ipInAnyCidr(ip, denied)).toBe(false);
-  });
+  it.each([["8.8.8.8"], ["::ffff:8.8.8.8"], ["2001:db8::1"]])(
+    "leaves the public address %s alone",
+    (ip) => {
+      expect(ipInAnyCidr(ip, denied)).toBe(false);
+    }
+  );
 
   it("treats a bare address as a single host", () => {
     expect(ipInAnyCidr("203.0.113.7", ["203.0.113.7"])).toBe(true);
@@ -62,13 +61,12 @@ describe("the internal token", () => {
     expect(ipInAnyCidr(ip, [INTERNAL_ADDRESS_TOKEN])).toBe(true);
   });
 
-  it.each([
-    ["8.8.8.8"],
-    ["1.1.1.1"],
-    ["2606:4700::1111"],
-  ])("allows the public address %s", (ip) => {
-    expect(isInternalAddress(ip)).toBe(false);
-  });
+  it.each([["8.8.8.8"], ["1.1.1.1"], ["2606:4700::1111"]])(
+    "allows the public address %s",
+    (ip) => {
+      expect(isInternalAddress(ip)).toBe(false);
+    }
+  );
 
   it("treats an unreadable address as internal, so a deny still fires", () => {
     expect(isInternalAddress("garbage")).toBe(true);

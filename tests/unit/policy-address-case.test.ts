@@ -17,22 +17,21 @@ describe("EVM addresses", () => {
     expect(isValidAddress(address)).toBe(true);
   });
 
-  it.each([
-    [CHECKSUMMED],
-    [LOWER],
-    [UPPER],
-  ])("normalises %s to one form", (address) => {
-    // An author may write a checksummed address, a wallet may emit a
-    // lowercase one, and an explorer may paste an uppercase one. All three
-    // name the same contract, so all three have to compile to one identifier
-    // or a rule would depend on how it was typed.
-    const arn = buildContractCallArn({
-      chainId: 8453,
-      contractAddress: address,
-      selector: null,
-    });
-    expect(arn).toContain(LOWER);
-  });
+  it.each([[CHECKSUMMED], [LOWER], [UPPER]])(
+    "normalises %s to one form",
+    (address) => {
+      // An author may write a checksummed address, a wallet may emit a
+      // lowercase one, and an explorer may paste an uppercase one. All three
+      // name the same contract, so all three have to compile to one identifier
+      // or a rule would depend on how it was typed.
+      const arn = buildContractCallArn({
+        chainId: 8453,
+        contractAddress: address,
+        selector: null,
+      });
+      expect(arn).toContain(LOWER);
+    }
+  );
 
   it("matches a rule written in one case against a call seen in another", () => {
     const rule = buildContractCallArn({

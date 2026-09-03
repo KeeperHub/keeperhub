@@ -62,14 +62,12 @@ describe("selectors", () => {
     ).toContain("/fn/none");
   });
 
-  it.each([
-    ["0x617ba03"],
-    ["0x617ba0377"],
-    ["617ba037"],
-    ["0xZZ7ba037"],
-  ])("refuses %s", (value) => {
-    expect(isValidSelector(value)).toBe(false);
-  });
+  it.each([["0x617ba03"], ["0x617ba0377"], ["617ba037"], ["0xZZ7ba037"]])(
+    "refuses %s",
+    (value) => {
+      expect(isValidSelector(value)).toBe(false);
+    }
+  );
 
   it("still parses an identifier carrying an uppercase selector", () => {
     const parsed = parseArn(`kh:chain/8453/contract/${CONTRACT}/fn/${UPPER}`);

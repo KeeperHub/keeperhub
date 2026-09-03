@@ -163,15 +163,12 @@ describe("a rule scoped to manual runs", () => {
     expect(outcomeFor("Manual")).toBe(PolicyOutcome.ALLOW);
   });
 
-  it.each([
-    "Block",
-    "Transfer",
-    "Schedule",
-    "Webhook",
-    "Event",
-  ])("refuses a %s run, which used to read as manual", (declared) => {
-    expect(outcomeFor(declared)).toBe(PolicyOutcome.DENY);
-  });
+  it.each(["Block", "Transfer", "Schedule", "Webhook", "Event"])(
+    "refuses a %s run, which used to read as manual",
+    (declared) => {
+      expect(outcomeFor(declared)).toBe(PolicyOutcome.DENY);
+    }
+  );
 
   it("refuses a trigger nothing recognises rather than assuming a person", () => {
     expect(outcomeFor("SomethingAddedLater")).toBe(PolicyOutcome.DENY);

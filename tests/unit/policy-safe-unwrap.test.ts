@@ -82,12 +82,10 @@ describe("an ordinary call", () => {
     expect(unwrapForwardedCall(plain)).toBeNull();
   });
 
-  it.each([
-    [undefined],
-    [null],
-    ["0x"],
-    ["0xdeadbeef"],
-  ])("unwraps %s to nothing rather than throwing", (data) => {
-    expect(unwrapForwardedCall(data)).toBeNull();
-  });
+  it.each([[undefined], [null], ["0x"], ["0xdeadbeef"]])(
+    "unwraps %s to nothing rather than throwing",
+    (data) => {
+      expect(unwrapForwardedCall(data)).toBeNull();
+    }
+  );
 });

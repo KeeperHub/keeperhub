@@ -377,17 +377,14 @@ describe.skipIf(shouldSkip)("policy, wired", () => {
       expect(await outcomeFor("Manual")).toBe(PolicyOutcome.ALLOW);
     });
 
-    it.each([
-      "Schedule",
-      "Webhook",
-      "Event",
-      "Block",
-      "Transfer",
-    ])("refuses a %s run", async (declared) => {
-      // Block and Transfer are the two that used to report themselves as
-      // manual, so a rule keeping automation out let them straight through.
-      expect(await outcomeFor(declared)).toBe(PolicyOutcome.DENY);
-    });
+    it.each(["Schedule", "Webhook", "Event", "Block", "Transfer"])(
+      "refuses a %s run",
+      async (declared) => {
+        // Block and Transfer are the two that used to report themselves as
+        // manual, so a rule keeping automation out let them straight through.
+        expect(await outcomeFor(declared)).toBe(PolicyOutcome.DENY);
+      }
+    );
 
     it("refuses a trigger nothing recognises rather than assuming a person", async () => {
       expect(await outcomeFor("SomethingAddedLater")).toBe(PolicyOutcome.DENY);

@@ -14,14 +14,12 @@ describe("selectorOf", () => {
     );
   });
 
-  it.each([
-    [undefined],
-    [null],
-    ["0x"],
-    [""],
-  ])("reports empty calldata for %s", (data) => {
-    expect(selectorOf(data)).toBe(EMPTY_CALLDATA);
-  });
+  it.each([[undefined], [null], ["0x"], [""]])(
+    "reports empty calldata for %s",
+    (data) => {
+      expect(selectorOf(data)).toBe(EMPTY_CALLDATA);
+    }
+  );
 
   it("lowercases, so a mixed-case selector still matches a rule", () => {
     expect(selectorOf("0x617BA037aaaa")).toBe("0x617ba037");
