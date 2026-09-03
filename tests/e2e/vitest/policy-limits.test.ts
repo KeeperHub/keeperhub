@@ -87,6 +87,58 @@ async function usedFor(sid: string): Promise<string> {
   return rows[0]?.used ?? "0";
 }
 
+const CHECKSUMMED = "0xA0b86991c6218b36c1D19D4a2e9Eb0cE3606eB48";
+
+function tokenFacts(amount: string, address: string): PolicyFacts {
+  return {
+    ...facts("0"),
+    assets: {
+      state: FactState.KNOWN,
+      value: [{ address, symbol: "USDC", amount }],
+      provenance: FactProvenance.AUTHORITATIVE,
+    },
+  } as PolicyFacts;
+}
+
+function tokenLimit(sid: string, asset: string) {
+  return [
+    {
+      policyId: `policy-${ORG_ID}`,
+      sid,
+      limit: {
+        metric: "token",
+        window: "1d",
+        max: "1000",
+        scope: "organization",
+        asset,
+      } as PolicyLimit,
+    },
+  ];
+}
+
+function principalLimit(sid: string) {
+  return [
+    {
+      policyId: `policy-${ORG_ID}`,
+      sid,
+      limit: {
+        metric: "usd",
+        window: "1d",
+        max: "100",
+        scope: "principal",
+      } as PolicyLimit,
+    },
+  ];
+}
+
+const member = (userId: string) =>
+  ({
+    kind: "member",
+    userId,
+    organizationId: ORG_ID,
+    role: "member",
+  }) as never;
+
 beforeAll(async () => {
   await db
     .insert(users)
@@ -228,5 +280,65 @@ describe("the limit ledger", () => {
     // against, so nothing is taken and nothing is recorded.
     expect(outcome.ok).toBe(true);
     expect(await usedFor(sid)).toBe("0");
+  });
+
+  it("counts a token limit when the address is checksummed", async () => {
+    // The address on the fact arrives checksummed from the chain while the
+    // policy names it in lower case. Lowering only one side skipped the limit
+    // entirely, so the cap never counted anything.
+    const sid = `token-${crypto.randomUUID()}`;
+    const outcome = await reserveLimits({
+      organizationId: ORG_ID,
+      limits: tokenLimit(sid, CHECKSUMMED.toLowerCase()),
+      facts: tokenFacts("400", CHECKSUMMED),
+    });
+    expect(outcome.ok).toBe(true);
+    expect(await usedFor(sid)).toBe("400");
+  });
+
+  it("counts a token limit that names the asset by identifier", async () => {
+    const sid = `token-arn-${crypto.randomUUID()}`;
+    await reserveLimits({
+      organizationId: ORG_ID,
+      limits: tokenLimit(sid, `kh:chain/1/asset/${CHECKSUMMED.toLowerCase()}`),
+      facts: tokenFacts("250", CHECKSUMMED),
+    });
+    expect(await usedFor(sid)).toBe("250");
+  });
+
+  it("gives each principal its own bucket", async () => {
+    const sid = `principal-${crypto.randomUUID()}`;
+    const first = await reserveLimits({
+      organizationId: ORG_ID,
+      limits: principalLimit(sid),
+      facts: facts("80"),
+      principal: member("person-a"),
+    });
+    // A shared organization bucket would refuse this: 80 + 80 crosses 100.
+    const second = await reserveLimits({
+      organizationId: ORG_ID,
+      limits: principalLimit(sid),
+      facts: facts("80"),
+      principal: member("person-b"),
+    });
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+  });
+
+  it("still stops one principal from crossing their own cap", async () => {
+    const sid = `principal-cap-${crypto.randomUUID()}`;
+    await reserveLimits({
+      organizationId: ORG_ID,
+      limits: principalLimit(sid),
+      facts: facts("80"),
+      principal: member("person-c"),
+    });
+    const again = await reserveLimits({
+      organizationId: ORG_ID,
+      limits: principalLimit(sid),
+      facts: facts("80"),
+      principal: member("person-c"),
+    });
+    expect(again.ok).toBe(false);
   });
 });

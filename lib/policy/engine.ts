@@ -99,12 +99,29 @@ function compareNumeric(
   }
 }
 
+/**
+ * The values a fact offers a comparison.
+ *
+ * A list-backed fact (the assets a call moves, its counterparties, a workflow's
+ * tags) resolves to several strings, and they are alternatives rather than a
+ * tuple: one asset contributes both its address and its symbol. So a comparison
+ * holds when any one of them holds, and a negated comparison holds only when
+ * none of them do. Comparing the list itself would stringify it to a
+ * comma-joined value that matches nothing, which silently turns an asset or
+ * counterparty deny into a no-op.
+ */
+function comparableValues(left: unknown): unknown[] {
+  return Array.isArray(left) ? left : [left];
+}
+
 function compareEquality(
   op: PolicyOperator,
   left: unknown,
   right: PolicyConditionOperand
 ): Match {
-  const equal = String(left) === String(right);
+  const equal = comparableValues(left).some(
+    (value) => String(value) === String(right)
+  );
   if (op === PolicyOperator.EQ) {
     return equal ? Match.YES : Match.NO;
   }
@@ -145,7 +162,7 @@ function compareMembership(
   if (!Array.isArray(right)) {
     return Match.UNKNOWN;
   }
-  const value = String(left);
+  const values = comparableValues(left).map((entry) => String(entry));
   // Membership accepts an identifier pattern as well as a literal, so an `in`
   // list holding a wildcard protocol identifier matches the same way a resource
   // pattern does.
@@ -155,8 +172,10 @@ function compareMembership(
   // two asterisks is read as an arbitrary property. It emits that as a CSS
   // declaration, which opens a comment and silently swallows the rest of the
   // stylesheet, theme tokens included.
-  const present = right.some(
-    (candidate) => candidate === value || arnStringMatches(candidate, value)
+  const present = values.some((value) =>
+    right.some(
+      (candidate) => candidate === value || arnStringMatches(candidate, value)
+    )
   );
   if (op === PolicyOperator.IN) {
     return present ? Match.YES : Match.NO;
@@ -177,7 +196,11 @@ function evaluatePredicate(predicate: PolicyCondition, raw: unknown): Match {
       case PolicyOperator.LTE:
       case PolicyOperator.GT:
       case PolicyOperator.GTE:
-        one = compareNumeric(op, String(raw), operand);
+        one = comparableValues(raw).some(
+          (value) => compareNumeric(op, String(value), operand) === Match.YES
+        )
+          ? Match.YES
+          : Match.NO;
         break;
       case PolicyOperator.EQ:
       case PolicyOperator.NEQ:
@@ -197,7 +220,10 @@ function evaluatePredicate(predicate: PolicyCondition, raw: unknown): Match {
         break;
       case PolicyOperator.MATCHES:
         one =
-          typeof operand === "string" && new RegExp(operand).test(String(raw))
+          typeof operand === "string" &&
+          comparableValues(raw).some((value) =>
+            new RegExp(operand).test(String(value))
+          )
             ? Match.YES
             : Match.NO;
         break;

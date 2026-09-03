@@ -1324,7 +1324,8 @@ export function WorkflowRuns({
     <div data-ready={String(isReady)} data-testid="workflow-runs" className="space-y-3">
       {executions.map((execution, index) => {
         const isExpanded = expandedRuns.has(execution.id);
-        const executionLogs = (logs[execution.id] || []).sort((a, b) => {
+        const loadedLogs = logs[execution.id];
+        const executionLogs = (loadedLogs ?? []).sort((a, b) => {
           // Sort by startedAt to ensure first to last order
           return (
             new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
@@ -1337,7 +1338,18 @@ export function WorkflowRuns({
         const hasFailedStep = executionLogs.some(
           (log) => log.status === "error"
         );
-        const showRunError = Boolean(runErrorMessage) && !hasFailedStep;
+        // The run row records the failure before the step rows catch up, and an
+        // absent log list is "not read yet" rather than "nothing failed". Both
+        // read as no-failed-step, which flashed the whole error at the top of
+        // the run for a poll or two before the step claimed it. Wait until the
+        // steps have been read and none is still in flight.
+        const stepsSettled =
+          loadedLogs !== undefined &&
+          !executionLogs.some(
+            (log) => log.status === "pending" || log.status === "running"
+          );
+        const showRunError =
+          Boolean(runErrorMessage) && stepsSettled && !hasFailedStep;
 
         return (
           <div

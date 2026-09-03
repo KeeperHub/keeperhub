@@ -208,6 +208,7 @@ async function chargeLimits(input: {
   decision: PolicyDecision;
   policySet: CompiledPolicySet;
   facts: PolicyFacts;
+  principal: Principal;
 }): Promise<{
   decision: PolicyDecision;
   reservations: readonly ReservationHandle[];
@@ -239,6 +240,7 @@ async function chargeLimits(input: {
     organizationId: input.organizationId,
     limits,
     facts: input.facts,
+    principal: input.principal,
   });
 
   if (outcome.ok) {
@@ -469,6 +471,7 @@ export async function enforcePolicy(input: GuardInput): Promise<GuardVerdict> {
       decision,
       policySet,
       facts: grant.facts,
+      principal: input.principal,
     });
 
     await recordDecision(input, organizationId, charged.decision);

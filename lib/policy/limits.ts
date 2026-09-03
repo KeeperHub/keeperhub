@@ -7,9 +7,11 @@ import { ErrorCategory, logSystemWarn } from "@/lib/logging";
 import {
   FactState,
   PolicyLimitMetric,
+  PolicyLimitScope,
   type PolicyLimitWindow,
 } from "@/lib/policy/constants";
-import type { PolicyFacts, PolicyLimit } from "@/lib/policy/types";
+import { principalId } from "@/lib/policy/principal-facts";
+import type { PolicyFacts, PolicyLimit, Principal } from "@/lib/policy/types";
 
 /** How long a reservation nothing settles or releases is held before sweeping. */
 const RESERVATION_TTL_MS = 900_000;
@@ -59,10 +61,19 @@ export function amountFor(
   const assets = knownValue<{ address?: string; amount?: string }[]>(
     facts.assets
   );
-  const match = assets?.find(
-    (asset) =>
-      asset.address && limit.asset?.toLowerCase().includes(asset.address)
-  );
+  // Both sides are lowered before comparing. The address on the fact arrives in
+  // whatever case the chain or the ABI produced, usually checksummed, so
+  // lowering only the policy's side meant a checksummed address never matched:
+  // the amount came back null and the caller skipped the limit entirely, which
+  // is the silent pass this function exists to avoid. `includes` stays so the
+  // limit can name the asset by its identifier as well as by a bare address.
+  const wanted = limit.asset?.toLowerCase();
+  const match = assets?.find((asset) => {
+    const address = asset.address?.toLowerCase();
+    return Boolean(
+      address && wanted && (wanted === address || wanted.includes(address))
+    );
+  });
   return match?.amount ?? null;
 }
 
@@ -75,9 +86,20 @@ export type ReserveOutcome =
   | { ok: true; reservations: ReservationHandle[] }
   | { ok: false; sid: string };
 
-function scopeKeyFor(limit: PolicyLimit, facts: PolicyFacts): string {
-  if (limit.scope === "workflow") {
+function scopeKeyFor(
+  limit: PolicyLimit,
+  facts: PolicyFacts,
+  principal?: Principal
+): string {
+  if (limit.scope === PolicyLimitScope.WORKFLOW) {
     return knownValue<string>(facts.workflowId) ?? "unknown-workflow";
+  }
+  if (limit.scope === PolicyLimitScope.PRINCIPAL) {
+    // Without this the scope fell through to the organization bucket, so "each
+    // person gets their own daily budget" was one budget everybody drew from
+    // and the first spender could exhaust it for the rest.
+    const id = principal ? principalId(principal) : null;
+    return id ? `principal:${id}` : "unknown-principal";
   }
   return "organization";
 }
@@ -157,6 +179,8 @@ export async function reserveLimits(input: {
   organizationId: string;
   limits: { policyId: string; sid: string; limit: PolicyLimit }[];
   facts: PolicyFacts;
+  /** Required for a principal-scoped limit to get its own bucket. */
+  principal?: Principal;
   now?: Date;
 }): Promise<ReserveOutcome> {
   const now = input.now ?? new Date();
@@ -174,7 +198,7 @@ export async function reserveLimits(input: {
       limit: entry.limit,
       amount,
       now,
-      scopeKey: scopeKeyFor(entry.limit, input.facts),
+      scopeKey: scopeKeyFor(entry.limit, input.facts, input.principal),
     });
 
     if (!reservationId) {
