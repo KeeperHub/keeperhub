@@ -26,7 +26,7 @@ import { RuleSummary } from "./builder/rule-summary";
  * than a search; where there is not, it stays plain text rather than becoming a
  * link that goes nowhere.
  */
-function Identifier({
+export function Identifier({
   value,
   organizationId,
 }: {

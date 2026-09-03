@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, count, eq, ilike, or, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import { db } from "@/lib/db";
@@ -6,6 +6,7 @@ import { organizationPolicies } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
+import { buildPage, parsePageRequest } from "@/lib/pagination";
 import type { PolicyDocument, PolicyEnforcementMode } from "@/lib/policy";
 import { compilePolicy } from "@/lib/policy/compile";
 import { scorePolicy } from "@/lib/policy/coverage";
@@ -41,34 +42,61 @@ export async function GET(
     return access.response;
   }
 
-  try {
-    const rows = await db
-      .select()
-      .from(organizationPolicies)
-      .where(eq(organizationPolicies.organizationId, organizationId));
+  const url = new URL(request.url);
+  const req = parsePageRequest(url, { fallback: 20 });
+  const query = url.searchParams.get("q")?.trim() ?? "";
 
-    return NextResponse.json({
-      policies: rows
-        .map((row) => ({
-          // Coverage is computed rather than stored, so it can never go stale
-          // against a document that changed. A policy that no longer compiles
-          // reports no coverage rather than a misleading number.
-          coverage: coverageOf(row.id, row.document, row.enforcement),
-          id: row.id,
-          name: row.name,
-          description: row.description,
-          enabled: row.enabled,
-          enforcement: row.enforcement,
-          version: row.version,
-          changeDelayHours: row.changeDelayHours,
-          effectiveAt: row.effectiveAt,
-          protected: row.protected,
-          document: row.document,
-          createdAt: row.createdAt,
-          updatedAt: row.updatedAt,
-        }))
-        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()),
-    });
+  try {
+    // The document holds the capabilities, resources and statement ids, so
+    // casting it to text is what makes "find the policy that mentions this
+    // contract" work without a column per searchable field.
+    const term = `%${query}%`;
+    const filters = and(
+      eq(organizationPolicies.organizationId, organizationId),
+      query
+        ? or(
+            ilike(organizationPolicies.name, term),
+            ilike(organizationPolicies.description, term),
+            sql`${organizationPolicies.document}::text ILIKE ${term}`
+          )
+        : undefined
+    );
+
+    // Ordered by when each was written, not when it was last touched. Sorting
+    // by updatedAt moved a policy to the top the moment somebody edited it, so
+    // the list rearranged itself under the reader every time they changed
+    // anything, and the row they were working on was never where they left it.
+    const [rows, [totalRow]] = await Promise.all([
+      db
+        .select()
+        .from(organizationPolicies)
+        .where(filters)
+        .orderBy(asc(organizationPolicies.createdAt))
+        .limit(req.pageSize)
+        .offset(req.offset),
+      db.select({ value: count() }).from(organizationPolicies).where(filters),
+    ]);
+
+    const items = rows.map((row) => ({
+      // Coverage is computed rather than stored, so it can never go stale
+      // against a document that changed. A policy that no longer compiles
+      // reports no coverage rather than a misleading number.
+      coverage: coverageOf(row.id, row.document, row.enforcement),
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      enabled: row.enabled,
+      enforcement: row.enforcement,
+      version: row.version,
+      changeDelayHours: row.changeDelayHours,
+      effectiveAt: row.effectiveAt,
+      protected: row.protected,
+      document: row.document,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+
+    return NextResponse.json(buildPage(items, totalRow?.value ?? 0, req, url));
   } catch (error) {
     logSystemError(
       ErrorCategory.DATABASE,

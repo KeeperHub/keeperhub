@@ -2,11 +2,12 @@
 
 import { ChevronRight } from "lucide-react";
 import { useCallback, useState } from "react";
-
+import { Pager } from "@/components/activity/pager";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { useDebounce } from "@/lib/hooks/use-debounce";
 import { type PolicyDocument, PolicyEnforcementMode } from "@/lib/policy";
 import {
   type UnrepresentableReason,
@@ -22,8 +23,12 @@ import {
 } from "./policies/builder/editor-mode-toggle";
 import { PolicyBuilder } from "./policies/builder/policy-builder";
 import { PolicyCatalogProvider } from "./policies/policy-context";
-import { PolicyDecisions } from "./policies/policy-decisions";
+import {
+  PolicyDecisions,
+  PolicyDecisionsForPolicy,
+} from "./policies/policy-decisions";
 import { PolicyEditor } from "./policies/policy-editor";
+import { PolicySearch } from "./policies/policy-list-controls";
 import { PolicyOverview } from "./policies/policy-overview";
 import { PolicySimulator } from "./policies/policy-simulator";
 import { SectionHeader, SettingsCard } from "./section";
@@ -153,9 +158,15 @@ function PolicyRow({
 }
 
 export function PoliciesSection(): React.ReactElement {
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  // Debounced so typing does not fire a request per keystroke.
+  const debouncedQuery = useDebounce(query, 200);
+
   const {
     policies,
     loading,
+    meta,
     saving,
     violations,
     warnings,
@@ -163,7 +174,7 @@ export function PoliciesSection(): React.ReactElement {
     update,
     remove,
     clearFeedback,
-  } = usePolicies();
+  } = usePolicies({ query: debouncedQuery, page });
   // Reading policy is open to admins, changing it is not. Without this an
   // admin gets a working editor and finds out the server refuses only when
   // they press save, which reads as a broken page rather than a rule.
@@ -305,7 +316,24 @@ export function PoliciesSection(): React.ReactElement {
           </Alert>
         )}
         {loading && <FormSkeleton rows={3} />}
-        {!loading && policies.length === 0 && (
+        {!loading && (meta.total > 0 || debouncedQuery) && (
+          <PolicySearch
+            matched={meta.total}
+            onChange={(next) => {
+              setQuery(next);
+              setPage(1);
+            }}
+            searching={debouncedQuery.length > 0}
+            value={query}
+          />
+        )}
+        {!(loading || policies.length > 0) && debouncedQuery && (
+          <p className="text-muted-foreground text-sm">
+            No policy matches that. Search covers a policy's name, what it
+            claims, the addresses and capabilities it names, and its conditions.
+          </p>
+        )}
+        {!(loading || debouncedQuery) && policies.length === 0 && (
           <p className="text-muted-foreground text-sm">
             No policies yet. Without one, nothing here is governed and every
             action is allowed.
@@ -334,12 +362,20 @@ export function PoliciesSection(): React.ReactElement {
                 {editing?.id === policy.id ? (
                   renderEditor()
                 ) : (
-                  <PolicyOverview document={policy.document} />
+                  <div className="flex flex-col gap-4">
+                    <PolicyOverview document={policy.document} />
+                    <div className="flex flex-col gap-2">
+                      <h4 className="font-medium text-sm">Decisions</h4>
+                      <PolicyDecisionsForPolicy policyId={policy.id} />
+                    </div>
+                  </div>
                 )}
               </PolicyRow>
             ))}
           </div>
         )}
+
+        {!loading && <Pager meta={meta} onPage={setPage} unit="policies" />}
 
         {warnings.length > 0 && (
           <Alert className="mt-3">

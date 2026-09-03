@@ -1,8 +1,9 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import { db } from "@/lib/db";
-import { policyDecisions } from "@/lib/db/schema";
+import { organizationPolicies, policyDecisions } from "@/lib/db/schema";
+import { buildPage, parsePageRequest } from "@/lib/pagination";
 import { PolicyOutcome } from "@/lib/policy";
 import { requireOrgPolicyAccess } from "../policies/_lib/access";
 
@@ -17,8 +18,27 @@ import { requireOrgPolicyAccess } from "../policies/_lib/access";
  * rather than a firehose.
  */
 
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
+const DEFAULT_LIMIT = 25;
+
+/**
+ * Decisions that no longer belong to a living policy.
+ *
+ * `governing_policy_ids` is a jsonb array rather than a foreign key, on purpose:
+ * a decision is a historical record and deleting a policy must not erase the
+ * evidence of what it did. The cost is that the reference can dangle, so this
+ * predicate finds the rows whose every governing policy is gone, plus the
+ * unmanaged ones that never had a policy at all.
+ */
+function orphanedPredicate() {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM ${organizationPolicies} p
+    WHERE p.id IN (
+      SELECT jsonb_array_elements_text(
+        COALESCE(${policyDecisions.governingPolicyIds}, '[]'::jsonb)
+      )
+    )
+  )`;
+}
 
 export async function GET(
   request: Request,
@@ -31,42 +51,70 @@ export async function GET(
   }
 
   const url = new URL(request.url);
-  const requested = Number(url.searchParams.get("limit") ?? DEFAULT_LIMIT);
-  const limit = Number.isInteger(requested)
-    ? Math.min(Math.max(requested, 1), MAX_LIMIT)
-    : DEFAULT_LIMIT;
+  const req = parsePageRequest(url, { fallback: DEFAULT_LIMIT });
   const outcome = url.searchParams.get("outcome");
+  const policyId = url.searchParams.get("policyId");
+  const orphaned = url.searchParams.get("orphaned") === "true";
+  const query = url.searchParams.get("q")?.trim() ?? "";
 
   try {
     const conditions = [eq(policyDecisions.organizationId, organizationId)];
     if (outcome && Object.values(PolicyOutcome).includes(outcome as never)) {
       conditions.push(eq(policyDecisions.outcome, outcome as PolicyOutcome));
     }
+    if (policyId) {
+      conditions.push(
+        sql`${policyDecisions.governingPolicyIds} @> ${JSON.stringify([policyId])}::jsonb`
+      );
+    }
+    if (orphaned) {
+      conditions.push(orphanedPredicate());
+    }
+    if (query) {
+      const term = `%${query}%`;
+      const match = or(
+        ilike(policyDecisions.capability, term),
+        ilike(policyDecisions.resource, term),
+        ilike(policyDecisions.reason, term),
+        ilike(policyDecisions.checkpoint, term),
+        ilike(policyDecisions.outcome, term)
+      );
+      if (match) {
+        conditions.push(match);
+      }
+    }
 
-    const rows = await db
-      .select({
-        id: policyDecisions.id,
-        checkpoint: policyDecisions.checkpoint,
-        capability: policyDecisions.capability,
-        resource: policyDecisions.resource,
-        outcome: policyDecisions.outcome,
-        reason: policyDecisions.reason,
-        matchedSids: policyDecisions.matchedSids,
-        observedOnly: policyDecisions.observedOnly,
-        principalKind: policyDecisions.principalKind,
-        executionId: policyDecisions.executionId,
-        workflowId: policyDecisions.workflowId,
-        createdAt: policyDecisions.createdAt,
-      })
-      .from(policyDecisions)
-      .where(and(...conditions))
-      .orderBy(desc(policyDecisions.createdAt))
-      .limit(limit);
+    const where = and(...conditions);
+
+    const [rows, [totalRow]] = await Promise.all([
+      db
+        .select({
+          id: policyDecisions.id,
+          checkpoint: policyDecisions.checkpoint,
+          capability: policyDecisions.capability,
+          resource: policyDecisions.resource,
+          outcome: policyDecisions.outcome,
+          reason: policyDecisions.reason,
+          matchedSids: policyDecisions.matchedSids,
+          governingPolicyIds: policyDecisions.governingPolicyIds,
+          observedOnly: policyDecisions.observedOnly,
+          principalKind: policyDecisions.principalKind,
+          executionId: policyDecisions.executionId,
+          workflowId: policyDecisions.workflowId,
+          createdAt: policyDecisions.createdAt,
+        })
+        .from(policyDecisions)
+        .where(where)
+        .orderBy(desc(policyDecisions.createdAt))
+        .limit(req.pageSize)
+        .offset(req.offset),
+      db.select({ value: count() }).from(policyDecisions).where(where),
+    ]);
 
     // An explicit projection rather than the whole row: the stored facts and
     // signals are for the engine, and this endpoint is read by anyone who can
     // see policy.
-    return NextResponse.json({ decisions: rows });
+    return NextResponse.json(buildPage(rows, totalRow?.value ?? 0, req, url));
   } catch (error) {
     return apiError(error, "Failed to read policy decisions");
   }

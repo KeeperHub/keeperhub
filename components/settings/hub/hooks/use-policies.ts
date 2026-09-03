@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
+import type { Page, PageLinks, PageMeta } from "@/lib/pagination";
 import type { PolicyDocument, PolicyEnforcementMode } from "@/lib/policy";
 import { useSettingsContext } from "../settings-context";
 import { useCachedSection } from "./use-cached-section";
@@ -37,6 +38,8 @@ export type PolicyViolation = { sid?: string; message: string };
 
 export type PoliciesState = {
   policies: OrganizationPolicySummary[];
+  /** Row count and page count for the current query, from the server. */
+  meta: PageMeta;
   loading: boolean;
   saving: boolean;
   /** Compile errors from the last attempted save, for display beside the editor. */
@@ -56,29 +59,54 @@ export type PoliciesState = {
   clearFeedback: () => void;
 };
 
-function policiesKey(organizationId: string | null): string | null {
-  return organizationId ? `policies:${organizationId}` : null;
+function policiesKey(
+  organizationId: string | null,
+  query: string,
+  page: number
+): string | null {
+  // The query and page are part of the cache key because the server does the
+  // filtering now. Without them a second search would read the first one's
+  // cached page.
+  return organizationId ? `policies:${organizationId}:${query}:${page}` : null;
 }
 
-export function usePolicies(): PoliciesState {
+const EMPTY_LINKS: PageLinks = {
+  self: "",
+  first: "",
+  prev: null,
+  next: null,
+  last: "",
+};
+
+const EMPTY_META: PageMeta = { total: 0, page: 1, pageSize: 20, totalPages: 1 };
+
+export function usePolicies(options?: {
+  query?: string;
+  page?: number;
+}): PoliciesState {
+  const query = options?.query?.trim() ?? "";
+  const page = options?.page ?? 1;
   const { organizationId } = useSettingsContext();
   const [saving, setSaving] = useState(false);
   const [violations, setViolations] = useState<PolicyViolation[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
 
-  const section = useCachedSection<OrganizationPolicySummary[]>(
-    policiesKey(organizationId),
+  const section = useCachedSection<Page<OrganizationPolicySummary>>(
+    policiesKey(organizationId, query, page),
     async () => {
-      const res = await fetch(`/api/organizations/${organizationId}/policies`);
+      const params = new URLSearchParams({ page: String(page) });
+      if (query) {
+        params.set("q", query);
+      }
+      const res = await fetch(
+        `/api/organizations/${organizationId}/policies?${params.toString()}`
+      );
       if (!res.ok) {
         // A 403 here is the common case: the viewer is a member rather than an
         // admin. An empty list reads correctly for them.
-        return [];
+        return { items: [], meta: EMPTY_META, _links: EMPTY_LINKS };
       }
-      const body = (await res.json()) as {
-        policies: OrganizationPolicySummary[];
-      };
-      return body.policies;
+      return (await res.json()) as Page<OrganizationPolicySummary>;
     }
   );
 
@@ -197,7 +225,8 @@ export function usePolicies(): PoliciesState {
   );
 
   return {
-    policies: section.data ?? [],
+    policies: section.data?.items ?? [],
+    meta: section.data?.meta ?? EMPTY_META,
     loading: section.loading,
     saving,
     violations,

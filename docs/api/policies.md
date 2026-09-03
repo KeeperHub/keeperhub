@@ -268,13 +268,27 @@ All paths are relative to your organization.
 ### List policies
 
 ```http
-GET /api/organizations/{organizationId}/policies
+GET /api/organizations/{organizationId}/policies?q=aave&page=1&limit=20
 ```
 
 Returns each policy with its document, enforcement mode, version, effective
 date, and a computed coverage score naming which guard dimensions it binds.
 Coverage is computed on read, so it can never be stale against a document that
 changed.
+
+Policies are ordered by when they were created, so editing one does not move it
+in the list.
+
+| Parameter | Meaning |
+|---|---|
+| `q` | Matches the name, the description, and the document itself, so you can find a policy by a capability, an address, or a statement id it names. |
+| `page` | 1-based page number. Default 1. |
+| `limit` | Page size. Default 20, maximum 200. |
+
+The response is the shared page envelope: `items`, `meta` (`total`, `page`,
+`pageSize`, `totalPages`), and `_links` (`self`, `first`, `prev`, `next`,
+`last`). Filtering and paging happen on the server, so a large policy set never
+has to be read in full to be searched.
 
 ### Create a policy
 
@@ -328,12 +342,23 @@ the policy builder is generated from.
 ### Decisions
 
 ```http
-GET /api/organizations/{organizationId}/policy-decisions?outcome=deny&limit=50
+GET /api/organizations/{organizationId}/policy-decisions?outcome=deny&limit=25
 ```
 
-Governed decisions, with the facts each was made from and the statements that
-matched. Unmanaged decisions are not recorded, because an organization with no
-policy would otherwise write a row for every node of every run.
+Governed decisions, with the statements that matched. Unmanaged decisions are
+not recorded, because an organization with no policy would otherwise write a row
+for every node of every run.
+
+| Parameter | Meaning |
+|---|---|
+| `policyId` | Only decisions this policy governed. |
+| `orphaned` | `true` returns only decisions whose governing policies no longer exist. A decision outlives the policy that made it, so this is where that history remains readable. |
+| `outcome` | `allow`, `deny`, or `require_approval`. |
+| `q` | Matches the capability, resource, reason, checkpoint, and outcome. |
+| `page` | 1-based page number. Default 1. |
+| `limit` | Page size. Default 25, maximum 200. |
+
+The response uses the same page envelope as the policy list.
 
 ## When policy refuses
 
