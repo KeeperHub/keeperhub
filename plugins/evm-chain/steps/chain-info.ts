@@ -1,60 +1,79 @@
 import "server-only";
 
 import { fetchCredentials } from "@/lib/credential-fetcher";
-import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
+import {
+  runPluginStep,
+  type StepInput,
+} from "@/lib/workflow/executor/step-handler";
 import type { EvmChainCredentials } from "../credentials";
+import { callEvmRpc, isHexResult } from "./evm-rpc-core";
 
 type ChainInfoResult =
-  | { success: true; chainId: string; chainIdDecimal: number; latestBlock: number }
+  | {
+      success: true;
+      chainId: string;
+      chainIdDecimal: number;
+      latestBlock: number;
+    }
   | { success: false; error: string };
 
 export type ChainInfoInput = StepInput & { integrationId?: string };
 
-/** Core chain-info logic - receives credentials as parameter. */
 async function stepHandler(
   credentials: EvmChainCredentials
 ): Promise<ChainInfoResult> {
-  const rpcUrl = credentials.EVM_CHAIN_RPC_URL;
-  if (!rpcUrl) {
+  const [idRes, blockRes] = await Promise.all([
+    callEvmRpc(credentials, "eth_chainId", [], 1),
+    callEvmRpc(credentials, "eth_blockNumber", [], 2),
+  ]);
+
+  if (!idRes.success) {
+    return { success: false, error: idRes.error };
+  }
+  if (!blockRes.success) {
+    return { success: false, error: blockRes.error };
+  }
+
+  const chainId = idRes.result;
+  if (!isHexResult(chainId)) {
     return {
       success: false,
-      error: "EVM_CHAIN_RPC_URL is not configured. Add it in Project Integrations.",
+      error: `Unexpected chain id response: ${JSON.stringify(chainId)}`,
     };
   }
-  const rpc = async (id: number, method: string): Promise<unknown> => {
-    const response = await fetch(rpcUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params: [] }),
-    });
-    if (!response.ok) throw new Error(`RPC endpoint returned HTTP ${response.status}`);
-    return response.json();
-  };
-  try {
-    const [idRes, blockRes] = await Promise.all([rpc(1, "eth_chainId"), rpc(2, "eth_blockNumber")]);
-    const chainId = (idRes as { result?: unknown })?.result;
-    if (typeof chainId !== "string" || !/^0x[0-9a-f]+$/i.test(chainId)) {
-      return { success: false, error: `Unexpected chain id response: ${JSON.stringify(idRes)}` };
-    }
-    const latestBlock = Number.parseInt(String((blockRes as { result?: unknown })?.result), 16);
-    if (!Number.isFinite(latestBlock)) {
-      return { success: false, error: `Unexpected block response: ${JSON.stringify(blockRes)}` };
-    }
+
+  const blockNumber = blockRes.result;
+  if (!isHexResult(blockNumber)) {
     return {
-      success: true,
-      chainId,
-      chainIdDecimal: Number.parseInt(chainId, 16),
-      latestBlock,
+      success: false,
+      error: `Unexpected block response: ${JSON.stringify(blockNumber)}`,
     };
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
+
+  const latestBlock = Number.parseInt(blockNumber, 16);
+  if (!Number.isFinite(latestBlock)) {
+    return {
+      success: false,
+      error: `Unexpected block response: ${JSON.stringify(blockNumber)}`,
+    };
+  }
+
+  return {
+    success: true,
+    chainId,
+    chainIdDecimal: Number.parseInt(chainId, 16),
+    latestBlock,
+  };
 }
 
-export async function chainInfoStep(input: ChainInfoInput): Promise<ChainInfoResult> {
+export async function chainInfoStep(
+  input: ChainInfoInput
+): Promise<ChainInfoResult> {
   "use step";
   const credentials = input.integrationId
-    ? await fetchCredentials(input.integrationId, { organizationId: input._context?.organizationId ?? null })
+    ? await fetchCredentials(input.integrationId, {
+        organizationId: input._context?.organizationId ?? null,
+      })
     : {};
   return runPluginStep(
     { pluginName: "evm-chain", actionName: "chain-info" },

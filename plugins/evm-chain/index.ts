@@ -20,7 +20,8 @@ const evmChainPlugin: IntegrationPlugin = {
       placeholder: "https://sepolia.base.org",
       configKey: "EVM_CHAIN_RPC_URL",
       envVar: "EVM_CHAIN_RPC_URL",
-      helpText: "Any EVM JSON-RPC endpoint (Alchemy, Infura, CDP, public gateway...).",
+      helpText:
+        "Any EVM JSON-RPC endpoint (Alchemy, Infura, CDP, public gateway...). Providers that authenticate through the URL embed the API key in the endpoint path, so treat this field as a secret.",
       helpLink: {
         text: "Base docs - Network RPC endpoints",
         url: "https://docs.base.org/guides/rpc-endpoints/",
