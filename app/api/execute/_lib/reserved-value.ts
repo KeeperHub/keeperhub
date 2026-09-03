@@ -4,7 +4,7 @@ export {
   isSolanaNetwork,
   type NodeReservedValue,
   parseNativeValueLamports,
-  parseNativeValueWei,
+  parseNativeValueEther,
   parseNodeNativeValueWei,
   type ReservedValue,
 } from "@/lib/execute/reserved-value";

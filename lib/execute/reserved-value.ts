@@ -2,7 +2,7 @@ import "server-only";
 
 import {
   parseNativeValueLamports,
-  parseNativeValueWei,
+  parseNativeValueEther,
 } from "@/lib/execute/native-value";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { isSolanaChain } from "@/lib/rpc/provider-factory";
@@ -10,7 +10,7 @@ import { SOLANA_SPL_MAX_FEE_LAMPORTS } from "@/lib/web3/solana-fees";
 
 export {
   parseNativeValueLamports,
-  parseNativeValueWei,
+  parseNativeValueEther,
   type ReservedValue,
 } from "@/lib/execute/native-value";
 
@@ -108,13 +108,13 @@ export function parseNodeNativeValueWei(
         ? { ok: true, kind: "solana", valueLamports: parsed.valueWei }
         : parsed;
     }
-    const parsed = parseNativeValueWei(amount);
+    const parsed = parseNativeValueEther(amount);
     return parsed.ok
       ? { ok: true, kind: "evm", valueWei: parsed.valueWei }
       : parsed;
   }
 
-  const parsed = parseNativeValueWei(
+  const parsed = parseNativeValueEther(
     typeof config.ethValue === "string" ? config.ethValue : undefined
   );
   return parsed.ok

@@ -32,7 +32,7 @@ import {
   withRejectedSignerOverride,
 } from "../_lib/execution-service";
 import { checkRateLimit } from "../_lib/rate-limit";
-import { parseNativeValueWei } from "../_lib/reserved-value";
+import { parseNativeValueEther } from "../_lib/reserved-value";
 import { parseSimulateFlag } from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import type { ExecuteResponse } from "../_lib/types";
@@ -151,7 +151,7 @@ async function handleWriteCall(
 
   const redactedInput = redactInput(withRejectedSignerOverride(body, body));
   // Charge any native ETH value sent with the call against the daily value cap.
-  const parsedValue = parseNativeValueWei(body.value as string | undefined);
+  const parsedValue = parseNativeValueEther(body.value as string | undefined);
   if (!parsedValue.ok) {
     return recordIdempotentResponse(
       idem,

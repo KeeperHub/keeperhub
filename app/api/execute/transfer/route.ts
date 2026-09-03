@@ -34,7 +34,7 @@ import { checkRateLimit } from "../_lib/rate-limit";
 import {
   isSolanaNetwork,
   parseNativeValueLamports,
-  parseNativeValueWei,
+  parseNativeValueEther,
 } from "../_lib/reserved-value";
 import { parseSimulateFlag } from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
@@ -221,7 +221,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!isTokenTransfer) {
     const parsedValue = isSolanaTransfer
       ? parseNativeValueLamports(amount)
-      : parseNativeValueWei(amount);
+      : parseNativeValueEther(amount);
     if (!parsedValue.ok) {
       return applyRateLimitHeaders(
         await recordIdempotentResponse(
