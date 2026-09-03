@@ -14,7 +14,7 @@
  * must ever block or fail a real trigger.
  */
 
-import { apiRequest } from "./http-client.js";
+import { apiRequest, apiRequestWithAttempts } from "./http-client.js";
 
 /** Trigger sources the scheduler reports for phantom attribution. */
 export type PhantomTriggerSource = "schedule" | "block";
@@ -63,7 +63,7 @@ export async function createPhantomExecution(
   dispatchKey?: string,
 ): Promise<PhantomCreateResult> {
   try {
-    const result = await apiRequest<{
+    const { data: result, attempts } = await apiRequestWithAttempts<{
       executionId?: string;
       alreadyExisted?: boolean;
       refused?: boolean;
@@ -86,10 +86,15 @@ export async function createPhantomExecution(
       );
       return { alreadyExisted: false, refused: reason };
     }
-    return {
-      executionId: result.executionId,
-      alreadyExisted: result.alreadyExisted ?? false,
-    };
+    // A dedup hit is only trustworthy on the first attempt. After a retry the
+    // existing row may be this dispatcher's own, created by an attempt whose
+    // reply was lost, so nobody has enqueued it yet: report it as fresh and let
+    // the caller enqueue. If another dispatcher did enqueue it, the second
+    // message is harmless (the executor's status CAS drops the duplicate
+    // delivery); skipping instead would strand the phantom until the reaper
+    // marks it P-0005 and the occurrence would never run.
+    const alreadyExisted = attempts === 1 && result.alreadyExisted === true;
+    return { executionId: result.executionId, alreadyExisted };
   } catch (error) {
     console.warn(
       `[Phantom] Failed to pre-create execution for workflow ${workflowId}:`,

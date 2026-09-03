@@ -613,6 +613,33 @@ app:
         failedJobsHistoryLimit: 3
         restartPolicy: OnFailure
         backoffLimit: 2
+      - name: execution-reconciler
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-staging
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "1-59/2 * * * *" # every 2 minutes, offset by 1 minute per this file's convention; the reconciler only re-reads rows older than 30s
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/cron/execution-reconciler"
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
       - name: execution-digest
         image:
           repository: ${ECR_REGISTRY}/keeperhub-staging

@@ -890,7 +890,14 @@ export const workflowExecutionLogs = pgTable(
      */
     deletedAt: timestamp("deleted_at"),
   },
-  (table) => [index("idx_exec_logs_started_at").on(table.startedAt)]
+  (table) => [
+    index("idx_exec_logs_started_at").on(table.startedAt),
+    // Created back in 0024_analytics-indexes.sql but never declared here.
+    // The reaper's correlated NOT EXISTS probes it once per reap candidate,
+    // so a dev DB bootstrapped with db:push (which only builds what this file
+    // declares) would seq-scan the log table instead.
+    index("idx_exec_logs_execution_id").on(table.executionId),
+  ]
 );
 
 export {

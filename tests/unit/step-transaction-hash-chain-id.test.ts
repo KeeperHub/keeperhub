@@ -24,9 +24,11 @@ const STEP_FILENAME = /\.ts$/;
 
 /**
  * Steps whose `transactionHash` is a Solana signature (base58), not an EVM
- * hash. The tracker only records 0x-prefixed hashes, so these outputs never
- * reach reconciliation and have no numeric chain to verify against. Adding
- * an EVM-shaped step to this list would silently reopen the hole.
+ * hash. None of them reports a chainId, and the tracker records a base58
+ * signature only when the step said which Solana chain it was on
+ * (isRecordableTransactionHash), so these outputs never reach reconciliation
+ * and have no numeric chain to verify against. Adding an EVM-shaped step to
+ * this list would silently reopen the hole.
  */
 const NON_EVM_HASH_STEPS = new Set([
   "web3/steps/call-solana-program-core.ts",

@@ -16,6 +16,7 @@ import {
   eq,
   gte,
   inArray,
+  ne,
   notInArray,
   or,
   sql,
@@ -35,6 +36,7 @@ import { metricsDb as db } from "@/lib/db";
 import {
   apiKeys,
   chains,
+  directExecutions,
   integrations,
   invitation,
   member,
@@ -292,6 +294,12 @@ export async function getWorkflowStatsFromDb(): Promise<WorkflowStats> {
  * index scan for max() rather than a full-table scan that would trip the 8s
  * metrics statement_timeout.
  *
+ * `unconfirmed` rows are excluded: the finalizer stamps completed_at on them
+ * (lib/workflow/executor/logging.ts) but they have not finished, so a pipeline
+ * that only produces unconfirmed rows must still read as stalled. The filter
+ * sits on top of the same partial index; the backward scan just steps past any
+ * unconfirmed rows at the top, and those are rare.
+ *
  * Returns null when the table has no finished executions yet (max is NULL) or
  * on query error; the caller leaves the gauge unset in that case so Prometheus
  * staleness / the alert's no_data_state governs rather than a misleading 0.
@@ -307,7 +315,12 @@ export async function getLastFinishedExecutionAgeSecondsFromDb(): Promise<
         >`EXTRACT(EPOCH FROM (now() - max(${workflowExecutions.completedAt})))`,
       })
       .from(workflowExecutions)
-      .where(sql`${workflowExecutions.completedAt} IS NOT NULL`);
+      .where(
+        and(
+          sql`${workflowExecutions.completedAt} IS NOT NULL`,
+          ne(workflowExecutions.status, "unconfirmed")
+        )
+      );
 
     const raw = rows[0]?.ageSeconds;
     return raw == null ? null : Number(raw);
@@ -315,6 +328,51 @@ export async function getLastFinishedExecutionAgeSecondsFromDb(): Promise<
     logSystemWarn(
       ErrorCategory.DATABASE,
       "[Metrics] Failed to query last finished execution age from DB",
+      error
+    );
+    return null;
+  }
+}
+
+export type UnconfirmedExecutionCounts = {
+  workflow: number;
+  direct: number;
+};
+
+/**
+ * Rows currently parked in `unconfirmed`: a transaction was broadcast but its
+ * receipt could not be read when the run finalized. Only the
+ * execution-reconciler CronJob moves these on, so a value that climbs and never
+ * comes down means the reconciler is not running or cannot reach the chain.
+ *
+ * Both counts are equality lookups on a plain btree over status
+ * (idx_workflow_executions_status, idx_direct_executions_status), and
+ * `unconfirmed` is a rare value, so each is a small index scan rather than a
+ * table scan.
+ *
+ * Returns null on query error; the caller leaves the gauge untouched so the
+ * last real value stands rather than a misleading 0.
+ */
+export async function getUnconfirmedExecutionCountsFromDb(): Promise<UnconfirmedExecutionCounts | null> {
+  try {
+    const [workflowRows, directRows] = await Promise.all([
+      db
+        .select({ count: count() })
+        .from(workflowExecutions)
+        .where(eq(workflowExecutions.status, "unconfirmed")),
+      db
+        .select({ count: count() })
+        .from(directExecutions)
+        .where(eq(directExecutions.status, "unconfirmed")),
+    ]);
+    return {
+      workflow: Number(workflowRows[0]?.count) || 0,
+      direct: Number(directRows[0]?.count) || 0,
+    };
+  } catch (error) {
+    logSystemWarn(
+      ErrorCategory.DATABASE,
+      "[Metrics] Failed to query unconfirmed execution counts from DB",
       error
     );
     return null;

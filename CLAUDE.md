@@ -235,8 +235,6 @@ pnpm test                   # All tests
 pnpm test:e2e               # E2E tests
 ```
 
-For codebase exploration, see the "Codebase Understanding" section below — `/understand` and `/understand-dashboard` are Claude Code slash commands, not pnpm scripts.
-
 ## Database Migrations
 
 The build script (`scripts/migrate-prod.ts`) runs `pnpm db:migrate` (file-based migrations), **not** `db:push`. Migration state is tracked in the `drizzle.__drizzle_migrations` table (schema `drizzle`, not `public`). When adding or modifying database tables:
@@ -538,64 +536,3 @@ Combine with the discovery utilities: use MCP to navigate, then call `getInterac
 | `getInteractiveElements(page)` | `./utils/discover` | Get structured element list         |
 | `getPageStructure(page)`       | `./utils/discover` | Get page headings, landmarks, forms |
 | `createTestWorkflow(email)`    | `./utils/db`       | Inject workflow directly into DB    |
-
----
-
-## Codebase Understanding (Understand-Anything)
-
-The repo uses [Understand-Anything](https://github.com/Lum1104/Understand-Anything) — a Claude Code plugin that produces a queryable knowledge graph of the codebase plus an interactive force-directed dashboard.
-
-### When to reach for it
-
-- **Onboarding** into `plugins/`, `lib/`, or `app/api/`: start with `/understand-onboard` instead of `ls` + grep.
-- **Cross-system debugging** (executor + SDK + DB bugs that span subsystems): `/understand-diff` shows structural impact of in-flight changes.
-- **Pre-PR review** for diffs that touch shared `lib/` or multiple plugins.
-
-Skip it for plugin-local PRs, design-system work, or Drizzle migration ordering bugs — reading the live code is faster.
-
-### Install (one-time, per developer)
-
-In a fresh Claude Code session at the repo root:
-
-```
-/plugin marketplace add Lum1104/Understand-Anything
-/plugin install understand-anything
-```
-
-Restart Claude Code. The post-commit auto-update hook is **off** in this repo's `config.json` on purpose — auto-update couples the graph to every commit and pollutes PR diffs with regenerated JSON. Refresh on cadence instead (see "Update process" below). If you want personal incremental updates that you'll squash before pushing, enable it locally with `/understand --auto-update`.
-
-### Daily usage
-
-```
-/understand plugins/      # scope a first-time analysis to a subtree
-/understand-dashboard     # open the interactive graph at http://127.0.0.1:5173
-/understand-chat ...      # Q&A over the graph
-/understand-diff          # impact analysis of uncommitted changes
-/understand-onboard       # guided tour for a new contributor
-/understand-explain ...   # explain a file/function in context
-/understand-domain        # business-domain grouping view
-```
-
-Run a fresh full index after large refactors or after pulling new `staging`:
-
-```
-/understand --full
-```
-
-### Update process
-
-- **Plugin itself**: `/plugin marketplace update understand-anything` (run periodically; harmless if no update is available).
-- **Knowledge graph**: refresh weekly with `/understand` (incremental — only re-analyzes changed files) and after wide-blast-radius refactors with `/understand --full`. Auto-update is off (see above) to keep PR diffs clean. Refresh PRs land as their own commit, never bundled into feature PRs.
-
-### Output and gitignore
-
-- `.understand-anything/knowledge-graph.json` — **committed**; the dashboard reads this so the next person doesn't have to re-run a full index.
-- `.understand-anything/intermediate/` and `.understand-anything/diff-overlay.json` — gitignored (scratch + local diff state).
-
-For graphs over ~10MB, use git-lfs.
-
-### Gotchas specific to this repo
-
-- **tsconfig path aliases**: KeeperHub's `@/*` aliases can be dropped by the indexer (upstream issue #214). After the first run, verify the graph has edges into `@/components`, `@/lib`, and `@/plugins`. If missing, re-run `/understand --full` after the upstream fix lands.
-- **Dashboard port `5173`**: Vite's default. If another Vite project is already running, the dashboard URL will silently serve the wrong app — kill the other one first.
-- **VS Code Copilot Chat 0.48.1**: known incompatibility (upstream issue #218); use Claude Code as the host instead.

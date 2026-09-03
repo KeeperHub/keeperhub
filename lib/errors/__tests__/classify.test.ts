@@ -339,6 +339,29 @@ describe("classifyExecutionError", () => {
     });
   });
 
+  describe("a chain rejection quoted inside a failover exhaustion", () => {
+    // The wrapper rules match the wrapper, not the body, so without a rule
+    // above them a deterministic chain verdict would be read as an endpoint
+    // outage and take N-0001's message and system_error status.
+    it.each([
+      "RPC failed on primary endpoint: nonce too low",
+      "RPC failed on primary endpoint: replacement transaction underpriced",
+      "RPC failed on primary endpoint: already known",
+      "RPC failed on primary endpoint: intrinsic gas too low",
+      "RPC failed on both endpoints. Primary: nonce too low. Fallback: nonce too low",
+    ])("keeps %s off the network_rpc code", (input) => {
+      const r = classifyExecutionError(input);
+      expect(r.errorCategory).not.toBe(ErrorCategory.NETWORK_RPC);
+      expect(r.code).not.toBe("N-0001");
+      expect(isDefaultClassification(r)).toBe(true);
+    });
+
+    it("leaves an unwrapped chain rejection where it already landed", () => {
+      const r = classifyExecutionError("nonce too low");
+      expect(r).toEqual(classifyExecutionError("some unmatched failure"));
+    });
+  });
+
   describe("system: KeeperHub-managed RPC failures", () => {
     it("RPC failed on both endpoints: network_rpc + system", () => {
       const r = classifyExecutionError(
@@ -355,6 +378,45 @@ describe("classifyExecutionError", () => {
       );
       expect(r.errorCategory).toBe(ErrorCategory.NETWORK_RPC);
       expect(r.errorType).toBe("system");
+    });
+
+    // A chain with no fallback configured exhausts on `primary endpoint`, and
+    // the manager's own per-attempt timeout can surface bare. Both are the
+    // same KeeperHub-managed endpoint failure as the both-endpoints shape.
+    it.each([
+      "RPC failed on primary endpoint: Timeout after 30000ms",
+      "Solana RPC failed on primary endpoint: request timeout",
+      "Timeout after 30000ms",
+    ])("classifies %s as network_rpc + system + N-0001", (input) => {
+      const r = classifyExecutionError(input);
+      expect(r.errorCategory).toBe(ErrorCategory.NETWORK_RPC);
+      expect(r.errorType).toBe("system");
+      expect(r.code).toBe("N-0001");
+      expect(isDefaultClassification(r)).toBe(false);
+    });
+
+    it("keeps the reaper's execution timeout on the workflow-engine code", () => {
+      const r = classifyExecutionError(
+        "Execution timed out: no progress for 30 minutes"
+      );
+      expect(r.errorCategory).toBe(ErrorCategory.WORKFLOW_ENGINE);
+      expect(r.code).toBe("E-0001");
+    });
+
+    it("leaves a timeout quoted inside a third-party response with that endpoint", () => {
+      const r = classifyExecutionError("HTTP 504: Timeout after 30000ms");
+      expect(r.errorCategory).toBe(ErrorCategory.EXTERNAL_SERVICE);
+      expect(r.errorType).toBe("external");
+      expect(r.code).toBeNull();
+    });
+
+    it("attributes a single-endpoint exhaustion that quotes a funding shortfall to the wallet", () => {
+      const r = classifyExecutionError(
+        "RPC failed on primary endpoint: insufficient funds for intrinsic transaction cost"
+      );
+      expect(r.errorCategory).toBe(ErrorCategory.TRANSACTION);
+      expect(r.errorType).toBe("user");
+      expect(r.code).toBeNull();
     });
   });
 

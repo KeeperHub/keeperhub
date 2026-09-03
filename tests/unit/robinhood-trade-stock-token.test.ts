@@ -98,6 +98,8 @@ vi.mock("@/lib/web3/gas-defaults", () => ({
   }),
 }));
 
+import { executeContractCallAsRole } from "@/lib/safe/execute-as-safe";
+import { OnChainRevertError } from "@/lib/web3/onchain-revert";
 import { tradeStockTokenCore } from "@/plugins/robinhood/steps/trade-stock-token-core";
 
 const AAPL = "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9";
@@ -267,6 +269,34 @@ describe("a clean trade", () => {
     const r = await tradeStockTokenCore(baseInput({ poolFee: "not-a-number" }));
     expect(r.success).toBe(false);
     expect(mockOnChain).not.toHaveBeenCalled();
+  });
+});
+
+describe("a reverted trade", () => {
+  it("carries the broadcast hash and chainId out of a Safe-role revert", async () => {
+    mockSignerMode.mockReturnValue({
+      kind: "safe-role",
+      safeAddress: "0x2222222222222222222222222222222222222222",
+      delegateAddress: "0x3333333333333333333333333333333333333333",
+      rolesModifierAddress: "0x4444444444444444444444444444444444444444",
+      roleKey: "0xrole",
+    } as never);
+    vi.mocked(executeContractCallAsRole).mockRejectedValue(
+      new OnChainRevertError({
+        message:
+          "Transaction 0xreverted reverted on-chain (status 0, block 500)",
+        transactionHash: "0xreverted",
+        blockNumber: 500,
+      })
+    );
+
+    const r = await tradeStockTokenCore(baseInput());
+
+    expect(r).toMatchObject({
+      success: false,
+      transactionHash: "0xreverted",
+      chainId: 4663,
+    });
   });
 });
 

@@ -142,6 +142,23 @@ describe("BlockIngestor end-to-end fan-out", () => {
     expect(mocks.enqueueBlock).toHaveBeenCalledTimes(1);
     expect(dedup.markProcessed).toHaveBeenCalledWith("wf-event", "sig-1");
 
+    // The phantom for each fire carries its dispatch key: the tx signature for
+    // an event (the matcher fires once per tx), the slot for a block.
+    expect(mocks.createPhantom).toHaveBeenCalledWith(
+      "wf-event",
+      "user-1",
+      "event",
+      "events",
+      "event:wf-event:101:sig-1",
+    );
+    expect(mocks.createPhantom).toHaveBeenCalledWith(
+      "wf-block",
+      "user-1",
+      "block",
+      "scheduler",
+      "block:wf-block:101:100",
+    );
+
     const eventArg = mocks.enqueueEvent.mock.calls[0][2] as {
       workflowId: string;
       triggerData: { chainType: string; programId: string };
@@ -163,6 +180,25 @@ describe("BlockIngestor end-to-end fan-out", () => {
     // A refusal is settled, so it is marked: re-processing the block would
     // otherwise pay for the admission round-trip again and reach the same
     // answer.
+    expect(dedup.markProcessed).toHaveBeenCalledWith("wf-event", "sig-1");
+    expect(dedup.markProcessed).toHaveBeenCalledWith("wf-block", "block:10");
+  });
+
+  // A re-processed block whose Redis dedup entries were missed collides on the
+  // dispatch keys: both rows were already enqueued once and must not be again.
+  it("skips both enqueues when the dispatch keys already exist, and marks them settled", async () => {
+    mocks.createPhantom.mockResolvedValue({
+      executionId: "exec-existing",
+      alreadyExisted: true,
+    });
+    const dedup = fakeDedup(false);
+    await startIngestor(dedup);
+
+    await mocks.onBlock?.(block());
+
+    expect(mocks.enqueueEvent).not.toHaveBeenCalled();
+    expect(mocks.enqueueBlock).not.toHaveBeenCalled();
+    expect(mocks.failPhantom).not.toHaveBeenCalled();
     expect(dedup.markProcessed).toHaveBeenCalledWith("wf-event", "sig-1");
     expect(dedup.markProcessed).toHaveBeenCalledWith("wf-block", "block:10");
   });
