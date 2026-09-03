@@ -58,21 +58,24 @@ describe("executeWithRetry", () => {
       "already known",
       "replacement fee too low",
       "transaction underpriced",
-    ])("does not retry post-broadcast error %s, which would send a second transaction", async (error) => {
-      let calls = 0;
-      const result = await executeWithRetry<TransactionResult>(
-        () => {
-          calls++;
-          return Promise.resolve({ success: false as const, error });
-        },
-        { maxRetries: 3 },
-        transactionRetryOptions
-      );
+    ])(
+      "does not retry post-broadcast error %s, which would send a second transaction",
+      async (error) => {
+        let calls = 0;
+        const result = await executeWithRetry<TransactionResult>(
+          () => {
+            calls++;
+            return Promise.resolve({ success: false as const, error });
+          },
+          { maxRetries: 3 },
+          transactionRetryOptions
+        );
 
-      expect(calls).toBe(1);
-      expect(result.outcome).toBe("failed");
-      expect(result.retryCount).toBe(0);
-    });
+        expect(calls).toBe(1);
+        expect(result.outcome).toBe("failed");
+        expect(result.retryCount).toBe(0);
+      }
+    );
 
     it("does not retry a hash-carrying failure whose error reads as a timeout", async () => {
       let calls = 0;

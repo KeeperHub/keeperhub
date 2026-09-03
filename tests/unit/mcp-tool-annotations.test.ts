@@ -131,15 +131,15 @@ describe("MCP tool annotations", () => {
   // sends to a caller-named target and cannot recall the message. Neither
   // persists over existing state, so they would read as additive without an
   // explicit case.
-  it.each([
-    "create_workflow",
-    "test_notification",
-  ])("marks %s as destructive because it arms or emits an unbounded effect", (name) => {
-    const annotation = annotations.get(name);
-    expect(annotation, name).toBeDefined();
-    expect(annotation?.readOnlyHint).toBe(false);
-    expect(annotation?.destructiveHint).toBe(true);
-  });
+  it.each(["create_workflow", "test_notification"])(
+    "marks %s as destructive because it arms or emits an unbounded effect",
+    (name) => {
+      const annotation = annotations.get(name);
+      expect(annotation, name).toBeDefined();
+      expect(annotation?.readOnlyHint).toBe(false);
+      expect(annotation?.destructiveHint).toBe(true);
+    }
+  );
 
   it("downgrades destructiveHint only for the additive write allowlist", () => {
     const downgraded = [...annotations.entries()]
@@ -304,14 +304,17 @@ describe("per-listing workflow MCP server annotations", () => {
     "tempo/batch-payout",
     "tempo/dex-swap",
     "tempo/hold-payment",
-  ])("treats a read-typed listing containing %s as destructive", (actionType) => {
-    const annotation = listingAnnotations({
-      workflowType: "read" as const,
-      nodes: [actionNode("n1", actionType)],
-    });
-    expect(annotation.readOnlyHint).toBe(false);
-    expect(annotation.destructiveHint).toBe(true);
-  });
+  ])(
+    "treats a read-typed listing containing %s as destructive",
+    (actionType) => {
+      const annotation = listingAnnotations({
+        workflowType: "read" as const,
+        nodes: [actionNode("n1", actionType)],
+      });
+      expect(annotation.readOnlyHint).toBe(false);
+      expect(annotation.destructiveHint).toBe(true);
+    }
+  );
 
   // tools.ts annotates test_notification destructive because it "sends to a
   // caller-named target and cannot recall the message". A listing whose nodes
@@ -323,14 +326,17 @@ describe("per-listing workflow MCP server annotations", () => {
     "telegram/send-message",
     "sendgrid/send-email",
     "resend/send-email",
-  ])("treats a read-typed listing containing %s as destructive", (actionType) => {
-    const annotation = listingAnnotations({
-      workflowType: "read" as const,
-      nodes: [actionNode("n1", actionType)],
-    });
-    expect(annotation.readOnlyHint).toBe(false);
-    expect(annotation.destructiveHint).toBe(true);
-  });
+  ])(
+    "treats a read-typed listing containing %s as destructive",
+    (actionType) => {
+      const annotation = listingAnnotations({
+        workflowType: "read" as const,
+        nodes: [actionNode("n1", actionType)],
+      });
+      expect(annotation.readOnlyHint).toBe(false);
+      expect(annotation.destructiveHint).toBe(true);
+    }
+  );
 
   // Protocol action types are `<protocol>/<action-slug>`, so they match
   // neither hasIrreversibleEffect's literal allowlist nor isWriteActionType's
@@ -354,17 +360,17 @@ describe("per-listing workflow MCP server annotations", () => {
   // no cached _protocolMeta, so the registry lookup is the only thing that can
   // classify them; dropping that import empties the registry and turns every
   // one of these read-only again, silently.
-  it.each([
-    "sky/approve-usds",
-    "sky/st-usds-vault-deposit",
-  ])("treats a read-typed listing containing %s as destructive without cached metadata", (actionType) => {
-    const annotation = listingAnnotations({
-      workflowType: "read" as const,
-      nodes: [protocolActionNode("n1", actionType)],
-    });
-    expect(annotation.readOnlyHint).toBe(false);
-    expect(annotation.destructiveHint).toBe(true);
-  });
+  it.each(["sky/approve-usds", "sky/st-usds-vault-deposit"])(
+    "treats a read-typed listing containing %s as destructive without cached metadata",
+    (actionType) => {
+      const annotation = listingAnnotations({
+        workflowType: "read" as const,
+        nodes: [protocolActionNode("n1", actionType)],
+      });
+      expect(annotation.readOnlyHint).toBe(false);
+      expect(annotation.destructiveHint).toBe(true);
+    }
+  );
 
   // The other half of the acceptance criteria: widening the check must not
   // swallow the protocol reads, which are the bulk of the listed catalogue.
