@@ -264,6 +264,12 @@ function buildPathEntry(workflow: DiscoveryWorkflow): Record<string, unknown> {
               data: { type: "string" },
               value: { type: "string" },
             },
+            example: {
+              type: "calldata",
+              to: "0x0000000000000000000000000000000000000001",
+              data: "0xa9059cbb",
+              value: "0",
+            },
           },
         },
       },
@@ -279,6 +285,10 @@ function buildPathEntry(workflow: DiscoveryWorkflow): Record<string, unknown> {
             properties: {
               executionId: { type: "string" },
               status: { type: "string", const: "running" },
+            },
+            example: {
+              executionId: "exec_example_000000000000000000000001",
+              status: "running",
             },
           },
         },
