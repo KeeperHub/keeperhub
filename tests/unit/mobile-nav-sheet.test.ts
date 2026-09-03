@@ -99,9 +99,10 @@ describe("visibleMobileNavItems", () => {
         desktopGating[item.id],
         `no desktop-sidebar entry known for mobile item "${item.id}"`
       ).toBeDefined();
-      expect(item.requireAuth, `${item.id} requireAuth diverges from sidebar`).toBe(
-        desktopGating[item.id]
-      );
+      expect(
+        item.requireAuth,
+        `${item.id} requireAuth diverges from sidebar`
+      ).toBe(desktopGating[item.id]);
     }
   });
 
