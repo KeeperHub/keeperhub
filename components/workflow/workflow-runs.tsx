@@ -815,6 +815,33 @@ function getStatusLabel(status: string): string {
 }
 
 // Component for rendering individual execution log entries
+
+/**
+ * An error message with any address in it made clickable.
+ *
+ * A refusal names where the rules that refused it live. Rendering that as text
+ * leaves the reader to select and paste a URL out of a monospace block, which
+ * is the same as not telling them.
+ */
+function ErrorWithLinks({ text }: { text: string }): React.ReactNode {
+  const parts = text.split(/(\bhttps?:\/\/[^\s)'"<>]+)/g);
+  return parts.map((part, index) =>
+    /^https?:\/\//.test(part) ? (
+      <a
+        className="underline underline-offset-2 hover:text-red-500"
+        href={part}
+        key={`${part}-${index}`}
+        rel="noopener"
+        target="_blank"
+      >
+        {part}
+      </a>
+    ) : (
+      part
+    )
+  );
+}
+
 function ExecutionLogEntry({
   log,
   isExpanded,
@@ -918,21 +945,8 @@ function ExecutionLogEntry({
                 title="Error"
               >
                 <pre className="overflow-auto rounded-lg border border-red-500/20 bg-red-500/5 p-3 font-mono text-red-600 text-xs leading-relaxed">
-                  {log.error}
+                  <ErrorWithLinks text={log.error} />
                 </pre>
-                {/* A refusal is the organization's own rules working, so the
-                    reader is sent to them rather than left to search. The link
-                    lives here, not in the message: the message is written to
-                    logs and API responses where a URL is stripped, and a
-                    sentence cannot be clicked. */}
-                {isPolicyDenialMessage(log.error) && organization?.id && (
-                  <Link
-                    className="mt-2 inline-block text-red-600 text-xs underline underline-offset-2 hover:text-red-500"
-                    href={`/settings/${organization.id}/policies`}
-                  >
-                    Review your organization's policies
-                  </Link>
-                )}
               </CollapsibleSection>
             )}
             {!(log.input || log.output || log.error || middleContent) && (

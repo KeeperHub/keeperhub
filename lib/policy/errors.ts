@@ -168,13 +168,17 @@ export function explainDenial(input: {
   reason: PolicyDecisionReason;
   organizationId?: string;
 }): string {
-  // No URL in the text. This string is written to a step, a log line and an
-  // API response, and one of those paths strips every URL from a web3 step's
-  // error because a URL there is normally an RPC endpoint. The reader was left
-  // with a redaction placeholder where the help was meant to be. The reader
-  // also cannot click a sentence, so where to go belongs in the surface showing
-  // the failure, next to a link it can actually render.
-  return POLICY_DENIAL_MESSAGE[input.reason];
+  const base = POLICY_DENIAL_MESSAGE[input.reason];
+  if (!input.organizationId) {
+    return base;
+  }
+  // The address of the rules that refused this, carried in the message itself
+  // so it survives wherever the message goes: a step, a log line, an API
+  // response, a CLI transcript. The redaction that strips a web3 step's URLs
+  // leaves this one alone, because it is our address rather than a provider's.
+  return `${base} Review your organization's policies at ${policyPageLink({
+    organizationId: input.organizationId,
+  })}`;
 }
 
 /**

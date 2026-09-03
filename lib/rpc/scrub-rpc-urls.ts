@@ -131,11 +131,30 @@ const KNOWN_PROVIDER_HOSTS =
  * and provider identity - including the host - must not reach users.
  * Idempotent: the placeholder contains no URL.
  */
+/**
+ * Our own address, which is never a provider endpoint.
+ *
+ * The rule below exists so a provider host cannot reach a user through a web3
+ * step's error. A link back into this application is the opposite: it is where
+ * we are sending the reader, and replacing it with a placeholder took away the
+ * one useful thing the message had.
+ */
+function isOwnAppUrl(url: string): boolean {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.keeperhub.com";
+  try {
+    return new URL(url).origin === new URL(appUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
 export function redactAllUrls(text: string): string {
   if (!text) {
     return text;
   }
-  return text.replace(URL_RE, URL_PLACEHOLDER);
+  return text.replace(URL_RE, (match) =>
+    isOwnAppUrl(match) ? match : URL_PLACEHOLDER
+  );
 }
 
 /**

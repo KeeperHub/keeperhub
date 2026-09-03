@@ -6,6 +6,7 @@ import {
   POLICY_DENIAL_MESSAGE,
   policyPageLink,
 } from "@/lib/policy/errors";
+import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 
 const ORG = "85a32c46-a6b5-401c-9d88-598cf573e042";
 
@@ -19,34 +20,42 @@ describe("what a blocked run tells the reader", () => {
     ).toContain("no remaining allowance");
   });
 
-  it("puts no URL in the message", () => {
-    // The same string is written to a step, a log line and an API response, and
-    // one of those paths strips every URL from a web3 step's error, because a
-    // URL there is normally an RPC endpoint. Embedding one left the reader with
-    // a redaction placeholder where the help should have been.
+  it("carries the address of the rules that refused it", () => {
+    // A run is read in the app, an execution log, an agent's reply or a CLI
+    // transcript. The message has to carry where to go, because most of those
+    // have nowhere else to put it.
     const message = explainDenial({
       reason: PolicyDecisionReason.EXPLICIT_DENY,
       organizationId: ORG,
     });
-    expect(message).not.toMatch(/https?:\/\//);
+    expect(message).toMatch(/https?:\/\/\S+\/settings\/[^/]+\/policies/);
   });
 
-  it("carries the reason and nothing else", () => {
-    // Pinning the whole string is what stops a rule name, a condition or an
-    // amount being appended later.
+  it("survives the redaction that strips a web3 step's URLs", () => {
+    // That rule exists so a provider host cannot reach a user. Our own address
+    // is the opposite: it is where we are sending them, and replacing it with a
+    // placeholder took away the one useful thing the message had.
+    const message = explainDenial({
+      reason: PolicyDecisionReason.EXPLICIT_DENY,
+      organizationId: ORG,
+    });
+    expect(redactAllUrls(message)).toBe(message);
+  });
+
+  it("still redacts a provider URL beside it", () => {
+    expect(
+      redactAllUrls("failed at https://eth-mainnet.g.alchemy.com/v2/SECRET")
+    ).not.toContain("alchemy");
+  });
+
+  it("carries the reason and the link, and nothing else", () => {
     for (const reason of Object.values(PolicyDecisionReason)) {
       expect(explainDenial({ reason, organizationId: ORG })).toBe(
-        POLICY_DENIAL_MESSAGE[reason]
+        `${POLICY_DENIAL_MESSAGE[reason]} Review your organization's policies at ${policyPageLink(
+          { organizationId: ORG }
+        )}`
       );
     }
-  });
-
-  it("still builds an absolute link for a surface that can render one", () => {
-    // Where to go did not disappear, it moved to the caller, which can show it
-    // as something clickable rather than a sentence.
-    expect(policyPageLink({ organizationId: ORG })).toMatch(
-      /https?:\/\/\S+\/settings\/[^/]+\/policies/
-    );
   });
 
   it("recognises its own refusals, so a caller can offer the way back", () => {
