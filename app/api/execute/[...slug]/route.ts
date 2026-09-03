@@ -40,7 +40,7 @@ import {
 } from "../_lib/execution-service";
 import { buildProtocolFunctionArgs } from "../_lib/protocol-function-args";
 import { checkRateLimit } from "../_lib/rate-limit";
-import { parseNativeValueWei } from "../_lib/reserved-value";
+import { parseNativeValueEther } from "../_lib/reserved-value";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import { requireWallet } from "../_lib/wallet-check";
 
@@ -230,7 +230,7 @@ async function executeProtocolAction(
 
   const ethValue = body.ethValue ? String(body.ethValue) : undefined;
   // Charge any native value forwarded by the protocol write against the cap.
-  const parsedValue = parseNativeValueWei(ethValue);
+  const parsedValue = parseNativeValueEther(ethValue);
   if (!parsedValue.ok) {
     return recordIdempotentResponse(
       idem,
