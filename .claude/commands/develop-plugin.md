@@ -486,10 +486,6 @@ UTILITY PLUGINS:
    - For web3 plugins, use chain-select, abi-with-auto-fetch, etc.
    - For security steps, plan for maxRetries = 0
 
-3.5. ORIENT WITH THE KNOWLEDGE GRAPH (cheap, do it before creating files)
-   - Run `/understand-chat plugins/` to find the closest existing plugin to use as a template (file layout, step pattern, credential handling). Copying from a near-fit plugin beats writing from spec.
-   - For an action being added to an existing plugin, run `/understand-chat plugins/<plugin>/steps/` to see the sibling step pattern.
-
 4. CREATE PLUGIN FILES
    If NEW PLUGIN:
    - Create directory: `plugins/[name]/`
