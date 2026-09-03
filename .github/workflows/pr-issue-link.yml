@@ -161,9 +161,8 @@ jobs:
             if [ -n "$awaiting" ]; then
               md+="**Nothing to do on your side.** The issue is filed and is waiting for a "
               md+="maintainer to triage it and apply the \`$ACCEPTED_LABEL\` label; that step "
-              md+="is ours, not yours. This check reruns when the pull request is pushed or "
-              md+="edited, not when the issue is labelled, so once \`$ACCEPTED_LABEL\` lands, "
-              md+="re-run the job or edit the title to retrigger it."
+              md+="is ours, not yours. Once \`$ACCEPTED_LABEL\` lands this check re-runs on "
+              md+="its own and turns green; there is nothing to re-trigger by hand."
             else
               md+="**Outside contributions** start with an issue. Open one, wait for a "
               md+="maintainer to apply the \`$ACCEPTED_LABEL\` label, then put \`#N\` in the "
@@ -171,8 +170,8 @@ jobs:
               md+="No issue is needed for typos, broken links, formatting, or docs corrected to "
               md+="match existing behaviour; retitle with one of: \`$EXEMPT_TYPES\`. Full policy: "
               md+="[ISSUES.md](https://github.com/$REPO/blob/staging/ISSUES.md)."$'\n\n'
-              md+="This check reruns on every push and edit, but not when the issue changes; "
-              md+="re-run the job or edit the title to retrigger it."
+              md+="This check reruns on every push and edit, and again on its own once a "
+              md+="referenced issue is labelled \`$ACCEPTED_LABEL\`."
             fi
 
             echo "----------------------------------------------"

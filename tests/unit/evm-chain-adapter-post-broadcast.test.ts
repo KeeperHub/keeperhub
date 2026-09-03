@@ -169,22 +169,22 @@ describe("EvmChainAdapter post-broadcast failures (non-Tempo)", () => {
     expect(broadcastTransactionHash(error)).toBe(REPLACEMENT_HASH);
   });
 
-  it.each([
-    "cancelled",
-    "replaced",
-  ] as const)("settles a %s transaction terminally instead of leaving it pending", async (reason) => {
-    // The nonce is spent by something else: our transaction was not executed
-    // and never will be. Conclusive, not unknown. Routing it to pending would
-    // create a row the reconciler can never close.
-    const h = createHarness(vi.fn().mockRejectedValue(replacedError(reason)));
+  it.each(["cancelled", "replaced"] as const)(
+    "settles a %s transaction terminally instead of leaving it pending",
+    async (reason) => {
+      // The nonce is spent by something else: our transaction was not executed
+      // and never will be. Conclusive, not unknown. Routing it to pending would
+      // create a row the reconciler can never close.
+      const h = createHarness(vi.fn().mockRejectedValue(replacedError(reason)));
 
-    const error = await sendAndCatch(h);
+      const error = await sendAndCatch(h);
 
-    expect(isOnChainPendingError(error)).toBe(false);
-    expect(isOnChainRevertError(error)).toBe(true);
-    expect(broadcastTransactionHash(error)).toBe(TX_HASH);
-    expect((error as Error).message).toContain(reason);
-  });
+      expect(isOnChainPendingError(error)).toBe(false);
+      expect(isOnChainRevertError(error)).toBe(true);
+      expect(broadcastTransactionHash(error)).toBe(TX_HASH);
+      expect((error as Error).message).toContain(reason);
+    }
+  );
 
   it("records our own hash on the error, never the replacement's", async () => {
     // The replacement is a transaction we did not send and it landed with

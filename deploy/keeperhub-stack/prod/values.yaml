@@ -172,7 +172,10 @@ app:
             set -e
             echo "Setting up workflow postgres tables..."
             export WORKFLOW_POSTGRES_URL=$(tsx scripts/encode-pg-url.ts)
-            pnpm exec workflow-postgres-setup
+            # Called by path, not through the `bootstrap` bin: .npmrc public-hoists
+            # @workflow/* and hoisted packages land bins in the root .bin, so a sibling
+            # gaining that generic name would silently shadow this (KEEP-1299).
+            node node_modules/@workflow/world-postgres/bin/setup.js
             echo "Running database migrations..."
             pnpm db:migrate
             echo "Seeding chains..."

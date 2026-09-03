@@ -1037,7 +1037,13 @@ function computeCommentRanges(code: string): [number, number][] {
       i++;
       continue;
     }
-    if (c === '"' || c === "'" || c === "`") {
+    // "\u0060" is a backtick, written as an escape on purpose. A raw backtick
+    // here is unpaired within this file, and @workflow/builders' directive
+    // detector pairs backticks with a regex that ignores string context. One
+    // unpaired tick desynchronizes it for the rest of the file and blanks the
+    // "use workflow" directive in executeWorkflow below, so the function ships
+    // untransformed and start() rejects it at runtime. See KEEP-1302.
+    if (c === '"' || c === "'" || c === "\u0060") {
       stringDelim = c;
       i++;
       continue;

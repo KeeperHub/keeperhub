@@ -38,37 +38,11 @@ import {
   redactInput,
   withRejectedSignerOverride,
 } from "../_lib/execution-service";
+import { buildProtocolFunctionArgs } from "../_lib/protocol-function-args";
 import { checkRateLimit } from "../_lib/rate-limit";
 import { parseNativeValueWei } from "../_lib/reserved-value";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import { requireWallet } from "../_lib/wallet-check";
-
-function buildFunctionArgs(
-  input: Record<string, unknown>,
-  protocolSlug: string,
-  contractKey: string,
-  functionName: string
-): string | undefined {
-  const protocol = getProtocol(protocolSlug);
-  if (!protocol) {
-    return undefined;
-  }
-
-  const protocolAction = protocol.actions.find(
-    (a) => a.function === functionName && a.contract === contractKey
-  );
-
-  if (!protocolAction || protocolAction.inputs.length === 0) {
-    return undefined;
-  }
-
-  const args = protocolAction.inputs.map((inp) => {
-    const value = input[inp.name];
-    return value === undefined ? "" : String(value);
-  });
-
-  return JSON.stringify(args);
-}
 
 async function executeProtocolAction(
   actionType: string,
@@ -195,12 +169,29 @@ async function executeProtocolAction(
     );
   }
 
-  const functionArgs = buildFunctionArgs(
+  const argsResult = buildProtocolFunctionArgs(
     body,
     meta.protocolSlug,
     meta.contractKey,
     meta.functionName
   );
+  if (!argsResult.ok) {
+    // Pre-broadcast validation: release so the same key can retry with a
+    // complete body instead of caching a client mistake for 24h.
+    return recordIdempotentResponse(
+      idem,
+      NextResponse.json(
+        {
+          success: false,
+          error: argsResult.error,
+          field: argsResult.field,
+        },
+        { status: HttpStatus.BAD_REQUEST }
+      ),
+      "release"
+    );
+  }
+  const { functionArgs } = argsResult;
 
   if (meta.actionType === "read") {
     const coreInput: ReadContractCoreInput = {

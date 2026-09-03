@@ -398,43 +398,47 @@ describe("POST /mcp/w/[slug] — tools/call argument normalization", () => {
   it.each([
     ["explicitly null", true],
     ["omitted entirely", false],
-  ])("defaults tools/call arguments to {} when %s, before the transport sees it", async (_label, includeNullArguments) => {
-    vi.mocked(getWorkflowListing).mockResolvedValue({
-      ok: true,
-      listing: { ...makeListing(), isListed: true } as never,
-    });
-    mockAuthSuccess();
-    vi.mocked(getSession).mockReturnValue({
-      organizationId: "org-x",
-      transport: { handleRequest: mockTransportHandleRequest },
-    } as never);
+  ])(
+    "defaults tools/call arguments to {} when %s, before the transport sees it",
+    async (_label, includeNullArguments) => {
+      vi.mocked(getWorkflowListing).mockResolvedValue({
+        ok: true,
+        listing: { ...makeListing(), isListed: true } as never,
+      });
+      mockAuthSuccess();
+      vi.mocked(getSession).mockReturnValue({
+        organizationId: "org-x",
+        transport: { handleRequest: mockTransportHandleRequest },
+      } as never);
 
-    const params: Record<string, unknown> = { name: "call_workflow" };
-    if (includeNullArguments) {
-      params.arguments = null;
+      const params: Record<string, unknown> = { name: "call_workflow" };
+      if (includeNullArguments) {
+        params.arguments = null;
+      }
+      const req = new Request("http://localhost/mcp/w/my-workflow", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer kh_test",
+          Accept: "application/json, text/event-stream",
+          "Mcp-Session-Id": "session-abc",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 5,
+          method: "tools/call",
+          params,
+        }),
+      });
+      await POST(req, makeParams());
+
+      expect(mockTransportHandleRequest).toHaveBeenCalledTimes(1);
+      const [, options] = mockTransportHandleRequest.mock
+        .calls[0] as unknown as [
+        Request,
+        { parsedBody: { params: { arguments: unknown } } },
+      ];
+      expect(options.parsedBody.params.arguments).toEqual({});
     }
-    const req = new Request("http://localhost/mcp/w/my-workflow", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer kh_test",
-        Accept: "application/json, text/event-stream",
-        "Mcp-Session-Id": "session-abc",
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 5,
-        method: "tools/call",
-        params,
-      }),
-    });
-    await POST(req, makeParams());
-
-    expect(mockTransportHandleRequest).toHaveBeenCalledTimes(1);
-    const [, options] = mockTransportHandleRequest.mock.calls[0] as unknown as [
-      Request,
-      { parsedBody: { params: { arguments: unknown } } },
-    ];
-    expect(options.parsedBody.params.arguments).toEqual({});
-  });
+  );
 });

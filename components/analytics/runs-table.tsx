@@ -771,6 +771,36 @@ export function RunsTable(): ReactNode {
     ]
   );
 
+  // A changed filter set restarts the listing at page 1 - useAnalytics refetches
+  // without a page - so a ?page= left in the URL outlives the result it
+  // described, and the restore below would replay it against a filter set that
+  // never produced it. Dropping it keeps the URL and the rendered page in step.
+  const filterKey = JSON.stringify([
+    range,
+    statuses,
+    sources,
+    networks,
+    gas,
+    duration,
+    search,
+    projectId,
+    customStart,
+    customEnd,
+  ]);
+  const lastFilterKey = useRef(filterKey);
+  useEffect(() => {
+    if (lastFilterKey.current === filterKey) {
+      return;
+    }
+    lastFilterKey.current = filterKey;
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("page")) {
+      return;
+    }
+    url.searchParams.delete("page");
+    router.replace(url.pathname + url.search, { scroll: false });
+  }, [filterKey, router]);
+
   // Restore page from URL ?page= param once after initial data load
   const urlPage = Number(searchParams.get("page")) || 1;
   const hasRestoredPage = useRef(false);

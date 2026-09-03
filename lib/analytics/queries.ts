@@ -38,6 +38,7 @@ import {
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
+import { likePattern } from "./like-pattern";
 import {
   getBucketInterval,
   getPreviousPeriodStart,
@@ -185,11 +186,11 @@ function directStatusesCondition(statuses: NormalizedStatus[]): SQL {
  * same COALESCE(column, JSONB) the listing reads them through. EXISTS keeps a
  * run that touched any selected chain without multiplying it per matching step.
  */
-function workflowNetworkCondition(networks: string[]): SQL {
-  return sql`EXISTS (
-    SELECT 1
+function workflowNetworkCondition(networks: string[], logsFrom: Date): SQL {
+  return sql`${workflowExecutions.id} IN (
+    SELECT ${workflowExecutionLogs.executionId}
       FROM ${workflowExecutionLogs}
-     WHERE ${workflowExecutionLogs.executionId} = ${workflowExecutions.id}
+     WHERE ${gte(workflowExecutionLogs.startedAt, logsFrom)}
        AND COALESCE(${workflowExecutionLogs.network}, ${logInputField("network")}) IN (${sql.join(
          networks.map((network) => sql`${network}`),
          sql`, `
@@ -200,24 +201,24 @@ function workflowNetworkCondition(networks: string[]): SQL {
 // The name match gets its own alias because both callers already have
 // `workflows` in scope, one through a join and one through a scoping subquery.
 function workflowSearchCondition(term: string): SQL {
-  const pattern = `%${term}%`;
+  const pattern = likePattern(term);
   return sql`(
-    ${workflowExecutions.id} ILIKE ${pattern}
+    ${workflowExecutions.id} ILIKE ${pattern} ESCAPE '\\'
     OR EXISTS (
       SELECT 1
         FROM ${workflows} AS search_wf
        WHERE search_wf.id = ${workflowExecutions.workflowId}
-         AND search_wf.name ILIKE ${pattern}
+         AND search_wf.name ILIKE ${pattern} ESCAPE '\\'
     )
   )`;
 }
 
 function directSearchCondition(term: string): SQL {
-  const pattern = `%${term}%`;
+  const pattern = likePattern(term);
   return sql`(
-    ${directExecutions.id} ILIKE ${pattern}
-    OR ${directExecutions.type} ILIKE ${pattern}
-    OR ${directExecutions.network} ILIKE ${pattern}
+    ${directExecutions.id} ILIKE ${pattern} ESCAPE '\\'
+    OR ${directExecutions.type} ILIKE ${pattern} ESCAPE '\\'
+    OR ${directExecutions.network} ILIKE ${pattern} ESCAPE '\\'
   )`;
 }
 
@@ -226,67 +227,103 @@ function directSearchCondition(term: string): SQL {
 // asking for "runs over 30s" means.
 const directDurationMs = sql`(EXTRACT(EPOCH FROM (${directExecutions.completedAt} - ${directExecutions.createdAt})) * 1000)`;
 
-// Wei the run's steps burned, and the slice of it gas credit covered. The step
-// rollup is the total, not the unsponsored remainder, so the wallet's share is
-// the difference rather than the whole.
-const workflowStepGasWei = sql`COALESCE((
-  SELECT SUM(COALESCE(
-           ${workflowExecutionLogs.gasUsedWei},
-           CAST(NULLIF(${logOutputField("gasUsed")}, '') AS NUMERIC)
-         ))
-    FROM ${workflowExecutionLogs}
-   WHERE ${workflowExecutionLogs.executionId} = ${workflowExecutions.id}
-), 0)`;
+// Per-step gas and the sponsorship marker, each read as COALESCE(denormalised
+// column, JSONB extract) so rows written before migration 0117 - and rows the
+// backfill has not reached - still classify correctly.
+const filterStepGasWei = sql`COALESCE(${workflowExecutionLogs.gasUsedWei}, CAST(NULLIF(${logOutputField("gasUsed")}, '') AS NUMERIC))`;
+const filterStepSponsored = sql`${workflowExecutionLogs.outputRaw}->>'sponsored' = 'true'`;
 
-const workflowSponsoredGasWei = sql`COALESCE((
-  SELECT SUM(CAST(${gasCreditUsage.gasCostWei} AS NUMERIC))
+/**
+ * Gas facts per execution, aggregated once over the window.
+ *
+ * These were correlated subqueries on workflow_executions.id, so the planner
+ * re-ran them - up to four, each decoding JSONB - for every candidate row in
+ * the range. Selecting a gas filter over a wide range therefore walked
+ * workflow_execution_logs once per execution, which is what pinned prod on
+ * 2026-09-02: the listing and its count both paid it and neither ever
+ * finished. Uncorrelated, it is evaluated once and hash-semi-joined instead.
+ *
+ * The lower bound is the only bound, and it is safe in both directions: a step
+ * cannot start before the run that owns it, so every log of an execution
+ * inside the window has started_at >= the window start; and a step may finish
+ * after the window closes, so there is no upper bound to apply.
+ */
+function workflowGasTotals(logsFrom: Date): SQL {
+  return sql`(
+    SELECT ${workflowExecutionLogs.executionId} AS execution_id,
+           COALESCE(SUM(${filterStepGasWei}), 0) AS step_gas_wei,
+           COALESCE(BOOL_OR(${filterStepSponsored}), false) AS sponsored_step,
+           COALESCE(BOOL_OR(
+             ${filterStepGasWei} > 0
+             AND ${workflowExecutionLogs.outputRaw}->>'sponsored' IS DISTINCT FROM 'true'
+           ), false) AS unsponsored_gas_step
+      FROM ${workflowExecutionLogs}
+     WHERE ${gte(workflowExecutionLogs.startedAt, logsFrom)}
+     GROUP BY ${workflowExecutionLogs.executionId}
+  )`;
+}
+
+/**
+ * The sponsored slice from the gas-credit ledger, per execution. Its
+ * execution_id is nullable, and a NULL reaching a NOT IN below would make the
+ * whole predicate answer NULL, so the rows are dropped here at the source.
+ */
+const workflowLedgerTotals = sql`(
+  SELECT ${gasCreditUsage.executionId} AS execution_id,
+         COALESCE(SUM(CAST(${gasCreditUsage.gasCostWei} AS NUMERIC)), 0) AS sponsored_gas_wei
     FROM ${gasCreditUsage}
-   WHERE ${gasCreditUsage.executionId} = ${workflowExecutions.id}
-), 0)`;
-
-// The same marker the sponsored chip on a run reads: a web3 step core writes
-// `sponsored: true` into its output when the gas station covered the gas. Taken
-// alongside the ledger rather than instead of it, so a run is still sponsored
-// if only one of the two recorded it.
-const workflowSponsoredStep = sql`EXISTS (
-  SELECT 1
-    FROM ${workflowExecutionLogs}
-   WHERE ${workflowExecutionLogs.executionId} = ${workflowExecutions.id}
-     AND ${workflowExecutionLogs.outputRaw}->>'sponsored' = 'true'
+   WHERE ${gasCreditUsage.executionId} IS NOT NULL
+   GROUP BY ${gasCreditUsage.executionId}
 )`;
 
 /**
  * One predicate per gas category. Sponsored is "gas credit covered a leg";
  * wallet is "the run burned more than credit covered", which is what makes a
- * part-sponsored run answer to both.
+ * part-sponsored run answer to both. Free is the complement of the two, so a
+ * run with no step rows at all - absent from the aggregate rather than present
+ * with a zero - still reads as free.
  */
-function workflowGasCondition(value: GasSpend): SQL {
+function workflowGasCondition(value: GasSpend, logsFrom: Date): SQL {
   if (value === "sponsored") {
-    return sql`(${workflowSponsoredStep} OR ${workflowSponsoredGasWei} > 0)`;
+    // Only the marker decides this one, so it reads output_raw directly rather
+    // than paying for the gas rollup - and its JSONB decode - that the other
+    // two branches genuinely need.
+    return sql`(
+      ${workflowExecutions.id} IN (
+        SELECT ${workflowExecutionLogs.executionId}
+          FROM ${workflowExecutionLogs}
+         WHERE ${gte(workflowExecutionLogs.startedAt, logsFrom)}
+           AND ${filterStepSponsored}
+      )
+      OR ${workflowExecutions.id} IN (
+        SELECT s.execution_id FROM ${workflowLedgerTotals} AS s
+         WHERE s.sponsored_gas_wei > 0
+      )
+    )`;
   }
+  const totals = workflowGasTotals(logsFrom);
   if (value === "wallet") {
     // Both signals have to agree there is an unsponsored share: a step that
     // burned gas without the sponsored marker, and a total the ledger did not
     // fully cover. Either alone misfiles a run that only one of the two
     // recorded.
-    return sql`(
-      EXISTS (
-        SELECT 1
-          FROM ${workflowExecutionLogs}
-         WHERE ${workflowExecutionLogs.executionId} = ${workflowExecutions.id}
-           AND COALESCE(
-                 ${workflowExecutionLogs.gasUsedWei},
-                 CAST(NULLIF(${logOutputField("gasUsed")}, '') AS NUMERIC)
-               ) > 0
-           AND ${workflowExecutionLogs.outputRaw}->>'sponsored' IS DISTINCT FROM 'true'
-      )
-      AND ${workflowStepGasWei} > ${workflowSponsoredGasWei}
+    return sql`${workflowExecutions.id} IN (
+      SELECT g.execution_id
+        FROM ${totals} AS g
+        LEFT JOIN ${workflowLedgerTotals} AS s ON s.execution_id = g.execution_id
+       WHERE g.unsponsored_gas_step
+         AND g.step_gas_wei > COALESCE(s.sponsored_gas_wei, 0)
     )`;
   }
   return sql`(
-    ${workflowStepGasWei} = 0
-    AND ${workflowSponsoredGasWei} = 0
-    AND NOT ${workflowSponsoredStep}
+    ${workflowExecutions.id} NOT IN (
+      SELECT g.execution_id FROM ${totals} AS g
+       WHERE g.step_gas_wei > 0 OR g.sponsored_step
+    )
+    AND ${workflowExecutions.id} NOT IN (
+      SELECT s.execution_id FROM ${workflowLedgerTotals} AS s
+       WHERE s.sponsored_gas_wei > 0
+    )
   )`;
 }
 
@@ -326,6 +363,7 @@ function gasCondition(
  */
 function workflowFilterConditions(
   filters: RunQueryFilters,
+  rangeStart: Date,
   skipStatuses = false
 ): SQL[] {
   const conditions: SQL[] = [];
@@ -335,7 +373,7 @@ function workflowFilterConditions(
   }
   const networks = filters.networks ?? [];
   if (networks.length > 0) {
-    conditions.push(workflowNetworkCondition(networks));
+    conditions.push(workflowNetworkCondition(networks, rangeStart));
   }
   if (filters.durationMinMs !== undefined) {
     conditions.push(
@@ -351,7 +389,9 @@ function workflowFilterConditions(
   if (search) {
     conditions.push(workflowSearchCondition(search));
   }
-  const gas = gasCondition(filters.gas ?? [], workflowGasCondition);
+  const gas = gasCondition(filters.gas ?? [], (value) =>
+    workflowGasCondition(value, rangeStart)
+  );
   if (gas) {
     conditions.push(gas);
   }
@@ -1256,7 +1296,7 @@ async function fetchWorkflowRuns(
     isNull(workflowExecutions.deletedAt),
   ];
 
-  conditions.push(...workflowFilterConditions(filters));
+  conditions.push(...workflowFilterConditions(filters, rangeStart));
 
   if (cursor) {
     conditions.push(lt(workflowExecutions.startedAt, new Date(cursor)));
@@ -1533,7 +1573,7 @@ async function getWorkflowRunsTotal(
   if (projectId) {
     conditions.push(eq(workflows.projectId, projectId));
   }
-  conditions.push(...workflowFilterConditions(filters));
+  conditions.push(...workflowFilterConditions(filters, rangeStart));
   const result = await db
     .select({ count: count() })
     .from(workflowExecutions)
@@ -1651,7 +1691,7 @@ async function computeStatusFacets(
             gte(workflowExecutions.startedAt, rangeStart),
             lt(workflowExecutions.startedAt, rangeEnd),
             isNull(workflowExecutions.deletedAt),
-            ...workflowFilterConditions(filters, true)
+            ...workflowFilterConditions(filters, rangeStart, true)
           )
         )
         // Group by the select ordinal: the CASE carries a bound parameter, and

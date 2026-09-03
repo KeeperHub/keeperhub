@@ -1,5 +1,6 @@
 import { randomBytes, scrypt } from "node:crypto";
 import type postgres from "postgres";
+import { CREDENTIAL_ACCOUNT_ISSUER } from "../../../../lib/auth/account-issuer";
 import { getDbConnection } from "./connection";
 
 // ---------------------------------------------------------------------------
@@ -188,8 +189,8 @@ async function ensureCredentialAccount(
   const hashedPassword = await hashPassword(password);
   const now = new Date();
   await sql`
-    INSERT INTO accounts (id, account_id, provider_id, user_id, password, created_at, updated_at)
-    VALUES (${generateId()}, ${userId}, 'credential', ${userId}, ${hashedPassword}, ${now}, ${now})
+    INSERT INTO accounts (id, account_id, provider_id, issuer, user_id, password, created_at, updated_at)
+    VALUES (${generateId()}, ${userId}, 'credential', ${CREDENTIAL_ACCOUNT_ISSUER}, ${userId}, ${hashedPassword}, ${now}, ${now})
   `;
 }
 
