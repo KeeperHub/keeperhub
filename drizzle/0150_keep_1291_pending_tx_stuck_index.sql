@@ -1,0 +1,34 @@
+-- @requires-db-prep
+-- KEEP-1291: partial index backing the stuck-pending-transaction gauge
+-- (keeperhub_web3_pending_transactions_stuck).
+--
+-- The gauge counts pending_transactions rows whose status is still 'pending'
+-- more than 15 minutes after submitted_at, grouped by chain_id, on every
+-- DB-metrics refresh. No existing index serves that predicate:
+-- idx_pending_tx_status leads on wallet_address, which the query does not
+-- filter on. Nothing prunes pending_transactions - there is no DELETE against
+-- it anywhere in the codebase - so without this index the query degrades into
+-- a sequential scan that grows with lifetime transaction volume, on a table
+-- that is only ever appended to. That is the failure mode
+-- metrics-db-review-gate.yml exists to catch (see
+-- docs/incidents/2026-05-29-db-cpu-spike.md).
+--
+-- The index is partial on status = 'pending', so it stays the size of the
+-- in-flight set rather than the table, and leading on submitted_at makes the
+-- age predicate a bounded range scan. chain_id is included so the GROUP BY is
+-- satisfied from the index.
+--
+-- The directive on line 1 makes db-prep-check.yml block merge until the
+-- matching db-prepped-<target-branch> label is set. Before setting it, build
+-- the index without holding a write lock:
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_pending_tx_stuck"
+--     ON "pending_transactions" USING btree ("submitted_at","chain_id")
+--     WHERE "status" = 'pending';
+-- then confirm it is valid:
+--   SELECT indexrelid::regclass, indisvalid FROM pg_index
+--   WHERE indexrelid = 'idx_pending_tx_stuck'::regclass;
+-- IF NOT EXISTS below then short-circuits before any lock. drizzle-kit emits a
+-- bare CREATE INDEX, which would take an ACCESS EXCLUSIVE lock on the table.
+CREATE INDEX IF NOT EXISTS "idx_pending_tx_stuck"
+  ON "pending_transactions" USING btree ("submitted_at","chain_id")
+  WHERE "pending_transactions"."status" = 'pending';

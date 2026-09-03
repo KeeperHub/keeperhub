@@ -564,6 +564,15 @@ export const pendingTransactions = pgTable(
       table.status
     ),
     index("idx_pending_tx_execution").on(table.executionId),
+    // KEEP-1291: backs the stuck-backlog gauge, which filters on status and
+    // submittedAt with no wallet_address to lead idx_pending_tx_status. The
+    // table is append-only - nothing prunes it - so an unpartitioned scan
+    // would grow with lifetime transaction volume on every metrics scrape.
+    // Partial on the live statuses only, so the index stays the size of the
+    // in-flight set rather than the table.
+    index("idx_pending_tx_stuck")
+      .on(table.submittedAt, table.chainId)
+      .where(sql`${table.status} = 'pending'`),
   ]
 );
 
