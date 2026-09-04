@@ -9,10 +9,11 @@ import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 const MAINNET_CHAIN_ID = 1;
 
 // Chains with their own stablecoin lineup that doesn't mirror Ethereum mainnet
-// (TEMPO mainnet/testnet, Plasma mainnet). These bypass the master-list overlay
-// and return only their own supported_tokens rows, avoiding misleading
-// "Not available" entries for assets that don't exist on the chain.
-const INDEPENDENT_TOKEN_LIST_CHAIN_IDS = [42_431, 4217, 9745];
+// (TEMPO mainnet/testnet, Plasma mainnet, Arc testnet). These bypass the
+// master-list overlay and return only their own supported_tokens rows,
+// avoiding misleading "Not available" entries for assets that don't exist on
+// the chain.
+const INDEPENDENT_TOKEN_LIST_CHAIN_IDS = [42_431, 4217, 9745, 5_042_002];
 
 /**
  * Build explorer URL for a token address

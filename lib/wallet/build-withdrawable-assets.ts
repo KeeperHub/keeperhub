@@ -28,6 +28,29 @@ export type BuildWithdrawableAssetsInput = {
 };
 
 const TEMPO_CHAIN_IDS: ReadonlySet<number> = new Set([42_431, 4217]);
+
+/**
+ * True for chains that use stablecoins for gas and so never show a native
+ * row at all. Categorical: unlike `nativeMirrorsSupportedToken` below, this
+ * does not depend on whether a token feed has loaded -- there is no native
+ * balance to reconcile against, just none to show.
+ */
+export function isTempoChain(chainId: number): boolean {
+  return TEMPO_CHAIN_IDS.has(chainId);
+}
+
+// Chains where the native gas balance and a supported_tokens row represent
+// the same underlying balance at two different decimal precisions (e.g.
+// Arc's native USDC at 18 decimals vs. its ERC-20 interface at 6 decimals).
+// This is the double-count set only -- Tempo is deliberately excluded (see
+// `isTempoChain`): Tempo hides its native row unconditionally because it has
+// no native gas token, not because two rows would double-count one balance.
+// This is the single source of truth for the set; other wallet modules
+// import it (or the helper) from here rather than re-declaring it.
+export const NATIVE_MIRRORS_TOKEN_CHAIN_IDS: ReadonlySet<number> = new Set([
+  5_042_002, // Arc Testnet (Circle)
+]);
+
 const DEFAULT_STABLECOIN_DECIMALS = 6;
 
 function hasPositiveBalance(raw: string): boolean {
@@ -35,12 +58,52 @@ function hasPositiveBalance(raw: string): boolean {
   return Number.isFinite(parsed) && parsed > 0;
 }
 
+/**
+ * Shape-agnostic: true when at least one row in a pre-filtered (already
+ * scoped to one chain) list carries a funded balance. Callers with a
+ * `chainId` field filter first; callers whose rows are already nested under
+ * a chain (no `chainId` field of their own) pass them straight through. This
+ * is the one place "funded" is decided so the withdraw path and the wallet
+ * digest can't drift on what counts as a real row.
+ */
+export function hasFundedMirrorRow(
+  rows: readonly { balance: string }[]
+): boolean {
+  return rows.some((row) => hasPositiveBalance(row.balance));
+}
+
+/**
+ * True when `chainId`'s native balance should be treated as already
+ * represented by a supported-token row -- i.e. it's a candidate chain AND a
+ * supported-token row for it actually exists in `supportedTokenBalances`
+ * and carries a positive balance. A row that exists only because a
+ * partial balanceOf failure pushed a "0" placeholder must not suppress the
+ * native asset -- that would hide and strip withdrawal from a real balance.
+ * Callers pass whatever supported-token feed they have on hand; a chain
+ * whose token seed failed or hasn't loaded yet keeps its native row visible
+ * and withdrawable rather than disappearing.
+ */
+export function nativeMirrorsSupportedToken(
+  chainId: number,
+  supportedTokenBalances: readonly { chainId: number; balance: string }[]
+): boolean {
+  return (
+    NATIVE_MIRRORS_TOKEN_CHAIN_IDS.has(chainId) &&
+    hasFundedMirrorRow(
+      supportedTokenBalances.filter((t) => t.chainId === chainId)
+    )
+  );
+}
+
 function collectNativeAssets(
   input: BuildWithdrawableAssetsInput
 ): WithdrawableAsset[] {
   const assets: WithdrawableAsset[] = [];
   for (const balance of input.balances) {
-    if (TEMPO_CHAIN_IDS.has(balance.chainId)) {
+    if (
+      isTempoChain(balance.chainId) ||
+      nativeMirrorsSupportedToken(balance.chainId, input.supportedTokenBalances)
+    ) {
       continue;
     }
     const chain = input.chains.find((c) => c.chainId === balance.chainId);

@@ -10,6 +10,9 @@ import {
 import { useCachedResource } from "@/lib/hooks/use-cached-resource";
 import {
   buildWithdrawableAssets,
+  hasFundedMirrorRow,
+  isTempoChain,
+  NATIVE_MIRRORS_TOKEN_CHAIN_IDS,
   type WithdrawableAsset,
 } from "@/lib/wallet/build-withdrawable-assets";
 import {
@@ -145,7 +148,16 @@ function fundedAssets(
 ): Omit<DigestAsset, "usdValue">[] {
   const assets: Omit<DigestAsset, "usdValue">[] = [];
   for (const chain of balances) {
-    if (positive(chain.nativeBalance)) {
+    // Tempo hides its native row unconditionally (no native gas token). Arc
+    // only hides its native row once a matching supported-token row has
+    // actually loaded and is funded; a partial token-seed failure must not
+    // make the balance both invisible and unwithdrawable. Shares the same
+    // "funded" predicate as the withdraw path so the two can't drift.
+    const hidesNativeRow =
+      isTempoChain(chain.chainId) ||
+      (NATIVE_MIRRORS_TOKEN_CHAIN_IDS.has(chain.chainId) &&
+        hasFundedMirrorRow(chain.supportedTokens ?? []));
+    if (!hidesNativeRow && positive(chain.nativeBalance)) {
       assets.push({
         balance: chain.nativeBalance,
         chainId: chain.chainId,

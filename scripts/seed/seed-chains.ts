@@ -624,6 +624,30 @@ const DEFAULT_CHAINS: NewChain[] = [
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "solana-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "solana-testnet" }),
   },
+  // Arc Testnet (Circle) - USDC is the native gas token, not ETH
+  {
+    chainId: getChainConfigValue("arc-testnet", "chainId", 5_042_002),
+    name: "Arc Testnet",
+    symbol: getChainConfigValue("arc-testnet", "symbol", "USDC"),
+    chainType: "evm",
+    defaultPrimaryRpc: getRpcUrlByChainId(5_042_002, "primary"),
+    defaultFallbackRpc: getRpcUrlByChainId(5_042_002, "fallback"),
+    defaultPrimaryWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[5_042_002].jsonKey,
+      type: "primary",
+    }),
+    defaultFallbackWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[5_042_002].jsonKey,
+      type: "fallback",
+    }),
+    isTestnet: getChainConfigValue("arc-testnet", "isTestnet", true),
+    isEnabled: getChainConfigValue("arc-testnet", "isEnabled", true),
+    status: "experimental",
+    usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "arc-testnet" }),
+    defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "arc-testnet" }),
+  },
 ];
 
 // Explorer configuration template for each chain (KEEP-1154)
@@ -874,6 +898,16 @@ const EXPLORER_CONFIG_TEMPLATES: Record<
     explorerAddressPath: "/account/{address}",
     explorerContractPath: "/account/{address}#anchorProgramIDL",
   },
+  // Arc Testnet - Blockscout
+  5042002: {
+    chainType: "evm",
+    explorerUrl: "https://testnet.arcscan.app",
+    explorerApiType: "blockscout",
+    explorerApiUrl: "https://testnet.arcscan.app/api",
+    explorerTxPath: "/tx/{hash}",
+    explorerAddressPath: "/address/{address}",
+    explorerContractPath: "/address/{address}?tab=contract",
+  },
 };
 
 async function seedChains() {
@@ -993,6 +1027,7 @@ async function seedChains() {
     "Robinhood Chain Testnet": 46_630,
     Solana: 101,
     "Solana Devnet": 103,
+    "Arc Testnet": 5_042_002,
   };
 
   const EXPLORER_CONFIGS: NewExplorerConfig[] = DEFAULT_CHAINS.map((chain) => {

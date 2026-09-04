@@ -31,6 +31,7 @@ import {
   hasIndependentTokenList,
   isTempoChain,
   MAINNET_CHAIN_ID,
+  nativeMirrorsSupportedToken,
 } from "./chain-utils";
 
 function buildTokenExplorerUrl(
@@ -385,6 +386,12 @@ export function ChainBalanceItem({
   );
 
   const isTempo = isTempoChain(balance.chainId);
+  // Tempo's rule is categorical (no native gas token); Arc's is a
+  // double-count guard gated on a funded token row. Different
+  // justifications, so kept as separate checks rather than folded into one
+  // membership test.
+  const hidesNativeRow =
+    isTempo || nativeMirrorsSupportedToken(balance.chainId, supportedTokenBalances);
   const isMainnet = balance.chainId === MAINNET_CHAIN_ID;
   const isIndependentTokenList = hasIndependentTokenList(balance.chainId);
 
@@ -440,7 +447,7 @@ export function ChainBalanceItem({
 
   const tokenList = (
     <div className="divide-y rounded border bg-background/50 px-2">
-      <NativeTokenRow balance={balance} />
+      {!hidesNativeRow && <NativeTokenRow balance={balance} />}
       {chainSupportedTokens.map((token) => (
         <TokenItemWithActions
           isAdmin={isAdmin}
@@ -475,7 +482,7 @@ export function ChainBalanceItem({
           <div className="font-medium text-muted-foreground text-xs">
             {tokenSectionLabel}
           </div>
-          {!isTempo && isAdmin && hasNativeBalance && (
+          {!hidesNativeRow && isAdmin && hasNativeBalance && (
             <Button
               className="h-7 px-2 text-xs"
               onClick={() => onWithdraw(balance.chainId)}
@@ -526,7 +533,7 @@ export function ChainBalanceItem({
               <ExternalLink className="h-3 w-3" />
             </a>
           )}
-          {!isTempo && isAdmin && hasNativeBalance && (
+          {!hidesNativeRow && isAdmin && hasNativeBalance && (
             <Button
               className="h-7 px-2 text-xs"
               onClick={() => onWithdraw(balance.chainId)}

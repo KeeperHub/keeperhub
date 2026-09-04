@@ -97,6 +97,10 @@ export const PUBLIC_RPCS = {
   // block triggers depend on the WSS URLs in CHAIN_RPC_CONFIG.
   SOLANA_MAINNET: "https://api.mainnet-beta.solana.com",
   SOLANA_DEVNET: "https://api.devnet.solana.com",
+  // Arc Testnet (Circle). USDC is the native gas token here, not ETH.
+  ARC_TESTNET: "https://rpc.testnet.arc.io",
+  ARC_TESTNET_FALLBACK: "https://rpc.drpc.testnet.arc.io",
+  ARC_TESTNET_WSS: "wss://rpc.testnet.arc.io",
 } as const;
 
 /**
@@ -302,6 +306,15 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     envKey: "CHAIN_SOLANA_DEVNET_PRIMARY_RPC",
     fallbackEnvKey: "CHAIN_SOLANA_DEVNET_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.SOLANA_DEVNET,
+  },
+  // Arc Testnet (Circle)
+  5042002: {
+    jsonKey: "arc-testnet",
+    envKey: "CHAIN_ARC_TESTNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_ARC_TESTNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.ARC_TESTNET,
+    publicFallback: PUBLIC_RPCS.ARC_TESTNET_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.ARC_TESTNET_WSS,
   },
 };
 
