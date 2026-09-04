@@ -217,6 +217,63 @@ describe("GET /api/openapi", () => {
     expect(op.requestBody).toBeDefined();
   });
 
+  it("MCP workflow-call 200 schemas carry static example values (#2105)", async () => {
+    mockDbSelect.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([
+          {
+            id: "wf-read-ex",
+            name: "Read Example",
+            description: null,
+            listedSlug: "read-example",
+            inputSchema: null,
+            priceUsdcPerCall: "0",
+            workflowType: "read",
+            category: null,
+            chain: null,
+          },
+          {
+            id: "wf-write-ex",
+            name: "Write Example",
+            description: null,
+            listedSlug: "write-example",
+            inputSchema: null,
+            priceUsdcPerCall: null,
+            workflowType: "write",
+            category: null,
+            chain: null,
+          },
+        ]),
+      }),
+    });
+
+    const { GET } = await import("@/app/api/openapi/route");
+    const request = new Request("https://app.keeperhub.com/api/openapi");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const readSchema =
+      body.paths["/api/mcp/workflows/read-example/call"].post.responses["200"]
+        .content["application/json"].schema;
+    expect(readSchema.example).toEqual({
+      executionId: "exec_example_000000000000000000000001",
+      status: "running",
+    });
+
+    const writeSchema =
+      body.paths["/api/mcp/workflows/write-example/call"].post.responses["200"]
+        .content["application/json"].schema;
+    expect(writeSchema.example.type).toBe("calldata");
+    expect(writeSchema.example).toEqual(
+      expect.objectContaining({
+        type: "calldata",
+        to: expect.stringMatching(/^0x[0-9a-fA-F]{40}$/),
+        data: expect.stringMatching(/^0x[0-9a-fA-F]*$/),
+        value: "0",
+      })
+    );
+  });
+
   it("free write workflows still declare `security: []` and no 402", async () => {
     mockDbSelect.mockReturnValue({
       from: vi.fn().mockReturnValue({
