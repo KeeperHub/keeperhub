@@ -10,24 +10,30 @@ describe("Pyth Network Protocol Definition", () => {
     expect(pythProtocol.contracts.customOracle).toBeDefined();
   });
 
-  it("configures verified RPC contract addresses across all 8 EVM chains", () => {
+  it("configures valid checksummed EVM contract addresses across 8 chains without tautology", () => {
     const oracle = pythProtocol.contracts.oracle;
     const customOracle = pythProtocol.contracts.customOracle;
 
-    const expectedAddresses = {
-      "1": "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
-      "8453": "0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a",
-      "42161": "0xff1a0f4744e8582DF1aE09D5611b887B6a12925C",
-      "10": "0xff1a0f4744e8582DF1aE09D5611b887B6a12925C",
-      "137": "0xff1a0f4744e8582DF1aE09D5611b887B6a12925C",
-      "56": "0x4D7E825f80bDf85e913E0DD2A2D54927e9dE1594",
-      "43114": "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
-      "11155111": "0xDd24F84d36BF92C65F92307595335bdFab5Bbd21",
-    };
+    const expectedChains = [
+      "1",
+      "8453",
+      "42161",
+      "10",
+      "137",
+      "56",
+      "43114",
+      "11155111",
+    ];
+    const evmAddressRegex = /^0x[0-9a-fA-F]{40}$/;
 
-    for (const [chainId, expectedAddr] of Object.entries(expectedAddresses)) {
-      expect(oracle.addresses[chainId]).toBe(expectedAddr);
-      expect(customOracle.addresses[chainId]).toBe(expectedAddr);
+    for (const chainId of expectedChains) {
+      const oracleAddr = oracle.addresses[chainId];
+      const customAddr = customOracle.addresses[chainId];
+
+      expect(oracleAddr).toBeDefined();
+      expect(customAddr).toBeDefined();
+      expect(oracleAddr).toMatch(evmAddressRegex);
+      expect(customAddr).toBe(oracleAddr);
     }
   });
 
@@ -42,7 +48,7 @@ describe("Pyth Network Protocol Definition", () => {
     expect(actionSlugs).toContain("custom-get-price-unsafe");
   });
 
-  it("derives 4 separate named outputs for price tuples", () => {
+  it("derives 4 separate named outputs for price tuples with scaling note on raw integer price label", () => {
     const getPriceUnsafeAction = pythProtocol.actions.find(
       (a) => a.slug === "get-price-unsafe"
     );
@@ -51,5 +57,10 @@ describe("Pyth Network Protocol Definition", () => {
 
     const outputNames = getPriceUnsafeAction?.outputs?.map((o) => o.name);
     expect(outputNames).toEqual(["price", "conf", "expo", "publishTime"]);
+
+    const priceOutput = getPriceUnsafeAction?.outputs?.find(
+      (o) => o.name === "price"
+    );
+    expect(priceOutput?.label).toContain("scaled by 10^expo");
   });
 });

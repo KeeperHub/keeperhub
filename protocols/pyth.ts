@@ -140,7 +140,11 @@ const PYTH_ABI = JSON.stringify([
 ]);
 
 const OUTPUT_OVERRIDES = {
-  price: { name: "price", label: "Price (int64 raw integer)" },
+  price: {
+    name: "price",
+    label:
+      "Price (int64 raw integer, scaled by 10^expo e.g. 190533915588 with expo -8 is $1905.33)",
+  },
   conf: { name: "conf", label: "Confidence Interval (uint64)" },
   expo: { name: "expo", label: "Exponent (int32)" },
   publishTime: { name: "publishTime", label: "Publish Time (Unix timestamp)" },
@@ -151,7 +155,7 @@ const ORACLE_OVERRIDES: Record<string, AbiFunctionOverride> = {
     slug: "get-price-unsafe",
     label: "Get Price (Unsafe)",
     description:
-      "Read the latest on-chain price tuple from the Pyth contract without age-stale revert.",
+      "Read the last pushed on-chain price of any age (check publishTime for freshness).",
     inputs: {
       id: { label: "Price Feed ID (bytes32 hex)" },
     },
@@ -182,7 +186,7 @@ const ORACLE_OVERRIDES: Record<string, AbiFunctionOverride> = {
     slug: "get-ema-price-unsafe",
     label: "Get EMA Price (Unsafe)",
     description:
-      "Read the latest on-chain EMA price tuple from Pyth contract without age-stale revert.",
+      "Read the last pushed on-chain EMA price of any age (check publishTime for freshness).",
     inputs: {
       id: { label: "Price Feed ID (bytes32 hex)" },
     },
@@ -216,7 +220,7 @@ const CUSTOM_ORACLE_OVERRIDES: Record<string, AbiFunctionOverride> = {
     slug: "custom-get-price-unsafe",
     label: "Get Price Unsafe (Custom Oracle)",
     description:
-      "Read latest price tuple from a custom Pyth oracle address without age-stale revert.",
+      "Read the last pushed on-chain price of any age from a custom Pyth oracle address.",
     inputs: {
       id: { label: "Price Feed ID (bytes32 hex)" },
     },
@@ -247,7 +251,7 @@ const CUSTOM_ORACLE_OVERRIDES: Record<string, AbiFunctionOverride> = {
     slug: "custom-get-ema-price-unsafe",
     label: "Get EMA Price Unsafe (Custom Oracle)",
     description:
-      "Read latest EMA price tuple from a custom Pyth oracle address without age-stale revert.",
+      "Read the last pushed on-chain EMA price of any age from a custom Pyth oracle address.",
     inputs: {
       id: { label: "Price Feed ID (bytes32 hex)" },
     },
