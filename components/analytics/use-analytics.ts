@@ -7,6 +7,7 @@ import {
   normalizeRunsResponse,
   type WireRunsResponse,
 } from "@/lib/analytics/runs-response";
+import { nextStreamRetry } from "@/lib/analytics/stream-retry";
 import type {
   AnalyticsSummary,
   NetworkBreakdown,
@@ -117,6 +118,13 @@ export function useAnalytics(): UseAnalyticsReturn {
   const eventSourceRef = useRef<EventSource | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const reconnectAttemptsRef = useRef(0);
+  // startSSE reopens itself from its own onerror, which it cannot reference
+  // directly inside its own useCallback.
+  const startSSERef = useRef<(() => void) | null>(null);
 
   const fetchData = useCallback(async (): Promise<void> => {
     if (!activeOrgId) {
@@ -186,6 +194,11 @@ export function useAnalytics(): UseAnalyticsReturn {
         setLoading(false);
         clearInterval(pollIntervalRef.current ?? undefined);
         pollIntervalRef.current = null;
+        // An auth failure must not reopen the stream on a pending backoff.
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
+        }
         eventSourceRef.current?.close();
         eventSourceRef.current = null;
       },
@@ -305,6 +318,13 @@ export function useAnalytics(): UseAnalyticsReturn {
     }
   }, []);
 
+  const cleanupReconnect = useCallback((): void => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+  }, []);
+
   const startPolling = useCallback((): void => {
     cleanupPolling();
     pollIntervalRef.current = setInterval(() => {
@@ -326,6 +346,9 @@ export function useAnalytics(): UseAnalyticsReturn {
     const source = new EventSource(`/api/analytics/stream?${query}`);
 
     source.onmessage = (event: MessageEvent): void => {
+      // A delivered message proves the stream is healthy, so the next close
+      // starts its backoff from zero rather than from the last outage.
+      reconnectAttemptsRef.current = 0;
       try {
         const parsed = JSON.parse(event.data as string) as {
           type: string;
@@ -347,7 +370,20 @@ export function useAnalytics(): UseAnalyticsReturn {
 
     source.onerror = (): void => {
       cleanupSSE();
-      startPolling();
+      cleanupReconnect();
+
+      // Polling is the last resort, not the response to a single close.
+      const retry = nextStreamRetry(reconnectAttemptsRef.current);
+      if (retry.action === "poll") {
+        startPolling();
+        return;
+      }
+
+      reconnectAttemptsRef.current += 1;
+      reconnectTimeoutRef.current = setTimeout(() => {
+        reconnectTimeoutRef.current = null;
+        startSSERef.current?.();
+      }, retry.delayMs);
     };
 
     eventSourceRef.current = source;
@@ -357,6 +393,7 @@ export function useAnalytics(): UseAnalyticsReturn {
     customStart,
     customEnd,
     cleanupSSE,
+    cleanupReconnect,
     setSummary,
     setLastUpdated,
     startPolling,
@@ -387,15 +424,18 @@ export function useAnalytics(): UseAnalyticsReturn {
     });
   }, [activeOrgId, fetchData]);
 
-  // SSE for real-time updates, falls back to polling on error
+  // SSE for real-time updates, reconnects on close, polls only if that fails
   useEffect(() => {
+    startSSERef.current = startSSE;
+    reconnectAttemptsRef.current = 0;
     startSSE();
 
     return (): void => {
       cleanupSSE();
       cleanupPolling();
+      cleanupReconnect();
     };
-  }, [startSSE, cleanupSSE, cleanupPolling]);
+  }, [startSSE, cleanupSSE, cleanupPolling, cleanupReconnect]);
 
   return { loading, error, refetch: fetchData };
 }
