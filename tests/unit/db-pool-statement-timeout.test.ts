@@ -63,15 +63,22 @@ function queryPool(options: PoolOptions[]): PoolOptions {
   return pool;
 }
 
-/** The analytics pool is the only one built with max: 3. */
+const ANALYTICS_POOL_MAX = 5;
+
+/**
+ * The analytics pool, found by its size.
+ *
+ * Matching on size alone would silently pick the wrong pool if another one of
+ * the same size were added, so this fails when the match is not unique.
+ */
 function analyticsPool(options: PoolOptions[]): PoolOptions {
-  const pool = options.find((o) => o.max === 3);
-  if (!pool) {
+  const matches = options.filter((o) => o.max === ANALYTICS_POOL_MAX);
+  if (matches.length !== 1) {
     throw new Error(
-      `no pool with max:3 among ${JSON.stringify(options)} - lib/db changed shape`
+      `expected exactly one pool with max:${ANALYTICS_POOL_MAX}, found ${matches.length} among ${JSON.stringify(options)} - lib/db changed shape`
     );
   }
-  return pool;
+  return matches[0];
 }
 
 describe("app pool statement_timeout", () => {
@@ -135,12 +142,12 @@ describe("analytics pool", () => {
     process.env = originalEnv;
   });
 
-  it("caps the dashboard at 3 connections per pod", async () => {
+  it("caps the dashboard at 5 connections per pod", async () => {
     const options = await loadPoolOptions();
 
     // The cap is the isolation. Whatever the dashboard does, it cannot reach
     // the app pool's 10 and starve the writes that keep runs alive.
-    expect(analyticsPool(options).max).toBe(3);
+    expect(analyticsPool(options).max).toBe(ANALYTICS_POOL_MAX);
   });
 
   it("is a separate pool from the main query pool", async () => {

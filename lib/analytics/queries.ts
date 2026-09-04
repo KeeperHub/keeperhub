@@ -2200,10 +2200,13 @@ export async function getAnalyticsChecksum(
   // has no column to map a Date through, the way the comparison helpers do.
   const from = rangeStart.toISOString();
 
-  const [wfMax, deMax, activeCount] = await Promise.all([
-    db
-      .execute<{ max_started: string }>(
-        sql`
+  // Sequential, not Promise.all. The stream runs this per open connection every
+  // poll interval, and three at once took the whole analytics pool for a tick,
+  // so page requests queued behind the streams watching them. Each arm is an
+  // index-only lookup, so the wall-clock cost of serialising is a few ms.
+  const wfMax = await db
+    .execute<{ max_started: string }>(
+      sql`
     SELECT COALESCE(MAX(latest.started_at), '1970-01-01')::text AS max_started
       FROM ${workflows} AS scoped_wf
       CROSS JOIN LATERAL (
@@ -2213,32 +2216,33 @@ export async function getAnalyticsChecksum(
            AND ${workflowExecutions.startedAt} >= ${from}
       ) AS latest
      WHERE scoped_wf.organization_id = ${organizationId}`
+    )
+    .then((r) => r[0]?.max_started ?? "");
+
+  const deMax = await db
+    .select({
+      maxCreated: sql<string>`COALESCE(MAX(${directExecutions.createdAt}), '1970-01-01')::text`,
+    })
+    .from(directExecutions)
+    .where(
+      and(
+        eq(directExecutions.organizationId, organizationId),
+        gte(directExecutions.createdAt, rangeStart)
       )
-      .then((r) => r[0]?.max_started ?? ""),
-    db
-      .select({
-        maxCreated: sql<string>`COALESCE(MAX(${directExecutions.createdAt}), '1970-01-01')::text`,
-      })
-      .from(directExecutions)
-      .where(
-        and(
-          eq(directExecutions.organizationId, organizationId),
-          gte(directExecutions.createdAt, rangeStart)
-        )
+    )
+    .then((r) => r[0]?.maxCreated ?? "");
+
+  const activeCount = await db
+    .select({ count: count() })
+    .from(workflowExecutions)
+    .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+    .where(
+      and(
+        eq(workflows.organizationId, organizationId),
+        sql`${workflowExecutions.status} IN ('pending', 'running')`
       )
-      .then((r) => r[0]?.maxCreated ?? ""),
-    db
-      .select({ count: count() })
-      .from(workflowExecutions)
-      .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
-      .where(
-        and(
-          eq(workflows.organizationId, organizationId),
-          sql`${workflowExecutions.status} IN ('pending', 'running')`
-        )
-      )
-      .then((r) => Number(r[0]?.count) || 0),
-  ]);
+    )
+    .then((r) => Number(r[0]?.count) || 0);
 
   return `${wfMax}|${deMax}|${activeCount}`;
 }
