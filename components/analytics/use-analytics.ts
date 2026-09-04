@@ -383,10 +383,10 @@ export function useAnalytics(): UseAnalyticsReturn {
       cleanupSSE();
       cleanupReconnect();
 
-      // Polling is the last resort, not the response to a single close.
+      // Only the summary rides this stream, and the refresh below runs whatever
+      // happens here, so giving up costs summary freshness and nothing else.
       const retry = nextStreamRetry(reconnectAttemptsRef.current);
-      if (retry.action === "poll") {
-        startPolling();
+      if (retry.action === "stop") {
         return;
       }
 
@@ -407,7 +407,6 @@ export function useAnalytics(): UseAnalyticsReturn {
     cleanupReconnect,
     setSummary,
     setLastUpdated,
-    startPolling,
     fetchData,
   ]);
 
@@ -435,11 +434,16 @@ export function useAnalytics(): UseAnalyticsReturn {
     });
   }, [activeOrgId, fetchData]);
 
-  // SSE for real-time updates, reconnects on close, polls only if that fails
+  // The stream carries the summary. The refresh keeps the runs table, the
+  // chart, the network panel and the status counts current, and it runs
+  // whatever the stream is doing: the stream emits no per-run event, so tying
+  // the refresh to a stream failure left those panels frozen for the life of
+  // the page while the header still showed a recent update time.
   useEffect(() => {
     startSSERef.current = startSSE;
     reconnectAttemptsRef.current = 0;
     startSSE();
+    startPolling();
 
     return (): void => {
       cleanupSSE();
@@ -447,7 +451,7 @@ export function useAnalytics(): UseAnalyticsReturn {
       cleanupReconnect();
       runRefreshRef.current?.cancel();
     };
-  }, [startSSE, cleanupSSE, cleanupPolling, cleanupReconnect]);
+  }, [startSSE, startPolling, cleanupSSE, cleanupPolling, cleanupReconnect]);
 
   return { loading, error, refetch: fetchData };
 }

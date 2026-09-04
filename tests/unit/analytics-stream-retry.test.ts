@@ -5,7 +5,7 @@ import {
 } from "@/lib/analytics/stream-retry";
 
 describe("nextStreamRetry", () => {
-  it("reconnects on the first close rather than polling", () => {
+  it("reconnects on the first close rather than giving up", () => {
     // The server recycles the stream on its lifetime, so close one is routine.
     expect(nextStreamRetry(0)).toEqual({ action: "reconnect", delayMs: 1000 });
   });
@@ -15,12 +15,12 @@ describe("nextStreamRetry", () => {
     expect(nextStreamRetry(2)).toEqual({ action: "reconnect", delayMs: 4000 });
   });
 
-  it("falls back to polling once the attempts are spent", () => {
+  it("stops once the attempts are spent", () => {
     expect(nextStreamRetry(SSE_RECONNECT_MAX_ATTEMPTS)).toEqual({
-      action: "poll",
+      action: "stop",
     });
     expect(nextStreamRetry(SSE_RECONNECT_MAX_ATTEMPTS + 1)).toEqual({
-      action: "poll",
+      action: "stop",
     });
   });
 
@@ -29,6 +29,6 @@ describe("nextStreamRetry", () => {
       action: "reconnect",
       delayMs: 500,
     });
-    expect(nextStreamRetry(1, 500, 1)).toEqual({ action: "poll" });
+    expect(nextStreamRetry(1, 500, 1)).toEqual({ action: "stop" });
   });
 });
