@@ -3,10 +3,6 @@
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useRef } from "react";
 import {
-  createLeadingDebounce,
-  type LeadingDebounce,
-} from "@/lib/analytics/leading-debounce";
-import {
   createPollScheduler,
   type PollScheduler,
 } from "@/lib/analytics/poll-scheduler";
@@ -45,9 +41,6 @@ import {
 import { authClient } from "@/lib/auth-client";
 
 const POLL_INTERVAL_MS = 10_000;
-// A busy organization emits run events faster than a refresh completes, so the
-// stream-triggered refresh is grouped into at most one pass per window.
-const RUN_REFRESH_WINDOW_MS = 2000;
 
 type UseAnalyticsReturn = {
   loading: boolean;
@@ -128,7 +121,6 @@ export function useAnalytics(): UseAnalyticsReturn {
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const pollSchedulerRef = useRef<PollScheduler | null>(null);
-  const runRefreshRef = useRef<LeadingDebounce | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
@@ -206,7 +198,6 @@ export function useAnalytics(): UseAnalyticsReturn {
         setLoading(false);
         pollSchedulerRef.current?.stop();
         pollSchedulerRef.current = null;
-        runRefreshRef.current?.cancel();
         // An auth failure must not reopen the stream on a pending backoff.
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
@@ -346,10 +337,6 @@ export function useAnalytics(): UseAnalyticsReturn {
   const startSSE = useCallback((): void => {
     cleanupSSE();
 
-    runRefreshRef.current?.cancel();
-    const refreshRuns = createLeadingDebounce(fetchData, RUN_REFRESH_WINDOW_MS);
-    runRefreshRef.current = refreshRuns;
-
     const query = buildQuery({
       range,
       projectId: projectId ?? undefined,
@@ -368,11 +355,12 @@ export function useAnalytics(): UseAnalyticsReturn {
           data: unknown;
         };
 
+        // summary and heartbeat are the only frames the stream sends. A
+        // heartbeat needs nothing beyond the counter reset above, and the
+        // periodic refresh keeps the rest of the page current.
         if (parsed.type === "summary") {
           setSummary(parsed.data as AnalyticsSummary);
           setLastUpdated(new Date());
-        } else if (parsed.type === "new-run" || parsed.type === "run-updated") {
-          refreshRuns.call();
         }
       } catch {
         // Ignore malformed SSE messages
@@ -407,7 +395,6 @@ export function useAnalytics(): UseAnalyticsReturn {
     cleanupReconnect,
     setSummary,
     setLastUpdated,
-    fetchData,
   ]);
 
   // Fetch on mount and when range/filters change
@@ -434,24 +421,25 @@ export function useAnalytics(): UseAnalyticsReturn {
     });
   }, [activeOrgId, fetchData]);
 
-  // The stream carries the summary. The refresh keeps the runs table, the
-  // chart, the network panel and the status counts current, and it runs
-  // whatever the stream is doing: the stream emits no per-run event, so tying
-  // the refresh to a stream failure left those panels frozen for the life of
-  // the page while the header still showed a recent update time.
+  // The stream carries the summary. Its query reads the range and the project,
+  // not the row filters, so changing a filter no longer recycles it.
   useEffect(() => {
     startSSERef.current = startSSE;
     reconnectAttemptsRef.current = 0;
     startSSE();
-    startPolling();
 
     return (): void => {
       cleanupSSE();
-      cleanupPolling();
       cleanupReconnect();
-      runRefreshRef.current?.cancel();
     };
-  }, [startSSE, startPolling, cleanupSSE, cleanupPolling, cleanupReconnect]);
+  }, [startSSE, cleanupSSE, cleanupReconnect]);
+
+  // The refresh keeps the runs table, the chart, the network panel and the
+  // status counts current, and runs whatever the stream is doing.
+  useEffect(() => {
+    startPolling();
+    return cleanupPolling;
+  }, [startPolling, cleanupPolling]);
 
   return { loading, error, refetch: fetchData };
 }
