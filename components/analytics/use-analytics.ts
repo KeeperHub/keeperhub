@@ -2,6 +2,10 @@
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useRef } from "react";
+import {
+  createPollScheduler,
+  type PollScheduler,
+} from "@/lib/analytics/poll-scheduler";
 import { buildRunsQuery } from "@/lib/analytics/runs-query";
 import {
   normalizeRunsResponse,
@@ -116,7 +120,7 @@ export function useAnalytics(): UseAnalyticsReturn {
   const setLastUpdated = useSetAtom(analyticsLastUpdatedAtom);
 
   const eventSourceRef = useRef<EventSource | null>(null);
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollSchedulerRef = useRef<PollScheduler | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
@@ -192,8 +196,8 @@ export function useAnalytics(): UseAnalyticsReturn {
         ctx.aborted = true;
         setError(message);
         setLoading(false);
-        clearInterval(pollIntervalRef.current ?? undefined);
-        pollIntervalRef.current = null;
+        pollSchedulerRef.current?.stop();
+        pollSchedulerRef.current = null;
         // An auth failure must not reopen the stream on a pending backoff.
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
@@ -312,10 +316,8 @@ export function useAnalytics(): UseAnalyticsReturn {
   }, []);
 
   const cleanupPolling = useCallback((): void => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
+    pollSchedulerRef.current?.stop();
+    pollSchedulerRef.current = null;
   }, []);
 
   const cleanupReconnect = useCallback((): void => {
@@ -327,11 +329,9 @@ export function useAnalytics(): UseAnalyticsReturn {
 
   const startPolling = useCallback((): void => {
     cleanupPolling();
-    pollIntervalRef.current = setInterval(() => {
-      fetchData().catch(() => {
-        /* polling errors handled in fetchData */
-      });
-    }, POLL_INTERVAL_MS);
+    const scheduler = createPollScheduler(fetchData, POLL_INTERVAL_MS);
+    pollSchedulerRef.current = scheduler;
+    scheduler.start();
   }, [cleanupPolling, fetchData]);
 
   const startSSE = useCallback((): void => {
