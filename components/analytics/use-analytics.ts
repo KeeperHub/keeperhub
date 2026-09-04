@@ -3,6 +3,10 @@
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useRef } from "react";
 import {
+  createLeadingDebounce,
+  type LeadingDebounce,
+} from "@/lib/analytics/leading-debounce";
+import {
   createPollScheduler,
   type PollScheduler,
 } from "@/lib/analytics/poll-scheduler";
@@ -41,6 +45,9 @@ import {
 import { authClient } from "@/lib/auth-client";
 
 const POLL_INTERVAL_MS = 10_000;
+// A busy organization emits run events faster than a refresh completes, so the
+// stream-triggered refresh is grouped into at most one pass per window.
+const RUN_REFRESH_WINDOW_MS = 2000;
 
 type UseAnalyticsReturn = {
   loading: boolean;
@@ -121,6 +128,7 @@ export function useAnalytics(): UseAnalyticsReturn {
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const pollSchedulerRef = useRef<PollScheduler | null>(null);
+  const runRefreshRef = useRef<LeadingDebounce | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
@@ -198,6 +206,7 @@ export function useAnalytics(): UseAnalyticsReturn {
         setLoading(false);
         pollSchedulerRef.current?.stop();
         pollSchedulerRef.current = null;
+        runRefreshRef.current?.cancel();
         // An auth failure must not reopen the stream on a pending backoff.
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
@@ -337,6 +346,10 @@ export function useAnalytics(): UseAnalyticsReturn {
   const startSSE = useCallback((): void => {
     cleanupSSE();
 
+    runRefreshRef.current?.cancel();
+    const refreshRuns = createLeadingDebounce(fetchData, RUN_REFRESH_WINDOW_MS);
+    runRefreshRef.current = refreshRuns;
+
     const query = buildQuery({
       range,
       projectId: projectId ?? undefined,
@@ -359,9 +372,7 @@ export function useAnalytics(): UseAnalyticsReturn {
           setSummary(parsed.data as AnalyticsSummary);
           setLastUpdated(new Date());
         } else if (parsed.type === "new-run" || parsed.type === "run-updated") {
-          fetchData().catch(() => {
-            /* SSE-triggered refresh errors handled in fetchData */
-          });
+          refreshRuns.call();
         }
       } catch {
         // Ignore malformed SSE messages
@@ -434,6 +445,7 @@ export function useAnalytics(): UseAnalyticsReturn {
       cleanupSSE();
       cleanupPolling();
       cleanupReconnect();
+      runRefreshRef.current?.cancel();
     };
   }, [startSSE, cleanupSSE, cleanupPolling, cleanupReconnect]);
 
