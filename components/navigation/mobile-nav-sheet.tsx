@@ -1,5 +1,6 @@
 "use client";
 
+import type { LucideIcon } from "lucide-react";
 import {
   Activity,
   BarChart3,
@@ -31,8 +32,13 @@ import {
   type MobileNavItem,
   visibleMobileNavItems,
 } from "./mobile-nav-items";
+import type { NavItemId } from "./nav-items-data";
 
-const ICONS: Record<string, typeof Globe> = {
+// Exhaustive over the mobile-reachable destinations (all NavItemId except the
+// desktop-only address-book flyout, which never appears on mobile). Keyed by
+// the shared union so a destination added to NAV_ITEMS_DATA without an icon is
+// a compile error here, not a silent Globe at runtime.
+const ICONS: Record<Exclude<NavItemId, "address-book">, LucideIcon> = {
   hub: Globe,
   workflows: WorkflowIcon,
   analytics: BarChart3,
@@ -96,7 +102,7 @@ export function MobileNavSheet(): React.ReactNode {
         <nav aria-label="Mobile navigation" className="flex flex-col gap-1 p-2">
           {visible.map((item) => {
             const active = isMobileNavActive(item.href, pathname);
-            const Icon = ICONS[item.id] ?? Globe;
+            const Icon = ICONS[item.id as keyof typeof ICONS] ?? Globe;
             return (
               <button
                 aria-current={active ? "page" : undefined}

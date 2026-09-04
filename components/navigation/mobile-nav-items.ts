@@ -11,6 +11,7 @@ export type MobileNavItem = {
   href: string;
   requireAuth: boolean;
   ownerOnly?: boolean;
+  adminOnly?: boolean;
 };
 
 // The mobile nav derives from the same NAV_ITEMS_DATA the desktop sidebar
@@ -36,13 +37,14 @@ export const MOBILE_NAV_ITEMS: MobileNavItem[] = [
         href,
         requireAuth: item.requireAuth,
         ownerOnly: item.ownerOnly,
+        adminOnly: item.adminOnly,
       },
     ];
   }),
   {
     id: SETTINGS_NAV_ITEM_DATA.id,
     label: SETTINGS_NAV_ITEM_DATA.label,
-    href: SETTINGS_NAV_ITEM_DATA.href as string,
+    href: SETTINGS_NAV_ITEM_DATA.href,
     requireAuth: SETTINGS_NAV_ITEM_DATA.requireAuth,
   },
 ];
@@ -57,7 +59,10 @@ export function visibleMobileNavItems(
   access: NavAccess,
   items: MobileNavItem[] = MOBILE_NAV_ITEMS
 ): MobileNavItem[] {
-  return items.filter((item) => !item.ownerOnly || access.isOwner);
+  return items.filter(
+    (item) =>
+      (!item.adminOnly || access.isAdmin) && (!item.ownerOnly || access.isOwner)
+  );
 }
 
 /** Whether a route is the active one for a nav destination. */
