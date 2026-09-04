@@ -15,7 +15,7 @@
  * components, metadata routes, and the proxy.
  */
 
-const TRAILING_SLASH = /\/$/;
+const TRAILING_SLASH = /\/+$/;
 
 const DEFAULT_APP_URL = "https://app.keeperhub.com";
 const DEFAULT_MARKETING_URL = "https://keeperhub.com";

@@ -2,6 +2,7 @@
   "$schema": "./plugin-allowlist.schema.json",
   "description": "Plugin allowlist - only plugins listed here will be enabled",
   "plugins": [
+    "agent-gateway",
     "blockscout",
     "code",
     "discord",
