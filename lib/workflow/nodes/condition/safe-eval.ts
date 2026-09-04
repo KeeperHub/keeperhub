@@ -548,6 +548,40 @@ function resolveMissingOperands(
   };
 }
 
+/** A string of digits only. Promoted to BigInt so magnitude never limits exactness. */
+const INTEGER_OPERAND_RE = /^\d+$/;
+/**
+ * A decimal with digits on both sides of a single point. BigInt cannot represent it, so it
+ * becomes a Number and carries the usual double precision limit. One point, so semver
+ * ("1.2.3") is not a decimal; digits only, so dates and addresses are not either.
+ */
+const DECIMAL_OPERAND_RE = /^\d+\.\d+$/;
+
+/**
+ * Coerce a relational operand so that numbers written as strings compare as numbers.
+ *
+ * `<`, `<=`, `>` and `>=` are documented as numeric ("Numeric less than" in
+ * docs/workflows/creating.md, `category: "number"` in the operator metadata the builder
+ * shows the user), but template resolution hands the evaluator its values as strings, so
+ * two operands would reach JavaScript's code-unit ordering and `"9" < "10"` would be false.
+ *
+ * Only digit strings move. Everything else - dates, semver, addresses, hashes, prose -
+ * keeps the behaviour it has today, because the only pairing that changes is a numeric
+ * string against another numeric value.
+ */
+function toRelationalOperand(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  if (INTEGER_OPERAND_RE.test(value)) {
+    return BigInt(value);
+  }
+  if (DECIMAL_OPERAND_RE.test(value)) {
+    return Number(value);
+  }
+  return value;
+}
+
 function applyBinary(
   operator: string,
   rawLeft: unknown,
@@ -567,13 +601,17 @@ function applyBinary(
       // biome-ignore lint/suspicious/noDoubleEquals: condition grammar intentionally supports loose != for cross-type comparisons
       return left != right;
     case ">":
-      return (left as number) > (right as number);
+      return (toRelationalOperand(left) as number) >
+        (toRelationalOperand(right) as number);
     case "<":
-      return (left as number) < (right as number);
+      return (toRelationalOperand(left) as number) <
+        (toRelationalOperand(right) as number);
     case ">=":
-      return (left as number) >= (right as number);
+      return (toRelationalOperand(left) as number) >=
+        (toRelationalOperand(right) as number);
     case "<=":
-      return (left as number) <= (right as number);
+      return (toRelationalOperand(left) as number) <=
+        (toRelationalOperand(right) as number);
     case "+":
       return (left as number) + (right as number);
     case "-":
