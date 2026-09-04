@@ -4,7 +4,8 @@ import { NextResponse } from "next/server";
 import { logAnonymousExecutionBlock } from "@/lib/auth-anonymous-guard";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { chargePaygIfBillable } from "@/lib/billing/payg/charge";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { isUniqueViolation } from "@/lib/db/errors";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { getMetricsCollector } from "@/lib/metrics";
 import { LabelKeys, MetricNames } from "@/lib/metrics/types";
@@ -35,7 +36,6 @@ import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
 import { executeWorkflowInBackground } from "@/lib/workflow/execute-in-background";
 import { loadWorkflowForExecution } from "@/lib/workflow/load-for-execution";
 import {
-  type ExecuteBody,
   resolveExecutionInput,
   topLevelInputDeprecationHeaders,
 } from "@/lib/workflow/resolve-execution-input";
@@ -211,14 +211,13 @@ export async function POST(
       );
     }
     const { input } = resolved;
-    const body: ExecuteBody = resolved.rawParsed;
 
     // The bare top-level shape is deprecated, and the notice has to ride every
     // response this handler returns from here on -- replays included. A caller
     // retrying with an Idempotency-Key would otherwise see it once and never
     // again, which is the opposite of what a migration window needs.
     const withDeprecation = (response: NextResponse): NextResponse => {
-      if (resolved.ok && resolved.deprecated) {
+      if (resolved.deprecated) {
         for (const [name, value] of topLevelInputDeprecationHeaders()) {
           response.headers.set(name, value);
         }
@@ -232,7 +231,7 @@ export async function POST(
       request,
       organizationId: workflow.organizationId,
       scope: `workflow-execute:${workflowId}`,
-      requestBody: body,
+      requestBody: resolved.rawParsed,
     });
     if (idem) {
       const early = idempotencyEarlyResponse(idem);
@@ -324,21 +323,62 @@ export async function POST(
         // pending (scheduler handoff) — continue: charge + start once
         console.log("[API] Using existing execution:", executionId);
       } else {
-        // Create new execution with provided ID
-        await withBackstopCapture(
-          { workflowId, userId, source: triggerSource },
-          () =>
-            db.insert(workflowExecutions).values({
-              id: executionId,
-              workflowId,
-              organizationId: workflow.organizationId,
-              userId,
-              status: "pending",
-              input,
-              ...attribution,
-              executedWorkflowHash,
-            })
-        );
+        // A miss on the lookup above means "no such execution *on this
+        // workflow*", which is not the same as "this id is free": the row may
+        // exist under another workflow, and the insert below would then
+        // violate the primary key. withBackstopCapture only special-cases
+        // 42501, so that violation would reach the outer catch and answer 500
+        // with the driver's constraint text in it.
+        //
+        // Answering the conflict here keeps the scoping fix from turning a
+        // client mistake into a 500, and the same branch absorbs the race
+        // where two concurrent requests both find the id free. 409 rather
+        // than 404: the caller asked to *create* a run under an id it chose,
+        // and the id is taken -- there is nothing for it to go look up. The
+        // response says only that: naming the owner would confirm a row this
+        // caller cannot see, and would be wrong anyway in the race case,
+        // where the winner is a run of this same workflow.
+        try {
+          await withBackstopCapture(
+            { workflowId, userId, source: triggerSource },
+            () =>
+              db.insert(workflowExecutions).values({
+                id: executionId,
+                workflowId,
+                organizationId: workflow.organizationId,
+                userId,
+                status: "pending",
+                input,
+                ...attribution,
+                executedWorkflowHash,
+              })
+          );
+        } catch (error) {
+          if (!isUniqueViolation(error)) {
+            throw error;
+          }
+          logUserError(
+            ErrorCategory.VALIDATION,
+            "[Execute] executionId already in use",
+            undefined,
+            { workflowId, endpoint: "/api/workflow/[workflowId]/execute" }
+          );
+          return recordIdempotentResponse(
+            idem,
+            withDeprecation(
+              NextResponse.json(
+                {
+                  error:
+                    "The provided executionId is already in use. Retry with a different id.",
+                  code: "execution_id_conflict",
+                  executionId,
+                },
+                { status: HttpStatus.CONFLICT }
+              )
+            ),
+            "release"
+          );
+        }
         console.log("[API] Created execution with provided ID:", executionId);
         createdHere = true;
       }

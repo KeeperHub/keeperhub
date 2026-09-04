@@ -29,6 +29,9 @@
 // caller-controlled string to the execution lookup in the route, which is
 // how a data field turns into a way to address someone else's execution row.
 
+import { deprecationHeaders } from "@/lib/api-versioning";
+import { docsUrl } from "@/lib/site/identity";
+
 const RECOGNIZED_TOP_LEVEL_KEYS = new Set(["input", "executionId"]);
 
 /**
@@ -38,22 +41,24 @@ const RECOGNIZED_TOP_LEVEL_KEYS = new Set(["input", "executionId"]);
  * note. A bespoke header would not be read by a client written against that
  * published contract.
  *
- * Both dates are fixed constants rather than computed from the current time,
- * so every response carries the same pair for the life of the deprecation.
- * `tests/unit/resolve-execution-input.test.ts` asserts the gap between them
- * stays at or above the documented 180-day minimum notice.
+ * Only the effective date is stated here. `Sunset` is derived from it inside
+ * `deprecationHeaders`, so the published DEPRECATION_NOTICE_DAYS minimum
+ * cannot be undercut by a hand-computed date, and the link is resolved
+ * against `docsUrl()` at emit time so a self-hosted deployment sends its
+ * callers to its own docs instead of ours.
  */
 export const TOP_LEVEL_INPUT_DEPRECATION = {
-  /** The date the deprecation took effect. */
-  effective: "2026-09-03",
-  /** Earliest date the bare shape may start returning 400. */
-  sunset: "2027-03-02",
-  link: "https://docs.keeperhub.com/api/workflows",
+  /**
+   * The day the deprecation takes effect. RFC 9745 permits a future date,
+   * read as "will be deprecated", so this is the intended ship date. Move it
+   * to the merge date if this sits: a date left in the past does not shorten
+   * the sunset, which is derived from it, but it does misreport when callers
+   * could first have seen the notice.
+   */
+  effective: "2026-09-16",
+  /** Joined onto `docsUrl()` at emit time; see above. */
+  linkPath: "/api/workflows",
 } as const;
-
-function toHttpDate(isoDay: string): string {
-  return new Date(`${isoDay}T00:00:00Z`).toUTCString();
-}
 
 /**
  * Header pairs announcing the bare-shape deprecation. Applied to every
@@ -63,11 +68,10 @@ function toHttpDate(isoDay: string): string {
  * for.
  */
 export function topLevelInputDeprecationHeaders(): [string, string][] {
-  return [
-    ["Deprecation", toHttpDate(TOP_LEVEL_INPUT_DEPRECATION.effective)],
-    ["Sunset", toHttpDate(TOP_LEVEL_INPUT_DEPRECATION.sunset)],
-    ["Link", `<${TOP_LEVEL_INPUT_DEPRECATION.link}>; rel="deprecation"`],
-  ];
+  return deprecationHeaders({
+    effective: TOP_LEVEL_INPUT_DEPRECATION.effective,
+    link: `${docsUrl()}${TOP_LEVEL_INPUT_DEPRECATION.linkPath}`,
+  });
 }
 
 export type ExecuteBody = {
@@ -160,6 +164,17 @@ export function resolveExecutionInput(rawBody: string): ResolvedExecutionInput {
     // field that happens to be called input. `executionId` is the opposite:
     // it only means anything as an envelope field when an envelope exists.
     const { input: _nullEnvelope, ...bareInput } = rawParsed;
+
+    // Then drop `__proto__` outright. The rest-destructure above has already
+    // defused it -- it lands as an own property rather than reaching
+    // Object.prototype's setter -- so this is not what stops the pollution.
+    // It stops the key from riding on into the workflow input and into the
+    // JSONB column, where it is inert only for as long as nothing deep-merges
+    // it. Nothing in lib/workflow/ deep-merges today. Carrying a key whose
+    // only possible use is to reintroduce the hazard buys nothing, and no
+    // caller can mean anything legitimate by sending it.
+    Reflect.deleteProperty(bareInput, "__proto__");
+
     return {
       ok: true,
       input: bareInput,

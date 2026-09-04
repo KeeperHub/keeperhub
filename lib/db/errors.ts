@@ -10,17 +10,47 @@
 
 export type CuratedDbError = { message: string; status: number };
 
+/**
+ * How far down the `cause` chain to look for the SQLSTATE. Drizzle wraps the
+ * driver error, and a caller that adds its own context wraps that again, so a
+ * single `err.cause.code` check misses real constraint violations. Bounded so
+ * a self-referential chain cannot spin.
+ */
+const MAX_CAUSE_DEPTH = 5;
+
 function pgErrorCode(err: unknown): string | undefined {
-  if (!err || typeof err !== "object") {
-    return undefined;
+  let current: unknown = err;
+  for (
+    let depth = 0;
+    depth < MAX_CAUSE_DEPTH && current && typeof current === "object";
+    depth++
+  ) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string") {
+      return code;
+    }
+    current = (current as { cause?: unknown }).cause;
   }
-  const e = err as { code?: string; cause?: { code?: string } };
-  return e.cause?.code ?? e.code;
+  return undefined;
+}
+
+/** Postgres `unique_violation`. */
+const UNIQUE_VIOLATION = "23505";
+
+/**
+ * True when a caught DB error is a Postgres unique/primary-key violation.
+ *
+ * Callers that can answer a duplicate meaningfully -- a 409 naming the field
+ * that collided -- need to tell it apart from a generic failure before
+ * reaching for `curateDbError`, whose message is deliberately generic.
+ */
+export function isUniqueViolation(err: unknown): boolean {
+  return pgErrorCode(err) === UNIQUE_VIOLATION;
 }
 
 /** Default curated response per Postgres SQLSTATE code. */
 const PG_CODE_DEFAULTS: Record<string, CuratedDbError> = {
-  "23505": { message: "This record already exists.", status: 409 },
+  [UNIQUE_VIOLATION]: { message: "This record already exists.", status: 409 },
   "23503": {
     message: "A related record is missing or still in use.",
     status: 409,

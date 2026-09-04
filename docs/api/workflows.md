@@ -272,6 +272,20 @@ curl -X POST https://app.keeperhub.com/api/workflows/wf_123/execute \
 }
 ```
 
+### Supplying your own executionId
+
+A nested-shape body may carry an `executionId` alongside `input` to run under
+an id you have already issued. The id is resolved within the workflow in the
+path, so it can only ever address a run belonging to that workflow.
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 200 | -- | The id names a run of this workflow that is already in flight; the existing run is returned rather than a second one started. |
+| 409 | `execution_already_terminal` | The id names a run of this workflow that has already finished. Retrying under the same id would charge twice. |
+| 409 | `execution_id_conflict` | The id is already taken by a run you cannot address from this workflow. Nothing about that run is disclosed -- retry with a different id. |
+
+An id that is free is created and run.
+
 ## Webhook Trigger
 
 ```http

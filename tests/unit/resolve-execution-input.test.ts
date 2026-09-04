@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEPRECATION_NOTICE_DAYS,
+  sunsetFor,
+  toStructuredFieldDate,
+} from "@/lib/api-versioning";
+import { docsUrl } from "@/lib/site/identity";
+import {
   resolveExecutionInput,
   TOP_LEVEL_INPUT_DEPRECATION,
   topLevelInputDeprecationHeaders,
@@ -249,16 +255,43 @@ describe("resolveExecutionInput", () => {
   });
 
   describe("deprecation notice", () => {
-    it("gives at least the documented 180 days between effective and sunset", () => {
+    const headerValue = (name: string): string | undefined =>
+      topLevelInputDeprecationHeaders().find(([key]) => key === name)?.[1];
+
+    // Against the published constant, not a literal: the point of the
+    // assertion is that this notice honours whatever minimum the API
+    // currently guarantees, so lowering DEPRECATION_NOTICE_DAYS without
+    // moving the sunset has to fail here.
+    it("gives at least the published minimum notice between effective and sunset", () => {
       const effective = new Date(
         `${TOP_LEVEL_INPUT_DEPRECATION.effective}T00:00:00Z`
       ).getTime();
-      const sunset = new Date(
-        `${TOP_LEVEL_INPUT_DEPRECATION.sunset}T00:00:00Z`
-      ).getTime();
+      const sunset = sunsetFor(TOP_LEVEL_INPUT_DEPRECATION.effective).getTime();
       const days = (sunset - effective) / 86_400_000;
 
-      expect(days).toBeGreaterThanOrEqual(180);
+      expect(days).toBeGreaterThanOrEqual(DEPRECATION_NOTICE_DAYS);
+    });
+
+    // RFC 9745 gives Deprecation a Structured Fields Date -- "@" plus integer
+    // epoch seconds. An HTTP-date here is not a lenient variant: a conforming
+    // parser rejects the field and treats it as absent, which is the silent
+    // drop this header exists to prevent.
+    it("sends Deprecation as a Structured Fields Date, not an HTTP-date", () => {
+      const deprecation = headerValue("Deprecation");
+
+      expect(deprecation).toBe(
+        toStructuredFieldDate(TOP_LEVEL_INPUT_DEPRECATION.effective)
+      );
+      expect(deprecation).toMatch(/^@\d+$/);
+    });
+
+    // RFC 8594 gives Sunset an HTTP-date. The two headers genuinely disagree
+    // on format; asserting both keeps a well-meaning "consistency" fix from
+    // breaking one of them.
+    it("sends Sunset as an HTTP-date derived from the effective date", () => {
+      expect(headerValue("Sunset")).toBe(
+        sunsetFor(TOP_LEVEL_INPUT_DEPRECATION.effective).toUTCString()
+      );
     });
 
     it("emits the published header names rather than a bespoke one", () => {
@@ -268,11 +301,30 @@ describe("resolveExecutionInput", () => {
     });
 
     it('points Link at the migration note with rel="deprecation"', () => {
-      const link = topLevelInputDeprecationHeaders().find(
-        ([name]) => name === "Link"
-      );
+      const link = headerValue("Link");
 
-      expect(link?.[1]).toContain('rel="deprecation"');
+      expect(link).toBe(
+        `<${docsUrl()}${TOP_LEVEL_INPUT_DEPRECATION.linkPath}>; rel="deprecation"`
+      );
+    });
+
+    // Resolved through docsUrl() at emit time rather than hardcoded, so a
+    // self-hosted deployment points its own callers at its own docs instead
+    // of ours.
+    it("resolves the Link against this deployment's docs origin", () => {
+      const original = process.env.DOCS_BASE_URL;
+      process.env.DOCS_BASE_URL = "https://docs.self-hosted.example";
+      try {
+        expect(headerValue("Link")).toBe(
+          `<https://docs.self-hosted.example${TOP_LEVEL_INPUT_DEPRECATION.linkPath}>; rel="deprecation"`
+        );
+      } finally {
+        if (original === undefined) {
+          delete process.env.DOCS_BASE_URL;
+        } else {
+          process.env.DOCS_BASE_URL = original;
+        }
+      }
     });
   });
 });

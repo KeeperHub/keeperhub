@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import { API_VERSION, DEPRECATION_NOTICE_DAYS } from "@/lib/api-versioning";
 import { db } from "@/lib/db";
 import { workflows } from "@/lib/db/schema";
 import { sanitizeDescription } from "@/lib/sanitize-description";
@@ -53,15 +54,9 @@ type DiscoveryWorkflow = {
 // were simply never written down where a machine could read them.
 // ---------------------------------------------------------------------------
 
-/** Current major version of the REST surface. */
-const API_VERSION = "1";
-
-/**
- * Minimum notice, in days, between an endpoint gaining a `Deprecation` header
- * and the `Sunset` date it carries. Published so a caller can plan against the
- * guarantee rather than discovering it when something stops answering.
- */
-const DEPRECATION_NOTICE_DAYS = 180;
+// API_VERSION and DEPRECATION_NOTICE_DAYS come from lib/api-versioning.ts,
+// which is also what the endpoints emitting Deprecation headers build against.
+// This document publishes the contract; that module is the contract.
 
 const VERSION_PARAMETER = {
   name: "KeeperHub-Version",
@@ -448,9 +443,9 @@ export async function GET(request: Request): Promise<Response> {
       deprecation: {
         headers: ["Deprecation", "Sunset", "Link"],
         deprecationHeader:
-          "RFC 9745. Present once an endpoint or version is deprecated; carries the date the deprecation took effect.",
+          'RFC 9745. Present once an endpoint or version is deprecated; carries the date the deprecation took effect as a Structured Fields Date - an "@" sigil followed by integer seconds since the Unix epoch, e.g. "@1789516800". Not an HTTP-date; Sunset is.',
         sunsetHeader:
-          "RFC 8594. The earliest date the endpoint may stop answering.",
+          "RFC 8594. The earliest date the endpoint may stop answering, as an HTTP-date.",
         linkHeader:
           'Link: <url>; rel="deprecation" points at the migration note.',
         minimumNoticeDays: DEPRECATION_NOTICE_DAYS,

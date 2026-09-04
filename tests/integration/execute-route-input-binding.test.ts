@@ -20,6 +20,10 @@ const mockCheckConcurrencyLimit = vi.fn();
 const mockChargePaygIfBillable = vi.fn();
 const mockExecuteWorkflowInBackground = vi.fn();
 const mockBeginIdempotentFromRequest = vi.fn();
+const mockIdempotencyEarlyResponse = vi.fn();
+const mockRecordIdempotentResponse = vi.fn(
+  (_idem: unknown, response: Response) => response
+);
 const mockDbInsertValues = vi.fn();
 
 vi.mock("@/lib/internal-service-auth", () => ({
@@ -54,8 +58,8 @@ vi.mock("@/lib/db/org-helpers", () => ({
 }));
 vi.mock("@/lib/idempotency", () => ({
   beginIdempotentFromRequest: mockBeginIdempotentFromRequest,
-  idempotencyEarlyResponse: vi.fn().mockReturnValue(null),
-  recordIdempotentResponse: vi.fn((_idem, response) => response),
+  idempotencyEarlyResponse: mockIdempotencyEarlyResponse,
+  recordIdempotentResponse: mockRecordIdempotentResponse,
 }));
 vi.mock("@/lib/security/backstop-capture", () => ({
   withBackstopCapture: vi.fn((_ctx, fn: () => unknown) => fn()),
@@ -77,9 +81,48 @@ vi.mock("@/lib/metrics/types", () => ({
   LabelKeys: { TRIGGER_TYPE: "trigger_type" },
 }));
 const mockOwnerLimit = vi.fn().mockResolvedValue([{ orgDeactivatedAt: null }]);
+// The whole point of two of the tests below is that the execution lookup is
+// scoped by workflowId. A findFirst mock that ignores its `where` cannot show
+// that -- it answers the same whichever predicate the route built. So `and` /
+// `eq` are replaced with a tiny term representation, and findFirst evaluates
+// the term against an in-memory table. Everything else in drizzle-orm passes
+// through untouched.
+type Term =
+  | { op: "eq"; column: string; value: unknown }
+  | { op: "and"; parts: Term[] };
+
+vi.mock("drizzle-orm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("drizzle-orm")>();
+  return {
+    ...actual,
+    and: (...parts: Term[]): Term => ({ op: "and", parts }),
+    eq: (column: string, value: unknown): Term => ({ op: "eq", column, value }),
+  };
+});
+
+type ExecutionRow = { id: string; workflow_id: string; status: string };
+
+const executionRows: ExecutionRow[] = [];
+
+function matches(row: ExecutionRow, term: Term): boolean {
+  if (term.op === "and") {
+    return term.parts.every((part) => matches(row, part));
+  }
+  return (
+    (row as unknown as Record<string, unknown>)[term.column] === term.value
+  );
+}
+
+const mockExecutionsFindFirst = vi.fn(({ where }: { where: Term }) =>
+  Promise.resolve(executionRows.find((row) => matches(row, where)))
+);
+
 vi.mock("@/lib/db", () => ({
   db: {
-    query: { workflows: { findFirst: vi.fn() } },
+    query: {
+      workflows: { findFirst: vi.fn() },
+      workflowExecutions: { findFirst: mockExecutionsFindFirst },
+    },
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         leftJoin: vi.fn(() => ({
@@ -99,11 +142,15 @@ vi.mock("@/lib/db/schema", () => ({
   users: { id: "id", deactivatedAt: "deactivated_at" },
   workflows: { id: "id", userId: "user_id", organizationId: "organization_id" },
   organization: { id: "id", deactivatedAt: "deactivated_at" },
-  workflowExecutions: { id: "id" },
+  workflowExecutions: { id: "id", workflowId: "workflow_id" },
 }));
 vi.mock("@/lib/logging", () => ({
-  ErrorCategory: { WORKFLOW_ENGINE: "workflow_engine" },
+  ErrorCategory: {
+    WORKFLOW_ENGINE: "workflow_engine",
+    VALIDATION: "validation",
+  },
   logSystemError: vi.fn(),
+  logUserError: vi.fn(),
 }));
 
 const workflow = {
@@ -164,6 +211,11 @@ describe("execute route - input binding", () => {
     });
     mockChargePaygIfBillable.mockResolvedValue({ applicable: false });
     mockBeginIdempotentFromRequest.mockResolvedValue(null);
+    mockIdempotencyEarlyResponse.mockReturnValue(null);
+    mockRecordIdempotentResponse.mockImplementation(
+      (_idem: unknown, response: Response) => response
+    );
+    executionRows.length = 0;
     mockDbInsertValues.mockReturnValue({
       returning: vi.fn().mockResolvedValue([{ id: "exec_1" }]),
     });
@@ -247,5 +299,171 @@ describe("execute route - input binding", () => {
     const data = await response.json();
     expect(data.field).toBe("input");
     expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+  });
+
+  // The notice has to survive the paths a caller actually hits on a retry or a
+  // billing failure, not just the happy path -- a caller who only ever sees
+  // replays would otherwise never learn the shape is going away.
+  //
+  // Two of the five wrapped return sites are unreachable with a deprecated
+  // body and so are not covered here: the terminal-409 and running-200
+  // branches are behind an *envelope* executionId, and a body carrying an
+  // envelope is by definition not the bare shape. Wrapping them anyway keeps
+  // "every post-resolution response carries the notice" true by construction
+  // rather than by case analysis, which is why they stay wrapped.
+  describe("deprecation headers on non-success responses", () => {
+    it("carries the notice on an idempotent replay", async () => {
+      mockBeginIdempotentFromRequest.mockResolvedValue({ key: "idem_1" });
+      mockIdempotencyEarlyResponse.mockReturnValue({
+        body: { executionId: "exec_1", status: "running" },
+        status: 200,
+      });
+
+      const response = await callExecute(JSON.stringify({ amount: "1" }));
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Deprecation")).toMatch(/^@\d+$/);
+      expect(response.headers.get("Sunset")).toBeTruthy();
+      expect(response.headers.get("Link")).toContain('rel="deprecation"');
+      expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+    });
+
+    it("carries the notice on a 402 from a failed PAYG charge", async () => {
+      mockChargePaygIfBillable.mockResolvedValue({
+        applicable: true,
+        ok: false,
+        message: "Payment required",
+      });
+
+      const response = await callExecute(JSON.stringify({ amount: "1" }));
+
+      expect(response.status).toBe(402);
+      expect(response.headers.get("Deprecation")).toMatch(/^@\d+$/);
+      expect(response.headers.get("Sunset")).toBeTruthy();
+      expect(response.headers.get("Link")).toContain('rel="deprecation"');
+    });
+
+    it("sends no notice on the nested shape's 402", async () => {
+      mockChargePaygIfBillable.mockResolvedValue({
+        applicable: true,
+        ok: false,
+        message: "Payment required",
+      });
+
+      const response = await callExecute(
+        JSON.stringify({ input: { amount: "1" } })
+      );
+
+      expect(response.status).toBe(402);
+      expect(response.headers.get("Deprecation")).toBeNull();
+    });
+  });
+
+  // A caller-supplied executionId addresses a row. Scoping the lookup to the
+  // workflow in the path is what stops it addressing someone else's -- and
+  // these go through a findFirst that actually evaluates the predicate, so an
+  // unscoped `where` fails them rather than passing on a stubbed answer.
+  describe("caller-supplied executionId", () => {
+    const uniqueViolation = (): Error =>
+      Object.assign(new Error("insert failed"), {
+        cause: Object.assign(new Error("duplicate key value"), {
+          code: "23505",
+        }),
+      });
+
+    it("adopts a pre-created row belonging to this workflow", async () => {
+      executionRows.push({
+        id: "exec_pre",
+        workflow_id: "wf_1",
+        status: "running",
+      });
+
+      const response = await callExecute(
+        JSON.stringify({ executionId: "exec_pre", input: { amount: "1" } })
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        executionId: "exec_pre",
+        status: "running",
+      });
+      expect(mockDbInsertValues).not.toHaveBeenCalled();
+    });
+
+    it("answers 409 for an executionId that belongs to another workflow, without disclosing its state", async () => {
+      executionRows.push({
+        id: "exec_other",
+        workflow_id: "wf_2",
+        status: "success",
+      });
+      mockDbInsertValues.mockImplementationOnce(() =>
+        Promise.reject(uniqueViolation())
+      );
+
+      const response = await callExecute(
+        JSON.stringify({ executionId: "exec_other", input: { amount: "1" } })
+      );
+
+      expect(response.status).toBe(409);
+      const data = await response.json();
+      expect(data.code).toBe("execution_id_conflict");
+      expect(data.executionId).toBe("exec_other");
+      // Not "execution_already_terminal", and no status field: the row is on
+      // another workflow, so its state is not this caller's to read.
+      expect(data.status).toBeUndefined();
+      expect(JSON.stringify(data)).not.toContain("duplicate key");
+      expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+    });
+
+    it("creates the row when the supplied executionId is free", async () => {
+      const response = await callExecute(
+        JSON.stringify({ executionId: "exec_free", input: { amount: "1" } })
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockDbInsertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "exec_free", workflowId: "wf_1" })
+      );
+      expect(mockExecuteWorkflowInBackground).toHaveBeenCalledWith(
+        "exec_free",
+        "wf_1",
+        workflow.nodes,
+        workflow.edges,
+        { amount: "1" },
+        expect.anything(),
+        workflow.organizationId,
+        workflow.userId,
+        undefined,
+        undefined
+      );
+    });
+
+    it("does not treat a bare top-level executionId as an envelope field", async () => {
+      executionRows.push({
+        id: "exec_other",
+        workflow_id: "wf_2",
+        status: "success",
+      });
+
+      const response = await callExecute(
+        JSON.stringify({ executionId: "exec_other", amount: "1" })
+      );
+
+      expect(response.status).toBe(200);
+      // Never looked up: in the bare shape that key is the caller's data.
+      expect(mockExecutionsFindFirst).not.toHaveBeenCalled();
+      expect(mockExecuteWorkflowInBackground).toHaveBeenCalledWith(
+        "exec_1",
+        "wf_1",
+        workflow.nodes,
+        workflow.edges,
+        { executionId: "exec_other", amount: "1" },
+        expect.anything(),
+        workflow.organizationId,
+        workflow.userId,
+        undefined,
+        undefined
+      );
+    });
   });
 });
