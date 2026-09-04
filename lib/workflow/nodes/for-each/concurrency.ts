@@ -4,16 +4,16 @@
  * Extracted from the workflow executor to enable isolated unit testing.
  */
 
+import {
+  FOR_EACH_BODY_FAILURE_MARKER,
+  type ForEachIterationFailure,
+} from "@/lib/workflow/nodes/for-each/iteration-failure";
+
 export type ConcurrencyMode = "sequential" | "parallel" | "custom";
 
 export type IterationExecutor<T> = (item: T, index: number) => Promise<unknown>;
 
 export type ErrorHandler = (error: unknown) => Promise<string>;
-
-interface IterationFailure {
-  success: false;
-  error: string;
-}
 
 /**
  * Run iterations over `items` with the specified concurrency strategy.
@@ -23,8 +23,8 @@ interface IterationFailure {
  * - **custom**: worker-pool with at most `concurrencyLimit` concurrent.
  *
  * Results are always returned in iteration order regardless of mode.
- * Individual iteration failures are captured as `{ success: false, error }`,
- * they never abort sibling iterations.
+ * Individual iteration failures are captured as tagged `{ success: false, error }`
+ * objects (`__forEachBodyFailure`), they never abort sibling iterations.
  */
 export async function runIterations<T>(
   items: T[],
@@ -61,9 +61,10 @@ async function runSequential<T>(
     } catch (error) {
       const errorMessage = await handleError(error);
       results.push({
+        [FOR_EACH_BODY_FAILURE_MARKER]: true,
         success: false,
         error: errorMessage,
-      } satisfies IterationFailure);
+      } satisfies ForEachIterationFailure);
     }
   }
   return results;
@@ -84,9 +85,10 @@ async function runParallel<T>(
     } else {
       const errorMessage = await handleError(entry.reason);
       results.push({
+        [FOR_EACH_BODY_FAILURE_MARKER]: true,
         success: false,
         error: errorMessage,
-      } satisfies IterationFailure);
+      } satisfies ForEachIterationFailure);
     }
   }
   return results;
@@ -109,9 +111,10 @@ async function runWorkerPool<T>(
       } catch (error) {
         const errorMessage = await handleError(error);
         results[i] = {
+          [FOR_EACH_BODY_FAILURE_MARKER]: true,
           success: false,
           error: errorMessage,
-        } satisfies IterationFailure;
+        } satisfies ForEachIterationFailure;
       }
     }
   };

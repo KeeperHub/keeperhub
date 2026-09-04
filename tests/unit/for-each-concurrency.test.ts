@@ -121,9 +121,17 @@ describe("runIterations - sequential", () => {
     );
     expect(results).toEqual([
       10,
-      { success: false, error: "Iteration 1 failed" },
+      {
+        __forEachBodyFailure: true,
+        success: false,
+        error: "Iteration 1 failed",
+      },
       30,
-      { success: false, error: "Iteration 3 failed" },
+      {
+        __forEachBodyFailure: true,
+        success: false,
+        error: "Iteration 3 failed",
+      },
     ]);
   });
 
@@ -134,7 +142,13 @@ describe("runIterations - sequential", () => {
       simpleErrorHandler,
       "sequential"
     );
-    expect(results).toEqual([{ success: false, error: "Iteration 0 failed" }]);
+    expect(results).toEqual([
+      {
+        __forEachBodyFailure: true,
+        success: false,
+        error: "Iteration 0 failed",
+      },
+    ]);
   });
 
   it("handles all iterations failing", async () => {
@@ -145,6 +159,7 @@ describe("runIterations - sequential", () => {
       "sequential"
     );
     for (const result of results) {
+      expect(result).toHaveProperty("__forEachBodyFailure", true);
       expect(result).toHaveProperty("success", false);
       expect(result).toHaveProperty("error");
     }
@@ -262,9 +277,17 @@ describe("runIterations - parallel", () => {
       "parallel"
     );
     expect(results).toEqual([
-      { success: false, error: "Iteration 0 failed" },
+      {
+        __forEachBodyFailure: true,
+        success: false,
+        error: "Iteration 0 failed",
+      },
       20,
-      { success: false, error: "Iteration 2 failed" },
+      {
+        __forEachBodyFailure: true,
+        success: false,
+        error: "Iteration 2 failed",
+      },
       40,
     ]);
   });
@@ -398,10 +421,18 @@ describe("runIterations - custom", () => {
     );
     expect(results).toEqual([
       10,
-      { success: false, error: "Iteration 1 failed" },
+      {
+        __forEachBodyFailure: true,
+        success: false,
+        error: "Iteration 1 failed",
+      },
       30,
       40,
-      { success: false, error: "Iteration 4 failed" },
+      {
+        __forEachBodyFailure: true,
+        success: false,
+        error: "Iteration 4 failed",
+      },
       60,
     ]);
   });
@@ -536,6 +567,7 @@ describe("runIterations - edge cases", () => {
       const results = await runIterations([1], executor, handler, mode, 3);
       expect(handler).toHaveBeenCalledOnce();
       expect(results[0]).toEqual({
+        __forEachBodyFailure: true,
         success: false,
         error: "caught: string-error",
       });
@@ -572,6 +604,7 @@ describe("runIterations - error handler", () => {
       "sequential"
     );
     expect(results[0]).toEqual({
+      __forEachBodyFailure: true,
       success: false,
       error: "custom-error-message",
     });
@@ -604,6 +637,10 @@ describe("runIterations - error handler", () => {
       slowHandler,
       "parallel"
     );
-    expect(results[0]).toEqual({ success: false, error: "slow-error" });
+    expect(results[0]).toEqual({
+      __forEachBodyFailure: true,
+      success: false,
+      error: "slow-error",
+    });
   });
 });

@@ -26,6 +26,11 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+vi.mock("@/lib/step-registry", () => ({
+  getActionLabel: (actionType: string) => actionType,
+  getStepImporter: () => undefined,
+}));
+
 import { buildEdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-utils";
 import { buildEdgesBySource } from "@/lib/workflow/executor/convergence-barrier";
 import { identifyLoopBody } from "@/lib/workflow/executor/executor.workflow";
@@ -33,6 +38,7 @@ import {
   type BodyExecutionResult,
   type BodyNodeOutputs,
   type BodyStepRunner,
+  type NestedForEachHandler,
   type RunBodyContext,
   runBodyNode,
   type SpuriousRecoveryResolver,
@@ -98,6 +104,8 @@ type RunIterationOptions = {
   resolveSpuriousRecovery?: SpuriousRecoveryResolver;
   /** KEEP-543: Optional callback fired on successful recovery. */
   onSpuriousRecovery?: RunBodyContext["onSpuriousRecovery"];
+  /** Optional nested For Each handler factory (receives the live ctx). */
+  nestedForEachHandler?: (ctx: RunBodyContext) => NestedForEachHandler;
 };
 
 type RunIterationOutcome = {
@@ -174,6 +182,10 @@ async function runIteration(
       workflowId: "wf-test",
     } satisfies Omit<StepContext, "nodeId" | "nodeName" | "nodeType">,
   };
+
+  if (options.nestedForEachHandler) {
+    ctx.handleNestedForEach = options.nestedForEachHandler(ctx);
+  }
 
   const firstBodyNodes = bodyEdgesBySource.get(forEachNodeId) ?? [];
   for (const bodyNodeId of firstBodyNodes) {
@@ -973,5 +985,75 @@ describe("runBodyNode: KEEP-543 / KEEP-586 authority-backed recovery", () => {
 
     expect(bodyResults.read?.success).toBe(false);
     expect(bodyResults.decode).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// Nested For Each failure propagation (PR #2217 Joel review)
+// ===========================================================================
+
+describe("runBodyNode: nested For Each failure stops inner continuation", () => {
+  it("marks the nested For Each failed and skips inner downstream when inner body fails", async () => {
+    const nodes = [
+      makeForEach("outer-fe", "Outer loop"),
+      makeForEach("inner-fe", "Inner loop"),
+      makeAction("fail-step", "web3/read-contract", "Failing step"),
+      makeAction("inner-post", "web3/read-contract", "Inner post-loop"),
+    ];
+    const edges = [
+      edge("outer-fe", "inner-fe", "loop"),
+      edge("inner-fe", "fail-step", "loop"),
+      edge("inner-fe", "inner-post", "done"),
+    ];
+
+    const { bodyResults, visitOrder } = await runIteration({
+      nodes,
+      edges,
+      forEachNodeId: "outer-fe",
+      stepResultFor: (nodeId) => {
+        if (nodeId === "fail-step") {
+          return { success: false, error: "inner body failed" };
+        }
+        return { success: true, data: { ok: true } };
+      },
+      nestedForEachHandler:
+        (ctx) =>
+        async ({ forEachNodeId }) => {
+          const edgesBySource = buildEdgesBySource(edges);
+          const fullHandleMap = buildEdgesBySourceHandle(edges);
+          const innerBody = identifyLoopBody(
+            forEachNodeId,
+            edgesBySource,
+            new Map(ctx.nodeMap),
+            fullHandleMap
+          );
+          const innerBodyNodes =
+            innerBody.bodyEdgesBySource.get(forEachNodeId) ?? [];
+          for (const bodyNodeId of innerBodyNodes) {
+            await runBodyNode(bodyNodeId, ctx);
+          }
+          const failResult = ctx.bodyResults["fail-step"];
+          return {
+            arrayLength: 1,
+            maxIterations: 1,
+            iterationsRan: 1,
+            failedIterations: failResult?.success === false ? 1 : 0,
+            firstFailureError: failResult?.error,
+            firstFailureNodeId:
+              failResult?.success === false ? "fail-step" : undefined,
+          };
+        },
+    });
+
+    expect(bodyResults["inner-fe"]?.success).toBe(false);
+    expect(bodyResults["inner-fe"]?.error).toBe("inner body failed");
+    expect(bodyResults["inner-fe"]?.error).not.toContain(" at node ");
+    expect(bodyResults["inner-fe"]?.data).toMatchObject({
+      firstFailureNodeId: "fail-step",
+      failedIterations: 1,
+    });
+    expect(bodyResults["inner-post"]).toBeUndefined();
+    expect(visitOrder).toContain("fail-step");
+    expect(visitOrder).not.toContain("inner-post");
   });
 });

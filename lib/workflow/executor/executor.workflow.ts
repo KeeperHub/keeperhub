@@ -94,11 +94,21 @@ import {
   preValidateConditionExpression,
   validateConditionExpression,
 } from "@/lib/workflow/nodes/condition/validator";
+import {
+  FOR_EACH_BODY_FAILURE_MARKER,
+  type ForEachIterationFailure,
+  isForEachBodyFailureResult,
+} from "@/lib/workflow/nodes/for-each/iteration-failure";
 import { ARRAY_SOURCE_RE } from "@/lib/workflow/nodes/for-each/utils";
 import { triggerStep } from "@/lib/workflow/nodes/trigger/step";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import { splitTemplateRef } from "@/lib/workflow/template-ref";
 import { LEGACY_ACTION_MAPPINGS } from "@/plugins/legacy-mappings";
+
+export {
+  type ForEachIterationFailure,
+  isForEachBodyFailureResult,
+} from "@/lib/workflow/nodes/for-each/iteration-failure";
 
 // System actions that don't have plugins - maps to module import functions.
 // `satisfies Record<SystemActionType, ...>` makes the dispatch table and the
@@ -2031,6 +2041,163 @@ export function planIterationContinuation(
   return { kind: "none" };
 }
 
+export type ForEachIterationSummary = {
+  arrayLength: number;
+  maxIterations: number;
+  iterationsRan: number;
+  failedIterations: number;
+  firstFailureError?: string;
+  firstFailureNodeId?: string;
+};
+
+/**
+ * Prefer a nested For Each summary's firstFailureNodeId over the bodyResults
+ * key. Insertion order records the nested loop id before routeAfterSuccess
+ * overwrites the entry with data: summary.
+ */
+export function resolveBodyFailureNodeId(
+  bodyFailure: [string, { success: boolean; error?: string; data?: unknown }]
+): string {
+  const summary = bodyFailure[1].data as ForEachIterationSummary | undefined;
+  return summary?.firstFailureNodeId ?? bodyFailure[0];
+}
+
+/**
+ * First failed iteration result, if any. Used to flip the For Each log and
+ * to gate post-loop Collect / done-targets continuation.
+ */
+export function findFirstIterationFailure(
+  iterationResults: unknown[]
+): ForEachIterationFailure | undefined {
+  return iterationResults.find(isForEachBodyFailureResult);
+}
+
+/** Count iteration results tagged as genuine body failures. */
+export function countIterationFailures(iterationResults: unknown[]): number {
+  return iterationResults.filter(isForEachBodyFailureResult).length;
+}
+
+/**
+ * When post-loop Collect is skipped due to iteration failure, mark the Collect
+ * node visited and record an explicit failure so the parent DAG dispatcher does
+ * not re-dispatch it via a second incoming edge.
+ */
+export function markCollectSkippedOnForEachFailure(params: {
+  aggregateCollectNodeId: string;
+  collectNodeId: string | undefined;
+  doneCollectNodeId: string | undefined;
+  error: string;
+  iterationResults: unknown[];
+  currentVisited: Set<string>;
+  currentResults: Record<
+    string,
+    { success: boolean; error?: string; data?: unknown }
+  >;
+  attemptedNodes: Set<string>;
+}): void {
+  const skipData = {
+    results: params.iterationResults.map((result) =>
+      isForEachBodyFailureResult(result)
+        ? { error: result.error, nodeId: result.nodeId }
+        : result
+    ),
+    count: params.iterationResults.length,
+    skipped: true as const,
+  };
+  params.currentVisited.add(params.aggregateCollectNodeId);
+  params.attemptedNodes.add(params.aggregateCollectNodeId);
+  params.currentResults[params.aggregateCollectNodeId] = {
+    success: false,
+    error: params.error,
+    data: skipData,
+  };
+
+  if (
+    params.doneCollectNodeId &&
+    params.collectNodeId &&
+    params.collectNodeId !== params.doneCollectNodeId
+  ) {
+    params.currentVisited.add(params.collectNodeId);
+    params.attemptedNodes.add(params.collectNodeId);
+  }
+}
+
+export type ForEachPostLoopResult =
+  | "skipped"
+  | "aggregate-collect"
+  | "done-targets"
+  | "none";
+
+/**
+ * Dispatch Collect aggregation or done-targets after runIterations.
+ * Skips entirely when any iteration failed so downstream side effects
+ * (transfers, webhooks) do not fire after a failed loop body.
+ */
+async function dispatchForEachPostLoopIfNeeded(params: {
+  firstIterationFailure: ForEachIterationFailure | undefined;
+  continuation: IterationContinuation;
+  onAggregateCollect: (collectNodeId: string) => Promise<void>;
+  onDoneTargets: (targets: string[]) => Promise<void>;
+}): Promise<ForEachPostLoopResult> {
+  if (params.firstIterationFailure) {
+    return "skipped";
+  }
+  if (params.continuation.kind === "aggregate-collect") {
+    await params.onAggregateCollect(params.continuation.collectNodeId);
+    return "aggregate-collect";
+  }
+  if (params.continuation.kind === "done-targets") {
+    await params.onDoneTargets(params.continuation.targets);
+    return "done-targets";
+  }
+  return "none";
+}
+
+/**
+ * Dispatch post-loop continuation, or mark Collect skipped with an explicit
+ * result so the parent DAG cannot re-fire it and execution output still has
+ * a `data` payload.
+ */
+export async function settleForEachPostLoop(params: {
+  firstIterationFailure: ForEachIterationFailure | undefined;
+  continuation: IterationContinuation;
+  onAggregateCollect: (collectNodeId: string) => Promise<void>;
+  onDoneTargets: (targets: string[]) => Promise<void>;
+  collectNodeId: string | undefined;
+  doneCollectNodeId: string | undefined;
+  iterationResults: unknown[];
+  currentVisited: Set<string>;
+  currentResults: Record<
+    string,
+    { success: boolean; error?: string; data?: unknown }
+  >;
+  attemptedNodes: Set<string>;
+}): Promise<ForEachPostLoopResult> {
+  const postLoopResult = await dispatchForEachPostLoopIfNeeded({
+    firstIterationFailure: params.firstIterationFailure,
+    continuation: params.continuation,
+    onAggregateCollect: params.onAggregateCollect,
+    onDoneTargets: params.onDoneTargets,
+  });
+  if (
+    postLoopResult === "skipped" &&
+    params.continuation.kind === "aggregate-collect" &&
+    params.firstIterationFailure
+  ) {
+    markCollectSkippedOnForEachFailure({
+      aggregateCollectNodeId: params.continuation.collectNodeId,
+      collectNodeId: params.collectNodeId,
+      doneCollectNodeId: params.doneCollectNodeId,
+      error: params.firstIterationFailure.error,
+      iterationResults: params.iterationResults,
+      currentVisited: params.currentVisited,
+      currentResults: params.currentResults,
+      attemptedNodes: params.attemptedNodes,
+    });
+  }
+  return postLoopResult;
+}
+
 /**
  * Resolve a template string to its raw array value.
  * Accepts {{@nodeId:Label.field}} syntax or a JSON array literal.
@@ -2534,7 +2701,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         forEachNode: nestedForEachNode,
         processedConfig,
       }) => {
-        await handleForEachExecution({
+        return await handleForEachExecution({
           forEachNodeId: nestedForEachNodeId,
           forEachNode: nestedForEachNode,
           processedConfig,
@@ -2599,14 +2766,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       fromNodeId: string,
       targets: string[]
     ) => Promise<void>;
-  }): Promise<{
-    arrayLength: number;
-    maxIterations: number;
-    iterationsRan: number;
-    failedIterations: number;
-    firstFailureError?: string;
-    firstFailureNodeId?: string;
-  }> {
+  }): Promise<ForEachIterationSummary> {
     const {
       forEachNodeId,
       forEachNode,
@@ -2726,15 +2886,16 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         ([, r]) => !r.success
       );
       if (bodyFailure) {
+        const failureNodeId = resolveBodyFailureNodeId(bodyFailure);
         console.log(
-          `[Workflow Executor] For Each "${getNodeName(forEachNode)}" iteration ${index} failed at node "${getNodeName(nodeMap.get(bodyFailure[0]) ?? forEachNode)}" (${bodyFailure[0]}): ${bodyFailure[1].error}`
+          `[Workflow Executor] For Each "${getNodeName(forEachNode)}" iteration ${index} failed at node "${getNodeName(nodeMap.get(failureNodeId) ?? forEachNode)}" (${failureNodeId}): ${bodyFailure[1].error}`
         );
         return {
-          __forEachBodyFailure: true as const,
-          success: false as const,
+          [FOR_EACH_BODY_FAILURE_MARKER]: true,
+          success: false,
           error: bodyFailure[1].error ?? "Body node failed",
-          nodeId: bodyFailure[0],
-        };
+          nodeId: failureNodeId,
+        } satisfies ForEachIterationFailure;
       }
 
       // Capture output from the last body node(s) that produced data.
@@ -2796,13 +2957,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
 
     // 5a. If any iteration failed, flip the For Each node's own log row to error
     // so the UI can surface which step errored rather than showing all green.
-    const firstIterationFailure = iterationResults.find(
-      (r): r is { success: false; error: string } =>
-        r !== null &&
-        typeof r === "object" &&
-        "success" in (r as object) &&
-        (r as { success: unknown }).success === false
-    );
+    const firstIterationFailure = findFirstIterationFailure(iterationResults);
     if (firstIterationFailure && executionId) {
       await triggerStep({
         triggerData: {},
@@ -2828,75 +2983,85 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     //                      ordinary post-loop steps via continueWithDoneTargets
     //                      (no aggregation injection).
     //   none:              fire-and-forget loop, nothing to do here.
-    if (continuation.kind === "aggregate-collect") {
-      const aggregateCollectNodeId = continuation.collectNodeId;
-      const collectData = {
-        results: iterationResults,
-        count: iterationResults.length,
-      };
-      const sanitizedCollectId = aggregateCollectNodeId.replace(
-        /[^a-zA-Z0-9]/g,
-        "_"
-      );
-      const collectNode = nodeMap.get(aggregateCollectNodeId);
-      const collectLabel = collectNode ? getNodeName(collectNode) : "Collect";
+    // Any failed iteration skips this block entirely (no Collect / downstream).
+    await settleForEachPostLoop({
+      firstIterationFailure,
+      continuation,
+      onAggregateCollect: async (aggregateCollectNodeId) => {
+        const collectData = {
+          results: iterationResults,
+          count: iterationResults.length,
+        };
+        const sanitizedCollectId = aggregateCollectNodeId.replace(
+          /[^a-zA-Z0-9]/g,
+          "_"
+        );
+        const collectNode = nodeMap.get(aggregateCollectNodeId);
+        const collectLabel = collectNode ? getNodeName(collectNode) : "Collect";
 
-      const collectAction = SYSTEM_ACTIONS.Collect;
-      if (collectAction) {
-        const mod = await collectAction.importer();
-        await mod[collectAction.stepFunction]({
-          ...collectData,
-          _context: {
-            executionId,
-            nodeId: aggregateCollectNodeId,
-            nodeName: collectLabel,
-            nodeType: "Collect",
-            forEachNodeId,
-            organizationId,
-            orgSlug: organizationSlug,
-            createdBy,
-            workflowId,
-          } satisfies StepContext,
-        });
-      }
+        const collectAction = SYSTEM_ACTIONS.Collect;
+        if (collectAction) {
+          const mod = await collectAction.importer();
+          await mod[collectAction.stepFunction]({
+            ...collectData,
+            _context: {
+              executionId,
+              nodeId: aggregateCollectNodeId,
+              nodeName: collectLabel,
+              nodeType: "Collect",
+              forEachNodeId,
+              organizationId,
+              orgSlug: organizationSlug,
+              createdBy,
+              workflowId,
+            } satisfies StepContext,
+          });
+        }
 
-      currentOutputs[sanitizedCollectId] = {
-        label: collectLabel,
-        data: collectData,
-      };
-      currentResults[aggregateCollectNodeId] = {
-        success: true,
-        data: collectData,
-      };
-      currentVisited.add(aggregateCollectNodeId);
+        currentOutputs[sanitizedCollectId] = {
+          label: collectLabel,
+          data: collectData,
+        };
+        currentResults[aggregateCollectNodeId] = {
+          success: true,
+          data: collectData,
+        };
+        currentVisited.add(aggregateCollectNodeId);
 
-      // Skip the legacy in-body Collect in mixed wiring: don't re-fire it,
-      // but mark it visited so the parent DAG dispatcher leaves it alone.
-      if (
-        doneCollectNodeId &&
-        collectNodeId &&
-        collectNodeId !== doneCollectNodeId
-      ) {
-        currentVisited.add(collectNodeId);
-      }
+        // Skip the legacy in-body Collect in mixed wiring: don't re-fire it,
+        // but mark it visited so the parent DAG dispatcher leaves it alone.
+        if (
+          doneCollectNodeId &&
+          collectNodeId &&
+          collectNodeId !== doneCollectNodeId
+        ) {
+          currentVisited.add(collectNodeId);
+        }
 
-      if (continueAfterCollect) {
-        await continueAfterCollect(aggregateCollectNodeId);
-      }
-    } else if (
-      continuation.kind === "done-targets" &&
-      continueWithDoneTargets
-    ) {
-      await continueWithDoneTargets(forEachNodeId, continuation.targets);
-    }
+        if (continueAfterCollect) {
+          await continueAfterCollect(aggregateCollectNodeId);
+        }
+      },
+      onDoneTargets: async (targets) => {
+        if (continueWithDoneTargets) {
+          await continueWithDoneTargets(forEachNodeId, targets);
+        }
+      },
+      collectNodeId,
+      doneCollectNodeId,
+      iterationResults,
+      currentVisited,
+      currentResults,
+      attemptedNodes,
+    });
 
     return {
       arrayLength: resolvedArray.length,
       maxIterations,
       iterationsRan: itemsToProcess.length,
-      failedIterations: firstIterationFailure === undefined ? 0 : 1,
+      failedIterations: countIterationFailures(iterationResults),
       firstFailureError: firstIterationFailure?.error,
-      firstFailureNodeId: undefined,
+      firstFailureNodeId: firstIterationFailure?.nodeId,
     };
   }
 
