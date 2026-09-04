@@ -95,8 +95,13 @@ Confirm, in order:
 
 ## 6. Simulate
 
-Every execute tool and endpoint takes a `simulate` flag that estimates gas and catches
-reverts without signing or broadcasting:
+Three direct-execution tools take a `simulate` flag: `execute_transfer`,
+`execute_contract_call`, and `execute_check_and_execute`. Simulating estimates gas and
+catches reverts without signing or broadcasting. `execute_protocol_action` has no dry run:
+it executes the action when called and silently ignores a `simulate` flag if
+one is passed (it does not stop the broadcast). A protocol read action
+(for example a `chronicle/eth-usd-read` actionType) returns current state but cannot predict
+whether a particular write will revert. For example:
 
 ```json
 {
@@ -110,6 +115,10 @@ reverts without signing or broadcasting:
 
 `simulate` must be the JSON boolean `true`. The string `"true"` is rejected, deliberately,
 so a typo cannot fall through to a real broadcast.
+
+Simulation is EVM-only. Over MCP, on a known Solana chain a `simulate: true` request errors
+with `simulation_unsupported_chain` and sends nothing; a Solana transfer sent without
+`simulate` broadcasts directly, so there is no dry run to fall back on there.
 
 A deterministic dry-run failure answers HTTP 400 with `wouldRevert: true`. Classify the
 body by a string `code` first, then by `failureKind`: `insufficient_balance` is an
