@@ -84,8 +84,9 @@ export const NAV_ITEMS_DATA: NavItemData[] = [
 
 // Settings is a destination, not a workspace view, so it sits at the foot of
 // the desktop nav column rather than among Hub / Workflows / Analytics. It is
-// a normal routable destination on mobile.
-export const SETTINGS_NAV_ITEM_DATA: NavItemData = {
+// a normal routable destination on mobile. Its href is non-null (unlike the
+// flyout entries above), which the mobile derivation relies on.
+export const SETTINGS_NAV_ITEM_DATA: NavItemData & { href: string } = {
   id: "settings",
   label: "Settings",
   href: "/settings",

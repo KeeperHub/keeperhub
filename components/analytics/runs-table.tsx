@@ -681,8 +681,10 @@ function RunsTableContent({
             <th className="pb-2 pr-3 font-medium">Name</th>
             <th className="pb-2 pr-3 font-medium">Status</th>
             {/* Secondary columns stay on desktop; on a phone they are what
-                force the 700px pan. They remain reachable in the expanded
-                per-run rows, which carry the full detail. */}
+                force the 700px pan, so they are hidden below md per the
+                mobile issue (2295). The expanded per-run rows repeat the
+                primary fields; the values hidden here are not re-exposed on a
+                phone. Desktop is unaffected. */}
             <th className="hidden pb-2 pr-3 font-medium md:table-cell">
               Source
             </th>
