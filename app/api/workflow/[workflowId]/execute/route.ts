@@ -1,10 +1,11 @@
 import { HttpStatus } from "@/lib/http-status";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { logAnonymousExecutionBlock } from "@/lib/auth-anonymous-guard";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { chargePaygIfBillable } from "@/lib/billing/payg/charge";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { isUniqueViolation } from "@/lib/db/errors";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { getMetricsCollector } from "@/lib/metrics";
 import { LabelKeys, MetricNames } from "@/lib/metrics/types";
@@ -34,6 +35,10 @@ import { getWorkflowAccess } from "@/lib/workflow/access";
 import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
 import { executeWorkflowInBackground } from "@/lib/workflow/execute-in-background";
 import { loadWorkflowForExecution } from "@/lib/workflow/load-for-execution";
+import {
+  resolveExecutionInput,
+  topLevelInputDeprecationHeaders,
+} from "@/lib/workflow/resolve-execution-input";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Workflow execution requires complex error handling and validation
@@ -194,18 +199,31 @@ export async function POST(
       );
     }
 
-    // Parse request body from the captured raw bytes. Preserves the original
-    // "missing or invalid body becomes empty input" contract.
-    type ExecuteBody = { input?: unknown; executionId?: string };
-    let body: ExecuteBody = {};
-    if (rawBody) {
-      try {
-        body = JSON.parse(rawBody) as ExecuteBody;
-      } catch {
-        body = {};
-      }
+    // Parse request body from the captured raw bytes. See
+    // lib/workflow/resolve-execution-input.ts for the resolution
+    // rules -- bare top-level fields bind with a deprecation warning, a
+    // mixed or malformed body is a 400.
+    const resolved = resolveExecutionInput(rawBody);
+    if (!resolved.ok) {
+      return NextResponse.json(
+        { error: resolved.error, field: resolved.field },
+        { status: HttpStatus.BAD_REQUEST }
+      );
     }
-    const input = (body.input as Record<string, unknown> | undefined) ?? {};
+    const { input } = resolved;
+
+    // The bare top-level shape is deprecated, and the notice has to ride every
+    // response this handler returns from here on -- replays included. A caller
+    // retrying with an Idempotency-Key would otherwise see it once and never
+    // again, which is the opposite of what a migration window needs.
+    const withDeprecation = (response: NextResponse): NextResponse => {
+      if (resolved.deprecated) {
+        for (const [name, value] of topLevelInputDeprecationHeaders()) {
+          response.headers.set(name, value);
+        }
+      }
+      return response;
+    };
 
     // Idempotency: a retry with the same key + body replays the original
     // executionId instead of starting the workflow again. Scoped per workflow.
@@ -213,12 +231,14 @@ export async function POST(
       request,
       organizationId: workflow.organizationId,
       scope: `workflow-execute:${workflowId}`,
-      requestBody: body,
+      requestBody: resolved.rawParsed,
     });
     if (idem) {
       const early = idempotencyEarlyResponse(idem);
       if (early) {
-        return NextResponse.json(early.body, { status: early.status });
+        return withDeprecation(
+          NextResponse.json(early.body, { status: early.status })
+        );
       }
     }
 
@@ -243,8 +263,11 @@ export async function POST(
     );
 
     // Check if executionId was provided (for scheduled executions)
-    // This allows the executor to pre-create the execution record
-    let executionId = body.executionId;
+    // This allows the executor to pre-create the execution record.
+    // Sourced from the resolver rather than the raw body: in the bare
+    // top-level shape a key named executionId is caller input, not an
+    // envelope field, and must not address an execution row.
+    let executionId = resolved.executionId;
     // Whether this request created the workflow_executions row itself, vs.
     // reusing one that the executor pre-created. The KEEP-556 counter only
     // increments here when we created the row, so the executor-side increment
@@ -256,7 +279,10 @@ export async function POST(
       // Refuse terminal / in-flight reuse before PAYG so a retry cannot
       // charge again or start a second DevKit run.
       const existingExecution = await db.query.workflowExecutions.findFirst({
-        where: eq(workflowExecutions.id, executionId),
+        where: and(
+          eq(workflowExecutions.id, executionId),
+          eq(workflowExecutions.workflowId, workflowId)
+        ),
       });
 
       if (existingExecution) {
@@ -268,14 +294,16 @@ export async function POST(
         ) {
           return recordIdempotentResponse(
             idem,
-            NextResponse.json(
-              {
-                error: "Execution already completed",
-                code: "execution_already_terminal",
-                executionId,
-                status: existingStatus,
-              },
-              { status: HttpStatus.CONFLICT }
+            withDeprecation(
+              NextResponse.json(
+                {
+                  error: "Execution already completed",
+                  code: "execution_already_terminal",
+                  executionId,
+                  status: existingStatus,
+                },
+                { status: HttpStatus.CONFLICT }
+              )
             ),
             "release"
           );
@@ -283,31 +311,74 @@ export async function POST(
         if (existingStatus === "running") {
           return recordIdempotentResponse(
             idem,
-            NextResponse.json({
-              executionId,
-              status: "running",
-            }),
+            withDeprecation(
+              NextResponse.json({
+                executionId,
+                status: "running",
+              })
+            ),
             "success"
           );
         }
         // pending (scheduler handoff) — continue: charge + start once
         console.log("[API] Using existing execution:", executionId);
       } else {
-        // Create new execution with provided ID
-        await withBackstopCapture(
-          { workflowId, userId, source: triggerSource },
-          () =>
-            db.insert(workflowExecutions).values({
-              id: executionId,
-              workflowId,
-              organizationId: workflow.organizationId,
-              userId,
-              status: "pending",
-              input,
-              ...attribution,
-              executedWorkflowHash,
-            })
-        );
+        // A miss on the lookup above means "no such execution *on this
+        // workflow*", which is not the same as "this id is free": the row may
+        // exist under another workflow, and the insert below would then
+        // violate the primary key. withBackstopCapture only special-cases
+        // 42501, so that violation would reach the outer catch and answer 500
+        // with the driver's constraint text in it.
+        //
+        // Answering the conflict here keeps the scoping fix from turning a
+        // client mistake into a 500, and the same branch absorbs the race
+        // where two concurrent requests both find the id free. 409 rather
+        // than 404: the caller asked to *create* a run under an id it chose,
+        // and the id is taken -- there is nothing for it to go look up. The
+        // response says only that: naming the owner would confirm a row this
+        // caller cannot see, and would be wrong anyway in the race case,
+        // where the winner is a run of this same workflow.
+        try {
+          await withBackstopCapture(
+            { workflowId, userId, source: triggerSource },
+            () =>
+              db.insert(workflowExecutions).values({
+                id: executionId,
+                workflowId,
+                organizationId: workflow.organizationId,
+                userId,
+                status: "pending",
+                input,
+                ...attribution,
+                executedWorkflowHash,
+              })
+          );
+        } catch (error) {
+          if (!isUniqueViolation(error)) {
+            throw error;
+          }
+          logUserError(
+            ErrorCategory.VALIDATION,
+            "[Execute] executionId already in use",
+            undefined,
+            { workflowId, endpoint: "/api/workflow/[workflowId]/execute" }
+          );
+          return recordIdempotentResponse(
+            idem,
+            withDeprecation(
+              NextResponse.json(
+                {
+                  error:
+                    "The provided executionId is already in use. Retry with a different id.",
+                  code: "execution_id_conflict",
+                  executionId,
+                },
+                { status: HttpStatus.CONFLICT }
+              )
+            ),
+            "release"
+          );
+        }
         console.log("[API] Created execution with provided ID:", executionId);
         createdHere = true;
       }
@@ -373,9 +444,11 @@ export async function POST(
         .where(eq(workflowExecutions.id, executionId));
       return recordIdempotentResponse(
         idem,
-        NextResponse.json(
-          { error: paygCharge.message, executionId, status: "error" },
-          { status: HttpStatus.PAYMENT_REQUIRED }
+        withDeprecation(
+          NextResponse.json(
+            { error: paygCharge.message, executionId, status: "error" },
+            { status: HttpStatus.PAYMENT_REQUIRED }
+          )
         ),
         "failed"
       );
@@ -405,13 +478,13 @@ export async function POST(
     );
 
     // Return immediately with the execution ID
-    return recordIdempotentResponse(
-      idem,
+    const successResponse = withDeprecation(
       NextResponse.json({
         executionId,
         status: "running",
       })
     );
+    return recordIdempotentResponse(idem, successResponse);
   } catch (error) {
     logSystemError(ErrorCategory.WORKFLOW_ENGINE, "Failed to start workflow execution", error, { endpoint: "/api/workflow/[workflowId]/execute", operation: "post" });
     return NextResponse.json(

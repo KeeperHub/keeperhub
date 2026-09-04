@@ -252,7 +252,7 @@ Manually trigger a workflow execution. The singular form `POST /api/workflow/{wo
 }
 ```
 
-The `input` field is optional. It maps to the workflow's trigger input and is passed to the first node of the run.
+The `input` field is optional. It maps to the workflow's trigger input and is passed to the first node of the run. Input fields should be nested under `input`; a body with fields at the top level instead (e.g. `{"amount": "1"}` rather than `{"input": {"amount": "1"}}`) is still accepted and now binds correctly, but the response carries the standard `Deprecation`, `Sunset`, and `Link` headers -- support for the unnested shape will be removed no earlier than the `Sunset` date. Every response to such a request carries them, including idempotent replays. In the unnested shape every top-level field binds as input, `executionId` included; it is only read as an envelope field alongside a nested `input`. A body mixing both shapes, or with `input` set to something other than an object, returns a 400. This differs deliberately from the [webhook trigger](#webhook-trigger) route, which takes the entire request body as the input: a webhook carries an external caller's payload that can't be asked to nest itself under `input`, whereas the execute route uses KeeperHub's own envelope and so can require the nested shape.
 
 ### Example
 
@@ -271,6 +271,20 @@ curl -X POST https://app.keeperhub.com/api/workflows/wf_123/execute \
   "status": "running"
 }
 ```
+
+### Supplying your own executionId
+
+A nested-shape body may carry an `executionId` alongside `input` to run under
+an id you have already issued. The id is resolved within the workflow in the
+path, so it can only ever address a run belonging to that workflow.
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 200 | -- | The id names a run of this workflow that is already in flight; the existing run is returned rather than a second one started. |
+| 409 | `execution_already_terminal` | The id names a run of this workflow that has already finished. Retrying under the same id would charge twice. |
+| 409 | `execution_id_conflict` | The id is already taken by a run you cannot address from this workflow. Nothing about that run is disclosed -- retry with a different id. |
+
+An id that is free is created and run.
 
 ## Webhook Trigger
 
