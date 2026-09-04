@@ -18,32 +18,37 @@ export function createPollScheduler(
   intervalMs: number
 ): PollScheduler {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let stopped = true;
+  // Every stop and start opens a new generation. A pass that settles after one
+  // of those belongs to a chain nobody is waiting for, and a plain boolean let
+  // it arm a timer that overwrote the handle the new chain had just stored:
+  // both chains then ran forever and only one of them could be stopped.
+  let generation = 0;
 
   const stop = (): void => {
-    stopped = true;
+    generation += 1;
     if (timer) {
       clearTimeout(timer);
       timer = null;
     }
   };
 
-  const tick = (): void => {
-    timer = null;
-    task()
-      .catch(() => {
-        /* the caller surfaces its own errors */
-      })
-      .finally(() => {
-        if (!stopped) {
-          timer = setTimeout(tick, intervalMs);
-        }
-      });
-  };
-
   const start = (): void => {
     stop();
-    stopped = false;
+    const chain = generation;
+
+    const tick = (): void => {
+      timer = null;
+      task()
+        .catch(() => {
+          /* the caller surfaces its own errors */
+        })
+        .finally(() => {
+          if (chain === generation) {
+            timer = setTimeout(tick, intervalMs);
+          }
+        });
+    };
+
     timer = setTimeout(tick, intervalMs);
   };
 

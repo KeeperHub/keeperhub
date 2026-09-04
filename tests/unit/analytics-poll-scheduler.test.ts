@@ -75,6 +75,36 @@ describe("createPollScheduler", () => {
     scheduler.stop();
   });
 
+  it("does not fork a second chain when stopped and restarted mid-pass", async () => {
+    let settle: () => void = () => {
+      // Replaced when the first pass starts.
+    };
+    const task = vi.fn(
+      (): Promise<void> =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        })
+    );
+    const scheduler = createPollScheduler(task, 1000);
+    scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(task).toHaveBeenCalledTimes(1);
+
+    // The first pass is still in flight when the caller restarts.
+    scheduler.stop();
+    scheduler.start();
+
+    settle();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    // Without the generation token the settled pass armed a timer too, and
+    // both chains ticked from then on.
+    expect(task).toHaveBeenCalledTimes(2);
+    scheduler.stop();
+  });
+
   it("does not stack passes when start is called twice", async () => {
     const task = vi.fn().mockResolvedValue(undefined);
     const scheduler = createPollScheduler(task, 1000);
