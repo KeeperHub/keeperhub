@@ -75,7 +75,8 @@ four above. Treat anything other than `success` as a failure. Checking only for 
 For a one-off onchain action with no workflow around it, use the direct execution
 tools: `execute_transfer`, `execute_contract_call`, `execute_check_and_execute`, and
 `execute_protocol_action`. The first three take a `simulate` flag. `execute_protocol_action`
-has no dry run - it executes the action when called and accepts no `simulate` flag - so
+has no dry run - it executes the action when called and silently ignores a
+`simulate` flag if one is passed (it does not stop the broadcast) - so
 treat it as a broadcast and make the call itself the smallest possible step. Where the
 protocol exposes a read action (for example a `chronicle/eth-usd-read` or
 `morpho/get-position` actionType), calling that first returns current state, but it cannot

@@ -98,7 +98,8 @@ Confirm, in order:
 Three direct-execution tools take a `simulate` flag: `execute_transfer`,
 `execute_contract_call`, and `execute_check_and_execute`. Simulating estimates gas and
 catches reverts without signing or broadcasting. `execute_protocol_action` has no dry run:
-it executes the action when called and accepts no `simulate` flag. A protocol read action
+it executes the action when called and silently ignores a `simulate` flag if
+one is passed (it does not stop the broadcast). A protocol read action
 (for example a `chronicle/eth-usd-read` actionType) returns current state but cannot predict
 whether a particular write will revert. For example:
 
