@@ -533,8 +533,15 @@ export type NewWalletLock = typeof walletLocks.$inferInsert;
  * Tracks pending blockchain transactions for validation and recovery.
  * Used by NonceManager to:
  * - Reconcile pending txs with chain state at workflow start
- * - Detect stuck transactions that may need gas bumping
  * - Provide observability into transaction state
+ *
+ * Rows that stay `pending` well past their submittedAt are surfaced as the
+ * `keeperhub_web3_pending_transactions_stuck` gauge (KEEP-1291) so a backlog
+ * can be alerted on. Nothing acts on that signal automatically: no code path
+ * re-prices a transaction at the same nonce, so recovery is a human decision.
+ * (`app/api/execute/_lib/retry.ts` computes a gas-bump multiplier on retry,
+ * but neither call site accepts the overrides argument, so no caller ever
+ * applies it. KEEP-1293 removes that vestigial plumbing.)
  *
  * Status lifecycle: pending -> confirmed | dropped | replaced
  */
@@ -547,7 +554,7 @@ export const pendingTransactions = pgTable(
     txHash: text("tx_hash").notNull(),
     executionId: text("execution_id").notNull(),
     workflowId: text("workflow_id"),
-    gasPrice: text("gas_price"), // for stuck tx analysis
+    gasPrice: text("gas_price"), // fee actually paid, recorded for post-hoc review
     submittedAt: timestamp("submitted_at", { withTimezone: true }).defaultNow(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
     status: text("status").default("pending"), // pending, confirmed, dropped, replaced
@@ -560,6 +567,15 @@ export const pendingTransactions = pgTable(
       table.status
     ),
     index("idx_pending_tx_execution").on(table.executionId),
+    // KEEP-1291: backs the stuck-backlog gauge, which filters on status and
+    // submittedAt with no wallet_address to lead idx_pending_tx_status. The
+    // table is append-only - nothing prunes it - so an unpartitioned scan
+    // would grow with lifetime transaction volume on every metrics scrape.
+    // Partial on the live statuses only, so the index stays the size of the
+    // in-flight set rather than the table.
+    index("idx_pending_tx_stuck")
+      .on(table.submittedAt, table.chainId)
+      .where(sql`${table.status} = 'pending'`),
   ]
 );
 
