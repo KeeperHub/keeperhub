@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isToolAllowed, scopeSatisfies } from "@/lib/mcp/oauth-scopes";
+import {
+  isToolAllowed,
+  parseScopeInput,
+  scopeSatisfies,
+} from "@/lib/mcp/oauth-scopes";
 
 describe("oauth-scopes — prepare_test_pin_data (TESTWF-06)", () => {
   it("mcp:read allows prepare_test_pin_data", () => {
@@ -111,5 +115,43 @@ describe("oauth-scopes — scopeSatisfies (A-03)", () => {
     expect(scopeSatisfies("bogus:x", "mcp:read")).toBe(false);
     expect(scopeSatisfies("bogus:x", "mcp:write")).toBe(false);
     expect(scopeSatisfies("bogus:x", "mcp:admin")).toBe(false);
+  });
+});
+
+describe("parseScopeInput — null means unrestricted, so only omission may reach it", () => {
+  it("returns null only when the field is absent", () => {
+    expect(parseScopeInput(undefined)).toBeNull();
+    // JSON clients routinely send null for an absent field.
+    expect(parseScopeInput(null)).toBeNull();
+  });
+
+  it("floors a supplied but unreadable scopes value at mcp:read", () => {
+    // scopes is unvalidated request body. An object is the shape the creation
+    // overlay holds internally, and is the likeliest way one reaches the API.
+    expect(parseScopeInput({ "mcp:read": true })).toBe("mcp:read");
+    expect(parseScopeInput(true)).toBe("mcp:read");
+    expect(parseScopeInput(false)).toBe("mcp:read");
+    expect(parseScopeInput(0)).toBe("mcp:read");
+  });
+
+  it("narrows an explicitly empty scopes array to mcp:read", () => {
+    expect(parseScopeInput([])).toBe("mcp:read");
+  });
+
+  it("narrows a scopes array with no usable strings to mcp:read", () => {
+    expect(parseScopeInput([1, 2])).toBe("mcp:read");
+    expect(parseScopeInput(["bogus"])).toBe("mcp:read");
+    expect(parseScopeInput([""])).toBe("mcp:read");
+  });
+
+  it("narrows an explicitly empty scopes string to mcp:read", () => {
+    expect(parseScopeInput("")).toBe("mcp:read");
+    expect(parseScopeInput("   ")).toBe("mcp:read");
+  });
+
+  it("still normalizes a valid request unchanged", () => {
+    expect(parseScopeInput(["mcp:write"])).toBe("mcp:write");
+    expect(parseScopeInput("mcp:read mcp:write")).toBe("mcp:read mcp:write");
+    expect(parseScopeInput(["mcp:write", "bogus"])).toBe("mcp:write");
   });
 });

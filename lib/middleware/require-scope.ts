@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ErrorCategory, logSecurityEvent, logUserError } from "@/lib/logging";
 import { type OAuthScope, scopeSatisfies } from "@/lib/mcp/oauth-scopes";
+import type { AuthMethod } from "@/lib/middleware/auth-helpers";
 
 /**
  * Identifies the denied caller in the security signal. Never carries the
@@ -11,7 +12,39 @@ export type ScopeDenialContext = {
   organizationId?: string;
   credentialId?: string;
   endpoint?: string;
+  /**
+   * Which credential family is being denied. Selects the remediation sentence
+   * in the 403 body, since an OAuth grant is widened by an admin and an API
+   * key's scope is fixed at creation. Every route that gates on scope passes
+   * it: the execute routes from validateApiKey, the rest from the authMethod
+   * their auth helper already returns.
+   *
+   * Optional so a caller that genuinely cannot say gets the requirement with no
+   * remediation claim, rather than a guess that may be wrong for the credential
+   * in hand. "session" carries no scope, so scopeSatisfies admits it before a
+   * denial can be built; it falls to the no-remediation branch if it ever
+   * arrives.
+   */
+  credentialType?: AuthMethod;
 };
+
+/**
+ * How a caller widens the scope they were denied. The two credential families
+ * have genuinely different answers, and naming the wrong one sends an agent
+ * round a loop it cannot exit: an OAuth grant is clamped by an org-level
+ * ceiling an admin controls, while an API key's scope is fixed in the row at
+ * creation and `/api/keys/[keyId]` exposes only DELETE -- so there is nothing
+ * to raise, only a new key to mint.
+ */
+function remediationFor(credentialType: AuthMethod | undefined): string {
+  if (credentialType === "api-key") {
+    return " An API key's scope is fixed when the key is created and cannot be raised. A new key has to be issued with the scope this endpoint requires.";
+  }
+  if (credentialType === "oauth") {
+    return " The ceiling is set by an organization owner or admin under Settings > Developer > Agents. Do not retry; ask them to raise it.";
+  }
+  return "";
+}
 
 /**
  * A-03: enforce credential scope at the REST sinks that MCP tools forward to.
@@ -47,6 +80,7 @@ export function requireScope(
     granted_scope: grantedScope ?? null,
     organizationId: context?.organizationId,
     credentialId: context?.credentialId,
+    credential_type: context?.credentialType ?? null,
     endpoint: context?.endpoint,
   });
 
@@ -64,7 +98,7 @@ export function requireScope(
   // stay out, since per-org labels are the cardinality the allowlist exists to
   // keep off Prometheus.
   logUserError(
-    ErrorCategory.AUTH,
+    ErrorCategory.AUTHORIZATION,
     "[RequireScope] Insufficient scope",
     undefined,
     {
@@ -80,11 +114,12 @@ export function requireScope(
   return NextResponse.json(
     {
       error: "insufficient_scope",
-      // Written for the agent that reads it. It says what the connection may
-      // do, that reconnecting cannot widen it, and who can. Naming the token
-      // instead would send an agent round a loop of re-consenting with a wider
-      // scope that the limit would keep clamping back.
-      message: `This endpoint requires the \`${required}\` OAuth scope. This connection is allowed \`${grantedScope || "(none)"}\`. Reconnecting will not raise it: the limit is set by an organization owner or admin under Settings > Developer > Agents. Do not retry; ask them to raise it.`,
+      // Written for the agent that reads it. It says what the credential may
+      // do and that retrying cannot widen it; remediationFor adds who can, when
+      // the credential family is known. Naming the token instead would send an
+      // agent round a loop of re-consenting with a wider scope that the limit
+      // would keep clamping back.
+      message: `This endpoint requires the \`${required}\` scope. This credential is allowed \`${grantedScope || "(none)"}\`. Retrying will not widen it.${remediationFor(context?.credentialType)}`,
       retryable: false,
       required_scope: required,
       granted_scope: grantedScope ?? "",

@@ -38,6 +38,16 @@ Both caps count value moved by workflow runs as well as by this API, so the two 
 
 Call `GET /api/analytics/spend-cap` before planning a large transfer. Read `effectiveDailyCapWei` and `effectiveDailySolanaCapLamports` — those are the figures enforcement uses. A null `dailyCapWei` means the organization configured nothing, not that spending is unbounded.
 
+### Stablecoin transfers
+
+An ERC-20 transfer carries no native value, so the daily caps above cannot see it. A single transaction that moves a recognised stablecoin (any token listed for that chain and flagged as a stablecoin) is limited to **100 USD**, applying the 1:1 peg to the token's own decimals. The limit is per transaction rather than per day, and covers every write path: `/api/execute/transfer`, `/api/execute/contract-call`, protocol actions, `/api/execute/node`, and the equivalent workflow steps. Over the limit nothing is signed or broadcast; the request completes as a failed execution (`202` with `status: "failed"`) whose error reads `Stablecoin transfer of ... exceeds the 100.0 USD per-transaction limit`. Self-hosted deployments can change the figure with `EXECUTE_DEFAULT_STABLECOIN_CAP_MICRO_USD` (micro-USD, so `100000000` is 100 USD).
+
+A dry run reports the same refusal: simulating an over-limit transfer returns a failed simulation carrying the limit, rather than a clean estimate for a transfer that would fail at broadcast.
+
+`approve` is bounded by the same figure, with one exception. Approving more than the limit is allowed when the spender is a contract belonging to a protocol integration, which is what makes the usual approve-then-swap pattern work. Approving more than the limit to any other address is refused, because an unbounded allowance to an address outside that set is a standing right to move the balance that no later check can see. An approval at or under the limit is always allowed.
+
+Two things this does **not** do: it does not price non-stablecoin ERC-20s, which are not bounded at all, and it does not cover Solana. SPL token transfers are outside the ceiling, and the daily Solana cap counts native SOL only.
+
 ## Safe First-Write Sequence
 
 Use the same request body from simulation through broadcast so the transaction
@@ -367,11 +377,33 @@ Call any smart contract function. Automatically detects read vs write operations
 - `contractAddress` (required): Smart contract address
 - `chainId` (required): Numeric chain ID as a number or numeric string. The
   legacy `network` field still accepts known chain names but is deprecated.
-- `functionName` (required): Name of the function to call
+- `functionName` (required): Name of the function to call. The workflow web3
+  action node config calls this same value `abiFunction`; this route accepts
+  `abiFunction` as an alias so payloads copied between the two layers bind
+  without a rename. If both keys are present their values must agree once
+  surrounding whitespace is trimmed; a mismatch - including an empty or
+  non-string `functionName` next to a different `abiFunction` - is rejected
+  with a 400 naming both values.
 - `functionArgs` (optional): JSON array string of function arguments (e.g., `"[\"0x...\", \"1000\"]"`)
 - `abi` (optional): Contract ABI as JSON string. Auto-fetched from block explorer if omitted.
 - `value` (optional): Native value to send with the call, as a decimal string in ether units (e.g. `0.1`) (for payable functions)
 - `gasLimitMultiplier` (optional): Gas limit multiplier
+
+**Direct execution vs. workflow node field names**
+
+The same values carry different field names depending on which surface you're
+building against. This route accepts either spelling; workflow node config
+accepts only the single spelling in the right-hand column, which is not the
+canonical one in either row.
+
+| Meaning | `POST /api/execute/contract-call` | Workflow web3 action node config |
+|---|---|---|
+| Chain to execute on | `chainId` (canonical), `network` (deprecated alias) | `network` |
+| Function to call | `functionName` (canonical), `abiFunction` (alias) | `abiFunction` |
+
+The `abiFunction` alias is specific to this route. `check-and-execute` still
+requires `functionName` (and `action.functionName`), so a body that carries
+only `abiFunction` is rejected there with a 400.
 
 ### Response
 
@@ -447,6 +479,16 @@ Read a contract value, evaluate a condition, and conditionally execute a write o
 - `lt`: Less than
 - `gte`: Greater than or equal to
 - `lte`: Less than or equal to
+
+The check function must resolve to exactly one supported scalar output.
+Solidity integers support all six operators. `address` and `bytes1` through
+`bytes32` support `eq` and `neq` only. `condition.value` must be a
+`BigInt`-compatible decimal or hexadecimal string. KeeperHub rejects empty,
+multi-output, compound, or otherwise unsupported ABI return shapes with HTTP
+`400` before the check RPC call. It also rejects an operator that the output
+type does not support, or a runtime result that cannot be compared, before the
+action executes. The action leg never forwards native value; `action.value` is
+not part of the supported request shape.
 
 ### Response
 
@@ -712,11 +754,23 @@ Check the status of a direct execution.
   When a body sends both, the routes disagree about which wins: `contract-call`
   takes `network`, while `transfer` and `check-and-execute` take `chainId`.
   Send one.
-- `retryCount`: internal re-submissions of a node execution, which is
+- `retryCount`: internal re-executions of a node execution, which is
   `/api/execute/node` and is not covered by this page. It is always `0` for the
   transfer, contract-call and check-and-execute endpoints documented here,
-  whatever happened internally - those paths never set it. A `0` is therefore
-  not evidence that no nonce replacement or gas bump occurred.
+  whatever happened internally - those paths never set it, so a `0` is not
+  evidence that nothing was retried. Where the field is set, each count is a
+  fresh execution of the step rather than a replacement of an earlier
+  transaction: nothing is resubmitted at a pinned nonce and no gas price is
+  bumped. A failure that carries a transaction hash is therefore never
+  retried, whatever its message says: the hash means a transaction is already
+  live, and a retry would sign a second one rather than replace it. Of the
+  failures that carry no hash, only connection-level errors (resets and
+  timeouts) are retried, and an error reporting that a transaction is already
+  live - a used nonce, an already-known hash, an underpriced replacement - is
+  not. The one case left open is an attempt that exceeds its own per-attempt
+  timeout: it is abandoned rather than cancelled, so nothing comes back to
+  carry a hash, and a per-attempt timeout shorter than the chain's confirmation
+  latency can leave two transactions confirmed.
 - `gasPriceWei`: the effective gas price, as a decimal string. On EVM chains
   this is in wei. On Solana it is the micro-lamports-per-compute-unit price of
   the priority component, as described in
@@ -800,18 +854,25 @@ this connection is allowed:
 ```json
 {
   "error": "insufficient_scope",
-  "message": "This endpoint requires the `mcp:write` OAuth scope. This connection is allowed `mcp:read`. Reconnecting will not raise it: the limit is set by an organization owner or admin under Settings > Developer > Agents. Do not retry; ask them to raise it.",
+  "message": "This endpoint requires the `mcp:write` scope. This credential is allowed `mcp:read`. Retrying will not widen it. An API key's scope is fixed when the key is created and cannot be raised. A new key has to be issued with the scope this endpoint requires.",
   "retryable": false,
   "required_scope": "mcp:write",
   "granted_scope": "mcp:read"
 }
 ```
 
-`granted_scope` is what the connection may do right now, which is not always the
-scope the token was issued with. An organization can cap what its agents may do,
-and a cap is applied on every call, so a token issued with `mcp:admin` reports
-`mcp:read` here while a read-only cap is in force. Reauthorizing with a wider
-scope does not lift a cap; only an owner or admin can, in the Agents settings.
+The closing sentence names the remedy for the credential that was used, because
+the two families differ. An API key's scope is written into the key when it is
+created and cannot be changed afterwards, so a new key is the only route. An
+OAuth connection is instead told that an owner or admin controls its ceiling
+under Settings > Developer > Agents.
+
+`granted_scope` is what the credential may do right now. For an OAuth token that
+is not always the scope it was issued with: an organization can cap what its
+agents may do, and the cap is applied on every call, so a token issued with
+`mcp:admin` reports `mcp:read` here while a read-only cap is in force.
+Reauthorizing with a wider scope does not lift a cap; only an owner or admin
+can, in the Agents settings. An API key reports the scope stored on the key.
 
 Broadcasting requires `mcp:write`. A dry run (`simulate: true`) neither signs nor broadcasts, so `mcp:read` is sufficient.
 

@@ -9,6 +9,7 @@ import {
   parseEnforcedFactors,
 } from "@/lib/mfa/org-mfa-enforcement";
 import type { StepUpFactor } from "@/lib/mfa/step-up-policy";
+import type { AuthMethod } from "@/lib/middleware/auth-helpers";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
@@ -16,7 +17,7 @@ import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 type OwnerOk = {
   ok: true;
   userId: string;
-  authMethod: string;
+  authMethod: AuthMethod;
   apiKeyId: string | null;
   scope?: string;
 };
@@ -126,7 +127,9 @@ export async function PUT(
       );
     }
 
-    const scopeError = requireScope(owner.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(owner.scope, SCOPE_MCP_WRITE, {
+      credentialType: owner.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }

@@ -11,7 +11,10 @@ import {
   GETLOGS_MAX_BLOCK_SPAN,
   GETLOGS_MAX_CATCHUP_BLOCKS,
   GETLOGS_MIN_INTERVAL_MS,
+  GETLOGS_TIMEOUT_MS,
+  GETLOGS_TIMEOUT_RECONNECT_THRESHOLD,
   type ProviderFactory,
+  REORG_REWIND_MAX_BLOCKS,
   STATS_LOG_INTERVAL_MS,
 } from "../../src/chains/provider-manager";
 
@@ -1567,6 +1570,188 @@ describe("ChainProviderManager", () => {
       });
     });
 
+    describe("reorg re-delivery", () => {
+      it("re-queries a height the subscription announces a second time", async () => {
+        const provider = await subscribe();
+        await emitBlocks(provider, 100, 3, GETLOGS_MIN_INTERVAL_MS * 2);
+        const before = ranges(provider).length;
+
+        // The chain reorganised and re-announced 102. The logs there may not
+        // be the ones already dispatched, so serving it once and never again
+        // would drop the replacement silently.
+        await provider.emitBlock(102);
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+
+        const served = ranges(provider).slice(before);
+        expect(served.some((r) => r.from <= 102 && r.to >= 102)).toBe(true);
+      });
+
+      it("re-covers every height from the re-announced one forward", async () => {
+        const provider = await subscribe();
+        await emitBlocks(provider, 200, 4, GETLOGS_MIN_INTERVAL_MS * 2);
+        const before = ranges(provider).length;
+
+        // A reorg at 201 invalidates 201-203, not 201 alone.
+        await provider.emitBlock(201);
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+
+        const served = ranges(provider).slice(before);
+        expect(served[0].from).toBe(201);
+        expect(served[served.length - 1].to).toBeGreaterThanOrEqual(203);
+      });
+
+      it("refuses a rewind deeper than the bound", async () => {
+        const warnSpy = vi
+          .spyOn(console, "warn")
+          .mockImplementation(() => undefined);
+        try {
+          const provider = await subscribe();
+          await provider.emitBlock(1_000);
+          await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+          await provider.emitBlock(1_000 + REORG_REWIND_MAX_BLOCKS + 10);
+          await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+          const before = ranges(provider).length;
+
+          // A stray very old height must not schedule an unbounded re-read.
+          await provider.emitBlock(1_000);
+          await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+
+          expect(ranges(provider)).toHaveLength(before);
+          expect(
+            warnSpy.mock.calls
+              .map((a) => String(a[0]))
+              .filter((l) => l.includes("below the mark")),
+          ).toHaveLength(1);
+        } finally {
+          warnSpy.mockRestore();
+        }
+      });
+
+      it("does not rewind for a height nothing has requested yet", async () => {
+        const logSpy = vi
+          .spyOn(console, "log")
+          .mockImplementation(() => undefined);
+        try {
+          const provider = await subscribe();
+          await provider.emitBlock(300);
+          // Short of the minimum interval, so the next block only arms the
+          // catch-up: 301-310 has genuinely not been requested when 305
+          // arrives, rather than having been served by an awaited drain.
+          await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS / 10);
+          await provider.emitBlock(310);
+          await provider.emitBlock(305);
+          await vi.advanceTimersByTimeAsync(STATS_LOG_INTERVAL_MS);
+
+          expect(ranges(provider)).toEqual([
+            { from: 300, to: 300 },
+            { from: 301, to: 310 },
+          ]);
+          // Asserted through the counter rather than the ranges: a rewind to
+          // 304 would produce the same two ranges, so only this tells the two
+          // apart.
+          expect(statsLines(logSpy)[0]).toContain("reorgRewinds=0");
+        } finally {
+          logSpy.mockRestore();
+        }
+      });
+
+      it("re-queries a height re-announced while a drain is in flight", async () => {
+        const provider = await subscribe();
+        await emitBlocks(provider, 100, 2, GETLOGS_MIN_INTERVAL_MS * 2);
+
+        // Served through 101. Hold the request for 102 open so the
+        // re-announcement lands while that drain owns the mark - it commits
+        // its own `to` when it finishes, so a mark moved backwards underneath
+        // it is overwritten and 101 is never re-read.
+        let release: () => void = () => undefined;
+        provider.beforeSend = (method) =>
+          method === "eth_getLogs"
+            ? new Promise<void>((r) => {
+                release = r;
+              })
+            : null;
+        const held = provider.emitBlock(102);
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS);
+        const before = ranges(provider).length;
+
+        void provider.emitBlock(101);
+        await vi.advanceTimersByTimeAsync(10);
+        provider.beforeSend = null;
+        release();
+        await held;
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 3);
+
+        const served = ranges(provider).slice(before);
+        expect(served.some((r) => r.from <= 101 && r.to >= 101)).toBe(true);
+      });
+
+      it("re-queries a height re-announced inside the range being fetched", async () => {
+        const provider = await subscribe();
+        await provider.emitBlock(100);
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+
+        let release: () => void = () => undefined;
+        provider.beforeSend = (method) =>
+          method === "eth_getLogs"
+            ? new Promise<void>((r) => {
+                release = r;
+              })
+            : null;
+        // Requests 101-105 and holds it open.
+        const held = provider.emitBlock(105);
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS);
+        const before = ranges(provider).length;
+
+        // 103 is above the mark but inside the range already in flight. That
+        // request went out before the reorg, so it carries the pre-reorg logs
+        // and its commit moves the mark past 103 with nothing having fetched
+        // the replacement.
+        void provider.emitBlock(103);
+        await vi.advanceTimersByTimeAsync(10);
+        provider.beforeSend = null;
+        release();
+        await held;
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 3);
+
+        const served = ranges(provider).slice(before);
+        expect(served.some((r) => r.from <= 103 && r.to >= 103)).toBe(true);
+      });
+
+      it("counts every refused rewind and warns once per interval", async () => {
+        const logSpy = vi
+          .spyOn(console, "log")
+          .mockImplementation(() => undefined);
+        const warnSpy = vi
+          .spyOn(console, "warn")
+          .mockImplementation(() => undefined);
+        try {
+          const provider = await subscribe();
+          await provider.emitBlock(1_000);
+          await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+          await provider.emitBlock(1_000 + REORG_REWIND_MAX_BLOCKS + 10);
+          await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+
+          // An upstream announcing heights far below the mark does it on
+          // every block, so the warn is once per interval and the counter
+          // carries the rest - refusing is the other path that drops events
+          // on purpose, and it has to be countable rather than greppable.
+          await provider.emitBlock(1_000);
+          await provider.emitBlock(1_001);
+          await vi.advanceTimersByTimeAsync(STATS_LOG_INTERVAL_MS);
+
+          expect(
+            warnSpy.mock.calls
+              .map((a) => String(a[0]))
+              .filter((l) => l.includes("below the mark")),
+          ).toHaveLength(1);
+          expect(statsLines(logSpy)[0]).toContain("reorgRewindsRefused=2");
+        } finally {
+          logSpy.mockRestore();
+          warnSpy.mockRestore();
+        }
+      });
+    });
+
     describe("failure handling", () => {
       it("re-queries a failed range instead of losing its blocks", async () => {
         const provider = await subscribe();
@@ -1603,13 +1788,50 @@ describe("ChainProviderManager", () => {
         }
         provider.sendResponses = [[], new Error("chunk two refused")];
         await provider.emitBlock(800);
+        // Only ranges issued after the failed drain count: that drain already
+        // asked for 800 once per address chunk.
+        const afterFailedDrain = ranges(provider).length;
         await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 3);
 
         // Block 800 is still owed, so a later drain re-queries from 800.
         await provider.emitBlock(801);
         await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
-        expect(ranges(provider).some((r) => r.from === 800)).toBe(true);
+        expect(
+          ranges(provider)
+            .slice(afterFailedDrain)
+            .some((r) => r.from === 800),
+        ).toBe(true);
         await mgr.destroy();
+      });
+
+      it("times out a request that never gets a response", async () => {
+        const provider = await subscribe();
+        provider.beforeSend = (method) =>
+          method === "eth_getLogs" ? new Promise<void>(() => undefined) : null;
+
+        // Not awaited: the request never settles on its own, so awaiting it
+        // here would hang the test rather than the chain. Only the timeout
+        // inside processBlockRange unblocks it, and that needs fake time to
+        // advance first.
+        const stuck = provider.emitBlock(850);
+        await vi.advanceTimersByTimeAsync(GETLOGS_TIMEOUT_MS);
+        await stuck;
+
+        expect(getLogsCalls(provider)).toHaveLength(1);
+
+        // The mark stayed at 849, so the next drain re-issues 850 rather
+        // than treating the timed-out range as served. Only ranges issued
+        // after this point count: the timed-out call already asked for 850.
+        const beforeRetry = ranges(provider).length;
+        provider.beforeSend = null;
+        await provider.emitBlock(851);
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+
+        expect(
+          ranges(provider)
+            .slice(beforeRetry)
+            .some((r) => r.from === 850),
+        ).toBe(true);
       });
     });
 
@@ -1660,6 +1882,120 @@ describe("ChainProviderManager", () => {
         // getOrCreateProvider long after the socket was healthy.
         expect(manager.getHealth(CHAIN_A)?.reconnecting).toBe(false);
         expect(manager.getHealth(CHAIN_A)?.connected).toBe(true);
+      });
+
+      it("recovers once a request stranded by a reconnect times out", async () => {
+        const provider = await subscribe();
+        // Never resolves - the same shape as ethers leaving an in-flight
+        // eth_getLogs unsettled when the socket underneath it is destroyed.
+        provider.beforeSend = (method) =>
+          method === "eth_getLogs" ? new Promise<void>(() => undefined) : null;
+
+        // Not awaited: this request never settles on its own, so awaiting it
+        // would hang the test rather than the chain.
+        void provider.emitBlock(1_000);
+        await vi.advanceTimersByTimeAsync(100);
+
+        // The reconnect replaces the connection while that request is still
+        // open and never coming back.
+        provider.emitError(new Error("socket closed"));
+        await vi.advanceTimersByTimeAsync(3_000);
+
+        const replacement = factoryBundle.created[1];
+        expect(replacement).toBeDefined();
+
+        // The stranded drain still owns the chain here - that is deliberate,
+        // it may be dispatching - so nothing has moved yet.
+        await replacement.emitBlock(1_005);
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+
+        // Its timeout is what releases the chain, and it always arrives.
+        // Before this fix nothing did, and the chain never fetched again.
+        await vi.advanceTimersByTimeAsync(GETLOGS_TIMEOUT_MS);
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+
+        expect(getLogsCalls(replacement).length).toBeGreaterThan(0);
+      });
+
+      it("does not dispatch a log twice when a reconnect lands mid-dispatch", async () => {
+        // The drain holds the chain across dispatch as well as the request.
+        // Releasing it at reconnect would let the replacement re-fetch the
+        // same unadvanced range and dispatch its logs a second time, running
+        // alongside the first dispatch - and the dedup store cannot absorb
+        // that, because isProcessed/markProcessed is a check-then-set with
+        // the listener's jitter sleep in front of the check.
+        const log = {
+          address: ADDR_A.toLowerCase(),
+          topics: [TOPIC_EMITTED],
+        };
+        let releaseHandler: (() => void) | null = null;
+        const handlerGate = new Promise<void>((r) => {
+          releaseHandler = r;
+        });
+        const handler = vi.fn(() => handlerGate);
+
+        const mgr = new ChainProviderManager({
+          factory: factoryBundle.factory,
+          onPermanentFailure,
+        });
+        const before = factoryBundle.created.length;
+        await mgr.subscribeToLogs({
+          chainId: CHAIN_A,
+          wssUrl: "ws://a",
+          address: ADDR_A,
+          topic0: TOPIC_EMITTED,
+          handler,
+        });
+        const provider = factoryBundle.created[before];
+        provider.sendResponses = [[log]];
+
+        // Not awaited: the handler holds this dispatch open.
+        void provider.emitBlock(3_000);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(handler).toHaveBeenCalledTimes(1);
+
+        // The socket drops while that dispatch is still in flight.
+        provider.emitError(new Error("socket closed"));
+        await vi.advanceTimersByTimeAsync(3_000);
+
+        const replacement = factoryBundle.created[before + 1];
+        expect(replacement).toBeDefined();
+        // Armed so that a replacement drain of the same range would deliver
+        // the same log again - the assertion is only meaningful because this
+        // is here.
+        replacement.sendResponses = [[log]];
+        // Not awaited: if the replacement does re-dispatch, it blocks on the
+        // same held handler, and awaiting here would hang the test instead
+        // of reporting the duplicate.
+        void replacement.emitBlock(3_001);
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 3);
+
+        expect(handler).toHaveBeenCalledTimes(1);
+
+        releaseHandler?.();
+        await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS);
+        await mgr.destroy();
+      });
+
+      it("reconnects after a run of getLogs timeouts on one socket", async () => {
+        const provider = await subscribe();
+        const reasons: string[] = [];
+        manager.onDisconnect(CHAIN_A, (ev) => {
+          reasons.push(ev.reason);
+        });
+        // Answers the heartbeat, never answers getLogs. Every other liveness
+        // check this class has keeps passing, so the timeout has to escalate
+        // on its own or the chain retries into the void forever.
+        provider.beforeSend = (method) =>
+          method === "eth_getLogs" ? new Promise<void>(() => undefined) : null;
+
+        for (let i = 0; i < GETLOGS_TIMEOUT_RECONNECT_THRESHOLD; i += 1) {
+          void provider.emitBlock(4_000 + i);
+          await vi.advanceTimersByTimeAsync(GETLOGS_TIMEOUT_MS);
+          await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+        }
+
+        expect(reasons).toContain("getlogs_timeout");
       });
     });
 
@@ -1746,6 +2082,31 @@ describe("ChainProviderManager", () => {
           expect(lines[0]).not.toContain("getLogsErrors=0");
         } finally {
           logSpy.mockRestore();
+        }
+      });
+
+      it("reports blocks abandoned by the catch-up bound", async () => {
+        const logSpy = vi
+          .spyOn(console, "log")
+          .mockImplementation(() => undefined);
+        const warnSpy = vi
+          .spyOn(console, "warn")
+          .mockImplementation(() => undefined);
+        try {
+          const provider = await subscribe();
+          await provider.emitBlock(1_000);
+          await vi.advanceTimersByTimeAsync(GETLOGS_MIN_INTERVAL_MS * 2);
+          await provider.emitBlock(1_000 + GETLOGS_MAX_CATCHUP_BLOCKS + 100);
+          await vi.advanceTimersByTimeAsync(STATS_LOG_INTERVAL_MS);
+
+          // Skipping is the one path that loses events on purpose, so it has
+          // to be countable, not only greppable.
+          const lines = statsLines(logSpy);
+          expect(lines).toHaveLength(1);
+          expect(lines[0]).toMatch(/blocksSkipped=[1-9]/);
+        } finally {
+          logSpy.mockRestore();
+          warnSpy.mockRestore();
         }
       });
 

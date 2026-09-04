@@ -43,6 +43,7 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [Webhook](/plugins/webhook) | Integrations | Send HTTP requests to external services | None |
 | [Hyperliquid](/plugins/hyperliquid) | Data | Read-only Info API queries: clearinghouse state, vault details, validators, funding history, spot deploy state, referrals, sub-accounts, active asset data | None |
 | [Blockscout](/plugins/blockscout) | Data | Read-only block explorer queries: address balance, transaction details, token info | None (optional instance URL/API key) |
+| [Robinhood](/plugins/robinhood) | Data | Read-only stock-token reads on Robinhood Chain: price, holder position in share terms, market/trading status | None |
 
 ## How Plugins Work
 

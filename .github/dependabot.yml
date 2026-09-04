@@ -86,6 +86,25 @@ updates:
       day: "monday"
     target-branch: "staging"
     open-pull-requests-limit: 5
+    # docs-site/.npmrc sets minimum-release-age=4320, which is 3 days, and lists
+    # no exclusions. docs-site/package.json pins next to an exact version, so a
+    # bump to a release younger than the gate leaves no version that satisfies
+    # the range. pnpm then fails the lockfile step outright:
+    #
+    #   ERR_PNPM_NO_MATURE_MATCHING_VERSION  Version 16.3.3 (released 21 hours
+    #   ago) of next does not meet the minimumReleaseAge constraint
+    #
+    # Dependabot ships the manifest edit alone when its lockfile step fails, and
+    # the docs image installs with --frozen-lockfile, so the build breaks. This
+    # cooldown holds a version back for the same 3 days the gate wants, so the
+    # two agree and Dependabot never proposes a release pnpm will refuse.
+    # default-days also supplies the major, minor and patch values, which are
+    # left unset here on purpose.
+    #
+    # Cooldown covers version updates only. A security update can still propose
+    # a release younger than 3 days and hit the gate.
+    cooldown:
+      default-days: 3
     groups:
       minor-and-patch:
         applies-to: version-updates

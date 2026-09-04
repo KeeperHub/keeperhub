@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { NetworksMap, RawWorkflow } from "../../lib/types";
 import { logger } from "../../lib/utils/logger";
 import { buildEventAbi } from "../chains/event-serializer";
+import { redactRpcUrl } from "../chains/provider-manager";
 import type { AbiEvent } from "../chains/validation";
 import type { WorkflowRegistration } from "./registry";
 
@@ -75,7 +76,7 @@ export function buildRegistration(
   }
   if (!(wssUrl.startsWith("wss://") || wssUrl.startsWith("ws://"))) {
     logger.warn(
-      `[workflow-mapper] workflow ${workflowId} chain ${chainId} defaultPrimaryWss is not a WebSocket URL ("${wssUrl}"); skipping`,
+      `[workflow-mapper] workflow ${workflowId} chain ${chainId} defaultPrimaryWss is not a WebSocket URL ("${redactRpcUrl(wssUrl)}"); skipping`,
     );
     return null;
   }
@@ -94,7 +95,7 @@ export function buildRegistration(
       fallbackWssUrl = rawFallbackWssUrl;
     } else {
       logger.warn(
-        `[workflow-mapper] workflow ${workflowId} chain ${chainId} defaultFallbackWss is not a WebSocket URL ("${rawFallbackWssUrl}"); ignoring fallback`,
+        `[workflow-mapper] workflow ${workflowId} chain ${chainId} defaultFallbackWss is not a WebSocket URL ("${redactRpcUrl(String(rawFallbackWssUrl))}"); ignoring fallback`,
       );
     }
   }

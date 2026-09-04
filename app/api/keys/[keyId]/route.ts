@@ -30,7 +30,9 @@ export async function DELETE(
     // admin/owner + dual-factor gates below reject a Bearer OAuth token), but
     // gate on write scope anyway so the A-03 class stays closed if that ordering
     // is ever refactored. Mirrors the sibling resolveOrganizationId mutations.
-    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE, {
+      credentialType: authCtx.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }

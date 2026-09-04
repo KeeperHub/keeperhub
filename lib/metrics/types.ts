@@ -126,6 +126,7 @@ export const MetricNames = {
   // User-caused error metrics
   USER_VALIDATION_ERRORS: "errors.user.validation.total",
   USER_CONFIGURATION_ERRORS: "errors.user.configuration.total",
+  USER_AUTHORIZATION_ERRORS: "errors.user.authorization.total",
   EXTERNAL_SERVICE_ERRORS: "errors.external.service.total",
   NETWORK_RPC_ERRORS: "errors.network.rpc.total",
   TRANSACTION_BLOCKCHAIN_ERRORS: "errors.transaction.blockchain.total",

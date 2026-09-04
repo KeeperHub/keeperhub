@@ -9,6 +9,7 @@ import "server-only";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
+import { checkStablecoinContractCall } from "@/lib/execute/stablecoin-cap";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
 import { db } from "@/lib/db";
 import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
@@ -21,7 +22,7 @@ import {
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
-import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
 import { generateId } from "@/lib/utils/id";
 import {
@@ -42,7 +43,10 @@ import {
 import { resolveGasLimitOverrides } from "@/lib/web3/gas-defaults";
 import { isSponsorshipSupported } from "@/lib/web3/turnkey-sponsorship-config";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
-import { revertedTransactionHash } from "@/lib/web3/onchain-revert";
+import {
+  broadcastTransactionHash,
+  isOnChainPendingError,
+} from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
@@ -52,6 +56,10 @@ import {
   type TransactionContext,
   withNonceSession,
 } from "@/lib/web3/transaction-manager";
+import {
+  convertAmountForWrite,
+  resolveForWrite,
+} from "@/lib/web3/ui-multiplier";
 import { parseTokenAddress } from "./transfer-token-core";
 
 export type ApproveTokenCoreInput = {
@@ -323,8 +331,49 @@ export async function approveTokenCore(
         amountRaw = ethers.MaxUint256;
         approvedAmountDisplay = "unlimited";
       } else {
-        amountRaw = ethers.parseUnits(amount, Number(decimals));
+        // An allowance is spent by transferFrom in raw units, so an amount the
+        // user expressed in the units they were shown converts down the same
+        // way a transfer does. Identity for every ordinary ERC-20. "max" never
+        // reaches here: MaxUint256 is a sentinel, not a quantity.
+        const multiplier = await resolveForWrite(
+          (op) => rpcManager.executeWithFailover(op),
+          chainId,
+          tokenAddress
+        );
+        if (!multiplier.ok) {
+          return { success: false, error: getErrorMessage(multiplier.error) };
+        }
+        const converted = convertAmountForWrite(
+          ethers.parseUnits(amount, Number(decimals)),
+          multiplier.multiplier
+        );
+        if (!converted.ok) {
+          return { success: false, error: converted.error };
+        }
+        amountRaw = converted.raw;
         approvedAmountDisplay = amount;
+      }
+
+      // Stablecoin ceiling. This step calls ERC-20 approve directly, so it
+      // never passes through writeContractCore where the ceiling is applied --
+      // it was the one unbounded-allowance path the cap did not cover, and the
+      // cheapest complete drain a leaked key has: grant the allowance here,
+      // call transferFrom off platform afterwards, where nothing checks.
+      const stablecoinCap = await checkStablecoinContractCall({
+        organizationId,
+        chainId,
+        contractAddress: tokenAddress,
+        functionName: "approve",
+        inputTypes: ["address", "uint256"],
+        args: [spenderAddress, amountRaw],
+        context: "approve-token",
+      });
+      if (stablecoinCap.kind !== "allowed") {
+        return {
+          success: false,
+          error: stablecoinCap.error,
+          errorClass: ExecutionErrorType.USER,
+        };
       }
 
       const sponsoredResult = await executeSponsoredContractTransaction({
@@ -453,8 +502,26 @@ export async function approveTokenCore(
         amountRaw = ethers.MaxUint256;
         approvedAmountDisplay = "unlimited";
       } else {
+        const multiplier = await resolveForWrite(
+          (op) => rpcManager.executeWithFailover(op),
+          chainId,
+          tokenAddress
+        );
+        if (!multiplier.ok) {
+          return { success: false, error: getErrorMessage(multiplier.error) };
+        }
         try {
-          amountRaw = ethers.parseUnits(amount, decimalsNum);
+          // Same conversion as the sponsored branch above: an allowance is
+          // spent in raw units, so a UI amount converts down. Identity for
+          // every ordinary ERC-20.
+          const converted = convertAmountForWrite(
+            ethers.parseUnits(amount, decimalsNum),
+            multiplier.multiplier
+          );
+          if (!converted.ok) {
+            return { success: false, error: converted.error };
+          }
+          amountRaw = converted.raw;
           approvedAmountDisplay = amount;
         } catch (error) {
           return {
@@ -462,6 +529,26 @@ export async function approveTokenCore(
             error: `Invalid amount format: ${getErrorMessage(error)}`,
           };
         }
+      }
+
+      // Same ceiling as the sponsored branch above. Both reach ERC-20 approve
+      // directly without passing through writeContractCore, so each needs the
+      // check on its own: this is the Safe/EOA path.
+      const stablecoinCap = await checkStablecoinContractCall({
+        organizationId,
+        chainId,
+        contractAddress: tokenAddress,
+        functionName: "approve",
+        inputTypes: ["address", "uint256"],
+        args: [spenderAddress, amountRaw],
+        context: "approve-token",
+      });
+      if (stablecoinCap.kind !== "allowed") {
+        return {
+          success: false,
+          error: stablecoinCap.error,
+          errorClass: ExecutionErrorType.USER,
+        };
       }
 
       let receipt: Awaited<ReturnType<typeof adapter.executeContractCall>>;
@@ -557,7 +644,11 @@ export async function approveTokenCore(
         }
       );
       const rejection = classifyRevert(error, contract.interface);
-      const errorClass = rpcRelayErrorClass(error);
+      // Attributed as a system fault so the execution log records a fault
+      // domain for it; a relay-determined class is more specific, so it wins.
+      const errorClass =
+        rpcRelayErrorClass(error) ??
+        (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
       return {
         success: false,
         error: formatContractError(
@@ -567,8 +658,8 @@ export async function approveTokenCore(
         ),
         ...(errorClass ? { errorClass } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
-        ...(revertedTransactionHash(error)
-          ? { transactionHash: revertedTransactionHash(error), chainId }
+        ...(broadcastTransactionHash(error)
+          ? { transactionHash: broadcastTransactionHash(error), chainId }
           : {}),
       };
     }

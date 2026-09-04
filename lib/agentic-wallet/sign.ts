@@ -32,6 +32,7 @@ import { Challenge, Credential } from "mppx";
 import { TxEnvelopeTempo } from "ox/tempo";
 import { encodeFunctionData, keccak256 } from "viem";
 import { Abis } from "viem/tempo";
+import { BASE_RAIL } from "@/lib/payments/rails";
 import {
   runTurnkeyActivity,
   type TurnkeyActivityErrorSpec,
@@ -139,11 +140,12 @@ const SIGN_ACTIVITY_ERRORS: TurnkeyActivityErrorSpec = {
   missingResultMessage: "Signature missing from Turnkey response",
 };
 
-// Source: lib/x402/reconcile.ts:4 + @x402/evm domain constant. Base USDC
-// domain is the canonical TransferWithAuthorization EIP-712 domain.
+// The canonical TransferWithAuthorization EIP-712 domain for the x402 rail's
+// settlement asset, taken whole from the rail. The advertised `extra` in
+// payment-gate.ts and router.ts reads the same `domain`, so the pair that
+// drifted in KEEP-364 is now one value rather than two that agree by review.
 export const BASE_USDC_DOMAIN = {
-  name: "USD Coin",
-  version: "2",
+  ...BASE_RAIL.domain,
   chainId: BASE_CHAIN_ID,
   verifyingContract: USDC_BASE_ADDRESS,
 } as const;

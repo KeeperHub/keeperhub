@@ -389,6 +389,21 @@ describe("POST /api/mcp/workflows/[slug]/call", () => {
   it("Test 3b: charges the owner org before starting an MCP run (PAYG)", async () => {
     setupDbSelectWorkflow(FREE_WORKFLOW);
     setupDbInsertExecution("exec-payg-1");
+    // The admission verdict reached before the execution row was written. The
+    // charge point bills off this rather than counting again, since the count
+    // would by then include this run.
+    mockEnforceExecutionLimit.mockResolvedValue({
+      blocked: false,
+      limitResult: {
+        allowed: true,
+        isOverage: false,
+        paygOverflow: true,
+        limit: 5000,
+        used: 5000,
+        debtExecutions: 0,
+        effectiveLimit: 5000,
+      },
+    });
     mockChargePaygIfBillable.mockResolvedValue({
       applicable: true,
       ok: true,
@@ -403,6 +418,7 @@ describe("POST /api/mcp/workflows/[slug]/call", () => {
     expect(mockChargePaygIfBillable).toHaveBeenCalledWith({
       organizationId: "org-1",
       executionId: "exec-payg-1",
+      paygOverflow: true,
     });
     expect(response.status).toBe(200);
     // The run still starts once the charge settles.

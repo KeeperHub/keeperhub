@@ -15,25 +15,19 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const {
-  mockGetIntegration,
-  mockStripDatabaseSecrets,
-  mockToChecksumAddress,
-  mockWalletResult,
-} = vi.hoisted(() => ({
-  mockGetIntegration: vi.fn(),
-  mockStripDatabaseSecrets: vi.fn((config: Record<string, unknown>) => config),
-  mockToChecksumAddress: vi.fn(
-    (addr: string) => `0xChecksummed_${addr.slice(2)}`
-  ),
-  mockWalletResult: { current: [] as unknown[] },
-}));
+const { mockGetIntegration, mockToChecksumAddress, mockWalletResult } =
+  vi.hoisted(() => ({
+    mockGetIntegration: vi.fn(),
+    mockToChecksumAddress: vi.fn(
+      (addr: string) => `0xChecksummed_${addr.slice(2)}`
+    ),
+    mockWalletResult: { current: [] as unknown[] },
+  }));
 
 vi.mock("server-only", () => ({}));
 
 vi.mock("@/lib/db/integrations", () => ({
   getIntegration: mockGetIntegration,
-  stripDatabaseSecrets: mockStripDatabaseSecrets,
 }));
 
 vi.mock("@/lib/middleware/auth-helpers", () => ({
@@ -59,8 +53,10 @@ vi.mock("@/lib/db", () => ({
 }));
 
 vi.mock("@/lib/logging", () => ({
-  ErrorCategory: { DATABASE: "DATABASE" },
+  ErrorCategory: { DATABASE: "DATABASE", VALIDATION: "VALIDATION" },
   logSystemError: vi.fn(),
+  logSecurityEvent: vi.fn(),
+  logUserError: vi.fn(),
 }));
 
 import { GET } from "@/app/api/integrations/[integrationId]/route";
@@ -152,6 +148,24 @@ describe("GET /api/integrations/[integrationId]", () => {
 
     expect(response.status).toBe(404);
     expect(data.error).toBe("Integration not found");
+  });
+
+  it("never returns a stored credential in the response", async () => {
+    mockGetIntegration.mockResolvedValue({
+      ...mockDatabaseIntegration,
+      id: "int-3",
+      type: "discord",
+      config: { webhookUrl: "https://discord.com/api/webhooks/secret" },
+    });
+
+    const response = await GET(createRequest("/api/integrations/int-3"), {
+      params: Promise.resolve({ integrationId: "int-3" }),
+    });
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.config).toEqual({});
+    expect(JSON.stringify(data)).not.toContain("secret");
   });
 
   it("walletAddress is checksummed from lowercase storage form", async () => {

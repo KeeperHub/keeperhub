@@ -126,6 +126,14 @@ vi.mock("@/lib/abi/utils", () => ({
     if (name === "setValue") {
       return { name, type: "function", stateMutability: "nonpayable" };
     }
+    if (name === "balanceOf") {
+      return {
+        name,
+        type: "function",
+        stateMutability: "view",
+        outputs: [{ name: "", type: "uint256" }],
+      };
+    }
     return;
   },
 }));

@@ -17,6 +17,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const scopeError = requireScope(apiKeyCtx.scope, SCOPE_MCP_WRITE, {
     organizationId: apiKeyCtx.organizationId,
     credentialId: apiKeyCtx.apiKeyId,
+    credentialType: apiKeyCtx.credentialType,
     endpoint: "/api/execute/swap",
   });
   if (scopeError) {

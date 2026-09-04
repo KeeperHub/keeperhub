@@ -14,6 +14,7 @@ import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
 import { validateArgsForAbi } from "@/lib/abi/validate-args";
 import { db } from "@/lib/db";
 import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
+import { checkStablecoinContractCall } from "@/lib/execute/stablecoin-cap";
 import { getTransactionUrl } from "@/lib/explorer";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
@@ -51,7 +52,10 @@ import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
 import { traceExecutedCallWithFailover } from "@/lib/web3/trace-executed-call";
-import { revertedTransactionHash } from "@/lib/web3/onchain-revert";
+import {
+  broadcastTransactionHash,
+  isOnChainPendingError,
+} from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
 import {
@@ -367,6 +371,28 @@ export async function writeContractCore(
     };
   }
 
+  // Stablecoin ceiling. An ERC-20 call carries no native value, so the daily
+  // value cap reserves 0 for it: a `transfer` on a USDC contract is invisible
+  // to it. Checked here rather than in any one route because every write
+  // entrance funnels through this core -- the contract-call API, the protocol
+  // action API, check-and-execute, node execution, and the workflow steps.
+  const stablecoinCap = await checkStablecoinContractCall({
+    organizationId,
+    chainId,
+    contractAddress,
+    functionName: functionAbi.name,
+    inputTypes: (functionAbi.inputs ?? []).map((i) => i.type),
+    args,
+    context: "write-contract",
+  });
+  if (stablecoinCap.kind !== "allowed") {
+    return {
+      success: false,
+      error: stablecoinCap.error,
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
+
   // Get wallet address for nonce management
   let walletAddress: string;
   try {
@@ -679,15 +705,20 @@ export async function writeContractCore(
         }
       );
       const rejection = classifyRevert(error, contractInterface);
-      const revertedHash = revertedTransactionHash(error);
-      const errorClass = rpcRelayErrorClass(error);
+      const broadcastHash = broadcastTransactionHash(error);
+      // Set so a failOnError=false node cannot soften an unresolved in-flight
+      // send into success. A relay-determined class is the more specific
+      // answer, so it wins.
+      const errorClass =
+        rpcRelayErrorClass(error) ??
+        (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
       return {
         success: false,
         error: formatContractError(error, contractInterface),
         ...(errorClass ? { errorClass } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
-        ...(revertedHash
-          ? { transactionHash: revertedHash, chainId }
+        ...(broadcastHash
+          ? { transactionHash: broadcastHash, chainId }
           : {}),
       };
     }

@@ -34,4 +34,5 @@ export default {
   sendgrid: "SendGrid",
   webhook: "Webhook",
   hyperliquid: "Hyperliquid",
+  robinhood: "Robinhood",
 };

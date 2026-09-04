@@ -93,6 +93,7 @@ describe("validateApiKey -- anonymous and failure propagation", () => {
       organizationId: "org-1",
       apiKeyId: "oauth:user-1",
       scope: "mcp:write",
+      credentialType: "oauth",
     });
     expect(mockAuthenticateApiKey).not.toHaveBeenCalled();
   });
@@ -110,7 +111,11 @@ describe("validateApiKey -- anonymous and failure propagation", () => {
 
     const result = await validateApiKey(request());
 
-    expect(result).toEqual({ organizationId: "org-2", apiKeyId: "key-1" });
+    expect(result).toEqual({
+      organizationId: "org-2",
+      apiKeyId: "key-1",
+      credentialType: "api-key",
+    });
   });
 
   it("propagates the scope an API key was minted with", async () => {
@@ -132,6 +137,7 @@ describe("validateApiKey -- anonymous and failure propagation", () => {
       organizationId: "org-2",
       apiKeyId: "key-1",
       scope: "mcp:read",
+      credentialType: "api-key",
     });
   });
 

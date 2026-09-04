@@ -164,7 +164,9 @@ export async function POST(request: Request): Promise<NextResponse> {
       { status: resolved.status }
     );
   }
-  const scopeError = requireScope(resolved.scope, SCOPE_MCP_WRITE);
+  const scopeError = requireScope(resolved.scope, SCOPE_MCP_WRITE, {
+    credentialType: resolved.authMethod,
+  });
   if (scopeError) {
     return scopeError;
   }

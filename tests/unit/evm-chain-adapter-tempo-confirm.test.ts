@@ -1,6 +1,17 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+
+// The receipt poll's only pause is lib/sleep, so counting what it sleeps and
+// reading Date.now() off that counter walks the 60s deadline in a few real
+// milliseconds.
+const clock = vi.hoisted(() => ({ elapsedMs: 0 }));
+vi.mock("@/lib/sleep", () => ({
+  sleep: (ms: number) => {
+    clock.elapsedMs += ms;
+    return Promise.resolve();
+  },
+}));
 vi.mock("@/lib/db", () => ({ db: {} }));
 vi.mock("@/lib/db/schema", () => ({ explorerConfigs: {} }));
 vi.mock("drizzle-orm", () => ({ eq: () => ({}) }));
@@ -10,6 +21,10 @@ vi.mock("@/lib/explorer", () => ({
 }));
 
 import { EvmChainAdapter } from "@/lib/web3/chain-adapter/evm";
+import {
+  broadcastTransactionHash,
+  isOnChainPendingError,
+} from "@/lib/web3/onchain-revert";
 
 const FROM = "0x2c9F694183A4240B6431771F6c714a8106179dF5";
 const TO = "0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59";
@@ -121,5 +136,98 @@ describe("EvmChainAdapter Tempo confirmation", () => {
     expect(result.hash).toBe(TX_HASH);
     expect(h.wait).toHaveBeenCalledTimes(1);
     expect(h.getTransactionReceipt).not.toHaveBeenCalled();
+  });
+});
+
+describe("EvmChainAdapter unreadable receipt", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("keeps the hash on the error when the receipt cannot be read", async () => {
+    // wait() resolving null is the shape of "broadcast, outcome unknown": the
+    // transaction is on the network, we just cannot see it yet.
+    const h = createHarness(SEPOLIA, vi.fn().mockResolvedValue(null));
+
+    const error = await send(h).then(
+      () => undefined,
+      (thrown: unknown) => thrown
+    );
+
+    expect(isOnChainPendingError(error)).toBe(true);
+    // The regression this guards: a bare Error dropped the hash, so the
+    // finalizer recorded a terminal failure for a transaction that exists
+    // on-chain and nowhere in our data, and the reconciler -- which scans for
+    // unconfirmed rows WITH a hash -- never revisited it.
+    expect(broadcastTransactionHash(error)).toBe(TX_HASH);
+  });
+
+  it("leaves the message untouched for callers that only read it", async () => {
+    const h = createHarness(SEPOLIA, vi.fn().mockResolvedValue(null));
+
+    await expect(send(h)).rejects.toThrow(
+      "Transaction sent but receipt not available"
+    );
+  });
+
+  it("does not mistake a pre-broadcast failure for a broadcast one", async () => {
+    // Nothing reached the chain, so no hash may be attached: recording one
+    // would invent a transaction that does not exist.
+    const h = createHarness(SEPOLIA, vi.fn());
+    (
+      h.signer as { sendTransaction: ReturnType<typeof vi.fn> }
+    ).sendTransaction = vi
+      .fn()
+      .mockRejectedValue(new Error("insufficient funds"));
+
+    const error = await send(h).then(
+      () => undefined,
+      (thrown: unknown) => thrown
+    );
+
+    expect(isOnChainPendingError(error)).toBe(false);
+    expect(broadcastTransactionHash(error)).toBeUndefined();
+  });
+});
+
+describe("EvmChainAdapter Tempo receipt-poll timeout", () => {
+  let nowSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clock.elapsedMs = 0;
+    const base = Date.now();
+    nowSpy = vi
+      .spyOn(Date, "now")
+      .mockImplementation(() => base + clock.elapsedMs);
+  });
+
+  afterEach(() => {
+    nowSpy?.mockRestore();
+  });
+
+  // Tempo is the one chain that polls precisely because wait() misbehaves
+  // there, so it is the one chain whose broadcast-but-unread case never
+  // reached the empty-receipt branch above. It needs its own carrier.
+  it("keeps the hash on the error when the poll lapses before the chain answers", async () => {
+    const h = createHarness(TEMPO_TESTNET, badDataWait());
+    h.getTransactionReceipt.mockResolvedValue(null);
+
+    const error = await send(h).then(
+      () => undefined,
+      (thrown: unknown) => thrown
+    );
+
+    expect(isOnChainPendingError(error)).toBe(true);
+    expect(broadcastTransactionHash(error)).toBe(TX_HASH);
+  });
+
+  it("leaves the timeout message untouched for callers that only read it", async () => {
+    const h = createHarness(TEMPO_TESTNET, badDataWait());
+    h.getTransactionReceipt.mockResolvedValue(null);
+
+    await expect(send(h)).rejects.toThrow(
+      `Timed out waiting for Tempo transaction receipt (${TX_HASH})`
+    );
   });
 });

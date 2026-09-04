@@ -2,6 +2,7 @@ import {
   McpServer,
   ResourceTemplate,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { AuthMethod } from "@/lib/middleware/auth-helpers";
 import { PUBLIC_TOOLS, SCOPE_MCP_PUBLIC } from "./oauth-scopes";
 import { registerMetaTools, registerTools } from "./tools";
 
@@ -112,7 +113,8 @@ function registerResources(
 export function createMcpServer(
   internalApiBaseUrl: string,
   authHeader: string,
-  scope?: string
+  scope?: string,
+  credentialType?: AuthMethod
 ): McpServer {
   const server = new McpServer({
     name: "keeperhub",
@@ -122,8 +124,20 @@ export function createMcpServer(
   const isPublic = scope === SCOPE_MCP_PUBLIC;
   const registrar = isPublic ? publicToolRegistrar(server) : server;
 
-  registerTools(registrar, internalApiBaseUrl, authHeader, scope);
-  registerMetaTools(registrar, internalApiBaseUrl, authHeader, scope);
+  registerTools(
+    registrar,
+    internalApiBaseUrl,
+    authHeader,
+    scope,
+    credentialType
+  );
+  registerMetaTools(
+    registrar,
+    internalApiBaseUrl,
+    authHeader,
+    scope,
+    credentialType
+  );
 
   // Resources (keeperhub://workflows*) read org-scoped data, so they are never
   // registered on the anonymous public surface.

@@ -9,6 +9,7 @@ import { db } from "@/lib/db";
 import { workflows } from "@/lib/db/schema";
 import { extractActionTypeNodes } from "@/lib/features";
 import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
+import { syncPersistedWorkflowSchedule } from "@/lib/schedule-service";
 import { generateId } from "@/lib/utils/id";
 import { remapTemplateRefsInString } from "@/lib/utils/template";
 import { getWorkflowAccess } from "@/lib/workflow/access";
@@ -124,7 +125,9 @@ export async function POST(
       return authFailureResponse(authContext, request.headers);
     }
 
-    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+      credentialType: authContext.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }
@@ -243,6 +246,14 @@ export async function POST(
         sourceWorkflowId: sourceWorkflow.visibility === "public" ? workflowId : null,
       })
       .returning();
+
+    // The copy needs its own schedule row. It is created disabled, so the row
+    // stays inert until the user enables the copy.
+    await syncPersistedWorkflowSchedule(
+      newWorkflow.id,
+      newNodes as Parameters<typeof syncPersistedWorkflowSchedule>[1],
+      "/api/workflows/[workflowId]/duplicate"
+    );
 
     return NextResponse.json({
       ...newWorkflow,

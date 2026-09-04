@@ -1,15 +1,15 @@
 ---
 title: "Migrate from OpenZeppelin Defender"
-description: "OpenZeppelin Defender shuts down July 1, 2026. A practical migration guide covering feature mapping, self-hosted vs managed options, and step-by-step migration."
+description: "OpenZeppelin Defender shut down July 1, 2026. A practical migration guide covering feature mapping, self-hosted vs managed options, and step-by-step migration."
 ---
 
 # Migrate from OpenZeppelin Defender
 
-OpenZeppelin Defender shuts down on **July 1, 2026**. This guide covers what's changing, how to evaluate your options, and how to migrate to KeeperHub.
+OpenZeppelin Defender shut down on **July 1, 2026**. This guide covers what changed, how to evaluate your options, and how to migrate to KeeperHub.
 
 ## What's Changing
 
-Defender is in maintenance mode. Two core services are affected:
+Defender has shut down. Two core services were affected:
 
 - **Defender Monitor** -- on-chain monitoring and alerting
 - **Defender Relayer** -- transaction signing and submission
@@ -63,7 +63,7 @@ Both ship as workflow plugins and can be chained with monitoring triggers and no
 
 ### 1. Audit Your Defender Setup
 
-Export your configuration from the Defender dashboard. Document every monitor, relayer, and action -- contract addresses, event signatures, trigger conditions, and relayer permissions.
+If you still have dashboard access, export your configuration before it is fully decommissioned. Otherwise, reconstruct it from your own records or run history. Document every monitor, relayer, and action -- contract addresses, event signatures, trigger conditions, and relayer permissions.
 
 ### 2. Set Up KeeperHub
 
@@ -73,9 +73,9 @@ Create your account, configure chain connections, and set up your wallet for tra
 
 Use the workflow builder or AI assistant to recreate your automations. Check the [Workflow Hub](/workflows/hub) for templates that match your existing patterns.
 
-### 4. Run in Parallel
+### 4. Validate Against Historical Behavior
 
-Run both systems side by side to validate that KeeperHub matches Defender's behavior. Once confirmed, update on-chain permissions to your new signer addresses and decommission Defender.
+With Defender no longer running, validate KeeperHub's monitoring and execution against your last known Defender configuration and run history rather than a live side-by-side comparison. Once confirmed, update on-chain permissions to your new signer addresses.
 
 ---
 

@@ -342,49 +342,47 @@ const nextConfig = {
 
 const { SENTRY_ORG, SENTRY_PROJECT, SENTRY_RELEASE } = process.env;
 
-// Enable the workflow DevKit's deferred builder to avoid the eager
-// builder's per-route esbuild scan of every "use step" file. The eager
-// scan + intermediate bundle takes 2-5 min on first hit per route in
-// dev, making /api/workflow/* effectively unusable on a normal laptop.
-// The deferred builder uses socket-driven lazy discovery and only
-// pre-bundles the well-known /flow, /step, /webhook routes. Requires
-// Next.js >= 16.2.0-canary.48 (we're on 16.2.2). The builder itself
-// branches on phase (development vs build) so this is safe for prod.
-export default withSentryConfig(
-  withWorkflow(nextConfig, { workflows: { lazyDiscovery: true } }),
-  {
-    // For all available options, see:
-    // https://www.npmjs.com/package/@sentry/webpack-plugin#options
+// The `workflows.lazyDiscovery` option is gone as of workflow 4.8.5:
+// @workflow/next 4.1.9 deleted the deferred builder outright, and its
+// builder.js is now a shim that unconditionally returns the eager builder,
+// so the option no longer has anything to select. This reinstates the eager
+// per-route esbuild scan of every "use step" file, which took 2-5 min on
+// first hit per route in dev and made /api/workflow/* painful on a normal
+// laptop. Production is unaffected - the build phase always used the eager
+// path. If dev startup regresses, raise it upstream rather than re-adding
+// the flag; there is no deferred builder left to turn on.
+export default withSentryConfig(withWorkflow(nextConfig), {
+  // For all available options, see:
+  // https://www.npmjs.com/package/@sentry/webpack-plugin#options
 
-    org: SENTRY_ORG,
-    project: SENTRY_PROJECT,
-    release: SENTRY_RELEASE ? { name: SENTRY_RELEASE } : undefined,
+  org: SENTRY_ORG,
+  project: SENTRY_PROJECT,
+  release: SENTRY_RELEASE ? { name: SENTRY_RELEASE } : undefined,
 
-    // Only print logs for uploading source maps in CI
-    silent: !process.env.CI,
+  // Only print logs for uploading source maps in CI
+  silent: !process.env.CI,
 
-    // For all available options, see:
-    // https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/
+  // For all available options, see:
+  // https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/
 
-    // Upload a larger set of source maps for prettier stack traces (increases build time)
-    widenClientFileUpload: true,
+  // Upload a larger set of source maps for prettier stack traces (increases build time)
+  widenClientFileUpload: true,
 
-    // No-op: source map upload moved to sentry-upload Docker stage (KEEP-280).
-    // Kept for safety in case SENTRY_AUTH_TOKEN is ever set during build.
-    sourcemaps: {
-      deleteSourcemapsAfterUpload: true,
+  // No-op: source map upload moved to sentry-upload Docker stage (KEEP-280).
+  // Kept for safety in case SENTRY_AUTH_TOKEN is ever set during build.
+  sourcemaps: {
+    deleteSourcemapsAfterUpload: true,
+  },
+
+  // Route browser requests to Sentry through a Next.js rewrite to circumvent ad-blockers.
+  // This can increase your server load as well as your hosting bill.
+  // Note: Check that the configured route will not match with your Next.js middleware, otherwise reporting of client-
+  // side errors will fail.
+  tunnelRoute: "/monitoring",
+
+  webpack: {
+    treeshake: {
+      removeDebugLogging: true,
     },
-
-    // Route browser requests to Sentry through a Next.js rewrite to circumvent ad-blockers.
-    // This can increase your server load as well as your hosting bill.
-    // Note: Check that the configured route will not match with your Next.js middleware, otherwise reporting of client-
-    // side errors will fail.
-    tunnelRoute: "/monitoring",
-
-    webpack: {
-      treeshake: {
-        removeDebugLogging: true,
-      },
-    },
-  }
-);
+  },
+});

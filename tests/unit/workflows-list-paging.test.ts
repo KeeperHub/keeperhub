@@ -141,38 +141,36 @@ describe("GET /api/workflows paging", () => {
     expect(calls.offset).toBe(0);
   });
 
-  it.each([
-    "1e20",
-    "99999999999999999999",
-    "-1",
-  ])("rejects offset=%s rather than letting Postgres reject it", async (value) => {
-    // Number.isInteger(1e20) is true, so an unbounded offset reaches the
-    // driver as a bigint overflow and the caller gets a raw database message.
-    const { builder } = queryStub([]);
-    mockSelect.mockReturnValue(builder);
+  it.each(["1e20", "99999999999999999999", "-1"])(
+    "rejects offset=%s rather than letting Postgres reject it",
+    async (value) => {
+      // Number.isInteger(1e20) is true, so an unbounded offset reaches the
+      // driver as a bigint overflow and the caller gets a raw database message.
+      const { builder } = queryStub([]);
+      mockSelect.mockReturnValue(builder);
 
-    const res = await call(
-      `https://x.test/api/workflows?limit=10&offset=${encodeURIComponent(value)}`
-    );
+      const res = await call(
+        `https://x.test/api/workflows?limit=10&offset=${encodeURIComponent(value)}`
+      );
 
-    expect(res.status).toBe(400);
-    expect((await res.json()).detail).toMatch(/offset/);
-  });
+      expect(res.status).toBe(400);
+      expect((await res.json()).detail).toMatch(/offset/);
+    }
+  );
 
-  it.each([
-    "0x1f4",
-    "1e2",
-    " 5",
-  ])("rejects limit=%s, which Number() would have silently accepted", async (value) => {
-    const { builder } = queryStub([]);
-    mockSelect.mockReturnValue(builder);
+  it.each(["0x1f4", "1e2", " 5"])(
+    "rejects limit=%s, which Number() would have silently accepted",
+    async (value) => {
+      const { builder } = queryStub([]);
+      mockSelect.mockReturnValue(builder);
 
-    const res = await call(
-      `https://x.test/api/workflows?limit=${encodeURIComponent(value)}`
-    );
+      const res = await call(
+        `https://x.test/api/workflows?limit=${encodeURIComponent(value)}`
+      );
 
-    expect(res.status).toBe(400);
-  });
+      expect(res.status).toBe(400);
+    }
+  );
 
   it("sorts by a total order so pages cannot overlap", async () => {
     // createdAt is not unique, so a single-column sort lets a row on a page
@@ -185,22 +183,20 @@ describe("GET /api/workflows paging", () => {
     expect(calls.orderBy).toBe(2);
   });
 
-  it.each([
-    "abc",
-    "0",
-    "-1",
-    "",
-  ])("rejects limit=%s rather than returning the whole list", async (value) => {
-    const { builder } = queryStub([]);
-    mockSelect.mockReturnValue(builder);
+  it.each(["abc", "0", "-1", ""])(
+    "rejects limit=%s rather than returning the whole list",
+    async (value) => {
+      const { builder } = queryStub([]);
+      mockSelect.mockReturnValue(builder);
 
-    const res = await call(
-      `https://x.test/api/workflows?limit=${encodeURIComponent(value)}`
-    );
+      const res = await call(
+        `https://x.test/api/workflows?limit=${encodeURIComponent(value)}`
+      );
 
-    expect(res.status).toBe(400);
-    expect((await res.json()).detail).toMatch(/limit/);
-  });
+      expect(res.status).toBe(400);
+      expect((await res.json()).detail).toMatch(/limit/);
+    }
+  );
 
   it("rejects offset without limit", async () => {
     const { builder } = queryStub([]);

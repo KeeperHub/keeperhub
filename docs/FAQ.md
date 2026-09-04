@@ -124,8 +124,10 @@ Failed steps are retried with exponential backoff. To reduce risk: test on Sepol
 
 KeeperHub calls `eth_estimateGas` and applies a multiplier per chain:
 
-- Ethereum and Polygon: 2.0x normally, 2.5x for time-sensitive triggers (events, webhooks)
-- Base and Arbitrum: 1.5x normally, 2.0x for time-sensitive triggers
+- Ethereum, Polygon, 0G, and any network without a specific default: 2.0x
+- Arbitrum, Base, Robinhood Chain, and Tempo: 1.5x (L2 estimates are more accurate)
+
+The multiplier does not depend on how the workflow was triggered.
 
 You can override the gas limit on any action node in its Advanced section. Gas pricing (base fee, priority fee) is handled automatically. See [Gas Management](/wallet-management/gas) for more.
 

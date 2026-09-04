@@ -1,8 +1,25 @@
 import { decodeFunctionData } from "viem";
 import { Abis } from "viem/tempo";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+
+// supported_tokens rows the stablecoin ceiling reads, set per test.
+const registry = vi.hoisted(() => ({
+  tokenRows: [] as Array<{
+    tokenAddress: string;
+    decimals: number;
+    symbol: string;
+    isStablecoin: boolean;
+  }>,
+}));
+vi.mock("@/lib/db", () => ({
+  db: {
+    select: () => ({
+      from: () => ({ where: () => Promise.resolve(registry.tokenRows) }),
+    }),
+  },
+}));
 
 // tempo-tx-core pulls the Turnkey / signer / wallet / RPC modules at import
 // time; stub them so the pure helpers can be exercised without infra.
@@ -22,8 +39,11 @@ vi.mock("@/lib/rpc/provider-factory", () => ({
 vi.mock("@/lib/logging", () => ({
   ErrorCategory: { TRANSACTION: "transaction" },
   logSystemError: vi.fn(),
+  logSecurityEvent: vi.fn(),
 }));
 
+import { resolveSignerMode } from "@/lib/safe/signer-resolver";
+import { getOrganizationWallet } from "@/lib/web3/wallet-helpers";
 import {
   applyTempoMemoGasFloor,
   buildSwapExactAmountInCall,
@@ -31,6 +51,7 @@ import {
   deriveTempoNonceKey,
   isTempoChain,
   normalizeMemo,
+  signTempoTx,
   TEMPO_MEMO_MIN_GAS,
 } from "@/plugins/tempo/steps/tempo-tx-core";
 
@@ -155,5 +176,69 @@ describe("applyTempoMemoGasFloor", () => {
       BigInt(990_000)
     );
     expect(applyTempoMemoGasFloor(swapCall, UNDERESTIMATE)).toBe(UNDERESTIMATE);
+  });
+});
+
+describe("signTempoTx stablecoin ceiling", () => {
+  beforeEach(() => {
+    vi.mocked(resolveSignerMode).mockResolvedValue({
+      kind: "eoa",
+    } as Awaited<ReturnType<typeof resolveSignerMode>>);
+    registry.tokenRows = [
+      {
+        tokenAddress: USDC,
+        decimals: 6,
+        symbol: "USDC",
+        isStablecoin: true,
+      },
+    ];
+  });
+
+  it("refuses an over-cap TIP-20 transfer before signing", async () => {
+    // Tempo has no native gas token at all, so the daily value cap never sees a
+    // Tempo send; every Tempo write is signed through here.
+    await expect(
+      signTempoTx({
+        organizationId: "org-1",
+        userId: "user-1",
+        chainId: 4217,
+        feeToken: USDC,
+        calls: [
+          buildTransferWithMemoCall(
+            USDC,
+            RECIPIENT,
+            BigInt(5000) * BigInt(10) ** BigInt(6),
+            normalizeMemo("invoice-1")
+          ),
+        ],
+      })
+    ).rejects.toThrow(/per-transaction limit/);
+
+    expect(getOrganizationWallet).not.toHaveBeenCalled();
+  });
+
+  it("checks every call in a batch, not just the first", async () => {
+    await expect(
+      signTempoTx({
+        organizationId: "org-1",
+        userId: "user-1",
+        chainId: 4217,
+        feeToken: USDC,
+        calls: [
+          buildTransferWithMemoCall(
+            USDC,
+            RECIPIENT,
+            BigInt(1) * BigInt(10) ** BigInt(6),
+            normalizeMemo("small")
+          ),
+          buildTransferWithMemoCall(
+            USDC,
+            RECIPIENT,
+            BigInt(9000) * BigInt(10) ** BigInt(6),
+            normalizeMemo("large")
+          ),
+        ],
+      })
+    ).rejects.toThrow(/per-transaction limit/);
   });
 });

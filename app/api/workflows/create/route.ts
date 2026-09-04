@@ -18,6 +18,11 @@ import {
   idempotencyEarlyResponse,
   recordIdempotentResponse,
 } from "@/lib/idempotency";
+import { IntervalTooSmallError } from "@/lib/cron-utils";
+import {
+  extractScheduleConfig,
+  syncPersistedWorkflowSchedule,
+} from "@/lib/schedule-service";
 import { generateId } from "@/lib/utils/id";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
@@ -94,7 +99,9 @@ export async function POST(request: Request) {
       return authFailureResponse(authContext, request.headers);
     }
 
-    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+      credentialType: authContext.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }
@@ -174,6 +181,23 @@ export async function POST(request: Request) {
       );
     }
 
+    // Same pre-check the PATCH handler runs: reject a sub-minimum interval
+    // before the insert, so a rejected value never lands as persisted nodes
+    // paired with an unregistered schedule.
+    try {
+      extractScheduleConfig(
+        nodes as Parameters<typeof extractScheduleConfig>[0]
+      );
+    } catch (error) {
+      if (error instanceof IntervalTooSmallError) {
+        return NextResponse.json(
+          { error: "SCHEDULE_INTERVAL_TOO_SMALL", message: error.message },
+          { status: 400 }
+        );
+      }
+      throw error;
+    }
+
     const actionConfigValidation = validateWorkflowActionConfigs(nodes);
     if (!actionConfigValidation.valid) {
       return NextResponse.json(
@@ -250,6 +274,14 @@ export async function POST(request: Request) {
         ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
       })
       .returning();
+
+    // A Schedule trigger only reaches the dispatcher through a schedule row,
+    // so create it here rather than leaving it to the next definition save.
+    await syncPersistedWorkflowSchedule(
+      newWorkflow.id,
+      nodes as Parameters<typeof syncPersistedWorkflowSchedule>[1],
+      "/api/workflows/create"
+    );
 
     await recordAuditEvent({
       actor: {

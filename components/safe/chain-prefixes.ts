@@ -6,6 +6,19 @@
  *
  * Unknown chain IDs return null; the caller should hide the "View on Safe"
  * link for those rather than linking to a broken URL.
+ *
+ * Every entry must be a chain Safe's client gateway still serves, and must use
+ * the shortName that gateway reports. Safe's frontend resolves an unrecognised
+ * prefix by falling through to Ethereum rather than erroring, so a stale entry
+ * does not produce a dead link - it silently opens the wrong chain, which is
+ * worse than the hidden link this map is designed to fall back to.
+ *
+ * Checked against safe-client.safe.global/v1/chains (53 chains, paginated in
+ * full) on 2026-08-28. Optimism Sepolia (11155420), Arbitrum Sepolia (421614),
+ * BSC Testnet (97), Polygon Amoy (80002) and Avalanche Fuji (43113) were
+ * removed: Safe no longer lists any of them, so their links had been opening
+ * Ethereum. All five remain in SUPPORTED_SAFE_CHAIN_IDS, so Safes can still be
+ * deployed there; only the deep link is hidden.
  */
 const SAFE_CHAIN_PREFIXES: Record<number, string> = {
   // mainnets
@@ -18,12 +31,7 @@ const SAFE_CHAIN_PREFIXES: Record<number, string> = {
   43114: "avax",
   // testnets
   11155111: "sep",
-  11155420: "opsep",
   84532: "basesep",
-  421614: "arbsep",
-  97: "bnbt",
-  80002: "amoy",
-  43113: "fuji",
 };
 
 export function getSafeChainPrefix(chainId: number): string | null {

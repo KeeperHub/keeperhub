@@ -4,23 +4,33 @@
  *
  * Migration 0117 adds the columns null. New rows are populated at write time by
  * lib/workflow/executor/logging.ts (network at step start, gas_used_wei at step
- * complete). This script fills historical rows so the /analytics per-network
- * gas breakdown can move off the per-row input/output JSONB re-parse (the cost
- * behind the networks-endpoint 524) without the breakdown totals changing.
+ * complete). This script fills historical rows so the /analytics read paths can
+ * move off the per-row input/output JSONB re-parse (the cost behind the
+ * networks-endpoint 524) without any total or attribution changing.
  *
- * Scope: only gas-bearing rows. The per-network breakdown reads network and
- * gas_used_wei exclusively for rows where gas_used_wei IS NOT NULL, so those are
- * the only historical rows that need denormalising. Gas steps are a tiny
- * fraction of the table (most rows are reads with no on-chain gas), so this
- * touches a handful of rows rather than the whole multi-GB table. network on
- * non-gas rows stays null on purpose; nothing reads it.
+ * Scope: every row whose JSONB carries a value the matching column does not.
+ * That is wider than the original KEEP-857 scope, which took gas-bearing rows
+ * only on the reasoning that nothing read `network` on a gas-free row. That is
+ * no longer true - fetchWorkflowRuns reads `network` per step so a run that
+ * failed before broadcast keeps its chain (#2093), and a pre-flight failure is
+ * exactly a row with a network in `input` and no `gasUsed` in `output`. Gas
+ * steps are a small fraction of the table but network-bearing steps are not, so
+ * this walk is over most web3 step rows rather than a handful; it is keyset
+ * batched, idempotent and resumable via --after-id, so a long run is fine to
+ * interrupt and continue.
  *
- * Approach: keyset batches over the gas-bearing rows, each re-extracting
- * network/gasUsed from the JSONB via the shared logInputField/logOutputField
- * builders, the same expressions the executor writer mirrors in JS and the
- * /analytics reads used to use, so all paths agree value-for-value. COALESCE
- * preserves any value the live writer already set (no clobber race on hot
- * recent rows). Idempotent and resumable via --after-id.
+ * Correctness does not depend on this having run. lib/analytics/queries.ts reads
+ * COALESCE(column, JSONB extract), so an unbackfilled row still resolves; the
+ * backfill is what retires the JSONB arm, not what makes it right.
+ *
+ * Approach: keyset batches, each re-extracting network/gasUsed from the JSONB
+ * via the shared logInputField/logOutputField builders - the same expressions
+ * the executor writer mirrors in JS and the /analytics reads use as their
+ * fallback arm, so all paths agree value-for-value. COALESCE preserves any value
+ * the live writer already set (no clobber race on hot recent rows).
+ *
+ * The SQL lives in scripts/lib/exec-log-network-gas-backfill.ts so
+ * tests/e2e/vitest/analytics-run-network.db.test.ts can run a batch directly.
  *
  * A LIVE run against a non-local DB requires --yes; dry-runs and local DBs do
  * not. This is a guard against an accidental prod write, not a security
@@ -34,15 +44,12 @@
  *   pnpm tsx scripts/backfill-exec-log-network-gas.ts --dry-run --max-batches 5
  */
 
-import { sql } from "drizzle-orm";
-import { db } from "@/lib/db";
 import {
-  logInputField,
-  logOutputField,
-} from "@/lib/db/execution-log-fields";
-import { workflowExecutionLogs } from "@/lib/db/schema";
-
-const DEFAULT_BATCH_SIZE = 1000;
+  applyBatch,
+  countBatch,
+  DEFAULT_BATCH_SIZE,
+  fetchLogIdBatch,
+} from "@/scripts/lib/exec-log-network-gas-backfill";
 
 type CliArgs = {
   dryRun: boolean;
@@ -89,77 +96,6 @@ function parseArgs(argv: string[]): CliArgs {
     }
   }
   return args;
-}
-
-const networkExpr = logInputField("network");
-const gasExpr = logOutputField("gasUsed");
-
-/**
- * Keyset page of the gas-bearing log ids still needing a backfill; the cursor
- * for the next batch is the last id. Filtering to gas rows here keeps the walk
- * over the handful of rows that matter instead of the whole table.
- */
-async function fetchLogIdBatch(
-  afterId: string,
-  batchSize: number
-): Promise<string[]> {
-  const rows = await db
-    .select({ id: workflowExecutionLogs.id })
-    .from(workflowExecutionLogs)
-    .where(
-      sql`${workflowExecutionLogs.id} > ${afterId} AND ${workflowExecutionLogs.gasUsedWei} IS NULL AND ${gasExpr} IS NOT NULL`
-    )
-    .orderBy(workflowExecutionLogs.id)
-    .limit(batchSize);
-  return rows.map((r) => r.id);
-}
-
-/**
- * Backfill one keyset batch of gas-bearing rows. Re-selects the same batch
- * inside a CTE (deterministic for a fixed cursor) so no id array has to be
- * marshalled into the statement. COALESCE keeps any value the live writer
- * already set; re-runs skip rows whose gas_used_wei is already populated.
- * Returns the number of rows written.
- */
-async function applyBatch(afterId: string, batchSize: number): Promise<number> {
-  const result = await db.execute(sql`
-    WITH batch AS (
-      SELECT id FROM workflow_execution_logs
-      WHERE id > ${afterId}
-        AND gas_used_wei IS NULL
-        AND ${gasExpr} IS NOT NULL
-      ORDER BY id
-      LIMIT ${batchSize}
-    )
-    UPDATE workflow_execution_logs
-    SET network = COALESCE(workflow_execution_logs.network, ${networkExpr}),
-        gas_used_wei = COALESCE(
-          workflow_execution_logs.gas_used_wei,
-          CAST(${gasExpr} AS NUMERIC)
-        )
-    FROM batch
-    WHERE workflow_execution_logs.id = batch.id
-    RETURNING workflow_execution_logs.id
-  `);
-  // postgres-js: db.execute resolves to the RETURNING rows array.
-  return result.length;
-}
-
-/** Dry-run: count how many gas-bearing rows in the batch WOULD be written. */
-async function countBatch(afterId: string, batchSize: number): Promise<number> {
-  const result = await db.execute(sql`
-    WITH batch AS (
-      SELECT id FROM workflow_execution_logs
-      WHERE id > ${afterId}
-        AND gas_used_wei IS NULL
-        AND ${gasExpr} IS NOT NULL
-      ORDER BY id
-      LIMIT ${batchSize}
-    )
-    SELECT COUNT(*) AS n FROM batch
-  `);
-  // postgres-js: db.execute resolves to the rows array.
-  return Number(result[0]?.n ?? 0);
 }
 
 function dbHost(): string {

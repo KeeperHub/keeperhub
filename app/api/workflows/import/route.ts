@@ -13,6 +13,11 @@ import { getMetricsCollector } from "@/lib/metrics";
 import { MetricNames } from "@/lib/metrics/types";
 import { type DualAuthContext, auditFromAuth, authFailureResponse, getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
+import { IntervalTooSmallError } from "@/lib/cron-utils";
+import {
+  extractScheduleConfig,
+  syncPersistedWorkflowSchedule,
+} from "@/lib/schedule-service";
 import { generateId } from "@/lib/utils/id";
 import {
   stripIntegrationsFromImportNodes,
@@ -56,7 +61,9 @@ export async function POST(request: Request): Promise<NextResponse> {
       return authFailureResponse(authContext, request.headers);
     }
 
-    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+      credentialType: authContext.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }
@@ -136,6 +143,22 @@ export async function POST(request: Request): Promise<NextResponse> {
       );
     }
 
+    // Same pre-check the create and PATCH handlers run, so no import can
+    // persist an interval the dispatcher cannot honour.
+    try {
+      extractScheduleConfig(
+        sanitized.nodes as Parameters<typeof extractScheduleConfig>[0]
+      );
+    } catch (error) {
+      if (error instanceof IntervalTooSmallError) {
+        return NextResponse.json(
+          { error: "SCHEDULE_INTERVAL_TOO_SMALL", message: error.message },
+          { status: 400 }
+        );
+      }
+      throw error;
+    }
+
     const actionConfigValidation = validateWorkflowActionConfigs(
       sanitized.nodes
     );
@@ -168,6 +191,14 @@ export async function POST(request: Request): Promise<NextResponse> {
         isAnonymous: false,
       })
       .returning();
+
+    // An imported Schedule trigger needs its own row. The import lands
+    // disabled, so the row stays inert until the user enables it.
+    await syncPersistedWorkflowSchedule(
+      newWorkflow.id,
+      sanitized.nodes as Parameters<typeof syncPersistedWorkflowSchedule>[1],
+      "/api/workflows/import"
+    );
 
     // Aggregate-only counter to avoid Prometheus label-cardinality blow-up.
     // Per-workflow attribution is available via the structured logs on this

@@ -9,6 +9,10 @@ import {
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getRedis } from "@/lib/redis";
 import { trustedCountryKey } from "@/lib/redis-keys";
+import {
+  CLIENT_IP_HEADERS,
+  resolveIpFromHeaderValue,
+} from "@/lib/security/client-ip";
 import { normalizeIpForTrust } from "@/lib/security/ip-normalize";
 import {
   type ResolvedLocation,
@@ -417,14 +421,38 @@ export function logIpVerify(
  * routes that write sessions.ip_address directly instead of through
  * Better Auth's getIp, so every entrypoint resolves the client IP the
  * same way.
+ *
+ * start custom keeperhub code //
+ * CF-Connecting-IP is the default rather than the only option. A deployment
+ * KeeperHub does not run sets CLIENT_IP_HEADERS to name the header its own
+ * proxy sets; unset, this behaves exactly as described above.
+ * end keeperhub code //
  */
 export function resolveClientIpFromHeaders(
   header: Pick<Headers, "get">
 ): string | null {
-  const cfConnectingIp = header.get("cf-connecting-ip");
-  if (cfConnectingIp) {
-    return cfConnectingIp;
+  // start custom keeperhub code //
+  // Which headers count as authoritative comes from CLIENT_IP_HEADERS, which is
+  // exactly ["cf-connecting-ip"] unless a deployment sets it. A deployment that
+  // KeeperHub does not run has no Cloudflare, so without the seam this returns
+  // null in production and every session it mints records no address at all.
+  // lib/auth.ts reads the same list, and resolveIpFromHeaderValue applies the
+  // same single-hop rule better-auth applies, so both routes into
+  // sessions.ip_address agree. Without that rule this side would accept a
+  // caller-supplied leading hop that better-auth rejects, and the value would
+  // reach both the session row and the per-IP rate-limit buckets keyed on it.
+  // See lib/security/client-ip.ts.
+  for (const name of CLIENT_IP_HEADERS) {
+    const raw = header.get(name);
+    if (!raw) {
+      continue;
+    }
+    const trusted = resolveIpFromHeaderValue(raw);
+    if (trusted) {
+      return trusted;
+    }
   }
+  // end keeperhub code //
   if (process.env.NODE_ENV !== "production") {
     const xffFirst = header.get("x-forwarded-for")?.split(",")[0]?.trim();
     if (xffFirst) {

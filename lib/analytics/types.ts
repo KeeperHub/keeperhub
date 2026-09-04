@@ -50,8 +50,22 @@ export type UnifiedRun = {
   workflowName: string | null;
   directType: DirectType | null;
   network: string | null;
-  /** Distinct networks (chain ids) the run produced on-chain writes on. */
+  /**
+   * Distinct networks (chain ids) the run's steps targeted - not only the ones
+   * it produced on-chain writes on. A run that fails before broadcast still
+   * names its chain here, which is the point: a chainless failed run is
+   * unattributable in the audit trail. The widening is visible on mixed-chain
+   * runs, where a read-only step on another chain now joins the list.
+   */
   networks: string[];
+  /**
+   * The subset of `networks` the run actually spent gas on. Distinct from
+   * `networks` because the runs table asks two different questions of the same
+   * run: which chains it touched (the Network column) and which chains its gas
+   * landed on (the Gas cell, which can only render an amount when that is one
+   * chain - two chains' native tokens do not add).
+   */
+  gasNetworks: string[];
   /** Total native gas cost (wei) sponsored across the run's transactions. */
   gasCostWei: string | null;
   /**
@@ -121,10 +135,68 @@ export type NetworkBreakdown = {
   errorCount: number;
 };
 
-export type RunsFilters = {
+/**
+ * Server-side filters the runs listing accepts. Every dimension is a set, so a
+ * reader can hold several values of one dimension open at once (all three error
+ * statuses, two networks). Values inside a dimension OR together; the
+ * dimensions AND together.
+ */
+/**
+ * How a run's on-chain cost was met. "sponsored" is a run with a leg KeeperHub
+ * covered from gas credit; "wallet" is a run that spent more than the credit
+ * covered, so the org's own funds paid for part of it; "free" is a run that
+ * only read, or never reached a broadcast.
+ *
+ * Sponsored and wallet deliberately overlap. A run that starts sponsored and
+ * falls back to direct signing genuinely is both, and filing it under only one
+ * would hide it from the other filter.
+ */
+export type GasSpend = "sponsored" | "wallet" | "free";
+
+export type RunQueryFilters = {
+  statuses?: NormalizedStatus[];
+  gas?: GasSpend[];
+  sources?: RunSource[];
+  networks?: string[];
+  /** Inclusive lower bound on run duration, in milliseconds. */
+  durationMinMs?: number;
+  /** Exclusive upper bound on run duration, in milliseconds. */
+  durationMaxMs?: number;
+  /** Matches a workflow name or a run id, case-insensitively. */
+  search?: string;
+};
+
+/**
+ * Run count per normalized status over the current window, used for the counts
+ * beside each option in the status filter. Counted with every other filter
+ * applied but with the status filter itself lifted, so a count answers "how
+ * many rows would ticking this add", not "how many are showing now".
+ */
+export type StatusFacets = Partial<Record<NormalizedStatus, number>>;
+
+/**
+ * Counts for every filter dimension that offers them, each computed with its
+ * own dimension lifted. Networks are keyed by the chain id a run's steps
+ * recorded, and include chains a run merely touched: a filter offering only the
+ * chains that spent gas hides every chain the org reads on.
+ */
+export type RunFacets = {
+  statusCounts: StatusFacets;
+  networkCounts: Record<string, number>;
+  gasCounts: Partial<Record<GasSpend, number>>;
+};
+
+/**
+ * Which counts a facets request wants. They are not equally cheap: status
+ * counts group `workflow_executions` alone, while network and gas both reach
+ * into the step logs - network to decode a chain out of JSONB, gas to run one
+ * count per bucket. Only status is cheap enough to ride the dashboard's poll;
+ * the other two are asked for when their dropdown is opened.
+ */
+export type FacetDimension = "status" | "network" | "gas";
+
+export type RunsFilters = RunQueryFilters & {
   range: TimeRange;
-  status?: NormalizedStatus;
-  source?: RunSource;
   cursor?: string;
   limit?: number;
   customStart?: string;

@@ -64,7 +64,7 @@ export function formatGasAsEth(
 ): string {
   const wei = parseWei(weiString);
   if (wei === null) {
-    return "--";
+    return "-";
   }
   if (wei === ZERO) {
     return "0 ETH";
@@ -88,7 +88,7 @@ export function formatGasExactEth(
 ): string {
   const wei = parseWei(weiString);
   if (wei === null) {
-    return "--";
+    return "-";
   }
   if (wei === ZERO) {
     return "0 ETH";

@@ -147,10 +147,9 @@ describe("buildRegistrations", () => {
     expect(regs).toEqual([]);
   });
 
-  it("defaults mainnet event ingestion to the filtered signatures source", () => {
-    // getBlock pulls every produced block in full; on mainnet that is a
-    // firehose no CPU request absorbs, and it skips slots (missing triggers)
-    // once it falls behind.
+  it("defaults event ingestion to the filtered signatures source", () => {
+    // getBlock pulls every produced block in full: a firehose no CPU request
+    // absorbs, and it skips slots (missing triggers) once it falls behind.
     const regs = buildRegistrations(
       data({
         eventWorkflows: [eventWorkflow("wf-1", "101", VALID_PROGRAM)],
@@ -160,26 +159,54 @@ describe("buildRegistrations", () => {
     expect(regs[0].sourceMode).toBe("signatures");
   });
 
-  it("leaves testnet chains on getBlock, where whole-block pulls are cheap", () => {
+  it("defaults a testnet event chain to signatures as well", () => {
+    // KEEP-1242: testnet chains used to keep getBlock, on the assumption that a
+    // testnet produces small blocks. Chain 103's endpoint served Solana
+    // testnet, whose blocks are ~14x a devnet block, and parsing them cost 4x
+    // the prod CPU request. Block size is a property of the endpoint, which the
+    // tracker cannot see, so the default no longer reads isTestnet at all.
     const regs = buildRegistrations(
       data({
         eventWorkflows: [eventWorkflow("wf-1", "103", VALID_PROGRAM)],
         networks: { 103: solanaNetwork(103, { isTestnet: true }) },
       }),
     );
-    expect(regs[0].sourceMode).toBeUndefined();
+    expect(regs[0].sourceMode).toBe("signatures");
   });
 
-  it("leaves a mainnet chain with only block triggers on getBlock", () => {
-    // No event triggers means no full-detail pull: getBlock runs header-only
-    // and is the only source that serves block triggers.
+  it("keeps signatures on a testnet chain that also has block triggers", () => {
+    // The shape of staging chain 103. sourceMode "signatures" plus block
+    // triggers is what routes the chain into a CompositeSource: the signatures
+    // source for events, a header-only getBlock for block height. Falling back
+    // to getBlock for the whole chain would put event matching back on the
+    // full-block pull.
     const regs = buildRegistrations(
       data({
-        blockWorkflows: [blockWorkflow("wf-b", "101", "1")],
-        networks: { 101: solanaNetwork(101) },
+        eventWorkflows: [eventWorkflow("wf-1", "103", VALID_PROGRAM)],
+        blockWorkflows: [blockWorkflow("wf-b", "103", "20")],
+        networks: { 103: solanaNetwork(103, { isTestnet: true }) },
       }),
     );
-    expect(regs[0].sourceMode).toBeUndefined();
+    expect(regs[0].sourceMode).toBe("signatures");
+    expect(regs[0].blockTriggers).toHaveLength(1);
+  });
+
+  it("leaves a chain with only block triggers on getBlock", () => {
+    // No event triggers means no full-detail pull: getBlock runs header-only
+    // and is the only source that serves block triggers. True on either network
+    // kind - the default reads the chain's triggers, nothing else.
+    for (const network of [
+      solanaNetwork(101),
+      solanaNetwork(103, { isTestnet: true }),
+    ]) {
+      const regs = buildRegistrations(
+        data({
+          blockWorkflows: [blockWorkflow("wf-b", String(network.chainId), "1")],
+          networks: { [network.chainId]: network },
+        }),
+      );
+      expect(regs[0].sourceMode).toBeUndefined();
+    }
   });
 
   it("lets SOLANA_SOURCE_MODE override the per-chain default in both directions", () => {
@@ -191,12 +218,20 @@ describe("buildRegistrations", () => {
       eventWorkflows: [eventWorkflow("wf-1", "103", VALID_PROGRAM)],
       networks: { 103: solanaNetwork(103, { isTestnet: true }) },
     });
+    const blockOnly = data({
+      blockWorkflows: [blockWorkflow("wf-b", "101", "1")],
+      networks: { 101: solanaNetwork(101) },
+    });
 
+    // Both chains default to "signatures", so only "getblock" proves the
+    // override fires. "signatures" is proved against a block-only chain, whose
+    // default is getBlock.
     process.env.SOLANA_SOURCE_MODE = "getblock";
     expect(buildRegistrations(mainnet)[0].sourceMode).toBe("getblock");
+    expect(buildRegistrations(testnet)[0].sourceMode).toBe("getblock");
 
     process.env.SOLANA_SOURCE_MODE = "signatures";
-    expect(buildRegistrations(testnet)[0].sourceMode).toBe("signatures");
+    expect(buildRegistrations(blockOnly)[0].sourceMode).toBe("signatures");
   });
 
   it("accepts SOLANA_SOURCE_MODE regardless of case or surrounding space", () => {
@@ -212,20 +247,19 @@ describe("buildRegistrations", () => {
     expect(regs[0].sourceMode).toBe("getblock");
   });
 
-  it("treats a chain with an unknown isTestnet as a testnet, not mainnet", () => {
-    // chains.is_testnet is nullable and discovery payloads are not validated;
-    // a null must not read as mainnet and pull a testnet onto the mainnet path.
-    const regs = buildRegistrations(
-      data({
-        eventWorkflows: [eventWorkflow("wf-1", "103", VALID_PROGRAM)],
-        networks: {
-          103: solanaNetwork(103, {
-            isTestnet: undefined as unknown as boolean,
-          }),
-        },
-      }),
-    );
-    expect(regs[0].sourceMode).toBeUndefined();
+  it("selects the same mode whatever isTestnet says, including a null", () => {
+    // chains.is_testnet is nullable and discovery payloads are not validated.
+    // The default no longer reads the field, so no value of it can change the
+    // source - which is the point of KEEP-1242.
+    for (const isTestnet of [true, false, undefined as unknown as boolean]) {
+      const regs = buildRegistrations(
+        data({
+          eventWorkflows: [eventWorkflow("wf-1", "103", VALID_PROGRAM)],
+          networks: { 103: solanaNetwork(103, { isTestnet }) },
+        }),
+      );
+      expect(regs[0].sourceMode).toBe("signatures");
+    }
   });
 
   it("ignores an unrecognised SOLANA_SOURCE_MODE and keeps the default", () => {

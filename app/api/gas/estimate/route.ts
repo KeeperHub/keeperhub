@@ -262,7 +262,9 @@ async function validateRequest(request: Request): Promise<
     );
   }
 
-  const scopeError = requireScope(authCtx.scope, SCOPE_MCP_READ);
+  const scopeError = requireScope(authCtx.scope, SCOPE_MCP_READ, {
+    credentialType: authCtx.authMethod,
+  });
   if (scopeError) {
     return scopeError;
   }
@@ -373,7 +375,6 @@ export async function POST(request: Request): Promise<NextResponse> {
       estimatedGas: result.toString(),
       chainDefaults: {
         multiplier: chainDefaults.multiplier,
-        conservative: chainDefaults.conservative,
       },
     });
   } catch (error) {

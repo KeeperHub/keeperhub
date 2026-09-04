@@ -34,6 +34,7 @@ import { metrics, registry } from "../lib/metrics.js";
 import type { BlockWorkflow, ChainConfig } from "../lib/types.js";
 import { fetchBlockWorkflows } from "./api-client.js";
 import { ChainMonitor } from "./chain-monitor.js";
+import { type HealthStatus, buildHealthStatus } from "./health.js";
 
 class BlockMonitorService {
   private readonly monitors: Map<number, ChainMonitor> = new Map();
@@ -89,11 +90,11 @@ class BlockMonitorService {
 
   getHealth(): {
     healthy: boolean;
+    status: HealthStatus;
     monitors: ReturnType<ChainMonitor["getStatus"]>[];
   } {
     const monitors = [...this.monitors.values()].map((m) => m.getStatus());
-    const healthy = monitors.length === 0 || monitors.every((m) => m.alive);
-    return { healthy, monitors };
+    return { ...buildHealthStatus(monitors), monitors };
   }
 
   private async reconcile(): Promise<void> {
@@ -284,7 +285,7 @@ async function main(): Promise<void> {
     const health = service.getHealth();
     const statusCode = health.healthy ? 200 : 503;
     res.status(statusCode).json({
-      status: health.healthy ? "ok" : "degraded",
+      status: health.status,
       service: "block-dispatcher",
       leader: election.isLeader(),
       timestamp: new Date().toISOString(),

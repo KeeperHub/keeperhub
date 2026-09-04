@@ -55,12 +55,16 @@ import {
   type ReceiptVerificationResult,
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
+import { pollForCompletedOutput } from "@/lib/workflow/executor/poll-for-output";
 import {
   EXCEEDED_MAX_RETRIES_REGEX,
   FAILED_AFTER_RETRIES_REGEX,
   NO_STEP_COMPLETION_REGEX,
 } from "@/lib/workflow/executor/runner-error-patterns";
-import { getTransactionHashes } from "@/lib/workflow/executor/step-success-tracker";
+import {
+  getTransactionHashes,
+  isRecordableTransactionHash,
+} from "@/lib/workflow/executor/step-success-tracker";
 import { computeTrulyFailedNodes } from "@/lib/workflow/executor/truly-failed-nodes";
 
 // Statuses a late step write must never resurrect: the user stopped the run,
@@ -137,7 +141,10 @@ async function listTrulyFailedNodes(executionId: string): Promise<string[]> {
  * that runs a non-tx step many times (e.g. a For-Each over hundreds of HTTP
  * calls) does not stream every row back to Node just to discard it in JS.
  * The JS-side type guard below stays as the authoritative check: SQL only
- * confirms the key exists in output_raw, not that the value is a 0x string.
+ * confirms the key exists in output_raw, not that the value is shaped like a
+ * hash for the chain the step reported. That shape check is shared with the
+ * in-memory tracker (isRecordableTransactionHash) so the two reconstructions
+ * of the same list cannot drift apart.
  */
 async function loadHashesFromLogs(
   executionId: string
@@ -170,7 +177,7 @@ async function loadHashesFromLogs(
         o === null ||
         typeof o !== "object" ||
         typeof o.transactionHash !== "string" ||
-        !o.transactionHash.startsWith("0x") ||
+        !isRecordableTransactionHash(o.transactionHash, o.chainId) ||
         seen.has(o.transactionHash)
       ) {
         continue;
@@ -453,6 +460,12 @@ async function selfHealWorkflowAfterLateStepCommit(
     .set({
       status: "success",
       error: null,
+      // The classification columns are written alongside `error` at finalize.
+      // Clearing only the message left a success row still labelled with the
+      // spurious failure (e.g. E-0002), which the UI reads as a failed run.
+      errorCategory: null,
+      errorType: null,
+      errorCode: null,
       completedAt: new Date(),
       duration: newDuration,
       currentNodeId: null,
@@ -694,6 +707,25 @@ const CANCELLED_DUE_TO_SIBLING_ERROR =
   "Cancelled: workflow stopped because another step errored";
 
 /**
+ * True when a step row carries an actionable failure, as opposed to the
+ * placeholder attached to rows that were merely still running when the
+ * workflow finalized.
+ */
+async function hasRealStepFailure(executionId: string): Promise<boolean> {
+  const siblings = await db.query.workflowExecutionLogs.findMany({
+    where: and(
+      eq(workflowExecutionLogs.executionId, executionId),
+      eq(workflowExecutionLogs.status, "error"),
+      isNotNull(workflowExecutionLogs.error),
+      ne(workflowExecutionLogs.error, STEP_INCOMPLETE_ERROR)
+    ),
+    columns: { id: true },
+    limit: 1,
+  });
+  return siblings.length > 0;
+}
+
+/**
  * Pick the message attached to step rows that were still 'running' when the
  * workflow finalized as error.
  *
@@ -708,19 +740,47 @@ const CANCELLED_DUE_TO_SIBLING_ERROR =
 async function pickOrphanCloseErrorMessage(
   executionId: string
 ): Promise<string> {
-  const siblings = await db.query.workflowExecutionLogs.findMany({
-    where: and(
-      eq(workflowExecutionLogs.executionId, executionId),
-      eq(workflowExecutionLogs.status, "error"),
-      isNotNull(workflowExecutionLogs.error),
-      ne(workflowExecutionLogs.error, STEP_INCOMPLETE_ERROR)
-    ),
-    columns: { id: true },
-    limit: 1,
-  });
-  return siblings.length > 0
+  return (await hasRealStepFailure(executionId))
     ? CANCELLED_DUE_TO_SIBLING_ERROR
     : STEP_INCOMPLETE_ERROR;
+}
+
+/**
+ * How long finalization waits for a step commit that is still in flight.
+ *
+ * The step-level recovery in executor.workflow.ts measured this write landing
+ * ~0.3-0.5s after the runner throws, and polls 3s for it. Finalization is the
+ * last chance to get the run's terminal state right, so it allows a wider
+ * margin. It stays far inside the runner's shutdown budget, and inside the
+ * step-completion window a long-running step crosses, so the wait cannot
+ * become the thing that trips the next lost completion.
+ */
+const LATE_STEP_COMMIT_WAIT_MS = 5000;
+const LATE_STEP_COMMIT_POLL_INTERVAL_MS = 250;
+
+/**
+ * Wait for the in-flight commits behind a spurious runner error to land.
+ *
+ * A step that is still executing has only a 'running' row, which
+ * computeTrulyFailedNodes cannot tell apart from a step that failed. Resolves
+ * true once no node is left without a success row.
+ */
+async function awaitLateStepCommits(executionId: string): Promise<boolean> {
+  const settled = await pollForCompletedOutput(
+    async () =>
+      (await listTrulyFailedNodes(executionId)).length === 0 ? true : null,
+    {
+      timeoutMs: LATE_STEP_COMMIT_WAIT_MS,
+      intervalMs: LATE_STEP_COMMIT_POLL_INTERVAL_MS,
+    }
+  );
+
+  getMetricsCollector().incrementCounter(
+    "workflow.executor.late_step_commit_wait.total",
+    { outcome: settled ? "settled" : "timed_out" }
+  );
+
+  return settled === true;
 }
 
 /**
@@ -770,7 +830,9 @@ export async function logWorkflowCompleteDb(
   // completion (e.g. the worker was killed mid-step). That is not a
   // spurious SDK error - the workflow really is incomplete. Keep 'error'
   // and close the orphaned rows below so the UI doesn't show stuck
-  // spinners.
+  // spinners. When the runner error IS one of the spurious shapes, the
+  // running row is ambiguous: the step may simply not have committed yet,
+  // so it gets a bounded wait before that reading is published.
   //
   // KEEP-431: Aggregate by nodeId rather than counting raw rows. Under
   // cross-pod SDK checkpoint resume, a step that already succeeded on pod A
@@ -801,7 +863,24 @@ export async function logWorkflowCompleteDb(
     );
 
     try {
-      const trulyFailedNodes = await listTrulyFailedNodes(params.executionId);
+      let trulyFailedNodes = await listTrulyFailedNodes(params.executionId);
+
+      // A step whose completion event the runner lost may still be executing.
+      // It has only a 'running' row, so it reads as failed here, and
+      // finalizing on that reading publishes a failure the late commit takes
+      // back seconds later: the run flips error -> success in the runs table
+      // and the step row shows "Step did not record completion" until it does.
+      // Wait for the commit instead, so the run stays running until its real
+      // outcome is known. A step row carrying a real error means something
+      // genuinely failed and there is nothing to wait for.
+      if (
+        trulyFailedNodes.length > 0 &&
+        isSpuriousWorkflowError(params.error) &&
+        !(await hasRealStepFailure(params.executionId)) &&
+        (await awaitLateStepCommits(params.executionId))
+      ) {
+        trulyFailedNodes = [];
+      }
 
       if (trulyFailedNodes.length === 0) {
         // KEEP-532: Recovery event -- spurious SDK error overridden to success.

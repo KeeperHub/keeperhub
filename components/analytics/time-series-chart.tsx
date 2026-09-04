@@ -13,6 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
 import type { TimeRange } from "@/lib/analytics/types";
 import {
   analyticsLoadingAtom,
@@ -20,14 +21,15 @@ import {
   analyticsTimeSeriesAtom,
 } from "@/lib/atoms/analytics";
 
+// Colours come from the shared status palette, so a band on this chart is the
+// same hue as that status's badge in the table and its swatch in the filter.
 const CHART_COLORS = {
-  success: "var(--color-keeperhub-green)",
-  error: "var(--color-orange-500, #f97316)",
-  cancelled: "var(--chart-1)",
-  // Refused before it started: muted, so it never reads as a failure band.
-  skipped: "var(--color-muted-foreground)",
-  running: "var(--chart-2)",
-  pending: "var(--chart-4)",
+  success: STATUS_DISPLAY.success.chartColor,
+  error: STATUS_DISPLAY.error.chartColor,
+  cancelled: STATUS_DISPLAY.cancelled.chartColor,
+  skipped: STATUS_DISPLAY.skipped.chartColor,
+  running: STATUS_DISPLAY.running.chartColor,
+  pending: STATUS_DISPLAY.pending.chartColor,
 } as const;
 
 function formatTimestamp(value: string, range: TimeRange): string {

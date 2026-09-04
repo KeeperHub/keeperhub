@@ -28,6 +28,7 @@ const state = vi.hoisted(() => ({
     | { applicable: false }
     | { applicable: true; ok: true; txHash: string }
     | { applicable: true; ok: false; reason: string; message: string },
+  paygChargeCalls: [] as Record<string, unknown>[],
 }));
 
 // A cap-row insert carries nothing but the org id: lockOrgSpendCapRow creates
@@ -119,7 +120,10 @@ vi.mock("@/lib/db", () => ({
 // PAYG charge runs after a successful reservation. Value-cap tests keep it a
 // no-op (applicable: false); the PAYG-charge tests drive it via state.paygCharge.
 vi.mock("@/lib/billing/payg/charge", () => ({
-  chargePaygIfBillable: () => Promise.resolve(state.paygCharge),
+  chargePaygIfBillable: (params: Record<string, unknown>) => {
+    state.paygChargeCalls.push(params);
+    return Promise.resolve(state.paygCharge);
+  },
 }));
 
 import { checkAndReserveExecution } from "@/app/api/execute/_lib/spending-cap";
@@ -137,6 +141,8 @@ const baseParams = {
   type: "transfer",
   network: "1",
   input: { foo: "bar" },
+  // The admission verdict the route reached before anything was written.
+  paygOverflow: false,
 };
 
 beforeEach(() => {
@@ -149,6 +155,7 @@ beforeEach(() => {
   state.capInsertLosesRace = false;
   state.updated = [];
   state.paygCharge = { applicable: false };
+  state.paygChargeCalls = [];
 });
 
 describe("platform default cap figures", () => {
@@ -509,6 +516,7 @@ describe("checkAndReserveExecution PAYG charge", () => {
     const result = await checkAndReserveExecution({
       ...baseParams,
       reserved: { kind: "evm", valueWei: "0" },
+      paygOverflow: true,
     });
 
     expect(result).toEqual({ allowed: true, executionId: "exec_test" });
@@ -529,6 +537,7 @@ describe("checkAndReserveExecution PAYG charge", () => {
     const result = await checkAndReserveExecution({
       ...baseParams,
       reserved: { kind: "evm", valueWei: "0" },
+      paygOverflow: true,
     });
 
     expect(result).toEqual({ allowed: false, reason: message });
@@ -549,5 +558,26 @@ describe("checkAndReserveExecution PAYG charge", () => {
 
     expect(result).toEqual({ allowed: true, executionId: "exec_test" });
     expect(state.updated).toHaveLength(0);
+  });
+
+  // The reservation is committed before the charge, so the charge point can no
+  // longer tell an over-limit run from the last included one. It gets the
+  // verdict the route already reached instead.
+  it("hands the charge point the admission verdict rather than letting it recount", async () => {
+    await checkAndReserveExecution({
+      ...baseParams,
+      reserved: { kind: "evm", valueWei: "0" },
+      paygOverflow: false,
+    });
+    await checkAndReserveExecution({
+      ...baseParams,
+      reserved: { kind: "evm", valueWei: "0" },
+      paygOverflow: true,
+    });
+
+    expect(state.paygChargeCalls.map((c) => c.paygOverflow)).toEqual([
+      false,
+      true,
+    ]);
   });
 });

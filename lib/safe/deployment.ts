@@ -6,7 +6,7 @@ import { recordWalletInAddressBook } from "@/lib/address-book/record-wallet";
 import { normalizeAddressForStorage } from "@/lib/address-utils";
 import { db } from "@/lib/db";
 import { chains, type SafeWallet, safeWallets } from "@/lib/db/schema";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { startSafeDeployMetrics } from "@/lib/metrics/instrumentation/safe";
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
@@ -285,10 +285,17 @@ export async function deployOrgSafe(
     return { success: true, safe: inserted, alreadyDeployed: false };
   } catch (error) {
     finishMetrics("failure");
+    const report = formatSafeDeployError(error);
     // Keep the full ethers CALL_EXCEPTION blob in Sentry for triage but
     // return a kind-classified user-readable message via the API. Raw
-    // blobs are 1KB+ and unactionable in a toast.
-    logSystemError(
+    // blobs are 1KB+ and unactionable in a toast. A deployer wallet with no
+    // gas money is the one failure here that is not ours: it stays out of
+    // Sentry so an unfunded wallet does not read as a platform fault. Every
+    // other revert here (an adopted Safe, an unauthorized caller, a paused
+    // contract) is still worth a look, so it keeps paging.
+    const log =
+      report.kind === "insufficient-gas" ? logUserError : logSystemError;
+    log(
       ErrorCategory.TRANSACTION,
       `[Safe] Deployment failed for org=${organizationId}`,
       error,
@@ -297,7 +304,6 @@ export async function deployOrgSafe(
         chain_id: chainId.toString(),
       }
     );
-    const report = formatSafeDeployError(error);
     return {
       success: false,
       error: report.message,

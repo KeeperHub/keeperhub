@@ -168,6 +168,10 @@ describe("Unified Logging Helpers", () => {
           metric: MetricNames.USER_CONFIGURATION_ERRORS,
         },
         {
+          category: ErrorCategory.AUTHORIZATION,
+          metric: MetricNames.USER_AUTHORIZATION_ERRORS,
+        },
+        {
           category: ErrorCategory.EXTERNAL_SERVICE,
           metric: MetricNames.EXTERNAL_SERVICE_ERRORS,
         },

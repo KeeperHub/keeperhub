@@ -158,7 +158,9 @@ export async function DELETE(
       return authFailureResponse(authContext, request.headers);
     }
 
-    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+      credentialType: authContext.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }

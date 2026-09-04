@@ -36,6 +36,9 @@ const rpcSpies = vi.hoisted(() => ({
   isSolanaChain: vi.fn(),
   parseTokenAddress: vi.fn(),
   chainsLookup: vi.fn(() => Promise.resolve([{ symbol: "ETH" }])),
+  // Empty by default: no row means the token is not a recognised stablecoin,
+  // so the ceiling is not engaged and the existing cases are unaffected.
+  supportedTokensLookup: vi.fn(() => Promise.resolve([] as unknown[])),
 }));
 
 vi.mock("@/lib/web3/wallet-helpers", () => ({
@@ -58,6 +61,9 @@ vi.mock("@/plugins/web3/steps/transfer-token-core", () => ({
 vi.mock("@/lib/logging", () => ({
   logSystemError: vi.fn(),
   ErrorCategory: { DATABASE: "database" },
+  // Emitted by the stablecoin ceiling when it refuses. Absent from this mock
+  // the call throws and the refusal surfaces as an unrelated failure.
+  logSecurityEvent: vi.fn(),
 }));
 
 // getNativeSymbol reads the chain's symbol from the seeded `chains` table.
@@ -68,9 +74,18 @@ vi.mock("@/lib/db", () => ({
   db: {
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () => rpcSpies.chainsLookup(),
-        }),
+        // Two call shapes share this stub. The chains lookup ends in .limit();
+        // loadStablecoin in stablecoin-cap.ts awaits .where() directly, because
+        // it reads the chain's whole token list and matches in JS. Returning a
+        // promise that also carries .limit satisfies both without branching on
+        // the table.
+        where: () => {
+          const pending = Promise.resolve(
+            rpcSpies.supportedTokensLookup()
+          ) as Promise<unknown> & { limit: () => unknown };
+          pending.limit = () => rpcSpies.chainsLookup();
+          return pending;
+        },
       }),
     }),
   },
@@ -83,6 +98,15 @@ vi.mock("@/lib/db", () => ({
 // file with "No X export is defined on the mock" — add the table here.
 vi.mock("@/lib/db/schema", () => ({
   chains: { chainId: "chain_id", symbol: "symbol" },
+  // Read by loadStablecoin, which the ceiling calls on the simulate path so a
+  // dry run reports the same refusal a broadcast would.
+  supportedTokens: {
+    chainId: "chain_id",
+    tokenAddress: "token_address",
+    decimals: "decimals",
+    symbol: "symbol",
+    isStablecoin: "is_stablecoin",
+  },
 }));
 
 // Import after mocks so the simulate module binds to the stubbed deps.
@@ -132,6 +156,49 @@ function resetSpies(): void {
 }
 
 describe("simulateContractCall", () => {
+  // The contract-call route calls this function directly rather than going
+  // through simulateTokenTransfer, so gating only the latter left
+  // POST /api/execute/contract-call?simulate=true reporting a clean dry run
+  // for a send the broadcast path then refuses.
+  it("reports the stablecoin ceiling on a direct contract-call simulation", async () => {
+    resetSpies();
+    rpcSpies.supportedTokensLookup.mockResolvedValueOnce([
+      {
+        tokenAddress: CONTRACT_ADDRESS,
+        decimals: 6,
+        symbol: "USDC",
+        isStablecoin: true,
+      },
+    ]);
+
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: JSON.stringify([
+        {
+          name: "transfer",
+          type: "function",
+          inputs: [
+            { name: "to", type: "address" },
+            { name: "amount", type: "uint256" },
+          ],
+          outputs: [{ name: "", type: "bool" }],
+        },
+      ]),
+      functionName: "transfer",
+      // 5,000 USDC at 6 decimals, well past the ceiling.
+      functionArgs: JSON.stringify([RECIPIENT_ADDRESS, "5000000000"]),
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("per-transaction limit");
+    }
+    // Refused before any RPC work: the answer is knowable without simulating.
+    expect(executeWithFailover).not.toHaveBeenCalled();
+  });
+
   it("returns gas + decoded return value when the call succeeds", async () => {
     resetSpies();
     // ABI-encoded uint256(123)
@@ -759,6 +826,38 @@ describe("simulateTokenTransfer", () => {
     expect(executeWithFailover).toHaveBeenCalledTimes(2);
     expect(executeWithFailover.mock.calls[0]?.[1]).toBe("preflight");
     expect(executeWithFailover.mock.calls[1]?.[1]).toBe("preflight");
+  });
+
+  // A dry run that ignored the ceiling reported a clean simulation for a
+  // transfer that then failed at broadcast. Agents call simulate to decide
+  // whether to send, so the limit has to be discoverable here.
+  it("reports the stablecoin ceiling instead of simulating a doomed transfer", async () => {
+    resetSpies();
+    parseTokenAddress.mockResolvedValueOnce(CONTRACT_ADDRESS);
+    rpcSpies.supportedTokensLookup.mockResolvedValueOnce([
+      {
+        tokenAddress: CONTRACT_ADDRESS,
+        decimals: 6,
+        symbol: "USDC",
+        isStablecoin: true,
+      },
+    ]);
+
+    const result = await simulateTokenTransfer({
+      organizationId: "org_test",
+      network: "1",
+      tokenAddress: CONTRACT_ADDRESS,
+      recipientAddress: RECIPIENT_ADDRESS,
+      amount: "5000",
+      decimals: 6,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("per-transaction limit");
+    }
+    // Refused before any RPC work: the ceiling is known without simulating.
+    expect(executeWithFailover).not.toHaveBeenCalled();
   });
 
   it("skips the on-chain decimals lookup when decimals is provided", async () => {

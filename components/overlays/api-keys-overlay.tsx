@@ -22,7 +22,7 @@ import { usePaginatedResource } from "@/lib/hooks/use-paginated-resource";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import type { Page, PageMeta } from "@/lib/pagination";
 import { useDualFactorState } from "@/lib/mfa/use-dual-factor-state";
-import { SUPPORTED_SCOPES } from "@/lib/mcp/oauth-scopes";
+import { SCOPE_MCP_READ, SUPPORTED_SCOPES } from "@/lib/mcp/oauth-scopes";
 import { ConfirmOverlay } from "./confirm-overlay";
 import { KeyActivityOverlay } from "./key-activity-overlay";
 import { Overlay } from "./overlay";
@@ -85,12 +85,27 @@ export function CreateApiKeyOverlay({
   const [phase, setPhase] = useState<"label" | "codes">("label");
   const dual = useDualFactorState();
   const [creating, setCreating] = useState(false);
+  // Only read is pre-checked. Pre-checking all three made the least-effort
+  // mint a full-access mcp:admin key, which is the widest-by-default outcome
+  // parseScopeInput was just changed to stop producing on the API side.
   const [selectedScopes, setSelectedScopes] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(SUPPORTED_SCOPES.map((s) => [s, true]))
+    () =>
+      Object.fromEntries(
+        SUPPORTED_SCOPES.map((s) => [s, s === SCOPE_MCP_READ])
+      )
   );
 
+  // Scope is only enforced for organisation keys (kh_): authenticateApiKey
+  // reads the column on organizationApiKeys, and requireScope gates on it.
+  // Webhook keys (wfb_) are looked up by hash in the workflow webhook route and
+  // dispatched without consulting scope, so offering the checkboxes there would
+  // promise a restriction nothing applies.
+  const scopesApply = keyType === "organisation";
   const activeScopes = SUPPORTED_SCOPES.filter((s) => selectedScopes[s]);
-  const hasScopeSelected = activeScopes.length > 0;
+  const hasScopeSelected = !scopesApply || activeScopes.length > 0;
+  // Omitted rather than sent-and-ignored for webhook keys, so the stored column
+  // says what is true: this key carries no scope restriction.
+  const scopesForRequest = scopesApply ? activeScopes : undefined;
 
   const toggleScope = (id: string, checked: boolean): void => {
     if (id === "mcp:admin" && checked) {
@@ -108,7 +123,10 @@ export function CreateApiKeyOverlay({
     fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: keyName.trim() || null, scopes: activeScopes }),
+      body: JSON.stringify({
+        name: keyName.trim() || null,
+        scopes: scopesForRequest,
+      }),
     });
 
   // Wallet users confirm by signing instead of entering TOTP + email codes.
@@ -128,7 +146,7 @@ export function CreateApiKeyOverlay({
             // The same Permissions block is shown to wallet users, so the
             // selection has to reach the API here too. Omitting it minted an
             // unscoped key that ignored whatever the user unchecked.
-            scopes: activeScopes,
+            scopes: scopesForRequest,
           }),
         })
       );
@@ -159,7 +177,7 @@ export function CreateApiKeyOverlay({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: keyName.trim() || null,
-          scopes: activeScopes,
+          scopes: scopesForRequest,
           code: dual.totpCode.trim(),
           emailOtp: dual.emailOtp.trim() || undefined,
         }),
@@ -255,35 +273,37 @@ export function CreateApiKeyOverlay({
             value={keyName}
           />
         </div>
-        <div className="space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Permissions
-          </p>
-          <div className="rounded-lg border bg-muted/30 p-4">
-            <ul className="space-y-3">
-              {SUPPORTED_SCOPES.map((scopeId) => {
-                const lockedByAdmin = scopeId !== "mcp:admin" && isAdminSelected;
-                return (
-                  <li key={scopeId}>
-                    <label
-                      className={`flex items-center gap-3 text-sm text-foreground ${lockedByAdmin ? "cursor-default opacity-50" : "cursor-pointer"}`}
-                    >
-                      <input
-                        checked={selectedScopes[scopeId] ?? false}
-                        className="h-4 w-4 shrink-0 rounded border-input accent-[var(--ds-green-accent)]"
-                        disabled={lockedByAdmin}
-                        onChange={(e) => toggleScope(scopeId, e.target.checked)}
-                        type="checkbox"
-                        value={scopeId}
-                      />
-                      {SCOPE_LABELS[scopeId] ?? scopeId}
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
+        {scopesApply && (
+          <div className="space-y-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Permissions
+            </p>
+            <div className="rounded-lg border bg-muted/30 p-4">
+              <ul className="space-y-3">
+                {SUPPORTED_SCOPES.map((scopeId) => {
+                  const lockedByAdmin = scopeId !== "mcp:admin" && isAdminSelected;
+                  return (
+                    <li key={scopeId}>
+                      <label
+                        className={`flex items-center gap-3 text-sm text-foreground ${lockedByAdmin ? "cursor-default opacity-50" : "cursor-pointer"}`}
+                      >
+                        <input
+                          checked={selectedScopes[scopeId] ?? false}
+                          className="h-4 w-4 shrink-0 rounded border-input accent-[var(--ds-green-accent)]"
+                          disabled={lockedByAdmin}
+                          onChange={(e) => toggleScope(scopeId, e.target.checked)}
+                          type="checkbox"
+                          value={scopeId}
+                        />
+                        {SCOPE_LABELS[scopeId] ?? scopeId}
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </Overlay>
   );
@@ -428,6 +448,7 @@ function ApiKeysList({
   onDelete,
   onDismissNewKey,
   showCreator = false,
+  showScope = true,
   deleteEndpoint,
   canDelete = true,
   readOnlyReason,
@@ -445,6 +466,12 @@ function ApiKeysList({
   ) => Promise<{ ok: true } | { ok: false; code: string }>;
   onDismissNewKey: () => void;
   showCreator?: boolean;
+  /**
+   * Webhook (wfb_) keys store a scope that nothing reads: the workflow webhook
+   * route looks a key up by hash and dispatches without consulting it. Showing
+   * it there states a restriction that is not applied.
+   */
+  showScope?: boolean;
   deleteEndpoint: (id: string) => string;
   canDelete?: boolean;
   readOnlyReason?: string;
@@ -538,7 +565,7 @@ function ApiKeysList({
                     <span className="truncate text-sm">{apiKey.name}</span>
                   </p>
                 )}
-                {apiKey.scope && (
+                {showScope && apiKey.scope && (
                   <p className="mt-2 mb-2 text-sm">
                     {"Scope: "}
                     {apiKey.scope.split(" ").map((s) => (
@@ -940,6 +967,7 @@ export function ApiKeysPanel({
           ) : (
             <ApiKeysList
               apiKeys={webhookKeys.apiKeys}
+              showScope={false}
               deleteEndpoint={webhookKeys.deleteEndpoint}
               deleting={webhookKeys.deleting}
               highlightId={

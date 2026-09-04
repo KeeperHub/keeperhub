@@ -7,7 +7,12 @@ import {
 } from "@/lib/cron-utils";
 import { db } from "@/lib/db";
 import { workflowSchedules } from "@/lib/db/schema";
-import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
+import {
+  ErrorCategory,
+  logSystemError,
+  logSystemWarn,
+  logUserError,
+} from "@/lib/logging";
 import { generateId } from "@/lib/utils/id";
 import type { WorkflowNode } from "@/lib/workflow/store";
 
@@ -338,6 +343,32 @@ export async function syncWorkflowSchedule(
   }
 
   return { synced: true };
+}
+
+/**
+ * Sync a schedule for a workflow row that is already committed, warn-logging a
+ * soft failure instead of surfacing it. The creation routes and the enable path
+ * use this: their write has landed, so a bad timezone or cron expression must
+ * not turn into a failed request.
+ *
+ * Pass the nodes that were persisted, not the raw request body. The sanitizer
+ * moves misplaced trigger fields into `data.config` and canonicalises
+ * `data.type`, and extractScheduleConfig only recognises that canonical shape.
+ */
+export async function syncPersistedWorkflowSchedule(
+  workflowId: string,
+  nodes: WorkflowNode[],
+  endpoint: string
+): Promise<void> {
+  const result = await syncWorkflowSchedule(workflowId, nodes);
+  if (!result.synced) {
+    logSystemWarn(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[Schedule] Schedule sync failed",
+      result.error,
+      { workflow_id: workflowId, endpoint }
+    );
+  }
 }
 
 /**

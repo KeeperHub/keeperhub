@@ -20,6 +20,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { WalletProvisioningTrigger } from "@/components/wallet/wallet-provisioning-trigger";
 import { mono, sans } from "@/lib/fonts";
+import { siteJsonLdScript } from "@/lib/site/structured-data";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
@@ -29,6 +30,12 @@ export const metadata: Metadata = {
   title: "KeeperHub - Blockchain Workflow Automation",
   description:
     "Build powerful blockchain workflow automations with a visual, node-based editor. Built with Next.js and React Flow.",
+  // Resolved against metadataBase, so a self-hosted deployment canonicalises to
+  // its own origin rather than to app.keeperhub.com. Agents use rel=canonical
+  // for entity resolution and attribution; pointing it at somebody else's
+  // origin is worse than omitting it. Routes needing a different canonical
+  // declare their own `alternates` - see app/hub/page.tsx.
+  alternates: { canonical: "/" },
   openGraph: {
     title: "KeeperHub - Blockchain Workflow Automation",
     description:
@@ -122,6 +129,19 @@ const RootLayout = async ({ children }: RootLayoutProps) => {
       translate="no"
     >
       <body className={cn(sans.variable, mono.variable, "antialiased")}>
+        {/*
+          schema.org identity for the whole origin: the Organization that
+          operates the service, this WebSite, and the SoftwareApplication with
+          its plans as Offers. Emitted server-side on every route so an agent
+          that renders no JavaScript still resolves who publishes this app and
+          what it costs. Built from lib/billing/plans.ts, so prices here cannot
+          drift from the ones we bill.
+        */}
+        <script
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: JSON-LD has to be inlined as raw text; the payload is deployment config serialised with JSON.stringify, with `<` escaped in siteJsonLdScript.
+          dangerouslySetInnerHTML={{ __html: siteJsonLdScript() }}
+          type="application/ld+json"
+        />
         <KeeperHubExtensionLoader />
         <ThemeProvider
           attribute="class"

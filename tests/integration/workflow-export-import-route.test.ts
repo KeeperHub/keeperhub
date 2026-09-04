@@ -126,6 +126,11 @@ vi.mock("@/lib/db", () => ({
         }),
       })),
     }),
+    // The route registers the imported schedule after the insert; a non-schedule
+    // import takes the delete branch of syncWorkflowSchedule.
+    delete: vi.fn(() => ({
+      where: vi.fn().mockResolvedValue(undefined),
+    })),
   },
 }));
 

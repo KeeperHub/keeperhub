@@ -7,8 +7,9 @@ description: "The facts you need to integrate KeeperHub in one place - MCP endpo
 
 A single copy-paste reference for the facts an integration needs:
 where the MCP endpoint is, which chains are supported, which USDC address and
-faucet to use, what the two API key types are for, and the rate limits. Each
-section links to its full reference page.
+faucet to use, what the two API key types are for, the rate limits, the
+machine-readable documents to start from, and how versioning and deprecation
+are signalled. Each section links to its full reference page.
 
 ## 1. Connect the MCP endpoint
 
@@ -240,3 +241,61 @@ chain IDs `101` and `103` (and their aliases), `execute_transfer` with
 a hard stop. See [MCP Server](/agent/mcp-server#safely-preflight-direct-writes)
 for the tool flow and [Direct Execution](/api/direct-execution) for complete
 response and error handling details.
+
+## 7. Machine-readable entry points
+
+Start from one of these rather than by scraping a page. Each is served without
+authentication, is CORS-readable, and describes the surface it belongs to.
+
+| Document | URL | What it describes |
+|---|---|---|
+| OpenAPI 3.1 | `https://app.keeperhub.com/openapi.json` | Callable endpoints, request and response schemas, the typed error model, per-workflow pricing, rate-limit headers |
+| MCP server card | `https://app.keeperhub.com/.well-known/mcp.json` | Transport, tool catalog, and authentication for both the anonymous and organization-scoped MCP surfaces |
+| MCP endpoint | `https://app.keeperhub.com/.well-known/mcp` | Streamable HTTP transport. Accepts an anonymous `initialize`, so a probe can confirm the server is alive without a credential |
+| Agent card | `https://app.keeperhub.com/.well-known/agent-card.json` | ERC-8004 identity and onchain registration |
+| x402 metadata | `https://app.keeperhub.com/.well-known/x402` | Per-call pricing for paid workflow endpoints |
+| llms.txt | `https://docs.keeperhub.com/llms.txt` | Canonical index of all three KeeperHub hosts, for language models |
+| Sitemap | `https://docs.keeperhub.com/sitemap.xml` | Every page on this site |
+
+Every page on this site is also available as Markdown. Send
+`Accept: text/markdown`, or append `.md` to the path:
+
+```bash
+curl -H "Accept: text/markdown" https://docs.keeperhub.com/platform-reference
+curl https://docs.keeperhub.com/platform-reference.md
+```
+
+Both return the same document. Responses carry `Vary: Accept` so a shared cache
+keys on it.
+
+## 8. Versioning and deprecation
+
+The REST surface is version 1. Send the optional `KeeperHub-Version` request
+header to pin a call to a version; omitting it selects the current version.
+
+```bash
+curl -H "KeeperHub-Version: 1" \
+     -H "Authorization: Bearer kh_your_api_key" \
+     https://app.keeperhub.com/api/keys
+```
+
+Additive changes ship inside a version and need no action from you: new
+endpoints, new optional fields, new enum members, new response headers. Treat
+unknown fields as forward compatibility rather than as errors.
+
+A breaking change ships as a new version, never in place. When an endpoint or a
+version is scheduled for removal its responses carry:
+
+| Header | Meaning |
+|---|---|
+| `Deprecation: <http-date>` | RFC 9745. The date the deprecation took effect. The endpoint still works. |
+| `Sunset: <http-date>` | RFC 8594. The earliest date it may stop answering. |
+| `Link: <url>; rel="deprecation"` | Where to read what replaces it. |
+
+**A sunset date is never less than 180 days after the `Deprecation` header first
+appears.** Log these headers rather than discarding them — they are the only
+warning you get, and they arrive on successful responses, not errors.
+
+The same policy is published as machine-readable metadata under
+`x-api-versioning` in the [OpenAPI document](https://app.keeperhub.com/openapi.json),
+alongside `x-error-model` and `x-rate-limits`.

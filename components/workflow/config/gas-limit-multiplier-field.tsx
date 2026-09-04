@@ -171,7 +171,7 @@ export function GasLimitMultiplierField({
 
       const data = (await response.json()) as {
         estimatedGas: string;
-        chainDefaults: { multiplier: number; conservative: number };
+        chainDefaults: { multiplier: number };
       };
 
       setEstimate({ status: "success", estimatedGas: data.estimatedGas });

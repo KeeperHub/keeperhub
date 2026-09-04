@@ -29,7 +29,7 @@ describe("executeWithRetry", () => {
       }
     });
 
-    it("retries on retryable error and eventually succeeds", async () => {
+    it("retries on a connection-level error and eventually succeeds", async () => {
       let attempt = 0;
       const result = await executeWithRetry<TransactionResult>(
         () => {
@@ -37,7 +37,7 @@ describe("executeWithRetry", () => {
           if (attempt < 3) {
             return Promise.resolve({
               success: false as const,
-              error: "nonce has already been used",
+              error: "connect ECONNRESET 10.0.0.1:443",
             });
           }
           return Promise.resolve({
@@ -51,6 +51,55 @@ describe("executeWithRetry", () => {
 
       expect(result.outcome).toBe("success");
       expect(result.retryCount).toBe(2);
+    });
+
+    it.each([
+      "nonce has already been used",
+      "already known",
+      "replacement fee too low",
+      "transaction underpriced",
+    ])(
+      "does not retry post-broadcast error %s, which would send a second transaction",
+      async (error) => {
+        let calls = 0;
+        const result = await executeWithRetry<TransactionResult>(
+          () => {
+            calls++;
+            return Promise.resolve({ success: false as const, error });
+          },
+          { maxRetries: 3 },
+          transactionRetryOptions
+        );
+
+        expect(calls).toBe(1);
+        expect(result.outcome).toBe("failed");
+        expect(result.retryCount).toBe(0);
+      }
+    );
+
+    it("does not retry a hash-carrying failure whose error reads as a timeout", async () => {
+      let calls = 0;
+      const result = await executeWithRetry<TransactionResult>(
+        () => {
+          calls++;
+          return Promise.resolve({
+            success: false as const,
+            error:
+              "Transaction sent but receipt could not be read (timeout (code=TIMEOUT))",
+            transactionHash: "0xbroadcast",
+            chainId: 11_155_111,
+          });
+        },
+        { maxRetries: 3 },
+        transactionRetryOptions
+      );
+
+      expect(calls).toBe(1);
+      expect(result.outcome).toBe("failed");
+      expect(result.retryCount).toBe(0);
+      if (result.outcome === "failed" && !result.result.success) {
+        expect(result.result.transactionHash).toBe("0xbroadcast");
+      }
     });
 
     it("returns failed on non-retryable error", async () => {
@@ -84,36 +133,6 @@ describe("executeWithRetry", () => {
       if (result.outcome === "timeout") {
         expect(result.error).toContain("Timed out");
       }
-    });
-
-    it("passes gas bump overrides on retries", async () => {
-      const overridesSeen: unknown[] = [];
-      let attempt = 0;
-
-      await executeWithRetry<TransactionResult>(
-        (overrides) => {
-          overridesSeen.push(overrides);
-          attempt++;
-          if (attempt < 3) {
-            return Promise.resolve({
-              success: false as const,
-              error: "transaction underpriced",
-            });
-          }
-          return Promise.resolve({
-            success: true as const,
-            transactionHash: "0x",
-          });
-        },
-        { maxRetries: 3, gasBumpPercent: 20 },
-        transactionRetryOptions
-      );
-
-      expect(overridesSeen[0]).toEqual({});
-      expect(overridesSeen[1]).toHaveProperty("gasBumpMultiplier");
-      const bump1 = (overridesSeen[1] as { gasBumpMultiplier: number })
-        .gasBumpMultiplier;
-      expect(bump1).toBeCloseTo(1.2, 5);
     });
   });
 

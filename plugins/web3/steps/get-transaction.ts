@@ -19,6 +19,11 @@ import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-hand
 import { getErrorMessage } from "@/lib/utils";
 import { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
 import { validateChainTxHash } from "@/lib/web3/validate-chain-address";
+import {
+  applyReadFailOnError,
+  type ReadDestinationFailure,
+  type ReadFailOnErrorInput,
+} from "./read-fail-on-error-core";
 
 /**
  * Index 0 of a transaction's account keys is always the fee payer - the
@@ -40,13 +45,16 @@ function getSolanaFeePayer(tx: VersionedTransactionResponse): string {
 type GetTransactionResult =
   | {
       success: true;
-      hash: string;
-      from: string;
+      // Every field below is null when failOnError=false softened a failed
+      // lookup into a success value so the workflow continues; `error`
+      // carries the reason.
+      hash: string | null;
+      from: string | null;
       to: string | null;
-      value: string;
-      input: string;
-      nonce: number;
-      gasLimit: string;
+      value: string | null;
+      input: string | null;
+      nonce: number | null;
+      gasLimit: string | null;
       // Solana only: actual compute units consumed. Not comparable to
       // gasLimit (an EVM ceiling the transaction was allowed to spend, not
       // what it used), so it is reported as its own field rather than
@@ -56,10 +64,26 @@ type GetTransactionResult =
       transactionLink: string;
       fromLink: string;
       toLink: string;
+      error?: string;
     }
-  | { success: false; error: string };
+  | (ReadDestinationFailure & { success: false; error: string });
 
-export type GetTransactionCoreInput = {
+/** Data fields a softened lookup reports, so a soft failure never looks like a real transaction. */
+const SOFT_TRANSACTION_FIELDS = {
+  hash: null,
+  from: null,
+  to: null,
+  value: null,
+  input: null,
+  nonce: null,
+  gasLimit: null,
+  blockNumber: null,
+  transactionLink: "",
+  fromLink: "",
+  toLink: "",
+} as const;
+
+export type GetTransactionCoreInput = ReadFailOnErrorInput & {
   network: string;
   transactionHash: string;
 };
@@ -78,7 +102,11 @@ async function fetchEvmTransaction(
   try {
     rpcManager = await getRpcProvider({ chainId, userId });
   } catch (error) {
-    return { success: false, error: getErrorMessage(error) };
+    return {
+      success: false,
+      destinationError: true,
+      error: getErrorMessage(error),
+    };
   }
 
   const tx = await rpcManager.executeWithFailover(async (provider) =>
@@ -86,7 +114,8 @@ async function fetchEvmTransaction(
   );
 
   if (!tx) {
-    return { success: false, error: `Transaction not found: ${hash}` };
+    const message = `Transaction not found: ${hash}`;
+    return { success: false, error: message };
   }
 
   const explorerConfig = await db.query.explorerConfigs.findFirst({
@@ -139,7 +168,8 @@ async function fetchSolanaTransaction(
   );
 
   if (!tx) {
-    return { success: false, error: `Transaction not found: ${hash}` };
+    const message = `Transaction not found: ${hash}`;
+    return { success: false, error: message };
   }
 
   const feePayer = getSolanaFeePayer(tx);
@@ -198,6 +228,7 @@ async function stepHandler(
   } catch (error) {
     return {
       success: false,
+      destinationError: true,
       error: getErrorMessage(error),
     };
   }
@@ -205,6 +236,7 @@ async function stepHandler(
   if (!validateChainTxHash(hash, chainId)) {
     return {
       success: false,
+      destinationError: true,
       error: `Invalid transaction hash format: ${hash}`,
     };
   }
@@ -216,10 +248,8 @@ async function stepHandler(
       ? await fetchSolanaTransaction(hash, chainId, userId)
       : await fetchEvmTransaction(hash, chainId, userId);
   } catch (error) {
-    return {
-      success: false,
-      error: `Failed to fetch transaction: ${getErrorMessage(error)}`,
-    };
+    const message = `Failed to fetch transaction: ${getErrorMessage(error)}`;
+    return { success: false, error: message };
   }
 }
 
@@ -244,7 +274,12 @@ export async function getTransactionStep(
   return runPluginStep(
     { pluginName: "web3", actionName: "get-transaction" },
     enrichedInput,
-    () => stepHandler(input)
+    async () =>
+      applyReadFailOnError(
+        await stepHandler(input),
+        input.failOnError,
+        SOFT_TRANSACTION_FIELDS
+      )
   );
 }
 

@@ -24,6 +24,14 @@
  * access, and any other call target) throws.
  */
 
+import {
+  isEqualityOperator,
+  isMissingReference,
+  isPresenceProbe,
+  type MissingReference,
+  missingReferenceError,
+} from "./missing-reference";
+
 const HEX_RE = /^[0-9a-fA-F]+$/;
 const WHITESPACE_RE = /\s/;
 
@@ -506,7 +514,47 @@ function parse(expression: string): AstNode {
   return ast;
 }
 
-function applyBinary(operator: string, left: unknown, right: unknown): unknown {
+/**
+ * A reference whose field path was not present resolves to a marker rather
+ * than a bare undefined, so the operator decides what it means. Presence
+ * checks read it as undefined; everything else rejects it, which stops a
+ * mistyped path from quietly satisfying a comparison.
+ */
+function resolveMissingOperands(
+  operator: string,
+  left: unknown,
+  right: unknown
+): { left: unknown; right: unknown } {
+  const leftMissing = isMissingReference(left);
+  const rightMissing = isMissingReference(right);
+  if (!(leftMissing || rightMissing)) {
+    return { left, right };
+  }
+
+  const probesPresence =
+    isEqualityOperator(operator) &&
+    ((leftMissing && isPresenceProbe(right)) ||
+      (rightMissing && isPresenceProbe(left)));
+
+  if (!probesPresence) {
+    throw missingReferenceError(
+      (leftMissing ? left : right) as MissingReference
+    );
+  }
+
+  return {
+    left: leftMissing ? undefined : left,
+    right: rightMissing ? undefined : right,
+  };
+}
+
+function applyBinary(
+  operator: string,
+  rawLeft: unknown,
+  rawRight: unknown
+): unknown {
+  const { left, right } = resolveMissingOperands(operator, rawLeft, rawRight);
+
   switch (operator) {
     case "===":
       return left === right;
@@ -544,6 +592,9 @@ function applyBinary(operator: string, left: unknown, right: unknown): unknown {
 }
 
 function applyUnary(operator: string, argument: unknown): unknown {
+  if (isMissingReference(argument)) {
+    throw missingReferenceError(argument);
+  }
   switch (operator) {
     case "!":
       return !argument;

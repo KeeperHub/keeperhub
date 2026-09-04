@@ -1037,6 +1037,27 @@
       "when": 1787253008362,
       "tag": "0147_keep_1199_soft_delete_execution_logs",
       "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "7",
+      "when": 1788348301067,
+      "tag": "0148_keep_1311_account_issuer",
+      "breakpoints": true
+    },
+    {
+      "idx": 149,
+      "version": "7",
+      "when": 1788348699824,
+      "tag": "0149_keep_1308_exec_logs_execution_id_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 150,
+      "version": "7",
+      "when": 1788517619226,
+      "tag": "0150_keep_1333_summary_covering_index",
+      "breakpoints": true
     }
   ]
 }

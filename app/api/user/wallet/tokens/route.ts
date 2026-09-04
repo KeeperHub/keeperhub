@@ -110,7 +110,9 @@ export async function POST(request: Request) {
       );
     }
 
-    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE, {
+      credentialType: authCtx.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }
@@ -301,7 +303,9 @@ export async function DELETE(request: Request) {
       );
     }
 
-    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE, {
+      credentialType: authCtx.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }

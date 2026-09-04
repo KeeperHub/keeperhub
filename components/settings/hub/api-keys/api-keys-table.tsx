@@ -40,12 +40,20 @@ const SCOPE_SEPARATOR = /[\s,]+/;
 export function ApiKeysTable({
   apiKeys,
   showCreator,
+  showScope,
   canDelete,
   deleteEndpoint,
   onDelete,
 }: {
   apiKeys: ApiKey[];
   showCreator: boolean;
+  /**
+   * Webhook (wfb_) keys store a scope nothing reads -- the workflow webhook
+   * route matches on the key hash and dispatches without consulting it -- so
+   * the column is dropped rather than reporting a restriction that is not
+   * applied.
+   */
+  showScope: boolean;
   canDelete: boolean;
   deleteEndpoint: (id: string) => string;
   onDelete: DeleteFn;
@@ -57,7 +65,7 @@ export function ApiKeysTable({
       <TableHeader>
         <TableRow className={SETTINGS_HEAD_ROW}>
           <TableHead>Key</TableHead>
-          <TableHead>Scopes</TableHead>
+          {showScope && <TableHead>Scopes</TableHead>}
           {showCreator && <TableHead>Created by</TableHead>}
           <TableHead>Last used</TableHead>
           <TableHead className="text-right">Actions</TableHead>
@@ -76,24 +84,30 @@ export function ApiKeysTable({
                 </span>
               </div>
             </TableCell>
-            <TableCell>
-              <div className="flex flex-wrap gap-1">
-                {(key.scope ?? "")
-                  .split(SCOPE_SEPARATOR)
-                  .filter(Boolean)
-                  .map((scope) => (
-                    <span
-                      className="rounded-full border px-2 py-0.5 font-mono text-[0.6875rem]"
-                      key={scope}
-                    >
-                      {scope}
+            {showScope && (
+              <TableCell>
+                <div className="flex flex-wrap gap-1">
+                  {(key.scope ?? "")
+                    .split(SCOPE_SEPARATOR)
+                    .filter(Boolean)
+                    .map((scope) => (
+                      <span
+                        className="rounded-full border px-2 py-0.5 font-mono text-[0.6875rem]"
+                        key={scope}
+                      >
+                        {scope}
+                      </span>
+                    ))}
+                  {/* A null scope column is full access, not none. "--" read as
+                      "no permissions" -- the opposite of what it means. */}
+                  {!key.scope && (
+                    <span className="text-muted-foreground text-xs">
+                      unrestricted
                     </span>
-                  ))}
-                {!key.scope && (
-                  <span className="text-muted-foreground text-xs">--</span>
-                )}
-              </div>
-            </TableCell>
+                  )}
+                </div>
+              </TableCell>
+            )}
             {showCreator && (
               <TableCell>
                 <div className="flex min-w-0 flex-col">

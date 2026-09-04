@@ -21,6 +21,7 @@ jobs:
       dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
       plugins: ${{ steps.filter.outputs.plugins }}
       selfhosted: ${{ steps.filter.outputs.selfhosted }}
+      bake: ${{ steps.filter.outputs.bake }}
     steps:
       - uses: dorny/paths-filter@v4
         id: filter
@@ -41,6 +42,8 @@ jobs:
               - 'plugins/**'
             selfhosted:
               - 'deploy/keeperhub-stack/self-hosted/**'
+            bake:
+              - 'docker-bake.hcl'
 
   compose-validation:
     name: Docker Compose Validation
@@ -167,7 +170,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Lint Dockerfiles
-        uses: hadolint/hadolint-action@v3.3.0
+        uses: hadolint/hadolint-action@v3.5.0
         with:
           recursive: true
           failure-threshold: warning
@@ -201,6 +204,49 @@ jobs:
             done < <(grep -E "^(COPY|ADD)" "$dockerfile" | grep -v "\-\-from=")
           done
           exit $failed
+
+  bake-provenance:
+    name: Bake Provenance Disabled
+    needs: changes
+    if: needs.changes.outputs.bake == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # docker/bake-action injects
+      # `--set <target>.attest=type=provenance,mode=max` for every target that
+      # declares no provenance entry. ECR indexes each pushed attestation as a
+      # referrer of the image and allows only 100 referrers per subject. The
+      # sandbox image digest does not change between commits, so its referrers
+      # reached 100 and every staging deploy failed for about 14 hours on
+      # 2026-08-29.
+      #
+      # A target that omits the entry re-enables the attestation for itself, and
+      # the two forms that look like a fix are silent no-ops. `attest = []`
+      # disappears from `bake --print`, and `provenance = false` is not a bake
+      # attribute at all. This check reads the resolved definition, so it sees
+      # what buildx sees rather than what the file appears to say.
+      - name: Every bake target disables the provenance attestation
+        run: |
+          set -euo pipefail
+          mapfile -t targets < <(grep -oP '^target "\K[^"]+' docker-bake.hcl)
+          echo "Bake targets declared: ${#targets[@]} (${targets[*]})"
+          docker buildx bake -f docker-bake.hcl --print "${targets[@]}" > /tmp/bake-def.json
+          printed=$(jq -r '.target | length' /tmp/bake-def.json)
+          if [ "$printed" -ne "${#targets[@]}" ]; then
+            echo "::error file=docker-bake.hcl::bake --print resolved $printed targets but the file declares ${#targets[@]}."
+            exit 1
+          fi
+          missing=$(jq -r '.target | to_entries[]
+            | select((.value.attest // []) | any(.type == "provenance" and .disabled == true) | not)
+            | .key' /tmp/bake-def.json)
+          if [ -n "$missing" ]; then
+            echo "::error file=docker-bake.hcl::These targets do not disable the provenance attestation: $(echo "$missing" | tr '\n' ' ')"
+            echo "Add this line to each one, and read the comment above the first target in docker-bake.hcl:"
+            echo '  attest = ["type=provenance,disabled=true"]'
+            exit 1
+          fi
+          echo "All $printed targets disable the provenance attestation."
 
   env-sync:
     name: Environment Variable Sync
@@ -331,7 +377,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: azure/setup-helm@v3
+      - uses: azure/setup-helm@v5
         with:
           version: v3.18.4
 

@@ -23,7 +23,9 @@ export async function PATCH(
       );
     }
 
-    const scopeError = requireScope(authResult.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authResult.scope, SCOPE_MCP_WRITE, {
+      credentialType: authResult.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }
@@ -146,7 +148,9 @@ export async function DELETE(
       );
     }
 
-    const scopeError = requireScope(authResult.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authResult.scope, SCOPE_MCP_WRITE, {
+      credentialType: authResult.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }

@@ -39,7 +39,7 @@ jobs:
     environment: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
     outputs:
       image_tag: ${{ steps.vars.outputs.sha_short }}
-      sandbox_image: ${{ steps.vars.outputs.sandbox_image }}
+      sandbox_image: ${{ steps.sandbox-image.outputs.sandbox_image }}
       ecr_registry: ${{ steps.login-ecr.outputs.registry }}
       ecr_repo: ${{ steps.vars.outputs.ecr_repo }}
       ecr_region: ${{ steps.vars.outputs.ecr_region }}
@@ -135,7 +135,6 @@ jobs:
             echo "sha_short=${SHA}"
             echo "ecr_repo=${AWS_ECR_NAME}"
             echo "ecr_region=${REGION}"
-            echo "sandbox_image=${{ steps.login-ecr.outputs.registry }}/${SANDBOX_ECR_NAME}:sandbox-${SHA}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Check if images already exist
@@ -144,6 +143,11 @@ jobs:
           IMAGE_TAG="${{ steps.vars.outputs.sha_short }}"
           ALL_EXIST=true
           # repo:prefix pairs for every image in the pipeline bake group.
+          # KEEP-1259: the sandbox is deliberately absent. The bake no longer
+          # writes a per-commit sandbox tag, so there is nothing SHA-keyed to
+          # look for. Its sandbox-latest tag is re-put onto the same digest on
+          # every push, so a skipped rerun still leaves the right image in place,
+          # and the "Resolve the sandbox image" step below reads it either way.
           for pair in \
             "${{ env.AWS_ECR_NAME }}:app" \
             "${{ env.AWS_ECR_NAME }}:migrator" \
@@ -151,8 +155,7 @@ jobs:
             "${{ env.EXECUTOR_ECR_NAME }}:executor" \
             "${{ env.SCHEDULER_ECR_NAME }}:schedule" \
             "${{ env.SCHEDULER_ECR_NAME }}:block" \
-            "${{ env.COLLECTOR_ECR_NAME }}:collector" \
-            "${{ env.SANDBOX_ECR_NAME }}:sandbox"; do
+            "${{ env.COLLECTOR_ECR_NAME }}:collector"; do
             repo="${pair%%:*}"; prefix="${pair##*:}"
             if aws ecr describe-images \
               --repository-name "${repo}" \
@@ -234,7 +237,13 @@ jobs:
           # sandbox baked in the same session so it pushes under the app-compile
           # shadow instead of adding a serial ~72s to every e2e job. It has its
           # own Dockerfile/context and cache scope, so it builds independently
-          # of the shared app builder stage.
+          # of the shared app builder stage, and from warm cache it costs about
+          # 11 seconds beside a 17-19 minute app compile.
+          #
+          # KEEP-1259: this bake does NOT set SANDBOX_COMMIT_TAG, so it pushes
+          # the sandbox under sandbox-latest and the environment tag only. Baking
+          # it here is what lets the resolve step below hand e2e the digest this
+          # very run produced, so e2e can never pull a stale sandbox.
           targets: |
             pipeline
             sandbox
@@ -268,11 +277,44 @@ jobs:
             exit 0
           fi
           if [[ "${RETRY}" == "success" ]]; then
-            echo "::warning title=KEEP-1206 image build retried::The image build failed on its first attempt and succeeded on the retry. This is the known memory ceiling, not a random flake - the build needs up to 20 GiB and a standard runner has about 20 GiB including swap. Track how often this warning appears; if it becomes common the job needs more memory or the module graph needs to shrink."
+            echo "::warning title=Image build needed its retry::The first bake attempt failed and the retry passed. Open the failed Build and push all images to ECR step and read the last BuildKit error before you record a cause. A memory failure says cannot allocate memory or ResourceExhausted. That build needs up to 20 GiB and a standard runner has about 20 GiB including swap, so the retry resumes from the layers the first attempt finished. Any other error is a transient fault that the retry hid. Track how often this warning appears. If the memory case becomes common, give the job more memory or make the module graph smaller."
             exit 0
           fi
-          echo "::error title=KEEP-1206 image build failed twice::The image build failed on both attempts. If the logs show 'cannot allocate memory' or 'ResourceExhausted', the runner ran out of memory and re-running will not reliably help - this job needs more memory than a standard runner has."
+          echo "::error title=Image build failed twice::Both bake attempts failed. Do not assume a cause. Open the Build and push all images to ECR step and read the last BuildKit error. Three signatures are known. 1. cannot allocate memory or ResourceExhausted means the runner ran out of memory, and a re-run does not reliably help because this job needs more memory than a standard runner has. 2. denied, the subject of your artifact has the maximum number of artifacts, means ECR refused an attestation push. Every re-run fails the same way until the attestation is disabled or the referrers are removed, so stop retrying. 3. any other denied or unauthorized is an ECR authentication or repository policy problem. Re-run only when the log shows a fault that is really transient."
           exit 1
+
+      # e2e pulls the sandbox by digest, not by tag. KEEP-1259.
+      #
+      # The bake above pushes the sandbox under sandbox-latest and the environment
+      # tag, and no longer under a per-commit tag, because the sandbox digest does
+      # not change between commits and ECR caps one image at 1000 tags. Resolving
+      # the digest here rather than passing "sandbox-latest" down matters for two
+      # reasons. Three e2e jobs read this output in parallel, so a floating tag
+      # could be re-pointed under them by a concurrent deploy-sandbox push. And a
+      # tag that does not resolve fails HERE, once, instead of failing three times
+      # inside the e2e jobs.
+      #
+      # This step runs even when the bake was skipped by [skip build] or by the
+      # rerun guard. sandbox-latest is idempotent, so the image is already correct
+      # in those cases and e2e still needs a ref for it.
+      - name: Resolve the sandbox image for e2e
+        id: sandbox-image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "${SANDBOX_ECR_NAME}" \
+            --image-ids imageTag=sandbox-latest \
+            --region "${REGION}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text 2>/dev/null || true)
+          if [[ -z "${DIGEST}" || "${DIGEST}" == "None" ]]; then
+            echo "::error::Could not resolve ${SANDBOX_ECR_NAME}:sandbox-latest to a digest. Every sandbox bake pushes that tag, so its absence means the repository was emptied or this job cannot read it. e2e cannot start a sandbox without it. Run the deploy-sandbox workflow to republish the image, then re-run this pipeline."
+            exit 1
+          fi
+          echo "sandbox-latest resolves to ${DIGEST}"
+          echo "sandbox_image=${REGISTRY}/${SANDBOX_ECR_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
 
       # Sentry source-map upload moved out to its own sentry-upload.yml job,
       # fanned out from build-images in ci-pipeline.yml so it runs parallel to

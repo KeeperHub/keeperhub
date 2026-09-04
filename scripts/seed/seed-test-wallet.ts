@@ -2,7 +2,8 @@
  * Seed script for persistent E2E test account (KEEP-529).
  *
  * Seeds a test user (with login credentials) + organization + Turnkey wallet
- * for write-contract E2E tests and Playwright tests.
+ * for write-contract E2E tests and Playwright tests, plus the organization's
+ * daily value cap.
  * Idempotent: skips records that already exist.
  *
  * Para has been decommissioned. On first run the script calls Turnkey to
@@ -32,6 +33,7 @@ import { hashPassword } from "better-auth/crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { CREDENTIAL_ACCOUNT_ISSUER } from "../../lib/auth/account-issuer";
 import { getDatabaseUrl } from "../../lib/db/connection-utils";
 import {
   accounts,
@@ -40,12 +42,27 @@ import {
   organizationWallets,
   users,
 } from "../../lib/db/schema";
+import { organizationSpendCaps } from "../../lib/db/schema-extensions";
 import { createTurnkeyWallet } from "../../lib/turnkey/turnkey-operations";
 import { generateId } from "../../lib/utils/id";
 
 const TEST_ORG_SLUG = "e2e-test-org";
 const TEST_USER_EMAIL = "pr-test-do-not-delete@techops.services";
 const TEST_PASSWORD = "TestPassword123!";
+
+// Daily EVM native value cap for this organization, in wei. 1 ETH.
+//
+// Every protocol-coverage suite executes as this one organization, so the
+// native value they move accumulates against a single daily ledger per shard.
+// Shard 4 sends 0.04 ETH today: 0.01 for wrapped/wrap, plus 0.01 for each of
+// the three frax-ether-v2 mints. The platform default is 0.02 ETH, so an
+// organization with no cap of its own denies its own writes (KEEP-1239).
+//
+// This figure is 25 times that worst case, so a new payable fixture does not
+// break the suite again. The cap belongs here rather than in
+// EXECUTE_DEFAULT_DAILY_VALUE_CAP_WEI: CI then keeps the same platform default
+// as staging and prod, and this organization carries its own ceiling instead.
+const E2E_DAILY_VALUE_CAP_WEI = "1000000000000000000";
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -103,6 +120,7 @@ async function ensureCredentialAccount(db: Db, userId: string): Promise<void> {
     id: generateId(),
     accountId: userId,
     providerId: "credential",
+    issuer: CREDENTIAL_ACCOUNT_ISSUER,
     userId,
     password: hashedPassword,
     createdAt: new Date(),
@@ -163,6 +181,28 @@ async function ensureOrganization(db: Db, userId: string): Promise<string> {
   });
   console.log(`Created member record (id: ${memberId})`);
   return orgId;
+}
+
+/** Give the test org an explicit daily value cap. Written as an upsert, not as
+ *  an insert-if-absent: the reservation path creates a row with both cap
+ *  columns NULL on the org's first value-moving request, and such a row still
+ *  resolves to the platform default. A database that already ran the suite
+ *  would otherwise keep that default forever. */
+async function ensureSpendCap(db: Db, orgId: string): Promise<void> {
+  await db
+    .insert(organizationSpendCaps)
+    .values({
+      organizationId: orgId,
+      dailyValueCapWei: E2E_DAILY_VALUE_CAP_WEI,
+    })
+    .onConflictDoUpdate({
+      target: organizationSpendCaps.organizationId,
+      set: {
+        dailyValueCapWei: E2E_DAILY_VALUE_CAP_WEI,
+        updatedAt: new Date(),
+      },
+    });
+  console.log(`Set daily value cap to ${E2E_DAILY_VALUE_CAP_WEI} wei`);
 }
 
 async function ensureTurnkeyWallet(
@@ -263,6 +303,7 @@ async function seedTestWallet(): Promise<void> {
     const userId = await ensureUser(db);
     await ensureCredentialAccount(db, userId);
     const orgId = await ensureOrganization(db, userId);
+    await ensureSpendCap(db, orgId);
     await ensureTurnkeyWallet(db, userId, orgId);
 
     const wallet = await db
@@ -277,6 +318,7 @@ async function seedTestWallet(): Promise<void> {
     console.log(`  Org Slug:       ${TEST_ORG_SLUG}`);
     console.log(`  Org ID:         ${orgId}`);
     console.log(`  User ID:        ${userId}`);
+    console.log(`  Value Cap:      ${E2E_DAILY_VALUE_CAP_WEI} wei`);
     if (wallet.length > 0) {
       console.log(`  Wallet Address: ${wallet[0].walletAddress}`);
     }

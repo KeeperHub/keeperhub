@@ -191,7 +191,9 @@ export async function POST(
     );
   }
 
-  const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+  const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+    credentialType: authContext.authMethod,
+  });
   if (scopeError) {
     return scopeError;
   }
@@ -275,7 +277,9 @@ export async function PATCH(
     );
   }
 
-  const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+  const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+    credentialType: authContext.authMethod,
+  });
   if (scopeError) {
     return scopeError;
   }
@@ -357,7 +361,9 @@ export async function DELETE(
     );
   }
 
-  const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+  const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+    credentialType: authContext.authMethod,
+  });
   if (scopeError) {
     return scopeError;
   }

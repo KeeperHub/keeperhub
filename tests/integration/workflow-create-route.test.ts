@@ -4,12 +4,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // step-registry, which `import "server-only"`. Stub the guard for vitest.
 vi.mock("server-only", () => ({}));
 
-const { mockGetDualAuthContext, mockInsert, mockValidateWorkflowIntegrations } =
-  vi.hoisted(() => ({
-    mockGetDualAuthContext: vi.fn(),
-    mockInsert: vi.fn(),
-    mockValidateWorkflowIntegrations: vi.fn(),
-  }));
+const {
+  mockGetDualAuthContext,
+  mockInsert,
+  mockValidateWorkflowIntegrations,
+  mockSyncPersistedSchedule,
+} = vi.hoisted(() => ({
+  mockGetDualAuthContext: vi.fn(),
+  mockInsert: vi.fn(),
+  mockValidateWorkflowIntegrations: vi.fn(),
+  mockSyncPersistedSchedule: vi.fn(),
+}));
 
 vi.mock("@/lib/middleware/auth-helpers", () => ({
   getDualAuthContext: mockGetDualAuthContext,
@@ -49,6 +54,22 @@ vi.mock("@/lib/idempotency", () => ({
   beginIdempotentFromRequest: vi.fn().mockResolvedValue(null),
   idempotencyEarlyResponse: vi.fn().mockReturnValue(null),
   recordIdempotentResponse: vi.fn((_idem, response) => response),
+}));
+
+// extractScheduleConfig runs for real so the interval pre-check exercises the
+// actual cron-utils guard; only the write side effect is stubbed.
+vi.mock("@/lib/schedule-service", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/schedule-service")>(
+    "@/lib/schedule-service"
+  );
+  return {
+    ...actual,
+    syncPersistedWorkflowSchedule: mockSyncPersistedSchedule,
+  };
+});
+
+vi.mock("@/lib/metrics/collectors/prometheus", () => ({
+  recordWorkflowCreatedFromSource: vi.fn(),
 }));
 
 vi.mock("@/lib/workflow/history", () => ({
@@ -253,5 +274,81 @@ describe("POST /api/workflows/create action config validation", () => {
 
     expect(response.status).not.toBe(422);
     expect(mockInsert).toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/workflows/create schedule registration", () => {
+  function scheduleTrigger(
+    config: Record<string, unknown>
+  ): Record<string, unknown> {
+    return {
+      id: "trigger-1",
+      type: "trigger",
+      data: {
+        type: "trigger",
+        label: "Schedule",
+        config: { triggerType: "Schedule", ...config },
+      },
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-123",
+      organizationId: "org-123",
+      authMethod: "session",
+    });
+    mockValidateWorkflowIntegrations.mockResolvedValue({ valid: true });
+    mockSyncPersistedSchedule.mockResolvedValue(undefined);
+    mockInsert.mockReturnValue({
+      values: vi.fn((row: Record<string, unknown>) => ({
+        returning: vi
+          .fn()
+          .mockResolvedValue([
+            { ...row, createdAt: new Date(), updatedAt: new Date() },
+          ]),
+      })),
+    });
+  });
+
+  it("registers the schedule so the dispatcher sees the new workflow", async () => {
+    const response = await POST(
+      request({
+        name: "Hourly check",
+        nodes: [
+          scheduleTrigger({
+            scheduleCron: "0 * * * *",
+            scheduleTimezone: "UTC",
+          }),
+        ],
+        edges: [],
+        enabled: true,
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockSyncPersistedSchedule).toHaveBeenCalledTimes(1);
+    const [workflowId, nodes] = mockSyncPersistedSchedule.mock.calls[0];
+    const created = await response.json();
+    expect(workflowId).toBe(created.id);
+    expect(nodes[0].data.config.scheduleCron).toBe("0 * * * *");
+  });
+
+  it("rejects a sub-minimum interval before inserting the workflow", async () => {
+    const response = await POST(
+      request({
+        name: "Too fast",
+        nodes: [scheduleTrigger({ scheduleIntervalSeconds: 30 })],
+        edges: [],
+      })
+    );
+
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("SCHEDULE_INTERVAL_TOO_SMALL");
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockSyncPersistedSchedule).not.toHaveBeenCalled();
   });
 });

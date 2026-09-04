@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
-import {
-  getIntegration as getIntegrationFromDb,
-  mergeDatabaseConfig,
-} from "@/lib/db/integrations";
+import { getIntegration as getIntegrationFromDb } from "@/lib/db/integrations";
 import { handleDatabaseTest, handlePluginTest } from "@/lib/db/test-connection";
+import { mergeSecretConfig } from "@/lib/integrations/secret-fields";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
@@ -43,7 +41,9 @@ export async function POST(
       );
     }
 
-    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+      credentialType: authContext.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }
@@ -76,25 +76,29 @@ export async function POST(
       );
     }
 
-    // Parse optional config overrides from the request body.
-    // For database integrations, overrides are merged with stored config so the
-    // server can test with updated non-secret fields (e.g. host) without
-    // the client needing to send the password.
+    // Parse optional config overrides from the request body. Overrides are
+    // merged with the stored config so the server can test with updated
+    // non-secret fields without the client holding the credential.
     const bodyOrError = await parseJsonBody(request);
     if (bodyOrError instanceof NextResponse) {
       return bodyOrError;
     }
     const body = bodyOrError;
 
+    const testConfig = body.configOverrides
+      ? mergeSecretConfig(
+          integration.config,
+          body.configOverrides,
+          integration.type
+        )
+      : integration.config;
+
     if (integration.type === "database") {
-      const testConfig = body.configOverrides
-        ? mergeDatabaseConfig(integration.config, body.configOverrides)
-        : integration.config;
       const result = await handleDatabaseTest(testConfig);
       return NextResponse.json(result);
     }
 
-    const result = await handlePluginTest(integration.type, integration.config);
+    const result = await handlePluginTest(integration.type, testConfig);
     if (
       result.message === "Invalid integration type" ||
       result.message === "Integration does not support testing"

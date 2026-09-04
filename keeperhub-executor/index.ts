@@ -49,6 +49,7 @@ import { verifySqsMessageSignature } from "../lib/sqs-message-auth";
 import { generateId } from "../lib/utils/id";
 import { checkConcurrencyLimit } from "../lib/workflow/concurrency";
 import { hashWorkflowDefinition } from "../lib/workflow/content-hash";
+import { SHUTDOWN_TIMEOUT_MS } from "../lib/workflow/executor/runner-constants";
 import { loadWorkflowForExecution } from "../lib/workflow/load-for-execution";
 import type { WorkflowNode } from "../lib/workflow/store";
 import { chargePaygExecution } from "../lib/billing/payg/charge";
@@ -67,6 +68,7 @@ import {
   failExecutionAsSystemError,
   resolveToSkipped,
 } from "./lib/db-helpers";
+import { InFlightTracker } from "./lib/in-flight";
 import { applyCounterDeltas, isIngestPayload } from "./lib/metrics-shipping";
 import { recordSkippedSample } from "./lib/terminal-counters";
 import { toJsonSafe } from "./lib/serialize";
@@ -373,14 +375,20 @@ async function processExecutorMessage(message: ExecutorMessage): Promise<void> {
   });
   if (loaded.status === "not_found") {
     console.error(`[Executor] Workflow not found: ${workflowId}`);
-    await discardPhantomRow(db, message.executionId);
+    await discardPhantomRow(db, message.executionId, {
+      reason: "not_found",
+      error: "Execution skipped: workflow not found.",
+    });
     return;
   }
   if (loaded.status === "not_executable") {
     console.log(
       `[Executor] Workflow not executable (${loaded.reason}), skipping: ${workflowId}`
     );
-    await discardPhantomRow(db, message.executionId);
+    await discardPhantomRow(db, message.executionId, {
+      reason: loaded.reason,
+      error: `Execution skipped: workflow is not executable (${loaded.reason}).`,
+    });
     return;
   }
   const { workflow } = loaded;
@@ -390,7 +398,10 @@ async function processExecutorMessage(message: ExecutorMessage): Promise<void> {
       (message as ScheduleMessage).scheduleId
     );
     if (!valid) {
-      await discardPhantomRow(db, message.executionId);
+      await discardPhantomRow(db, message.executionId, {
+        reason: "schedule_invalid",
+        error: "Execution skipped: schedule is disabled or no longer exists.",
+      });
       return;
     }
   }
@@ -1024,17 +1035,43 @@ async function listen(): Promise<void> {
     );
   });
 
-  const shutdown = async (): Promise<void> => {
-    console.log("\n[Executor] Shutting down...");
+  // Graceful shutdown: stop receiving, let in-flight handlers finish within the
+  // pod's grace period, then close the DB. Exiting with work mid-processMessage
+  // leaves the claimed row for the reaper and redelivers the message after the
+  // visibility timeout - dropped by the claim CAS when it carries an id, run a
+  // second time when it does not (the id-less fallback path).
+  const inFlight = new InFlightTracker();
+  const receiveAbort = new AbortController();
+  let shuttingDown = false;
+
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) {
+      console.log(`[Executor] Already shutting down, ignoring ${signal}`);
+      return;
+    }
+    shuttingDown = true;
+    console.log(
+      `\n[Executor] Received ${signal}, draining ${inFlight.size} in-flight message(s) (up to ${SHUTDOWN_TIMEOUT_MS}ms)...`
+    );
     healthServer.close();
+    // Cut the long poll short so the loop exits instead of handing back a
+    // batch the drain could not cover.
+    receiveAbort.abort();
+
+    const drained = await inFlight.drain(SHUTDOWN_TIMEOUT_MS);
+    if (!drained) {
+      console.error(
+        `[Executor] Drain timed out with ${inFlight.size} message(s) still in flight; their rows are left for the reaper and the messages redeliver after the visibility timeout`
+      );
+    }
     await queryClient.end();
     console.log("[Executor] Shutdown complete");
-    process.exit(0);
+    process.exit(drained ? 0 : 1);
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-  process.on("SIGHUP", shutdown);
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGHUP", () => shutdown("SIGHUP"));
   process.on("SIGUSR1", () => {
     console.warn(
       "[Security] SIGUSR1 received; inspector activation suppressed"
@@ -1042,7 +1079,7 @@ async function listen(): Promise<void> {
   });
 
   // SQS polling loop
-  while (true) {
+  while (!shuttingDown) {
     try {
       const response = await sqs.send(
         new ReceiveMessageCommand({
@@ -1051,16 +1088,29 @@ async function listen(): Promise<void> {
           WaitTimeSeconds: CONFIG.waitTimeSeconds,
           VisibilityTimeout: CONFIG.visibilityTimeout,
           MessageAttributeNames: ["All"],
-        })
+        }),
+        { abortSignal: receiveAbort.signal }
       );
 
       const messages = response.Messages || [];
+
+      if (shuttingDown) {
+        // A batch that landed as the abort fired. It is already invisible on
+        // the queue, so leave it to redeliver after the visibility timeout
+        // rather than start work the drain cannot see through.
+        if (messages.length > 0) {
+          console.warn(
+            `[Executor] Ignoring ${messages.length} message(s) received during shutdown; they redeliver after the visibility timeout`
+          );
+        }
+        break;
+      }
 
       if (messages.length > 0) {
         console.log(`[Executor] Received ${messages.length} messages`);
 
         const results = await Promise.allSettled(
-          messages.map((msg) => processMessage(msg))
+          messages.map((msg) => inFlight.track(processMessage(msg)))
         );
 
         for (const [idx, result] of results.entries()) {
@@ -1070,6 +1120,10 @@ async function listen(): Promise<void> {
         }
       }
     } catch (error) {
+      if (shuttingDown) {
+        // The aborted long poll rejects; that is the loop's exit, not a fault.
+        break;
+      }
       console.error("[Executor] Error receiving messages:", error);
       await new Promise((r) => setTimeout(r, 5000));
     }

@@ -45,10 +45,11 @@ export async function loginWithWallet(
     });
     const chainId = Number.parseInt(chainIdHex, 16) || 1;
 
-    const nonceResult = await authClient.siwe.nonce({
-      walletAddress: address,
-      chainId,
-    });
+    // better-auth 1.7 made the SIWE endpoint bodies strict and moved address /
+    // chainId derivation server-side: the nonce body is now empty, and /siwe/verify
+    // parses both out of the signed message rather than trusting client-sent
+    // fields. Both values still reach the server inside `message` below.
+    const nonceResult = await authClient.siwe.nonce();
     const nonce = nonceResult.data?.nonce;
     if (!nonce) {
       return { ok: false, error: "Could not start the wallet sign-in." };
@@ -72,8 +73,6 @@ export async function loginWithWallet(
     const verifyResult = await authClient.siwe.verify({
       message,
       signature,
-      walletAddress: address,
-      chainId,
     });
     if (verifyResult.error || !verifyResult.data?.success) {
       return {

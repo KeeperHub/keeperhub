@@ -234,7 +234,11 @@ export class SolanaProviderManager {
     return this.primaryConnection;
   }
 
-  private getFallbackConnection(): Connection | null {
+  // Public for the same reason RpcProviderManager.getFallbackProvider is: a
+  // read whose "not there" answer is a successful call never triggers
+  // failover, so callers that must not trust a single endpoint's silence
+  // (lib/web3/verify-receipt.ts) read the fallback explicitly.
+  getFallbackConnection(): Connection | null {
     if (!this.fallbackConnection && this.config.fallbackRpcUrl) {
       this.fallbackConnection = this.createConnection(
         this.config.fallbackRpcUrl

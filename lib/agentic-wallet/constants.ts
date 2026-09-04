@@ -1,20 +1,26 @@
 /**
- * Agentic-wallet shared constants. Single source of truth for USDC contract
- * addresses and chain ids used across policy.ts, sign.ts, and the /sign route.
+ * Agentic-wallet shared constants used across policy.ts, sign.ts and the /sign
+ * route.
+ *
+ * The asset addresses and chain ids come from `lib/payments/rails.ts`, which
+ * is where a rail is defined. This file previously declared them itself and
+ * described itself as the single source of truth while `router.ts`,
+ * `x402/reconcile.ts` and `mpp/server.ts` each declared their own copies -
+ * four sources, one of which said it was the only one.
  *
  * Source: Phase 33 CONTEXT Resolution #2 (locked 2026-04-21).
  */
 
-export const USDC_BASE_ADDRESS =
-  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as const;
-export const USDC_TEMPO_ADDRESS =
-  "0x20c000000000000000000000b9537d11c60e8b50" as const;
+import { BASE_RAIL, TEMPO_RAIL } from "@/lib/payments/rails";
+
+export const USDC_BASE_ADDRESS = BASE_RAIL.asset;
+export const USDC_TEMPO_ADDRESS = TEMPO_RAIL.asset;
 
 export const USDC_BASE_LC = USDC_BASE_ADDRESS.toLowerCase();
 export const USDC_TEMPO_LC = USDC_TEMPO_ADDRESS.toLowerCase();
 
-export const BASE_CHAIN_ID = 8453 as const;
-export const TEMPO_MAINNET_CHAIN_ID = 4217 as const;
+export const BASE_CHAIN_ID = BASE_RAIL.chainId;
+export const TEMPO_MAINNET_CHAIN_ID = TEMPO_RAIL.chainId;
 // Tempo testnet — matches the Tempo public testnet chain id. Confirmed
 // against the Tempo network docs at writing-plans research time.
 export const TEMPO_TESTNET_CHAIN_ID = 4218 as const;

@@ -125,6 +125,7 @@ export function KeysCard({
               deleteEndpoint={deleteEndpoint}
               onDelete={keys.handleDelete}
               showCreator={showCreator}
+              showScope={keyType === "organisation"}
             />
             {keys.meta && keys.meta.totalPages > 1 && (
               <div className="px-2 pt-2">

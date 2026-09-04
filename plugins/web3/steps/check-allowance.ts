@@ -2,6 +2,7 @@ import "server-only";
 
 import { ethers } from "ethers";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
+import { rawToUi, resolveForDisplay } from "@/lib/web3/ui-multiplier";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
@@ -9,9 +10,14 @@ import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
+import {
+  applyReadFailOnError,
+  type ReadDestinationFailure,
+  type ReadFailOnErrorInput,
+} from "./read-fail-on-error-core";
 import { parseTokenAddress } from "./transfer-token-core";
 
-export type CheckAllowanceCoreInput = {
+export type CheckAllowanceCoreInput = ReadFailOnErrorInput & {
   network: string;
   tokenConfig: string | Record<string, unknown>;
   ownerAddress: string;
@@ -24,11 +30,14 @@ export type CheckAllowanceInput = StepInput & CheckAllowanceCoreInput;
 type CheckAllowanceResult =
   | {
       success: true;
-      allowance: string;
-      allowanceRaw: string;
-      symbol: string;
+      // Null when failOnError=false softened a failed read into a success
+      // value so the workflow continues; `error` carries the reason.
+      allowance: string | null;
+      allowanceRaw: string | null;
+      symbol: string | null;
+      error?: string;
     }
-  | { success: false; error: string };
+  | (ReadDestinationFailure & { success: false; error: string });
 
 async function stepHandler(
   input: CheckAllowanceInput
@@ -46,7 +55,8 @@ async function stepHandler(
       error,
       { plugin_name: "web3", action_name: "check-allowance" }
     );
-    return { success: false, error: getErrorMessage(error) };
+    return { success: false,
+      destinationError: true, error: getErrorMessage(error) };
   }
 
   // Parse token address from config
@@ -95,12 +105,19 @@ async function stepHandler(
         chain_id: String(chainId),
       }
     );
-    return { success: false, error: getErrorMessage(error) };
+    return { success: false,
+      destinationError: true, error: getErrorMessage(error) };
   }
 
   const adapter = getChainAdapter(chainId);
 
   try {
+    const uiMultiplier = await resolveForDisplay(
+      (op) => adapter.executeWithFailover(rpcManager, op),
+      chainId,
+      tokenAddress
+    );
+
     const [allowanceRaw, decimals, symbol] = await adapter.executeWithFailover(
       rpcManager,
       (provider) => {
@@ -114,7 +131,21 @@ async function stepHandler(
     );
 
     const decimalsNum = Number(decimals);
-    const allowance = ethers.formatUnits(allowanceRaw, decimalsNum);
+    // Reported in the same units the approve step accepts, so a user can
+    // compare what they granted against what is left without converting.
+    // `allowanceRaw` keeps the on-chain value, which is what transferFrom
+    // actually spends.
+    //
+    // MaxUint256 is left alone. Approve treats "max" as a sentinel rather than
+    // a quantity, so scaling it here would report a number that is not an
+    // allowance and that no longer equals the value a workflow compares
+    // against when deciding whether to re-approve.
+    const allowance = ethers.formatUnits(
+      allowanceRaw === ethers.MaxUint256
+        ? allowanceRaw
+        : rawToUi(allowanceRaw, uiMultiplier),
+      decimalsNum
+    );
 
     return {
       success: true,
@@ -133,10 +164,8 @@ async function stepHandler(
         chain_id: String(chainId),
       }
     );
-    return {
-      success: false,
-      error: `Failed to check allowance: ${getErrorMessage(error)}`,
-    };
+    const message = `Failed to check allowance: ${getErrorMessage(error)}`;
+    return { success: false, error: message };
   }
 }
 
@@ -144,13 +173,18 @@ async function stepHandler(
  * Check Allowance Step
  * Reads ERC20 allowance(owner, spender) to check the current spending approval
  */
-// biome-ignore lint/suspicious/useAwait: "use step" directive requires async
 export async function checkAllowanceStep(
   input: CheckAllowanceInput
 ): Promise<CheckAllowanceResult> {
   "use step";
 
-  return withStepLogging(input, () => stepHandler(input));
+  return withStepLogging(input, async () =>
+    applyReadFailOnError(await stepHandler(input), input.failOnError, {
+      allowance: null,
+      allowanceRaw: null,
+      symbol: null,
+    })
+  );
 }
 
 checkAllowanceStep.maxRetries = 0;

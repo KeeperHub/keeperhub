@@ -2,22 +2,34 @@
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useRef } from "react";
+import { buildRunsQuery } from "@/lib/analytics/runs-query";
+import {
+  normalizeRunsResponse,
+  type WireRunsResponse,
+} from "@/lib/analytics/runs-response";
 import type {
   AnalyticsSummary,
   NetworkBreakdown,
-  RunsResponse,
+  RunFacets,
   TimeSeriesBucket,
 } from "@/lib/analytics/types";
 import {
+  analyticsCustomEndAtom,
+  analyticsCustomStartAtom,
+  analyticsDurationFilterAtom,
   analyticsErrorAtom,
+  analyticsFacetsAtom,
+  analyticsGasFiltersAtom,
   analyticsLastUpdatedAtom,
   analyticsLoadingAtom,
+  analyticsNetworkFiltersAtom,
   analyticsNetworksAtom,
   analyticsProjectIdAtom,
   analyticsRangeAtom,
   analyticsRunsAtom,
-  analyticsSourceFilterAtom,
-  analyticsStatusFilterAtom,
+  analyticsSearchAtom,
+  analyticsSourceFiltersAtom,
+  analyticsStatusFiltersAtom,
   analyticsSummaryAtom,
   analyticsTimeSeriesAtom,
 } from "@/lib/atoms/analytics";
@@ -83,9 +95,15 @@ export function useAnalytics(): UseAnalyticsReturn {
   const activeOrgId = activeOrg?.id ?? null;
 
   const range = useAtomValue(analyticsRangeAtom);
-  const statusFilter = useAtomValue(analyticsStatusFilterAtom);
-  const sourceFilter = useAtomValue(analyticsSourceFilterAtom);
+  const statusFilters = useAtomValue(analyticsStatusFiltersAtom);
+  const sourceFilters = useAtomValue(analyticsSourceFiltersAtom);
+  const networkFilters = useAtomValue(analyticsNetworkFiltersAtom);
+  const gasFilters = useAtomValue(analyticsGasFiltersAtom);
+  const durationFilter = useAtomValue(analyticsDurationFilterAtom);
+  const search = useAtomValue(analyticsSearchAtom);
   const projectId = useAtomValue(analyticsProjectIdAtom);
+  const customStart = useAtomValue(analyticsCustomStartAtom);
+  const customEnd = useAtomValue(analyticsCustomEndAtom);
   const [loading, setLoading] = useAtom(analyticsLoadingAtom);
   const [error, setError] = useAtom(analyticsErrorAtom);
 
@@ -93,6 +111,7 @@ export function useAnalytics(): UseAnalyticsReturn {
   const setTimeSeries = useSetAtom(analyticsTimeSeriesAtom);
   const setNetworks = useSetAtom(analyticsNetworksAtom);
   const setRuns = useSetAtom(analyticsRunsAtom);
+  const setFacets = useSetAtom(analyticsFacetsAtom);
   const setLastUpdated = useSetAtom(analyticsLastUpdatedAtom);
 
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -111,12 +130,34 @@ export function useAnalytics(): UseAnalyticsReturn {
     setLoading(true);
     setError(null);
 
-    const baseQuery = buildQuery({ range, projectId: projectId ?? undefined });
-    const runsQuery = buildQuery({
+    const baseQuery = buildQuery({
       range,
-      status: statusFilter,
-      source: sourceFilter,
       projectId: projectId ?? undefined,
+      customStart: customStart ?? undefined,
+      customEnd: customEnd ?? undefined,
+    });
+    const filters = {
+      range,
+      statuses: statusFilters,
+      sources: sourceFilters,
+      networks: networkFilters,
+      gas: gasFilters,
+      duration: durationFilter,
+      search,
+      projectId,
+      customStart,
+      customEnd,
+    };
+    const runsQuery = buildRunsQuery(filters);
+    // The status counts sit under every filter except status itself, so the
+    // facets request carries the same query with that one dimension lifted.
+    // Status only. The network and gas counts read the step logs, and this
+    // request repeats every poll for every open dashboard, so they are fetched
+    // when their dropdown opens instead.
+    const facetsQuery = buildRunsQuery({
+      ...filters,
+      omitStatus: true,
+      dimensions: ["status"],
     });
 
     const { signal } = controller;
@@ -132,8 +173,11 @@ export function useAnalytics(): UseAnalyticsReturn {
       signal,
     });
     const runsPromise = fetch(`/api/analytics/runs?${runsQuery}`, { signal });
+    const facetsPromise = fetch(`/api/analytics/facets?${facetsQuery}`, {
+      signal,
+    });
 
-    let pendingCount = 4;
+    let pendingCount = 5;
     const ctx: FetchContext = {
       aborted: false,
       onAbort: (message: string): void => {
@@ -208,23 +252,42 @@ export function useAnalytics(): UseAnalyticsReturn {
         )
       ),
       wrapSection(
-        processSection<RunsResponse>(runsPromise, "Runs", ctx, (data) => {
-          setRuns(data);
+        processSection<WireRunsResponse>(runsPromise, "Runs", ctx, (data) => {
+          setRuns(normalizeRunsResponse(data));
+        })
+      ),
+      wrapSection(
+        processSection<RunFacets>(facetsPromise, "Facets", ctx, (data) => {
+          // Take the status counts alone. The response still carries the other
+          // two keys, empty, because they were not computed - spreading the
+          // whole object would blank whichever step-log counts a dropdown had
+          // already loaded, on every poll tick.
+          setFacets((current) => ({
+            ...current,
+            statusCounts: data.statusCounts,
+          }));
         })
       ),
     ]);
   }, [
     activeOrgId,
     range,
-    statusFilter,
-    sourceFilter,
+    statusFilters,
+    sourceFilters,
+    networkFilters,
+    gasFilters,
+    durationFilter,
+    search,
     projectId,
+    customStart,
+    customEnd,
     setLoading,
     setError,
     setSummary,
     setTimeSeries,
     setNetworks,
     setRuns,
+    setFacets,
     setLastUpdated,
   ]);
 
@@ -254,7 +317,12 @@ export function useAnalytics(): UseAnalyticsReturn {
   const startSSE = useCallback((): void => {
     cleanupSSE();
 
-    const query = buildQuery({ range, projectId: projectId ?? undefined });
+    const query = buildQuery({
+      range,
+      projectId: projectId ?? undefined,
+      customStart: customStart ?? undefined,
+      customEnd: customEnd ?? undefined,
+    });
     const source = new EventSource(`/api/analytics/stream?${query}`);
 
     source.onmessage = (event: MessageEvent): void => {
@@ -286,6 +354,8 @@ export function useAnalytics(): UseAnalyticsReturn {
   }, [
     range,
     projectId,
+    customStart,
+    customEnd,
     cleanupSSE,
     setSummary,
     setLastUpdated,

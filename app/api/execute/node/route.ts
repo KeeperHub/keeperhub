@@ -79,17 +79,6 @@ function validateRetryConfig(
       error: "retry.timeoutMs must be a number between 1000 and 600000",
     };
   }
-  if (
-    r.gasBumpPercent !== undefined &&
-    (typeof r.gasBumpPercent !== "number" ||
-      r.gasBumpPercent < 0 ||
-      r.gasBumpPercent > 100)
-  ) {
-    return {
-      valid: false,
-      error: "retry.gasBumpPercent must be a number between 0 and 100",
-    };
-  }
 
   const attempts = ((r.maxRetries as number | undefined) ?? 0) + 1;
   const perAttempt =
@@ -106,7 +95,6 @@ function validateRetryConfig(
     data: {
       maxRetries: r.maxRetries as number | undefined,
       timeoutMs: r.timeoutMs as number | undefined,
-      gasBumpPercent: r.gasBumpPercent as number | undefined,
     },
   };
 }
@@ -266,7 +254,24 @@ async function handleResult(
   if (!success) {
     const errorMsg =
       output && "error" in output ? String(output.error) : "Execution failed";
-    await failExecution(executionId, errorMsg);
+    // A failure that already reached the chain carries its hash, so the
+    // execution records which transaction failed and what the chain said about
+    // it. failExecution decides from that receipt whether this is terminal or
+    // a broadcast that may still land, and its verdict is authoritative for
+    // the status this reports, in place of the hardcoded "failed" it replaces.
+    // The transport code stays UNPROCESSABLE_ENTITY either way, grouping an
+    // unconfirmed transaction with a failed one exactly as the verified-success
+    // branch below already does.
+    const transactionHash =
+      output && typeof output.transactionHash === "string"
+        ? output.transactionHash
+        : undefined;
+    const chainId =
+      output && typeof output.chainId === "number" ? output.chainId : undefined;
+    const settled = await failExecution(executionId, errorMsg, {
+      transactionHash,
+      chainId,
+    });
     // The step ran (possibly broadcasting): finalize as failed so a retry
     // replays the failure instead of re-executing.
     return recordIdempotentResponse(
@@ -274,8 +279,9 @@ async function handleResult(
       NextResponse.json(
         {
           executionId,
-          status: "failed",
+          status: settled.status,
           error: errorMsg,
+          ...(transactionHash ? { transactionHash } : {}),
           ...(retryCount > 0 ? { retryCount } : {}),
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }
@@ -501,6 +507,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const scopeError = requireScope(apiKeyCtx.scope, SCOPE_MCP_WRITE, {
     organizationId: apiKeyCtx.organizationId,
     credentialId: apiKeyCtx.apiKeyId,
+    credentialType: apiKeyCtx.credentialType,
     endpoint: "/api/execute/node",
   });
   if (scopeError) {
@@ -663,6 +670,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         parsedValue.kind === "solana"
           ? { kind: "solana", valueLamports: parsedValue.valueLamports }
           : { kind: "evm", valueWei: parsedValue.valueWei },
+      paygOverflow: executionGuard.limitResult?.paygOverflow === true,
     });
     if (!reserve.allowed) {
       return applyRateLimitHeaders(

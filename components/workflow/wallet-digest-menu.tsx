@@ -240,7 +240,7 @@ export function WalletDigestMenu({
   onClose: () => void;
 }): React.ReactElement {
   const { push } = useOverlay();
-  const { isOwner } = useActiveMember();
+  const { isOwner, isLoading: roleLoading } = useActiveMember();
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const digest = useWalletDigest(organizationId);
   const { account, isDefault, setDefault } = useDefaultAccount(
@@ -257,6 +257,9 @@ export function WalletDigestMenu({
     : "";
 
   const send = (): void => {
+    if (!isOwner) {
+      return;
+    }
     const assets = digest.sendableAssets();
     if (assets.length === 0) {
       // Closing on a dead click reads as the menu breaking, so it stays open
@@ -334,31 +337,34 @@ export function WalletDigestMenu({
 
       <div className="flex flex-col items-center gap-3 px-3 py-4">
         <TotalBalance loading={digest.balancesLoading} total={digest.total} />
-        {/* Withdrawing is owner-only and the endpoint refuses anyone else, so
-            a member is not shown a button that cannot work for them. Anyone
-            can be given funds, so Receive stays. */}
-        <div
-          className={cn(
-            "grid w-full gap-2",
-            isOwner ? "grid-cols-2" : "grid-cols-1"
-          )}
-        >
-          {isOwner && (
-            <Button className="w-full" onClick={send} size="sm">
-              <ArrowUpRight className="size-4" />
-              Send
-            </Button>
-          )}
+        {/* Both halves of a wallet stay on screen. Withdrawing is owner-only
+            and the endpoint refuses anyone else, so a member sees Send
+            disabled with the reason rather than a control that went missing. */}
+        <div className="grid w-full grid-cols-2 gap-2">
+          <Button
+            className="w-full"
+            disabled={roleLoading || !isOwner}
+            onClick={send}
+            size="sm"
+          >
+            <ArrowUpRight className="size-4" />
+            Send
+          </Button>
           <Button
             className="w-full"
             onClick={receive}
             size="sm"
-            variant={isOwner ? "outline" : "default"}
+            variant="outline"
           >
             <ArrowDownLeft className="size-4" />
             Receive
           </Button>
         </div>
+        {!(roleLoading || isOwner) && (
+          <p className="text-center text-muted-foreground text-xs">
+            Only an organization owner can send funds.
+          </p>
+        )}
       </div>
 
       <DropdownMenuSeparator className="mx-0" />

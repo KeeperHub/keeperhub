@@ -177,13 +177,16 @@ describe.skipIf(SKIP)("reaper route - real-DB integration", () => {
       startedAt: TWO_HOURS_AGO,
     });
 
-    // Wallet lock held by the stale execution → reaper must release it.
+    // Wallet lock held by the stale execution → reaper must release it. The
+    // lock has already lapsed: the reaper only clears locks past expires_at,
+    // because a lock still in the future is one a live heartbeat is renewing.
+    // reaper-classification.test.ts covers the live-lock-is-retained half.
     await db.insert(walletLocks).values({
       walletAddress: TEST_WALLET,
       chainId: TEST_CHAIN_ID,
       lockedBy: staleRunningId,
       lockedAt: TWO_HOURS_AGO,
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      expiresAt: TEN_MINUTES_AGO,
     });
 
     const { GET } = (await import(

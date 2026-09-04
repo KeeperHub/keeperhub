@@ -283,12 +283,13 @@ app:
           - |
             set -e
             echo "Setting up workflow postgres tables..."
-            # Same line staging runs. workflow-postgres-setup parses the URL
-            # itself and does not tolerate unencoded characters in the userinfo
-            # component, while drizzle goes through getDatabaseUrl and is already
-            # safe. A generated password is where that difference shows up.
+            # Same line staging runs, called by path for the reason noted
+            # there. The setup entrypoint parses the URL itself and does not
+            # tolerate unencoded characters in the userinfo component, while
+            # drizzle goes through getDatabaseUrl and is already safe. A
+            # generated password is where that difference shows up.
             export WORKFLOW_POSTGRES_URL=$(tsx scripts/encode-pg-url.ts)
-            pnpm exec workflow-postgres-setup
+            node node_modules/@workflow/world-postgres/bin/setup.js
             echo "Running database migrations..."
             pnpm db:migrate
             echo "Seeding chains..."

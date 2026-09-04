@@ -81,10 +81,11 @@ jobs:
             echo "has_prs=true" >> "$GITHUB_OUTPUT"
           fi
 
-          # Save PR JSON for subsequent steps
-          echo "PR_JSON<<PRJSONEOF" >> "$GITHUB_ENV"
-          echo "$PR_JSON" >> "$GITHUB_ENV"
-          echo "PRJSONEOF" >> "$GITHUB_ENV"
+          # Save PR JSON to a file, not GITHUB_ENV. A PR body is capped at
+          # 65535 chars, so two dependabot PRs alone push this past the kernel's
+          # 128 KB limit on a single environment variable, and every later step
+          # then fails at exec with "Argument list too long".
+          printf '%s\n' "$PR_JSON" > "$RUNNER_TEMP/merged-prs.json"
 
       - name: Skip release if no PRs found
         if: steps.discover_prs.outputs.has_prs == 'false'
@@ -147,7 +148,7 @@ jobs:
             else
               OTHER_PRS="${OTHER_PRS}${ENTRY}"$'\n'
             fi
-          done < <(echo "$PR_JSON" | jq -c '.[]')
+          done < <(jq -c '.[]' "$RUNNER_TEMP/merged-prs.json")
 
           # Determine bump type
           if [ "$HAS_BREAKING" = true ]; then

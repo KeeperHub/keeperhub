@@ -1,10 +1,11 @@
 import { PublicKey } from "@solana/web3.js";
-import bs58 from "bs58";
 import { ethers } from "ethers";
 import { isSolanaChain } from "@/lib/rpc/provider-factory";
 
-const EVM_TX_HASH_PATTERN = /^0x[a-fA-F0-9]{64}$/;
-const SOLANA_SIGNATURE_BYTE_LENGTH = 64;
+// Lives in a leaf module with no @solana/web3.js or ethers import so bundles
+// that forbid Node modules can reach it; re-exported here so callers of this
+// module do not move.
+export { validateChainTxHash } from "./validate-chain-tx-hash";
 
 /**
  * Validates an address against the format the chain actually uses: base58
@@ -26,21 +27,6 @@ export function validateChainAddress(
     }
   }
   return ethers.isAddress(address);
-}
-
-/**
- * Validates a transaction hash/signature against the chain's format: a
- * 64-byte base58 signature for Solana, a 32-byte 0x-hex hash for EVM.
- */
-export function validateChainTxHash(hash: string, chainId: number): boolean {
-  if (isSolanaChain(chainId)) {
-    try {
-      return bs58.decode(hash).length === SOLANA_SIGNATURE_BYTE_LENGTH;
-    } catch {
-      return false;
-    }
-  }
-  return EVM_TX_HASH_PATTERN.test(hash);
 }
 
 /**

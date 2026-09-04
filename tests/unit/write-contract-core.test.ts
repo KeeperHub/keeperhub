@@ -4,6 +4,16 @@ const DIRECT_ID_PREFIX_REGEX = /^direct-/;
 
 vi.mock("server-only", () => ({}));
 
+// supported_tokens rows the stablecoin ceiling reads, set per test.
+const registry = vi.hoisted(() => ({
+  tokenRows: [] as Array<{
+    tokenAddress: string;
+    decimals: number;
+    symbol: string;
+    isStablecoin: boolean;
+  }>,
+}));
+
 vi.mock("@/lib/workflow/executor/step-handler", async () =>
   (await import("../mocks/step-mocks")).stepHandlerPassthrough()
 );
@@ -21,15 +31,19 @@ vi.mock("@/lib/logging", () => ({
   },
   logUserError: vi.fn(),
   logSystemWarn: vi.fn(),
+  logSecurityEvent: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
   db: {
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([]),
-        }),
+        // The stablecoin ceiling awaits where() directly (it reads the chain's
+        // whole token list); other lookups end in limit().
+        where: () =>
+          Object.assign(Promise.resolve(registry.tokenRows), {
+            limit: () => Promise.resolve([]),
+          }),
       }),
     }),
   },
@@ -37,6 +51,13 @@ vi.mock("@/lib/db", () => ({
 
 vi.mock("@/lib/db/schema", () => ({
   workflowExecutions: { id: "id", userId: "userId", workflowId: "workflowId" },
+  supportedTokens: {
+    chainId: "chainId",
+    tokenAddress: "tokenAddress",
+    decimals: "decimals",
+    symbol: "symbol",
+    isStablecoin: "isStablecoin",
+  },
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -54,9 +75,16 @@ vi.mock("@/lib/utils/id", () => ({
   generateId: () => mockGenerateId(),
 }));
 
-vi.mock("@/lib/utils", async () =>
-  (await import("../mocks/step-mocks")).utilsGetErrorMessage()
-);
+// Spread the real module so applyFailOnError's resolveFailOnError and
+// redactAllUrls run for real; only getErrorMessage is stubbed, as before.
+vi.mock("@/lib/utils", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/utils")>("@/lib/utils");
+  return {
+    ...actual,
+    ...(await import("../mocks/step-mocks")).utilsGetErrorMessage(),
+  };
+});
 
 vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: vi.fn().mockReturnValue(1),
@@ -85,6 +113,7 @@ vi.mock("@/lib/explorer", () => ({
 
 vi.mock("@/lib/abi/struct-args", () => ({
   reshapeArgsForAbi: vi.fn().mockImplementation((args: unknown[]) => args),
+  coerceArgsForAbi: vi.fn().mockImplementation((args: unknown[]) => args),
 }));
 
 vi.mock("@/lib/abi/function-key", () => ({
@@ -111,6 +140,7 @@ vi.mock("@/lib/web3/chain-adapter", () => ({
 
 vi.mock("@/lib/web3/decode-revert-error", () => ({
   formatContractError: vi.fn().mockReturnValue("contract error"),
+  classifyRevert: vi.fn().mockReturnValue({ kind: "unknown" }),
 }));
 
 vi.mock("@/lib/web3/gas-defaults", () => ({
@@ -189,11 +219,14 @@ import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { RpcRelayTransportError } from "@/lib/rpc/providers/transport-error";
 import { parsePriorityFeeGwei } from "@/lib/web3/gas-defaults";
+import { OnChainPendingError } from "@/lib/web3/onchain-revert";
 // Import mocks for assertion
 import { initializeWalletSigner } from "@/lib/web3/wallet-helpers";
-
 // Import SUT after all mocks
-import { writeContractCore } from "@/plugins/web3/steps/write-contract-core";
+import {
+  applyFailOnError,
+  writeContractCore,
+} from "@/plugins/web3/steps/write-contract-core";
 
 const VALID_ABI = JSON.stringify([
   {
@@ -218,10 +251,81 @@ const MOCK_EXECUTED_CALL = {
   reverted: false,
 };
 
+const USDC_CONTRACT = "0x1234567890123456789012345678901234567890";
+
+describe("writeContractCore stablecoin ceiling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+  });
+
+  it("refuses an over-cap USDC transfer routed through a raw contract call", async () => {
+    // The contract-call, protocol-action, check-and-execute and node APIs all
+    // reach this core with a caller-supplied address, ABI and args, and they
+    // reserve only native value -- which an ERC-20 transfer does not carry. A
+    // ceiling on the transfer route alone would just have said which door to
+    // use.
+    registry.tokenRows = [
+      {
+        tokenAddress: USDC_CONTRACT,
+        decimals: 6,
+        symbol: "USDC",
+        isStablecoin: true,
+      },
+    ];
+
+    const result = await writeContractCore({
+      contractAddress: USDC_CONTRACT,
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      functionArgs: JSON.stringify([
+        "0x1111111111111111111111111111111111111111",
+        "10000000000",
+      ]),
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("per-transaction limit");
+    }
+    // Refused before the wallet is even resolved, so nothing is signed.
+    expect(initializeWalletSigner).not.toHaveBeenCalled();
+  });
+
+  it("allows an under-cap USDC transfer through the same path", async () => {
+    registry.tokenRows = [
+      {
+        tokenAddress: USDC_CONTRACT,
+        decimals: 6,
+        symbol: "USDC",
+        isStablecoin: true,
+      },
+    ];
+
+    const result = await writeContractCore({
+      contractAddress: USDC_CONTRACT,
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      functionArgs: JSON.stringify([
+        "0x1111111111111111111111111111111111111111",
+        "1000000",
+      ]),
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+  });
+});
+
 describe("writeContractCore executedCall on direct send", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedTxContext = null;
+    registry.tokenRows = [];
     mockTraceExecutedCall.mockResolvedValue(undefined);
   });
 
@@ -441,5 +545,80 @@ describe("writeContractCore RPC resolution failure", () => {
     if (!result.success) {
       expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
     }
+  });
+});
+
+describe("writeContractCore broadcast with an unreadable receipt", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+  });
+
+  it("classifies the send as SYSTEM so failOnError cannot soften it", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new OnChainPendingError({
+        message: "Transaction sent but receipt not available",
+        transactionHash: "0xpending",
+      })
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.transactionHash).toBe("0xpending");
+      expect(result.errorClass).toBe(ExecutionErrorType.SYSTEM);
+    }
+
+    // Without a class, applyFailOnError reports the step as a success while
+    // the transaction may still mine: the node continues as though the write
+    // never happened, and the operator never learns otherwise.
+    const softened = applyFailOnError(result, false);
+    expect(softened.success).toBe(false);
+    expect(softened).toEqual(result);
+  });
+
+  it("keeps a relay-determined class rather than overwriting it with SYSTEM", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new RpcRelayTransportError("RPC failed on primary endpoint: timeout")
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+    }
+  });
+
+  it("leaves an ordinary send failure unclassified and softenable", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(new Error("nonce too low"));
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBeUndefined();
+    }
+    expect(applyFailOnError(result, false).success).toBe(true);
   });
 });

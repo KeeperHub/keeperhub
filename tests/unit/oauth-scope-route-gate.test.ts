@@ -492,6 +492,9 @@ describe("A-03 leg 3: kh_ API key scope gate at the direct-execution sinks", () 
         granted_scope: "mcp:read",
         organizationId: "org-1",
         credentialId: "key-1",
+        // Proves the route threads the family through, not just that
+        // requireScope forwards whatever it is handed.
+        credential_type: "api-key",
         endpoint: "/api/execute/transfer",
       })
     );

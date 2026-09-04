@@ -123,6 +123,7 @@ describe("checkExecutionLimit", () => {
     expect(result).toEqual({
       allowed: true,
       isOverage: false,
+      paygOverflow: false,
       debtExecutions: 0,
       effectiveLimit: -1,
     });
@@ -136,6 +137,24 @@ describe("checkExecutionLimit", () => {
     expect(result).toEqual({
       allowed: true,
       isOverage: false,
+      paygOverflow: false,
+      debtExecutions: 0,
+      effectiveLimit: 5000,
+    });
+  });
+
+  // The last run the plan includes. The count here is usage before this run, so
+  // 4999 prior executions means this one is number 5000 of 5000: included, and
+  // not flagged for the pay-as-you-go charge.
+  it("does not flag the last included execution as billable", async () => {
+    mockSelectReturning([]);
+    mockExecuteReturning([{ count: 4999 }]);
+
+    const result = await checkExecutionLimit("org_1");
+    expect(result).toEqual({
+      allowed: true,
+      isOverage: false,
+      paygOverflow: false,
       debtExecutions: 0,
       effectiveLimit: 5000,
     });
@@ -149,6 +168,7 @@ describe("checkExecutionLimit", () => {
     expect(result).toEqual({
       allowed: true,
       isOverage: false,
+      paygOverflow: false,
       debtExecutions: 0,
       effectiveLimit: 25_000,
     });
@@ -162,6 +182,7 @@ describe("checkExecutionLimit", () => {
     expect(result).toEqual({
       allowed: true,
       isOverage: true,
+      paygOverflow: false,
       limit: 25_000,
       used: 30_000,
       overageRate: 2,
@@ -180,6 +201,9 @@ describe("checkExecutionLimit", () => {
     expect(result).toEqual({
       allowed: true,
       isOverage: false,
+      paygOverflow: true,
+      limit: 5000,
+      used: 5000,
       debtExecutions: 0,
       effectiveLimit: 5000,
     });
@@ -193,6 +217,9 @@ describe("checkExecutionLimit", () => {
     expect(result).toEqual({
       allowed: true,
       isOverage: false,
+      paygOverflow: true,
+      limit: 5000,
+      used: 6000,
       debtExecutions: 0,
       effectiveLimit: 5000,
     });

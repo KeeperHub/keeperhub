@@ -39,7 +39,8 @@ function compareBigInt(a: bigint, b: bigint, op: ConditionOperator): boolean {
   }
 }
 
-function extractObservedString(observed: unknown): string {
+function extractObservedString(observed: unknown): string | null {
+  let scalar = observed;
   if (
     observed !== null &&
     typeof observed === "object" &&
@@ -47,18 +48,29 @@ function extractObservedString(observed: unknown): string {
   ) {
     const keys = Object.keys(observed as Record<string, unknown>);
     if (keys.length === 1) {
-      return String((observed as Record<string, unknown>)[keys[0]]);
+      scalar = (observed as Record<string, unknown>)[keys[0]];
     }
   }
-  return String(observed);
+
+  if (typeof scalar === "string" && scalar.trim() !== "") {
+    return scalar;
+  }
+  if (typeof scalar === "bigint") {
+    return scalar.toString();
+  }
+  return null;
 }
 
 export function evaluateCondition(
   observed: unknown,
   condition: ConditionInput
-): ConditionResult {
+): ConditionResult | null {
   const observedStr = extractObservedString(observed);
   const { operator, value: targetValue } = condition;
+
+  if (observedStr === null) {
+    return null;
+  }
 
   try {
     const observedBig = BigInt(observedStr);
@@ -70,20 +82,6 @@ export function evaluateCondition(
       operator,
     };
   } catch {
-    // BigInt parsing failed -- fall back to string eq/neq
+    return null;
   }
-
-  let met = false;
-  if (operator === "eq") {
-    met = observedStr === targetValue;
-  } else if (operator === "neq") {
-    met = observedStr !== targetValue;
-  }
-
-  return {
-    met,
-    observedValue: observedStr,
-    targetValue,
-    operator,
-  };
 }

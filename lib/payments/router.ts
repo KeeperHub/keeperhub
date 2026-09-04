@@ -6,6 +6,11 @@ import {
   hashMppCredential,
 } from "@/lib/payments/mpp/server";
 import {
+  type PaymentProtocol,
+  railForProtocol,
+  toAssetUnits,
+} from "@/lib/payments/rails";
+import {
   buildPaymentConfig,
   extractPayerAddress,
   findExistingPayment,
@@ -18,13 +23,8 @@ import {
 import { server } from "@/lib/payments/x402/server";
 import type { CallRouteWorkflow } from "@/lib/payments/x402/types";
 
-export type PaymentProtocol = "x402" | "mpp";
-
-const TEMPO_USDC_ADDRESS = "0x20c000000000000000000000b9537d11c60e8b50";
-const TEMPO_CHAIN_ID = 4217;
-const BASE_USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
-const BASE_NETWORK = "eip155:8453";
-const USDC_DECIMALS = 6;
+const X402_RAIL = railForProtocol("x402");
+const MPP_RAIL = railForProtocol("mpp");
 const PAYMENT_MAX_TIMEOUT_SECONDS = 300;
 const RE_PROTOCOL = /^https?:\/\//;
 const RE_TRAILING_SLASH = /\/$/;
@@ -101,9 +101,7 @@ function buildPaymentRequired(params: Dual402Params): PaymentRequiredV2 {
     tagName,
     workflowType,
   } = params;
-  const amountSmallestUnit = String(
-    Math.round(Number(price) * 10 ** USDC_DECIMALS)
-  );
+  const amountSmallestUnit = String(toAssetUnits(X402_RAIL, price));
   const payload: PaymentRequiredV2 = {
     x402Version: 2,
     error: "Payment required",
@@ -115,12 +113,14 @@ function buildPaymentRequired(params: Dual402Params): PaymentRequiredV2 {
     accepts: [
       {
         scheme: "exact",
-        network: BASE_NETWORK,
-        asset: BASE_USDC_ADDRESS,
+        network: X402_RAIL.network,
+        asset: X402_RAIL.asset,
         amount: amountSmallestUnit,
         payTo: creatorWalletAddress,
         maxTimeoutSeconds: PAYMENT_MAX_TIMEOUT_SECONDS,
-        extra: { name: "USD Coin", version: "2" },
+        // Same object the gate advertises and the signer signs over - they
+        // cannot drift apart the way they did in KEEP-364.
+        extra: { ...X402_RAIL.domain },
       },
     ],
   };
@@ -186,9 +186,7 @@ export function buildDual402Response(params: Dual402Params): Response {
     const realm = (process.env.NEXT_PUBLIC_APP_URL ?? "app.keeperhub.com")
       .replace(RE_PROTOCOL, "")
       .replace(RE_TRAILING_SLASH, "");
-    const amountSmallestUnit = String(
-      Math.round(Number(price) * 10 ** USDC_DECIMALS)
-    );
+    const amountSmallestUnit = String(toAssetUnits(MPP_RAIL, price));
     const challenge = Challenge.from({
       secretKey: mppSecretKey,
       realm,
@@ -197,10 +195,10 @@ export function buildDual402Response(params: Dual402Params): Response {
       expires: Expires.minutes(5),
       request: {
         amount: amountSmallestUnit,
-        currency: TEMPO_USDC_ADDRESS,
+        currency: MPP_RAIL.asset,
         recipient: creatorWalletAddress,
         methodDetails: {
-          chainId: TEMPO_CHAIN_ID,
+          chainId: MPP_RAIL.chainId,
         },
       },
     });

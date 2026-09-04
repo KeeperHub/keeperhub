@@ -2,11 +2,19 @@ import "server-only";
 
 import { authenticateApiKey } from "@/lib/api-key-auth";
 import { authenticateOAuthToken } from "@/lib/mcp/oauth-auth";
+import type { AuthMethod } from "@/lib/middleware/auth-helpers";
 
 export type ApiKeyContext = {
   organizationId: string;
   apiKeyId: string;
   scope?: string;
+  /**
+   * Which credential family authenticated the call. A scope denial's
+   * remediation differs between the two -- an OAuth grant is widened by an
+   * admin, an API key's scope is fixed at creation -- so requireScope needs to
+   * know which one it is talking to.
+   */
+  credentialType: Extract<AuthMethod, "oauth" | "api-key">;
 };
 
 export type ApiKeyAuthError = { error: string; status: number };
@@ -32,6 +40,7 @@ export async function validateApiKey(
       organizationId: oauthResult.organizationId,
       apiKeyId: `oauth:${oauthResult.userId ?? "unknown"}`,
       scope: oauthResult.scope,
+      credentialType: "oauth",
     };
   }
 
@@ -48,6 +57,7 @@ export async function validateApiKey(
       organizationId: result.organizationId,
       apiKeyId: result.apiKeyId,
       scope: result.scope,
+      credentialType: "api-key",
     };
   }
 

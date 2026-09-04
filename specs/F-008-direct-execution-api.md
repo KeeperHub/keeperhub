@@ -77,7 +77,7 @@ keeperhub/api/execute/
   [executionId]/status/route.ts
   _lib/
     auth.ts              -- API key validation (organizationApiKeys table, SHA-256 hash)
-    condition.ts         -- evaluateCondition() for check-and-execute (BigInt + string comparison)
+    condition.ts         -- fail-closed BigInt conditions for check-and-execute
     execution-service.ts -- Shared orchestration (create, markRunning, complete, fail)
     rate-limit.ts        -- In-memory sliding window (60 req/min per key)
     spending-cap.ts      -- Daily spend tracking (organizationSpendCaps table, UTC day boundary)
@@ -154,10 +154,13 @@ The contract-call endpoint auto-detects read vs write operations:
 
 ### Check-and-execute condition evaluation
 
-The `condition.ts` module evaluates conditions against contract read results:
+The check-and-execute gate evaluates conditions against contract read results:
 - Supports 6 operators: `eq`, `neq`, `gt`, `lt`, `gte`, `lte`
-- Attempts BigInt comparison first, falls back to string comparison
-- Extracts values from nested objects (handles `{ result: value }` shapes)
+- Accepts exactly one Solidity integer output for all six operators
+- Preserves `eq`/`neq` checks for exactly one `address` or `bytes1` through `bytes32` output
+- Rejects empty, multi-output, compound, and unsupported scalar return shapes before the RPC read
+- Rejects values that cannot be parsed by `BigInt` instead of falling back to string comparison
+- Extracts values from named single-output objects (`{ result: value }`)
 - Returns `ConditionResult` with `met`, `observedValue`, `targetValue`, `operator`
 
 ## Scope

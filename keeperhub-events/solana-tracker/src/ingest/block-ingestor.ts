@@ -210,12 +210,17 @@ export class BlockIngestor {
     if (alreadyProcessed) {
       return;
     }
-    const { executionId, refused } = await createPhantomExecution(
-      fire.workflowId,
-      fire.userId,
-      "event",
-      "events",
-    );
+    // The matcher fires a workflow at most once per transaction, so the
+    // signature identifies the fire; there is no per-event index to add.
+    const dispatchKey = `event:${fire.workflowId}:${this.registration.chainId}:${fire.signature}`;
+    const { executionId, alreadyExisted, refused } =
+      await createPhantomExecution(
+        fire.workflowId,
+        fire.userId,
+        "event",
+        "events",
+        dispatchKey,
+      );
     // Refused on plan grounds: the executor would refuse the same run, so skip
     // the enqueue instead of paying for the round-trip on every match. The
     // event is still marked: it is settled, and leaving it unmarked only buys
@@ -223,6 +228,16 @@ export class BlockIngestor {
     if (refused) {
       logger.log(
         `[ingestor] skipping refused event dispatch for ${fire.workflowId} (${refused})`,
+      );
+      await this.markProcessed(fire.workflowId, fire.signature);
+      return;
+    }
+    // An earlier pass over this block already created and enqueued the row
+    // (the Redis dedup missed it). Enqueueing again would run it twice; the
+    // fire is settled, so mark it like a refusal.
+    if (alreadyExisted) {
+      logger.log(
+        `[ingestor] skipping duplicate event dispatch for ${dispatchKey} (already enqueued)`,
       );
       await this.markProcessed(fire.workflowId, fire.signature);
       return;
@@ -271,15 +286,25 @@ export class BlockIngestor {
     if (alreadyProcessed) {
       return;
     }
-    const { executionId, refused } = await createPhantomExecution(
-      fire.workflowId,
-      fire.userId,
-      "block",
-      "scheduler",
-    );
+    const dispatchKey = `block:${fire.workflowId}:${this.registration.chainId}:${fire.payload.slot}`;
+    const { executionId, alreadyExisted, refused } =
+      await createPhantomExecution(
+        fire.workflowId,
+        fire.userId,
+        "block",
+        "scheduler",
+        dispatchKey,
+      );
     if (refused) {
       logger.log(
         `[ingestor] skipping refused block dispatch for ${fire.workflowId} (${refused})`,
+      );
+      await this.markProcessed(fire.workflowId, dedupKey);
+      return;
+    }
+    if (alreadyExisted) {
+      logger.log(
+        `[ingestor] skipping duplicate block dispatch for ${dispatchKey} (already enqueued)`,
       );
       await this.markProcessed(fire.workflowId, dedupKey);
       return;

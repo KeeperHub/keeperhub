@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { hashPassword } from "better-auth/crypto";
 import { eq } from "drizzle-orm";
+import { CREDENTIAL_ACCOUNT_ISSUER } from "@/lib/auth/account-issuer";
 import { db } from "@/lib/db";
 import {
   accounts,
@@ -45,8 +46,11 @@ async function seedUser(vuId: number, password: string): Promise<"created" | "sk
     });
     await tx.insert(accounts).values({
       id: accountId,
-      accountId: email,
+      // Better Auth 1.7 matches a credential account on accountId === user.id,
+      // so the email that used to sit here now fails sign-in outright.
+      accountId: userId,
       providerId: "credential",
+      issuer: CREDENTIAL_ACCOUNT_ISSUER,
       userId,
       password,
       createdAt: now,

@@ -3,9 +3,19 @@
 // `lib/mcp/rate-limit.ts`) return results carrying `limit`/`remaining`/`reset`
 // so callers can attach these headers on both success and 429 responses.
 //
-// `X-RateLimit-Reset` is a Unix epoch (seconds) timestamp marking when the
-// sliding window next frees a slot. `Retry-After` (delta seconds) is only
-// present on a denial.
+// Two spellings of the same facts go out together:
+//
+//   * `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` follow the
+//     IETF ratelimit-headers draft, where `Reset` is *delta seconds* until the
+//     window frees a slot. This is the spelling agent runtimes and HTTP client
+//     libraries look for when they self-throttle, and its absence was the
+//     "no REST rate-limit headers found" finding in the agent-readiness audit.
+//   * `X-RateLimit-*` is the older de-facto spelling, kept byte-identical to
+//     what shipped before - `X-RateLimit-Reset` stays a Unix epoch (seconds)
+//     timestamp. Existing clients (the kh CLI among them) parse it, so changing
+//     its units to match the draft would silently break their backoff maths.
+//
+// `Retry-After` (delta seconds) is only present on a denial.
 
 export type RateLimitHeaderInfo = {
   limit: number;
@@ -20,11 +30,25 @@ export type RateLimitHeaderOptions = {
   pollIntervalHint?: number;
 };
 
+/**
+ * Seconds from now until the window resets, which is what the IETF draft's
+ * `RateLimit-Reset` carries (as opposed to the epoch timestamp `X-RateLimit-Reset`
+ * has always carried). Never negative: a window whose reset has already passed
+ * reports 0, meaning "retry now".
+ */
+function resetDeltaSeconds(reset: number): number {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  return Math.max(0, reset - nowSeconds);
+}
+
 export function rateLimitHeaders(
   info: RateLimitHeaderInfo,
   options?: RateLimitHeaderOptions
 ): Record<string, string> {
   const headers: Record<string, string> = {
+    "RateLimit-Limit": String(info.limit),
+    "RateLimit-Remaining": String(info.remaining),
+    "RateLimit-Reset": String(resetDeltaSeconds(info.reset)),
     "X-RateLimit-Limit": String(info.limit),
     "X-RateLimit-Remaining": String(info.remaining),
     "X-RateLimit-Reset": String(info.reset),

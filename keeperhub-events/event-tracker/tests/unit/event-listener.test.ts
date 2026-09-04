@@ -16,9 +16,10 @@ import {
   EventListener,
   type EventListenerOptions,
 } from "../../src/listener/event-listener";
+import { TokenBucketPacer } from "../../src/listener/pacer";
 
 // KEEP-693: stub the phantom helpers so the listener does not call the internal
-// API. Default (undefined) keeps existing SQS-path tests on the id-less path.
+// API. Default (no id) keeps existing SQS-path tests on the id-less path.
 const { createPhantomExecution, failPhantomExecution } = vi.hoisted(() => ({
   createPhantomExecution: vi.fn(),
   failPhantomExecution: vi.fn(),
@@ -156,7 +157,7 @@ describe("EventListener", () => {
   beforeEach(() => {
     clearInterfaceCache();
     createPhantomExecution.mockReset();
-    createPhantomExecution.mockResolvedValue({});
+    createPhantomExecution.mockResolvedValue({ alreadyExisted: false });
     failPhantomExecution.mockReset();
   });
 
@@ -251,9 +252,14 @@ describe("EventListener", () => {
       expect(sqs.send).toHaveBeenCalledTimes(1);
     });
 
-    // KEEP-693: phantom pre-creation wiring.
-    it("pre-creates a phantom and carries its id on the event message", async () => {
-      createPhantomExecution.mockResolvedValue({ executionId: "exec_ph" });
+    // KEEP-693: phantom pre-creation wiring. The dispatch key is per log
+    // (workflow, chain, tx, log index), so two matching logs in one transaction
+    // are two distinct runs.
+    it("pre-creates a phantom keyed per log and carries its id on the event message", async () => {
+      createPhantomExecution.mockResolvedValue({
+        executionId: "exec_ph",
+        alreadyExisted: false,
+      });
       const providerMock = makeProviderManagerMock();
       const sqs = makeSqsMock();
       const listener = new EventListener(
@@ -265,19 +271,54 @@ describe("EventListener", () => {
       );
       await listener.start();
 
+      const txHash = `0x${"a".repeat(64)}`;
+      await providerMock.capturedHandler!(
+        makeLog({ txHash, sender: SENDER, value: 7n }),
+      );
+
+      expect(createPhantomExecution).toHaveBeenCalledWith(
+        WORKFLOW_ID,
+        USER_ID,
+        `event:${WORKFLOW_ID}:31337:${txHash}:0`,
+      );
+      const command = sqs.send.mock.calls[0][0] as {
+        input: { MessageBody: string };
+      };
+      expect(JSON.parse(command.input.MessageBody).executionId).toBe("exec_ph");
+    });
+
+    // A replayed log whose Redis dedup entry was missed (or never written, when
+    // the process died between the send and the mark) collides on the dispatch
+    // key: the row was already enqueued once, so it must not be enqueued again.
+    it("skips the enqueue when the dispatch key already exists (dedup)", async () => {
+      createPhantomExecution.mockResolvedValue({
+        executionId: "exec_existing",
+        alreadyExisted: true,
+      });
+      const providerMock = makeProviderManagerMock();
+      const sqs = makeSqsMock();
+      const dedup = makeDedupMock();
+      const listener = new EventListener(
+        buildOptions({
+          providerManager: providerMock.manager,
+          dedup,
+          sqs,
+        }),
+      );
+      await listener.start();
+
       await providerMock.capturedHandler!(
         makeLog({
-          txHash: `0x${"a".repeat(64)}`,
+          txHash: `0x${"d".repeat(64)}`,
           sender: SENDER,
           value: 7n,
         }),
       );
 
-      expect(createPhantomExecution).toHaveBeenCalledWith(WORKFLOW_ID, USER_ID);
-      const command = sqs.send.mock.calls[0][0] as {
-        input: { MessageBody: string };
-      };
-      expect(JSON.parse(command.input.MessageBody).executionId).toBe("exec_ph");
+      expect(sqs.send).not.toHaveBeenCalled();
+      expect(failPhantomExecution).not.toHaveBeenCalled();
+      // The event is settled, so it is marked like any delivered one.
+      expect(dedup.markProcessed).toHaveBeenCalledTimes(1);
     });
 
     it("skips the enqueue entirely when the dispatch is refused", async () => {
@@ -310,7 +351,10 @@ describe("EventListener", () => {
     });
 
     it("marks the phantom failed with ES-0001 when the enqueue fails", async () => {
-      createPhantomExecution.mockResolvedValue({ executionId: "exec_ph" });
+      createPhantomExecution.mockResolvedValue({
+        executionId: "exec_ph",
+        alreadyExisted: false,
+      });
       const providerMock = makeProviderManagerMock();
       const sqs = makeSqsMock();
       sqs.send.mockRejectedValueOnce(new Error("SQS down"));
@@ -393,11 +437,121 @@ describe("EventListener", () => {
       expect(sqs.send).toHaveBeenCalledTimes(1);
     });
 
+    it("uses the shared pacer (lone event forwards immediately) instead of jitter", async () => {
+      const providerMock = makeProviderManagerMock();
+      const sqs = makeSqsMock();
+      // A fresh bucket is full, so the first take() does not wait: a lone
+      // matched event on an idle chain must not pay the old fixed delay.
+      const pacer = new TokenBucketPacer(1000);
+      const listener = new EventListener(
+        buildOptions({
+          providerManager: providerMock.manager,
+          sqs,
+          pacer,
+        }),
+      );
+      await listener.start();
+
+      const started = Date.now();
+      await providerMock.capturedHandler!(
+        makeLog({
+          txHash:
+            "0x9999000000000000000000000000000000000000000000000000000000000000",
+          sender: SENDER,
+          value: 1n,
+        }),
+      );
+      expect(sqs.send).toHaveBeenCalledTimes(1);
+      // A full token bucket returns immediately (well under the old 0-10s
+      // jitter cap).
+      expect(Date.now() - started).toBeLessThan(200);
+    });
+
+    it("paces a burst through the shared pacer rather than a per-event sleep", async () => {
+      const providerMock = makeProviderManagerMock();
+      const sqs = makeSqsMock();
+      // Slow drain rate so the pacing effect is measurable with real timers.
+      const pacer = new TokenBucketPacer(10); // 1 token per 100ms
+      const listener = new EventListener(
+        buildOptions({
+          providerManager: providerMock.manager,
+          sqs,
+          pacer,
+        }),
+      );
+      await listener.start();
+
+      // Drain the initial burst (capacity == drain rate == 10).
+      const drain = async () => {
+        for (let i = 0; i < 10; i++) {
+          await providerMock.capturedHandler!(
+            makeLog({
+              txHash: `0x${"a".repeat(60)}${i.toString(16).padStart(4, "0")}`,
+              sender: SENDER,
+              value: 1n,
+            }),
+          );
+        }
+      };
+      const started = Date.now();
+      await drain();
+      const burstElapsed = Date.now() - started;
+      // First 10 = bucket capacity, no waiting expected.
+      expect(burstElapsed).toBeLessThan(500);
+
+      // Next event must wait for the drain rate (100ms per token).
+      const pacedStart = Date.now();
+      await providerMock.capturedHandler!(
+        makeLog({
+          txHash: `0x${"b".repeat(64)}`,
+          sender: SENDER,
+          value: 1n,
+        }),
+      );
+      const pacedElapsed = Date.now() - pacedStart;
+      // The bucket is empty after the 10-token burst, so the 11th event must
+      // wait ~1 drain interval (100ms at 10/s). Allow generous slack for timer
+      // granularity — the point is it waited (vs the burst's ~0ms), not the
+      // exact millisecond.
+      expect(pacedElapsed).toBeGreaterThanOrEqual(50);
+      expect(pacedElapsed).toBeLessThan(500);
+      expect(sqs.send.mock.calls.length).toBe(11);
+    });
+
+    it("releases a jittered dispatch immediately when shutdown aborts", async () => {
+      const providerMock = makeProviderManagerMock();
+      const sqs = makeSqsMock();
+      const controller = new AbortController();
+      const listener = new EventListener(
+        buildOptions({
+          providerManager: providerMock.manager,
+          sqs,
+          // No pacer: this is the legacy jitter branch, which is what the
+          // deployed tracker runs until this PR's pacer reaches it.
+          jitterMs: 10_000,
+          shutdownSignal: controller.signal,
+        }),
+      );
+      await listener.start();
+
+      const started = Date.now();
+      const dispatch = providerMock.capturedHandler!(
+        makeLog({
+          txHash: `0x${"c".repeat(64)}`,
+          sender: SENDER,
+          value: 1n,
+        }),
+      );
+      controller.abort();
+      await dispatch;
+
+      // Abort forwards the event now rather than cancelling it: the send
+      // still happens, it just does not wait out the remaining jitter.
+      expect(sqs.send).toHaveBeenCalledTimes(1);
+      expect(Date.now() - started).toBeLessThan(500);
+    });
+
     it("applies jitter up to the configured cap before forwarding", async () => {
-      // Pin Math.random() to 1 so the jitter is exactly the cap, and use
-      // fake timers so the test does not actually wait. The goal is to
-      // verify the jitter branch executes and respects the cap; precise
-      // timing is out of scope.
       const randomSpy = vi.spyOn(Math, "random").mockReturnValue(1);
       vi.useFakeTimers();
       try {

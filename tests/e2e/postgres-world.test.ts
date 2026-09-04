@@ -2,7 +2,7 @@
  * E2E Tests for Workflow Postgres World
  *
  * Verifies that the @workflow/world-postgres integration works:
- * 1. workflow-postgres-setup creates the workflow schema tables
+ * 1. world-postgres bootstrap creates the workflow schema tables
  * 2. world.start() creates pg-boss schema tables
  * 3. Workflow executions flow through pg-boss and persist in workflow.workflow_runs
  * 4. Steps are recorded in workflow.workflow_steps
@@ -10,7 +10,7 @@
  * Prerequisites:
  * - Docker compose dev profile running with WORKFLOW_TARGET_WORLD=@workflow/world-postgres
  * - WORKFLOW_POSTGRES_URL or DATABASE_URL pointing to the database
- * - workflow-postgres-setup already run against the database
+ * - world-postgres bootstrap already run against the database
  * - App running at KEEPERHUB_URL (default: http://localhost:3000)
  * - INTERNAL_SERVICE_HMAC_SECRET set to the same value seeded into the running
  *   app's internal_service_hmac_secrets store under caller "*shared*" (see
@@ -150,7 +150,7 @@ describe.skipIf(shouldSkip || !hasPgboss)("Postgres World E2E", () => {
   });
 
   describe("Schema Setup", () => {
-    it("should have workflow schema tables from workflow-postgres-setup", async () => {
+    it("should have workflow schema tables from world-postgres bootstrap", async () => {
       const result = await client<{ table_name: string }[]>`
         SELECT table_name
         FROM information_schema.tables

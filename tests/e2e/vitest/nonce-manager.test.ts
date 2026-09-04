@@ -26,7 +26,11 @@ vi.unmock("@/lib/db");
 vi.unmock("server-only");
 
 import { pendingTransactions, walletLocks } from "@/lib/db/schema-extensions";
-import { NonceManager, resetNonceManager } from "@/lib/web3/nonce-manager";
+import {
+  NonceLockLostError,
+  NonceManager,
+  resetNonceManager,
+} from "@/lib/web3/nonce-manager";
 
 // Skip if DATABASE_URL not set or SKIP_INFRA_TESTS is true
 const shouldSkip =
@@ -766,5 +770,147 @@ describe.skipIf(shouldSkip)("Nonce Manager E2E", () => {
 
       await manager1.endSession(session1);
     }, 15_000);
+  });
+
+  // The unit suite drives the heartbeat against a mocked db, so it can only
+  // prove the handler reacts to what the UPDATE returned. These run the fence
+  // itself: the lock row, the takeover, and the beat are all real.
+  describe("Heartbeat", () => {
+    const SHORT_TTL_MS = 1000;
+
+    async function readLock() {
+      const [row] = await db
+        .select()
+        .from(walletLocks)
+        .where(
+          and(
+            eq(walletLocks.walletAddress, TEST_WALLET_NORMALIZED),
+            eq(walletLocks.chainId, TEST_CHAIN_ID)
+          )
+        );
+      return row;
+    }
+
+    function sleep(ms: number) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    it("keeps the lock past its TTL while the holder beats, so nobody else can take it", async () => {
+      const holder = new NonceManager({ lockTtlMs: SHORT_TTL_MS });
+      const { session } = await holder.startSession(
+        TEST_WALLET,
+        TEST_CHAIN_ID,
+        `${testExecutionId}_beating`,
+        createMockProvider(5) as any
+      );
+      const firstExpiry = (await readLock())?.expiresAt;
+
+      // Well past the TTL: without the heartbeat the row would be takeable.
+      await sleep(SHORT_TTL_MS * 1.5);
+
+      const renewed = await readLock();
+      expect(renewed?.lockedBy).toBe(`${testExecutionId}_beating`);
+      expect(renewed?.expiresAt.getTime()).toBeGreaterThan(
+        firstExpiry?.getTime() ?? 0
+      );
+      expect(renewed?.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      expect(session.lost).toBe(false);
+
+      const taker = new NonceManager({
+        lockTtlMs: SHORT_TTL_MS,
+        maxLockRetries: 3,
+        lockRetryDelayMs: 50,
+      });
+      await expect(
+        taker.startSession(
+          TEST_WALLET,
+          TEST_CHAIN_ID,
+          `${testExecutionId}_denied`,
+          createMockProvider(5) as any
+        )
+      ).rejects.toThrow(FAILED_LOCK_REGEX);
+
+      await holder.endSession(session);
+    }, 20_000);
+
+    it("lets a second manager take over once the holder stops beating", async () => {
+      const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+      const holder = new NonceManager({ lockTtlMs: SHORT_TTL_MS });
+      const { session } = await holder.startSession(
+        TEST_WALLET,
+        TEST_CHAIN_ID,
+        `${testExecutionId}_dying`,
+        createMockProvider(5) as any
+      );
+      const timer = setIntervalSpy.mock.results.at(-1)?.value as NodeJS.Timeout;
+      setIntervalSpy.mockRestore();
+
+      // The holder's process dies: the interval never fires again and nothing
+      // renews expires_at.
+      clearInterval(timer);
+      await sleep(SHORT_TTL_MS * 1.5);
+
+      const taker = new NonceManager({
+        lockTtlMs: SHORT_TTL_MS,
+        maxLockRetries: 20,
+        lockRetryDelayMs: 50,
+      });
+      const { session: takerSession } = await taker.startSession(
+        TEST_WALLET,
+        TEST_CHAIN_ID,
+        `${testExecutionId}_heir`,
+        createMockProvider(5) as any
+      );
+      expect((await readLock())?.lockedBy).toBe(`${testExecutionId}_heir`);
+
+      // The dead holder coming back to release must not clear the new holder.
+      await holder.endSession(session);
+      expect((await readLock())?.lockedBy).toBe(`${testExecutionId}_heir`);
+
+      await taker.endSession(takerSession);
+    }, 20_000);
+
+    it("cannot revive a lock another execution has taken over, and hands out no more nonces", async () => {
+      const holder = new NonceManager({ lockTtlMs: SHORT_TTL_MS });
+      const { session } = await holder.startSession(
+        TEST_WALLET,
+        TEST_CHAIN_ID,
+        `${testExecutionId}_loser`,
+        createMockProvider(5) as any
+      );
+
+      // Someone else now owns the row, with an expiry far beyond the holder's.
+      const usurperExpiry = new Date(Date.now() + 60_000);
+      await db
+        .update(walletLocks)
+        .set({
+          lockedBy: `${testExecutionId}_usurper`,
+          lockedAt: new Date(),
+          expiresAt: usurperExpiry,
+        })
+        .where(
+          and(
+            eq(walletLocks.walletAddress, TEST_WALLET_NORMALIZED),
+            eq(walletLocks.chainId, TEST_CHAIN_ID)
+          )
+        );
+
+      // Give the holder several beats to try to extend what it no longer holds.
+      await sleep(SHORT_TTL_MS);
+
+      const row = await readLock();
+      expect(row?.lockedBy).toBe(`${testExecutionId}_usurper`);
+      expect(row?.expiresAt.getTime()).toBe(usurperExpiry.getTime());
+      expect(session.lost).toBe(true);
+      expect(() => holder.getNextNonce(session)).toThrow(NonceLockLostError);
+
+      await holder.endSession(session);
+      expect((await readLock())?.lockedBy).toBe(`${testExecutionId}_usurper`);
+
+      await db
+        .update(walletLocks)
+        .set({ lockedBy: null, lockedAt: null })
+        .where(eq(walletLocks.walletAddress, TEST_WALLET_NORMALIZED));
+    }, 20_000);
   });
 });

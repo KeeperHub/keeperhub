@@ -2,6 +2,7 @@ import type { MetadataRoute } from "next";
 import { db } from "@/lib/db";
 import { publicTags } from "@/lib/db/schema";
 import { logWarn } from "@/lib/logging";
+import { PUBLIC_PAGE_PATHS, publicPages } from "@/lib/site/content";
 
 const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.keeperhub.com";
 
@@ -9,7 +10,9 @@ const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.keeperhub.com";
  * Sitemap metadata route (HUB-12, HUB-13).
  *
  * Enumerates the public surface area:
- *   - root (/) and the Hub index (/hub)
+ *   - every page in lib/site/content.ts (/, /developers, /pricing, /about,
+ *     /contact, /privacy)
+ *   - the Hub index (/hub)
  *   - one entry per row in `publicTags` as /hub/tags/{slug}
  *
  * Runs at build time (revalidates per the route segment cache); the
@@ -47,12 +50,21 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     priority: 0.6,
   }));
 
+  // The public pages, driven off lib/site/content.ts so a page added there is
+  // crawlable without a second edit here. `/hub` is not a SitePage (it renders
+  // live catalog data) so it stays listed explicitly.
+  const pages = publicPages();
+  const publicEntries: MetadataRoute.Sitemap = PUBLIC_PAGE_PATHS.map(
+    (path) => ({
+      url: `${baseUrl}${path === "/" ? "/" : path}`,
+      changeFrequency:
+        path === "/" ? ("weekly" as const) : ("monthly" as const),
+      priority: pages[path]?.priority ?? 0.5,
+    })
+  );
+
   const staticEntries: MetadataRoute.Sitemap = [
-    {
-      url: `${baseUrl}/`,
-      changeFrequency: "weekly",
-      priority: 1.0,
-    },
+    ...publicEntries,
     {
       url: `${baseUrl}/hub`,
       changeFrequency: "daily",

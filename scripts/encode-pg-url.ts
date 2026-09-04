@@ -8,7 +8,7 @@
  * characters (base64 +/= from CNPG, etc.) don't break URL parsing, and
  * prints the result to stdout.
  *
- * Used by Helm init containers before running workflow-postgres-setup and
+ * Used by Helm init containers before running world-postgres bootstrap and
  * drizzle-kit migrations. The same logic lives in instrumentation.ts for
  * runtime use -- keep both in sync.
  *

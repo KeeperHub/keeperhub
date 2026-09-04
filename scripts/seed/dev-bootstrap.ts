@@ -44,6 +44,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
+import { CREDENTIAL_ACCOUNT_ISSUER } from "../../lib/auth/account-issuer";
 import { getDatabaseUrl } from "../../lib/db/connection-utils";
 import {
   accounts,
@@ -235,6 +236,7 @@ async function ensureDevIdentity(
       id: generateId(),
       accountId: userId,
       providerId: "credential",
+      issuer: CREDENTIAL_ACCOUNT_ISSUER,
       userId,
       password: hash,
       createdAt: now,

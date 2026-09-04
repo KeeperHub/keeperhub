@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { sortChainsByName } from "@/lib/chains/sort-chains";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
 
 type Chain = {
@@ -156,9 +157,16 @@ export function ChainSelectField({
     );
   }
 
-  // Group chains by testnet status for better UX
-  const mainnets = chains.filter((chain) => !chain.isTestnet);
-  const testnets = chains.filter((chain) => chain.isTestnet);
+  // Grouped by testnet status, each group alphabetical. The analytics network
+  // filter sorts through the same comparator so the two lists agree.
+  const mainnets = sortChainsByName(
+    chains.filter((chain) => !chain.isTestnet),
+    (chain) => chain.name
+  );
+  const testnets = sortChainsByName(
+    chains.filter((chain) => chain.isTestnet),
+    (chain) => chain.name
+  );
 
   function onSelectChain(selectValue: string): void {
     const isPrivateVariant = selectValue.endsWith(PRIVATE_SUFFIX);

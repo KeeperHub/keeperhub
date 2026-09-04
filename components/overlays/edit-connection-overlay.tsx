@@ -6,12 +6,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, type Integration } from "@/lib/api-client";
+import { SecretField } from "@/components/secret-field";
 import {
   DatabaseConnectionForm,
   detectDefaultTab,
   validateDatabaseConfig,
   type DatabaseTab,
 } from "@/components/database-connection-form";
+import { getSecretConfigKeys } from "@/lib/integrations/secret-fields";
 import { getCustomIntegrationFormHandler } from "@/lib/workflow/editor/extension-registry";
 import type { IntegrationConfig } from "@/lib/types/integration";
 import { getIntegration, getIntegrationLabels } from "@/plugins/registry";
@@ -35,6 +37,32 @@ function normalizeConfig(c: IntegrationConfig): Record<string, string> {
     out[key] = v === undefined || v === null ? "" : String(v);
   }
   return out;
+}
+
+type PluginFormField = {
+  helpText?: string;
+  helpLink?: { text: string; url: string };
+};
+
+function renderFieldHelp(field: PluginFormField): React.ReactNode {
+  if (!(field.helpText || field.helpLink)) {
+    return null;
+  }
+  return (
+    <p className="text-muted-foreground text-xs">
+      {field.helpText}
+      {field.helpLink && (
+        <a
+          className="underline hover:text-foreground"
+          href={field.helpLink.url}
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          {field.helpLink.text}
+        </a>
+      )}
+    </p>
+  );
 }
 
 type IntegrationWithOptionalConfig = Integration & {
@@ -138,12 +166,12 @@ export function EditConnectionForm({
     setConfig((prev) => ({ ...prev, [key]: value }));
   };
 
-  // For database integrations, secret fields (password, url) are stripped from
-  // the server response. We check if the user entered new secret values to
-  // decide whether to test client-side or use the server-side test endpoint.
-  const hasNewDatabaseSecrets =
-    integration.type === "database" &&
-    ((config.password ?? "").length > 0 || (config.url ?? "").length > 0);
+  // Credential values are never sent to the client, so a secret field starts
+  // blank and stays blank unless the user replaces it.
+  const secretKeys = getSecretConfigKeys(integration.type) ?? new Set<string>();
+  const hasNewSecrets = [...secretKeys].some(
+    (key) => (config[key] ?? "").length > 0
+  );
 
   /**
    * Returns a validation error message if the current config is invalid for
@@ -154,7 +182,7 @@ export function EditConnectionForm({
     if (integration.type !== "database") {
       return null;
     }
-    if (!hasNewDatabaseSecrets) {
+    if (!hasNewSecrets) {
       return null;
     }
     return validateDatabaseConfig(config, dbTab);
@@ -196,23 +224,13 @@ export function EditConnectionForm({
     status: "success" | "error";
     message: string;
   }> => {
-    // For database integrations, always test server-side. The server merges
-    // any config overrides with stored secrets before testing.
-    if (integration.type === "database") {
-      const overrides = getNonEmptyConfig();
-      return api.integration.testConnection(
-        integration.id,
-        Object.keys(overrides).length > 0 ? overrides : undefined
-      );
-    }
-    const hasNewConfig = Object.values(config).some((v) => v && v.length > 0);
-    if (hasNewConfig) {
-      return api.integration.testCredentials({
-        type: integration.type,
-        config,
-      });
-    }
-    return api.integration.testConnection(integration.id);
+    // Always test server-side. The stored credential never leaves the server,
+    // and any value the user typed is merged over it before the test runs.
+    const overrides = getNonEmptyConfig();
+    return api.integration.testConnection(
+      integration.id,
+      Object.keys(overrides).length > 0 ? overrides : undefined
+    );
   };
 
   /**
@@ -345,33 +363,37 @@ export function EditConnectionForm({
       return null;
     }
 
-    return formFields.map((field) => (
-      <div className="space-y-2" key={field.id}>
-        <Label htmlFor={field.id}>{field.label}</Label>
-        <Input
-          id={field.id}
-          onChange={(e) => updateConfig(field.configKey, e.target.value)}
-          placeholder={field.placeholder}
-          type={field.type}
-          value={config[field.configKey] || ""}
-        />
-        {(field.helpText || field.helpLink) && (
-          <p className="text-muted-foreground text-xs">
-            {field.helpText}
-            {field.helpLink && (
-              <a
-                className="underline hover:text-foreground"
-                href={field.helpLink.url}
-                rel="noopener noreferrer"
-                target="_blank"
-              >
-                {field.helpLink.text}
-              </a>
-            )}
-          </p>
-        )}
-      </div>
-    ));
+    return formFields.map((field) => {
+      const help = renderFieldHelp(field);
+      if (field.type === "password") {
+        return (
+          <SecretField
+            configKey={field.configKey}
+            fieldId={field.id}
+            helpNode={help}
+            isEditMode
+            key={field.id}
+            label={field.label}
+            onChange={updateConfig}
+            placeholder={field.placeholder}
+            value={config[field.configKey] || ""}
+          />
+        );
+      }
+      return (
+        <div className="space-y-2" key={field.id}>
+          <Label htmlFor={field.id}>{field.label}</Label>
+          <Input
+            id={field.id}
+            onChange={(e) => updateConfig(field.configKey, e.target.value)}
+            placeholder={field.placeholder}
+            type={field.type}
+            value={config[field.configKey] || ""}
+          />
+          {help}
+        </div>
+      );
+    });
   };
 
   return (

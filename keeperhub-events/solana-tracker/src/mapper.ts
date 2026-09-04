@@ -105,27 +105,21 @@ function sourceModeOverride(): SourceMode | undefined {
 /**
  * Default ingestion strategy for a chain, from the chain's own shape.
  *
- * Mainnet event ingestion defaults to the server-side filtered `signatures`
- * source: `getBlock` pulls every produced block with full transaction detail,
- * which on mainnet is a firehose (see specs/solana-event-ingestion.md) that no
- * CPU request can absorb, and which silently skips slots - and so misses
- * triggers - once it falls behind. Testnets keep `getBlock`, where whole-block
- * pulls are cheap and one source serves event and block triggers together.
+ * Event ingestion defaults to the server-side filtered `signatures` source:
+ * `getBlock` pulls every produced block with full transaction detail, which is
+ * a firehose (see specs/solana-event-ingestion.md) that no CPU request absorbs,
+ * and which silently skips slots - and so misses triggers - once it falls
+ * behind. This was gated on mainnet, on the assumption that a testnet produces
+ * small blocks. KEEP-1242: that assumption is not the tracker's to make. Chain
+ * 103's endpoint served Solana testnet, whose blocks are ~14x a devnet block,
+ * and the testnet default spent 4x the prod CPU request to parse them.
  *
- * `undefined` means the `getblock` default, matching the factory.
+ * `undefined` means the `getblock` default, matching the factory. A chain with
+ * no event triggers keeps it: `getBlock` runs header-only there, and it is the
+ * only source that serves block triggers.
  */
-function defaultSourceMode(
-  network: NetworkConfig,
-  hasEventTriggers: boolean,
-): SourceMode | undefined {
-  // Explicit `!== false` rather than a truthiness test: discovery payloads are
-  // not runtime-validated and `chains.is_testnet` is nullable, so a null would
-  // otherwise read as mainnet and pull a testnet onto the mainnet path.
-  const isMainnet = network.isTestnet === false;
-  if (!hasEventTriggers || !isMainnet) {
-    return undefined;
-  }
-  return "signatures";
+function defaultSourceMode(hasEventTriggers: boolean): SourceMode | undefined {
+  return hasEventTriggers ? "signatures" : undefined;
 }
 
 interface ChainEndpoints {
@@ -223,8 +217,7 @@ export function buildRegistrations(data: DiscoveryData): ChainRegistration[] {
     const blockTriggers: SolanaBlockTrigger[] = (
       blocksByChain.get(chainId) ?? []
     ).map((t) => ({ ...t, configHash: sha256(t) }));
-    const sourceMode =
-      override ?? defaultSourceMode(network, eventTriggers.length > 0);
+    const sourceMode = override ?? defaultSourceMode(eventTriggers.length > 0);
 
     const configHash = sha256({
       endpoints,

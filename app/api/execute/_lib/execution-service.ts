@@ -132,8 +132,10 @@ export async function completeExecution(
       estimatedCostUsd: result.estimatedCostUsd ?? null,
       // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
       output: (result.output ?? {}) as any,
-      // An unconfirmed execution has not completed, and the reconciler uses a
-      // null completedAt to find rows that still need settling.
+      // An unconfirmed execution has not completed, so it carries no
+      // completedAt. The reconciler finds rows that still need settling by
+      // status = 'unconfirmed' (lib/execute/reconcile-executions.ts), not by a
+      // null completedAt.
       completedAt: isTerminal ? new Date() : null,
     })
     .where(eq(directExecutions.id, executionId));
@@ -189,8 +191,19 @@ export async function failExecution(
     }));
   }
 
+  // A hash that re-verifies as *successful* means the write threw after its
+  // transaction had already landed: the throw was ours (a receipt we could not
+  // read the first time, a post-broadcast timeout), not the chain's verdict.
+  // Recording that as a definite failure is the same mistake in the opposite
+  // direction -- it invites a retry that re-runs an action which already took
+  // effect. Left non-terminal, the reconciler re-reads the receipt and settles
+  // the row as `completed`, which is what actually happened.
+  const landedSuccessfully = receipts.some((receipt) => receipt.verified);
+
   const status =
-    receipts.length > 0 && isInconclusive(receipts) ? "unconfirmed" : "failed";
+    receipts.length > 0 && (isInconclusive(receipts) || landedSuccessfully)
+      ? "unconfirmed"
+      : "failed";
 
   await db
     .update(directExecutions)
@@ -205,8 +218,9 @@ export async function failExecution(
         ? {}
         : // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
           { output: { sponsored: params.sponsored } as any }),
-      // The reconciler finds rows still needing settlement by their null
-      // completedAt, so an unconfirmed row must not carry one.
+      // The reconciler finds rows still needing settlement by
+      // status = 'unconfirmed' (lib/execute/reconcile-executions.ts); an
+      // unconfirmed row carries no completedAt because it has not finished.
       completedAt: status === "failed" ? new Date() : null,
     })
     .where(eq(directExecutions.id, executionId));

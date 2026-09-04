@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   organization,
   users,
+  walletLocks,
   workflowExecutionLogs,
   workflowExecutions,
   workflows,
@@ -66,6 +67,7 @@ describe.skipIf(SKIP)(
       runningNoLogsStale: `${PREFIX}running_nolog_stale`,
       runningWithLogStale: `${PREFIX}running_log_stale`,
       runningRecentlyActive: `${PREFIX}running_recent`,
+      runningOldCompletedStep: `${PREFIX}running_old_completed`,
       pendingNoLogsStale: `${PREFIX}pending_nolog_stale`,
       phantomStale: `${PREFIX}phantom_stale`,
       runningNoLogsQueued: `${PREFIX}running_nolog_queued`,
@@ -74,7 +76,14 @@ describe.skipIf(SKIP)(
 
     let reapedIds: string[] = [];
 
+    // Two wallets, so the two lock fixtures below do not collide on the
+    // (wallet_address, chain_id) primary key.
+    const LAPSED_LOCK_WALLET = `0x${"1".repeat(40)}`;
+    const LIVE_LOCK_WALLET = `0x${"2".repeat(40)}`;
+    const LOCK_CHAIN_ID = 987_654;
+
     async function cleanup(): Promise<void> {
+      await queryClient`DELETE FROM wallet_locks WHERE wallet_address IN (${LAPSED_LOCK_WALLET}, ${LIVE_LOCK_WALLET})`;
       await queryClient`DELETE FROM workflow_execution_logs WHERE execution_id LIKE ${`${PREFIX}%`}`;
       await queryClient`DELETE FROM workflow_executions WHERE id LIKE ${`${PREFIX}%`}`;
       await queryClient`DELETE FROM workflows WHERE id LIKE ${`${PREFIX}%`}`;
@@ -162,9 +171,20 @@ describe.skipIf(SKIP)(
       await seedStepLog(ID.runningWithLogStale, "running", null);
 
       // running, older than 30 min, but a step COMPLETED within the threshold:
-      // actively progressing - never reaped (excludeIds).
+      // actively progressing - never reaped.
       await seedExecution(ID.runningRecentlyActive, "running", minutesAgo(31));
       await seedStepLog(ID.runningRecentlyActive, "success", minutesAgo(1));
+
+      // running, older than 30 min, with a step that COMPLETED before the
+      // threshold window opened: progress stopped, so it IS reaped. This is the
+      // boundary the exclusion must respect - "has a completed step" is not the
+      // test, "completed one inside the window" is.
+      await seedExecution(
+        ID.runningOldCompletedStep,
+        "running",
+        minutesAgo(45)
+      );
+      await seedStepLog(ID.runningOldCompletedStep, "success", minutesAgo(40));
 
       // pending, no logs, older than 5 min: unchanged - infrastructure/P-0001.
       await seedExecution(ID.pendingNoLogsStale, "pending", minutesAgo(6));
@@ -182,6 +202,27 @@ describe.skipIf(SKIP)(
       // the 30-min running threshold - not reaped.
       await seedExecution(ID.runningWithLogFresh, "running", minutesAgo(10));
       await seedStepLog(ID.runningWithLogFresh, "running", null);
+
+      // Two wallet locks held by executions this pass reaps. The only thing
+      // separating them is whether a heartbeat is still renewing expires_at:
+      // the lapsed one is safe to clear, the live one is a holder mid-write
+      // whose nonce a waiter would otherwise duplicate.
+      await db.insert(walletLocks).values([
+        {
+          walletAddress: LAPSED_LOCK_WALLET,
+          chainId: LOCK_CHAIN_ID,
+          lockedBy: ID.runningNoLogsStale,
+          lockedAt: minutesAgo(40),
+          expiresAt: minutesAgo(35),
+        },
+        {
+          walletAddress: LIVE_LOCK_WALLET,
+          chainId: LOCK_CHAIN_ID,
+          lockedBy: ID.runningWithLogStale,
+          lockedAt: minutesAgo(40),
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+        },
+      ]);
 
       // NOTE: reapStaleExecutions is GLOBAL - it reaps every stale row in the DB,
       // not just this suite's PREFIX. On the shared local/CI database this can
@@ -221,6 +262,14 @@ describe.skipIf(SKIP)(
       );
     });
 
+    it("DOES reap a running row whose completed step predates the window", async () => {
+      expect(reapedIds).toContain(ID.runningOldCompletedStep);
+      const row = await readExecution(ID.runningOldCompletedStep);
+      expect(row.status).toBe("system_error");
+      expect(row.errorCategory).toBe("workflow_engine");
+      expect(row.errorCode).toBe("E-0001");
+    });
+
     it("reaps a stale pending row as infrastructure/P-0001 (unchanged)", async () => {
       expect(reapedIds).toContain(ID.pendingNoLogsStale);
       const row = await readExecution(ID.pendingNoLogsStale);
@@ -249,6 +298,23 @@ describe.skipIf(SKIP)(
       expect((await readExecution(ID.runningWithLogFresh)).status).toBe(
         "running"
       );
+    });
+
+    it("clears a lapsed wallet lock held by a reaped execution", async () => {
+      const [row] = await db
+        .select()
+        .from(walletLocks)
+        .where(eq(walletLocks.walletAddress, LAPSED_LOCK_WALLET));
+      expect(row.lockedBy).toBeNull();
+    });
+
+    it("leaves a wallet lock a live heartbeat is still renewing", async () => {
+      const [row] = await db
+        .select()
+        .from(walletLocks)
+        .where(eq(walletLocks.walletAddress, LIVE_LOCK_WALLET));
+      expect(row.lockedBy).toBe(ID.runningWithLogStale);
+      expect(row.expiresAt.getTime()).toBeGreaterThan(Date.now());
     });
   }
 );

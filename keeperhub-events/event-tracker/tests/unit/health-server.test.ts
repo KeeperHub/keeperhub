@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ChainProviderManager,
   type ProviderFactory,
+  redactRpcUrl,
 } from "../../src/chains/provider-manager";
 import {
   type HealthServerHandle,
@@ -145,5 +146,95 @@ describe("health-server", () => {
       const address = handle.server.address() as AddressInfo;
       expect(address.port).toBe(handle.port);
     });
+  });
+});
+
+describe("RPC URL redaction", () => {
+  it("keeps scheme and host, drops the credential-bearing path", () => {
+    // The shape that matters: chain-config stores ${DRPC_API_KEY} as a
+    // placeholder, and the deploy workflow substitutes the real key into the
+    // value before writing it to SSM, so this string is a live secret at
+    // runtime for 19 of 22 chains.
+    expect(
+      redactRpcUrl("wss://lb.drpc.live/robinhood-mainnet/sk_live_abc123"),
+    ).toBe("wss://lb.drpc.live/[redacted]");
+    expect(redactRpcUrl("https://eth-mainnet.g.alchemy.com/v2/SECRETKEY")).toBe(
+      "https://eth-mainnet.g.alchemy.com/[redacted]",
+    );
+  });
+
+  it("redacts a key passed as a query parameter", () => {
+    expect(redactRpcUrl("wss://rpc.example.com/?apiKey=SECRET")).toBe(
+      "wss://rpc.example.com/[redacted]",
+    );
+  });
+
+  it("strips credentials given as URL userinfo", () => {
+    const out = redactRpcUrl("wss://user:hunter2@rpc.example.com/path");
+    expect(out).not.toContain("hunter2");
+    expect(out).not.toContain("user");
+  });
+
+  it("keeps a bare host readable so failover is still diagnosable", () => {
+    // Redaction has to leave the upstream identifiable, or the field stops
+    // answering the question it exists for.
+    expect(redactRpcUrl("wss://chain.techops.services")).toBe(
+      "wss://chain.techops.services",
+    );
+  });
+
+  it("passes null through and fails closed on anything unparseable", () => {
+    expect(redactRpcUrl(null)).toBeNull();
+    expect(redactRpcUrl("not a url")).toBe("[redacted]");
+    expect(redactRpcUrl("")).toBe("[redacted]");
+  });
+
+  it("never returns a string containing the original secret", () => {
+    const secret = "0123456789abcdef0123456789abcdef";
+    for (const url of [
+      `wss://lb.drpc.live/base/${secret}`,
+      `https://host/v2/${secret}?k=${secret}`,
+      `wss://x:${secret}@host/p`,
+    ]) {
+      expect(redactRpcUrl(url)).not.toContain(secret);
+    }
+  });
+});
+
+describe("no credential reaches the health payload", () => {
+  // The helper being correct is not the property that matters. The property
+  // is that nothing secret leaves buildHealthResponse - reverting only the
+  // toHealth() call site left the helper intact and the whole suite green
+  // while /healthz served raw credentials.
+  const SECRET = "dk_live_0123456789abcdef0123456789abcdef";
+
+  it("omits the credential from every field, including error strings", async () => {
+    // A factory that always throws: both URLs fail, so the aggregate error -
+    // which names every URL it tried - lands on lastCreateError.
+    const failingFactory: ProviderFactory = () => {
+      throw new Error("ECONNREFUSED");
+    };
+    const mgr = new ChainProviderManager({
+      factory: failingFactory,
+      onPermanentFailure: () => undefined,
+    });
+    const primary = "wss://chain.techops.services/eth-mainnet";
+    const fallback = `wss://lb.drpc.live/eth-mainnet/${SECRET}`;
+
+    await mgr
+      .subscribeToLogs({
+        chainId: 1,
+        wssUrl: primary,
+        fallbackWssUrl: fallback,
+        address: "0x1111111111111111111111111111111111111111",
+        topic0:
+          "0x6d7747ff9aaba238de658957a12a32c8a94f6ec3aa0508441fe400ca79ed457c",
+        handler: () => undefined,
+      })
+      .catch(() => undefined);
+
+    const body = JSON.stringify(buildHealthResponse(mgr).body);
+    expect(body).not.toContain(SECRET);
+    await mgr.destroy();
   });
 });

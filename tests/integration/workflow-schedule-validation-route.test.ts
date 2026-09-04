@@ -105,7 +105,7 @@ vi.mock("@/lib/schedule-service", async () => {
   );
   return {
     ...actual,
-    syncWorkflowSchedule: mockSyncWorkflowSchedule,
+    syncPersistedWorkflowSchedule: mockSyncWorkflowSchedule,
   };
 });
 
@@ -245,5 +245,72 @@ describe("KEEP-581: PATCH /api/workflows/[workflowId] schedule interval guard", 
     });
 
     expect(response.status).toBe(200);
+  });
+});
+
+describe("PATCH /api/workflows/[workflowId] schedule registration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-1",
+      organizationId: "org-1",
+      authMethod: "session",
+    });
+    mockValidateWorkflowIntegrations.mockResolvedValue({ valid: true });
+    mockWorkflowsFindFirst.mockResolvedValue({
+      ...existingWorkflow(),
+      enabled: false,
+    });
+    mockSelectFrom.mockResolvedValue([]);
+    mockMemberLimit.mockResolvedValue([{ id: "m-1" }]);
+    mockSyncWorkflowSchedule.mockResolvedValue(undefined);
+    mockUpdateReturning.mockResolvedValue([
+      { ...existingWorkflow(), nodes: [scheduleTriggerNode(null)] },
+    ]);
+  });
+
+  it("registers the schedule on an enable-only PATCH", async () => {
+    const response = await PATCH(makeRequest({ enabled: true }), { params });
+
+    expect(response.status).toBe(200);
+    expect(mockSyncWorkflowSchedule).toHaveBeenCalledTimes(1);
+    expect(mockSyncWorkflowSchedule).toHaveBeenCalledWith(
+      "wf-1",
+      [scheduleTriggerNode(null)],
+      expect.any(String)
+    );
+  });
+
+  it("syncs the persisted nodes rather than the raw request body", async () => {
+    // A trigger in the MCP shape the sanitizer canonicalises. Syncing the raw
+    // body would not see a Schedule trigger at all.
+    const rawTrigger = {
+      id: "trigger-1",
+      type: "Schedule",
+      data: { scheduleCron: "0 9 * * *", scheduleTimezone: "UTC" },
+    };
+
+    await PATCH(makeRequest({ nodes: [rawTrigger] }), { params });
+
+    expect(mockSyncWorkflowSchedule).toHaveBeenCalledWith(
+      "wf-1",
+      [scheduleTriggerNode(null)],
+      expect.any(String)
+    );
+  });
+
+  it("does not touch the schedule when neither nodes nor enable change", async () => {
+    const response = await PATCH(makeRequest({ name: "renamed" }), { params });
+
+    expect(response.status).toBe(200);
+    expect(mockSyncWorkflowSchedule).not.toHaveBeenCalled();
+  });
+
+  it("does not re-register on a disable", async () => {
+    mockWorkflowsFindFirst.mockResolvedValue(existingWorkflow());
+
+    await PATCH(makeRequest({ enabled: false }), { params });
+
+    expect(mockSyncWorkflowSchedule).not.toHaveBeenCalled();
   });
 });

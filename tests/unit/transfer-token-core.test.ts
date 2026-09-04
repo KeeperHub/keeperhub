@@ -2,6 +2,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+// supported_tokens rows the stablecoin ceiling reads, set per test.
+const registry = vi.hoisted(() => ({
+  tokenRows: [] as Array<{
+    tokenAddress: string;
+    decimals: number;
+    symbol: string;
+    isStablecoin: boolean;
+  }>,
+}));
+
 vi.mock("@/lib/workflow/executor/step-handler", async () =>
   (await import("../mocks/step-mocks")).stepHandlerPassthrough()
 );
@@ -12,15 +22,19 @@ vi.mock("@/lib/logging", () => ({
     TRANSACTION: "transaction",
   },
   logUserError: vi.fn(),
+  logSecurityEvent: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
   db: {
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([]),
-        }),
+        // The stablecoin ceiling awaits where() directly (it reads the chain's
+        // whole token list); other lookups end in limit().
+        where: () =>
+          Object.assign(Promise.resolve(registry.tokenRows), {
+            limit: () => Promise.resolve([]),
+          }),
       }),
     }),
     query: {
@@ -39,6 +53,9 @@ vi.mock("@/lib/db/schema", () => ({
     id: "id",
     chainId: "chainId",
     tokenAddress: "tokenAddress",
+    decimals: "decimals",
+    symbol: "symbol",
+    isStablecoin: "isStablecoin",
   },
 }));
 
@@ -235,7 +252,46 @@ function setupMocks(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  registry.tokenRows = [];
   setupMocks();
+});
+
+describe("transfer-token-core - stablecoin ceiling", () => {
+  it("refuses an over-cap stablecoin transfer before touching the chain", async () => {
+    // A token transfer carries no native value, so the daily value cap reserves
+    // 0 for it and cannot see this at all.
+    registry.tokenRows = [
+      {
+        tokenAddress: VALID_TOKEN.toLowerCase(),
+        decimals: 18,
+        symbol: "USDC",
+        isStablecoin: true,
+      },
+    ];
+
+    const result = await transferTokenCore(makeInput({ amount: "5000" }));
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("per-transaction limit");
+    }
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("allows an under-cap stablecoin transfer", async () => {
+    registry.tokenRows = [
+      {
+        tokenAddress: VALID_TOKEN.toLowerCase(),
+        decimals: 18,
+        symbol: "USDC",
+        isStablecoin: true,
+      },
+    ];
+
+    const result = await transferTokenCore(makeInput({ amount: "10" }));
+
+    expect(result.success).toBe(true);
+  });
 });
 
 describe("transfer-token-core - executedCall on direct send", () => {

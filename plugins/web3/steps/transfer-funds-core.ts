@@ -25,7 +25,7 @@ import {
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
-import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
 import { generateId } from "@/lib/utils/id";
 import { validateChainAddress } from "@/lib/web3/validate-chain-address";
@@ -52,7 +52,10 @@ import {
   computeSolanaLamportFee,
   SOLANA_BASE_FEE_LAMPORTS,
 } from "@/lib/web3/solana-fees";
-import { revertedTransactionHash } from "@/lib/web3/onchain-revert";
+import {
+  broadcastTransactionHash,
+  isOnChainPendingError,
+} from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { executeSponsoredTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
@@ -511,14 +514,18 @@ export async function transferFundsCore(
         }
       );
       const rejection = classifyRevert(error);
-      const errorClass = rpcRelayErrorClass(error);
+      // Attributed as a system fault so the execution log records a fault
+      // domain for it; a relay-determined class is more specific, so it wins.
+      const errorClass =
+        rpcRelayErrorClass(error) ??
+        (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
       return {
         success: false,
         error: formatContractError(error, undefined, "Transaction failed"),
         ...(errorClass ? { errorClass } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
-        ...(revertedTransactionHash(error)
-          ? { transactionHash: revertedTransactionHash(error), chainId }
+        ...(broadcastTransactionHash(error)
+          ? { transactionHash: broadcastTransactionHash(error), chainId }
           : {}),
       };
     }

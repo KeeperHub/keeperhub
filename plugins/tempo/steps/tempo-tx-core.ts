@@ -32,7 +32,9 @@ import { TxEnvelopeTempo } from "ox/tempo";
 import { encodeFunctionData, type Hex, toFunctionSelector } from "viem";
 import { Abis } from "viem/tempo";
 import { toChecksumAddress } from "@/lib/address-utils";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { checkStablecoinCalldataBatch } from "@/lib/execute/stablecoin-cap";
+import { isFundingShortfall } from "@/lib/errors/funding-shortfall";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { resolveSignerMode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
@@ -417,6 +419,24 @@ export async function signTempoTx(
     );
   }
 
+  // Stablecoin ceiling. Tempo moves TIP-20 stablecoins as its primary asset and
+  // carries no native value at all, so the daily value cap never sees a Tempo
+  // send. Every Tempo write is signed here, so one check covers transfer-with-
+  // memo, batch payouts, held payments and swaps.
+  // Batched, not per call. signTempoTx carries every call of a batch payout in
+  // one 0x76 transaction, so checking each in isolation let ten entries of 99
+  // USD each clear a 100 USD ceiling while the transaction moved 990 USD, with
+  // nothing bounding the entry count.
+  const stablecoinDecision = await checkStablecoinCalldataBatch({
+    organizationId,
+    chainId,
+    context: "tempo",
+    calls,
+  });
+  if (stablecoinDecision.kind !== "allowed") {
+    throw new Error(stablecoinDecision.error);
+  }
+
   const wallet = await getOrganizationWallet(organizationId);
   if (!wallet.turnkeySubOrgId) {
     throw new Error("Organization wallet is missing its Turnkey sub-org id");
@@ -536,7 +556,11 @@ export async function broadcastStoredTempoTx(
       provider.send("eth_sendRawTransaction", [serialized])
     );
   } catch (error) {
-    logSystemError(
+    // A node that refuses the envelope because the payer cannot cover it is
+    // answering about this wallet, not reporting that Tempo is unreachable.
+    const message = error instanceof Error ? error.message : String(error);
+    const log = isFundingShortfall(message) ? logUserError : logSystemError;
+    log(
       ErrorCategory.TRANSACTION,
       "[Tempo] Failed to broadcast transaction",
       error,

@@ -178,6 +178,11 @@ export const ErrorCategory = {
   NETWORK_RPC: "network_rpc",
   TRANSACTION: "transaction",
   BILLING: "billing",
+  // A caller using a valid credential outside its grant. User-caused and
+  // reachable at the caller's own request rate, so it is deliberately not
+  // AUTH -- that is the system-side family (broken sessions, misconfigured
+  // providers) the errors dashboard sums into its System Errors panels.
+  AUTHORIZATION: "authorization",
 
   // System-caused errors
   DATABASE: "database",
@@ -211,6 +216,8 @@ function getMetricName(category: ErrorCategory): string {
       return MetricNames.TRANSACTION_BLOCKCHAIN_ERRORS;
     case ErrorCategory.DATABASE:
       return MetricNames.SYSTEM_DATABASE_ERRORS;
+    case ErrorCategory.AUTHORIZATION:
+      return MetricNames.USER_AUTHORIZATION_ERRORS;
     case ErrorCategory.AUTH:
       return MetricNames.SYSTEM_AUTH_ERRORS;
     case ErrorCategory.INFRASTRUCTURE:
@@ -381,7 +388,7 @@ export function logSystemError(
  * | ---------------------- | ----------- | --------------- | --------- |
  * | logSystemError         | error       | error event     | counter+1 |
  * | logSystemWarn (this)   | warn        | warning event   | none      |
- * | logUserError           | warn        | warning event   | counter+1 |
+ * | logUserError           | warn        | none            | counter+1 |
  *
  * Sentry tag policy:
  *   - error_type is intentionally NOT set. At the call sites where this

@@ -140,6 +140,18 @@ vi.mock("@/lib/web3/verify-receipt", () => ({
       .join(", ")}`,
 }));
 
+// The poll loop itself is covered by tests/unit/poll-for-completed-output.test.ts.
+// Collapsing it to two attempts with no sleeping lets the finalize-side wait be
+// driven by lateCommitLogs without wall-clock delay.
+vi.mock("@/lib/workflow/executor/poll-for-output", () => ({
+  pollForCompletedOutput: async <T>(
+    fetchFn: () => Promise<T | null>
+  ): Promise<T | null> => {
+    const first = await fetchFn();
+    return first === null ? await fetchFn() : first;
+  },
+}));
+
 // State the tests mutate between runs.
 type UpdateCall = {
   target: unknown;
@@ -160,6 +172,10 @@ let mockExecution: ExecutionRow | null = null;
 // (status='error' siblings carrying a non-orphan error). Default empty so existing
 // tests keep observing the legacy "Step did not record completion" message.
 let siblingErrorRows: Array<{ id: string }> = [];
+// When set, every listTrulyFailedNodes probe after the first sees these rows:
+// the step commit that was in flight while the runner reported failure.
+let lateCommitLogs: LogRow[] | null = null;
+let trulyFailedProbes = 0;
 // resolveGasTotal issues `db.select(...).from(...).where(...)` and reads
 // rows[0].gasUsedWei. Default to a no-gas run; tests that exercise the gas
 // denormalisation set this to a summed value.
@@ -249,8 +265,12 @@ vi.mock("@/lib/db", () => ({
           const cols = opts?.columns ?? {};
           const isOrphanSiblingProbe =
             cols.id === true && cols.nodeId !== true && cols.status !== true;
+          if (isOrphanSiblingProbe) {
+            return Promise.resolve(siblingErrorRows);
+          }
+          trulyFailedProbes += 1;
           return Promise.resolve(
-            isOrphanSiblingProbe ? siblingErrorRows : allLogs
+            lateCommitLogs && trulyFailedProbes > 1 ? lateCommitLogs : allLogs
           );
         }),
       },
@@ -324,6 +344,8 @@ describe("logWorkflowCompleteDb", () => {
     updateCalls = [];
     updateShouldThrow = false;
     siblingErrorRows = [];
+    lateCommitLogs = null;
+    trulyFailedProbes = 0;
     mockGasRows = [{ gasUsedWei: null }];
     mockReturningRows = [];
     mockOrgRows = [{ slug: "acme" }];
@@ -451,6 +473,80 @@ describe("logWorkflowCompleteDb", () => {
       expect.objectContaining({ execution_id: "exec_1" })
     );
     expect(logSystemError).not.toHaveBeenCalled();
+  });
+
+  // The runner reports a lost completion event while the step body is still
+  // executing. Publishing that reading paints the run red and stamps the step
+  // "Step did not record completion" until the commit lands and self-heal
+  // takes it back; the run was never anything but running.
+  it("waits for an in-flight step commit before finalizing a spurious error", async () => {
+    allLogs = [
+      { id: "log_trigger", nodeId: "trigger", status: "success" },
+      { id: "log_query", nodeId: "query", status: "running" },
+    ];
+    lateCommitLogs = [
+      { id: "log_trigger", nodeId: "trigger", status: "success" },
+      { id: "log_query", nodeId: "query", status: "success" },
+    ];
+
+    await logWorkflowCompleteDb({
+      executionId: "exec_1",
+      status: "error",
+      error: "Step did not record completion",
+      startTime: Date.now() - 1000,
+    });
+
+    expect(getExecUpdate()?.set).toEqual(
+      expect.objectContaining({ status: "success", error: undefined })
+    );
+    // The orphan row is closed as success, so no failure message is attached.
+    expect(getLogUpdate()?.set).toEqual(
+      expect.objectContaining({ status: "success", error: undefined })
+    );
+  });
+
+  it("finalizes as error when the in-flight commit never lands", async () => {
+    allLogs = [{ id: "log_running", nodeId: "node_a", status: "running" }];
+
+    await logWorkflowCompleteDb({
+      executionId: "exec_1",
+      status: "error",
+      error: "Step did not record completion",
+      startTime: Date.now() - 1000,
+    });
+
+    expect(getExecUpdate()?.set).toEqual(
+      expect.objectContaining({
+        status: "system_error",
+        error: "Step did not record completion",
+      })
+    );
+  });
+
+  // A step row carrying a real error means something genuinely failed, so
+  // there is nothing in flight to wait for.
+  it("does not wait when a peer step carries a real error", async () => {
+    allLogs = [
+      { id: "log_running", nodeId: "node_a", status: "running" },
+      { id: "log_error", nodeId: "node_b", status: "error" },
+    ];
+    siblingErrorRows = [{ id: "log_error" }];
+    lateCommitLogs = [
+      { id: "log_running", nodeId: "node_a", status: "success" },
+      { id: "log_error", nodeId: "node_b", status: "error" },
+    ];
+
+    await logWorkflowCompleteDb({
+      executionId: "exec_1",
+      status: "error",
+      error: 'Step "node_b" exceeded max retries (1 retry)',
+      startTime: Date.now() - 1000,
+    });
+
+    expect(trulyFailedProbes).toBe(1);
+    expect(getExecUpdate()?.set).toEqual(
+      expect.objectContaining({ status: "system_error" })
+    );
   });
 
   // KEEP-333: If a step started but never recorded completion, the workflow

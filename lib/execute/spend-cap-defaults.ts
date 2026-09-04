@@ -55,6 +55,38 @@ const DEFAULT_DAILY_VALUE_CAP_WEI = "20000000000000000";
 // reasoning: stays under the 200 USD anchor until SOL passes roughly 400 USD.
 const DEFAULT_DAILY_SOLANA_VALUE_CAP_LAMPORTS = "500000000";
 
+// 100 USD in micro-USD (6 decimals), the unit stablecoins are compared in.
+//
+// Half the anchor rather than equal to it, because this ceiling is PER
+// TRANSACTION and nothing aggregates it: the per-key rate limit is the only
+// thing bounding the daily total, which leaves far more headroom than the
+// native caps have. What this figure actually sizes is the single worst
+// transaction a leaked key can push through, so it is set below the daily
+// anchor rather than at it.
+//
+// Deliberately its own constant rather than a re-export of the agentic wallet's
+// DEFAULT_DAILY_CAP_MICROS: that figure is a DAILY AGGREGATE for a different
+// subsystem and this one bounds a SINGLE transfer, so they are not the same
+// policy even though they were chosen from the same anchor. Coupling them would
+// mean an edit to the agentic wallet's daily budget silently moved the
+// execution API's per-transfer ceiling.
+const DEFAULT_STABLECOIN_CAP_MICRO_USD = "100000000";
+
+// 2,000 USD in micro-USD: the ceiling on ONE transaction's total stablecoin
+// outflow, distinct from the per-call figure above.
+//
+// A Tempo batch payout packs up to MAX_PAYOUTS (50) recipients into a single
+// transaction. Measuring that total against the per-call 100 USD would cap a
+// 50-recipient payroll at 2 USD a head, which is not a bound on the feature so
+// much as its removal. The two figures do different jobs: the per-call ceiling
+// stops any one recipient being large, and this one stops the batch as a whole
+// being large, so neither a single 990 USD entry nor fifty 100 USD entries get
+// through.
+//
+// 20x the per-call figure. Sized so an ordinary payroll run clears it while a
+// batch still cannot move materially more than a handful of single transfers.
+const DEFAULT_BATCH_STABLECOIN_CAP_MICRO_USD = "2000000000";
+
 // BigInt() accepts hex-prefixed strings ("0x10" -> 16), so an ops typo would
 // silently turn a cap into a near-zero one. Reject anything that is not a
 // decimal digit run before it is used.
@@ -83,5 +115,35 @@ export function getDefaultDailySolanaValueCapLamports(): string {
   return resolveOverride(
     process.env.EXECUTE_DEFAULT_DAILY_SOLANA_VALUE_CAP_LAMPORTS,
     DEFAULT_DAILY_SOLANA_VALUE_CAP_LAMPORTS
+  );
+}
+
+/**
+ * Ceiling on a single stablecoin outflow, in micro-USD (6 decimals).
+ *
+ * Per transfer, not per day. A daily total would need a third unit column on
+ * the value ledger (micro-USD alongside wei and lamports) and a reserve/settle
+ * lifecycle for token moves; this bounds each individual move instead, which is
+ * what the 1:1 peg and the recorded token decimals support with no oracle. The
+ * residual is that the per-key rate limit, not this cap, bounds the aggregate.
+ */
+export function getDefaultStablecoinTransferCapMicroUsd(): string {
+  return resolveOverride(
+    process.env.EXECUTE_DEFAULT_STABLECOIN_CAP_MICRO_USD,
+    DEFAULT_STABLECOIN_CAP_MICRO_USD
+  );
+}
+
+/**
+ * Ceiling on the total stablecoin outflow of a single transaction, in
+ * micro-USD (6 decimals).
+ *
+ * Applies alongside the per-call figure rather than instead of it: every call
+ * in a batch is still individually bounded, and this bounds their sum.
+ */
+export function getDefaultBatchStablecoinCapMicroUsd(): string {
+  return resolveOverride(
+    process.env.EXECUTE_DEFAULT_BATCH_STABLECOIN_CAP_MICRO_USD,
+    DEFAULT_BATCH_STABLECOIN_CAP_MICRO_USD
   );
 }

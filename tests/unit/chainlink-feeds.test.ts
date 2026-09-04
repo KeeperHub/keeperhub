@@ -54,9 +54,10 @@ describe("every billable sponsorship chain has a price feed", () => {
   // runtime backstop for anyone who widens the annotation.
   const billable = SPONSORSHIP_CHAINS.filter((chain) => !chain.isTestnet);
 
-  it.each(billable)("$name ($chainId) resolves a gas-token USD feed", ({
-    chainId,
-  }) => {
-    expect(getGasTokenUsdFeedAddress(chainId)).toBeDefined();
-  });
+  it.each(billable)(
+    "$name ($chainId) resolves a gas-token USD feed",
+    ({ chainId }) => {
+      expect(getGasTokenUsdFeedAddress(chainId)).toBeDefined();
+    }
+  );
 });

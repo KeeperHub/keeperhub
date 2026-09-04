@@ -8,6 +8,7 @@ import {
   getNativeSymbol,
   type INSUFFICIENT_BALANCE_CODE,
 } from "@/lib/execute/native-balance";
+import { checkStablecoinContractCall } from "@/lib/execute/stablecoin-cap";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
@@ -17,6 +18,10 @@ import {
   decodeRevertReason,
   extractRevertData,
 } from "@/lib/web3/decode-revert-error";
+import {
+  convertAmountForWrite,
+  resolveForWrite,
+} from "@/lib/web3/ui-multiplier";
 import { getOrganizationWalletAddress } from "@/lib/web3/wallet-helpers";
 import { parseTokenAddress } from "@/plugins/web3/steps/transfer-token-core";
 
@@ -626,6 +631,28 @@ export async function simulateContractCall(
   }
   const { rpc, chainId } = rpcResolution;
 
+  // The ceiling applies to the broadcast, so a simulation that ignored it
+  // would report a clean dry run for a call that then fails at send. Agents
+  // call simulate to decide whether to send, so the limit has to be visible
+  // here. Placed in this function rather than only in simulateTokenTransfer
+  // because the contract-call route reaches this one directly, and
+  // simulateTokenTransfer delegates here, so one check covers both entrances.
+  //
+  // Reported as a failed simulation rather than thrown: the caller asked what
+  // would happen, and this is what would happen.
+  const stablecoinCap = await checkStablecoinContractCall({
+    organizationId: input.organizationId,
+    chainId,
+    contractAddress: to,
+    functionName: abiFn.name ?? input.functionName,
+    inputTypes: (abiFn.inputs ?? []).map((i) => i.type),
+    args: argsOrError,
+    context: "simulate",
+  });
+  if (stablecoinCap.kind !== "allowed") {
+    return failure(from, to, value, stablecoinCap.error);
+  }
+
   const tx: ethers.TransactionRequest = { from, to, data: encodedData, value };
 
   let gasEstimate: bigint;
@@ -845,6 +872,40 @@ export async function simulateTokenTransfer(
     );
   }
 
+  // The dry run has to interpret the request exactly as the broadcast will.
+  // /api/execute/transfer routes the same body here on simulate and to
+  // transferTokenCore on send, so an unconverted amount would simulate a
+  // different transaction than the one that gets signed - on an ERC-8056 token,
+  // one several times larger.
+  const multiplier = await resolveForWrite(
+    (op) => rpc.executeWithFailover(op),
+    chainId,
+    resolvedTokenAddress
+  );
+  if (!multiplier.ok) {
+    return failure(
+      from,
+      resolvedTokenAddress,
+      BigInt(0),
+      getErrorMessage(multiplier.error)
+    );
+  }
+  const convertedAmount = convertAmountForWrite(
+    amountUnits,
+    multiplier.multiplier
+  );
+  if (!convertedAmount.ok) {
+    return failure(
+      from,
+      resolvedTokenAddress,
+      BigInt(0),
+      convertedAmount.error
+    );
+  }
+  amountUnits = convertedAmount.raw;
+
+  // No ceiling check here: this delegates to simulateContractCall below,
+  // which applies it once for both entrances.
   return simulateContractCall({
     organizationId: input.organizationId,
     network: input.network,

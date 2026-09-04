@@ -132,18 +132,29 @@ export function normalizeScope(requestedScope: string): string {
 /**
  * Coerce the `scopes` field from an API request body (array or space-separated
  * string) into a normalized scope string, or null when omitted.
+ *
+ * Null means "no scope restriction" and passes every gate, so only omission may
+ * reach it. `scopes` arrives as unvalidated request body, so "supplied" has to
+ * cover more than the two shapes we can read: an object (the shape the creation
+ * UI holds internally), a boolean, a number. Anything present but unusable
+ * floors at mcp:read rather than widening to full access -- the caller asked
+ * for a restriction, and the one thing we must not do is answer that with none.
  */
 export function parseScopeInput(scopes: unknown): string | null {
+  // JSON clients routinely send null for an absent field, so it is read as
+  // omission. undefined is the same case.
+  if (scopes === undefined || scopes === null) {
+    return null;
+  }
   if (Array.isArray(scopes)) {
-    const raw = scopes
-      .filter((s): s is string => typeof s === "string")
-      .join(" ");
-    return raw.trim() ? normalizeScope(raw) : null;
+    return normalizeScope(
+      scopes.filter((s): s is string => typeof s === "string").join(" ")
+    );
   }
   if (typeof scopes === "string") {
-    return scopes.trim() ? normalizeScope(scopes) : null;
+    return normalizeScope(scopes);
   }
-  return null;
+  return SCOPE_MCP_READ;
 }
 
 /**

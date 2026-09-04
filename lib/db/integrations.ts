@@ -4,6 +4,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { filterUnauthorizedIntegrationIds } from "@/lib/integrations/authorization";
+import { mergeSecretConfig } from "@/lib/integrations/secret-fields";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import {
   getOrganizationWallet,
@@ -109,50 +110,6 @@ function decryptConfig(encryptedConfig: string): Record<string, unknown> {
     );
     return {};
   }
-}
-
-const DB_SECRET_KEYS = new Set(["password", "url"]);
-
-/**
- * Strip secret fields from a database integration config before sending to clients.
- * For non-database integrations, returns the config unchanged.
- */
-export function stripDatabaseSecrets(
-  config: IntegrationConfig,
-  integrationType: IntegrationType
-): IntegrationConfig {
-  if (integrationType !== "database") {
-    return config;
-  }
-
-  const stripped: IntegrationConfig = {};
-  for (const key of Object.keys(config)) {
-    if (!DB_SECRET_KEYS.has(key)) {
-      stripped[key] = config[key];
-    }
-  }
-  return stripped;
-}
-
-/**
- * Merge incoming config with existing config, preserving secret fields
- * that were not provided (empty or missing) in the update.
- */
-export function mergeDatabaseConfig(
-  existingConfig: IntegrationConfig,
-  incomingConfig: IntegrationConfig
-): IntegrationConfig {
-  const merged: IntegrationConfig = { ...existingConfig };
-  for (const [key, value] of Object.entries(incomingConfig)) {
-    if (DB_SECRET_KEYS.has(key)) {
-      if (value !== undefined && value !== "") {
-        merged[key] = value;
-      }
-    } else {
-      merged[key] = value;
-    }
-  }
-  return merged;
 }
 
 export type DecryptedIntegration = {
@@ -540,13 +497,17 @@ export async function updateIntegration(
   }
 
   if (updates.config !== undefined) {
-    if (existingIntegration?.type === "database") {
-      updateData.config = encryptConfig(
-        mergeDatabaseConfig(existingIntegration.config, updates.config)
-      );
-    } else {
-      updateData.config = encryptConfig(updates.config);
-    }
+    // Clients never receive stored secrets back, so an unchanged secret
+    // arrives blank. Merge for every type or the update would erase it.
+    updateData.config = encryptConfig(
+      existingIntegration
+        ? mergeSecretConfig(
+            existingIntegration.config,
+            updates.config,
+            existingIntegration.type
+          )
+        : updates.config
+    );
   }
 
   // No active org -> personal scope only. Constrain the createdBy fallback to

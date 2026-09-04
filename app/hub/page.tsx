@@ -112,6 +112,17 @@ export async function generateMetadata({
   return {
     title: meta.title,
     description: meta.description,
+    // Explicit, because the root layout declares `alternates: { canonical: "/" }`
+    // and Next.js merges metadata root-to-leaf per top-level key: a route that
+    // does not declare `alternates` inherits the root's. Without this, /hub -
+    // the public catalog, and the highest-priority non-root sitemap entry -
+    // would tell crawlers it is a duplicate of the homepage and be consolidated
+    // away, taking every protocol page under it.
+    //
+    // The tab is deliberately not part of the canonical: ?tab= renders a
+    // different slice of one catalog, and robots.ts already disallows the
+    // query-string variants (HUB-13).
+    alternates: { canonical: "/hub" },
     openGraph: {
       title: meta.title,
       description: meta.description,

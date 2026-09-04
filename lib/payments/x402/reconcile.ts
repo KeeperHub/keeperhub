@@ -1,7 +1,8 @@
 import { Contract, JsonRpcProvider } from "ethers";
 import { ErrorCategory, logUserError } from "@/lib/logging";
+import { railForProtocol } from "@/lib/payments/rails";
 
-const USDC_BASE_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+const X402_RAIL = railForProtocol("x402");
 
 const AUTH_STATE_ABI = [
   "function authorizationState(address, bytes32) view returns (uint8)",
@@ -17,9 +18,9 @@ const TIMEOUT_PATTERNS = [
 // pool) on every reconciliation call. Mirrors the pattern used in
 // lib/x402/server.ts. BASE_RPC_URL is read once at module load.
 const provider = new JsonRpcProvider(
-  process.env.BASE_RPC_URL ?? "https://mainnet.base.org"
+  process.env[X402_RAIL.rpcUrlEnvVar] ?? X402_RAIL.defaultRpcUrl
 );
-const usdcContract = new Contract(USDC_BASE_ADDRESS, AUTH_STATE_ABI, provider);
+const settlementAsset = new Contract(X402_RAIL.asset, AUTH_STATE_ABI, provider);
 
 /**
  * Returns true if the error message indicates a transient facilitator timeout
@@ -60,7 +61,7 @@ export async function pollForPaymentConfirmation({
 
   while (Date.now() < deadline) {
     try {
-      const state = (await usdcContract.authorizationState(
+      const state = (await settlementAsset.authorizationState(
         payerAddress,
         nonce
       )) as bigint;

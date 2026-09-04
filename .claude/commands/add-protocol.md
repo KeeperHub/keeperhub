@@ -71,8 +71,6 @@ Phases run in order. After VERIFY, if any check failed, loop back to BUILD with 
 
 PHASE 1 - RESEARCH (web search + explorer lookups, BEFORE any code is written)
 
-**Orient locally first**: run `/understand-chat protocols/` to see how the existing protocols are structured (definition strategy, ABI layout, TEST_DATA shape) and to confirm no entry for $ARGUMENTS already exists. The closest existing protocol is your structural template; the graph names it faster than `ls protocols/` + grep does.
-
 Use WebSearch and WebFetch to gather concrete facts. Cite URLs and addresses for every claim. Do not guess; if a fact cannot be confirmed, mark it open and surface to the user.
 
 1.1 Identity and version (do this FIRST; everything downstream depends on getting the version right)

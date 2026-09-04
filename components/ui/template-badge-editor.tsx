@@ -1,7 +1,7 @@
 "use client";
 
 import { useAtom } from "jotai";
-import type { CSSProperties } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { doesNodeExist, getDisplayTextForTemplate } from "@/lib/workflow/editor/template-utils";
 import { cn } from "@/lib/utils";
@@ -22,6 +22,56 @@ export function hasUsableSelection(
   selection: Selection | null
 ): selection is Selection {
   return selection !== null && selection.rangeCount > 0;
+}
+
+// Length of the trailing "}}" so the caret can be parked just inside the token
+// when a badge is opened for editing.
+const CLOSING_BRACES_LENGTH = 2;
+
+/**
+ * Caret offset to use when a badge is opened for editing: just inside the
+ * closing braces, so typing extends the field path rather than appending text
+ * after the token. Falls back to the end for a token that is not brace-closed.
+ */
+export function caretOffsetForBadgeEdit(rawTemplate: string): number {
+  return rawTemplate.endsWith("}}")
+    ? rawTemplate.length - CLOSING_BRACES_LENGTH
+    : rawTemplate.length;
+}
+
+const EDIT_BADGE_HINT = "Double-click to edit this reference";
+
+/**
+ * Tooltip text for a badge whose reference the field cuts off: the full
+ * reference leads, and the edit hint keeps its own line below.
+ */
+export function badgeTooltip(displayText: string): string {
+  return displayText ? `${displayText}\n${EDIT_BADGE_HINT}` : EDIT_BADGE_HINT;
+}
+
+/**
+ * Geometry of one badge inside the field that holds it, measured in the
+ * field's content box so a scrolled field gives the same answer as an
+ * unscrolled one.
+ */
+export type BadgeExtent = {
+  /** Right edge of the badge, from the start of the field's content. */
+  right: number;
+  /** Width the field actually shows. */
+  visibleWidth: number;
+};
+
+/**
+ * Whether the field cuts the badge off. A badge never truncates itself -- it
+ * sits at full width inside a wrapper that scrolls -- so the test is its right
+ * edge against the visible width, where `TruncatedTooltip` asks the same
+ * question of text that truncates against its own box.
+ *
+ * A badge that fits keeps the edit hint alone, so hovering a reference you can
+ * already read in full does not repeat it back.
+ */
+export function isBadgeClipped({ right, visibleWidth }: BadgeExtent): boolean {
+  return visibleWidth > 0 && right > visibleWidth;
 }
 
 export type TemplateBadgeEditorMultilineOptions = {
@@ -344,6 +394,31 @@ export function TemplateBadgeEditor({
     container.appendChild(document.createTextNode(text));
   };
 
+  // Give the full reference only to the badges the field cuts off, measuring
+  // each against the content box so the answer does not move when the field is
+  // scrolled. Mirrors TruncatedTooltip: measure, gate, re-measure on resize.
+  const syncBadgeTooltips = (): void => {
+    const container = contentRef.current;
+    if (!container) {
+      return;
+    }
+
+    const visibleWidth = container.clientWidth;
+    const containerLeft = container.getBoundingClientRect().left;
+
+    for (const badge of container.querySelectorAll<HTMLElement>(
+      "[data-template]"
+    )) {
+      const right =
+        badge.getBoundingClientRect().right -
+        containerLeft +
+        container.scrollLeft;
+      badge.title = isBadgeClipped({ right, visibleWidth })
+        ? badgeTooltip(badge.textContent ?? "")
+        : EDIT_BADGE_HINT;
+    }
+  };
+
   // Parse text and render with badges
   const updateDisplay = (): void => {
     if (!contentRef.current || !shouldUpdateDisplay.current) return;
@@ -396,6 +471,9 @@ export function TemplateBadgeEditor({
       badge.setAttribute("data-template", fullMatch);
       // Use current node label for display
       badge.textContent = getDisplayTextForTemplate(fullMatch, nodes);
+      // Upgraded to the full reference by syncBadgeTooltips once the badge has
+      // been laid out and its width against the field is known.
+      badge.title = EDIT_BADGE_HINT;
       container.appendChild(badge);
 
       lastIndex = pattern.lastIndex;
@@ -413,6 +491,8 @@ export function TemplateBadgeEditor({
     }
 
     shouldUpdateDisplay.current = false;
+
+    syncBadgeTooltips();
 
     // Restore cursor position after updating
     if (cursorPos) {
@@ -553,6 +633,50 @@ export function TemplateBadgeEditor({
 
     pendingCursorPosition.current = targetCursorPosition;
     contentRef.current.focus();
+  };
+
+  // Open a badge for editing: swap it for its raw `{{@nodeId:Label.path}}` text
+  // with the caret just inside the closing braces. The autocomplete can only
+  // offer field paths it has seen in a previous run, so a path on a node that
+  // has never executed is otherwise unreachable -- the badge is
+  // contentEditable=false and there is no cursor position inside it.
+  //
+  // No re-render is needed here: extractValue() reads a badge as its
+  // data-template and raw text as itself, so the serialized value is unchanged.
+  // Typing inside the token keeps the token count stable, which handleInput
+  // treats as "typing around existing badges" and leaves the DOM alone.
+  // handleBlur re-renders the badge with the edited path.
+  const handleDoubleClick = (e: ReactMouseEvent<HTMLDivElement>): void => {
+    if (disabled || !contentRef.current) {
+      return;
+    }
+    const target = e.target as HTMLElement | null;
+    const badge = target?.closest?.("[data-template]") as HTMLElement | null;
+    if (!badge || !contentRef.current.contains(badge)) {
+      return;
+    }
+    const raw = badge.getAttribute("data-template");
+    if (!raw) {
+      return;
+    }
+
+    e.preventDefault();
+    const textNode = document.createTextNode(raw);
+    badge.replaceWith(textNode);
+
+    const caret = caretOffsetForBadgeEdit(raw);
+    const selection = window.getSelection();
+    try {
+      const range = document.createRange();
+      range.setStart(textNode, caret);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    } catch {
+      // Caret placement is a convenience; the text is editable regardless.
+    }
+    contentRef.current.focus();
+    shouldUpdateDisplay.current = false;
   };
 
   const handleFocus = (): void => {
@@ -704,6 +828,18 @@ export function TemplateBadgeEditor({
     }
   }, [internalValue, isFocused]);
 
+  // A field that grows or shrinks changes which badges are cut off, and the
+  // panel holding these fields is resizable.
+  useEffect(() => {
+    const container = contentRef.current;
+    if (!container || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(() => syncBadgeTooltips());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
   // Hint 2: clicking the "@" chip focuses the editor, inserts an "@" at the
   // cursor (or at the end if none), and lets handleInput open the dropdown.
   const handleAtButtonClick = (): void => {
@@ -758,6 +894,7 @@ export function TemplateBadgeEditor({
           contentEditable={!disabled}
           id={id}
           onBlur={handleBlur}
+          onDoubleClick={handleDoubleClick}
           onFocus={handleFocus}
           onInput={handleInput}
           onKeyDown={handleKeyDown}

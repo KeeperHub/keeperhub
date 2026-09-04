@@ -5,5 +5,6 @@ export default {
   "mcp-trigger-inputs": "MCP Trigger Inputs",
   "mcp-validate-workflow": "Validate Workflow",
   "mcp-test-workflow": "Test Workflow",
+  "mcp-get-execution": "Get Execution",
   "agentic-wallet": "Agentic Wallets",
 };

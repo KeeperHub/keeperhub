@@ -10,17 +10,22 @@ vi.mock("server-only", () => ({}));
 // the DB for the org slug. Stub it so these tests stay a focused unit on the
 // row write; a separate assertion checks it is invoked with the persisted
 // classification.
-const { recordTerminalSampleMock } = vi.hoisted(() => ({
-  recordTerminalSampleMock: vi.fn(),
-}));
+const { recordTerminalSampleMock, recordSkippedSampleMock } = vi.hoisted(
+  () => ({
+    recordTerminalSampleMock: vi.fn(),
+    recordSkippedSampleMock: vi.fn(),
+  })
+);
 vi.mock("./terminal-counters", () => ({
   recordTerminalSample: recordTerminalSampleMock,
+  recordSkippedSample: recordSkippedSampleMock,
 }));
 
 import type { DbSchema } from "./db-helpers";
 import {
   claimPendingForExecution,
   claimPhantomForExecution,
+  discardPhantomRow,
   updateExecutionStatus,
 } from "./db-helpers";
 
@@ -251,5 +256,55 @@ describe("execution-claim CAS retry", () => {
 
     await expect(claimPendingForExecution(db, "e1")).resolves.toBe("not_found");
     expect(updateCalls()).toBe(1);
+  });
+});
+
+describe("discardPhantomRow", () => {
+  const discard = {
+    reason: "disabled" as const,
+    error: "Execution skipped: workflow is not executable (disabled).",
+  };
+
+  beforeEach(() => {
+    recordSkippedSampleMock.mockReset();
+  });
+
+  // The row is resolved, not deleted: a delete would release its dispatch key
+  // and let a later dispatcher create a second row for the same occurrence.
+  it("resolves the row to a non-billable skipped state with the reason", async () => {
+    const { db, captured } = makeDb([{ workflowId: "wf1" }]);
+
+    await discardPhantomRow(db, "e1", discard);
+
+    expect(captured.setData).toMatchObject({
+      status: "skipped",
+      billable: false,
+      error: discard.error,
+      errorCategory: "configuration",
+      errorType: "user",
+    });
+    expect(captured.setData?.completedAt).toBeInstanceOf(Date);
+    expect(recordSkippedSampleMock).toHaveBeenCalledWith(db, {
+      workflowId: "wf1",
+      reason: "disabled",
+    });
+  });
+
+  it("does not count a skip when the row already advanced past phantom/pending", async () => {
+    const { db, captured } = makeDb([]);
+
+    await discardPhantomRow(db, "e1", discard);
+
+    expect(captured.setData?.status).toBe("skipped");
+    expect(recordSkippedSampleMock).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op for an id-less message", async () => {
+    const { db, captured } = makeDb([{ workflowId: "wf1" }]);
+
+    await discardPhantomRow(db, undefined, discard);
+
+    expect(captured.setData).toBeNull();
+    expect(recordSkippedSampleMock).not.toHaveBeenCalled();
   });
 });

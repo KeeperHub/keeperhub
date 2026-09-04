@@ -32,6 +32,7 @@ export async function GET(
   const scopeError = requireScope(apiKeyCtx.scope, SCOPE_MCP_READ, {
     organizationId: apiKeyCtx.organizationId,
     credentialId: apiKeyCtx.apiKeyId,
+    credentialType: apiKeyCtx.credentialType,
     endpoint: "/api/execute/[executionId]/status",
   });
   if (scopeError) {

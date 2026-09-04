@@ -9,6 +9,7 @@ import {
 import { isFeatureEnabledForOrg } from "@/lib/features/server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
+import type { AuthMethod } from "@/lib/middleware/auth-helpers";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
 import {
@@ -27,7 +28,7 @@ const FEATURE_ID = "notifications.execution-digest" as const;
 type ManagerOk = {
   ok: true;
   userId: string;
-  authMethod: string;
+  authMethod: AuthMethod;
   apiKeyId: string | null;
   scope?: string;
 };
@@ -176,7 +177,9 @@ export async function PUT(
       );
     }
 
-    const scopeError = requireScope(manager.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(manager.scope, SCOPE_MCP_WRITE, {
+      credentialType: manager.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }

@@ -914,35 +914,37 @@ describe("validateWorkflowActionConfigs", () => {
       return actionNode("discord/send-message", { discordMessage: id }, id);
     }
 
-    it.each([
-      1, 2, 3, 5, 10, 20,
-    ])("a workflow of size %i with the affected node passes", (size) => {
-      const nodes: ReturnType<typeof actionNode>[] = [];
-      for (let i = 0; i < size; i++) {
-        nodes.push(
-          i === 0 ? makeAffectedReadNode(`n-${i}`) : makeFillerNode(`n-${i}`)
-        );
+    it.each([1, 2, 3, 5, 10, 20])(
+      "a workflow of size %i with the affected node passes",
+      (size) => {
+        const nodes: ReturnType<typeof actionNode>[] = [];
+        for (let i = 0; i < size; i++) {
+          nodes.push(
+            i === 0 ? makeAffectedReadNode(`n-${i}`) : makeFillerNode(`n-${i}`)
+          );
+        }
+
+        const result = validateWorkflowActionConfigs(nodes);
+        expect(result).toEqual({ valid: true, issues: [] });
       }
+    );
 
-      const result = validateWorkflowActionConfigs(nodes);
-      expect(result).toEqual({ valid: true, issues: [] });
-    });
+    it.each([0, 1, 3, 5, 9])(
+      "validation outcome is identical regardless of affected-node index (idx=%i in 10-node workflow)",
+      (affectedIndex) => {
+        const nodes: ReturnType<typeof actionNode>[] = [];
+        for (let i = 0; i < 10; i++) {
+          nodes.push(
+            i === affectedIndex
+              ? makeAffectedReadNode(`n-${i}`)
+              : makeFillerNode(`n-${i}`)
+          );
+        }
 
-    it.each([
-      0, 1, 3, 5, 9,
-    ])("validation outcome is identical regardless of affected-node index (idx=%i in 10-node workflow)", (affectedIndex) => {
-      const nodes: ReturnType<typeof actionNode>[] = [];
-      for (let i = 0; i < 10; i++) {
-        nodes.push(
-          i === affectedIndex
-            ? makeAffectedReadNode(`n-${i}`)
-            : makeFillerNode(`n-${i}`)
-        );
+        const result = validateWorkflowActionConfigs(nodes);
+        expect(result).toEqual({ valid: true, issues: [] });
       }
-
-      const result = validateWorkflowActionConfigs(nodes);
-      expect(result).toEqual({ valid: true, issues: [] });
-    });
+    );
 
     it("a workflow with N affected nodes still passes (no aggregate cap)", () => {
       const nodes: ReturnType<typeof actionNode>[] = [];

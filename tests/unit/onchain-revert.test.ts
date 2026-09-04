@@ -9,7 +9,10 @@ vi.mock("@/lib/logging", () => ({
 }));
 
 import {
+  broadcastTransactionHash,
+  isOnChainPendingError,
   isOnChainRevertError,
+  OnChainPendingError,
   OnChainRevertError,
   revertedTransactionHash,
 } from "@/lib/web3/onchain-revert";
@@ -81,5 +84,56 @@ describe("resolveSponsoredSendError", () => {
     const decision = resolveSponsoredSendError(new Error("policy denied"), ctx);
 
     expect(decision.fallback).toBe(true);
+  });
+});
+
+describe("OnChainPendingError", () => {
+  it("keeps the hash of a broadcast whose outcome could not be read", () => {
+    const error = new OnChainPendingError({
+      message: "Transaction sent but receipt not available",
+      transactionHash: HASH,
+    });
+
+    expect(isOnChainPendingError(error)).toBe(true);
+    expect(broadcastTransactionHash(error)).toBe(HASH);
+  });
+
+  it("is not a revert: unknown and failed must stay distinguishable", () => {
+    // The whole point of the carrier. A reverted transaction is a settled
+    // failure; an unread one may still mine, so anything that decides
+    // "terminal or not" has to be able to tell them apart.
+    const pending = new OnChainPendingError({
+      message: "Transaction sent but receipt not available",
+      transactionHash: HASH,
+    });
+
+    expect(isOnChainRevertError(pending)).toBe(false);
+    // revertedTransactionHash answers "did it fail on-chain", so it stays
+    // silent here even though a transaction does exist.
+    expect(revertedTransactionHash(pending)).toBeUndefined();
+  });
+});
+
+describe("broadcastTransactionHash", () => {
+  it("recovers the hash from either carrier", () => {
+    const reverted = new OnChainRevertError({
+      message: "reverted",
+      transactionHash: HASH,
+    });
+    const pending = new OnChainPendingError({
+      message: "receipt not available",
+      transactionHash: HASH,
+    });
+
+    expect(broadcastTransactionHash(reverted)).toBe(HASH);
+    expect(broadcastTransactionHash(pending)).toBe(HASH);
+  });
+
+  it("reports nothing when no transaction was ever broadcast", () => {
+    expect(
+      broadcastTransactionHash(new Error("nonce too low"))
+    ).toBeUndefined();
+    expect(broadcastTransactionHash(undefined)).toBeUndefined();
+    expect(broadcastTransactionHash(null)).toBeUndefined();
   });
 });

@@ -1,7 +1,15 @@
 "use client";
 
 import { ethers } from "ethers";
-import { AlertCircle, CheckCircle2, Loader2, ShieldAlert } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  CheckCircle2,
+  Copy,
+  ExternalLink,
+  Loader2,
+  ShieldAlert,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ChangeEvent, ChangeEventHandler, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -9,9 +17,15 @@ import { DualFactorSteps } from "@/components/auth/dual-factor-steps";
 import { Overlay } from "@/components/overlays/overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { SettingsOverlay } from "@/components/overlays/settings-overlay";
+import { EmailOtpField } from "@/components/auth/email-otp-field";
 import { isWalletEmail } from "@/lib/auth/wallet-constants";
 import { useSession } from "@/lib/auth-client";
 import { handleGuardError } from "@/lib/client/handle-guard-error";
+import {
+  type EnrolledFactors,
+  resolveRequiredFactors,
+  type StepUpFactor,
+} from "@/lib/mfa/step-up-policy";
 import { useDualFactorState } from "@/lib/mfa/use-dual-factor-state";
 import { runWalletStepUp } from "@/lib/wallet/step-up-client";
 import { useActiveMember } from "@/lib/hooks/use-organization";
@@ -27,9 +41,12 @@ import {
 } from "@/components/ui/select";
 import { SaveAddressBookmark } from "@/components/address-book/save-address-bookmark";
 import { toChecksumAddress, truncateAddress } from "@/lib/address-utils";
+import { joinExplorerUrl } from "@/lib/build-explorer-url";
 import type { WithdrawableAsset } from "@/lib/wallet/build-withdrawable-assets";
 
 export type { WithdrawableAsset };
+
+const COPIED_FOR_MS = 1500;
 
 /**
  * The wallet whose funds the withdraw moves. Default = the org's Turnkey
@@ -107,7 +124,18 @@ export function WithdrawModal({
   const [gasEstimateError, setGasEstimateError] = useState<string | null>(null);
   const [maxReserveApplied, setMaxReserveApplied] = useState(false);
   const [maxLoading, setMaxLoading] = useState(false);
+  // What the server says this account must present for a withdraw. Wallet
+  // accounts always sign; TOTP and the step-up email are added only when the
+  // user enrolled them, so the confirm step asks for exactly those.
+  const [walletFactors, setWalletFactors] = useState<StepUpFactor[] | null>(
+    null
+  );
+  // The chain's explorer base, so a finished transaction can be opened rather
+  // than only read off the screen.
+  const [explorerBase, setExplorerBase] = useState<string | null>(null);
+  const [hashCopied, setHashCopied] = useState(false);
   const lastEstimateKeyRef = useRef<string | null>(null);
+  const factorsProbedRef = useRef(false);
 
   const selectedAsset = assets[selectedAssetIndex];
 
@@ -295,6 +323,103 @@ export function WithdrawModal({
     return null;
   };
 
+  // The chains feed carries the explorer base; the withdraw response carries
+  // only the hash. Fetched on success so a page that never sends pays nothing.
+  useEffect(() => {
+    if (state !== "success" || !selectedAsset) {
+      return;
+    }
+    let cancelled = false;
+    const loadExplorer = async (): Promise<void> => {
+      try {
+        const response = await fetch("/api/chains");
+        if (!response.ok) {
+          return;
+        }
+        const rows = (await response.json()) as {
+          chainId: number;
+          explorerUrl: string | null;
+        }[];
+        if (cancelled) {
+          return;
+        }
+        const match = rows.find((row) => row.chainId === selectedAsset.chainId);
+        setExplorerBase(match?.explorerUrl ?? null);
+      } catch {
+        // No link, but the hash itself is still on screen and copyable.
+      }
+    };
+    void loadExplorer();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAsset, state]);
+
+  // An empty-codes POST. The server reads it as the opening move of the
+  // challenge: it mints the wallet nonce and emails the confirmation code,
+  // and moves no funds because no factor is present yet.
+  const withdrawEmptyCodes = (): Promise<Response> =>
+    fetch("/api/user/wallet/withdraw", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chainId: selectedAsset?.chainId,
+        tokenAddress: selectedAsset?.tokenAddress,
+        amount:
+          maxReserveApplied && selectedAsset?.type === "native"
+            ? undefined
+            : amount,
+        recipient,
+        fromMax: maxReserveApplied && selectedAsset?.type === "native",
+        safeId: source.kind === "safe" ? source.safeId : undefined,
+      }),
+    });
+
+  // Wallet accounts: resolve the factor set before asking for a signature, so
+  // a user who enrolled an authenticator or a step-up email is shown those
+  // fields and signs once instead of being bounced by the server. Enrollment
+  // is read from the step-up policy, which costs nothing and mints nothing;
+  // only the email code needs a withdraw POST to be sent.
+  useEffect(() => {
+    if (!(state === "mfa-code" && isWallet) || factorsProbedRef.current) {
+      return;
+    }
+    factorsProbedRef.current = true;
+    const resolveFactors = async (): Promise<void> => {
+      try {
+        const response = await fetch("/api/user/step-up/policy");
+        if (!response.ok) {
+          return;
+        }
+        const data = (await response.json()) as {
+          enrolled?: EnrolledFactors;
+        };
+        if (!data.enrolled) {
+          return;
+        }
+        const required = resolveRequiredFactors({
+          isWalletUser: true,
+          enrolled: data.enrolled,
+        });
+        setWalletFactors(required);
+        if (!required.includes("email")) {
+          return;
+        }
+        // The OTP is minted by the withdraw endpoint, not by reading policy,
+        // so ask for one now and let it land while the user is on this step.
+        const seeded = await withdrawEmptyCodes();
+        if (seeded.status === 401) {
+          dual.setAwaitingEmailOtp(true);
+          toast.success("We just emailed you a confirmation code");
+        }
+      } catch {
+        // Signature-only is the safe fallback: a submit still surfaces any
+        // factor the server turns out to want.
+      }
+    };
+    void resolveFactors();
+  }, [isWallet, state]);
+
   // Click handler for the input-step "Withdraw" button. Validates
   // local form state, then routes to the MFA step (owner with MFA
   // enrolled) or the enroll-MFA prompt (owner without MFA). The
@@ -313,6 +438,8 @@ export function WithdrawModal({
       return;
     }
     dual.reset();
+    factorsProbedRef.current = false;
+    setWalletFactors(null);
     setErrorMessage(null);
     setState("mfa-code");
   };
@@ -325,11 +452,17 @@ export function WithdrawModal({
       }
       return;
     }
-    if (!isWallet && dual.totpCode.trim().length !== 6) {
+    const needsTotp = isWallet
+      ? walletFactors?.includes("totp") === true
+      : true;
+    const needsEmail = isWallet
+      ? walletFactors?.includes("email") === true
+      : dual.awaitingEmailOtp;
+    if (needsTotp && dual.totpCode.trim().length !== 6) {
       toast.error("Enter the 6-digit code from your authenticator");
       return;
     }
-    if (!isWallet && dual.awaitingEmailOtp && dual.emailOtp.trim().length !== 6) {
+    if (needsEmail && dual.emailOtp.trim().length !== 6) {
       toast.error("Enter the 6-digit code we emailed to you");
       return;
     }
@@ -362,9 +495,17 @@ export function WithdrawModal({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...baseBody, ...extra }),
         });
-      // Wallet users sign the step-up challenge; everyone else submits codes.
+      // Wallet users sign the step-up challenge, and carry any factor they
+      // enrolled on top of it: the server wants every required factor in the
+      // same request the signature rides in.
       const response = isWallet
-        ? await runWalletStepUp(withdrawFetch)
+        ? await runWalletStepUp((extra) =>
+            withdrawFetch({
+              ...extra,
+              code: dual.totpCode.trim() || undefined,
+              emailOtp: dual.emailOtp.trim() || undefined,
+            })
+          )
         : await withdrawFetch({
             code: dual.totpCode.trim(),
             emailOtp: dual.emailOtp.trim() || undefined,
@@ -381,6 +522,9 @@ export function WithdrawModal({
           return;
         }
         const data = await response.json();
+        if (Array.isArray(data.required)) {
+          setWalletFactors(data.required as StepUpFactor[]);
+        }
         // Dual-factor outcomes (factors_required / *_invalid) bring
         // the user back to the MFA step rather than the red error
         // screen so they can finish the flow.
@@ -408,13 +552,21 @@ export function WithdrawModal({
 
   // Success state
   if (state === "success" && txHash) {
+    const explorerTxUrl = explorerBase
+      ? joinExplorerUrl(explorerBase, `/tx/${txHash}`)
+      : null;
+    const copyHash = (): void => {
+      navigator.clipboard.writeText(txHash);
+      setHashCopied(true);
+      setTimeout(() => setHashCopied(false), COPIED_FOR_MS);
+    };
     return (
       <Overlay
         actions={[{ label: "Done", onClick: closeAll }]}
         overlayId={overlayId}
         title="Withdrawal Complete"
       >
-        <div className="flex flex-col items-center justify-center py-8 text-center">
+        <div className="flex flex-col items-center py-8 text-center">
           <CheckCircle2 className="mb-4 size-12 text-green-500" />
           <p className="mb-2 font-medium">
             {amount} {selectedAsset?.symbol} sent
@@ -422,6 +574,40 @@ export function WithdrawModal({
           <p className="mb-4 text-muted-foreground text-sm">
             To: {truncateAddress(recipient)}
           </p>
+
+          {/* The hash is the only handle a person has on the transfer once
+              this closes, so it is shown in full, copyable, and linked. */}
+          <div className="w-full space-y-2 text-left">
+            <p className="text-muted-foreground text-xs">Transaction hash</p>
+            <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2">
+              <code className="min-w-0 flex-1 break-all font-mono text-xs">
+                {txHash}
+              </code>
+              <button
+                aria-label="Copy transaction hash"
+                className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                onClick={copyHash}
+                type="button"
+              >
+                {hashCopied ? (
+                  <Check className="size-4" />
+                ) : (
+                  <Copy className="size-4" />
+                )}
+              </button>
+            </div>
+            {explorerTxUrl && (
+              <a
+                className="inline-flex items-center gap-1.5 text-sm underline underline-offset-4"
+                href={explorerTxUrl}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                View on block explorer
+                <ExternalLink className="size-3.5" />
+              </a>
+            )}
+          </div>
         </div>
       </Overlay>
     );
@@ -532,23 +718,12 @@ export function WithdrawModal({
   // TOTP and triggers the server to email a fresh OTP; the email field
   // reveals once that response lands. The second click submits both.
   if (state === "mfa-code") {
-    const withdrawEmptyCodes = (): Promise<Response> =>
-      fetch("/api/user/wallet/withdraw", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chainId: selectedAsset?.chainId,
-          tokenAddress: selectedAsset?.tokenAddress,
-          amount:
-            maxReserveApplied && selectedAsset?.type === "native"
-              ? undefined
-              : amount,
-          recipient,
-          fromMax: maxReserveApplied && selectedAsset?.type === "native",
-          safeId: source.kind === "safe" ? source.safeId : undefined,
-        }),
-      });
     if (isWallet) {
+      const needsTotp = walletFactors?.includes("totp") === true;
+      const needsEmail = walletFactors?.includes("email") === true;
+      const codesReady =
+        (!needsTotp || dual.totpCode.trim().length === 6) &&
+        (!needsEmail || dual.emailOtp.trim().length === 6);
       return (
         <Overlay
           actions={[
@@ -561,22 +736,58 @@ export function WithdrawModal({
               label: "Sign to withdraw",
               onClick: handleSubmit,
               variant: "destructive",
+              disabled: !codesReady,
             },
           ]}
           overlayId={overlayId}
           title="Confirm withdrawal"
         >
-          <p className="text-muted-foreground text-sm">
-            Confirm sending{" "}
-            <span className="font-medium text-foreground">
-              {amount} {selectedAsset?.symbol}
-            </span>{" "}
-            to{" "}
-            <span className="font-mono text-foreground">
-              {truncateAddress(recipient)}
-            </span>
-            . Sign with your wallet to continue.
-          </p>
+          <div className="space-y-4">
+            <p className="text-muted-foreground text-sm">
+              Confirm sending{" "}
+              <span className="font-medium text-foreground">
+                {amount} {selectedAsset?.symbol}
+              </span>{" "}
+              to{" "}
+              <span className="font-mono text-foreground">
+                {truncateAddress(recipient)}
+              </span>
+              . Sign with your wallet to continue.
+            </p>
+
+            {needsTotp && (
+              <div className="space-y-2">
+                <Label htmlFor="withdraw-wallet-totp">Authenticator code</Label>
+                <Input
+                  autoComplete="one-time-code"
+                  className="text-center font-mono text-lg tracking-[0.3em]"
+                  id="withdraw-wallet-totp"
+                  inputMode="numeric"
+                  maxLength={6}
+                  onChange={(event) =>
+                    dual.setTotpCode(event.target.value.replace(/\D/g, ""))
+                  }
+                  placeholder="000000"
+                  value={dual.totpCode}
+                />
+              </div>
+            )}
+
+            {needsEmail && (
+              <div className="space-y-2">
+                <EmailOtpField
+                  id="withdraw-wallet-email-otp"
+                  label="Email code"
+                  onChange={dual.setEmailOtp}
+                  value={dual.emailOtp}
+                />
+                <p className="text-muted-foreground text-xs">
+                  We emailed a 6-digit code to your step-up address. It expires
+                  in 5 minutes.
+                </p>
+              </div>
+            )}
+          </div>
         </Overlay>
       );
     }

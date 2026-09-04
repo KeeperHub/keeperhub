@@ -20,7 +20,6 @@ type UpdateCall = {
   set: Record<string, unknown>;
 };
 
-let mockActiveExecutionIds: { executionId: string }[] = [];
 let mockReapedRows: { id: string }[] = [];
 let updateCalls: UpdateCall[] = [];
 
@@ -44,15 +43,10 @@ function buildUpdate(target: unknown): UpdateChain {
   };
 }
 
+// The reaper reads nothing outside the UPDATEs: the "still progressing" test
+// is a correlated NOT EXISTS inside the UPDATE's WHERE, not a separate SELECT.
 vi.mock("@/lib/db", () => ({
   db: {
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          groupBy: vi.fn(() => mockActiveExecutionIds),
-        })),
-      })),
-    })),
     update: vi.fn((target: unknown) => buildUpdate(target)),
   },
 }));
@@ -119,7 +113,6 @@ function getWalletLocksUpdate(): UpdateCall | undefined {
 describe("/api/internal/reaper", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockActiveExecutionIds = [];
     mockReapedRows = [];
     updateCalls = [];
     mockAuthResult.authenticated = true;
@@ -181,17 +174,6 @@ describe("/api/internal/reaper", () => {
     await GET(createRequest());
 
     expect(getExecUpdate()?.set.duration).toBeDefined();
-  });
-
-  it("excludes executions with recent step activity", async () => {
-    mockActiveExecutionIds = [{ executionId: "exec_active" }];
-    mockReapedRows = [];
-
-    const response = await GET(createRequest());
-    const data = await response.json();
-
-    expect(response.status).toBe(200);
-    expect(data.reapedCount).toBe(0);
   });
 
   it("reaps multiple stale executions in a single query", async () => {

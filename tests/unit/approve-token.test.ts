@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -12,15 +12,31 @@ vi.mock("@/lib/logging", () => ({
     TRANSACTION: "transaction",
   },
   logUserError: vi.fn(),
+  // Emitted by the stablecoin ceiling when it refuses an approval.
+  logSecurityEvent: vi.fn(),
 }));
+
+// supported_tokens rows the stablecoin ceiling reads. Empty by default, so
+// the existing cases run against a token the ceiling does not recognise.
+const tokenRegistry = vi.hoisted(() => ({ rows: [] as unknown[] }));
 
 vi.mock("@/lib/db", () => ({
   db: {
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([]),
-        }),
+        // Two shapes share this stub: most lookups end in .limit(), while
+        // loadStablecoin in stablecoin-cap.ts awaits .where() directly because
+        // it reads the chain's whole token list and matches in JS. A promise
+        // that also carries .limit satisfies both.
+        where: () => {
+          const pending = Promise.resolve(tokenRegistry.rows) as Promise<
+            unknown[]
+          > & {
+            limit: () => Promise<unknown[]>;
+          };
+          pending.limit = () => Promise.resolve([]);
+          return pending;
+        },
       }),
     }),
     query: {
@@ -39,10 +55,16 @@ vi.mock("@/lib/db/schema", () => ({
     workflowId: "workflowId",
   },
   explorerConfigs: { id: "id", chainId: "chainId" },
+  // decimals/symbol/isStablecoin are read by loadStablecoin: this step calls
+  // ERC-20 approve directly, so the stablecoin ceiling is applied here rather
+  // than in writeContractCore.
   supportedTokens: {
     id: "id",
     chainId: "chainId",
     tokenAddress: "tokenAddress",
+    decimals: "decimals",
+    symbol: "symbol",
+    isStablecoin: "is_stablecoin",
   },
 }));
 
@@ -230,6 +252,10 @@ import { approveTokenCore } from "@/plugins/web3/steps/approve-token-core";
 
 const VALID_TOKEN = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
 const VALID_SPENDER = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45";
+// Deliberately not a protocol contract: the allowlist admits over-cap
+// approvals to routers this repo already directs value at, and VALID_SPENDER
+// above is one of them, so it cannot exercise the refusal.
+const UNKNOWN_SPENDER = "0x000000000000000000000000000000000000dEaD";
 
 function makeInput(
   overrides: Partial<ApproveTokenCoreInput>
@@ -474,5 +500,83 @@ describe("approve-token - executedCall on direct send", () => {
       "0xtxhash",
       expect.objectContaining({ target: VALID_TOKEN, functionName: "approve" })
     );
+  });
+});
+
+describe("approve-token stablecoin ceiling", () => {
+  // approveTokenCore calls ERC-20 approve directly, so it never passes through
+  // writeContractCore where the ceiling is applied. It was the one unbounded
+  // allowance path the cap did not cover -- and the cheapest complete drain a
+  // leaked key has, since the allowance is granted here and transferFrom
+  // happens off platform afterwards where nothing checks.
+  beforeEach(() => {
+    tokenRegistry.rows = [
+      {
+        tokenAddress: VALID_TOKEN,
+        decimals: 6,
+        symbol: "USDC",
+        isStablecoin: true,
+      },
+    ];
+  });
+
+  afterEach(() => {
+    tokenRegistry.rows = [];
+  });
+
+  it("refuses an unlimited approval to a spender nothing accounts for", async () => {
+    setupMocks();
+
+    const result = await approveTokenCore(
+      makeInput({ amount: "max", spenderAddress: UNKNOWN_SPENDER })
+    );
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("per-transaction limit");
+    }
+  });
+
+  it("refuses an over-cap approval to a spender nothing accounts for", async () => {
+    setupMocks();
+
+    const result = await approveTokenCore(
+      makeInput({ amount: "5000", spenderAddress: UNKNOWN_SPENDER })
+    );
+
+    expect(result.success).toBe(false);
+  });
+
+  it("leaves an approval under the ceiling alone", async () => {
+    setupMocks();
+
+    const result = await approveTokenCore(makeInput({ amount: "10" }));
+
+    expect(result.success).toBe(true);
+  });
+
+  // The case the allowlist exists to preserve, exercised against the REAL
+  // protocol registry rather than a mock: approving max uint to a router the
+  // platform already directs value at is how nearly every DeFi integration
+  // works, and must keep working. VALID_SPENDER is one such contract.
+  it("allows an unlimited approval to a contract a protocol already uses", async () => {
+    setupMocks();
+
+    const result = await approveTokenCore(
+      makeInput({ amount: "max", spenderAddress: VALID_SPENDER })
+    );
+
+    expect(result.success).toBe(true);
+  });
+
+  it("does not engage for a token that is not a recognised stablecoin", async () => {
+    setupMocks();
+    tokenRegistry.rows = [];
+
+    const result = await approveTokenCore(
+      makeInput({ amount: "max", spenderAddress: UNKNOWN_SPENDER })
+    );
+
+    expect(result.success).toBe(true);
   });
 });

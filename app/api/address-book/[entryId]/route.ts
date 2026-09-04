@@ -90,7 +90,9 @@ export async function PATCH(
         { status: authCtx.status }
       );
     }
-    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE, {
+      credentialType: authCtx.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }
@@ -171,7 +173,9 @@ export async function DELETE(
         { status: authCtx.status }
       );
     }
-    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE, {
+      credentialType: authCtx.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }

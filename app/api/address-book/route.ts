@@ -89,7 +89,9 @@ export async function POST(request: Request) {
         { status: authCtx.status }
       );
     }
-    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authCtx.scope, SCOPE_MCP_WRITE, {
+      credentialType: authCtx.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }

@@ -490,12 +490,16 @@ describe("MFA gate", () => {
     }
   });
 
-  it("does not block public marketing + docs pages for signed-in users", async () => {
+  it("does not block the exempt public pages for signed-in users", async () => {
+    // Was ["/pricing", "/docs/getting-started"]. /pricing was one of four
+    // entries in MFA_EXEMPT_PAGES that named routes this app has never served
+    // (/pricing, /about, /terms, /privacy); they now live on keeperhub.com and
+    // the exempt list only names routes that exist.
     mockGetSession.mockResolvedValue({
       user: { id: "u1", twoFactorEnabled: false },
       session: { requiresMfa: false },
     });
-    for (const path of ["/pricing", "/docs/getting-started"]) {
+    for (const path of ["/welcome", "/docs/getting-started"]) {
       const res = await proxy(make(path, { headers: sessionCookieHeaders() }));
       expect(res.status).toBe(200);
     }
@@ -723,5 +727,156 @@ describe("Country gate", () => {
     );
     expect(res.status).toBe(200);
     expect(mockResolveDevice).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Content negotiation gate. Runs before every auth gate, so these tests use the
+ * default "no session" mocks from the CSRF suite above.
+ */
+describe("markdown content negotiation", () => {
+  beforeEach(() => {
+    mockGetSession.mockReset();
+    mockGetSession.mockResolvedValue(null);
+  });
+
+  const MD = { accept: "text/markdown" };
+
+  it("serves markdown at / instead of redirecting to /welcome", async () => {
+    // The whole point: an agent asking `/` for markdown is answered at the URL
+    // it asked about, rather than 307'd into a sign-in page.
+    const res = await proxy(make("/", { headers: MD }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe(
+      "text/markdown; charset=utf-8"
+    );
+    const body = await res.text();
+    expect(body.startsWith("# ")).toBe(true);
+    expect(body).toContain("## What KeeperHub does");
+  });
+
+  it("answers /welcome with the same document as /", async () => {
+    const [root, welcome] = await Promise.all([
+      proxy(make("/", { headers: MD })).then((res) => res.text()),
+      proxy(make("/welcome", { headers: MD })).then((res) => res.text()),
+    ]);
+    expect(welcome).toBe(root);
+  });
+
+  it("serves markdown for every negotiable path", async () => {
+    // Only / and /welcome now: the five app-side pages were removed once they
+    // turned out to duplicate keeperhub.com and docs.keeperhub.com.
+    const { NEGOTIABLE_PATHS } = await import("@/lib/site/content");
+    expect(NEGOTIABLE_PATHS).toEqual(["/", "/welcome"]);
+    for (const path of NEGOTIABLE_PATHS) {
+      const res = await proxy(make(path, { headers: MD }));
+      expect(res.status, `${path} did not negotiate`).toBe(200);
+      expect(res.headers.get("content-type")).toBe(
+        "text/markdown; charset=utf-8"
+      );
+    }
+  });
+
+  it("sets Vary: Accept on the markdown branch", async () => {
+    const res = await proxy(make("/", { headers: MD }));
+    expect(res.headers.get("vary")).toBe("Accept, Accept-Encoding");
+  });
+
+  it("sets Vary: Accept on the / -> /welcome redirect", async () => {
+    // The redirect is a proxy-returned response, so this header survives to the
+    // wire. On responses that go on to render a page, Next.js replaces `Vary`
+    // with its own RSC value - see the note on the negotiation gate.
+    const res = await proxy(make("/", { headers: { accept: "text/html" } }));
+    expect(res.status).toBe(307);
+    expect(res.headers.get("vary")).toContain("Accept");
+  });
+
+  it("advertises the canonical URL on the markdown response", async () => {
+    const res = await proxy(make("/welcome", { headers: MD }));
+    // /welcome resolves to the homepage SitePage, so it canonicalises to "/".
+    expect(res.headers.get("link")).toBe(
+      '<http://localhost:3000/>; rel="canonical"'
+    );
+  });
+
+  it("still redirects a browser at / to /welcome", async () => {
+    const res = await proxy(
+      make("/", {
+        headers: {
+          accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+      })
+    );
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/welcome");
+  });
+
+  it("still redirects a client that sends no Accept header", async () => {
+    const res = await proxy(make("/"));
+    expect(res.status).toBe(307);
+  });
+
+  it("answers 406 when the client accepts neither representation", async () => {
+    const res = await proxy(
+      make("/", { headers: { accept: "application/json" } })
+    );
+    expect(res.status).toBe(406);
+    expect(res.headers.get("vary")).toBe("Accept, Accept-Encoding");
+    expect(await res.text()).toContain("406 Not Acceptable");
+  });
+
+  it("returns no body for HEAD but keeps the headers", async () => {
+    const res = await proxy(make("/", { method: "HEAD", headers: MD }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe(
+      "text/markdown; charset=utf-8"
+    );
+    expect(await res.text()).toBe("");
+  });
+
+  it("leaves non-GET methods to the normal pipeline", async () => {
+    const res = await proxy(make("/", { method: "POST", headers: MD }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).not.toBe(
+      "text/markdown; charset=utf-8"
+    );
+  });
+
+  it("ignores RSC navigation fetches", async () => {
+    // Next.js router fetches carry an `rsc` header and a permissive Accept.
+    // Answering them with markdown would break client-side navigation.
+    const res = await proxy(
+      make("/pricing", { headers: { accept: "text/markdown", rsc: "1" } })
+    );
+    expect(res.headers.get("content-type")).not.toBe(
+      "text/markdown; charset=utf-8"
+    );
+  });
+
+  it("does not negotiate paths outside the public set", async () => {
+    const res = await proxy(make("/settings", { headers: MD }));
+    expect(res.headers.get("content-type")).not.toBe(
+      "text/markdown; charset=utf-8"
+    );
+    expect(res.headers.get("vary")).toBeNull();
+  });
+
+  it("does not negotiate API routes", async () => {
+    const res = await proxy(make("/api/chains", { headers: MD }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).not.toBe(
+      "text/markdown; charset=utf-8"
+    );
+  });
+
+  it("does not exempt paths that have no page behind them", async () => {
+    // /terms was exempt for a long time with nothing to serve. The list reads
+    // as the inventory of public pages, so a dangling entry makes a page look
+    // shipped when it 404s.
+    const { proxy: freshProxy } = await import("@/proxy");
+    expect(typeof freshProxy).toBe("function");
+    const { PUBLIC_PAGE_PATHS } = await import("@/lib/site/content");
+    expect(PUBLIC_PAGE_PATHS).not.toContain("/terms");
   });
 });

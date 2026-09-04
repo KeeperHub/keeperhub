@@ -58,7 +58,10 @@ Note: Integration config is excluded from list responses for security.
 GET /api/integrations/{integrationId}
 ```
 
-Returns full integration details including configuration.
+Returns the integration's details and its non-credential configuration.
+Credential values, such as an API key, a bot token or a database password, are
+never returned by any endpoint. Reference an integration by its id and the
+platform supplies the credential when a workflow runs.
 
 ## Create Integration
 
@@ -94,6 +97,9 @@ PUT /api/integrations/{integrationId}
   }
 }
 ```
+
+Omit a credential field, or send it empty, to keep the stored value. Send a
+value to replace it.
 
 ## Delete Integration
 

@@ -10,6 +10,9 @@ import {
 } from "@/lib/pending-ip-cookie";
 import { resolveSigninDevice } from "@/lib/security/device-trust";
 import { gateRequestCountry } from "@/lib/security/login-risk";
+import { negotiate } from "@/lib/site/accept";
+import { NEGOTIABLE_PATHS, negotiablePage } from "@/lib/site/content";
+import { renderPageMarkdown } from "@/lib/site/markdown";
 import {
   hasSessionCookie,
   isTrustedOrigin,
@@ -17,7 +20,16 @@ import {
 } from "@/lib/trusted-origins";
 
 /**
- * Root request proxy. Three gates run in order on every matched request:
+ * Root request proxy. Four gates run in order on every matched request:
+ *
+ *  0. Markdown content negotiation: the public pages (/, /welcome, /about,
+ *     /contact, /privacy, /pricing, /developers) are served as text/markdown
+ *     when the client's Accept header prefers it, as text/html otherwise, and
+ *     as 406 when it accepts neither. Both branches carry `Vary: Accept` so a
+ *     CDN cannot serve one variant to a client that asked for the other. Runs
+ *     first, ahead of the /welcome redirect, so an agent asking `/` for
+ *     markdown is answered at the URL it asked about. See acceptmarkdown.com
+ *     and RFC 9110 section 12.5.1.
  *
  *  1. CSRF defence: enforce Origin against trustedOrigins on state-
  *     changing /api/** requests that carry a better-auth session cookie.
@@ -157,12 +169,15 @@ const MFA_EXEMPT_API_PREFIXES: readonly string[] = [
  * there and `hasSessionCookie` short-circuits the gate for them, but
  * signed-in users on `/` must still be routed through enrollment /
  * step-up before any other navigation.
+ *
+ * Every entry must name a route that exists. Four did not: /pricing, /about,
+ * /terms and /privacy sat here naming pages this app has never served. That is
+ * not harmless - the list reads as the inventory of public pages, so a dangling
+ * entry makes a page look shipped when it 404s. Those pages live on
+ * keeperhub.com. If any is ever served from this host, add the path back here
+ * and to PUBLIC_PAGE_PATHS in lib/site/content.ts together.
  */
 const MFA_EXEMPT_PAGES = new Set<string>([
-  "/pricing",
-  "/about",
-  "/terms",
-  "/privacy",
   "/welcome",
   "/enroll-mfa",
   "/enforce-mfa",
@@ -434,6 +449,127 @@ async function countryGateBlock(
 }
 
 // ---------------------------------------------------------------------------
+// Markdown content negotiation
+// ---------------------------------------------------------------------------
+
+/**
+ * Serves the markdown representation of a public page when the client asks for
+ * one, per acceptmarkdown.com (and RFC 9110 section 12.5.1 underneath it).
+ *
+ * Runs before every other gate, including the /welcome redirect, so an agent
+ * that asks `/` for markdown gets the answer at the URL it asked about instead
+ * of a 307 into a sign-in page. The gates it skips are all about protecting an
+ * authenticated session; these six pages are public documents that render the
+ * same bytes for everyone, so there is nothing here for them to protect.
+ *
+ * `Vary: Accept` goes on every response this gate returns itself - the markdown
+ * body, the 406, and the `/` -> `/welcome` redirect - because those are the
+ * cacheable half of the negotiation (markdown is served `public, max-age=300`).
+ *
+ * It cannot be put on the rendered HTML variant from here, or from
+ * next.config.ts `headers()`, or anywhere else in userland: Next.js computes its
+ * own `Vary` for RSC routing during the render and overwrites whatever was set
+ * beforehand. That is survivable rather than a hole, because those HTML
+ * responses ship `private, no-cache, no-store, must-revalidate` (Cloudflare
+ * records them as cf-cache-status: DYNAMIC), so no shared cache holds a variant
+ * to hand to the wrong client. If those pages ever become cacheable, the fix is
+ * an edge transform rule appending `Accept` to `Vary` on these paths, since the
+ * framework will still overwrite anything set in the app.
+ */
+
+/** Headers Next.js adds to its own RSC fetches. Never content negotiation. */
+const RSC_REQUEST_HEADERS: readonly string[] = [
+  "rsc",
+  "next-router-prefetch",
+  "next-router-state-tree",
+  "next-router-segment-prefetch",
+];
+
+const VARY_ACCEPT = "Accept, Accept-Encoding";
+
+function isRscRequest(request: NextRequest): boolean {
+  for (const header of RSC_REQUEST_HEADERS) {
+    if (request.headers.has(header)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isNegotiablePath(pathname: string): boolean {
+  return NEGOTIABLE_PATHS.includes(pathname);
+}
+
+function markdownNegotiation(request: NextRequest): NextResponse | null {
+  const { method } = request;
+  if (method !== "GET" && method !== "HEAD") {
+    return null;
+  }
+  const { pathname } = request.nextUrl;
+  if (!isNegotiablePath(pathname) || isRscRequest(request)) {
+    return null;
+  }
+
+  const decision = negotiate(request.headers.get("accept"));
+
+  if (decision.kind === "html") {
+    // Fall through to the normal HTML pipeline, but mark the response as
+    // negotiated so caches key on Accept.
+    return null;
+  }
+
+  if (decision.kind === "not-acceptable") {
+    const body =
+      "406 Not Acceptable. This URL is available as text/html and text/markdown.\n";
+    return new NextResponse(method === "HEAD" ? null : body, {
+      status: 406,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        Vary: VARY_ACCEPT,
+      },
+    });
+  }
+
+  const page = negotiablePage(pathname);
+  if (!page) {
+    // NEGOTIABLE_PATHS and the page map are built from the same module, so this
+    // is unreachable; falling through to HTML is the safe way to be wrong.
+    return null;
+  }
+
+  const markdown = renderPageMarkdown(page);
+  return new NextResponse(method === "HEAD" ? null : markdown, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/markdown; charset=utf-8",
+      "Content-Language": "en",
+      Vary: VARY_ACCEPT,
+      "Cache-Control": "public, max-age=300, stale-while-revalidate=600",
+      Link: `<${request.nextUrl.origin}${page.path}>; rel="canonical"`,
+    },
+  });
+}
+
+/**
+ * Marks a proxy-returned response as varying on Accept.
+ *
+ * Only reaches the wire on responses the proxy returns itself; on a
+ * `NextResponse.next()` that goes on to render a page, the renderer replaces
+ * `Vary` (see the note above). Applied to both anyway so the intent travels
+ * with the code rather than living in a comment.
+ */
+function applyVaryAccept(
+  request: NextRequest,
+  response: NextResponse
+): NextResponse {
+  if (!isNegotiablePath(request.nextUrl.pathname)) {
+    return response;
+  }
+  response.headers.append("Vary", VARY_ACCEPT);
+  return response;
+}
+
+// ---------------------------------------------------------------------------
 // Composed proxy entry point
 // ---------------------------------------------------------------------------
 
@@ -456,9 +592,13 @@ function welcomeRedirect(request: NextRequest): NextResponse | null {
 }
 
 export async function proxy(request: NextRequest): Promise<NextResponse> {
+  const markdown = markdownNegotiation(request);
+  if (markdown) {
+    return markdown;
+  }
   const welcome = welcomeRedirect(request);
   if (welcome) {
-    return welcome;
+    return applyVaryAccept(request, welcome);
   }
   const csrfResponse = csrfBlock(request);
   if (csrfResponse) {
@@ -474,7 +614,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
       return countryResponse;
     }
   }
-  return NextResponse.next();
+  return applyVaryAccept(request, NextResponse.next());
 }
 
 export const config = {

@@ -5,12 +5,12 @@ import { db } from "@/lib/db";
 import {
   deleteIntegration,
   getIntegration,
-  stripDatabaseSecrets,
   updateIntegration,
 } from "@/lib/db/integrations";
 import { organizationWallets } from "@/lib/db/schema";
+import { stripSecretConfig } from "@/lib/integrations/secret-fields";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
+import { SCOPE_MCP_READ, SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
@@ -33,7 +33,7 @@ export type UpdateIntegrationRequest = {
 
 /**
  * GET /api/integrations/[integrationId]
- * Get a single integration with decrypted config
+ * Get a single integration. Credential values are never included.
  */
 export async function GET(
   request: Request,
@@ -55,6 +55,13 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const scopeError = requireScope(authContext.scope, SCOPE_MCP_READ, {
+      credentialType: authContext.authMethod,
+    });
+    if (scopeError) {
+      return scopeError;
+    }
+
     const integration = await getIntegration(
       integrationId,
       userId ?? "",
@@ -72,7 +79,7 @@ export async function GET(
       id: integration.id,
       name: integration.name,
       type: integration.type,
-      config: stripDatabaseSecrets(integration.config, integration.type),
+      config: stripSecretConfig(integration.config, integration.type),
       createdAt: integration.createdAt.toISOString(),
       updatedAt: integration.updatedAt.toISOString(),
     };
@@ -134,7 +141,9 @@ export async function PUT(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+      credentialType: authContext.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }
@@ -193,7 +202,7 @@ export async function PUT(
       id: integration.id,
       name: integration.name,
       type: integration.type,
-      config: stripDatabaseSecrets(integration.config, integration.type),
+      config: stripSecretConfig(integration.config, integration.type),
       createdAt: integration.createdAt.toISOString(),
       updatedAt: integration.updatedAt.toISOString(),
     };
@@ -245,7 +254,9 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+      credentialType: authContext.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { railForProtocol } from "@/lib/payments/rails";
 
-const TEMPO_USDC_ADDRESS = "0x20c000000000000000000000b9537d11c60e8b50";
+const MPP_RAIL = railForProtocol("mpp");
 const RE_PROTOCOL = /^https?:\/\//;
 const RE_TRAILING_SLASH = /\/$/;
 
@@ -15,7 +16,7 @@ async function createMppServer(): Promise<unknown> {
   return Mppx.create({
     secretKey: process.env.MPP_SECRET_KEY,
     realm: resolveRealm(),
-    methods: [tempo.charge({ currency: TEMPO_USDC_ADDRESS })],
+    methods: [tempo.charge({ currency: MPP_RAIL.asset })],
   });
 }
 

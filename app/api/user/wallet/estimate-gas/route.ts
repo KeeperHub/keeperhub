@@ -10,6 +10,10 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getActiveOrgId } from "@/lib/middleware/org-context";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { getGasStrategy } from "@/lib/web3/gas-strategy";
+import {
+  convertAmountForWrite,
+  resolveForWrite,
+} from "@/lib/web3/ui-multiplier";
 import { getOrganizationWalletAddress } from "@/lib/web3/wallet-helpers";
 
 const ERC20_TRANSFER_ABI = [
@@ -118,7 +122,26 @@ export async function POST(request: Request) {
           );
           const decimalsBig: bigint = await contract.decimals();
           const decimals = Number(decimalsBig);
-          const amountWei = ethers.parseUnits(amount, decimals);
+          // Must match what the withdraw route will actually send. Estimating
+          // the unscaled amount on an ERC-8056 token probes a transfer several
+          // times larger than the real one, which reverts against the holder's
+          // balance and blocks a withdraw that would have succeeded.
+          const mult = await resolveForWrite(
+            (op) => op(provider),
+            chainId,
+            tokenAddress
+          );
+          if (!mult.ok) {
+            throw mult.error;
+          }
+          const converted = convertAmountForWrite(
+            ethers.parseUnits(amount, decimals),
+            mult.multiplier
+          );
+          if (!converted.ok) {
+            throw new Error(converted.error);
+          }
+          const amountWei = converted.raw;
           return await contract.transfer.estimateGas(recipient, amountWei, {
             from: walletAddress,
           });

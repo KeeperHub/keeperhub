@@ -81,6 +81,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     {
       organizationId: apiKeyCtx.organizationId,
       credentialId: apiKeyCtx.apiKeyId,
+      credentialType: apiKeyCtx.credentialType,
       endpoint: "/api/execute/transfer",
     }
   );
@@ -210,8 +211,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   // Solana too (transferFundsCore branches on a Solana chainId), so a SOL
   // transfer is parsed at 9 decimals and charged to the lamports cap rather
   // than being scaled to 18 and charged to the ETH-denominated one. Token
-  // transfers move no native value (token value is not yet priced into the
-  // cap) so reserve 0.
+  // transfers move no native value so reserve 0; a known stablecoin is bounded
+  // separately inside transferTokenCore, which is the choke point every
+  // entrance shares.
   const redactedInput = redactInput(withRejectedSignerOverride(body, body));
   const isSolanaTransfer = isSolanaNetwork(network);
   let reservedValueWei = "0";
@@ -248,6 +250,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     reserved: isSolanaTransfer
       ? { kind: "solana", valueLamports: reservedValueLamports }
       : { kind: "evm", valueWei: reservedValueWei },
+    paygOverflow: executionGuard.limitResult?.paygOverflow === true,
   });
   if (!reserve.allowed) {
     // Pre-broadcast gating failure: release so the same key can be retried.

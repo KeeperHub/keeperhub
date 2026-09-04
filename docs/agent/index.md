@@ -32,3 +32,7 @@ User-scoped keys (`wfb_`) authenticate webhook triggers and do not work here. Se
 - [MCP Trigger Inputs](/agent/mcp-trigger-inputs) - the input schema each trigger type expects
 - [Validate Workflow](/agent/mcp-validate-workflow) - catch structural problems before saving
 - [Test Workflow](/agent/mcp-test-workflow) - pin test data and dry-run a workflow
+
+## Running and reading executions
+
+- [Get Execution](/agent/mcp-get-execution) - the `{ status, logs }` response shape, which fields are numbers versus strings, and what is redacted cross-organization

@@ -1,7 +1,7 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { revalidateTag } from "next/cache";
 import { NextResponse } from "next/server";
-import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
+import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { authFailureResponse, getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
@@ -21,7 +21,7 @@ import {
 import { IntervalTooSmallError } from "@/lib/cron-utils";
 import {
   extractScheduleConfig,
-  syncWorkflowSchedule,
+  syncPersistedWorkflowSchedule,
 } from "@/lib/schedule-service";
 import { sanitizeDescription } from "@/lib/sanitize-description";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
@@ -316,7 +316,8 @@ async function validateWorkflowAccess(
 
 async function handlePostUpdateSideEffects(
   workflowId: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  persistedNodes: unknown
 ): Promise<void> {
   // Tags are Hub-discovery only; clear them on any demote off of "public",
   // including demote-to-unlisted (link-only) and demote-to-private.
@@ -337,19 +338,16 @@ async function handlePostUpdateSideEffects(
     revalidateTag("marketplace", "max");
   }
 
-  if (body.nodes !== undefined) {
-    const syncResult = await syncWorkflowSchedule(
+  // Enabling rebuilds the registration as well, not just a definition save. A
+  // workflow that reached its first enable through /create, duplicate or import
+  // has no schedule row yet, and an UPDATE that matches no row is a silent
+  // no-op, so the toggle alone would leave it unregistered.
+  if (body.nodes !== undefined || body.enabled === true) {
+    await syncPersistedWorkflowSchedule(
       workflowId,
-      body.nodes as Parameters<typeof syncWorkflowSchedule>[1]
+      persistedNodes as Parameters<typeof syncPersistedWorkflowSchedule>[1],
+      "/api/workflows/[workflowId]"
     );
-    if (!syncResult.synced) {
-      logSystemWarn(
-        ErrorCategory.WORKFLOW_ENGINE,
-        "[Workflow] Schedule sync failed",
-        syncResult.error,
-        { workflow_id: workflowId }
-      );
-    }
   }
 }
 
@@ -365,7 +363,9 @@ export async function PATCH(
       return authFailureResponse(authContext, request.headers);
     }
 
-    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+      credentialType: authContext.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }
@@ -398,6 +398,8 @@ export async function PATCH(
       );
     }
 
+    const updateData = buildUpdateData(body);
+
     if (Array.isArray(body.nodes)) {
       // KEEP-468: parse every `{{...}}` token at save time so grammar typos
       // (the n8n-style `{{$trigger.input.ts}}`-shaped errors that produced
@@ -418,12 +420,13 @@ export async function PATCH(
 
       // KEEP-581: schedule interval pre-check. Runs before the DB update so
       // a rejected sub-60s value never lands as persisted nodes paired with
-      // an unsynced schedule. extractScheduleConfig is the only thing that
-      // throws here; bad timezones/cron strings still take the warn-and-
+      // an unsynced schedule. It reads the sanitized nodes, the same shape
+      // the post-update sync reads. extractScheduleConfig is the only thing
+      // that throws here; bad timezones/cron strings still take the warn-and-
       // continue path in handlePostUpdateSideEffects.
       try {
         extractScheduleConfig(
-          body.nodes as Parameters<typeof extractScheduleConfig>[0]
+          updateData.nodes as Parameters<typeof extractScheduleConfig>[0]
         );
       } catch (error) {
         if (error instanceof IntervalTooSmallError) {
@@ -517,8 +520,6 @@ export async function PATCH(
         { status: 400 }
       );
     }
-
-    const updateData = buildUpdateData(body);
 
     if (Array.isArray(updateData.nodes)) {
       // What these two gates do NOT do: prove the workflow will run.
@@ -679,7 +680,27 @@ export async function PATCH(
     );
     const workflowTypeChanged =
       resolvedWorkflowType !== existingWorkflow.workflowType;
-    if (workflowTypeChanged) {
+    // Derive freely until the workflow is published, freeze it afterwards.
+    // Once a row is listed its workflowType is part of a call contract that
+    // external, possibly paying, callers already depend on, so an ordinary
+    // editor save must not change it as a side effect — the
+    // WORKFLOW_TYPE_FROZEN gate below rejects the edits that would.
+    //
+    // The freeze deliberately does not cover the PATCH that does the listing
+    // (`isTransitioningToListed`): that request is the publish event itself,
+    // there is no prior contract to protect, and the curator publish path
+    // (lib/mcp/listing.ts::listWorkflow) derives at exactly the same moment.
+    //
+    // A row that is already listed and whose stored type already disagreed
+    // with its nodes before this PATCH still reaches here with
+    // workflowTypeChanged true when the PATCH does not touch nodes. It is
+    // left as-is rather than silently repaired: repairing would republish a
+    // different contract on the back of an unrelated edit, and rejecting
+    // would lock the owner out of renaming their own workflow.
+    const isWorkflowTypeFrozen =
+      !isTransitioningToUnlisted && existingWorkflow.isListed === true;
+    const workflowTypePersisted = workflowTypeChanged && !isWorkflowTypeFrozen;
+    if (workflowTypePersisted) {
       updateData.workflowType = resolvedWorkflowType;
     }
 
@@ -723,6 +744,31 @@ export async function PATCH(
         updateData.inputSchema !== undefined
           ? updateData.inputSchema
           : existingWorkflow.inputSchema;
+
+      // Freezing workflowType on a listed row is the mirror of
+      // MISSING_WRITE_ACTION below: that gate stops a listed "write" from
+      // losing the write node its type promises, this one stops a listed
+      // "read" from gaining one. Without it, adding a write node to a listed,
+      // priced "read" workflow silently reclassified the row — the call route
+      // switched from executing the workflow with the owner's wallet to
+      // returning unsigned calldata the caller must sign and send, and the
+      // advertised x402 output example, the OpenAPI response shape and
+      // readOnlyHint changed with it — leaving a listingVersion bump as the
+      // only signal to callers.
+      //
+      // `checkNodes` is what keeps this to edits that introduce the change.
+      // On a frozen (already-listed) row it means `updateData.nodes !== undefined`,
+      // since isTransitioningToListed is false there by construction; a
+      // divergence that pre-dates the PATCH is handled at the derive above.
+      if (isWorkflowTypeFrozen && checkNodes && workflowTypeChanged) {
+        return NextResponse.json(
+          {
+            error: "WORKFLOW_TYPE_FROZEN",
+            message: `Listed workflows cannot change workflowType. This edit would change it from '${existingWorkflow.workflowType}' to '${resolvedWorkflowType}', which changes what POST /api/mcp/workflows/<slug>/call returns for callers of the published listing. Revert the change, or unlist the workflow before saving these changes.`,
+          },
+          { status: 422 }
+        );
+      }
 
       // Gate ordering matches the publish path (lib/mcp/listing.ts::listWorkflow):
       // write-action -> bare-@ -> input-schema. Same DB state therefore yields
@@ -774,15 +820,18 @@ export async function PATCH(
 
     // Bump listingVersion when a listed (or about-to-be-listed) workflow has
     // its schema-defining fields changed via this route — including an
-    // auto-flip of workflowType. Keeps per-workflow MCP consumers in sync
-    // without a dedicated version endpoint.
+    // auto-flip of workflowType on the PATCH that lists it. Keeps per-workflow
+    // MCP consumers in sync without a dedicated version endpoint. The flip is
+    // keyed to what was persisted, not to what was derived: on a frozen row
+    // the derived type is discarded, so a bump there would advertise a change
+    // that did not happen.
     if (
       willBeListed &&
       (body.nodes !== undefined ||
         body.edges !== undefined ||
         body.inputSchema !== undefined ||
         body.outputMapping !== undefined ||
-        workflowTypeChanged)
+        workflowTypePersisted)
     ) {
       updateData.listingVersion = sql`${workflows.listingVersion} + 1`;
     }
@@ -809,7 +858,7 @@ export async function PATCH(
       throw dbError;
     }
 
-    await handlePostUpdateSideEffects(workflowId, body);
+    await handlePostUpdateSideEffects(workflowId, body, updatedWorkflow.nodes);
 
     // Resolve project/tag names so a move/tagging shows "Project: A -> B" in
     // the activity feed rather than opaque ids.
@@ -923,7 +972,9 @@ export async function DELETE(
       return authFailureResponse(authContext, request.headers);
     }
 
-    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE);
+    const scopeError = requireScope(authContext.scope, SCOPE_MCP_WRITE, {
+      credentialType: authContext.authMethod,
+    });
     if (scopeError) {
       return scopeError;
     }
@@ -948,8 +999,13 @@ export async function DELETE(
     const { searchParams } = new URL(request.url);
     const force = searchParams.get("force") === "true";
 
+    // Soft-deleted runs (history already purged, see the executions DELETE
+    // route) are not "execution history" for this guard's purpose.
     const hasExecutions = await db.query.workflowExecutions.findFirst({
-      where: eq(workflowExecutions.workflowId, workflowId),
+      where: and(
+        eq(workflowExecutions.workflowId, workflowId),
+        isNull(workflowExecutions.deletedAt)
+      ),
       columns: { id: true },
     });
 

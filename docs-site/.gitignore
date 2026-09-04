@@ -26,3 +26,10 @@ yarn-error.log*
 # TypeScript
 *.tsbuildinfo
 next-env.d.ts
+
+# Markdown representations of every docs page, emitted by
+# scripts/emit-markdown.mjs on predev/prebuild. Generated from content/ (a
+# symlink to ../docs), so committing them would duplicate the docs in the repo
+# and let the copy drift from its source. One prefix means one ignore rule that
+# cannot rot as docs sections are added.
+public/_md/

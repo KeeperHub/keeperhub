@@ -21,6 +21,10 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return {
     title,
     description,
+    // See the note in app/hub/page.tsx: without an explicit canonical this
+    // inherits `/` from the root layout and every protocol page reports itself
+    // a duplicate of the homepage.
+    alternates: { canonical: `/hub/protocol/${slug}` },
     openGraph: {
       title,
       description,

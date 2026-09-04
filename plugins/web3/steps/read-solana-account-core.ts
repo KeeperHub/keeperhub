@@ -9,14 +9,24 @@ import {
   fetchSolanaAccountInfo,
   resolveSolanaAccountAddress,
 } from "@/lib/web3/solana-account-reader";
+import {
+  applyReadFailOnError,
+  type ReadDestinationFailure,
+  type ReadFailOnErrorInput,
+} from "./read-fail-on-error-core";
 
-export type ReadSolanaAccountCoreInput = {
+export type ReadSolanaAccountCoreInput = ReadFailOnErrorInput & {
   network: string;
   accountAddress: string;
   _context?: { executionId?: string };
 };
 
 export type ReadSolanaAccountResult =
+  // `exists: null` is the softened failure failOnError=false produces: the
+  // read did not complete, so whether the account exists is unknown. It is
+  // deliberately not `exists: false`, which a downstream node would read as
+  // the account being absent.
+  | { success: true; exists: null; error: string }
   | { success: true; exists: false }
   | {
       success: true;
@@ -29,16 +39,26 @@ export type ReadSolanaAccountResult =
       dataLength: number;
       addressLink: string;
     }
-  | { success: false; error: string };
+  | (ReadDestinationFailure & { success: false; error: string });
 
 export async function readSolanaAccountCore(
+  input: ReadSolanaAccountCoreInput
+): Promise<ReadSolanaAccountResult> {
+  return applyReadFailOnError(
+    await readSolanaAccountInner(input),
+    input.failOnError,
+    { exists: null }
+  );
+}
+
+async function readSolanaAccountInner(
   input: ReadSolanaAccountCoreInput
 ): Promise<ReadSolanaAccountResult> {
   const { network, accountAddress } = input;
 
   const resolved = resolveSolanaAccountAddress(network, accountAddress);
   if ("error" in resolved) {
-    return { success: false, error: resolved.error };
+    return { success: false, destinationError: true, error: resolved.error };
   }
   const { adapter, pubkey, chainId } = resolved;
 

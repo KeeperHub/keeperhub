@@ -24,6 +24,7 @@ import {
   startCleanupInterval,
   touchSession,
 } from "@/lib/mcp/sessions";
+import type { AuthMethod } from "@/lib/middleware/auth-helpers";
 import {
   applyRateLimitHeaders,
   rateLimitHeaders,
@@ -185,6 +186,17 @@ type BuiltSession = {
   entry: SessionEntry;
 };
 
+/**
+ * The session token carries the credential id but not which family issued it,
+ * and a reconstructed session has nothing else to go on. authenticate() builds
+ * `oauth:<userId>` for OAuth and uses the key row id for kh_ keys, so the
+ * prefix is the one signal that survives. Derived here only, so the convention
+ * has a single reader rather than being re-tested wherever it is needed.
+ */
+function credentialFamily(apiKeyId: string): AuthMethod {
+  return apiKeyId.startsWith("oauth:") ? "oauth" : "api-key";
+}
+
 function buildSession(
   sessionId: string,
   organizationId: string,
@@ -210,7 +222,12 @@ function buildSession(
     enableJsonResponse: true,
   });
 
-  const server = createMcpServer(internalApiBaseUrl, authHeader, scope);
+  const server = createMcpServer(
+    internalApiBaseUrl,
+    authHeader,
+    scope,
+    credentialFamily(apiKeyId)
+  );
 
   const entry: SessionEntry = {
     transport,

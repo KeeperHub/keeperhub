@@ -109,7 +109,7 @@ type ScopeDeniedEnvelope = {
   required_scope: string;
   granted_scope: string;
   tool: string;
-  upgrade_url: string;
+  upgrade_url?: string;
   hint: string;
 };
 
@@ -188,5 +188,59 @@ describe("buildScopeDeniedResult envelope shape (KEEP-483)", () => {
         SCOPE_MCP_READ
       )}&granted=`
     );
+  });
+});
+
+describe("scope-denied remediation matches the credential family", () => {
+  async function denyCreateWorkflow(
+    credentialType?: "oauth" | "api-key"
+  ): Promise<ScopeDeniedEnvelope> {
+    const { server, registeredTools } = makeMockServer();
+    registerTools(
+      server,
+      "http://internal",
+      "Bearer test",
+      SCOPE_MCP_READ,
+      credentialType
+    );
+    const createTool = registeredTools.find(
+      (t) => t.name === "create_workflow"
+    );
+    if (!createTool) {
+      throw new Error("create_workflow was not registered");
+    }
+    const result = (await createTool.handler({
+      name: "x",
+      nodes: [],
+      edges: [],
+    })) as { content: [{ type: "text"; text: string }] };
+    return JSON.parse(result.content[0].text) as ScopeDeniedEnvelope;
+  }
+
+  it("does not send an API key to the OAuth reauthorize page", async () => {
+    const envelope = await denyCreateWorkflow("api-key");
+
+    // There is no consent screen behind a kh_ key, so an upgrade_url is a
+    // dead end: the agent re-runs the flow and is denied identically.
+    expect(envelope.upgrade_url).toBeUndefined();
+    expect(envelope.hint).toContain("A new key has to be issued");
+    expect(envelope.hint).not.toContain("Reauthorize");
+    expect(envelope.message).toContain("API key");
+    expect(envelope.message).not.toContain("OAuth scope");
+  });
+
+  it("keeps the reauthorize route for an OAuth connection", async () => {
+    const envelope = await denyCreateWorkflow("oauth");
+
+    expect(envelope.upgrade_url).toContain("/settings/mcp/reauthorize");
+    expect(envelope.hint).toContain("Reauthorize");
+    expect(envelope.hint).not.toContain("A new key has to be issued");
+  });
+
+  it("falls back to the OAuth affordance when the family is unknown", async () => {
+    const envelope = await denyCreateWorkflow();
+
+    expect(envelope.upgrade_url).toContain("/settings/mcp/reauthorize");
+    expect(envelope.required_scope).toBe(SCOPE_MCP_WRITE);
   });
 });

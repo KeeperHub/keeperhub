@@ -18,6 +18,12 @@ export type ConditionInput = StepInput & {
   values?: Record<string, unknown>;
   /** KEEP-1284: Error from condition evaluation - if set, the step will throw */
   _evaluationError?: string;
+  /**
+   * Field paths that were not present on their node's output and resolved to
+   * undefined. Logged with the step so a mistyped reference is still visible
+   * in the run even though it no longer fails the branch.
+   */
+  unresolvedFields?: string[];
 };
 
 type ConditionResult = {

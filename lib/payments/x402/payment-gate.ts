@@ -8,7 +8,10 @@ import {
   type WorkflowPayment,
   workflowPayments,
 } from "@/lib/db/schema";
+import { railForProtocol } from "@/lib/payments/rails";
 import type { CallRouteWorkflow } from "./types";
+
+const X402_RAIL = railForProtocol("x402");
 
 /**
  * Extracts the payer wallet address from a base64-encoded PAYMENT-SIGNATURE
@@ -57,15 +60,16 @@ export function buildPaymentConfig(
   return {
     accepts: {
       scheme: "exact",
-      network: "eip155:8453",
+      network: X402_RAIL.network,
       payTo: creatorWalletAddress,
       price: `$${price}`,
       // extra.name and extra.version are required by @x402/evm verifyEIP3009 to
       // reconstruct the EIP-712 domain. Without these fields the CDP facilitator
       // throws "EIP-712 domain parameters (name, version) are required" and the
       // payment surfaces as verification-failed for all callers (KEEP-364).
-      // Values must match BASE_USDC_DOMAIN in lib/agentic-wallet/sign.ts exactly.
-      extra: { name: "USD Coin", version: "2" } as const,
+      // Taken from the rail rather than restated, so it and the signer's domain
+      // are the same value rather than two literals a comment asks to match.
+      extra: { ...X402_RAIL.domain },
     },
     resource: `${publicHost}/api/mcp/workflows/${workflow.listedSlug}/call`,
     description: `Pay to run workflow: ${workflow.name}`,

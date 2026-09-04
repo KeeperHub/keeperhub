@@ -14,10 +14,12 @@
  * visible) resolves to `verified: false`, never `verified: true`.
  */
 import "server-only";
+import type { Connection, SignatureStatus } from "@solana/web3.js";
 import { ethers } from "ethers";
 import { resolveRpcConfig } from "@/lib/rpc/config-service";
 import { isSolanaChain } from "@/lib/rpc/provider-factory";
 import { RpcProviderManager } from "@/lib/rpc/providers";
+import { SolanaProviderManager } from "@/lib/rpc/providers/solana";
 import { sleep } from "@/lib/sleep";
 
 export type ReceiptStatus =
@@ -81,9 +83,13 @@ const VERIFY_CONCURRENCY_LIMIT = 20;
 // checked between rounds, so one already in flight runs to completion. Rounds
 // against a responsive endpoint cost milliseconds, but a round whose endpoints
 // time out instead of answering can overrun the budget by
-// VERIFY_MAX_RETRIES x VERIFY_TIMEOUT_MS per provider, primary then fallback.
-// That case only arises for a transaction no endpoint can see, which the
-// unconfirmed state and the reconciler then own.
+// VERIFY_MAX_RETRIES x VERIFY_TIMEOUT_MS plus the provider manager's own
+// exponential backoff between attempts (1s, 2s, 4s, 5s, i.e. 12s at five
+// retries), per provider, primary then fallback. At the constants above that
+// is about 104s of wall clock, not the 12s this budget names, and the
+// finalize gate it sits behind is a synchronous HTTP path. That case only
+// arises for a transaction no endpoint can see, which the unconfirmed state
+// and the reconciler then own.
 const LOOKUP_BUDGET_MS = 12_000;
 const LOOKUP_RETRY_DELAY_MS = 1500;
 
@@ -138,6 +144,29 @@ async function buildVerificationManager(
       fallbackRpcUrl: config.fallbackRpcUrl,
       chainName: config.chainName,
       chainId,
+      maxRetries: VERIFY_MAX_RETRIES,
+      timeoutMs: VERIFY_TIMEOUT_MS,
+    },
+  });
+}
+
+/**
+ * Constructed directly rather than through createSolanaProviderManager: that
+ * cache is keyed by URL alone, so it would hand back the adapter's manager with
+ * its own retry count and 30s timeout in place of the budget above.
+ */
+async function buildSolanaVerificationManager(
+  chainId: number
+): Promise<SolanaProviderManager | null> {
+  const config = await resolveRpcConfig(chainId);
+  if (!config) {
+    return null;
+  }
+  return new SolanaProviderManager({
+    config: {
+      primaryRpcUrl: config.primaryRpcUrl,
+      fallbackRpcUrl: config.fallbackRpcUrl,
+      chainName: config.chainName,
       maxRetries: VERIFY_MAX_RETRIES,
       timeoutMs: VERIFY_TIMEOUT_MS,
     },
@@ -271,6 +300,168 @@ async function verifySingleReceipt(
   };
 }
 
+type SignatureLookup = {
+  status: SignatureStatus | null;
+  /** True when at least one read errored rather than answering "not there". */
+  errored: boolean;
+};
+
+/**
+ * The Solana adapter confirms writes at "confirmed" (connection.confirmTransaction
+ * in lib/web3/chain-adapter/solana.ts), so a signature is verified once the
+ * cluster reports it at that level or beyond. getSignatureStatuses returns the
+ * cluster's own confirmation level per signature; the connection's default
+ * commitment plays no part in that call, so this comparison is the gate.
+ * Requiring "finalized" instead would add the confirmed-to-finalized gap to
+ * every Solana finalize for nothing the write path did not already accept.
+ *
+ * confirmationStatus is optional on SignatureStatus, and a node or proxy that
+ * omits it would otherwise never satisfy this gate, leaving every Solana
+ * execution unconfirmed until the reconciler called it dropped. `confirmations`
+ * is the older, universally present signal: null means the transaction is
+ * rooted, which is at or above "finalized". It is only consulted when
+ * confirmationStatus is absent, so an explicit "processed" is never overridden.
+ */
+function reachedVerifyCommitment(status: SignatureStatus): boolean {
+  if (status.confirmationStatus === undefined) {
+    return status.confirmations === null;
+  }
+  return (
+    status.confirmationStatus === "confirmed" ||
+    status.confirmationStatus === "finalized"
+  );
+}
+
+async function readSignatureStatus(
+  connection: Connection,
+  signature: string
+): Promise<SignatureStatus | null> {
+  const response = await connection.getSignatureStatuses([signature], {
+    searchTransactionHistory: true,
+  });
+  return response.value[0] ?? null;
+}
+
+/**
+ * A "processed" status with no error is a node that has not caught up to the
+ * adapter's commitment yet, so it is re-asked like a null answer.
+ */
+function isDecisiveSignatureStatus(
+  status: SignatureStatus | null
+): status is SignatureStatus {
+  return (
+    status != null && (status.err != null || reachedVerifyCommitment(status))
+  );
+}
+
+/**
+ * Ask for the signature's status, repeatedly, until the cluster reports it at
+ * or above the verification commitment, reports an execution error, or the
+ * budget runs out.
+ *
+ * `searchTransactionHistory` matters: without it a node answers only from its
+ * recent-status cache (about 150 slots, on the order of a minute). That serves
+ * the finalize gate, which runs straight after the write, but would return
+ * null for every signature the 24h reconciler re-reads, and the reconciler
+ * settles a hash that stays absent as dropped.
+ *
+ * As in lookupReceipt, a null answer is followed by an explicit read against
+ * the fallback endpoint. getSignatureStatuses resolves to a null entry for an
+ * unknown signature rather than throwing, so `executeWithFailover` counts that
+ * as a successful call and never moves off the primary. The primary for
+ * solana-mainnet is a proxy that has been observed serving no transaction
+ * history at all, which is exactly the capability searchTransactionHistory
+ * needs. Retry rounds do not cover that: every round asks the same endpoint
+ * and gets the same valid empty answer.
+ */
+async function lookupSignatureStatus(
+  signature: string,
+  manager: SolanaProviderManager,
+  options: ReceiptLookupOptions = {}
+): Promise<SignatureLookup> {
+  const budgetMs = options.budgetMs ?? LOOKUP_BUDGET_MS;
+  const retryDelayMs = options.retryDelayMs ?? LOOKUP_RETRY_DELAY_MS;
+  const deadline = Date.now() + budgetMs;
+  let errored = false;
+  let firstRound = true;
+
+  while (firstRound || Date.now() < deadline) {
+    if (!firstRound) {
+      await sleep(retryDelayMs);
+    }
+    firstRound = false;
+
+    try {
+      const status = await manager.executeWithFailover(
+        (connection) => readSignatureStatus(connection, signature),
+        "read"
+      );
+      if (isDecisiveSignatureStatus(status)) {
+        return { status, errored: false };
+      }
+    } catch {
+      errored = true;
+    }
+
+    const fallback = manager.getFallbackConnection();
+    if (fallback) {
+      try {
+        const status = await readSignatureStatus(fallback, signature);
+        if (isDecisiveSignatureStatus(status)) {
+          return { status, errored: false };
+        }
+      } catch {
+        errored = true;
+      }
+    }
+  }
+
+  return { status: null, errored };
+}
+
+async function verifySingleSolanaSignature(
+  signature: string,
+  chainId: number,
+  manager: SolanaProviderManager,
+  options: ReceiptLookupOptions = {}
+): Promise<ReceiptVerificationResult> {
+  const verifiedAt = new Date().toISOString();
+
+  const { status, errored } = await lookupSignatureStatus(
+    signature,
+    manager,
+    options
+  );
+
+  if (!status) {
+    return {
+      hash: signature,
+      chainId,
+      verified: false,
+      status: errored ? "timeout" : "not_found",
+      verifiedAt,
+    };
+  }
+
+  if (status.err != null) {
+    return {
+      hash: signature,
+      chainId,
+      verified: false,
+      status: "reverted",
+      verifiedAt,
+    };
+  }
+
+  return {
+    hash: signature,
+    chainId,
+    verified: true,
+    status: "success",
+    verifiedAt,
+  };
+}
+
 /**
  * Inline concurrency cap (no new dependency, matches the established
  * pattern in lib/mcp/validate-workflow-deep.ts). Order of `results` matches
@@ -303,17 +494,31 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+/** Fail-closed results for a chain no endpoint could be resolved for. */
+function unreadableChainResults(
+  chainId: number,
+  group: { hash: string }[]
+): ReceiptVerificationResult[] {
+  const verifiedAt = new Date().toISOString();
+  return group.map(({ hash }) => ({
+    hash,
+    chainId,
+    verified: false,
+    status: "timeout",
+    verifiedAt,
+  }));
+}
+
 /**
  * Independently re-verifies every claimed transaction hash against the
  * chain. Groups by chainId so each distinct chain only pays for one
- * RpcProviderManager, then verifies all hashes concurrently (capped).
+ * provider manager, then verifies all hashes concurrently (capped).
  *
- * Solana chainIds are passed through as verified/success without an
- * on-chain check: lib/web3/chain-adapter/solana.ts is entirely stubbed
- * today (every write method throws "not implemented"), so no live code
- * path can produce a Solana hash here -- this is a defensive carve-out, not
- * a known gap, and fail-closing it would be a functional regression rather
- * than a safety fix if a Solana write path ever ships.
+ * Solana chainIds are read through getSignatureStatuses rather than an EVM
+ * receipt: a signature at or above the adapter's commitment with no error is
+ * success, an execution error is reverted, and a signature the cluster does
+ * not report is not_found. The same fail-closed budget applies, so an
+ * unreadable signature is never verified.
  */
 export async function verifyExecutionReceipts(
   hashes: { hash: string; chainId: number }[],
@@ -334,31 +539,24 @@ export async function verifyExecutionReceipts(
 
   for (const [chainId, group] of groups) {
     if (isSolanaChain(chainId)) {
-      const verifiedAt = new Date().toISOString();
-      for (const { hash } of group) {
-        allResults.push({
-          hash,
-          chainId,
-          verified: true,
-          status: "success",
-          verifiedAt,
-        });
+      const solanaManager = await buildSolanaVerificationManager(chainId);
+      if (!solanaManager) {
+        allResults.push(...unreadableChainResults(chainId, group));
+        continue;
       }
+      const solanaResults = await mapWithConcurrency(
+        group,
+        VERIFY_CONCURRENCY_LIMIT,
+        ({ hash }) =>
+          verifySingleSolanaSignature(hash, chainId, solanaManager, options)
+      );
+      allResults.push(...solanaResults);
       continue;
     }
 
     const manager = await buildVerificationManager(chainId);
     if (!manager) {
-      const verifiedAt = new Date().toISOString();
-      for (const { hash } of group) {
-        allResults.push({
-          hash,
-          chainId,
-          verified: false,
-          status: "timeout",
-          verifiedAt,
-        });
-      }
+      allResults.push(...unreadableChainResults(chainId, group));
       continue;
     }
 

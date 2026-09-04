@@ -140,7 +140,8 @@ async function handleWriteCall(
   resolvedAbi: string,
   organizationId: string,
   apiKeyId: string,
-  idem: IdempotencyOutcome | null
+  idem: IdempotencyOutcome | null,
+  paygOverflow: boolean
 ): Promise<NextResponse> {
   const walletError = await requireWallet(organizationId);
   if (walletError) {
@@ -168,6 +169,7 @@ async function handleWriteCall(
     network: body.network as string,
     input: redactedInput,
     reserved: { kind: "evm", valueWei: parsedValue.valueWei },
+    paygOverflow,
   });
   if (!reserve.allowed) {
     return recordIdempotentResponse(
@@ -227,9 +229,10 @@ async function handleWriteCall(
   }
 
   // The hash is returned whenever one exists, not only when the write
-  // succeeded. A call that broadcast and then reverted comes back with
-  // success: false and a hash (write-contract-core.ts sets it from
-  // revertedTransactionHash), and that is exactly the case where the caller
+  // succeeded. A call that broadcast and then reverted -- or broadcast and
+  // then could not be read back -- comes back with success: false and a hash
+  // (write-contract-core.ts sets it from
+  // broadcastTransactionHash), and that is exactly the case where the caller
   // needs it -- to look up what the chain said about a write it has already
   // paid for. The failure branch above already reads that hash and records it
   // against the execution, so withholding it from the response leaves the
@@ -277,6 +280,17 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
+  // KEEP-1927: abiFunction is the workflow web3 action node's name for this
+  // same value; accept it as an alias so payloads copied between the two
+  // layers bind without a rename. Keyed on the key being absent rather than on
+  // its value being usable, which is the same test the conflict check in
+  // _lib/schemas applies: a body carrying both keys is never filled in here,
+  // and a differing pair is rejected there (400) instead of broadcasting under
+  // one of the two names.
+  if (!("functionName" in body) && "abiFunction" in body) {
+    body.functionName = body.abiFunction;
+  }
+
   const simulateFlag = parseSimulateFlag(body);
   if (!simulateFlag.ok) {
     return NextResponse.json(
@@ -294,6 +308,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     {
       organizationId: apiKeyCtx.organizationId,
       credentialId: apiKeyCtx.apiKeyId,
+      credentialType: apiKeyCtx.credentialType,
       endpoint: "/api/execute/contract-call",
     }
   );
@@ -405,7 +420,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       resolvedAbi,
       apiKeyCtx.organizationId,
       apiKeyCtx.apiKeyId,
-      idem
+      idem,
+      executionGuard.limitResult?.paygOverflow === true
     ),
     rateLimit
   );

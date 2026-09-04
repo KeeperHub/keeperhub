@@ -62,10 +62,15 @@ vi.mock("@/lib/workflow/executor/step-handler", async () =>
   (await import("../mocks/step-mocks")).stepHandlerPassthrough()
 );
 
-vi.mock("@/lib/utils", () => ({
-  getErrorMessage: (error: { message?: string }) =>
-    error?.message ?? String(error),
-}));
+vi.mock("@/lib/utils", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/utils")>("@/lib/utils");
+  return {
+    ...actual,
+    getErrorMessage: (error: { message?: string }) =>
+      error?.message ?? String(error),
+  };
+});
 
 import { checkBalanceStep } from "@/plugins/web3/steps/check-balance";
 

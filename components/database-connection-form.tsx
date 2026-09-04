@@ -1,8 +1,7 @@
 "use client";
 
-import { Check, Pencil, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { SecretField } from "@/components/secret-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -13,88 +12,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useIsMobile } from "@/hooks/use-mobile";
 
 export type DatabaseTab = "url" | "details";
-
-type SecretFieldProps = {
-  fieldId: string;
-  label: string;
-  configKey: string;
-  placeholder?: string;
-  helpText?: string;
-  value: string;
-  onChange: (key: string, value: string) => void;
-  isEditMode?: boolean;
-};
-
-function SecretField({
-  fieldId,
-  label,
-  configKey,
-  placeholder,
-  helpText,
-  value,
-  onChange,
-  isEditMode,
-}: SecretFieldProps): React.JSX.Element {
-  const [isEditing, setIsEditing] = useState(false);
-  const isMobile = useIsMobile();
-  const hasNewValue = value.length > 0;
-
-  if (isEditMode && !isEditing && !hasNewValue) {
-    return (
-      <div className="space-y-2">
-        <Label htmlFor={fieldId}>{label}</Label>
-        <div className="flex items-center gap-2">
-          <div className="flex h-9 flex-1 items-center gap-2 rounded-md border bg-muted/30 px-3">
-            <Check className="size-4 text-green-600" />
-            <span className="text-muted-foreground text-sm">Configured</span>
-          </div>
-          <Button
-            onClick={() => setIsEditing(true)}
-            type="button"
-            variant="outline"
-          >
-            <Pencil className="mr-1.5 size-3" />
-            Change
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-2">
-      <Label htmlFor={fieldId}>{label}</Label>
-      <div className="flex items-center gap-2">
-        <Input
-          autoFocus={isEditMode && isEditing && !isMobile}
-          className="flex-1"
-          id={fieldId}
-          onChange={(e) => onChange(configKey, e.target.value)}
-          placeholder={placeholder}
-          type="password"
-          value={value}
-        />
-        {isEditMode && (isEditing || hasNewValue) && (
-          <Button
-            onClick={() => {
-              onChange(configKey, "");
-              setIsEditing(false);
-            }}
-            size="icon"
-            type="button"
-            variant="ghost"
-          >
-            <X className="size-4" />
-          </Button>
-        )}
-      </div>
-      {helpText && <p className="text-muted-foreground text-xs">{helpText}</p>}
-    </div>
-  );
-}
 
 type DatabaseConnectionFormProps = {
   config: Record<string, string>;

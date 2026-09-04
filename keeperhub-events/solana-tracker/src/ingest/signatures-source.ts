@@ -1,5 +1,11 @@
-import type { ConfirmedSignatureInfo } from "@solana/web3.js";
-import { SOLANA_SIGNATURES_POLL_INTERVAL_MS } from "../../lib/config/environment";
+import {
+  type ConfirmedSignatureInfo,
+  SolanaJSONRPCError,
+} from "@solana/web3.js";
+import {
+  SOLANA_SIGNATURES_POLL_INTERVAL_MS,
+  SOLANA_SIGNATURES_STALL_RESET_MS,
+} from "../../lib/config/environment";
 import { logger } from "../../lib/utils/logger";
 import { formatError } from "../format-error";
 import type { NormalizedBlock } from "../match/types";
@@ -29,10 +35,39 @@ import { type ConnectionHealth, SolanaConnection } from "./solana-connection";
 const MAX_SIGNATURES_PER_TICK = 1_000;
 /** Bounds one poll's paging at 10k signatures per program. */
 const MAX_SIGNATURE_PAGES = 10;
+/**
+ * The code the RPC returns for an `until`/`before` signature it cannot resolve,
+ * alongside "Transaction <sig> not found". Verified identical on both gateway
+ * routes and on api.testnet.solana.com, so it is the validator's behaviour
+ * rather than one provider's. web3.js 1.98.4 exports SolanaJSONRPCErrorCode but
+ * that table stops at -32016, so there is no constant to import.
+ */
+const RPC_TRANSACTION_NOT_FOUND = -32020;
+
+/**
+ * Whether the RPC rejected our cursor itself, as opposed to failing the query.
+ * A malformed signature is a different code (-32602 "Invalid param: WrongSize"),
+ * so this does not fire on one - and must not, because dropping a cursor skips
+ * the window.
+ */
+function isUnknownCursorError(err: unknown): boolean {
+  return (
+    err instanceof SolanaJSONRPCError &&
+    typeof err.code === "number" &&
+    err.code === RPC_TRANSACTION_NOT_FOUND
+  );
+}
 
 export class SignaturesSource implements BlockSource {
   private connection: SolanaConnection | null = null;
   private readonly cursors = new Map<string, string>();
+  /**
+   * When each program last completed a poll without throwing, which includes a
+   * poll that found nothing - a quiet program is the normal case and must never
+   * look stalled. Only programs holding a cursor are tracked, because a program
+   * without one is already re-seeding on every poll.
+   */
+  private readonly lastSuccessAt = new Map<string, number>();
   private isProcessing = false;
   private pendingTick = false;
   private lastPollAt = 0;
@@ -41,6 +76,7 @@ export class SignaturesSource implements BlockSource {
   constructor(
     private readonly opts: BlockSourceOptions,
     private readonly pollIntervalMs: number = SOLANA_SIGNATURES_POLL_INTERVAL_MS,
+    private readonly stallResetMs: number = SOLANA_SIGNATURES_STALL_RESET_MS,
   ) {}
 
   async start(): Promise<void> {
@@ -59,7 +95,7 @@ export class SignaturesSource implements BlockSource {
           limit: 1,
         });
         if (seed[0]) {
-          this.cursors.set(programId, seed[0].signature);
+          this.setCursor(programId, seed[0].signature);
         }
       } catch (err) {
         logger.warn(
@@ -133,43 +169,122 @@ export class SignaturesSource implements BlockSource {
       });
   }
 
+  /**
+   * One pass over every watched program.
+   *
+   * Each program is isolated: the query and its follow-up fetches are one
+   * round trip per program, so letting a rejection escape the loop would skip
+   * every program after it - one unreachable program would silently stop the
+   * rest of the chain's workflows, not just its own.
+   */
   private async poll(): Promise<void> {
+    for (const programId of this.opts.watchedProgramIds) {
+      if (!this.connection) {
+        return;
+      }
+      try {
+        await this.pollProgram(programId);
+        // Success means the query returned, empty included. A program with
+        // nothing new is the normal case and must not read as stalled.
+        if (this.cursors.has(programId)) {
+          this.lastSuccessAt.set(programId, Date.now());
+        }
+      } catch (err) {
+        this.handleProgramError(programId, err);
+      }
+    }
+  }
+
+  private async pollProgram(programId: string): Promise<void> {
     if (!this.connection) {
       return;
     }
-    for (const programId of this.opts.watchedProgramIds) {
-      const until = this.cursors.get(programId);
-      if (!until) {
-        // Not seeded yet (seed failed at start); seed now, process nothing.
-        const seed = await this.connection.getSignaturesForAddress(programId, {
-          limit: 1,
-        });
-        if (seed[0]) {
-          this.cursors.set(programId, seed[0].signature);
-        }
-        continue;
+    const until = this.cursors.get(programId);
+    if (!until) {
+      // Not seeded yet (seed failed at start, or a rejected cursor was
+      // dropped); seed now, process nothing.
+      const seed = await this.connection.getSignaturesForAddress(programId, {
+        limit: 1,
+      });
+      if (seed[0]) {
+        this.setCursor(programId, seed[0].signature);
       }
-      const sigs = await this.collectSignaturesSince(programId, until);
-      if (sigs.length === 0) {
-        continue;
-      }
-      // Newest-first from the RPC; advance the cursor to the newest, process
-      // oldest-first so downstream ordering matches on-chain ordering.
-      const newest = sigs[0].signature;
-      for (let i = sigs.length - 1; i >= 0; i--) {
-        const info = sigs[i];
-        if (info.err) {
-          continue; // failed tx emits no meaningful events
-        }
-        if (!this.connection) {
-          // stop() ran mid-window; drop the rest rather than dispatching for a
-          // chain the reconciler has already torn down.
-          return;
-        }
-        await this.processSignature(info.signature, info.slot);
-      }
-      this.cursors.set(programId, newest);
+      return;
     }
+    const sigs = await this.collectSignaturesSince(programId, until);
+    if (sigs.length === 0) {
+      return;
+    }
+    // Newest-first from the RPC; advance the cursor to the newest, process
+    // oldest-first so downstream ordering matches on-chain ordering.
+    const newest = sigs[0].signature;
+    for (let i = sigs.length - 1; i >= 0; i--) {
+      const info = sigs[i];
+      if (info.err) {
+        continue; // failed tx emits no meaningful events
+      }
+      if (!this.connection) {
+        // stop() ran mid-window; drop the rest rather than dispatching for a
+        // chain the reconciler has already torn down.
+        return;
+      }
+      await this.processSignature(info.signature, info.slot);
+    }
+    this.setCursor(programId, newest);
+  }
+
+  /**
+   * A failed poll either invalidates the cursor or does not. Getting this wrong
+   * in either direction costs events: keeping a cursor the endpoint will never
+   * resolve stalls the program forever, because the cursor only advances on
+   * success and so the same rejected value is retried on every poll; dropping a
+   * usable cursor re-seeds to head and skips the window.
+   */
+  private handleProgramError(programId: string, err: unknown): void {
+    const cursor = this.cursors.get(programId);
+    if (cursor && isUnknownCursorError(err)) {
+      this.dropCursor(programId);
+      logger.warn(
+        `[signatures] chain ${this.opts.chainId} program ${programId} cursor ${cursor} is unknown to the endpoint; re-seeding to head and skipping that window. An endpoint serving a different cluster than the cursor came from does this (KEEP-1202).`,
+      );
+      return;
+    }
+    if (cursor && this.hasStalled(programId)) {
+      this.dropCursor(programId);
+      logger.error(
+        `[signatures] chain ${this.opts.chainId} program ${programId} completed no poll for ${this.stallResetMs}ms; dropping cursor ${cursor} and re-seeding to head, skipping that window. Last error: ${formatError(err)}`,
+      );
+      return;
+    }
+    logger.warn(
+      `[signatures] chain ${this.opts.chainId} program ${programId} poll error: ${formatError(err)}`,
+    );
+  }
+
+  /**
+   * True once a program holding a cursor has gone `stallResetMs` without a poll
+   * that completed. The clock starts when the cursor is set, so a program that
+   * has never succeeded still trips it rather than waiting forever for a first
+   * success that may never come.
+   */
+  private hasStalled(programId: string): boolean {
+    const since = this.lastSuccessAt.get(programId);
+    return since !== undefined && Date.now() - since >= this.stallResetMs;
+  }
+
+  /**
+   * Keeps the cursor and its stall clock in lockstep - they are only ever set
+   * and cleared together, including across stop()/start(), so a cursor can
+   * never end up without a clock and so unable to trip the backstop.
+   */
+  private setCursor(programId: string, signature: string): void {
+    this.cursors.set(programId, signature);
+    this.lastSuccessAt.set(programId, Date.now());
+  }
+
+  private dropCursor(programId: string): void {
+    this.cursors.delete(programId);
+    this.lastSuccessAt.delete(programId);
   }
 
   /**

@@ -17,6 +17,7 @@ import type {
   NodeExecutionStatus,
   WorkflowExecutionStatus,
 } from "../errors/execution-status";
+import type { ErrorCategory } from "../logging";
 import type { IntegrationType } from "../types/integration";
 import { generateId } from "../utils/id";
 
@@ -283,6 +284,10 @@ export const accounts = pgTable(
     id: text("id").primaryKey(),
     accountId: text("account_id").notNull(),
     providerId: text("provider_id").notNull(),
+    // Better Auth 1.7 keys an account on (issuer, accountId) rather than
+    // providerId alone, and matches credential sign-in on all three. A row
+    // without it is invisible to signInEmail. See CREDENTIAL_ACCOUNT_ISSUER.
+    issuer: text("issuer").notNull(),
     userId: text("user_id")
       .notNull()
       .references(() => users.id),
@@ -699,19 +704,10 @@ export const workflowExecutions = pgTable(
     // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
     output: jsonb("output").$type<any>(),
     error: text("error"),
-    errorCategory: text("error_category").$type<
-      | "validation"
-      | "configuration"
-      | "external_service"
-      | "network_rpc"
-      | "transaction"
-      | "billing"
-      | "database"
-      | "auth"
-      | "infrastructure"
-      | "workflow_engine"
-      | "unknown"
-    >(),
+    // $type erases at compile time, so this tracks ErrorCategory in
+    // lib/logging.ts by reference rather than by a hand-copied union that has
+    // to be remembered whenever a category is added.
+    errorCategory: text("error_category").$type<ErrorCategory>(),
     errorType: text("error_type").$type<ExecutionErrorType>(),
     errorCode: text("error_code").$type<ErrorCode>(),
     startedAt: timestamp("started_at").notNull().defaultNow(),
@@ -894,7 +890,14 @@ export const workflowExecutionLogs = pgTable(
      */
     deletedAt: timestamp("deleted_at"),
   },
-  (table) => [index("idx_exec_logs_started_at").on(table.startedAt)]
+  (table) => [
+    index("idx_exec_logs_started_at").on(table.startedAt),
+    // Created back in 0024_analytics-indexes.sql but never declared here.
+    // The reaper's correlated NOT EXISTS probes it once per reap candidate,
+    // so a dev DB bootstrapped with db:push (which only builds what this file
+    // declares) would seq-scan the log table instead.
+    index("idx_exec_logs_execution_id").on(table.executionId),
+  ]
 );
 
 export {

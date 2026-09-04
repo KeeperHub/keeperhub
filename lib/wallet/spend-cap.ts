@@ -8,6 +8,13 @@ export type SpendCapResponse = {
   dailyUsedWei: string;
   dailySolanaCapLamports: string | null;
   dailySolanaUsedLamports: string;
+  // What enforcement actually compares against: the org's own cap when it set
+  // one, the platform default otherwise. A null configured cap means the org
+  // set nothing, never that spending is uncapped.
+  effectiveDailyCapWei: string;
+  effectiveDailySolanaCapLamports: string;
+  usingDefaultDailyCap: boolean;
+  usingDefaultDailySolanaCap: boolean;
 };
 
 export type SpendCap = {
@@ -15,7 +22,12 @@ export type SpendCap = {
   label: string;
   symbol: string;
   decimals: number;
+  /** The org's own cap, or null when it set none. */
   cap: string | null;
+  /** The figure enforcement uses. Null only while the response is missing. */
+  effectiveCap: string | null;
+  /** True when `effectiveCap` is the platform default rather than the org's. */
+  usingDefault: boolean;
   used: string;
 };
 
@@ -34,17 +46,21 @@ export function toSpendCaps(data: SpendCapResponse | null): SpendCap[] {
     {
       cap: data?.dailyCapWei ?? null,
       decimals: EVM_DECIMALS,
+      effectiveCap: data?.effectiveDailyCapWei ?? null,
       id: "evm",
       label: "EVM networks",
       symbol: "ETH",
+      usingDefault: data?.usingDefaultDailyCap ?? false,
       used: data?.dailyUsedWei ?? "0",
     },
     {
       cap: data?.dailySolanaCapLamports ?? null,
       decimals: SOLANA_DECIMALS,
+      effectiveCap: data?.effectiveDailySolanaCapLamports ?? null,
       id: "solana",
       label: "Solana",
       symbol: "SOL",
+      usingDefault: data?.usingDefaultDailySolanaCap ?? false,
       used: data?.dailySolanaUsedLamports ?? "0",
     },
   ];
