@@ -5,7 +5,7 @@ import {
   getAnalyticsSummary,
 } from "@/lib/analytics/queries";
 import { createAnalyticsStreamStart } from "@/lib/analytics/stream-start";
-import { parseTimeRange } from "@/lib/analytics/time-range";
+import { getTimeRangeStart, parseTimeRange } from "@/lib/analytics/time-range";
 import { apiError } from "@/lib/api-error";
 import { requireOrganization } from "@/lib/middleware/require-org";
 
@@ -26,6 +26,11 @@ export const GET = requireOrganization(
       const customEnd = params.get("customEnd") ?? undefined;
       const projectId = params.get("projectId") ?? undefined;
 
+      // Resolved once, for the life of the stream. The checksum only has to
+      // detect change inside the window this stream is watching, and a fixed
+      // bound also stops the window sliding from registering as a change.
+      const rangeStart = getTimeRangeStart(range, customStart);
+
       const start = createAnalyticsStreamStart({
         signal: req.signal,
         organizationId,
@@ -34,7 +39,8 @@ export const GET = requireOrganization(
         customEnd,
         projectId,
         deps: {
-          getChecksum: getAnalyticsChecksum,
+          getChecksum: (orgId: string) =>
+            getAnalyticsChecksum(orgId, rangeStart),
           getSummary: getAnalyticsSummary,
         },
       });

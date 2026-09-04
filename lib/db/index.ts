@@ -90,9 +90,47 @@ const globalForDb = globalThis as unknown as {
   metricsDb: PostgresJsDatabase<typeof schema> | undefined;
 };
 
+// statement_timeout is set once on every app-pool connection (not per query).
+// It bounds a single statement, not a request and not a job, so a handler that
+// issues many short queries is unaffected. Before KEEP-1305 this pool had no
+// bound at all: on 2026-09-02 about 40 analytics queries each ran for more than
+// an hour on the 2-vCPU prod instance and starved the dispatchers, which page
+// off the same database.
+//
+// 30s matches what keeperhub-executor/index.ts and
+// keeperhub-executor/workflow-runner.ts already set on their own pools, so
+// every request-shaped pool now carries the same bound.
+//
+// Two things this value reaches that are not obvious. The CronJobs (reaper,
+// reconciler, digest, the billing and security scans) do not open their own
+// connections - they are signed HTTP calls into these same pods, so their SQL
+// runs on this pool. And the workflow runner imports lib/db transitively for
+// step logging, so runner pods use this pool too, not only their own.
+//
+// The RDS parameter group holds a 120s backstop for everything that shares the
+// keeperhub role, including migrations and operator psql sessions. This value
+// is the tighter request-path bound and must stay below it. The migrator opts
+// out through statement_timeout on its DSN, so raising this number is never the
+// way to make a migration pass.
+//
+// Override with APP_STATEMENT_TIMEOUT_MS. A cancelled statement surfaces as
+// Postgres 57014.
+const parsedAppTimeoutMs = Number.parseInt(
+  process.env.APP_STATEMENT_TIMEOUT_MS ?? "",
+  10
+);
+const APP_STATEMENT_TIMEOUT_MS =
+  Number.isFinite(parsedAppTimeoutMs) && parsedAppTimeoutMs > 0
+    ? parsedAppTimeoutMs
+    : 30_000;
+
 // For queries - reuse connection in development
 const queryClient =
-  globalForDb.queryClient ?? postgres(connectionString, { max: 10 });
+  globalForDb.queryClient ??
+  postgres(connectionString, {
+    max: 10,
+    connection: { statement_timeout: APP_STATEMENT_TIMEOUT_MS },
+  });
 export const db = globalForDb.db ?? drizzle(queryClient, { schema });
 
 // Dedicated pool for the /api/metrics/db scrape aggregations. The collector

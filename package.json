@@ -198,6 +198,8 @@
       "prisma"
     ],
     "overrides": {
+      "toml": "^4.2.0",
+      "fflate": "^0.7.5",
       "rollup": "^4.59.0",
       "minimatch": "^10.2.3",
       "devalue": "^5.8.1",

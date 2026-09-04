@@ -228,10 +228,18 @@ function directSearchCondition(term: string): SQL {
 // asking for "runs over 30s" means.
 const directDurationMs = sql`(EXTRACT(EPOCH FROM (${directExecutions.completedAt} - ${directExecutions.createdAt})) * 1000)`;
 
-// Per-step gas and the sponsorship marker, each read as COALESCE(denormalised
-// column, JSONB extract) so rows written before migration 0117 - and rows the
-// backfill has not reached - still classify correctly.
-const filterStepGasWei = sql`COALESCE(${workflowExecutionLogs.gasUsedWei}, CAST(NULLIF(${logOutputField("gasUsed")}, '') AS NUMERIC))`;
+// Per-step gas, read straight off the denormalised column that migration 0117
+// added. This was COALESCE(column, JSONB extract) while the backfill still had
+// rows to reach; the backfill has since run - gas_used_wei is populated back to
+// 2026-02-24, and eight sample slices spanning the last 31 days found no row
+// whose JSONB carried gas the column did not.
+//
+// The JSONB arm was the entire cost of a gas filter. Reading `output` per row
+// de-TOASTs and re-parses it, which no index can avoid, so filtering by gas
+// walked every step the organization ran in the window: cost 925,055 for the
+// largest organization over 30 days. Off the column it is 4,382 (see
+// scopedGasLogs), because the scan can be driven by a partial index instead.
+const filterStepGasWei = sql`${workflowExecutionLogs.gasUsedWei}`;
 const filterStepSponsored = sql`${workflowExecutionLogs.outputRaw}->>'sponsored' = 'true'`;
 
 /**
@@ -284,6 +292,23 @@ function scopedLogs(scope: LogScope): SQL {
 }
 
 /**
+ * `scopedLogs` narrowed to the steps that actually recorded gas.
+ *
+ * Every reader of the gas dimension only asks about gas-bearing steps, and they
+ * are a rounding error on this table: 21,481 of the step-log rows in the 30 days
+ * to 2026-09-04 carried gas, against the millions a bare window scan reads. The
+ * predicate matches `idx_exec_logs_gas_started_at` (btree(started_at) WHERE
+ * gas_used_wei IS NOT NULL), so the planner drives the scan off that index and
+ * never touches a step that could not have contributed.
+ *
+ * `> 0` rather than `IS NOT NULL` because a recorded zero contributes nothing to
+ * any of the three categories, and the index still serves it as a filter.
+ */
+function scopedGasLogs(scope: LogScope): SQL {
+  return sql`${scopedLogs(scope)} AND ${filterStepGasWei} > 0`;
+}
+
+/**
  * Gas facts per execution, aggregated once over the window.
  *
  * These were correlated subqueries on workflow_executions.id, so the planner
@@ -297,17 +322,26 @@ function scopedLogs(scope: LogScope): SQL {
  * cannot start before the run that owns it, so every log of an execution
  * inside the window has started_at >= the window start; and a step may finish
  * after the window closes, so there is no upper bound to apply.
+ *
+ * Restricted to gas-bearing steps, which leaves both surviving columns
+ * value-identical: SUM ignores the NULL a gas-free step contributes, and
+ * `unsponsored_gas_step` already required gas above zero, so the rows dropped
+ * could only ever have added false to its BOOL_OR.
+ *
+ * The old `sponsored_step` column is gone. Every group here now has gas above
+ * zero, so `step_gas_wei > 0 OR sponsored_step` reduced to its first arm and the
+ * second could not change an answer. What it used to add - a sponsored marker on
+ * a step that recorded no gas - is a sponsored transfer that errored before
+ * broadcast, which spends nothing and now reads as free. See workflowGasCondition.
  */
 function workflowGasTotals(scope: LogScope): SQL {
   return sql`(
     SELECT ${workflowExecutionLogs.executionId} AS execution_id,
            COALESCE(SUM(${filterStepGasWei}), 0) AS step_gas_wei,
-           COALESCE(BOOL_OR(${filterStepSponsored}), false) AS sponsored_step,
            COALESCE(BOOL_OR(
-             ${filterStepGasWei} > 0
-             AND ${workflowExecutionLogs.outputRaw}->>'sponsored' IS DISTINCT FROM 'true'
+             ${workflowExecutionLogs.outputRaw}->>'sponsored' IS DISTINCT FROM 'true'
            ), false) AS unsponsored_gas_step
-    ${scopedLogs(scope)}
+    ${scopedGasLogs(scope)}
      GROUP BY ${workflowExecutionLogs.executionId}
   )`;
 }
@@ -343,12 +377,14 @@ function workflowLedgerTotals(scope: LogScope): SQL {
 function workflowGasCondition(value: GasSpend, scope: LogScope): SQL {
   if (value === "sponsored") {
     // Only the marker decides this one, so it reads output_raw directly rather
-    // than paying for the gas rollup - and its JSONB decode - that the other
-    // two branches genuinely need.
+    // than building the gas rollup the other two branches need. Scoped to
+    // gas-bearing steps for the same reason free is: a sponsored step that
+    // recorded no gas never reached the chain, and letting it answer here while
+    // free also claims it would put one run in two mutually exclusive buckets.
     return sql`(
       ${workflowExecutions.id} IN (
         SELECT ${workflowExecutionLogs.executionId}
-        ${scopedLogs(scope)}
+        ${scopedGasLogs(scope)}
            AND ${filterStepSponsored}
       )
       OR ${workflowExecutions.id} IN (
@@ -371,10 +407,14 @@ function workflowGasCondition(value: GasSpend, scope: LogScope): SQL {
          AND g.step_gas_wei > COALESCE(s.sponsored_gas_wei, 0)
     )`;
   }
+  // `step_gas_wei > 0` is already true of every group the rollup returns, so it
+  // reads as intent rather than as a filter: free is "no step of this run put
+  // gas on a chain", and the ledger arm below covers a run whose sponsorship was
+  // only ever recorded as a credit charge.
   return sql`(
     ${workflowExecutions.id} NOT IN (
       SELECT g.execution_id FROM ${totals} AS g
-       WHERE g.step_gas_wei > 0 OR g.sponsored_step
+       WHERE g.step_gas_wei > 0
     )
     AND ${workflowExecutions.id} NOT IN (
       SELECT s.execution_id FROM ${workflowLedgerTotals(scope)} AS s
@@ -2133,25 +2173,57 @@ export async function getSpendCapData(organizationId: string): Promise<{
 /**
  * Get a lightweight checksum for SSE change detection.
  * Returns max timestamps + active count so we know when to push updates.
+ *
+ * `rangeStart` is the lower bound of the window the stream is watching. A run
+ * that started before the window cannot change what that window summarises, so
+ * bounding by it is exact rather than an approximation.
+ *
+ * The run-side MAX is a lateral per workflow, not a plain aggregate over the
+ * join, because the two plan nothing alike. An aggregate over the join has to
+ * read every row it might be the maximum of; the lateral lets the planner turn
+ * each workflow into an index-only scan with LIMIT 1. Measured on the busiest
+ * organization over 30 days: 424 ms and 152,914 buffers unbounded, 120 ms and
+ * 78,496 bounded, 2 ms and 1,189 as the lateral. This runs every poll interval
+ * for every connected viewer, only to answer "has anything changed", so the
+ * difference is what it costs to have the dashboard open.
+ *
+ * The active-run count is deliberately left unbounded: the summary's activeRuns
+ * is unbounded too, and the two have to agree.
  */
 export async function getAnalyticsChecksum(
-  organizationId: string
+  organizationId: string,
+  rangeStart: Date
 ): Promise<string> {
+  // Bound as ISO text for the same reason the step-log scan is: a raw template
+  // has no column to map a Date through, the way the comparison helpers do.
+  const from = rangeStart.toISOString();
+
   const [wfMax, deMax, activeCount] = await Promise.all([
     db
-      .select({
-        maxStarted: sql<string>`COALESCE(MAX(${workflowExecutions.startedAt}), '1970-01-01')::text`,
-      })
-      .from(workflowExecutions)
-      .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
-      .where(eq(workflows.organizationId, organizationId))
-      .then((r) => r[0]?.maxStarted ?? ""),
+      .execute<{ max_started: string }>(
+        sql`
+    SELECT COALESCE(MAX(latest.started_at), '1970-01-01')::text AS max_started
+      FROM ${workflows} AS scoped_wf
+      CROSS JOIN LATERAL (
+        SELECT MAX(${workflowExecutions.startedAt}) AS started_at
+          FROM ${workflowExecutions}
+         WHERE ${workflowExecutions.workflowId} = scoped_wf.id
+           AND ${workflowExecutions.startedAt} >= ${from}
+      ) AS latest
+     WHERE scoped_wf.organization_id = ${organizationId}`
+      )
+      .then((r) => r[0]?.max_started ?? ""),
     db
       .select({
         maxCreated: sql<string>`COALESCE(MAX(${directExecutions.createdAt}), '1970-01-01')::text`,
       })
       .from(directExecutions)
-      .where(eq(directExecutions.organizationId, organizationId))
+      .where(
+        and(
+          eq(directExecutions.organizationId, organizationId),
+          gte(directExecutions.createdAt, rangeStart)
+        )
+      )
       .then((r) => r[0]?.maxCreated ?? ""),
     db
       .select({ count: count() })

@@ -1,0 +1,53 @@
+-- @requires-db-prep
+-- KEEP-1333: covering index for the analytics summary aggregates.
+--
+-- /api/analytics/summary?range=30d returned 500 with "canceling statement due to
+-- statement timeout". On 2026-09-04 one organization's dashboard produced 246
+-- statement timeouts in 51 minutes and held the database on its provisioned read
+-- ceiling for the whole window.
+--
+-- The queries are getWorkflowCounts and getWorkflowGasTotal in
+-- lib/analytics/queries.ts, plus the same join in computeTimeSeries. They all share
+-- one predicate: workflow_id IN (the org's workflows) AND started_at within a
+-- window. computeAnalyticsSummary runs the first pair twice, once for the window
+-- and once for the previous period.
+--
+-- idx_workflow_executions_workflow_started (workflow_id, started_at DESC) from 0024
+-- already matches that predicate, but it carries no payload, so status, duration
+-- and gas_used_wei are read from the heap one row at a time. On the organization
+-- that triggered the incident a single 30-day aggregate was 173,893 heap blocks and
+-- 424,088 buffer touches. Four of those run concurrently per request. Warm they
+-- finish; cold they are 174k random reads and they do not.
+--
+-- Adding the payload makes the aggregates index-only. Measured with EXPLAIN on the
+-- same organization and window: total cost 437,397 with a bitmap heap scan, 26,216
+-- reading indexed columns only - and the planner stops degrading the workflows side
+-- to a parallel sequential scan. The table's visibility map is fully set, so the
+-- heap access really does drop to zero rather than moving to a recheck.
+--
+-- Key columns and their order mirror 0024's index exactly. This is therefore a
+-- strict superset: it serves everything that one serves, DESC included, so 0024's
+-- index becomes redundant and is dropped in a follow-up once this one is confirmed
+-- to have taken over.
+--
+-- NOT partial on deleted_at IS NULL. The summary aggregates carry no such
+-- predicate - only the runs and facets queries do - so a partial index would be
+-- unusable by exactly the queries this fixes. If the summary is ever made
+-- consistent with the runs table, this index has to be revisited or the heap
+-- fetches come straight back.
+--
+-- Cost: one more B-tree entry per insert and per non-HOT update on a hot table.
+-- HOT eligibility does not change. status and duration are already indexed by
+-- idx_workflow_executions_status, idx_workflow_executions_status_duration and
+-- idx_workflow_executions_stats_covering, so updates touching them were already
+-- non-HOT. gas_used_wei is newly indexed, but it is written by the same finalize
+-- UPDATE that sets status and duration, which was non-HOT for that reason already.
+--
+-- On large environments apply out-of-band as CREATE INDEX CONCURRENTLY IF NOT
+-- EXISTS (see the @requires-db-prep runbook). The build exceeds statement_timeout,
+-- so that session needs SET statement_timeout = 0. The transaction-safe form below
+-- then no-ops on deploy.
+
+CREATE INDEX IF NOT EXISTS "idx_workflow_executions_workflow_started_covering"
+  ON "workflow_executions" ("workflow_id", "started_at" DESC)
+  INCLUDE ("status", "duration", "gas_used_wei");

@@ -549,4 +549,89 @@ describe.skipIf(SKIP)("analytics run filters", () => {
     expect(facets.success).toBe(1);
     expect(facets.error).toBeUndefined();
   });
+
+  // KEEP-1334. Both of these pin behaviour the gas rollup did NOT have before
+  // it moved onto the denormalised column, so both fail against the previous
+  // implementation. They are seeded per-test rather than added to SEEDS because
+  // the count assertions above pin the fixture exactly.
+  async function withGasRow(
+    id: string,
+    row: { gasUsedWei?: string | null; output?: unknown; outputRaw?: unknown },
+    assertions: () => Promise<void>
+  ): Promise<void> {
+    const now = new Date();
+    await db.insert(workflowExecutions).values({
+      id,
+      workflowId: NIGHTLY_ID,
+      userId: USER_ID,
+      status: "success",
+      duration: "1000",
+      startedAt: now,
+      completedAt: now,
+    });
+    await db.insert(workflowExecutionLogs).values({
+      id: `${id}_log`,
+      executionId: id,
+      nodeId: "n1",
+      nodeName: "Send",
+      nodeType: "web3/transfer-funds",
+      status: "success",
+      network: BASE,
+      gasUsedWei: row.gasUsedWei ?? null,
+      output: row.output ?? null,
+      outputRaw: row.outputRaw ?? null,
+      startedAt: now,
+    });
+    try {
+      await assertions();
+    } finally {
+      await queryClient`DELETE FROM workflow_execution_logs WHERE id = ${`${id}_log`}`;
+      await queryClient`DELETE FROM workflow_executions WHERE id = ${id}`;
+    }
+  }
+
+  // A sponsored transfer that errored before broadcast carries the gas-station
+  // marker and no gas, and has no ledger row because nothing was ever charged.
+  // On prod on 2026-09-04 nineteen such steps existed in two days. They used to
+  // answer to "sponsored" purely on the marker, which put a run that spent
+  // nothing in the same bucket as one KeeperHub actually paid for. Now the
+  // marker only speaks for a step that reached the chain, so the run reads as
+  // free - and free and sponsored stay mutually exclusive.
+  it("reads a sponsored step that never spent as free, not as sponsored", async () => {
+    const id = `${PREFIX}sponsored_no_gas`;
+    await withGasRow(
+      id,
+      { gasUsedWei: null, outputRaw: { sponsored: true } },
+      async () => {
+        expect(await idsFor({ gas: ["sponsored"] })).not.toContain(id);
+        expect(await idsFor({ gas: ["wallet"] })).not.toContain(id);
+        expect(await idsFor({ gas: ["free"] })).toContain(id);
+      }
+    );
+  });
+
+  // The filter reads gas_used_wei and nothing else, so a row the KEEP-857
+  // backfill never reached classifies as free however much gas its JSONB names.
+  // That is what lets the scan run off idx_exec_logs_gas_started_at instead of
+  // de-TOASTing `output` for every step in the window. It is safe because the
+  // backfill has run: gas_used_wei is populated back to 2026-02-24 and no row
+  // in the last 31 days has gas the column is missing.
+  //
+  // The runs listing still renders such a row's gas, because that read is
+  // already bounded to one page and can afford the JSONB. The asymmetry is the
+  // point of this test - it is deliberate, and it is what the backfill closes.
+  it("classifies gas from the denormalised column, not from the JSONB", async () => {
+    const id = `${PREFIX}jsonb_only_gas`;
+    await withGasRow(
+      id,
+      { gasUsedWei: null, output: { gasUsed: "21000" } },
+      async () => {
+        expect(await idsFor({ gas: ["wallet"] })).not.toContain(id);
+        expect(await idsFor({ gas: ["free"] })).toContain(id);
+
+        const { runs } = await getUnifiedRuns(ORG_ID, "7d", { limit: 50 });
+        expect(runs.find((run) => run.id === id)?.gasUsedWei).toBe("21000");
+      }
+    );
+  });
 });

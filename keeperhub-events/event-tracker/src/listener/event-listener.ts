@@ -19,6 +19,9 @@ import type {
 import type { AbiEvent } from "../chains/validation";
 import type { DedupStore } from "./dedup";
 import { formatError } from "./format-error";
+import type { InFlightTracker } from "./in-flight";
+import type { TokenBucketPacer } from "./pacer";
+import { abortableSleep } from "./shutdown";
 
 /**
  * EventListener encapsulates a single workflow's contract-event listener.
@@ -96,9 +99,39 @@ export interface EventListenerOptions {
   providerManager: ChainProviderManager;
 
   /**
+   * Optional per-chain pacer shared by every listener on the same chain.
+   * When set, `pacer.take()` is awaited before forwarding a matched event to
+   * SQS, replacing the fixed random jitter: a lone event forwards
+   * immediately (the bucket holds tokens), a large simultaneous batch is
+   * paced at the bucket's drain rate. When unset the legacy
+   * `jitterMs`/`DEFAULT_JITTER_MS` behaviour applies.
+   */
+  pacer?: TokenBucketPacer;
+
+  /**
+   * Optional registry-wide tracker for in-flight `onLog` promises. When set,
+   * every dispatch is registered with it so `ListenerRegistry.stopAll` can
+   * wait for handlers that are mid-flight at SIGTERM. Without it a parked or
+   * dispatching event dies with the process: it has no SQS message and no
+   * phantom row yet, and the provider manager keeps no cursor to replay it.
+   */
+  inFlight?: InFlightTracker;
+
+  /**
+   * Optional registry-wide shutdown signal. Once aborted the dispatch stops
+   * parking - both the pacer and the jitter below return immediately - so the
+   * drain that follows costs the dispatch rather than the remaining pace.
+   * Aborting does not cancel an event; it forwards it now.
+   */
+  shutdownSignal?: AbortSignal;
+
+  /**
    * Maximum jitter applied before forwarding a matched event to SQS.
    * Spreads downstream load when many events fire simultaneously. Tests
    * should pass 0 to keep runs deterministic.
+   *
+   * Ignored when `pacer` is set; kept for the legacy path and for tests of
+   * the jitter branch itself.
    */
   jitterMs?: number;
 }
@@ -141,7 +174,14 @@ export class EventListener {
       fallbackWssUrl: this.opts.fallbackWssUrl,
       address: this.opts.contractAddress,
       topic0: eventFragment.topicHash,
-      handler: (log) => this.onLog(log),
+      // Registered with the tracker so shutdown can wait for it. `onLog`
+      // swallows its own errors, so the tracked promise never rejects.
+      handler: (log) => {
+        const dispatch = this.onLog(log);
+        return this.opts.inFlight
+          ? this.opts.inFlight.track(dispatch)
+          : dispatch;
+      },
     });
     this.started = true;
     logger.log(
@@ -197,9 +237,20 @@ export class EventListener {
         return;
       }
 
-      const maxJitter = this.opts.jitterMs ?? DEFAULT_JITTER_MS;
-      if (maxJitter > 0) {
-        await new Promise((r) => setTimeout(r, Math.random() * maxJitter));
+      // Pace the dispatch. With a pacer (the production path, see registry)
+      // a lone event forwards immediately and a large batch drains at the
+      // per-chain rate. Without one, keep the legacy random jitter so the
+      // load-spreading property survives for direct/unit constructions.
+      if (this.opts.pacer) {
+        await this.opts.pacer.take();
+      } else {
+        const maxJitter = this.opts.jitterMs ?? DEFAULT_JITTER_MS;
+        if (maxJitter > 0) {
+          await abortableSleep(
+            Math.random() * maxJitter,
+            this.opts.shutdownSignal,
+          );
+        }
       }
 
       // Dedup is best-effort. If the read throws we fall through and
