@@ -147,7 +147,11 @@ Change nothing else between the dry run and the broadcast, so the transaction yo
 inspected is the transaction you send. The key must name the *work*, not the attempt, so
 a retry reuses it: see [Choosing a stable key](/api/direct-execution#choosing-a-stable-key).
 
-Save the returned `executionId`.
+Save the returned `executionId`. If the terms in this flow are not yet
+familiar — what an execution is versus the transaction that lands onchain —
+the
+[Headless and Agent Onboarding](/api/headless-onboarding#the-ids-in-the-direct-execution-flow)
+glossary defines them in one table.
 
 ## 8. Verify
 

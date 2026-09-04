@@ -252,6 +252,27 @@ simulate with the same body you intend to send, then send it once with an
 `Idempotency-Key` so an interrupted client can retry without double-executing,
 then poll `GET /api/execute/{executionId}/status`.
 
+### The IDs in the direct-execution flow
+
+The identifiers in this flow are not interchangeable:
+
+| Term | Where it comes from | What it identifies |
+|---|---|---|
+| Execution ID (`executionId`) | `POST /api/execute/transfer` (or any direct-execution route) | One attempt to run something: an opaque 21-character nanoid with no distinguishing prefix. Polled via `GET /api/execute/{executionId}/status`. |
+| `transactionHash` | The status response once a broadcast lands | The onchain transaction this execution sent. A direct execution that broadcasts has exactly one: the status response carries it in `transactionHash`, and `receipts` holds its verification result (status, block, gas) once the chain has answered. An execution that never broadcasts leaves `receipts` as an empty array. |
+| `transactionLink` | The same status response | A block-explorer URL for that `transactionHash` - a convenience, not a separate identifier. |
+
+The rule that keeps them straight: an execution is **one attempt**, and a
+transaction is **what actually landed onchain**. A queued execution (one the
+server has accepted and is yet to run) does not mean a transaction exists yet.
+See [Zero to a Verified Onchain Transaction](/guides/first-verified-transaction)
+for the full walkthrough of confirming the transaction actually landed.
+
+(Workflow executions are a separate surface: their ids come from the same
+`generateId()` and are indistinguishable by shape from a direct-execution id -
+what differs is the poll route, `/api/workflows/executions/{executionId}/status`
+rather than the direct-execution route above.)
+
 ## 6. Your first transaction should move zero
 
 A brand-new organization wallet holds nothing, so a first run with a non-zero
