@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { isAnonymousUser } from "@/lib/is-anonymous";
+import { NAV_ITEMS_DATA, SETTINGS_NAV_ITEM_DATA } from "./nav-items-data";
 
 export type MobileNavItem = {
   id: string;
@@ -12,44 +13,38 @@ export type MobileNavItem = {
   ownerOnly?: boolean;
 };
 
-// The read-only monitoring + account destinations. "Workflows" and
-// "Address Book" are flyout/overlay actions in the desktop sidebar (they
-// open panels, not pages) and have no equivalent as a bare link, so they
-// are intentionally not here — the workflow you are monitoring is reachable
-// via its run history and the list via /workflows.
-//
-// Source-of-truth note: the desktop sidebar (components/navigation-sidebar.tsx)
-// keeps its own NAV_ITEMS because it renders flyouts (null hrefs) that have no
-// mobile equivalent, and because its NavItemDef carries a Lucide icon — the
-// mobile module deliberately keeps icons out so tests import zero React
-// runtime. The two lists intentionally diverge only where desktop has a
-// flyout/overlay where mobile routes to the underlying page (workflows) or has
-// no page at all (address-book). The parity test below asserts the invariants
-// that must hold for the shared page destinations.
+// The mobile nav derives from the same NAV_ITEMS_DATA the desktop sidebar
+// renders, so a destination added to that one list either appears on both
+// surfaces or fails the parity tests. Derivation rule: an item appears on
+// mobile when it has a routable surface there - a desktop page (href) or a
+// mobile route (mobileHref, used where desktop treats the item as a flyout
+// with a null href). Items with neither (address-book) are desktop-only
+// flyouts and stay off mobile. Settings is a destination on both surfaces and
+// is appended from its own shared entry, matching its separate position at
+// the foot of the desktop nav.
 export const MOBILE_NAV_ITEMS: MobileNavItem[] = [
-  { id: "hub", label: "Hub", href: "/hub", requireAuth: false },
+  ...NAV_ITEMS_DATA.flatMap((item) => {
+    const href = item.href ?? item.mobileHref;
+    if (!href) {
+      // Desktop-only flyout (address-book): no routable surface on mobile.
+      return [];
+    }
+    return [
+      {
+        id: item.id,
+        label: item.label,
+        href,
+        requireAuth: item.requireAuth,
+        ownerOnly: item.ownerOnly,
+      },
+    ];
+  }),
   {
-    id: "workflows",
-    label: "Workflows",
-    href: "/workflows",
-    requireAuth: false,
+    id: SETTINGS_NAV_ITEM_DATA.id,
+    label: SETTINGS_NAV_ITEM_DATA.label,
+    href: SETTINGS_NAV_ITEM_DATA.href as string,
+    requireAuth: SETTINGS_NAV_ITEM_DATA.requireAuth,
   },
-  {
-    id: "analytics",
-    label: "Analytics",
-    href: "/analytics",
-    requireAuth: true,
-  },
-  { id: "earnings", label: "Earnings", href: "/earnings", requireAuth: true },
-  {
-    id: "held-payments",
-    label: "Held Payments",
-    href: "/held-payments",
-    requireAuth: true,
-    ownerOnly: true,
-  },
-  { id: "activity", label: "Activity", href: "/activity", requireAuth: false },
-  { id: "settings", label: "Settings", href: "/settings", requireAuth: true },
 ];
 
 export type NavAccess = {

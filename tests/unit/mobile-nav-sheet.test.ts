@@ -4,7 +4,6 @@
 // pattern settings-nav-search.test.ts uses.
 
 import { describe, expect, it } from "vitest";
-
 import {
   decideMobileNavAction,
   isMobileNavActive,
@@ -12,6 +11,10 @@ import {
   type MobileNavItem,
   visibleMobileNavItems,
 } from "@/components/navigation/mobile-nav-items";
+import {
+  NAV_ITEMS_DATA,
+  SETTINGS_NAV_ITEM_DATA,
+} from "@/components/navigation/nav-items-data";
 
 const OWNER = { isAdmin: true, isOwner: true };
 const ADMIN = { isAdmin: true, isOwner: false };
@@ -57,63 +60,51 @@ describe("visibleMobileNavItems", () => {
     expect(ids(MOBILE_NAV_ITEMS)).not.toContain("address-book");
   });
 
-  // Parity invariants with the desktop sidebar (components/navigation-sidebar.tsx
-  // NAV_ITEMS). The sidebar cannot be imported here (it pulls the React/Sentry
-  // tree), so these assert the rules that keep the two lists honest: any page
-  // destination the sidebar owns must exist on mobile with the same auth
-  // gating, and flyout-only (href: null) sidebar entries must never leak in.
-  it("covers every routable page destination the desktop sidebar owns", () => {
-    // Desktop NAV_ITEMS routable ids (href !== null): hub, analytics,
-    // earnings, held-payments, activity + settings (SETTINGS_NAV_ITEM).
-    const desktopRoutable = [
-      "hub",
-      "analytics",
-      "earnings",
-      "held-payments",
-      "activity",
-      "settings",
-    ];
-    for (const id of desktopRoutable) {
+  // Parity with the desktop sidebar. Both surfaces derive from the same
+  // NAV_ITEMS_DATA (nav-items-data.ts), so these tests assert the derivation
+  // rule itself against the real source rather than a hand-copied list: a
+  // destination added to NAV_ITEMS_DATA with a routable surface appears on
+  // mobile, and one without (desktop-only flyout) does not.
+  it("covers every desktop destination that has a routable surface", () => {
+    const desktopRoutable = NAV_ITEMS_DATA.filter(
+      (item) => item.href !== null || item.mobileHref !== undefined
+    );
+    for (const item of desktopRoutable) {
       expect(
-        MOBILE_NAV_ITEMS.find((i) => i.id === id),
-        `mobile nav is missing the desktop page destination "${id}"`
+        MOBILE_NAV_ITEMS.find((i) => i.id === item.id),
+        `mobile nav is missing the desktop destination "${item.id}"`
       ).toBeDefined();
     }
+    // Settings is a separate shared entry appended to both surfaces.
+    expect(
+      MOBILE_NAV_ITEMS.find((i) => i.id === SETTINGS_NAV_ITEM_DATA.id)
+    ).toBeDefined();
   });
 
-  it("matches the desktop sidebar's requireAuth gating per shared destination", () => {
-    // From NAV_ITEMS / SETTINGS_NAV_ITEM in navigation-sidebar.tsx:
-    // hub, workflows, activity are requireAuth: false; analytics, earnings,
-    // held-payments, settings are requireAuth: true.
-    const desktopGating: Record<string, boolean> = {
-      hub: false,
-      workflows: false,
-      analytics: true,
-      earnings: true,
-      "held-payments": true,
-      activity: false,
-      settings: true,
-    };
+  it("derives mobile auth gating from the shared source, not a copy", () => {
+    const expected: Record<string, boolean> = {};
+    for (const item of NAV_ITEMS_DATA) {
+      expected[item.id] = item.requireAuth;
+    }
+    expected[SETTINGS_NAV_ITEM_DATA.id] = SETTINGS_NAV_ITEM_DATA.requireAuth;
     for (const item of MOBILE_NAV_ITEMS) {
       expect(
-        desktopGating[item.id],
-        `no desktop-sidebar entry known for mobile item "${item.id}"`
+        expected[item.id],
+        `no shared-source entry known for mobile item "${item.id}"`
       ).toBeDefined();
       expect(
         item.requireAuth,
-        `${item.id} requireAuth diverges from sidebar`
-      ).toBe(desktopGating[item.id]);
+        `${item.id} requireAuth diverges from the shared source`
+      ).toBe(expected[item.id]);
     }
   });
 
-  it("keeps owner-only gating aligned with the desktop sidebar", () => {
-    // held-payments is the sole ownerOnly destination in NAV_ITEMS.
-    const hp = MOBILE_NAV_ITEMS.find((i) => i.id === "held-payments");
-    expect(hp?.ownerOnly).toBe(true);
+  it("keeps owner-only gating aligned with the shared source", () => {
+    const ownerOnlyIds: string[] = NAV_ITEMS_DATA.filter(
+      (item) => item.ownerOnly
+    ).map((item) => item.id);
     for (const item of MOBILE_NAV_ITEMS) {
-      if (item.id !== "held-payments") {
-        expect(item.ownerOnly).toBeUndefined();
-      }
+      expect(item.ownerOnly === true).toBe(ownerOnlyIds.includes(item.id));
     }
   });
 });

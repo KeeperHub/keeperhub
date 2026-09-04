@@ -49,6 +49,13 @@ import {
   type WorkflowTriggerType,
 } from "@/lib/workflow/store";
 import { FLYOUT_WIDTH, FlyoutPanel, STRIP_WIDTH } from "./flyout-panel";
+import {
+  ACTION_ITEM_IDS,
+  NAV_ITEMS_DATA,
+  type NavItemData,
+  type NavItemId,
+  SETTINGS_NAV_ITEM_DATA,
+} from "./navigation/nav-items-data";
 
 export const COLLAPSED_WIDTH = 60;
 export const EXPANDED_WIDTH = 200;
@@ -455,24 +462,8 @@ function SidebarHeader({
   );
 }
 
-const ACTION_ITEM_IDS: ReadonlySet<string> = new Set([
-  "workflows",
-  "address-book",
-  "activity",
-]);
-
-type NavItemDef = {
-  id: string;
+type NavItemDef = NavItemData & {
   icon: typeof Plus;
-  label: string;
-  href: string | null;
-  requireAuth: boolean;
-  // Visible only to organization owners/admins (the audit feed is gated the
-  // same way server-side).
-  adminOnly?: boolean;
-  // Visible only to organization owners (fund-moving surfaces like held
-  // payments; enforced server-side too).
-  ownerOnly?: boolean;
 };
 
 function NavItem({
@@ -542,71 +533,32 @@ function NavItem({
   );
 }
 
-const NAV_ITEMS: NavItemDef[] = [
-  {
-    id: "hub",
-    icon: Globe,
-    label: "Hub",
-    href: "/hub",
-    requireAuth: false,
-  },
-  {
-    id: "workflows",
-    icon: WorkflowIcon,
-    label: "Workflows",
-    href: null,
-    requireAuth: false,
-  },
-  {
-    id: "analytics",
-    icon: BarChart3,
-    label: "Analytics",
-    href: "/analytics",
-    requireAuth: true,
-  },
-  {
-    id: "earnings",
-    icon: DollarSign,
-    label: "Earnings",
-    href: "/earnings",
-    requireAuth: true,
-  },
-  {
-    id: "held-payments",
-    icon: Clock,
-    label: "Held Payments",
-    href: "/held-payments",
-    requireAuth: true,
-    ownerOnly: true,
-  },
-  {
-    id: "address-book",
-    icon: Bookmark,
-    label: "Address Book",
-    href: null,
-    requireAuth: true,
-  },
-  {
-    // Visible to everyone and routable while signed-out: the page itself shows
-    // an in-page sign-in for guests, a labelled sample for members, and the
-    // real feed for owners/admins. So this is neither requireAuth nor adminOnly.
-    id: "activity",
-    icon: Activity,
-    label: "Activity",
-    href: "/activity",
-    requireAuth: false,
-  },
-];
+// Icons are resolved here, in the surface component, from the shared nav data
+// (nav-items-data.ts holds no icons so tests can import it without the
+// React/lucide runtime). Keyed by NavItemId so a destination added to
+// NAV_ITEMS_DATA without an icon entry is a compile error, not a render crash.
+const NAV_ICONS: Record<NavItemId, typeof Plus> = {
+  hub: Globe,
+  workflows: WorkflowIcon,
+  analytics: BarChart3,
+  earnings: DollarSign,
+  "held-payments": Clock,
+  "address-book": Bookmark,
+  activity: Activity,
+  settings: Settings,
+};
+
+const NAV_ITEMS: NavItemDef[] = NAV_ITEMS_DATA.map((item) => ({
+  ...item,
+  icon: NAV_ICONS[item.id],
+}));
 
 // Settings is a destination, not a workspace view, so it sits at the foot of
 // the nav column rather than among Hub / Workflows / Analytics -- above the
 // divider that starts the external links, but pushed clear of Activity.
 const SETTINGS_NAV_ITEM: NavItemDef = {
-  id: "settings",
+  ...SETTINGS_NAV_ITEM_DATA,
   icon: Settings,
-  label: "Settings",
-  href: "/settings",
-  requireAuth: true,
 };
 
 export function NavigationSidebar(): React.ReactNode {
