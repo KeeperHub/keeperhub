@@ -73,12 +73,15 @@ four above. Treat anything other than `success` as a failure. Checking only for 
 ## 4. Write onchain, safely
 
 For a one-off onchain action with no workflow around it, use the direct execution
-tools: `execute_transfer`, `execute_contract_call`, `execute_check_and_execute`. The protocol
-action tool (`execute_protocol_action`) has no dry run today — it executes the action when
-called — so preflight it with a read (`search_protocol_actions`, or a view call against the
-protocol) rather than a `simulate: true` pass, which it does not accept.
+tools: `execute_transfer`, `execute_contract_call`, `execute_check_and_execute`, and
+`execute_protocol_action`. The first three take a `simulate` flag. `execute_protocol_action`
+has no dry run - it executes the action when called and accepts no `simulate` flag - so
+treat it as a broadcast and make the call itself the smallest possible step. Where the
+protocol exposes a read action (for example a `chronicle/eth-usd-read` or
+`morpho/get-position` actionType), calling that first returns current state, but it cannot
+tell you whether a particular write will revert; there is no substitute for a dry run here.
 
-Always preflight:
+Always preflight the three simulate-capable tools:
 
 1. Call the tool with `simulate: true`.
 2. Continue only when the result reports `success: true` and `wouldRevert: false`.
@@ -87,6 +90,9 @@ Always preflight:
    the number of seconds in the `X-Poll-Interval-Hint` response header between polls; `0` means
    the execution is terminal and you can stop.
 5. Keep `transactionLink` from the terminal response as the onchain proof.
+
+`execute_protocol_action` is not in that loop: it has no simulate step, so call it once with
+an `idempotency_key` and poll step 4 onward.
 
 **Simulation is EVM-only.** On Solana mainnet (`101`) and devnet (`103`), a `simulate: true` call
 resolves with `isError: true` rather than throwing. Parse the JSON in `content[0].text` and stop
