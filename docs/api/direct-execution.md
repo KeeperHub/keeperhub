@@ -48,6 +48,9 @@ A dry run reports the same refusal: simulating an over-limit transfer returns a 
 
 Two things this does **not** do: it does not price non-stablecoin ERC-20s, which are not bounded at all, and it does not cover Solana. SPL token transfers are outside the ceiling, and the daily Solana cap counts native SOL only.
 
+Organization policies apply to these endpoints as well, and can bound them by
+contract, counterparty, asset, amount and time. See [Policies](/api/policies).
+
 ## Safe First-Write Sequence
 
 Use the same request body from simulation through broadcast so the transaction

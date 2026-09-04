@@ -30,6 +30,13 @@
     },
     {
       "method": "DELETE",
+      "path": "/api/organizations/{organizationId}/policies/{policyId}",
+      "route_file": "app/api/organizations/[organizationId]/policies/[policyId]/route.ts",
+      "source": "docs/api/policies.md",
+      "line": 318
+    },
+    {
+      "method": "DELETE",
       "path": "/api/projects/{projectId}",
       "route_file": "app/api/projects/[projectId]/route.ts",
       "source": "docs/api/projects.md",
@@ -146,7 +153,7 @@
       "path": "/api/execute/{executionId}/status",
       "route_file": "app/api/execute/[executionId]/status/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 707
+      "line": 710
     },
     {
       "method": "GET",
@@ -175,6 +182,27 @@
       "route_file": "app/api/mcp/schemas/route.ts",
       "source": "docs/api/workflows.md",
       "line": 384
+    },
+    {
+      "method": "GET",
+      "path": "/api/organizations/{organizationId}/policies",
+      "route_file": "app/api/organizations/[organizationId]/policies/route.ts",
+      "source": "docs/api/policies.md",
+      "line": 271
+    },
+    {
+      "method": "GET",
+      "path": "/api/organizations/{organizationId}/policies/catalog",
+      "route_file": "app/api/organizations/[organizationId]/policies/catalog/route.ts",
+      "source": "docs/api/policies.md",
+      "line": 335
+    },
+    {
+      "method": "GET",
+      "path": "/api/organizations/{organizationId}/policy-decisions",
+      "route_file": "app/api/organizations/[organizationId]/policy-decisions/route.ts",
+      "source": "docs/api/policies.md",
+      "line": 345
     },
     {
       "method": "GET",
@@ -318,6 +346,13 @@
     },
     {
       "method": "PATCH",
+      "path": "/api/organizations/{organizationId}/policies/{policyId}",
+      "route_file": "app/api/organizations/[organizationId]/policies/[policyId]/route.ts",
+      "source": "docs/api/policies.md",
+      "line": 317
+    },
+    {
+      "method": "PATCH",
       "path": "/api/projects/{projectId}",
       "route_file": "app/api/projects/[projectId]/route.ts",
       "source": "docs/api/projects.md",
@@ -384,21 +419,21 @@
       "path": "/api/execute/check-and-execute",
       "route_file": "app/api/execute/check-and-execute/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 446
+      "line": 449
     },
     {
       "method": "POST",
       "path": "/api/execute/contract-call",
       "route_file": "app/api/execute/contract-call/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 356
+      "line": 359
     },
     {
       "method": "POST",
       "path": "/api/execute/transfer",
       "route_file": "app/api/execute/transfer/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 288
+      "line": 291
     },
     {
       "method": "POST",
@@ -441,6 +476,20 @@
       "route_file": "app/api/organizations/[organizationId]/leave/route.ts",
       "source": "docs/api/organizations.md",
       "line": 13
+    },
+    {
+      "method": "POST",
+      "path": "/api/organizations/{organizationId}/policies",
+      "route_file": "app/api/organizations/[organizationId]/policies/route.ts",
+      "source": "docs/api/policies.md",
+      "line": 296
+    },
+    {
+      "method": "POST",
+      "path": "/api/organizations/{organizationId}/policies/simulate",
+      "route_file": "app/api/organizations/[organizationId]/policies/simulate/route.ts",
+      "source": "docs/api/policies.md",
+      "line": 324
     },
     {
       "method": "POST",
@@ -538,7 +587,7 @@
       "path": "/api/workflows/{workflowId}/simulate",
       "route_file": "app/api/workflows/[workflowId]/simulate/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 881
+      "line": 884
     },
     {
       "method": "POST",

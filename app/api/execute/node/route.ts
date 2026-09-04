@@ -17,6 +17,7 @@ import {
 } from "@/lib/idempotency";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
+import { enforceDirectNodePolicy } from "@/lib/policy/direct-execution";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { getErrorMessage } from "@/lib/utils";
 import type { ResolvedAction } from "../_lib/action-resolver";
@@ -385,6 +386,18 @@ async function executeNode(
   const integrationId = resolvedRefs?.integrationId;
 
   const safeConfig = stripReservedConfig(config);
+
+  // A read never reaches a signer, so this is the only place policy can see
+  // one that arrived through the direct API rather than a workflow.
+  const policyRefusal = await enforceDirectNodePolicy({
+    organizationId: apiKeyCtx.organizationId,
+    apiKeyId: apiKeyCtx.apiKeyId,
+    actionType: resolved.actionType,
+    config: { ...safeConfig, ...(network ? { network } : {}) },
+  });
+  if (policyRefusal) {
+    return policyRefusal;
+  }
 
   let executionId: string;
   if (preCreatedExecutionId) {

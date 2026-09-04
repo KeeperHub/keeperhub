@@ -51,6 +51,9 @@ import {
 import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
+import { isPolicyDenialMessage } from "@/lib/policy/errors";
+import { useOrganization } from "@/lib/hooks/use-organization";
+import Link from "next/link";
 
 type ExecutionLog = {
   id: string;
@@ -812,6 +815,33 @@ function getStatusLabel(status: string): string {
 }
 
 // Component for rendering individual execution log entries
+
+/**
+ * An error message with any address in it made clickable.
+ *
+ * A refusal names where the rules that refused it live. Rendering that as text
+ * leaves the reader to select and paste a URL out of a monospace block, which
+ * is the same as not telling them.
+ */
+function ErrorWithLinks({ text }: { text: string }): React.ReactNode {
+  const parts = text.split(/(\bhttps?:\/\/[^\s)'"<>]+)/g);
+  return parts.map((part, index) =>
+    /^https?:\/\//.test(part) ? (
+      <a
+        className="underline underline-offset-2 hover:text-red-500"
+        href={part}
+        key={`${part}-${index}`}
+        rel="noopener"
+        target="_blank"
+      >
+        {part}
+      </a>
+    ) : (
+      part
+    )
+  );
+}
+
 function ExecutionLogEntry({
   log,
   isExpanded,
@@ -831,6 +861,11 @@ function ExecutionLogEntry({
   isLast: boolean;
   middleContent?: React.ReactNode;
 }) {
+  // Read here rather than threaded through every caller: this entry is rendered
+  // from several places, including inside a For Each group, and a prop for one
+  // link would have to cross all of them.
+  const { organization } = useOrganization();
+
   return (
     <div className="relative flex gap-3" key={log.id}>
       {/* Timeline connector */}
@@ -910,7 +945,7 @@ function ExecutionLogEntry({
                 title="Error"
               >
                 <pre className="overflow-auto rounded-lg border border-red-500/20 bg-red-500/5 p-3 font-mono text-red-600 text-xs leading-relaxed">
-                  {log.error}
+                  <ErrorWithLinks text={log.error} />
                 </pre>
               </CollapsibleSection>
             )}
@@ -1289,7 +1324,8 @@ export function WorkflowRuns({
     <div data-ready={String(isReady)} data-testid="workflow-runs" className="space-y-3">
       {executions.map((execution, index) => {
         const isExpanded = expandedRuns.has(execution.id);
-        const executionLogs = (logs[execution.id] || []).sort((a, b) => {
+        const loadedLogs = logs[execution.id];
+        const executionLogs = (loadedLogs ?? []).sort((a, b) => {
           // Sort by startedAt to ensure first to last order
           return (
             new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
@@ -1302,7 +1338,18 @@ export function WorkflowRuns({
         const hasFailedStep = executionLogs.some(
           (log) => log.status === "error"
         );
-        const showRunError = Boolean(runErrorMessage) && !hasFailedStep;
+        // The run row records the failure before the step rows catch up, and an
+        // absent log list is "not read yet" rather than "nothing failed". Both
+        // read as no-failed-step, which flashed the whole error at the top of
+        // the run for a poll or two before the step claimed it. Wait until the
+        // steps have been read and none is still in flight.
+        const stepsSettled =
+          loadedLogs !== undefined &&
+          !executionLogs.some(
+            (log) => log.status === "pending" || log.status === "running"
+          );
+        const showRunError =
+          Boolean(runErrorMessage) && stepsSettled && !hasFailedStep;
 
         return (
           <div

@@ -7,6 +7,7 @@ import {
   applyBigIntConversion,
   needsBigIntMode,
 } from "@/lib/bigint-condition-utils";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import {
   ErrorCategory,
   logSystemError,
@@ -62,6 +63,10 @@ import {
 import { awaitCompletedStepOutputStep } from "@/lib/workflow/executor/get-completed-step-output.step";
 import { createPendingTracker } from "@/lib/workflow/executor/pending-tasks";
 import {
+  policyCheckStep,
+  policySettleStep,
+} from "@/lib/workflow/executor/policy-check.step";
+import {
   EXCEEDED_MAX_RETRIES_REGEX,
   FAILED_AFTER_RETRIES_REGEX,
   NO_STEP_COMPLETION_REGEX,
@@ -98,6 +103,7 @@ import { ARRAY_SOURCE_RE } from "@/lib/workflow/nodes/for-each/utils";
 import { triggerStep } from "@/lib/workflow/nodes/trigger/step";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import { splitTemplateRef } from "@/lib/workflow/template-ref";
+import { triggerTypeOf } from "@/lib/workflow/trigger-type";
 import { LEGACY_ACTION_MAPPINGS } from "@/plugins/legacy-mappings";
 
 // System actions that don't have plugins - maps to module import functions.
@@ -658,7 +664,7 @@ export async function preloadStepFunctions(
  * IMPORTANT: Steps receive only the integration ID as a reference to fetch credentials.
  * This prevents credentials from being logged in workflow observability output.
  */
-async function executeActionStep(input: {
+type ActionStepInput = {
   actionType: string;
   config: Record<string, unknown>;
   outputs: NodeOutputs;
@@ -666,7 +672,67 @@ async function executeActionStep(input: {
   stepFunctions: StepFunctionTable;
   nodeMap?: ReadonlyMap<string, unknown>;
   executionResults?: Record<string, ExecutionResult>;
-}) {
+};
+
+/**
+ * Check policy, run the action, then close out whatever budget it took.
+ *
+ * The settle and release live here rather than beside each of the action's many
+ * return paths. A reservation that is never closed would hold budget a run
+ * never spent, and one missed return path is exactly the kind of omission that
+ * is invisible until a customer's daily cap stops letting anything through.
+ */
+async function executeActionStep(input: ActionStepInput) {
+  const { actionType, config, context } = input;
+
+  // The node checks its own policy before it dispatches, after its own
+  // templates resolve. Doing it here, once, rather than inside each action, is
+  // what makes it unavoidable: an omission at this single site is visible, an
+  // omission across 437 step files is not.
+  //
+  // A refusal is returned as an ordinary failed step so the executor records it
+  // with the policy fault domain. Throwing would reach the message classifier,
+  // which treats an unrecognised message as a platform fault.
+  const policyVerdict = await policyCheckStep({
+    actionType,
+    config,
+    organizationId: context.organizationId,
+    createdBy: context.createdBy,
+    executionId: context.executionId,
+    nodeId: context.nodeId,
+    workflowId: context.workflowId,
+    triggerType: context.triggerType,
+    // So a refusal shows the node the reader recognises rather than a slug.
+    nodeName: context.nodeName,
+  });
+  if (policyVerdict.blocked) {
+    return {
+      success: false,
+      error: policyVerdict.message,
+      errorClass: ExecutionErrorType.POLICY,
+      policyReason: policyVerdict.reason,
+    };
+  }
+
+  const reservations = policyVerdict.reservations ?? [];
+  if (reservations.length === 0) {
+    return await runActionStep(input);
+  }
+
+  try {
+    const result = await runActionStep(input);
+    await policySettleStep({
+      reservations,
+      succeeded: (result as { success?: boolean }).success !== false,
+    });
+    return result;
+  } catch (error) {
+    await policySettleStep({ reservations, succeeded: false });
+    throw error;
+  }
+}
+
+async function runActionStep(input: ActionStepInput) {
   const { actionType, config, outputs, context, stepFunctions } = input;
 
   // Build step input WITHOUT credentials, but WITH integrationId reference and logging context
@@ -686,7 +752,6 @@ async function executeActionStep(input: {
       error: `Unknown action type: "${actionType}". This action is not registered in the plugin system. Available system actions: ${Object.keys(SYSTEM_ACTIONS).join(", ")}.`,
     };
   }
-
   // Special handling for Condition action - needs template evaluation
   if (actionType === "Condition") {
     const originalExpression =
@@ -2286,24 +2351,10 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     "trigger nodes"
   );
 
-  // Detect trigger type for step context (gas strategy uses this for multiplier selection)
-  const workflowTriggerType: string = (() => {
-    const triggerNode = nodes.find((n) => n.data.type === "trigger");
-    if (!triggerNode) {
-      return "manual";
-    }
-    const tt = triggerNode.data.config?.triggerType as string | undefined;
-    if (tt === "Webhook") {
-      return "webhook";
-    }
-    if (tt === "Scheduled" || tt === "Schedule") {
-      return "scheduled";
-    }
-    if (tt === "Event") {
-      return "event";
-    }
-    return "manual";
-  })();
+  // What started this run, shared with the metrics label and with the policy
+  // check below. Undefined when the trigger is one nothing recognises, which
+  // leaves the policy fact absent rather than claiming a person did it.
+  const workflowTriggerType = triggerTypeOf(nodes);
 
   // Helper to get a meaningful node name
   function getNodeName(node: WorkflowNode): string {

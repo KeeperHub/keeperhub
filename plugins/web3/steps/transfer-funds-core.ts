@@ -606,7 +606,7 @@ async function transferFundsSolana(args: {
   let orgSolanaAddress: string;
   try {
     ({ signer: solanaSigner, address: orgSolanaAddress } =
-      await initializeSolanaWallet(organizationId));
+      await initializeSolanaWallet(organizationId, chainId));
   } catch (error) {
     return {
       success: false,

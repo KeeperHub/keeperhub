@@ -26,7 +26,7 @@ export type AdminError = {
  * MUST go through this gate so non-admin members cannot drive on-chain state
  * or trigger RPC/oracle work from the API.
  */
-export async function validateSafeAdmin(
+async function validateSafeAdminInner(
   request: Request
 ): Promise<AdminContext | AdminError> {
   const session = await auth.api.getSession({ headers: request.headers });
@@ -72,7 +72,7 @@ export async function validateSafeAdmin(
  * 403 with a clear message so the UI can pair it with a "owner only"
  * tooltip on the disabled control.
  */
-export async function validateSafeOwner(
+async function validateSafeOwnerInner(
   request: Request
 ): Promise<AdminContext | AdminError> {
   const session = await auth.api.getSession({ headers: request.headers });
@@ -130,4 +130,39 @@ export async function getSafeForOrg(options: {
     )
     .limit(1);
   return rows[0] ?? null;
+}
+
+/**
+ * The organization's own rules, after the role floor above.
+ *
+ * Both resolvers below decide who may act on a Safe. What may be done with it
+ * is a separate question, and it is the one an organization writes a policy to
+ * answer. Running it here means every Safe route inherits the check by
+ * resolving its caller, rather than each one remembering to ask.
+ */
+async function withPolicy(
+  request: Request,
+  context: AdminContext | AdminError
+): Promise<AdminContext | AdminError> {
+  if ("error" in context) {
+    return context;
+  }
+  const { policyRefusalFor } = await import("@/lib/middleware/policy-gate");
+  const refusal = await policyRefusalFor(request, {
+    organizationId: context.organizationId,
+    userId: context.userId,
+  });
+  return refusal ? { error: refusal.error, status: refusal.status } : context;
+}
+
+export async function validateSafeAdmin(
+  request: Request
+): Promise<AdminContext | AdminError> {
+  return withPolicy(request, await validateSafeAdminInner(request));
+}
+
+export async function validateSafeOwner(
+  request: Request
+): Promise<AdminContext | AdminError> {
+  return withPolicy(request, await validateSafeOwnerInner(request));
 }

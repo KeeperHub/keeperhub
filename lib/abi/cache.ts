@@ -12,6 +12,7 @@ import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 
 type AbiCacheEntry = {
   abi: string;
+  implementationAddress: string | null;
   fetchedAt: number;
 };
 
@@ -24,6 +25,17 @@ type ResolveAbiInput = {
 type ResolveAbiResult = {
   abi: string;
   source: "definition" | "cache" | "explorer";
+  /**
+   * Set when the ABI was read from a proxy's implementation. Callers that
+   * record what they called (rather than what they decoded with) need this,
+   * because the address on the wire stays the proxy.
+   */
+  implementationAddress?: string | null;
+};
+
+type ExplorerAbiResult = {
+  abi: string;
+  implementationAddress: string | null;
 };
 
 const abiCache = new Map<string, AbiCacheEntry>();
@@ -37,7 +49,7 @@ function buildCacheKey(chainId: number, contractAddress: string): string {
 async function fetchAbiFromExplorer(
   chainId: number,
   contractAddress: string
-): Promise<string> {
+): Promise<ExplorerAbiResult> {
   const explorerResults = await db
     .select()
     .from(explorerConfigs)
@@ -76,7 +88,10 @@ async function fetchAbiFromExplorer(
       ETHERSCAN_API_KEY
     );
     if (implResult.success && implResult.abi) {
-      return JSON.stringify(implResult.abi);
+      return {
+        abi: JSON.stringify(implResult.abi),
+        implementationAddress: sourceCodeResult.implementationAddress,
+      };
     }
   }
 
@@ -88,7 +103,10 @@ async function fetchAbiFromExplorer(
         (entry as Record<string, unknown>).type === "function"
     );
     if (hasFunctions) {
-      return JSON.stringify(directResult.abi);
+      return {
+        abi: JSON.stringify(directResult.abi),
+        implementationAddress: null,
+      };
     }
   }
 
@@ -101,7 +119,10 @@ async function fetchAbiFromExplorer(
       ETHERSCAN_API_KEY
     );
     if (implResult.success && implResult.abi) {
-      return JSON.stringify(implResult.abi);
+      return {
+        abi: JSON.stringify(implResult.abi),
+        implementationAddress: proxyResult.implementationAddress,
+      };
     }
   }
 
@@ -122,11 +143,24 @@ export async function resolveAbi(
 
   const cached = abiCache.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-    return { abi: cached.abi, source: "cache" };
+    return {
+      abi: cached.abi,
+      source: "cache",
+      implementationAddress: cached.implementationAddress,
+    };
   }
 
-  const abi = await fetchAbiFromExplorer(chainId, input.contractAddress);
-  abiCache.set(cacheKey, { abi, fetchedAt: Date.now() });
+  const resolved = await fetchAbiFromExplorer(chainId, input.contractAddress);
+  const abi = resolved.abi;
+  abiCache.set(cacheKey, {
+    abi,
+    implementationAddress: resolved.implementationAddress,
+    fetchedAt: Date.now(),
+  });
 
-  return { abi, source: "explorer" };
+  return {
+    abi,
+    source: "explorer",
+    implementationAddress: resolved.implementationAddress,
+  };
 }

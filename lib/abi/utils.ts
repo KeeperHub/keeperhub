@@ -40,11 +40,24 @@ export function computeSelector(
   name: string,
   inputs: Array<AbiInput | string>
 ): string {
+  return ethers.id(canonicalSignature(name, inputs)).slice(0, 10);
+}
+
+/**
+ * Build the canonical signature string a selector is hashed from, e.g.
+ * "supply(address,uint256,address,uint16)".
+ *
+ * Shared with `computeSelector` so a displayed signature and the selector it
+ * compiles to are always derived from the same normalization.
+ */
+export function canonicalSignature(
+  name: string,
+  inputs: Array<AbiInput | string>
+): string {
   const types = inputs.map((input) =>
     typeof input === "string" ? input : canonicalType(input)
   );
-  const signature = `${name}(${types.join(",")})`;
-  return ethers.id(signature).slice(0, 10);
+  return `${name}(${types.join(",")})`;
 }
 
 export type AbiItem = {

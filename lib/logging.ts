@@ -178,6 +178,10 @@ export const ErrorCategory = {
   NETWORK_RPC: "network_rpc",
   TRANSACTION: "transaction",
   BILLING: "billing",
+  // the organization's own guardrail refused the action. Neither a
+  // user mistake nor a platform failure, so it gets its own bucket and stays
+  // out of the failure-rate view.
+  POLICY: "policy",
   // A caller using a valid credential outside its grant. User-caused and
   // reachable at the caller's own request rate, so it is deliberately not
   // AUTH -- that is the system-side family (broken sessions, misconfigured

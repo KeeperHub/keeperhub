@@ -31,7 +31,7 @@ export type AuthFailure = {
   // `mfa_required` sits outside the documented set on purpose: the dialog
   // branches on it to route into step-up rather than showing a dead error, and
   // the docs already allow a route to raise a more specific code.
-  code: ApiErrorCode | "mfa_required";
+  code: ApiErrorCode | "mfa_required" | "policy_denied";
   status: number;
 };
 
@@ -306,7 +306,7 @@ async function resolveOAuthToken(request: Request): Promise<{
  * @param required - If true (default), returns 401 when no auth method succeeds.
  *   Set to false for routes that allow unauthenticated access (e.g. public workflows).
  */
-export async function getDualAuthContext(
+async function getDualAuthContextInner(
   request: Request,
   options?: { required?: boolean }
 ): Promise<DualAuthContext> {
@@ -415,7 +415,7 @@ export type OrganizationAuthContext =
  * session. Used by routes that only need org-level authorization but still
  * want authMethod / apiKeyId for logging.
  */
-export async function resolveOrganizationId(
+async function resolveOrganizationIdInner(
   request: Request
 ): Promise<OrganizationAuthContext> {
   const oauthAuth = await resolveOAuthToken(request);
@@ -488,7 +488,7 @@ export async function resolveOrganizationId(
  * Resolves both organization ID and user ID from either OAuth, API key, or session.
  * Used by POST routes that need to track the creator.
  */
-export async function resolveCreatorContext(request: Request): Promise<
+async function resolveCreatorContextInner(request: Request): Promise<
   | {
       organizationId: string;
       userId: string;
@@ -611,4 +611,82 @@ export function authFailureResponse(
     detail: failure.error,
     requestHeaders,
   });
+}
+
+/**
+ * Policy runs after the principal is known and before the route body runs.
+ *
+ * Every route reaches an organization through one of these resolvers, so
+ * wrapping them is what makes governance a property of the request rather than
+ * of whether a route author remembered. A resolver that already refused is
+ * returned untouched: the role floor decided first, and policy only subtracts.
+ */
+async function withPolicyGate<T>(
+  request: Request,
+  context: T
+): Promise<T | AuthFailure> {
+  if (context === null || typeof context !== "object") {
+    return context;
+  }
+  if ("error" in context) {
+    return context;
+  }
+  const { userId, organizationId } = context as unknown as {
+    userId?: string | null;
+    organizationId?: string | null;
+  };
+  if (!(userId && organizationId)) {
+    return context;
+  }
+  try {
+    const { policyRefusalFor } = await import("./policy-gate");
+    const refusal = await policyRefusalFor(request, {
+      organizationId,
+      userId,
+      authMethod: (context as unknown as { authMethod?: AuthMethod })
+        .authMethod,
+      apiKeyId: (context as unknown as { apiKeyId?: string | null }).apiKeyId,
+    });
+    return refusal ?? context;
+  } catch {
+    // The gate could not reach a decision. Letting this escape makes the route
+    // report a fault of its own, which is both wrong about the cause and, for a
+    // route that catches broadly, a way for an unreachable policy to end up
+    // looking like a server error instead of a refusal. A check that cannot run
+    // refuses, the same as one that runs and refuses.
+    return {
+      error:
+        "This action could not be checked against the policy that governs it",
+      code: "policy_denied",
+      status: 403,
+    };
+  }
+}
+
+export async function getDualAuthContext(
+  request: Request,
+  options?: { required?: boolean }
+): Promise<DualAuthContext> {
+  return (await withPolicyGate(
+    request,
+    await getDualAuthContextInner(request, options)
+  )) as DualAuthContext;
+}
+
+export async function resolveOrganizationId(
+  request: Request
+): Promise<OrganizationAuthContext> {
+  return (await withPolicyGate(
+    request,
+    await resolveOrganizationIdInner(request)
+  )) as OrganizationAuthContext;
+}
+
+export async function resolveCreatorContext(
+  request: Request
+): Promise<Awaited<ReturnType<typeof resolveCreatorContextInner>>> {
+  return (await withPolicyGate(
+    request,
+    await resolveCreatorContextInner(request)
+  )) as Awaited<ReturnType<typeof resolveCreatorContextInner>>;
 }
