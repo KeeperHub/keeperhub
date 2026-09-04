@@ -674,8 +674,10 @@ describe("resolveOrganizationId — origin check wiring", () => {
     );
     expect(result).toEqual({
       organizationId: "org_session",
+      userId: "user_session",
       authMethod: "session",
       apiKeyId: null,
+      isAnonymous: false,
     });
   });
 });
