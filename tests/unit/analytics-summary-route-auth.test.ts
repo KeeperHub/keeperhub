@@ -116,20 +116,30 @@ describe("GET /api/analytics/summary auth (session-only -> dual auth)", () => {
     );
   });
 
-  it("denies 403 when the API key scope lacks mcp:read", async () => {
+  it("admits an unscoped API key (scope undefined = legacy full access)", async () => {
+    // parseScopeInput never returns an empty string, and api-key-auth maps a
+    // null scope column to undefined, so scope: "" cannot occur. The real
+    // unscoped-key case is scope: undefined, which scopeSatisfies admits as
+    // full access for backwards compatibility. Pin that behaviour so a future
+    // change to scopeSatisfies breaks this test instead of silently narrowing
+    // every unscoped key.
     authenticateApiKeyMock.mockResolvedValueOnce({
       authenticated: true,
       userId: "user_key",
       organizationId: "org_from_key",
       apiKeyId: "key_1",
-      scope: "",
+      scope: undefined,
     });
 
     const res = await GET(request("Bearer kh_test_123"));
-    expect(res.status).toBe(403);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toBe("insufficient_scope");
-    expect(getAnalyticsSummary).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(getAnalyticsSummary).toHaveBeenCalledWith(
+      "org_from_key",
+      expect.anything(),
+      undefined,
+      undefined,
+      undefined
+    );
   });
 
   it("keeps resolving org from an OAuth Bearer JWT", async () => {
@@ -153,10 +163,12 @@ describe("GET /api/analytics/summary auth (session-only -> dual auth)", () => {
 
   it("rejects 401 when the session belongs to an anonymous user", async () => {
     // OAuth and API-key auth both fail; the session branch resolves. The
-    // route rejects anonymous sessions at route level (matching the
-    // requireOrganization behaviour it replaced) rather than in the shared
-    // resolver, which 26 routes call — several of which exist to serve
-    // anonymous visitors.
+    // route rejects anonymous sessions at route level. The rejection lives on
+    // the route rather than in the shared resolver, which 26 routes call -
+    // several of which exist to serve anonymous visitors. (The previous
+    // requireOrganization wrapper did not in fact reject anonymous sessions,
+    // which resolve to their own throwaway org; the check is kept to match
+    // the sidebar, which hides Analytics from anonymous users.)
     // getSession is called twice on this path (once by resolveOrganizationId,
     // once by getOrgContext), so the mock must persist for both calls.
     getSessionMock.mockResolvedValue({

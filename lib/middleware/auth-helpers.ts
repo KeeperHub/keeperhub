@@ -412,10 +412,6 @@ export type OrganizationAuthContext =
       // anonymous visitors check this; callers that serve anonymous
       // exploration (the default) ignore it.
       isAnonymous?: boolean;
-      // The authenticated user, when the auth method has one. Undefined for
-      // unscoped API keys and anonymous-free OAuth contexts only when the
-      // token has no sub. Present so policy gates (withPolicyGate) can run.
-      userId?: string | null;
     }
   | AuthFailure;
 
@@ -431,7 +427,6 @@ export async function resolveOrganizationId(
   if (oauthAuth?.organizationId) {
     return {
       organizationId: oauthAuth.organizationId,
-      userId: oauthAuth.userId,
       authMethod: "oauth",
       apiKeyId: null,
       scope: oauthAuth.scope,
@@ -451,7 +446,6 @@ export async function resolveOrganizationId(
     }
     return {
       organizationId,
-      userId: apiKeyAuth.userId ?? undefined,
       authMethod: "api-key",
       apiKeyId: apiKeyAuth.apiKeyId ?? null,
       scope: apiKeyAuth.scope,
@@ -490,7 +484,6 @@ export async function resolveOrganizationId(
   }
   return {
     organizationId: orgResult.organizationId,
-    userId: session.user.id,
     authMethod: "session",
     apiKeyId: null,
     isAnonymous: isAnonymousUserShape(session.user),

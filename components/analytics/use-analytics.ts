@@ -81,6 +81,20 @@ async function processSection<T>(
     ctx.onAbort(message);
     return;
   }
+  // The analytics routes resolve the org via resolveOrganizationId, which
+  // answers 400 "No active organization" for an authenticated session whose
+  // user has no org yet. The dashboard must show the join-an-org state for
+  // that case, not a raw fetch error. (The routes return 403 for a missing
+  // credential, which the branch above already maps.)
+  if (res.status === 400) {
+    const body = (await res.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+    if (body?.error === "No active organization") {
+      ctx.onAbort("ORG_REQUIRED");
+      return;
+    }
+  }
   if (!res.ok) {
     throw new Error(`${label} fetch failed: ${res.status}`);
   }
