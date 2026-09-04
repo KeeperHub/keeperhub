@@ -82,10 +82,11 @@ vi.mock("../../app/api/execute/_lib/concurrency-limit", () => ({
   enforceDirectExecutionConcurrency: vi.fn().mockResolvedValue(null),
 }));
 
+const failExecutionMock = vi.fn().mockResolvedValue({ status: "failed" });
 vi.mock("../../app/api/execute/_lib/execution-service", () => ({
   markRunning: vi.fn(),
   completeExecution: vi.fn().mockResolvedValue({ status: "completed" }),
-  failExecution: vi.fn(),
+  failExecution: (...args: unknown[]) => failExecutionMock(...args),
   redactInput: (x: unknown) => x,
   withRejectedSignerOverride: (a: unknown) => a,
 }));
@@ -136,6 +137,7 @@ beforeEach(() => {
     allowed: true,
     executionId: "exec_1",
   });
+  failExecutionMock.mockResolvedValue({ status: "failed" });
   writeContractCoreMock.mockResolvedValue({
     success: true,
     transactionHash: "0xtx",
@@ -179,19 +181,96 @@ describe("execute protocol idempotency disposition", () => {
   });
 
   it("finalizes as success when the write broadcasts and succeeds", async () => {
-    await postSwap();
+    const response = await postSwap();
+    const body = (await response.json()) as {
+      executionId: string;
+      status: string;
+      transactionHash?: string;
+    };
 
+    expect(response.status).toBe(202);
+    expect(body).toEqual(
+      expect.objectContaining({
+        executionId: "exec_1",
+        status: "completed",
+        transactionHash: "0xtx",
+      })
+    );
     expect(lastDisposition()).toBe("success");
+    expect(recordIdempotentResponseMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: 202 }),
+      "success"
+    );
   });
 
   it("finalizes as failed when the write reverts after broadcast", async () => {
     writeContractCoreMock.mockResolvedValue({
       success: false,
       error: "reverted",
+      transactionHash: "0xfailed",
+      transactionLink: "https://scan/0xfailed",
+      rejection: { kind: "string-revert", reason: "execution reverted" },
+      errorClass: "external",
     });
 
-    await postSwap();
+    const response = await postSwap();
+    const body = (await response.json()) as {
+      executionId: string;
+      status: string;
+      error?: string;
+      transactionHash?: string;
+      transactionLink?: string;
+      rejection?: { kind: string; reason?: string };
+      errorClass?: string;
+    };
 
+    expect(response.status).toBe(202);
+    expect(body).toEqual(
+      expect.objectContaining({
+        executionId: "exec_1",
+        status: "failed",
+        error: "reverted",
+        transactionHash: "0xfailed",
+        transactionLink: "https://scan/0xfailed",
+        rejection: { kind: "string-revert", reason: "execution reverted" },
+        errorClass: "external",
+      })
+    );
+    expect(failExecutionMock).toHaveBeenCalledWith(
+      "exec_1",
+      "reverted",
+      expect.objectContaining({
+        transactionHash: "0xfailed",
+        transactionLink: "https://scan/0xfailed",
+        rejection: { kind: "string-revert", reason: "execution reverted" },
+        errorClass: "external",
+      })
+    );
+    expect(lastDisposition()).toBe("failed");
+  });
+
+  it("omits error on unconfirmed so callers poll instead of retrying", async () => {
+    writeContractCoreMock.mockResolvedValue({
+      success: false,
+      error: "receipt unreadable",
+      transactionHash: "0xpending",
+      transactionLink: "https://scan/0xpending",
+      rejection: { kind: "string-revert", reason: "pending" },
+      errorClass: "external",
+    });
+    failExecutionMock.mockResolvedValue({ status: "unconfirmed" });
+
+    const response = await postSwap();
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(202);
+    expect(body.status).toBe("unconfirmed");
+    expect(body.transactionHash).toBe("0xpending");
+    expect(body.transactionLink).toBe("https://scan/0xpending");
+    expect(body).not.toHaveProperty("error");
+    expect(body).not.toHaveProperty("rejection");
+    expect(body).not.toHaveProperty("errorClass");
     expect(lastDisposition()).toBe("failed");
   });
 });

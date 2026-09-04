@@ -1709,6 +1709,12 @@ export function registerTools(
           "- simulation is EVM-only; Solana chain IDs 101/103 and their aliases are rejected before the API call",
           "- view/pure calls and unmet conditions return their normal read/no-action result",
           "",
+          "PROTOCOL WRITES",
+          "1. Call execute_protocol_action with a unique idempotency_key. There is no simulate / dry-run mode; a write signs and broadcasts immediately",
+          "2. Poll get_direct_execution_status with bounded backoff until completed or failed",
+          "3. Save the terminal transactionLink as the onchain proof",
+          "- status unconfirmed is non-terminal: keep polling. Never rotate the key or re-send; the transaction may still land",
+          "",
           "TEMPLATE SYNTAX",
           "Reference outputs from previous nodes using: {{@nodeId:Label.field}}",
           "Example: {{@check-balance:Check Balance.balance}}",
@@ -1933,7 +1939,7 @@ export function registerTools(
       execution_id: z
         .string()
         .describe(
-          "The execution ID returned by execute_transfer, execute_contract_call, or execute_check_and_execute"
+          "The execution ID returned by execute_transfer, execute_contract_call, execute_protocol_action, or execute_check_and_execute"
         ),
     },
     {
@@ -2418,7 +2424,7 @@ export function registerMetaTools(
   // Meta-tool 2: Execute any protocol action by actionType
   server.tool(
     "execute_protocol_action",
-    "Execute a DeFi protocol action directly. Use search_protocol_actions first to discover available actions and their required parameters. The actionType follows the format 'protocol/action-slug' (e.g., 'chronicle/eth-usd-read', 'aave-v3/supply', 'morpho/get-position'). Pass all required parameters in the params object. For writes, pass idempotency_key and retry with the same key when the previous attempt's outcome is unknown (e.g. after a timeout).",
+    "Execute a DeFi protocol action directly. Use search_protocol_actions first to discover available actions and their required parameters. The actionType follows the format 'protocol/action-slug' (e.g., 'chronicle/eth-usd-read', 'aave-v3/supply', 'morpho/get-position'). Pass all required parameters in the params object. This tool has no dry-run mode and no simulate flag; writes sign and broadcast. Write actions return HTTP 202 with executionId and status; poll get_direct_execution_status for the full receipt. For writes, pass idempotency_key and retry with the same key when the previous attempt's outcome is unknown (e.g. after a timeout). Do not re-send when status is unconfirmed.",
     {
       actionType: z
         .string()
