@@ -1058,6 +1058,13 @@
       "when": 1788517619226,
       "tag": "0150_keep_1333_summary_covering_index",
       "breakpoints": true
+    },
+    {
+      "idx": 151,
+      "version": "7",
+      "when": 1788517620226,
+      "tag": "0151_keep_2305_condition_group_to_condition_config",
+      "breakpoints": true
     }
   ]
 }

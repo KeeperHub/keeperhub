@@ -24,6 +24,13 @@ export type UnresolvedRef = {
   token: string;
   reason: UnresolvedReason;
   detail?: string;
+  /**
+   * Where in the rendered config the token was found, as a dotted path with
+   * bracket indices, for example `group.rules[0].leftOperand`. Present for
+   * leftover literals, which are the case where the token's own spelling is
+   * often correct and the field holding it is the actual fault.
+   */
+  path?: string;
 };
 
 export type TemplateResolutionTracker = {
@@ -63,7 +70,8 @@ export function recordUnresolved(
 export function scanForLeftoverLiterals(
   value: unknown,
   out: UnresolvedRef[],
-  depth = 0
+  depth = 0,
+  path = ""
 ): void {
   if (depth > 10 || out.length > 50) {
     return;
@@ -74,6 +82,7 @@ export function scanForLeftoverLiterals(
         token: match[0],
         reason: "literal-leftover",
         detail: "Reference left in rendered config; resolver did not match.",
+        path: path || undefined,
       });
       if (out.length > 50) {
         return;
@@ -82,14 +91,19 @@ export function scanForLeftoverLiterals(
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) {
-      scanForLeftoverLiterals(item, out, depth + 1);
+    for (const [index, item] of value.entries()) {
+      scanForLeftoverLiterals(item, out, depth + 1, `${path}[${index}]`);
     }
     return;
   }
   if (value && typeof value === "object") {
-    for (const item of Object.values(value as Record<string, unknown>)) {
-      scanForLeftoverLiterals(item, out, depth + 1);
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      scanForLeftoverLiterals(
+        item,
+        out,
+        depth + 1,
+        path ? `${path}.${key}` : key
+      );
     }
   }
 }
@@ -129,7 +143,13 @@ function dedupeByToken(refs: UnresolvedRef[]): UnresolvedRef[] {
 
 function formatErrorMessage(unresolved: UnresolvedRef[]): string {
   const summaries = unresolved.slice(0, 5).map((ref) => {
-    return ref.detail ? `${ref.token} (${ref.detail})` : ref.token;
+    // Naming the field matters when the token itself is spelled correctly and the
+    // key holding it is the one the renderer never reached. Without it the message
+    // sends the reader to rewrite a reference that was never wrong.
+    const where = ref.path ? ` at ${ref.path}` : "";
+    return ref.detail
+      ? `${ref.token}${where} (${ref.detail})`
+      : `${ref.token}${where}`;
   });
   const more =
     unresolved.length > summaries.length

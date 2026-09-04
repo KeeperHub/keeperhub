@@ -698,3 +698,73 @@ describe("extractTemplateParameters strict integration", () => {
     expect(tracker.unresolved[0]?.reason).toBe("no-path");
   });
 });
+
+describe("leftover literals name the field that carried them", () => {
+  // Issue #2305: a config key the renderer never reaches keeps its tokens, and the
+  // scan then reports the reference as unresolved. The reference is usually spelled
+  // correctly and the key above it is the fault, so the message has to say where.
+  const conditionConfigWithStaleGroup = {
+    actionType: "Condition",
+    condition: "resolved by its own path",
+    group: {
+      id: "group-1",
+      logic: "AND",
+      rules: [
+        {
+          id: "rule-1",
+          leftOperand: "{{@step-1:Get Aave Health Factor.healthFactor}}",
+          operator: "<",
+          rightOperand: "1500000000000000000",
+        },
+      ],
+    },
+  };
+
+  it("names the path through an array-valued key", () => {
+    const tracker = createTracker();
+    let message = "";
+    try {
+      assertResolved(tracker, conditionConfigWithStaleGroup, {
+        nodeId: "step-2",
+        nodeLabel: "Condition",
+        actionType: "Condition",
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(UNRESOLVED_REF_MESSAGE);
+    expect(message).toContain("group.rules[0].leftOperand");
+    expect(message).toContain("{{@step-1:Get Aave Health Factor.healthFactor}}");
+  });
+
+  it("records the path on the ref itself", () => {
+    const tracker = createTracker();
+    try {
+      assertResolved(tracker, conditionConfigWithStaleGroup, {});
+    } catch (error) {
+      const { unresolved } = error as TemplateResolutionError;
+      expect(unresolved[0]?.path).toBe("group.rules[0].leftOperand");
+      expect(unresolved[0]?.reason).toBe("literal-leftover");
+    }
+  });
+
+  it("omits the path clause when the token sits at the root", () => {
+    const tracker = createTracker();
+    let message = "";
+    try {
+      assertResolved(tracker, "{{@step-1:Node.field}}", {});
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(UNRESOLVED_REF_MESSAGE);
+    expect(message).not.toContain(" at ");
+  });
+
+  it("does not throw once the group is nested under conditionConfig", () => {
+    // processActionConfig lifts `conditionConfig` out before rendering, so its
+    // tokens never reach this scan. Simulate that by passing the config without it.
+    const { group, ...rest } = conditionConfigWithStaleGroup;
+    const repaired = { ...rest };
+    expect(() => assertResolved(createTracker(), repaired, {})).not.toThrow();
+  });
+});

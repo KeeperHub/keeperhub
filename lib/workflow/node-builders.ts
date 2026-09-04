@@ -92,7 +92,13 @@ export function buildConditionNode(
       config: {
         actionType: "Condition",
         condition: conditionConfig.condition,
-        group: conditionConfig.group,
+        // The runtime reads the rule group from `conditionConfig`, and
+        // `processActionConfig` lifts only `condition` and `conditionConfig` out
+        // before rendering templates. A top-level `group` is therefore never read,
+        // and its rules array carries unrendered tokens into the leftover-literal
+        // scan, which aborts the run. `lib/scan/factory/node-builders.ts` has always
+        // emitted the nested shape; this builder is the one that drifted.
+        conditionConfig: { group: conditionConfig.group },
       },
       status: "idle",
     },
