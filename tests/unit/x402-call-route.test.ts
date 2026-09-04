@@ -25,6 +25,11 @@ const {
   mockAuthenticateOAuthToken,
   mockBuildCallCompletionResponse,
   mockChargePaygIfBillable,
+  mockBeginIdempotentFromRequest,
+  mockIdempotencyEarlyResponse,
+  mockRecordIdempotentResponse,
+  mockSafeRecordIdempotentResponse,
+  mockWithIdempotencyHeartbeat,
 } = vi.hoisted(() => ({
   mockDbSelect: vi.fn(),
   mockDbInsert: vi.fn(),
@@ -46,6 +51,23 @@ const {
   mockAuthenticateOAuthToken: vi.fn(),
   mockBuildCallCompletionResponse: vi.fn(),
   mockChargePaygIfBillable: vi.fn(),
+  mockBeginIdempotentFromRequest: vi.fn(),
+  mockIdempotencyEarlyResponse: vi.fn(),
+  mockRecordIdempotentResponse: vi.fn(
+    (_idem: unknown, response: Response, _disposition?: string) =>
+      Promise.resolve(response)
+  ),
+  mockSafeRecordIdempotentResponse: vi.fn(
+    (
+      _idem: unknown,
+      response: Response,
+      _disposition?: string,
+      _context?: string
+    ) => Promise.resolve(response)
+  ),
+  mockWithIdempotencyHeartbeat: vi.fn((_idem: unknown, work: () => unknown) =>
+    work()
+  ),
 }));
 
 // ---------------------------------------------------------------------------
@@ -82,6 +104,7 @@ vi.mock("@/lib/payments/x402/payment-gate", () => ({
   hashPaymentSignature: mockHashPaymentSignature,
   recordPayment: mockRecordPayment,
   resolveCreatorWallet: mockResolveCreatorWallet,
+  extractPayerAddress: vi.fn().mockReturnValue("0xPayer"),
 }));
 
 vi.mock("@/lib/payments/mpp/server", () => ({
@@ -152,6 +175,28 @@ vi.mock("@/lib/errors/classify", () => ({
 }));
 vi.mock("@/lib/errors/finalize-error", () => ({
   recordExecutionErrorFinalized: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("server-only", () => ({}));
+
+vi.mock("@/lib/idempotency", () => ({
+  beginIdempotentFromRequest: (...args: unknown[]) =>
+    mockBeginIdempotentFromRequest(...args),
+  idempotencyEarlyResponse: (...args: unknown[]) =>
+    mockIdempotencyEarlyResponse(...args),
+  recordIdempotentResponse: (
+    idem: unknown,
+    response: Response,
+    disposition?: string
+  ) => mockRecordIdempotentResponse(idem, response, disposition),
+  safeRecordIdempotentResponse: (
+    idem: unknown,
+    response: Response,
+    disposition?: string,
+    context?: string
+  ) => mockSafeRecordIdempotentResponse(idem, response, disposition, context),
+  withIdempotencyHeartbeat: (idem: unknown, work: () => unknown) =>
+    mockWithIdempotencyHeartbeat(idem, work),
 }));
 
 // ---------------------------------------------------------------------------
@@ -330,6 +375,15 @@ describe("POST /api/mcp/workflows/[slug]/call", () => {
       }
       return null;
     });
+    mockBeginIdempotentFromRequest.mockResolvedValue({ kind: "proceed" });
+    mockIdempotencyEarlyResponse.mockReturnValue(null);
+    mockRecordIdempotentResponse.mockImplementation(
+      (_idem: unknown, response: Response, _disposition?: string) =>
+        Promise.resolve(response)
+    );
+    mockWithIdempotencyHeartbeat.mockImplementation(
+      (_idem: unknown, work: () => unknown) => work()
+    );
   });
 
   function setUnauthenticated(): void {
@@ -671,7 +725,11 @@ describe("POST /api/mcp/workflows/[slug]/call", () => {
     mockRecordPayment.mockRejectedValue(new Error("db connection lost"));
 
     const setMock = vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn().mockReturnValue({
+        returning: vi
+          .fn()
+          .mockResolvedValue([{ workflowId: LISTED_WORKFLOW.id }]),
+      }),
     });
     mockDbUpdate.mockReturnValue({ set: setMock });
 
@@ -682,15 +740,22 @@ describe("POST /api/mcp/workflows/[slug]/call", () => {
     const params = Promise.resolve({ slug: "test-workflow" });
     const response = await POST(request, { params });
 
-    // The error propagates through the outer POST try/catch as a 500.
-    expect(response.status).toBe(500);
-    // The execution row was marked failed before the error escaped.
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain("Payment could not be recorded");
+    // The execution row was marked failed before the 503 was returned.
     expect(mockDbUpdate).toHaveBeenCalled();
     expect(setMock).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "error",
         error: expect.stringContaining("recordPayment failed"),
       })
+    );
+    expect(mockSafeRecordIdempotentResponse).toHaveBeenCalledWith(
+      null,
+      expect.any(Response),
+      "release",
+      expect.any(String)
     );
     // The workflow itself was never started.
     expect(mockStart).not.toHaveBeenCalled();

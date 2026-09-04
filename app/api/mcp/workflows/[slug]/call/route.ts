@@ -19,12 +19,20 @@ import { recordExecutionErrorFinalized } from "@/lib/errors/finalize-error";
 import { extractActionTypeNodes } from "@/lib/features";
 import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
 import { HttpStatus } from "@/lib/http-status";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import {
+  beginIdempotentFromRequest,
+  type IdempotencyOutcome,
+  idempotencyEarlyResponse,
+  safeRecordIdempotentResponse,
+  withIdempotencyHeartbeat,
+} from "@/lib/idempotency";
+import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import {
   checkIpRateLimit,
   getClientIp,
   type RateLimitResult,
 } from "@/lib/mcp/rate-limit";
+import type { PaymentProtocol } from "@/lib/payments/rails";
 import {
   detectProtocol,
   gatePayment,
@@ -53,12 +61,99 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, PAYMENT-SIGNATURE",
+    "Content-Type, Authorization, PAYMENT-SIGNATURE, Idempotency-Key",
   "Access-Control-Expose-Headers": "Payment-Receipt",
 } as const;
 
 export function OPTIONS(): NextResponse {
   return NextResponse.json({}, { headers: corsHeaders });
+}
+
+type CallIdempotencyStart =
+  | { kind: "early"; response: NextResponse }
+  | { kind: "proceed"; idem: IdempotencyOutcome | null };
+
+/**
+ * Reserve an Idempotency-Key for a paid marketplace call after the payment
+ * gate has verified the credential. Scope includes protocol and the verified
+ * payer so the same key cannot collide across callers or rails and cannot be
+ * forged from an unsigned header. Call only from inside the gatePayment
+ * handler factory -- never on a 402 probe, and never before verification.
+ *
+ * When a key is present but the verified meta has no payer (e.g. MPP wallet
+ * omitted `credential.source`), proceed without a reservation rather than
+ * returning 400: this helper only runs after settlement on MPP, so rejecting
+ * would take funds and deliver nothing.
+ */
+async function beginCallIdempotency(
+  request: Request,
+  workflow: CallRouteWorkflow,
+  body: Record<string, unknown>,
+  payerAddress: string | null,
+  protocol: PaymentProtocol
+): Promise<CallIdempotencyStart> {
+  const key = request.headers.get("Idempotency-Key")?.trim();
+  if (!key) {
+    return { kind: "proceed", idem: null };
+  }
+  if (!workflow.organizationId) {
+    return { kind: "proceed", idem: null };
+  }
+
+  if (!payerAddress) {
+    logSystemWarn(
+      ErrorCategory.VALIDATION,
+      "[x402/call] Idempotency-Key ignored: verified payment has no payer address",
+      undefined,
+      { workflowId: workflow.id, protocol }
+    );
+    return { kind: "proceed", idem: null };
+  }
+
+  const idem = await beginIdempotentFromRequest({
+    request,
+    organizationId: workflow.organizationId,
+    scope: `mcp-call:${workflow.id}:${protocol}:${payerAddress.toLowerCase()}`,
+    requestBody: body,
+  });
+  if (idem) {
+    const early = idempotencyEarlyResponse(idem);
+    if (early) {
+      return {
+        kind: "early",
+        response: NextResponse.json(early.body, {
+          status: early.status,
+          headers: corsHeaders,
+        }),
+      };
+    }
+  }
+  return { kind: "proceed", idem };
+}
+
+function completionIdempotencyDisposition(body: {
+  status?: string;
+}): "success" | "release" {
+  return body.status === "running" ? "release" : "success";
+}
+
+async function recordCompletionResponse(
+  idem: IdempotencyOutcome | null,
+  body: { status?: string },
+  context: string,
+  skipSuccessFinalize = false
+): Promise<NextResponse> {
+  const response = NextResponse.json(body, { headers: corsHeaders });
+  const disposition = completionIdempotencyDisposition(body);
+  if (skipSuccessFinalize && disposition === "success") {
+    return response;
+  }
+  return await safeRecordIdempotentResponse(
+    idem,
+    response,
+    disposition,
+    context
+  );
 }
 
 /**
@@ -395,7 +490,8 @@ function calldataResponse(deliverable: PaymentDeliverable): NextResponse {
 async function gateWriteCall(
   request: Request,
   workflow: CallRouteWorkflow,
-  deliverable: PaymentDeliverable | null
+  deliverable: PaymentDeliverable | null,
+  body: Record<string, unknown> = {}
 ): Promise<NextResponse> {
   const creatorWalletAddress = await resolveCreatorWallet(
     workflow.organizationId
@@ -411,6 +507,10 @@ async function gateWriteCall(
     );
   }
 
+  // Idempotency is reserved inside the handler after the gate has verified
+  // the payer. A 402 probe never reaches this factory. MPP finalizes after
+  // withReceipt via getIdem so the stored body keeps Payment-Receipt.
+  const idemHold: { current: IdempotencyOutcome | null } = { current: null };
   return gatePayment(
     request,
     workflow,
@@ -435,6 +535,19 @@ async function gateWriteCall(
           );
         }
 
+        const started = await beginCallIdempotency(
+          request,
+          workflow,
+          body,
+          meta.payerAddress,
+          meta.protocol
+        );
+        if (started.kind === "early") {
+          return started.response;
+        }
+        const idem = started.idem;
+        idemHold.current = idem;
+
         try {
           await recordPayment({
             workflowId: workflow.id,
@@ -454,7 +567,7 @@ async function gateWriteCall(
             // path. The caller's funds have already moved, so failing here
             // would take money and deliver nothing. Deliver, and log loudly:
             // a missing earnings row can be reconciled by hand, a stolen
-            // payment cannot.
+            // payment cannot. Router finalizes via getIdem after withReceipt.
             logSystemError(
               ErrorCategory.DATABASE,
               "[x402/call] Calldata payment row lost after MPP settlement",
@@ -472,18 +585,31 @@ async function gateWriteCall(
             err,
             { workflowId: workflow.id }
           );
-          return NextResponse.json(
-            {
-              error:
-                "Payment could not be recorded. No funds were taken -- retry the same request.",
-            },
-            { status: HttpStatus.SERVICE_UNAVAILABLE, headers: corsHeaders }
+          return await safeRecordIdempotentResponse(
+            idem,
+            NextResponse.json(
+              {
+                error:
+                  "Payment could not be recorded. No funds were taken -- retry the same request.",
+              },
+              { status: HttpStatus.SERVICE_UNAVAILABLE, headers: corsHeaders }
+            ),
+            "release",
+            "[x402/call] Idempotency finalize failed after calldata recordPayment error"
           );
         }
 
-        return calldataResponse(deliverable);
+        return meta.protocol === "mpp"
+          ? calldataResponse(deliverable)
+          : await safeRecordIdempotentResponse(
+              idem,
+              calldataResponse(deliverable),
+              "success",
+              "[x402/call] Idempotency finalize failed after calldata delivery"
+            );
       };
-    }
+    },
+    { getIdem: () => idemHold.current }
   );
 }
 
@@ -536,7 +662,7 @@ async function handleWriteWorkflow(
     return calldataResponse(deliverable);
   }
 
-  return await gateWriteCall(request, workflow, deliverable);
+  return await gateWriteCall(request, workflow, deliverable, writeBody);
 }
 
 async function handlePaidWorkflow(
@@ -558,15 +684,38 @@ async function handlePaidWorkflow(
     );
   }
 
+  // Reservation happens inside the handler after the gate verifies the payer.
+  // 402 probes never reach that factory, so they cannot lock the key. MPP
+  // finalizes after withReceipt via getIdem so the stored body keeps
+  // Payment-Receipt.
+  const idemHold: { current: IdempotencyOutcome | null } = { current: null };
   return gatePayment(
     request,
     workflow,
     creatorWalletAddress,
     (meta: PaymentMeta) => {
       return async (_req: NextRequest): Promise<NextResponse> => {
+        const started = await beginCallIdempotency(
+          request,
+          workflow,
+          body,
+          meta.payerAddress,
+          meta.protocol
+        );
+        if (started.kind === "early") {
+          return started.response;
+        }
+        const idem = started.idem;
+        idemHold.current = idem;
+
         const prepared = await prepareExecution(request, workflow, body);
         if ("error" in prepared) {
-          return prepared.error;
+          return await safeRecordIdempotentResponse(
+            idem,
+            prepared.error,
+            "release",
+            "[x402/call] Idempotency finalize failed after prepareExecution error"
+          );
         }
         const { executionId } = prepared;
 
@@ -640,18 +789,64 @@ async function handlePaidWorkflow(
               persistedStatus: "error",
             });
           }
-          throw err;
+          if (meta.protocol === "mpp") {
+            // MPP settles BEFORE this handler runs. Deliver anyway and log
+            // loudly: a missing earnings row can be reconciled by hand.
+            // Router finalizes via getIdem after withReceipt.
+            logSystemError(
+              ErrorCategory.DATABASE,
+              "[x402/call] Execution payment row lost after MPP settlement",
+              err,
+              { workflowId: workflow.id, executionId }
+            );
+            await startExecutionInBackground(workflow, body, executionId);
+            const responseBody = await withIdempotencyHeartbeat(idem, () =>
+              buildCallCompletionResponse(executionId, workflow.outputMapping)
+            );
+            return await recordCompletionResponse(
+              idem,
+              responseBody,
+              "[x402/call] Idempotency finalize failed after MPP recordPayment error",
+              true
+            );
+          }
+          // x402 settles AFTER this handler returns and skips settlement
+          // entirely for any >=400 response, so a 503 here means no funds
+          // move and the same signature can simply be retried.
+          logSystemError(
+            ErrorCategory.DATABASE,
+            "[x402/call] Failed to record execution payment, settlement cancelled",
+            err,
+            { workflowId: workflow.id, executionId }
+          );
+          return await safeRecordIdempotentResponse(
+            idem,
+            NextResponse.json(
+              {
+                error:
+                  "Payment could not be recorded. No funds were taken -- retry the same request.",
+              },
+              { status: HttpStatus.SERVICE_UNAVAILABLE, headers: corsHeaders }
+            ),
+            "release",
+            "[x402/call] Idempotency finalize failed after recordPayment error"
+          );
         }
 
         await startExecutionInBackground(workflow, body, executionId);
 
-        const responseBody = await buildCallCompletionResponse(
-          executionId,
-          workflow.outputMapping
+        const responseBody = await withIdempotencyHeartbeat(idem, () =>
+          buildCallCompletionResponse(executionId, workflow.outputMapping)
         );
-        return NextResponse.json(responseBody, { headers: corsHeaders });
+        return await recordCompletionResponse(
+          idem,
+          responseBody,
+          "[x402/call] Idempotency finalize failed after paid execution start",
+          meta.protocol === "mpp"
+        );
       };
-    }
+    },
+    { getIdem: () => idemHold.current }
   );
 }
 
@@ -741,7 +936,7 @@ export async function POST(
       { endpoint: "/api/mcp/workflows/[slug]/call" }
     );
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Internal server error" },
+      { error: "Internal server error" },
       { status: HttpStatus.INTERNAL_SERVER_ERROR, headers: corsHeaders }
     );
   }

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { and, eq, lt } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { idempotencyRecords } from "@/lib/db/schema-extensions";
+import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { generateId } from "@/lib/utils/id";
 
 // A reserved record holds a short "lock" so a crashed request can't block a
@@ -288,6 +289,25 @@ export async function recordIdempotentResponse<T extends Response>(
     succeeded: true,
   });
   return response;
+}
+
+/** Finalize idempotency without failing the caller when the DB is unhealthy. */
+export async function safeRecordIdempotentResponse<T extends Response>(
+  outcome: IdempotencyOutcome | null,
+  response: T,
+  disposition?: IdempotencyDisposition,
+  context?: string
+): Promise<T> {
+  try {
+    return await recordIdempotentResponse(outcome, response, disposition);
+  } catch (err) {
+    logSystemError(
+      ErrorCategory.DATABASE,
+      context ?? "[idempotency] Finalize failed after work completed",
+      err
+    );
+    return response;
+  }
 }
 
 // Runs `work` while heartbeating the reserved lock so a long-running, fund-

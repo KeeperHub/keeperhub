@@ -2,6 +2,10 @@ import { withX402 } from "@x402/next";
 import { Challenge, Credential, Expires } from "mppx";
 import { type NextRequest, NextResponse } from "next/server";
 import {
+  type IdempotencyOutcome,
+  safeRecordIdempotentResponse,
+} from "@/lib/idempotency";
+import {
   extractMppPayerAddress,
   hashMppCredential,
 } from "@/lib/payments/mpp/server";
@@ -247,8 +251,74 @@ type HandlerFactory = (
   meta: PaymentMeta
 ) => (req: NextRequest) => Promise<NextResponse>;
 
+export type GatePaymentOptions = {
+  /**
+   * Outcome reserved before the gate. The marketplace call route reserves
+   * inside the verified handler instead; prefer `getIdem` there.
+   */
+  idem?: IdempotencyOutcome | null;
+  /**
+   * Lazy read of an outcome reserved inside the verified handler. MPP
+   * finalizes after `withReceipt` via this so the stored body keeps
+   * `Payment-Receipt`.
+   */
+  getIdem?: () => IdempotencyOutcome | null | undefined;
+};
+
+function resolveGateIdem(
+  options?: GatePaymentOptions
+): IdempotencyOutcome | null | undefined {
+  return options?.getIdem?.() ?? options?.idem;
+}
+
+async function finalizeGateExit(
+  idem: IdempotencyOutcome | null | undefined,
+  response: NextResponse,
+  disposition: "success" | "release" | "failed"
+): Promise<NextResponse> {
+  if (!idem) {
+    return response;
+  }
+  return await safeRecordIdempotentResponse(
+    idem,
+    response,
+    disposition,
+    "[payments/router] Idempotency finalize failed on gate exit"
+  );
+}
+
+function paymentVerificationFailedResponse(): NextResponse {
+  return NextResponse.json(
+    {
+      error: "Payment verification failed. Retry the same Idempotency-Key.",
+    },
+    { status: 503, headers: CORS_HEADERS }
+  );
+}
+
+async function finalizeAfterMppReceipt(
+  idem: IdempotencyOutcome | null | undefined,
+  wrapped: NextResponse
+): Promise<NextResponse> {
+  let completionStatus: string | undefined;
+  try {
+    const body = (await wrapped.clone().json()) as { status?: string };
+    completionStatus = body.status;
+  } catch {
+    completionStatus = undefined;
+  }
+  if (completionStatus === "running") {
+    return await finalizeGateExit(idem, wrapped, "release");
+  }
+  if (wrapped.status >= 400) {
+    return await finalizeGateExit(idem, wrapped, "failed");
+  }
+  return await finalizeGateExit(idem, wrapped, "success");
+}
+
 async function checkIdempotency(
-  paymentHash: string
+  paymentHash: string,
+  idem?: IdempotencyOutcome | null
 ): Promise<NextResponse | null> {
   const existing = await findExistingPayment(paymentHash);
   if (!existing) {
@@ -256,20 +326,28 @@ async function checkIdempotency(
   }
   if (existing.kind === "calldata") {
     if (existing.deliverable) {
-      // Serve the exact artifact this credential already bought. Never
-      // regenerate it from the replayed body: the payment hash covers the
-      // credential alone and is not bound to the body, so regenerating would
-      // let one signature buy calldata for any recipient or amount.
-      return NextResponse.json(existing.deliverable, { headers: CORS_HEADERS });
+      return await finalizeGateExit(
+        idem,
+        NextResponse.json(existing.deliverable, { headers: CORS_HEADERS }),
+        "success"
+      );
     }
-    return NextResponse.json(
-      { error: "Payment already used", code: "PAYMENT_ALREADY_SETTLED" },
-      { status: 409, headers: CORS_HEADERS }
+    return await finalizeGateExit(
+      idem,
+      NextResponse.json(
+        { error: "Payment already used", code: "PAYMENT_ALREADY_SETTLED" },
+        { status: 409, headers: CORS_HEADERS }
+      ),
+      "release"
     );
   }
-  return NextResponse.json(
-    { executionId: existing.executionId },
-    { headers: CORS_HEADERS }
+  return await finalizeGateExit(
+    idem,
+    NextResponse.json(
+      { executionId: existing.executionId },
+      { headers: CORS_HEADERS }
+    ),
+    "success"
   );
 }
 
@@ -277,12 +355,16 @@ async function handleX402(
   request: Request,
   workflow: CallRouteWorkflow,
   creatorWalletAddress: string,
-  createHandler: HandlerFactory
+  createHandler: HandlerFactory,
+  options?: GatePaymentOptions
 ): Promise<NextResponse> {
   const paymentSig = request.headers.get("PAYMENT-SIGNATURE");
   const paymentHash = paymentSig ? hashPaymentSignature(paymentSig) : null;
   if (paymentHash) {
-    const idempotent = await checkIdempotency(paymentHash);
+    const idempotent = await checkIdempotency(
+      paymentHash,
+      resolveGateIdem(options)
+    );
     if (idempotent) {
       return idempotent;
     }
@@ -291,17 +373,34 @@ async function handleX402(
   const payerAddress = extractPayerAddress(paymentSig);
   const paymentConfig = buildPaymentConfig(workflow, creatorWalletAddress);
 
+  let handlerInvoked = false;
   const innerHandler = createHandler({
     protocol: "x402",
     chain: "base",
     payerAddress,
     paymentHash,
   });
+  const trackedInnerHandler = (req: NextRequest): Promise<NextResponse> => {
+    handlerInvoked = true;
+    return innerHandler(req);
+  };
 
-  const gatedHandler = withX402(innerHandler, paymentConfig, server);
+  const gatedHandler = withX402(trackedInnerHandler, paymentConfig, server);
 
   try {
-    return (await gatedHandler(request as NextRequest)) as NextResponse;
+    const response = (await gatedHandler(
+      request as NextRequest
+    )) as NextResponse;
+    // 402 probe / verify failure never reaches the handler, so there is no
+    // post-gate reservation to release. Return the challenge as-is.
+    if (!handlerInvoked) {
+      return await finalizeGateExit(
+        resolveGateIdem(options),
+        response,
+        "release"
+      );
+    }
+    return response;
   } catch (gateErr) {
     const msg = gateErr instanceof Error ? gateErr.message : String(gateErr);
     if (isTimeoutError(msg)) {
@@ -314,14 +413,27 @@ async function handleX402(
         });
         if (confirmed) {
           if (paymentHash) {
-            const idempotent = await checkIdempotency(paymentHash);
+            const idempotent = await checkIdempotency(
+              paymentHash,
+              resolveGateIdem(options)
+            );
             if (idempotent) {
               return idempotent;
             }
           }
+          handlerInvoked = true;
           return innerHandler(request as NextRequest);
         }
       }
+    }
+    // Always 503 when verification threw before the handler ran, even with
+    // no idempotency record: the caller should retry the same key.
+    if (!handlerInvoked) {
+      return await finalizeGateExit(
+        resolveGateIdem(options),
+        paymentVerificationFailedResponse(),
+        "release"
+      );
     }
     throw gateErr;
   }
@@ -331,14 +443,18 @@ async function handleMpp(
   request: Request,
   workflow: CallRouteWorkflow,
   creatorWalletAddress: string,
-  createHandler: HandlerFactory
+  createHandler: HandlerFactory,
+  options?: GatePaymentOptions
 ): Promise<NextResponse> {
   const authHeader = request.headers.get("authorization");
   const paymentHash = authHeader
     ? hashMppCredential(authHeader.slice("Payment ".length))
     : null;
   if (paymentHash) {
-    const idempotent = await checkIdempotency(paymentHash);
+    const idempotent = await checkIdempotency(
+      paymentHash,
+      resolveGateIdem(options)
+    );
     if (idempotent) {
       return idempotent;
     }
@@ -366,62 +482,98 @@ async function handleMpp(
     recipient: creatorWalletAddress,
   });
 
-  const result = await chargeIntent(request);
-
-  if (result.status === 402) {
-    const challenge = result.challenge as unknown as NextResponse;
-    for (const [key, value] of Object.entries(CORS_HEADERS)) {
-      challenge.headers.set(key, value);
-    }
-    return challenge;
-  }
-
-  let credentialSource: string | null = null;
+  let settled = false;
   try {
-    const credential = Credential.fromRequest(request);
-    credentialSource = credential.source ?? null;
-  } catch {
-    // credential source is optional -- wallets may omit it
+    const result = await chargeIntent(request);
+
+    if (result.status === 402) {
+      const challenge = result.challenge as unknown as NextResponse;
+      for (const [key, value] of Object.entries(CORS_HEADERS)) {
+        challenge.headers.set(key, value);
+      }
+      return await finalizeGateExit(
+        resolveGateIdem(options),
+        challenge,
+        "release"
+      );
+    }
+
+    settled = true;
+
+    let credentialSource: string | null = null;
+    try {
+      const credential = Credential.fromRequest(request);
+      credentialSource = credential.source ?? null;
+    } catch {
+      // credential source is optional -- wallets may omit it
+    }
+    const payerAddress = extractMppPayerAddress(credentialSource);
+
+    const innerHandler = createHandler({
+      protocol: "mpp",
+      chain: "tempo",
+      payerAddress,
+      paymentHash,
+    });
+
+    const response = await innerHandler(request as NextRequest);
+    const wrapped = result.withReceipt(response) as unknown as NextResponse;
+    // Handler may have reserved via getIdem after settlement; finalize the
+    // receipt-wrapped body so replays keep Payment-Receipt.
+    return await finalizeAfterMppReceipt(resolveGateIdem(options), wrapped);
+  } catch (gateErr) {
+    if (!settled) {
+      return await finalizeGateExit(
+        resolveGateIdem(options),
+        paymentVerificationFailedResponse(),
+        "release"
+      );
+    }
+    throw gateErr;
   }
-  const payerAddress = extractMppPayerAddress(credentialSource);
-
-  const innerHandler = createHandler({
-    protocol: "mpp",
-    chain: "tempo",
-    payerAddress,
-    paymentHash,
-  });
-
-  const response = await innerHandler(request as NextRequest);
-  return result.withReceipt(response) as unknown as NextResponse;
 }
 
 export function gatePayment(
   request: Request,
   workflow: CallRouteWorkflow,
   creatorWalletAddress: string,
-  createHandler: HandlerFactory
+  createHandler: HandlerFactory,
+  options?: GatePaymentOptions
 ): Promise<NextResponse> {
   const protocol = detectProtocol(request);
 
   if (protocol === "error") {
-    return Promise.resolve(
+    return finalizeGateExit(
+      resolveGateIdem(options),
       NextResponse.json(
         {
           error:
             "Cannot send both PAYMENT-SIGNATURE and Authorization: Payment headers",
         },
         { status: 400, headers: CORS_HEADERS }
-      )
+      ),
+      "release"
     );
   }
 
   if (protocol === "x402") {
-    return handleX402(request, workflow, creatorWalletAddress, createHandler);
+    return handleX402(
+      request,
+      workflow,
+      creatorWalletAddress,
+      createHandler,
+      options
+    );
   }
 
   if (protocol === "mpp") {
-    return handleMpp(request, workflow, creatorWalletAddress, createHandler);
+    return handleMpp(
+      request,
+      workflow,
+      creatorWalletAddress,
+      createHandler,
+      options
+    );
   }
 
   // No payment header -- return dual 402 challenge.

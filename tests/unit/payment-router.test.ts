@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("server-only", () => ({}));
+vi.mock("@/lib/idempotency", () => ({
+  safeRecordIdempotentResponse: vi.fn(
+    async (_outcome: unknown, response: Response) => response
+  ),
+}));
+
 vi.mock("@x402/next", () => ({ withX402: vi.fn() }));
 vi.mock("@/lib/payments/x402/payment-gate", () => ({
   buildPaymentConfig: vi.fn(),
@@ -42,8 +49,24 @@ vi.mock("mppx", () => ({
   },
 }));
 
+import { withX402 } from "@x402/next";
 import { Challenge, Expires } from "mppx";
-import { buildDual402Response, detectProtocol } from "@/lib/payments/router";
+import { NextResponse } from "next/server";
+import { safeRecordIdempotentResponse } from "@/lib/idempotency";
+import { getMppServer, hashMppCredential } from "@/lib/payments/mpp/server";
+import {
+  buildDual402Response,
+  detectProtocol,
+  gatePayment,
+} from "@/lib/payments/router";
+import {
+  buildPaymentConfig,
+  extractPayerAddress,
+  findExistingPayment,
+  hashPaymentSignature,
+} from "@/lib/payments/x402/payment-gate";
+import { isTimeoutError } from "@/lib/payments/x402/reconcile";
+import type { CallRouteWorkflow } from "@/lib/payments/x402/types";
 
 describe("detectProtocol", () => {
   it("returns 'mpp' when Authorization: Payment header is present", () => {
@@ -324,5 +347,149 @@ describe("402 challenge output example", () => {
       data: "0xa9059cbb",
       value: "0",
     });
+  });
+});
+
+const MINIMAL_WORKFLOW = {
+  id: "wf-1",
+  name: "W",
+  description: null,
+  organizationId: "org-1",
+  listedSlug: "w",
+  inputSchema: null,
+  outputMapping: null,
+  priceUsdcPerCall: "0.10",
+  isListed: true,
+  enabled: true,
+  workflowType: "read" as const,
+  nodes: [],
+  edges: [],
+  userId: "user-1",
+  category: null,
+  tagName: null,
+} satisfies CallRouteWorkflow;
+
+describe("gatePayment reservation release", () => {
+  it("releases when withX402 throws before the handler", async () => {
+    vi.mocked(hashPaymentSignature).mockReturnValue("sig-hash");
+    vi.mocked(findExistingPayment).mockResolvedValue(null);
+    vi.mocked(extractPayerAddress).mockReturnValue("0xpayer");
+    vi.mocked(buildPaymentConfig).mockReturnValue({} as never);
+    vi.mocked(isTimeoutError).mockReturnValue(false);
+    vi.mocked(withX402).mockReturnValue((async () => {
+      throw new Error("facilitator 500");
+    }) as never);
+
+    const idem = {
+      kind: "proceed" as const,
+      release: vi.fn(),
+      finalize: vi.fn(),
+      heartbeat: vi.fn(),
+    };
+    const inner = vi.fn();
+    const request = new Request("http://localhost/call", {
+      method: "POST",
+      headers: { "PAYMENT-SIGNATURE": "sig" },
+    });
+
+    const response = await gatePayment(
+      request,
+      MINIMAL_WORKFLOW,
+      "0xCreator",
+      () => inner,
+      { idem }
+    );
+
+    expect(response.status).toBe(503);
+    expect(inner).not.toHaveBeenCalled();
+    expect(safeRecordIdempotentResponse).toHaveBeenCalledWith(
+      idem,
+      expect.any(Response),
+      "release",
+      expect.any(String)
+    );
+  });
+
+  it("releases when MPP charge throws before the handler", async () => {
+    vi.mocked(getMppServer).mockResolvedValue({
+      charge: () => async () => {
+        throw new Error("mpp down");
+      },
+    } as never);
+
+    const idem = {
+      kind: "proceed" as const,
+      release: vi.fn(),
+      finalize: vi.fn(),
+      heartbeat: vi.fn(),
+    };
+    const inner = vi.fn();
+    const request = new Request("http://localhost/call", {
+      method: "POST",
+      headers: { Authorization: "Payment abc" },
+    });
+
+    const response = await gatePayment(
+      request,
+      MINIMAL_WORKFLOW,
+      "0xCreator",
+      () => inner,
+      { idem }
+    );
+
+    expect(response.status).toBe(503);
+    expect(inner).not.toHaveBeenCalled();
+    expect(safeRecordIdempotentResponse).toHaveBeenCalledWith(
+      idem,
+      expect.any(Response),
+      "release",
+      expect.any(String)
+    );
+  });
+
+  it("wraps Payment-Receipt then finalizes success on MPP settlement", async () => {
+    vi.mocked(hashMppCredential).mockReturnValue("mpp-hash");
+    vi.mocked(findExistingPayment).mockResolvedValue(null);
+    vi.mocked(getMppServer).mockResolvedValue({
+      charge: () => async () => ({
+        status: 200 as const,
+        withReceipt: (response: Response) => {
+          const headers = new Headers(response.headers);
+          headers.set("Payment-Receipt", "receipt-1");
+          return new Response(response.body, {
+            status: response.status,
+            headers,
+          });
+        },
+      }),
+    } as never);
+
+    const idem = {
+      kind: "proceed" as const,
+      release: vi.fn(),
+      finalize: vi.fn(),
+      heartbeat: vi.fn(),
+    };
+    const request = new Request("http://localhost/call", {
+      method: "POST",
+      headers: { Authorization: "Payment abc" },
+    });
+
+    const response = await gatePayment(
+      request,
+      MINIMAL_WORKFLOW,
+      "0xCreator",
+      () => async () =>
+        NextResponse.json({ executionId: "exec-1", status: "success" }),
+      { idem }
+    );
+
+    expect(response.headers.get("Payment-Receipt")).toBe("receipt-1");
+    expect(safeRecordIdempotentResponse).toHaveBeenCalledWith(
+      idem,
+      expect.any(Response),
+      "success",
+      expect.any(String)
+    );
   });
 });

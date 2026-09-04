@@ -25,6 +25,11 @@ const {
   mockGenerateCalldata,
   mockLogSystemError,
   mockCheckIpRateLimit,
+  mockBeginIdempotentFromRequest,
+  mockIdempotencyEarlyResponse,
+  mockRecordIdempotentResponse,
+  mockSafeRecordIdempotentResponse,
+  mockWithIdempotencyHeartbeat,
 } = vi.hoisted(() => ({
   mockDbSelect: vi.fn(),
   mockRecordPayment: vi.fn(),
@@ -34,6 +39,23 @@ const {
   mockGenerateCalldata: vi.fn(),
   mockLogSystemError: vi.fn(),
   mockCheckIpRateLimit: vi.fn(),
+  mockBeginIdempotentFromRequest: vi.fn(),
+  mockIdempotencyEarlyResponse: vi.fn(),
+  mockRecordIdempotentResponse: vi.fn(
+    (_idem: unknown, response: Response, _disposition?: string) =>
+      Promise.resolve(response)
+  ),
+  mockSafeRecordIdempotentResponse: vi.fn(
+    (
+      _idem: unknown,
+      response: Response,
+      _disposition?: string,
+      _context?: string
+    ) => Promise.resolve(response)
+  ),
+  mockWithIdempotencyHeartbeat: vi.fn((_idem: unknown, work: () => unknown) =>
+    work()
+  ),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -65,11 +87,17 @@ vi.mock("@/lib/db/schema", () => ({
 vi.mock("@/lib/payments/x402/payment-gate", () => ({
   recordPayment: mockRecordPayment,
   resolveCreatorWallet: mockResolveCreatorWallet,
+  extractPayerAddress: vi.fn().mockReturnValue("0xPayer"),
+  hashPaymentSignature: (sig: string) => `hash-${sig}`,
 }));
 
 vi.mock("@/lib/payments/router", () => ({
   gatePayment: mockGatePayment,
   detectProtocol: mockDetectProtocol,
+}));
+
+vi.mock("@/lib/payments/mpp/server", () => ({
+  hashMppCredential: (value: string) => `mpp-hash-${value}`,
 }));
 
 vi.mock("@/lib/mcp/calldata", () => ({
@@ -115,6 +143,28 @@ vi.mock("@/lib/errors/classify", () => ({
 }));
 vi.mock("@/lib/errors/finalize-error", () => ({
   recordExecutionErrorFinalized: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("server-only", () => ({}));
+
+vi.mock("@/lib/idempotency", () => ({
+  beginIdempotentFromRequest: (...args: unknown[]) =>
+    mockBeginIdempotentFromRequest(...args),
+  idempotencyEarlyResponse: (...args: unknown[]) =>
+    mockIdempotencyEarlyResponse(...args),
+  recordIdempotentResponse: (
+    idem: unknown,
+    response: Response,
+    disposition?: string
+  ) => mockRecordIdempotentResponse(idem, response, disposition),
+  safeRecordIdempotentResponse: (
+    idem: unknown,
+    response: Response,
+    disposition?: string,
+    context?: string
+  ) => mockSafeRecordIdempotentResponse(idem, response, disposition, context),
+  withIdempotencyHeartbeat: (idem: unknown, work: () => unknown) =>
+    mockWithIdempotencyHeartbeat(idem, work),
 }));
 
 const CREATOR_WALLET = "0xCreatorWallet";
@@ -215,6 +265,15 @@ beforeEach(() => {
   mockResolveCreatorWallet.mockResolvedValue(CREATOR_WALLET);
   mockGenerateCalldata.mockReturnValue(CALLDATA);
   mockRecordPayment.mockResolvedValue(undefined);
+  mockBeginIdempotentFromRequest.mockResolvedValue({ kind: "proceed" });
+  mockIdempotencyEarlyResponse.mockReturnValue(null);
+  mockRecordIdempotentResponse.mockImplementation(
+    (_idem: unknown, response: Response, _disposition?: string) =>
+      Promise.resolve(response)
+  );
+  mockWithIdempotencyHeartbeat.mockImplementation(
+    (_idem: unknown, work: () => unknown) => work()
+  );
 });
 
 describe("paid write listings", () => {

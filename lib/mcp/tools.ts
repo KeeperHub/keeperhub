@@ -2538,7 +2538,7 @@ export function registerMetaTools(
   // Meta-tool 4: Invoke a listed workflow by its globally unique slug
   server.tool(
     "call_workflow",
-    "Invoke a listed KeeperHub workflow. For read workflows, executes and returns the result. For write workflows, returns unsigned calldata {to, data, value} for the caller to submit. Use search_workflows first to discover available workflows. PAID WORKFLOWS: this tool DOES NOT auto-pay. A paid listing returns HTTP 402 with an x402 challenge — pay it with @keeperhub/wallet's paymentSigner.fetch(), agentcash's mcp__agentcash__fetch, or the marketplace UI, then retry. The 402 error message includes the price and concrete next-step paths.",
+    "Invoke a listed KeeperHub workflow. For read workflows, executes and returns the result. For write workflows, returns unsigned calldata {to, data, value} for the caller to submit. Use search_workflows first to discover available workflows. PAID WORKFLOWS: this tool DOES NOT auto-pay. A paid listing returns HTTP 402 with an x402 challenge — pay it with @keeperhub/wallet's paymentSigner.fetch(), agentcash's mcp__agentcash__fetch, or the marketplace UI, then retry with PAYMENT-SIGNATURE (or Authorization: Payment for MPP). The 402 error message includes the price and concrete next-step paths. Pass idempotency_key only for paid calls after payment is verified: the key is scoped to the verified payer and protocol so a retry does not start a second execution. Free listings ignore the key (no caller identity to scope). A new PAYMENT-SIGNATURE can still settle (x402 settles after HTTP 200). Identical-credential replay is also blocked by payment_hash.",
     {
       slug: z
         .string()
@@ -2548,6 +2548,12 @@ export function registerMetaTools(
       inputs: z
         .record(z.string(), z.unknown())
         .describe("Input fields as declared in the workflow's inputSchema"),
+      idempotency_key: z
+        .string()
+        .optional()
+        .describe(
+          "Optional Idempotency-Key for paid listings after payment verification. Scoped to the verified payer and protocol so a retry with the same key does not start a second execution (within 24h once finalized). Free listings ignore this field. This tool does not attach payment credentials — pay a 402 challenge externally, then retry. A new PAYMENT-SIGNATURE can still settle. Two 409s are possible: `idempotency_in_progress` (retryable true) means retry shortly with the same key; `idempotency_conflict` (retryable false) means this body is not the body the key was bound to — rotate only for genuinely different work."
+        ),
     },
     // Invokes a third-party listing whose body we do not control, and a paid
     // listing charges USDC on retry after the 402 is settled.
@@ -2561,7 +2567,7 @@ export function registerMetaTools(
             `/api/mcp/workflows/${encodeURIComponent(args.slug)}/call`,
             "POST",
             args.inputs,
-            undefined,
+            args.idempotency_key,
             NO_MCP_FETCH_TIMEOUT
           );
           return {
