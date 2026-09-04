@@ -13,7 +13,9 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
-import { db } from "@/lib/db";
+// Every read here runs on the analytics pool, so a slow dashboard cannot take
+// the connections the executor needs to record progress. See lib/db/index.ts.
+import { analyticsDb as db } from "@/lib/db";
 import { logInputField, logOutputField } from "@/lib/db/execution-log-fields";
 import {
   workflowExecutionLogs,

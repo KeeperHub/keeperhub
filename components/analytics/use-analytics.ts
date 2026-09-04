@@ -2,11 +2,20 @@
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useRef } from "react";
+import {
+  createLeadingDebounce,
+  type LeadingDebounce,
+} from "@/lib/analytics/leading-debounce";
+import {
+  createPollScheduler,
+  type PollScheduler,
+} from "@/lib/analytics/poll-scheduler";
 import { buildRunsQuery } from "@/lib/analytics/runs-query";
 import {
   normalizeRunsResponse,
   type WireRunsResponse,
 } from "@/lib/analytics/runs-response";
+import { nextStreamRetry } from "@/lib/analytics/stream-retry";
 import type {
   AnalyticsSummary,
   NetworkBreakdown,
@@ -36,6 +45,9 @@ import {
 import { authClient } from "@/lib/auth-client";
 
 const POLL_INTERVAL_MS = 10_000;
+// A busy organization emits run events faster than a refresh completes, so the
+// stream-triggered refresh is grouped into at most one pass per window.
+const RUN_REFRESH_WINDOW_MS = 2000;
 
 type UseAnalyticsReturn = {
   loading: boolean;
@@ -115,8 +127,16 @@ export function useAnalytics(): UseAnalyticsReturn {
   const setLastUpdated = useSetAtom(analyticsLastUpdatedAtom);
 
   const eventSourceRef = useRef<EventSource | null>(null);
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollSchedulerRef = useRef<PollScheduler | null>(null);
+  const runRefreshRef = useRef<LeadingDebounce | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const reconnectAttemptsRef = useRef(0);
+  // startSSE reopens itself from its own onerror, which it cannot reference
+  // directly inside its own useCallback.
+  const startSSERef = useRef<(() => void) | null>(null);
 
   const fetchData = useCallback(async (): Promise<void> => {
     if (!activeOrgId) {
@@ -184,8 +204,14 @@ export function useAnalytics(): UseAnalyticsReturn {
         ctx.aborted = true;
         setError(message);
         setLoading(false);
-        clearInterval(pollIntervalRef.current ?? undefined);
-        pollIntervalRef.current = null;
+        pollSchedulerRef.current?.stop();
+        pollSchedulerRef.current = null;
+        runRefreshRef.current?.cancel();
+        // An auth failure must not reopen the stream on a pending backoff.
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
+        }
         eventSourceRef.current?.close();
         eventSourceRef.current = null;
       },
@@ -299,23 +325,30 @@ export function useAnalytics(): UseAnalyticsReturn {
   }, []);
 
   const cleanupPolling = useCallback((): void => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
+    pollSchedulerRef.current?.stop();
+    pollSchedulerRef.current = null;
+  }, []);
+
+  const cleanupReconnect = useCallback((): void => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
     }
   }, []);
 
   const startPolling = useCallback((): void => {
     cleanupPolling();
-    pollIntervalRef.current = setInterval(() => {
-      fetchData().catch(() => {
-        /* polling errors handled in fetchData */
-      });
-    }, POLL_INTERVAL_MS);
+    const scheduler = createPollScheduler(fetchData, POLL_INTERVAL_MS);
+    pollSchedulerRef.current = scheduler;
+    scheduler.start();
   }, [cleanupPolling, fetchData]);
 
   const startSSE = useCallback((): void => {
     cleanupSSE();
+
+    runRefreshRef.current?.cancel();
+    const refreshRuns = createLeadingDebounce(fetchData, RUN_REFRESH_WINDOW_MS);
+    runRefreshRef.current = refreshRuns;
 
     const query = buildQuery({
       range,
@@ -326,6 +359,9 @@ export function useAnalytics(): UseAnalyticsReturn {
     const source = new EventSource(`/api/analytics/stream?${query}`);
 
     source.onmessage = (event: MessageEvent): void => {
+      // A delivered message proves the stream is healthy, so the next close
+      // starts its backoff from zero rather than from the last outage.
+      reconnectAttemptsRef.current = 0;
       try {
         const parsed = JSON.parse(event.data as string) as {
           type: string;
@@ -336,9 +372,7 @@ export function useAnalytics(): UseAnalyticsReturn {
           setSummary(parsed.data as AnalyticsSummary);
           setLastUpdated(new Date());
         } else if (parsed.type === "new-run" || parsed.type === "run-updated") {
-          fetchData().catch(() => {
-            /* SSE-triggered refresh errors handled in fetchData */
-          });
+          refreshRuns.call();
         }
       } catch {
         // Ignore malformed SSE messages
@@ -347,7 +381,20 @@ export function useAnalytics(): UseAnalyticsReturn {
 
     source.onerror = (): void => {
       cleanupSSE();
-      startPolling();
+      cleanupReconnect();
+
+      // Polling is the last resort, not the response to a single close.
+      const retry = nextStreamRetry(reconnectAttemptsRef.current);
+      if (retry.action === "poll") {
+        startPolling();
+        return;
+      }
+
+      reconnectAttemptsRef.current += 1;
+      reconnectTimeoutRef.current = setTimeout(() => {
+        reconnectTimeoutRef.current = null;
+        startSSERef.current?.();
+      }, retry.delayMs);
     };
 
     eventSourceRef.current = source;
@@ -357,6 +404,7 @@ export function useAnalytics(): UseAnalyticsReturn {
     customStart,
     customEnd,
     cleanupSSE,
+    cleanupReconnect,
     setSummary,
     setLastUpdated,
     startPolling,
@@ -387,15 +435,19 @@ export function useAnalytics(): UseAnalyticsReturn {
     });
   }, [activeOrgId, fetchData]);
 
-  // SSE for real-time updates, falls back to polling on error
+  // SSE for real-time updates, reconnects on close, polls only if that fails
   useEffect(() => {
+    startSSERef.current = startSSE;
+    reconnectAttemptsRef.current = 0;
     startSSE();
 
     return (): void => {
       cleanupSSE();
       cleanupPolling();
+      cleanupReconnect();
+      runRefreshRef.current?.cancel();
     };
-  }, [startSSE, cleanupSSE, cleanupPolling]);
+  }, [startSSE, cleanupSSE, cleanupPolling, cleanupReconnect]);
 
   return { loading, error, refetch: fetchData };
 }
