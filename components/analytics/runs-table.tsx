@@ -383,13 +383,16 @@ function StepLogRow({ step }: StepLogRowProps): ReactNode {
           {step.error ? <StepErrorMessage message={step.error} /> : null}
         </div>
       </td>
-      <td className="whitespace-nowrap py-1.5 pr-3 text-xs text-muted-foreground">
+      {/* On a phone these three columns would push the row past the viewport.
+          The step's name/status/error (the monitoring essentials) stay; its
+          duration/network/gas return on desktop. */}
+      <td className="hidden py-1.5 pr-3 text-xs whitespace-nowrap text-muted-foreground md:table-cell">
         {formatDuration(step.durationMs)}
       </td>
-      <td className="whitespace-nowrap py-1.5 pr-3 text-xs text-muted-foreground">
+      <td className="hidden py-1.5 pr-3 text-xs whitespace-nowrap text-muted-foreground md:table-cell">
         {step.network ? chains.name(step.network) : NO_VALUE}
       </td>
-      <td className="whitespace-nowrap py-1.5 pr-3 text-xs text-muted-foreground">
+      <td className="hidden py-1.5 pr-3 text-xs whitespace-nowrap text-muted-foreground md:table-cell">
         <span className="inline-flex items-center gap-1.5">
           {formatGasNativeExact(step.gasCostWei, step.network, chains)}
           {step.sponsored ? (
@@ -424,13 +427,13 @@ function ExpandedStepRows({
                   <div className="h-3 w-40 animate-pulse rounded bg-muted" />
                 </div>
               </td>
-              <td className="py-2 pr-3">
+              <td className="hidden py-2 pr-3 md:table-cell">
                 <div className="h-3 w-12 animate-pulse rounded bg-muted" />
               </td>
-              <td className="py-2 pr-3">
+              <td className="hidden py-2 pr-3 md:table-cell">
                 <div className="h-3 w-16 animate-pulse rounded bg-muted" />
               </td>
-              <td className="py-2 pr-3">
+              <td className="hidden py-2 pr-3 md:table-cell">
                 <div className="h-3 w-14 animate-pulse rounded bg-muted" />
               </td>
               <td />
@@ -561,19 +564,19 @@ function ExpandableRunRow({ run }: ExpandableRunRowProps): ReactNode {
         <td className="py-3 pr-3">
           <StatusBadge status={run.status} />
         </td>
-        <td className="py-3 pr-3">
+        <td className="hidden py-3 pr-3 md:table-cell">
           <SourceBadge source={run.source} />
         </td>
-        <td className="whitespace-nowrap py-3 pr-3 text-sm text-muted-foreground">
+        <td className="hidden py-3 pr-3 text-sm whitespace-nowrap text-muted-foreground md:table-cell">
           {formatDuration(run.durationMs)}
         </td>
         <td
-          className="whitespace-nowrap py-3 pr-3 text-sm text-muted-foreground"
+          className="hidden py-3 pr-3 text-sm whitespace-nowrap text-muted-foreground md:table-cell"
           title={run.networks.map(chains.name).join(", ")}
         >
           {formatNetworks(run.networks, chains)}
         </td>
-        <td className="whitespace-nowrap py-3 pr-3 text-sm text-muted-foreground">
+        <td className="hidden py-3 pr-3 text-sm whitespace-nowrap text-muted-foreground md:table-cell">
           {runGasDisplay(run, chains)}
         </td>
         <td className="whitespace-nowrap py-3 pr-3 text-right text-sm text-muted-foreground">
@@ -671,16 +674,27 @@ function RunsTableContent({
 
   return (
     <div className={cn("overflow-x-auto", pageLoading && "opacity-50")}>
-      <table className="min-w-[700px] w-full text-left">
+      <table className="min-w-[700px] w-full text-left md:min-w-0">
         <thead>
           <tr className="border-b text-xs text-muted-foreground">
             <th className="w-8 pb-2 pl-3" />
             <th className="pb-2 pr-3 font-medium">Name</th>
             <th className="pb-2 pr-3 font-medium">Status</th>
-            <th className="pb-2 pr-3 font-medium">Source</th>
-            <th className="pb-2 pr-3 font-medium">Duration</th>
-            <th className="pb-2 pr-3 font-medium">Network</th>
-            <th className="pb-2 pr-3 font-medium">Gas</th>
+            {/* Secondary columns stay on desktop; on a phone they are what
+                force the 700px pan, so they are hidden below md per the
+                mobile issue (2295). The expanded per-run rows repeat the
+                primary fields; the values hidden here are not re-exposed on a
+                phone. Desktop is unaffected. */}
+            <th className="hidden pb-2 pr-3 font-medium md:table-cell">
+              Source
+            </th>
+            <th className="hidden pb-2 pr-3 font-medium md:table-cell">
+              Duration
+            </th>
+            <th className="hidden pb-2 pr-3 font-medium md:table-cell">
+              Network
+            </th>
+            <th className="hidden pb-2 pr-3 font-medium md:table-cell">Gas</th>
             <th className="pb-2 pr-3 text-right font-medium">Time</th>
           </tr>
         </thead>
