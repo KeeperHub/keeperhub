@@ -252,24 +252,25 @@ simulate with the same body you intend to send, then send it once with an
 `Idempotency-Key` so an interrupted client can retry without double-executing,
 then poll `GET /api/execute/{executionId}/status`.
 
-### The IDs in this flow
+### The IDs in the direct-execution flow
 
-The responses you read in this section use four different identifiers. They
-are not interchangeable:
+The responses in this section use three identifiers. They are not interchangeable:
 
 | Term | Where it comes from | What it identifies |
 |---|---|---|
-| Workflow ID | `POST /api/workflows/create` or `GET /api/workflows` | The workflow definition itself — its nodes and edges. Stable across every run of that workflow. |
-| Execution ID (`executionId`) | `POST /api/execute/transfer` (or any direct-execution route), or `POST /api/workflows/{workflowId}/execute` | One attempt to run something. Both the workflow route and the direct-execution routes return the same kind of value: an opaque 21-character nanoid with no distinguishing prefix. Polled via `GET /api/execute/{executionId}/status`. |
-| `transactionHash` | The status response once a broadcast lands | The onchain transaction. One execution can contain several (approve + action), and an execution that never broadcasts has none. |
-| `transactionLink` | The same status response | A block-explorer URL for that `transactionHash` — a convenience, not a separate identifier. |
+| Execution ID (`executionId`) | `POST /api/execute/transfer` (or any direct-execution route) | One attempt to run something: an opaque 21-character nanoid with no distinguishing prefix. Polled via `GET /api/execute/{executionId}/status`. |
+| `transactionHash` | The status response once a broadcast lands | The onchain transaction this execution sent. A direct execution that broadcasts has one primary hash (in `transactionHash`); a multi-step execution records each step under `receipts`. An execution that never broadcasts has neither. |
+| `transactionLink` | The same status response | A block-explorer URL for that `transactionHash` - a convenience, not a separate identifier. |
 
-The rule that keeps them straight: an execution is **one attempt**, a workflow
-is **the definition**, and a transaction is **what actually landed onchain**.
-A queued execution (one the server has accepted and is yet to run) does not
-mean a transaction exists yet. See
-[Zero to a Verified Onchain Transaction](/guides/first-verified-transaction)
+The rule that keeps them straight: an execution is **one attempt**, and a
+transaction is **what actually landed onchain**. A queued execution (one the
+server has accepted and is yet to run) does not mean a transaction exists yet.
+See [Zero to a Verified Onchain Transaction](/guides/first-verified-transaction)
 for the full walkthrough of confirming the transaction actually landed.
+
+(Workflow executions are a separate surface: they have their own id source and
+poll `/api/workflows/executions/{executionId}/status` rather than the
+direct-execution route above.)
 
 ## 6. Your first transaction should move zero
 
