@@ -262,7 +262,9 @@ Note which contract this runs against: the approval is granted on the token, not
 
 This is the only write action in the integration, and it needs a connected wallet.
 
-**When to use:** the step before a crosschain send on a lock-and-unlock Adapter, run once with a large allowance or per transfer with an exact one. Follow it with OFT Check Allowance to confirm it took effect.
+When the underlying token is one the platform recognises as a stablecoin (USDT and USDC, which covers the USDT0 family), this approval is bounded by the same 100 USD per-transaction stablecoin limit that applies to a stablecoin transfer. Approvals above that limit are allowed only when the spender is a contract address the platform already knows, and an OFT Adapter is an address you type in rather than one the platform holds, so that exemption never applies here. Approve the amount each transfer needs instead of a large standing allowance; the limit itself is a deployment-wide setting, not something an organization can raise from its own spending limits, and [Direct Execution](/api/direct-execution) covers how a self-hosted deployment changes it.
+
+**When to use:** the step before a crosschain send on a lock-and-unlock Adapter, approving the amount that send needs. Follow it with OFT Check Allowance to confirm it took effect.
 
 ---
 

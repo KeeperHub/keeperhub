@@ -52,8 +52,44 @@ export const LAYERZERO_EIDS: Record<string, number> = {
 export const DEFAULT_EXTRA_OPTIONS =
   "0x00030100110100000000000000000000000000030d40";
 
-const EID_TABLE =
-  "Ethereum 30101, Base 30184, Arbitrum One 30110, Optimism 30111, Polygon 30109, Ethereum Sepolia 40161, Base Sepolia 40245.";
+// Chain names for the endpoint ID table below, in the order it reads them:
+// mainnets first, then testnets.
+//
+// An ordered list rather than a map keyed by chain ID, because object keys that
+// look like integers enumerate in ascending numeric order however they are
+// written. Keying this off the chain ID would interleave the testnets with the
+// mainnets and put Base Sepolia ahead of Ethereum Sepolia, so the order has to
+// be stated rather than inherited.
+const EID_CHAIN_NAMES: readonly (readonly [string, string])[] = [
+  ["1", "Ethereum"],
+  ["8453", "Base"],
+  ["42161", "Arbitrum One"],
+  ["10", "Optimism"],
+  ["137", "Polygon"],
+  ["11155111", "Ethereum Sepolia"],
+  ["84532", "Base Sepolia"],
+];
+
+// Built from LAYERZERO_EIDS rather than typed out beside it, so a corrected
+// endpoint ID or a newly supported chain cannot leave a stale figure in the
+// help text. The list above supplies order and names only: every chain in the
+// map is listed either way, one with no name entry appearing by its chain ID
+// after the named ones.
+function formatEidTable(): string {
+  const rank = (chainId: string): number => {
+    const index = EID_CHAIN_NAMES.findIndex(([id]) => id === chainId);
+    return index === -1 ? EID_CHAIN_NAMES.length : index;
+  };
+  const nameOf = (chainId: string): string =>
+    EID_CHAIN_NAMES.find(([id]) => id === chainId)?.[1] ?? chainId;
+
+  return `${Object.entries(LAYERZERO_EIDS)
+    .sort(([a], [b]) => rank(a) - rank(b))
+    .map(([chainId, eid]) => `${nameOf(chainId)} ${eid}`)
+    .join(", ")}.`;
+}
+
+const EID_TABLE = formatEidTable();
 
 // EndpointV2 per chain. Same address on every mainnet listed; testnets
 // share a different one. Source: LayerZero metadata API, 2026-09-05.

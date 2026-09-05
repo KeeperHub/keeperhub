@@ -199,6 +199,29 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     expect(LAYERZERO_EIDS["84532"]).toBe(40_245);
   });
 
+  it("names every chain in the endpoint map in the destination help text", () => {
+    // Names restated here rather than imported, so a typo in the source list
+    // fails instead of being mirrored. A chain added to LAYERZERO_EIDS without
+    // a name lands in the help text as a bare chain ID, which this catches.
+    const names: Record<string, string> = {
+      "1": "Ethereum",
+      "8453": "Base",
+      "42161": "Arbitrum One",
+      "10": "Optimism",
+      "137": "Polygon",
+      "11155111": "Ethereum Sepolia",
+      "84532": "Base Sepolia",
+    };
+    const tip = action("oft-quote-send").inputs.find(
+      (i) => i.name === "dstEid"
+    )?.helpTip;
+
+    expect(tip).toBeDefined();
+    for (const [chainId, eid] of Object.entries(LAYERZERO_EIDS)) {
+      expect(tip, chainId).toContain(`${names[chainId]} ${eid}`);
+    }
+  });
+
   it("registers in the protocol registry and is retrievable", () => {
     registerProtocol(layerzeroDef);
     expect(getProtocol("layerzero")?.slug).toBe("layerzero");
