@@ -211,17 +211,20 @@ function applyEncodeTransform(
     return `("0x" + (${expr}).slice(2).padStart(64, "0") as ${HEX_BYTES_TYPE})`;
   }
   if (kind === "weiToEther") {
-    // Registered only on the virtual ethValue field, which is not an ABI
-    // input and never reaches this args builder. The exported SDK's payable
-    // value path is a separate, tracked change; this branch exists so the
-    // kind switch stays exhaustive.
+    // Intended for the virtual ethValue field, which is not an ABI input and
+    // never reaches this args builder. Registering this kind on a real ABI
+    // input would make the runtime convert the value while the emitted SDK
+    // does not, so it must not be registered there. The exported SDK's
+    // payable value path is a separate, tracked change.
     return expr;
   }
   // Exhaustive over EncodeTransformKind, enforced at compile time: adding a
   // new kind to the registry without a branch above narrows `kind` to
-  // something other than `never` here and fails type-check.
-  const exhaustive: never = kind;
-  return exhaustive;
+  // something other than `never` here and fails type-check. At runtime an
+  // unknown kind falls through to the untransformed expression rather than
+  // the kind name.
+  const _exhaustive: never = kind;
+  return expr;
 }
 
 function castScalar(expr: string, solType: string): string {

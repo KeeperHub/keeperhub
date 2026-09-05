@@ -131,10 +131,10 @@ const INTEGER_WEI = /^\d+$/;
  * unresolved reference is left for the executor to resolve.
  */
 export function weiToEther(value: string): string {
-  if (value.startsWith("{{")) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("{{")) {
     return value;
   }
-  const trimmed = value.trim();
   if (!INTEGER_WEI.test(trimmed)) {
     throw new Error(`weiToEther expects an integer wei string, got "${value}"`);
   }

@@ -11,7 +11,11 @@ import { resolveAbi } from "@/lib/abi/cache";
 import { type AbiItem, findAbiFunction } from "@/lib/abi/utils";
 import { withStepValueCap } from "@/lib/execute/value-ledger";
 import { ErrorCategory, logUserError } from "@/lib/logging";
-import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
+import {
+  getProtocol,
+  type ProtocolAction,
+  resolveContractAddress,
+} from "@/lib/protocol-registry";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
 import {
   applyEncodeTransformsNamed,
@@ -163,19 +167,20 @@ function checkUniswapNativeEthPreflight(
   return { ok: true };
 }
 
+// Both the args builder and the ethValue transform pass need the action the
+// step is executing. Resolved here once so the two paths cannot drift into
+// different lookup rules.
+function findProtocolAction(meta: ProtocolMeta): ProtocolAction | undefined {
+  return getProtocol(meta.protocolSlug)?.actions.find(
+    (a) => a.function === meta.functionName && a.contract === meta.contractKey
+  );
+}
+
 function buildFunctionArgs(
   input: ProtocolWriteInput,
   meta: ProtocolMeta
 ): string | undefined {
-  const protocol = getProtocol(meta.protocolSlug);
-  if (!protocol) {
-    return undefined;
-  }
-
-  const protocolAction = protocol.actions.find(
-    (a) => a.function === meta.functionName && a.contract === meta.contractKey
-  );
-
+  const protocolAction = findProtocolAction(meta);
   if (!protocolAction || protocolAction.inputs.length === 0) {
     return undefined;
   }
@@ -213,10 +218,7 @@ function applyEthValueTransform(
   if (typeof rawEthValue !== "string" || rawEthValue.trim() === "") {
     return rawEthValue;
   }
-  const protocol = getProtocol(meta.protocolSlug);
-  const protocolAction = protocol?.actions.find(
-    (a) => a.function === meta.functionName && a.contract === meta.contractKey
-  );
+  const protocolAction = findProtocolAction(meta);
   if (!protocolAction) {
     return rawEthValue;
   }
