@@ -118,3 +118,22 @@ registerEncodeTransform(
   padAddressToBytes,
   "padAddressToBytes"
 );
+
+// LayerZero OFT quotes take the recipient as bytes32; the form collects an
+// EVM address. Both quote actions share the flattened SendParam tuple, so
+// each registers the pad on its own `to` field. The payable send actions
+// register here too once they exist.
+registerEncodeTransform(
+  "layerzero",
+  "oft-quote-send",
+  "to",
+  padAddressToBytes,
+  "padAddressToBytes"
+);
+registerEncodeTransform(
+  "layerzero",
+  "oft-quote-oft",
+  "to",
+  padAddressToBytes,
+  "padAddressToBytes"
+);

@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import "@/protocols";
 import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
+import { getEncodeTransform } from "@/lib/protocol-encode-transforms";
 import { getRegisteredProtocols } from "@/lib/protocol-registry";
 import {
   encodeBoundAction,
@@ -87,7 +88,23 @@ describe("protocol calldata: synthetic encode (all actions)", () => {
         const iface = ifaceFor(protocol, action);
         const { ethersFragment, abi } = fragmentFor(iface, action);
         expect(abi, `function ${action.function} not in ABI`).toBeDefined();
-        let args: unknown[] = action.inputs.map((inp) => syntheticArg(inp));
+        // Encode transforms are part of the runtime encode path
+        // (encodeFromConfig applies them before reshape/coerce), so the
+        // synthetic layer applies them too. Without this, an input whose
+        // fieldType override narrows the declared ABI type - a bytes32
+        // param rendered as an address field - is handed 20 bytes for a
+        // 32-byte slot and fails on a protocol that is actually correct.
+        let args: unknown[] = action.inputs.map((inp) => {
+          const synthetic = syntheticArg(inp);
+          const transform = getEncodeTransform(
+            protocol.slug,
+            action.slug,
+            inp.name
+          );
+          return transform && typeof synthetic === "string"
+            ? transform(synthetic)
+            : synthetic;
+        });
         args = reshapeArgsForAbi(args, abi as never);
         args = coerceArgsForAbi(args, abi as never);
         const data = iface.encodeFunctionData(ethersFragment as never, args);
