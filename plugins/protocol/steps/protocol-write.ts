@@ -11,9 +11,16 @@ import { resolveAbi } from "@/lib/abi/cache";
 import { type AbiItem, findAbiFunction } from "@/lib/abi/utils";
 import { withStepValueCap } from "@/lib/execute/value-ledger";
 import { ErrorCategory, logUserError } from "@/lib/logging";
-import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
+import {
+  getProtocol,
+  type ProtocolAction,
+  resolveContractAddress,
+} from "@/lib/protocol-registry";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
-import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
+import {
+  applyEncodeTransformsNamed,
+  getEncodeTransform,
+} from "@/lib/protocol-encode-transforms";
 import {
   type ProtocolMeta,
   resolveProtocolMeta,
@@ -160,19 +167,20 @@ function checkUniswapNativeEthPreflight(
   return { ok: true };
 }
 
+// Both the args builder and the ethValue transform pass need the action the
+// step is executing. Resolved here once so the two paths cannot drift into
+// different lookup rules.
+function findProtocolAction(meta: ProtocolMeta): ProtocolAction | undefined {
+  return getProtocol(meta.protocolSlug)?.actions.find(
+    (a) => a.function === meta.functionName && a.contract === meta.contractKey
+  );
+}
+
 function buildFunctionArgs(
   input: ProtocolWriteInput,
   meta: ProtocolMeta
 ): string | undefined {
-  const protocol = getProtocol(meta.protocolSlug);
-  if (!protocol) {
-    return undefined;
-  }
-
-  const protocolAction = protocol.actions.find(
-    (a) => a.function === meta.functionName && a.contract === meta.contractKey
-  );
-
+  const protocolAction = findProtocolAction(meta);
   if (!protocolAction || protocolAction.inputs.length === 0) {
     return undefined;
   }
@@ -195,6 +203,31 @@ function buildFunctionArgs(
 
   const args = transformed.map((t) => t.value);
   return JSON.stringify(args);
+}
+
+// The ETH Value field is a virtual input resolved on its own path, so the
+// per-input transform pass inside buildFunctionArgs never sees it. A
+// transform registered under the input name "ethValue" is applied here,
+// before resolveEthValue, so the converted value reaches both consumers:
+// the core write and the org daily-value cap. The documented unit of the
+// field stays ether; a registered transform converts into it.
+function applyEthValueTransform(
+  rawEthValue: unknown,
+  meta: ProtocolMeta
+): unknown {
+  if (typeof rawEthValue !== "string" || rawEthValue.trim() === "") {
+    return rawEthValue;
+  }
+  const protocolAction = findProtocolAction(meta);
+  if (!protocolAction) {
+    return rawEthValue;
+  }
+  const transform = getEncodeTransform(
+    meta.protocolSlug,
+    protocolAction.slug,
+    "ethValue"
+  );
+  return transform ? transform(rawEthValue.trim()) : rawEthValue;
 }
 
 export async function protocolWriteStep(
@@ -273,7 +306,7 @@ export async function protocolWriteStep(
 
     // 6. Delegate to writeContractCore
     const ethValue = resolveEthValue(
-      input.ethValue,
+      applyEthValueTransform(input.ethValue, meta),
       resolvedAbi,
       meta.functionName,
       meta.protocolSlug

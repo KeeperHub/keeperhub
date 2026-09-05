@@ -9,6 +9,8 @@
  * other serialization layers are unaffected.
  */
 
+import { formatEther } from "ethers";
+
 type EncodeTransform = (value: string) => string;
 
 /**
@@ -18,7 +20,7 @@ type EncodeTransform = (value: string) => string;
  * registering a new transform shape, then teach the synthesiser to
  * handle it.
  */
-export type EncodeTransformKind = "padAddressToBytes";
+export type EncodeTransformKind = "padAddressToBytes" | "weiToEther";
 
 type TransformEntry = {
   kind: EncodeTransformKind;
@@ -118,3 +120,23 @@ registerEncodeTransform(
   padAddressToBytes,
   "padAddressToBytes"
 );
+
+const INTEGER_WEI = /^\d+$/;
+
+/**
+ * Convert an integer wei string into the decimal ether string the payable
+ * value field expects. Exact string arithmetic via ethers.formatEther:
+ * Number would lose precision above 2^53 and emit exponent notation for
+ * small values, which parseEther rejects. Templates pass through so an
+ * unresolved reference is left for the executor to resolve.
+ */
+export function weiToEther(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("{{")) {
+    return value;
+  }
+  if (!INTEGER_WEI.test(trimmed)) {
+    throw new Error(`weiToEther expects an integer wei string, got "${value}"`);
+  }
+  return formatEther(BigInt(trimmed));
+}
