@@ -41,9 +41,14 @@ export const LAYERZERO_EIDS: Record<string, number> = {
 };
 
 // Type 3 options: executor lzReceive gas of 200,000 and no native drop.
-// OFTs that set enforced options merge or ignore this; OFTs without
-// enforced options reject an empty options blob at the message library,
-// so a working floor is the safe default.
+// OFTs without enforced options reject an empty options blob at the
+// message library, so a working floor is the safe default.
+//
+// On an OFT that does set enforced options, these are COMBINED with them
+// rather than overriding or being ignored: the executor sums the
+// lzReceive gas across both. An OFT enforcing 100,000 gas therefore
+// budgets 300,000 with this default, and quoteSend returns a
+// correspondingly larger nativeFee.
 export const DEFAULT_EXTRA_OPTIONS =
   "0x00030100110100000000000000000000000000030d40";
 
@@ -124,7 +129,7 @@ const SEND_PARAM_INPUT_OVERRIDES: Record<string, AbiInputOverride> = {
   minAmountLD: {
     label: "Minimum Amount (token smallest unit)",
     helpTip:
-      "Slippage floor in the token's smallest unit. The send reverts if the amount after dust removal and fees is below this.",
+      "Slippage floor in the token's smallest unit. Both the quote and the send revert with SlippageExceeded when the amount after dust removal and fees falls below this, so leave headroom instead of matching the amount exactly.",
     docUrl: LAYERZERO_OFT_DOCS,
   },
   extraOptions: {
@@ -132,7 +137,7 @@ const SEND_PARAM_INPUT_OVERRIDES: Record<string, AbiInputOverride> = {
     default: DEFAULT_EXTRA_OPTIONS,
     advanced: true,
     helpTip:
-      "Encoded executor options for the destination. Default is a Type 3 blob with 200,000 gas for lzReceive, which is enough for a plain token receive. OFTs with enforced options may override it. Raise the gas when the receiver runs logic.",
+      "Encoded executor options for the destination. The default is a Type 3 blob with 200,000 gas for lzReceive, which is enough for a plain token receive; raise it when the receiver runs logic. An OFT that sets enforced options combines these with them rather than overriding or ignoring them, so the executor sums the lzReceive gas and this default adds to the fee the quote returns.",
     docUrl: LAYERZERO_OFT_DOCS,
   },
   composeMsg: {
@@ -179,7 +184,7 @@ const TEST_DATA: ProtocolTestData = {
         dstEid: "30110",
         to: wallet(),
         amountLD: "1000000",
-        minAmountLD: "1000000",
+        minAmountLD: "990000",
         extraOptions: DEFAULT_EXTRA_OPTIONS,
         composeMsg: "0x",
         oftCmd: "0x",
@@ -190,7 +195,7 @@ const TEST_DATA: ProtocolTestData = {
         dstEid: "30110",
         to: wallet(),
         amountLD: "1000000",
-        minAmountLD: "1000000",
+        minAmountLD: "990000",
         extraOptions: DEFAULT_EXTRA_OPTIONS,
         composeMsg: "0x",
         oftCmd: "0x",
@@ -289,7 +294,10 @@ export default defineAbiProtocol({
             payInLzToken: PAY_IN_LZ_TOKEN_OVERRIDE,
           },
           outputs: {
-            fee: { label: "Messaging Fee (nativeFee, lzTokenFee in wei)" },
+            fee: {
+              label:
+                "Messaging Fee (nativeFee, lzTokenFee, each in its token's smallest unit)",
+            },
           },
         },
         quoteOFT: {
@@ -311,7 +319,7 @@ export default defineAbiProtocol({
           slug: "oft-approval-required",
           label: "OFT Approval Required",
           description:
-            "Whether this OFT needs an ERC-20 approval before sending. true means it is an OFT Adapter that pulls the underlying token; false means it mints and burns its own supply.",
+            "Whether this OFT needs an ERC-20 approval before sending. true means it pulls the underlying token via transferFrom, so run OFT Approve first; false means it does not. Decide the approval step from this value alone. Do not infer it from whether the underlying token differs from the OFT: a Mint and Burn OFT Adapter is a separate contract holding mint and burn rights over an existing token, so it reports false while still having a distinct token address.",
           docUrl: LAYERZERO_OFT_DOCS,
           outputs: {
             result: { name: "approvalRequired", label: "Approval Required" },
@@ -331,7 +339,7 @@ export default defineAbiProtocol({
           slug: "oft-token",
           label: "OFT Underlying Token",
           description:
-            "The ERC-20 this OFT moves. For an OFT Adapter it is the wrapped token to approve; for a native OFT it is the OFT itself.",
+            "The ERC-20 this OFT moves. It is the OFT's own address when the OFT is itself the token, and a separate contract for every adapter style: one that locks and unlocks the token, and one that mints and burns a separate token it has rights over. So a differing address does not tell you an approval is needed. Use OFT Approval Required for that.",
           docUrl: LAYERZERO_OFT_DOCS,
           outputs: {
             result: { name: "token", label: "Token Address" },
@@ -492,7 +500,7 @@ export default defineAbiProtocol({
           slug: "endpoint-is-supported-eid",
           label: "Endpoint Is Supported EID",
           description:
-            "Whether this endpoint has a default send library for the destination, meaning messages can be routed there at all.",
+            "Whether this endpoint supports the destination endpoint ID. It returns true only when both the default send library and the default receive library are set, meaning messages can be routed there at all.",
           docUrl: LAYERZERO_PROTOCOL_DOCS,
           inputs: {
             eid: {
