@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   clearEncodeTransforms,
+  getEncodeTransformKind,
   registerEncodeTransform,
   weiToEther,
 } from "@/lib/protocol-encode-transforms";
@@ -19,11 +20,18 @@ describe("synthesiser: weiToEther kind", () => {
       weiToEther,
       "weiToEther"
     );
+    expect(
+      getEncodeTransformKind("chainlink", "ccip-approve-bridge-token", "amount")
+    ).toBe("weiToEther");
+
     const out = synthesiseProtocolTemplate(
       "chainlink/ccip-approve-bridge-token",
       { network: "11155111" }
     );
     expect(out).not.toBeNull();
     expect(out as string).toContain("BigInt(input.amount)");
+    // The emitted SDK must not convert: a leaked kind name or a stray
+    // conversion call would both fail here.
+    expect(out as string).not.toContain("formatEther");
   });
 });

@@ -1013,6 +1013,16 @@ describe("ethValue encode transforms", () => {
 
   it("is byte-identical for an action with no registered ethValue transform", async () => {
     arrange();
+    // Populate the registry with a different action of the same protocol, so
+    // this proves a lookup miss leaves the value alone rather than merely
+    // proving an empty registry does nothing.
+    registerEncodeTransform(
+      "compound",
+      "withdraw",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
 
     await protocolWriteStep(makeInput({ ethValue: "0.25" }));
 

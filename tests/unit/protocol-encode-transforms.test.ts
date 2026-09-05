@@ -145,6 +145,8 @@ describe("weiToEther", () => {
   it("rejects a non-integer input with a clear error", () => {
     expect(() => weiToEther("1.5")).toThrow(/integer wei/);
     expect(() => weiToEther("abc")).toThrow(/integer wei/);
+    expect(() => weiToEther("1e18")).toThrow(/integer wei/);
+    expect(() => weiToEther("0x64")).toThrow(/integer wei/);
   });
 
   it("is registrable under the weiToEther kind", () => {
