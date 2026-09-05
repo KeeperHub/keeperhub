@@ -18,6 +18,7 @@ export default {
   curve: "Curve",
   ethena: "Ethena",
   "frax-ether-v2": "Frax Ether V2",
+  layerzero: "LayerZero",
   lido: "Lido",
   morpho: "Morpho",
   pendle: "Pendle",
