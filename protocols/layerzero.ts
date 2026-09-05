@@ -269,6 +269,7 @@ export default defineAbiProtocol({
   description:
     "LayerZero V2 omnichain tokens (OFT) and endpoint configuration. Quote crosschain transfer fees, inspect an OFT's peers and approval needs, and read the send library and DVN configuration a lane will use before you trust it.",
   website: "https://layerzero.network",
+  icon: "/protocols/layerzero.png",
 
   testData: TEST_DATA,
 
