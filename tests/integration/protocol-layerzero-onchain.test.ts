@@ -2,8 +2,11 @@
  * LayerZero On-Chain Integration Tests
  *
  * Proves that the ABI-driven LayerZero protocol definition produces
- * calldata the deployed contracts accept on Ethereum mainnet, and that
- * what comes back decodes into the shapes the runtime expects. Three
+ * calldata the deployed contracts accept on Ethereum mainnet, and - for
+ * the eleven reads - that what comes back decodes into the shapes the
+ * runtime expects. The twelfth action is a write and is simulated only:
+ * USDT's approve returns no data, so there is nothing to decode and that
+ * test asserts acceptance rather than a return value. Three
  * deployments answer: the USDT0 OFT Adapter, the USDT token it locks,
  * and the LayerZero EndpointV2. Every action goes through the shared
  * calldata builder, so the test exercises the definition itself - its
@@ -73,12 +76,22 @@ const AMOUNT_LD = "1000000";
 const AMOUNT_LD_EXPECTED = BigInt(AMOUNT_LD);
 const MIN_AMOUNT_LD = "990000";
 const SHARED_DECIMALS_EXPECTED = BigInt(6);
-// A bytes32 peer and a bytes config both decode to hex strings; "0x"
-// alone is the empty answer for the config, and 32 zero bytes for the peer.
-const EMPTY_HEX = "0x";
 // Bigint zero, spelled out because the tsconfig target predates bigint literals.
 const ZERO = BigInt(0);
-const ZERO_BYTES32 = ethers.ZeroHash;
+// The ULN config the endpoint returns as opaque bytes. Decoding it is the
+// only way to assert anything that could actually fail: the endpoint always
+// returns a populated struct, so a length check on the raw bytes passes
+// whatever the lane's security settings are.
+const ULN_CONFIG_TUPLE =
+  "tuple(uint64 confirmations, uint8 requiredDVNCount, uint8 optionalDVNCount, uint8 optionalDVNThreshold, address[] requiredDVNs, address[] optionalDVNs)";
+// The Arbitrum OFT this adapter should be peered with, taken from the
+// protocol definition's own address map rather than retyped here: if USDT0
+// re-wires its peer, the definition has gone stale and this test is the
+// only thing that notices.
+const ARBITRUM_OFT_PEER = ethers.zeroPadValue(
+  layerzeroDef.contracts.oft.addresses["42161"],
+  32
+);
 
 // Resolve Ethereum mainnet RPC URLs via the shared config pipeline:
 // CHAIN_RPC_CONFIG first, individual env vars second, public default last.
@@ -116,13 +129,13 @@ const SEND_PARAM_SAMPLE: Record<string, string> = {
 //    decodes the return with the action's own ABI fragment and asserts
 //    the invariant; anything else (network error, ABI mismatch, decode
 //    failure) surfaces as a real test failure.
-//  - Write test (oft-approve): use provider.call (not estimateGas)
-//    against a zero-balance TEST_ADDRESS. USDT should either succeed and
-//    return hex, or revert with CALL_EXCEPTION on business logic. Both
-//    outcomes prove the deployed bytecode parsed our calldata. What we
-//    reject: calldata-level ethers errors (INVALID_ARGUMENT, BAD_DATA,
-//    BUFFER_OVERRUN), which would mean the definition encodes something
-//    the token does not implement.
+//  - Write test (oft-approve): use provider.call (not estimateGas) from
+//    TEST_ADDRESS, which has no allowance set for this spender. USDT
+//    should either succeed and return hex, or revert with CALL_EXCEPTION
+//    on business logic. Both outcomes prove the deployed bytecode parsed
+//    our calldata. What we reject: calldata-level ethers errors
+//    (INVALID_ARGUMENT, BAD_DATA, BUFFER_OVERRUN), which would mean the
+//    definition encodes something the token does not implement.
 describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
   // Route every RPC call through the failover manager so a
   // primary-endpoint hiccup falls back to the secondary.
@@ -210,12 +223,15 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
       });
 
       // Single tuple output named `fee`: (nativeFee, lzTokenFee).
-      const fee = decoded[0];
+      // Reaching this line at all is the coverage for payInLzToken:
+      // ethers treats any non-empty string as truthy, so a "false" that
+      // escaped coercion would ask to pay in ZRO, and the Ethereum
+      // endpoint has no LZ token set (lzToken() is the zero address), so
+      // the call would revert with LZ_LzTokenUnavailable before any
+      // assertion ran.
+      const fee = decoded.fee;
       expect(typeof fee.nativeFee).toBe("bigint");
       expect(fee.nativeFee).toBeGreaterThan(ZERO);
-      // payInLzToken=false must survive coercion; a string "false" that
-      // encoded as true would quote in ZRO instead.
-      expect(typeof fee.lzTokenFee).toBe("bigint");
     },
     30_000
   );
@@ -226,7 +242,7 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
       const decoded = await callAndDecode("oft-quote-oft", SEND_PARAM_SAMPLE);
 
       // Three tuple outputs: oftLimit, oftFeeDetails[], oftReceipt.
-      const receipt = decoded[2];
+      const receipt = decoded.oftReceipt;
       // 1 USDT at 6 shared decimals carries no dust, so nothing is
       // removed and the adapter takes no fee on this lane.
       expect(receipt.amountReceivedLD).toBe(AMOUNT_LD_EXPECTED);
@@ -260,10 +276,10 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
     async () => {
       const decoded = await callAndDecode("oft-token", {});
 
+      // USDT, not the adapter's own address: this is a lock-and-unlock
+      // adapter over an existing token, which is why the approve action
+      // targets a different contract from every other OFT action here.
       expect(ethers.getAddress(decoded[0])).toBe(ethers.getAddress(USDT));
-      expect(ethers.getAddress(decoded[0])).not.toBe(
-        ethers.getAddress(USDT0_OFT_ADAPTER)
-      );
     },
     30_000
   );
@@ -273,29 +289,29 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
     async () => {
       const decoded = await callAndDecode("oft-peer", { eid: ARBITRUM_EID });
 
-      // bytes32. All zeros would mean the lane is not wired and a send
-      // to it reverts. Observed 2026-09-05:
-      // 0x...14e4a1b13bf7f943c8ff7c51fb60fa964a298d92 (the Arbitrum OFT).
-      // Asserted as non-zero rather than fixed, matching the protocol
-      // definition's own expectation, so a legitimate re-wire on the
-      // destination does not break this test.
-      expect(decoded[0]).not.toBe(ZERO_BYTES32);
-      expect(ethers.dataLength(decoded[0])).toBe(32);
+      // bytes32. All zeros would mean the lane is not wired and a send to
+      // it reverts. Pinned to the Arbitrum OFT the definition itself
+      // lists, so this fails in the two cases worth knowing about: the
+      // lane is unwired, or USDT0 re-pointed it and the definition's
+      // address map is now stale.
+      expect(decoded[0]).toBe(ARBITRUM_OFT_PEER);
     },
     30_000
   );
 
   itOnchain(
-    "oft-check-balance: balanceOf decodes to a uint",
+    "oft-check-balance: adapter holds the locked USDT",
     async () => {
       const decoded = await callAndDecode("oft-check-balance", {
-        account: TEST_ADDRESS,
+        account: USDT0_OFT_ADAPTER,
       });
 
-      // Any value is correct; the point is that USDT accepted the
-      // calldata and the return decodes as a uint256.
+      // Read against the adapter rather than an arbitrary address so the
+      // assertion can fail: a lock-and-unlock adapter custodies the USDT
+      // backing every USDT0 in circulation, so an empty balance would
+      // mean the calldata reached the wrong contract.
       expect(typeof decoded[0]).toBe("bigint");
-      expect(decoded[0]).toBeGreaterThanOrEqual(ZERO);
+      expect(decoded[0]).toBeGreaterThan(ZERO);
     },
     30_000
   );
@@ -308,8 +324,11 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
         spender: USDT0_OFT_ADAPTER,
       });
 
+      // Shape only, deliberately: this reference wallet has granted no
+      // approval, so any specific value would be pinning an accident.
+      // The coverage is that USDT accepted the two-address calldata and
+      // the return decoded as a uint256.
       expect(typeof decoded[0]).toBe("bigint");
-      expect(decoded[0]).toBeGreaterThanOrEqual(ZERO);
     },
     30_000
   );
@@ -322,6 +341,10 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
         dstEid: ARBITRUM_EID,
       });
 
+      // Safe to pin: USDT0 sets this library explicitly rather than
+      // inheriting it (isDefaultSendLibrary(adapter, 30110) is false), so
+      // a LayerZero default-library rotation cannot redden this. Only a
+      // reconfiguration by the USDT0 owner would.
       expect(ethers.getAddress(decoded[0])).toBe(
         ethers.getAddress(SEND_ULN_302)
       );
@@ -330,7 +353,7 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
   );
 
   itOnchain(
-    "endpoint-get-config: the ULN config is set on that library",
+    "endpoint-get-config: the ULN config decodes to a usable DVN set",
     async () => {
       const decoded = await callAndDecode("endpoint-get-config", {
         oapp: USDT0_OFT_ADAPTER,
@@ -339,11 +362,20 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
         configType: CONFIG_TYPE_ULN,
       });
 
-      // ABI-encoded bytes: confirmations plus the DVN set. Empty bytes
-      // would mean nothing to compare a security baseline against.
-      const config = decoded[0] as string;
-      expect(config).not.toBe(EMPTY_HEX);
-      expect(config.length).toBeGreaterThan(EMPTY_HEX.length);
+      // The action returns opaque bytes, so decode them the way a
+      // workflow comparing against a security baseline would. Asserting
+      // internal consistency rather than a fixed DVN set: these hold for
+      // any correctly configured lane, so adding or swapping a DVN does
+      // not redden the test, but a lane with no verifier or a truncated
+      // config does. Observed 2026-09-05: 65 confirmations, 3 required
+      // DVNs.
+      const [uln] = ethers.AbiCoder.defaultAbiCoder().decode(
+        [ULN_CONFIG_TUPLE],
+        decoded[0] as string
+      );
+      expect(uln.confirmations).toBeGreaterThan(ZERO);
+      expect(uln.requiredDVNCount).toBeGreaterThan(ZERO);
+      expect(uln.requiredDVNs.length).toBe(Number(uln.requiredDVNCount));
     },
     30_000
   );
@@ -373,6 +405,10 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
         chainId: CHAIN_ID,
       });
 
+      // No decode here, unlike the eleven reads: USDT's approve returns
+      // no data at all, so a successful call comes back as "0x" and
+      // there is nothing to assert a shape against. Acceptance by the
+      // deployed bytecode is the whole of the coverage.
       await expect(simulateBytecodeCall({ to, data })).resolves.toBeUndefined();
     },
     30_000
