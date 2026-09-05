@@ -57,12 +57,13 @@ None of the reads below is interesting on its own. What they are for is the sequ
 
 1. Endpoint Is Supported EID on the destination endpoint ID, to establish the endpoint can route there at all.
 2. OFT Peer for the same endpoint ID, to establish this particular token has a counterpart wired there. A supported lane with no peer still reverts.
-3. OFT Approval Required, to decide whether an approval step exists at all for this OFT. If it does: OFT Underlying Token to find the token, OFT Check Token Balance to confirm the funds are there, OFT Check Allowance to confirm the Adapter can pull them, and OFT Approve when it cannot.
-4. OFT Quote Transfer, to see the amount that will actually arrive after dust removal rather than the amount you asked for.
-5. OFT Quote Send with the exact options you intend to use, to get the native fee the send will have to pay, and to fail early if the options are wrong.
-6. Endpoint Get Send Library and Endpoint Get Config, compared against a stored baseline, to confirm the parties verifying the lane are still the ones you agreed to.
+3. OFT Underlying Token to find the ERC-20 the OFT actually moves, then OFT Check Token Balance on it to confirm the sending wallet holds enough. This step is unconditional. It applies to every OFT, not just the ones needing an approval: a mint-and-burn contract burns tokens the sender has to hold exactly as a lock-and-unlock Adapter transfers them.
+4. OFT Approval Required, to decide whether an approval step exists at all for this OFT. Only when it returns true: OFT Check Allowance to see whether the Adapter can already pull the amount, and OFT Approve when it cannot.
+5. OFT Quote Transfer, to see the amount that will actually arrive after dust removal rather than the amount you asked for.
+6. OFT Quote Send with the exact options you intend to use, to get the native fee the send will have to pay, and to fail early if the options are wrong.
+7. Endpoint Get Send Library and Endpoint Get Config, compared against a stored baseline, to confirm the parties verifying the lane are still the ones you agreed to.
 
-Steps one through five each end in a revert or a shortfall you would have found the hard way. Step six does not: it is the check that catches a change nothing else reports.
+Steps one through six each end in a revert or a shortfall you would have found the hard way. Step seven does not: it is the check that catches a change nothing else reports.
 
 ## Actions
 
@@ -94,8 +95,8 @@ Quote the LayerZero messaging fee for sending an OFT to another chain. The `nati
 | contractAddress | address | OFT / OFT Adapter Address |
 | dstEid | uint32 | Destination Endpoint ID. The LayerZero endpoint ID of the destination chain, not its EVM chain ID |
 | to | address | Recipient Address. Enter a standard EVM address; it is padded to the bytes32 the OFT expects |
-| amountLD | uint256 | Amount in the token's smallest unit (local decimals) |
-| minAmountLD | uint256 | Minimum Amount in the token's smallest unit. The slippage floor |
+| amountLD | uint256 | Amount (token smallest unit). The amount to send, in the token's local decimals |
+| minAmountLD | uint256 | Minimum Amount (token smallest unit). The slippage floor, in the token's local decimals |
 | extraOptions | bytes | Extra Options. Advanced. Defaults to `0x00030100110100000000000000000000000000030d40`, a Type 3 blob giving the executor 200,000 gas for delivery |
 | composeMsg | bytes | Compose Message. Advanced. Defaults to `0x`. Bytes delivered to a composer contract on the destination |
 | oftCmd | bytes | OFT Command. Advanced. Defaults to `0x`. Unused by the standard OFT |
@@ -126,8 +127,8 @@ Preview an OFT transfer: the transfer limits, the fee breakdown, and the exact a
 | contractAddress | address | OFT / OFT Adapter Address |
 | dstEid | uint32 | Destination Endpoint ID. The LayerZero endpoint ID of the destination chain, not its EVM chain ID |
 | to | address | Recipient Address. Enter a standard EVM address; it is padded to the bytes32 the OFT expects |
-| amountLD | uint256 | Amount in the token's smallest unit (local decimals) |
-| minAmountLD | uint256 | Minimum Amount in the token's smallest unit. The slippage floor |
+| amountLD | uint256 | Amount (token smallest unit). The amount to send, in the token's local decimals |
+| minAmountLD | uint256 | Minimum Amount (token smallest unit). The slippage floor, in the token's local decimals |
 | extraOptions | bytes | Extra Options. Advanced. Defaults to `0x00030100110100000000000000000000000000030d40` |
 | composeMsg | bytes | Compose Message. Advanced. Defaults to `0x` |
 | oftCmd | bytes | OFT Command. Advanced. Defaults to `0x` |
@@ -249,7 +250,7 @@ Approve an OFT Adapter to pull the underlying token. Needed only when OFT Approv
 |-------|------|-------------|
 | contractAddress | address | OFT Underlying Token (ERC-20) Address |
 | spender | address | Spender (OFT Adapter). The address that will call `transferFrom` on this token during a send |
-| amount | uint256 | Amount in the token's smallest unit. Must cover the amount you intend to send |
+| amount | uint256 | Amount (token smallest unit). The allowance to grant. Must cover the amount you intend to send |
 
 **Outputs:**
 

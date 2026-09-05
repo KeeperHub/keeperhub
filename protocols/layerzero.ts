@@ -73,10 +73,10 @@ const ENDPOINT_V2_ADDRESSES: Record<string, string> = {
 //
 // Chains 1, 10, 137, 8453 and 42161 are the USDT0 family. Chain 1 is the
 // OFT Adapter over USDT: approvalRequired() is true, so a send needs an
-// ERC-20 approval first. The four L2 entries are native mint-and-burn
-// OFTs (approvalRequired() false), and on each of them token() returns
-// the separate USDT0 token contract listed in the map below, not the OFT
-// itself.
+// ERC-20 approval first. The four L2 entries are Mint and Burn OFT
+// Adapters (approvalRequired() false), and on each of them token()
+// returns the separate USDT0 token contract listed in the map below, not
+// the OFT itself.
 //
 // The two testnet entries are a third-party USDT+ test-token pair wired
 // to each other via peers(). There the OFT is the token, so token()
@@ -320,7 +320,7 @@ export default defineAbiProtocol({
           slug: "oft-approval-required",
           label: "OFT Approval Required",
           description:
-            "Whether this OFT needs an ERC-20 approval before sending. true means it pulls the underlying token via transferFrom, so run OFT Approve first; false means it does not. Decide the approval step from this value alone. Do not infer it from whether the underlying token differs from the OFT: a Mint and Burn OFT Adapter is a separate contract holding mint and burn rights over an existing token, so it reports false while still having a distinct token address.",
+            "Decide the approval step from this value alone. true means this OFT pulls the underlying token via transferFrom before sending, so run OFT Approve first; false means it does not. Do not infer it from whether the underlying token differs from the OFT: a Mint and Burn OFT Adapter is a separate contract holding mint and burn rights over an existing token, so it reports false while still having a distinct token address.",
           docUrl: LAYERZERO_OFT_DOCS,
           outputs: {
             result: { name: "approvalRequired", label: "Approval Required" },
@@ -340,7 +340,7 @@ export default defineAbiProtocol({
           slug: "oft-token",
           label: "OFT Underlying Token",
           description:
-            "The ERC-20 this OFT moves. It is the OFT's own address when the OFT is itself the token, and a separate contract for every adapter style: one that locks and unlocks the token, and one that mints and burns a separate token it has rights over. So a differing address does not tell you an approval is needed. Use OFT Approval Required for that.",
+            "Do not infer approval from this address; use OFT Approval Required for that. This is the ERC-20 the OFT moves: its own address when the OFT is itself the token, and a separate contract for every adapter style, both the one that locks and unlocks the token and the one that mints and burns a separate token it has rights over. So a differing address does not tell you an approval is needed.",
           docUrl: LAYERZERO_OFT_DOCS,
           outputs: {
             result: { name: "token", label: "Token Address" },
