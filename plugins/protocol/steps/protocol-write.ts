@@ -13,7 +13,10 @@ import { withStepValueCap } from "@/lib/execute/value-ledger";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
-import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
+import {
+  applyEncodeTransformsNamed,
+  getEncodeTransform,
+} from "@/lib/protocol-encode-transforms";
 import {
   type ProtocolMeta,
   resolveProtocolMeta,
@@ -197,6 +200,34 @@ function buildFunctionArgs(
   return JSON.stringify(args);
 }
 
+// The ETH Value field is a virtual input resolved on its own path, so the
+// per-input transform pass inside buildFunctionArgs never sees it. A
+// transform registered under the input name "ethValue" is applied here,
+// before resolveEthValue, so the converted value reaches both consumers:
+// the core write and the org daily-value cap. The documented unit of the
+// field stays ether; a registered transform converts into it.
+function applyEthValueTransform(
+  rawEthValue: unknown,
+  meta: ProtocolMeta
+): unknown {
+  if (typeof rawEthValue !== "string" || rawEthValue.trim() === "") {
+    return rawEthValue;
+  }
+  const protocol = getProtocol(meta.protocolSlug);
+  const protocolAction = protocol?.actions.find(
+    (a) => a.function === meta.functionName && a.contract === meta.contractKey
+  );
+  if (!protocolAction) {
+    return rawEthValue;
+  }
+  const transform = getEncodeTransform(
+    meta.protocolSlug,
+    protocolAction.slug,
+    "ethValue"
+  );
+  return transform ? transform(rawEthValue.trim()) : rawEthValue;
+}
+
 export async function protocolWriteStep(
   input: ProtocolWriteInput
 ): Promise<WriteContractResult> {
@@ -273,7 +304,7 @@ export async function protocolWriteStep(
 
     // 6. Delegate to writeContractCore
     const ethValue = resolveEthValue(
-      input.ethValue,
+      applyEthValueTransform(input.ethValue, meta),
       resolvedAbi,
       meta.functionName,
       meta.protocolSlug

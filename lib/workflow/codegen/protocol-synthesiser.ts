@@ -210,10 +210,18 @@ function applyEncodeTransform(
   if (kind === "padAddressToBytes") {
     return `("0x" + (${expr}).slice(2).padStart(64, "0") as ${HEX_BYTES_TYPE})`;
   }
-  // Exhaustive over EncodeTransformKind. Adding a new kind to the registry
-  // requires a new branch above; until then the synthesiser preserves the
-  // raw expression rather than silently dropping the transform.
-  return expr;
+  if (kind === "weiToEther") {
+    // Registered only on the virtual ethValue field, which is not an ABI
+    // input and never reaches this args builder. The exported SDK's payable
+    // value path is a separate, tracked change; this branch exists so the
+    // kind switch stays exhaustive.
+    return expr;
+  }
+  // Exhaustive over EncodeTransformKind, enforced at compile time: adding a
+  // new kind to the registry without a branch above narrows `kind` to
+  // something other than `never` here and fails type-check.
+  const exhaustive: never = kind;
+  return exhaustive;
 }
 
 function castScalar(expr: string, solType: string): string {

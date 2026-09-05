@@ -1,4 +1,12 @@
-import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 // ── Mocks (before imports) ───────────────────────────────────────────
 
@@ -49,8 +57,21 @@ vi.mock("@/plugins/web3/steps/write-contract-core", () => ({
   writeContractCore: (...args: unknown[]) => mockWriteContractCore(...args),
 }));
 
+const mockWithStepValueCap = vi.fn(
+  async (_opts: unknown, fn: () => Promise<unknown>) => await fn()
+);
+vi.mock("@/lib/execute/value-ledger", () => ({
+  withStepValueCap: (...args: unknown[]) =>
+    mockWithStepValueCap(...(args as [unknown, () => Promise<unknown>])),
+}));
+
 // ── Import under test ────────────────────────────────────────────────
 
+import {
+  clearEncodeTransforms,
+  registerEncodeTransform,
+  weiToEther,
+} from "@/lib/protocol-encode-transforms";
 import { protocolWriteStep } from "@/plugins/protocol/steps/protocol-write";
 import type { ProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
 
@@ -947,5 +968,91 @@ describe("protocolWriteStep", () => {
         expect(result.error).toContain("Missing contract address");
       }
     });
+  });
+});
+
+describe("ethValue encode transforms", () => {
+  const PAYABLE_ABI =
+    '[{"name":"supply","type":"function","stateMutability":"payable","inputs":[{"name":"asset","type":"address"},{"name":"amount","type":"uint256"}],"outputs":[]}]';
+
+  afterEach(() => {
+    clearEncodeTransforms();
+  });
+
+  function arrange(): void {
+    mockResolveProtocolMeta.mockReturnValue(COMPOUND_SUPPLY_META);
+    mockGetProtocol.mockReturnValue(COMPOUND_PROTOCOL);
+    mockResolveAbi.mockResolvedValue({ abi: PAYABLE_ABI });
+    mockWriteContractCore.mockResolvedValue({
+      success: true,
+      transactionHash: "0xdef",
+      transactionLink: "",
+      gasUsed: "21000",
+    });
+  }
+
+  it("applies a registered weiToEther transform before the core call and the value cap", async () => {
+    arrange();
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+
+    await protocolWriteStep(makeInput({ ethValue: "1500000000000000000" }));
+
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBe("1.5");
+    const capOpts = (mockWithStepValueCap as Mock).mock.calls[0][0] as {
+      config: { ethValue?: string };
+    };
+    expect(capOpts.config.ethValue).toBe("1.5");
+  });
+
+  it("is byte-identical for an action with no registered ethValue transform", async () => {
+    arrange();
+
+    await protocolWriteStep(makeInput({ ethValue: "0.25" }));
+
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBe("0.25");
+  });
+
+  it("does not invoke the transform on an empty ethValue", async () => {
+    arrange();
+    const spy = vi.fn(weiToEther);
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      spy,
+      "weiToEther"
+    );
+
+    await protocolWriteStep(makeInput({ ethValue: "" }));
+
+    expect(spy).not.toHaveBeenCalled();
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBeUndefined();
+  });
+
+  it("leaves an unresolved template for the executor", async () => {
+    arrange();
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+
+    await protocolWriteStep(
+      makeInput({ ethValue: "{{@quote:Quote.fee.nativeFee}}" })
+    );
+
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBe("{{@quote:Quote.fee.nativeFee}}");
   });
 });
