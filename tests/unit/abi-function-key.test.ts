@@ -90,7 +90,7 @@ describe("resolve then encode", () => {
   // The seam the two halves meet at: a key that resolves is not necessarily a
   // key ethers accepts. Every case below runs all the way to call data.
   const iface = new ethers.Interface(SWAP_ABI as ethers.InterfaceAbi);
-  const tupleArgs = [{ token: TOKEN, amount: 1n }];
+  const tupleArgs = [{ token: TOKEN, amount: BigInt(1) }];
 
   it("encodes the tuple overload from its canonical key", () => {
     const data = iface.encodeFunctionData(
@@ -110,7 +110,7 @@ describe("resolve then encode", () => {
 
   it("encodes the scalar overload of the same name", () => {
     const data = iface.encodeFunctionData(keyFor(SWAP_ABI, "swap(uint256)"), [
-      1n,
+      BigInt(1),
     ]);
     expect(data.slice(0, 10)).toBe("0x94b918de");
   });
