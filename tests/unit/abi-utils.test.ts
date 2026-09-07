@@ -406,6 +406,86 @@ describe("resolveAbiFunction", () => {
   });
 });
 
+describe("resolveAbiFunction on duplicated entries", () => {
+  // Merged facet ABIs and some explorer responses list one function twice.
+  // Repeats of the same signature are one function, not overloads.
+  const DUPLICATED_SCALAR: AbiItem[] = [
+    {
+      type: "function",
+      name: "f",
+      stateMutability: "view",
+      inputs: [{ name: "x", type: "uint256" }],
+    },
+    {
+      type: "function",
+      name: "f",
+      stateMutability: "view",
+      inputs: [{ name: "x", type: "uint256" }],
+    },
+  ];
+
+  const DUPLICATED_TUPLE: AbiItem[] = [
+    {
+      type: "function",
+      name: "f",
+      stateMutability: "view",
+      inputs: [
+        {
+          name: "p",
+          type: "tuple",
+          components: [{ name: "a", type: "address" }],
+        },
+      ],
+    },
+    {
+      type: "function",
+      name: "f",
+      stateMutability: "view",
+      inputs: [
+        {
+          name: "p",
+          type: "tuple",
+          components: [{ name: "a", type: "address" }],
+        },
+      ],
+    },
+  ];
+
+  it("resolves a scalar function that is listed twice", () => {
+    expect(resolveAbiFunction(DUPLICATED_SCALAR, "f(uint256)").status).toBe(
+      "found"
+    );
+    expect(findAbiFunction(DUPLICATED_SCALAR, "f(uint256)")).toBeDefined();
+  });
+
+  it("resolves a tuple function that is listed twice by its canonical key", () => {
+    expect(resolveAbiFunction(DUPLICATED_TUPLE, "f((address))").status).toBe(
+      "found"
+    );
+  });
+
+  it("resolves a tuple function that is listed twice by its legacy key", () => {
+    expect(resolveAbiFunction(DUPLICATED_TUPLE, "f(tuple)").status).toBe(
+      "found"
+    );
+  });
+
+  it("reports ambiguity only across distinct overloads, listing each once", () => {
+    const abi: AbiItem[] = [...DUPLICATED_TUPLE, ...COLLIDING_ABI];
+    const tuple = resolveAbiFunction(abi, "f(tuple)");
+    expect(tuple.status).toBe("found");
+
+    const permit = resolveAbiFunction(
+      [...COLLIDING_ABI, COLLIDING_ABI[0]],
+      "permit(address,tuple,bytes)"
+    );
+    expect(permit.status).toBe("ambiguous");
+    if (permit.status === "ambiguous") {
+      expect(permit.candidates).toHaveLength(2);
+    }
+  });
+});
+
 describe("describeAmbiguousKey", () => {
   it("names the canonical signatures to choose between", () => {
     const result = resolveAbiFunction(

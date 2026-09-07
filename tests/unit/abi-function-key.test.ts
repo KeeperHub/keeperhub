@@ -48,7 +48,9 @@ const SWAP_ABI: AbiItem[] = [
 function keyFor(abi: AbiItem[], storedKey: string): string {
   const resolution = resolveAbiFunction(abi, storedKey);
   if (resolution.status !== "found") {
-    throw new Error(`expected ${storedKey} to resolve, got ${resolution.status}`);
+    throw new Error(
+      `expected ${storedKey} to resolve, got ${resolution.status}`
+    );
   }
   return getAbiFunctionKey(abi, storedKey, resolution.entry);
 }

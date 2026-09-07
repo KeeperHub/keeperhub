@@ -598,7 +598,10 @@ export async function simulateContractCall(
   }
   const abiArray = abiArrayOrError;
 
-  const resolution = resolveAbiFunction(abiArray as AbiItem[], input.functionName);
+  const resolution = resolveAbiFunction(
+    abiArray as AbiItem[],
+    input.functionName
+  );
   if (resolution.status === "ambiguous") {
     return failure(
       from,
@@ -697,7 +700,7 @@ export async function simulateContractCall(
   if (returnData && returnData !== "0x") {
     try {
       const decoded = iface.decodeFunctionResult(
-        input.functionName,
+        resolution.canonicalKey,
         returnData
       );
       simulatedReturnValue =

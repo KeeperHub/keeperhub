@@ -232,6 +232,52 @@ describe("simulateContractCall", () => {
     );
   });
 
+  it("decodes the return value when the key is a legacy tuple spelling", async () => {
+    // API callers still send keys stored before tuples were expanded, such as
+    // `f(tuple)`. Resolving that key is only half the job: the call data and
+    // the returned bytes both have to go through a signature ethers accepts,
+    // or the decode fails silently and the caller gets raw hex back.
+    resetSpies();
+    const encoded42 =
+      "0x000000000000000000000000000000000000000000000000000000000000002a";
+    executeWithFailover.mockResolvedValueOnce([BigInt(30_000), encoded42]);
+
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: JSON.stringify([
+        {
+          type: "function",
+          name: "f",
+          inputs: [{ name: "x", type: "uint256" }],
+          outputs: [{ name: "", type: "uint256" }],
+          stateMutability: "view",
+        },
+        {
+          type: "function",
+          name: "f",
+          inputs: [
+            {
+              name: "p",
+              type: "tuple",
+              components: [{ name: "a", type: "uint256" }],
+            },
+          ],
+          outputs: [{ name: "", type: "uint256" }],
+          stateMutability: "view",
+        },
+      ]),
+      functionName: "f(tuple)",
+      functionArgs: JSON.stringify([{ a: "7" }]),
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.simulatedReturnValue).toBe("42");
+    }
+  });
+
   it("returns wouldRevert with a decoded reason when failover rejects", async () => {
     resetSpies();
     // Build a CALL_EXCEPTION-shaped error carrying a standard

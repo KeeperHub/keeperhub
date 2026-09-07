@@ -135,16 +135,24 @@ export function resolveAbiFunction(
     // Plain names keep their long-standing first-match behaviour.
     const entry = named[0];
     return entry
-      ? { status: "found", entry, canonicalKey: canonicalSignature(entry) ?? key }
+      ? {
+          status: "found",
+          entry,
+          canonicalKey: canonicalSignature(entry) ?? key,
+        }
       : { status: "not_found" };
   }
 
-  const canonical = named.filter((item) => canonicalSignature(item) === key);
-  if (canonical.length === 1) {
-    return { status: "found", entry: canonical[0], canonicalKey: key };
+  // Every canonical match spells the same signature, so however many entries
+  // repeat it -- merged facet ABIs do -- they are one function, not overloads.
+  const canonical = named.find((item) => canonicalSignature(item) === key);
+  if (canonical) {
+    return { status: "found", entry: canonical, canonicalKey: key };
   }
 
-  const legacy = named.filter((item) => legacySignature(item) === key);
+  const legacy = distinctBySignature(
+    named.filter((item) => legacySignature(item) === key)
+  );
   if (legacy.length === 1) {
     const entry = legacy[0];
     return {
@@ -158,6 +166,24 @@ export function resolveAbiFunction(
   }
 
   return { status: "not_found" };
+}
+
+/**
+ * Collapse entries that spell the same canonical signature to their first
+ * occurrence. A legacy key is ambiguous when it matches *different* overloads,
+ * not when one function happens to be listed twice.
+ */
+function distinctBySignature(entries: AbiFunctionItem[]): AbiFunctionItem[] {
+  const seen = new Set<string>();
+  const distinct: AbiFunctionItem[] = [];
+  for (const entry of entries) {
+    const signature = canonicalSignature(entry) ?? legacySignature(entry) ?? "";
+    if (!seen.has(signature)) {
+      seen.add(signature);
+      distinct.push(entry);
+    }
+  }
+  return distinct;
 }
 
 /**

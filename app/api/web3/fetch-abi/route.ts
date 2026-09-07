@@ -1,10 +1,7 @@
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { NextResponse } from "next/server";
-import {
-  type AbiItemComponent,
-  computeSelector,
-} from "@/lib/abi/utils";
+import { type AbiItemComponent, computeSelector } from "@/lib/abi/utils";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { apiError } from "@/lib/api-error";
 import { db } from "@/lib/db";
@@ -332,7 +329,11 @@ async function getDiamondFacets(
 function getFunctionSelector(abiItem: {
   type: string;
   name?: string;
-  inputs?: Array<{ type: string; name?: string; components?: AbiItemComponent[] }>;
+  inputs?: Array<{
+    type: string;
+    name?: string;
+    components?: AbiItemComponent[];
+  }>;
 }): string | null {
   if (abiItem.type !== "function" || !abiItem.name || !abiItem.inputs) {
     return null;
