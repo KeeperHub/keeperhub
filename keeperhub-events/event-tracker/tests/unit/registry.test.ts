@@ -1,5 +1,8 @@
 import type { SQSClient } from "@aws-sdk/client-sqs";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ethers } from "ethers";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { logger } from "../../lib/utils/logger";
+import { getInterface } from "../../src/chains/interface-cache";
 import type {
   ChainProviderManager,
   SubscribeOptions,
@@ -11,6 +14,7 @@ import {
   ListenerRegistry,
   type WorkflowRegistration,
 } from "../../src/listener/registry";
+import { SHUTDOWN_DRAIN_TIMEOUT_MS } from "../../src/listener/shutdown";
 
 const RAW_EVENTS_ABI: AbiEvent[] = [
   {
@@ -77,6 +81,33 @@ function makeDeps(): {
     sqs: sqs as unknown as SQSClient,
     sqsQueueUrl: "https://sqs.test/queue",
   };
+}
+
+function makeLog(txHash: string): ethers.Log {
+  const iface = getInterface(EVENTS_ABI_STRINGS);
+  const { topics, data } = iface.encodeEventLog("Emitted", [
+    "0x2222222222222222222222222222222222222222",
+    1n,
+  ]);
+  return {
+    topics,
+    data,
+    address: "0x1111111111111111111111111111111111111111",
+    blockNumber: 100,
+    blockHash:
+      "0x3333333333333333333333333333333333333333333333333333333333333333",
+    transactionHash: txHash,
+    transactionIndex: 0,
+    index: 0,
+  } as unknown as ethers.Log;
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 describe("ListenerRegistry", () => {
@@ -175,6 +206,80 @@ describe("ListenerRegistry", () => {
       registry.remove("wf-1");
       await registry.add(makeWorkflow("wf-1", { configHash: "second" }));
       expect(registry.getConfigHash("wf-1")).toBe("second");
+    });
+  });
+
+  describe("shutdown drain", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    /**
+     * Parks the handler inside the dedup read, which sits after the pace and
+     * before any SQS or phantom call. That is the same in-flight state a
+     * SIGTERM would catch, without the test needing the internal API.
+     */
+    async function dispatchAndPark(): Promise<{
+      release: (alreadyProcessed: boolean) => void;
+    }> {
+      const gate = deferred<boolean>();
+      (deps.dedup.isProcessed as ReturnType<typeof vi.fn>).mockReturnValue(
+        gate.promise,
+      );
+      await registry.add(makeWorkflow("wf-1"));
+      const { handler } = deps.subscribeToLogs.mock
+        .calls[0][0] as SubscribeOptions;
+      void handler(makeLog(`0x${"a".repeat(64)}`));
+      // Let the handler run up to the dedup await.
+      await Promise.resolve();
+      await Promise.resolve();
+      return { release: gate.resolve };
+    }
+
+    it("waits for an in-flight dispatch before returning", async () => {
+      const { release } = await dispatchAndPark();
+
+      let stopped = false;
+      const stopping = registry.stopAll().then(() => {
+        stopped = true;
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      // The listener is already unsubscribed, but the handler that was
+      // mid-flight when the signal arrived has not finished.
+      expect(deps.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(stopped).toBe(false);
+
+      release(true);
+      await stopping;
+      expect(stopped).toBe(true);
+    });
+
+    it("gives up at the drain bound and records what it could not finish", async () => {
+      const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+      // Parked and never released: the handler outlives the budget.
+      await dispatchAndPark();
+      vi.useFakeTimers();
+
+      const stopping = registry.stopAll();
+      await vi.advanceTimersByTimeAsync(SHUTDOWN_DRAIN_TIMEOUT_MS);
+      await stopping;
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("drain timed out"),
+      );
+      expect(registry.size()).toBe(0);
+    });
+
+    it("clears the registry once drained", async () => {
+      const { release } = await dispatchAndPark();
+      const stopping = registry.stopAll();
+      release(true);
+      await stopping;
+      expect(registry.size()).toBe(0);
+      expect(registry.ids()).toEqual([]);
     });
   });
 });

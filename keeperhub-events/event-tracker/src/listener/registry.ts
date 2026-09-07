@@ -5,6 +5,9 @@ import type { AbiEvent } from "../chains/validation";
 import type { DedupStore } from "./dedup";
 import { EventListener } from "./event-listener";
 import { formatError } from "./format-error";
+import { InFlightTracker } from "./in-flight";
+import { TokenBucketPacer } from "./pacer";
+import { SHUTDOWN_DRAIN_TIMEOUT_MS } from "./shutdown";
 
 /**
  * In-process registry of EventListener instances, keyed by workflow ID.
@@ -70,9 +73,35 @@ interface RegistryEntry {
 export class ListenerRegistry {
   private readonly entries = new Map<string, RegistryEntry>();
   private readonly deps: RegistryDeps;
+  /** One pacer per chain, shared by every listener on that chain. */
+  private readonly pacers = new Map<number, TokenBucketPacer>();
+  /** In-flight `onLog` dispatches across every listener, drained by stopAll. */
+  private readonly inFlight = new InFlightTracker();
+  /**
+   * Aborted by `stopAll` to stop every parked dispatch. Terminal: a registry
+   * that has been stopped is not restarted, the process exits behind it.
+   */
+  private readonly shutdown = new AbortController();
+
+  /** Events released per second per chain when a batch contends the bucket. */
+  private static readonly DRAIN_RATE_PER_SEC = 50;
 
   constructor(deps: RegistryDeps) {
     this.deps = deps;
+  }
+
+  /** Returns the shared pacer for a chain, creating it on first use. */
+  private pacerFor(chainId: number): TokenBucketPacer {
+    let pacer = this.pacers.get(chainId);
+    if (!pacer) {
+      pacer = new TokenBucketPacer(
+        ListenerRegistry.DRAIN_RATE_PER_SEC,
+        undefined,
+        this.shutdown.signal,
+      );
+      this.pacers.set(chainId, pacer);
+    }
+    return pacer;
   }
 
   /**
@@ -99,6 +128,9 @@ export class ListenerRegistry {
       dedup: this.deps.dedup,
       sqs: this.deps.sqs,
       sqsQueueUrl: this.deps.sqsQueueUrl,
+      pacer: this.pacerFor(reg.chainId),
+      inFlight: this.inFlight,
+      shutdownSignal: this.shutdown.signal,
     });
     try {
       await listener.start();
@@ -145,10 +177,42 @@ export class ListenerRegistry {
     return this.entries.size;
   }
 
+  /**
+   * Terminal teardown, called from the SIGTERM path.
+   *
+   * Order is load-bearing. Unsubscribing first removes each listener from the
+   * provider manager's subscriber set, so no further log can start a handler
+   * while an already-dispatched one keeps its captured reference. Aborting
+   * next releases every parked dispatch, which is what keeps the drain inside
+   * its budget: waiting out the pace instead would cover only
+   * `SHUTDOWN_DRAIN_TIMEOUT_MS * drainRate` events and kill the rest. The
+   * drain then waits for the sends themselves.
+   *
+   * Bounded rather than unbounded on purpose: a drain that outlives the K8s
+   * grace period is SIGKILLed with nothing logged. On timeout the remaining
+   * handlers are lost exactly as they are without a drain, but the count is
+   * on the record.
+   */
   async stopAll(): Promise<void> {
     for (const entry of this.entries.values()) {
       entry.listener.stop();
     }
+    this.shutdown.abort();
+
+    const outstanding = this.inFlight.size;
+    if (outstanding > 0) {
+      logger.log(
+        `[ListenerRegistry] draining ${outstanding} in-flight dispatch(es) (up to ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms)`,
+      );
+    }
+    const drained = await this.inFlight.drain(SHUTDOWN_DRAIN_TIMEOUT_MS);
+    if (!drained) {
+      logger.error(
+        `[ListenerRegistry] drain timed out with ${this.inFlight.size} dispatch(es) unfinished; those events are lost`,
+      );
+    }
+
     this.entries.clear();
+    this.pacers.clear();
   }
 }
