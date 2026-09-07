@@ -1065,6 +1065,13 @@
       "when": 1788839868869,
       "tag": "0151_keep_1328_org_circuit_breaker",
       "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1788880279201,
+      "tag": "0152_keep_1042_execution_retention_indexes",
+      "breakpoints": true
     }
   ]
 }

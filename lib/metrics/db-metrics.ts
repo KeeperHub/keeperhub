@@ -379,6 +379,55 @@ export async function getUnconfirmedExecutionCountsFromDb(): Promise<Unconfirmed
   }
 }
 
+export type ExecutionRetentionStats = {
+  oldestLogAgeSeconds: number | null;
+  logTableBytes: number;
+  executionTableBytes: number;
+};
+
+/**
+ * KEEP-1042: how far back the execution tables reach, and how much disk they
+ * hold. Both incidents this job exists to prevent were size-driven -- the
+ * volume alarm on 2026-09-01 and the CPU saturation on 2026-09-02, where
+ * analytics de-TOASTed jsonb out of a table nothing ever pruned -- and neither
+ * quantity was measured anywhere.
+ *
+ * Both queries are cheap: min() over idx_exec_logs_started_at is an index scan,
+ * and pg_total_relation_size reads the catalog. Returns nulls/zeroes on error
+ * so a metrics scrape never fails a run.
+ */
+export async function getExecutionRetentionStatsFromDb(): Promise<ExecutionRetentionStats | null> {
+  try {
+    const [ageRows, sizeRows] = await Promise.all([
+      db
+        .select({
+          ageSeconds: sql<
+            number | null
+          >`EXTRACT(EPOCH FROM (now() - min(${workflowExecutionLogs.startedAt})))`,
+        })
+        .from(workflowExecutionLogs),
+      db.execute<{ logs: string; executions: string }>(sql`SELECT
+          pg_total_relation_size('public.workflow_execution_logs') AS logs,
+          pg_total_relation_size('public.workflow_executions') AS executions`),
+    ]);
+
+    const rawAge = ageRows[0]?.ageSeconds;
+    const sizes = sizeRows[0];
+    return {
+      oldestLogAgeSeconds: rawAge == null ? null : Number(rawAge),
+      logTableBytes: Number(sizes?.logs) || 0,
+      executionTableBytes: Number(sizes?.executions) || 0,
+    };
+  } catch (error) {
+    logSystemWarn(
+      ErrorCategory.DATABASE,
+      "[Metrics] Failed to query execution retention stats from DB",
+      error
+    );
+    return null;
+  }
+}
+
 // One cumulative all-time error count per (workflow_id, org_slug, error_type)
 // for managed orgs. Mirrors the gauge semantics of
 // executionsByStatusAndOrgSlug: a point-in-time snapshot the alert reads as
