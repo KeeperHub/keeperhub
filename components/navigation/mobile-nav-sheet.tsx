@@ -12,7 +12,7 @@ import {
   Workflow as WorkflowIcon,
 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuthPrompt } from "@/components/auth/provider";
 import {
   Sheet,
@@ -32,13 +32,14 @@ import {
   type MobileNavItem,
   visibleMobileNavItems,
 } from "./mobile-nav-items";
-import type { NavItemId } from "./nav-items-data";
+import type { MobileReachableNavItemId } from "./nav-items-data";
 
-// Exhaustive over the mobile-reachable destinations (all NavItemId except the
-// desktop-only address-book flyout, which never appears on mobile). Keyed by
-// the shared union so a destination added to NAV_ITEMS_DATA without an icon is
-// a compile error here, not a silent Globe at runtime.
-const ICONS: Record<Exclude<NavItemId, "address-book">, LucideIcon> = {
+// Exhaustive over the mobile-reachable destinations (see
+// MobileReachableNavItemId). Keyed by that id set so a destination that can
+// render on mobile added to NAV_ITEMS_DATA without an icon is a compile error
+// here, not a silent Globe at runtime - while a desktop-only flyout does not
+// force an icon on a surface it cannot appear on.
+const ICONS: Record<MobileReachableNavItemId, LucideIcon> = {
   hub: Globe,
   workflows: WorkflowIcon,
   analytics: BarChart3,
@@ -53,11 +54,20 @@ export function MobileNavSheet(): React.ReactNode {
   const router = useRouter();
   const pathname = usePathname();
   const isMobile = useIsMobile();
+  const [mounted, setMounted] = useState(false);
   const { data: session } = useSession();
   const { openAuthPrompt } = useAuthPrompt();
   const { isAdmin, isOwner, isLoading: memberLoading } = useActiveMember();
 
-  if (!isMobile) {
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // useIsMobile starts undefined (false) until the matchMedia effect runs, so
+  // the first paint would otherwise hide the trigger and pop it in after
+  // hydration. Render nothing until mounted, matching the sidebar's
+  // hasMounted guard.
+  if (!(mounted && isMobile)) {
     return null;
   }
 

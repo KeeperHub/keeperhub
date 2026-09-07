@@ -39,6 +39,20 @@ export type NavItemData = {
   actionItem?: boolean;
 };
 
+/** Ids with a routable mobile surface - a desktop href or a mobileHref.
+ *  Desktop-only flyouts (both null, e.g. address-book) never render on mobile
+ *  and are excluded so adding one does not force an icon on a surface it
+ *  cannot appear on. Keep in sync with the mobile derivation rule in
+ *  mobile-nav-items.ts (href ?? mobileHref). */
+export type MobileReachableNavItemId =
+  | "hub"
+  | "workflows"
+  | "analytics"
+  | "earnings"
+  | "held-payments"
+  | "activity"
+  | "settings";
+
 export const NAV_ITEMS_DATA: NavItemData[] = [
   { id: "hub", label: "Hub", href: "/hub", requireAuth: false },
   {

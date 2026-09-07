@@ -402,7 +402,7 @@ function StepLogRow({ step }: StepLogRowProps): ReactNode {
           ) : null}
         </span>
       </td>
-      <td />
+      <td className="hidden md:table-cell" />
     </tr>
   );
 }
@@ -462,7 +462,7 @@ function ExpandedStepRows({
               <td className="hidden py-2 pr-3 md:table-cell">
                 <div className="h-3 w-14 animate-pulse rounded bg-muted" />
               </td>
-              <td />
+              <td className="hidden md:table-cell" />
             </tr>
           )
         )}
@@ -733,7 +733,7 @@ function RunsTableContent({
 
   return (
     <div className={cn("overflow-x-auto", pageLoading && "opacity-50")}>
-      <table className="min-w-[700px] w-full text-left md:min-w-0">
+      <table className="w-full text-left md:min-w-[700px]">
         <thead>
           <tr className="border-b text-xs text-muted-foreground">
             <th className="w-8 pb-2 pl-3" />

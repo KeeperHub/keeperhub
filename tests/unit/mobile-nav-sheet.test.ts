@@ -112,29 +112,37 @@ describe("visibleMobileNavItems", () => {
     // adminOnly must be carried onto mobile items and honoured by the
     // visibility filter, or an admin-only destination added to the shared
     // data would fail open on mobile (shown to every signed-in user) while
-    // the desktop sidebar hides it.
-    const adminOnlyIds: string[] = NAV_ITEMS_DATA.filter(
-      (item) => item.adminOnly
-    ).map((item) => item.id);
+    // the desktop sidebar hides it. No NAV_ITEMS_DATA entry sets adminOnly
+    // today, so pin a fixture item to exercise the filter branch directly.
+    const adminOnlyItem: MobileNavItem = {
+      id: "analytics",
+      label: "Analytics",
+      href: "/analytics",
+      requireAuth: true,
+      adminOnly: true,
+    };
+    const base: MobileNavItem[] = [
+      { id: "hub", label: "Hub", href: "/hub", requireAuth: false },
+    ];
+
+    // Carried flag: the data -> mobile derivation preserves adminOnly.
+    const carried = MOBILE_NAV_ITEMS.find((i) => i.id === "analytics");
+    expect(carried?.adminOnly).toBeUndefined(); // no real admin-only item today
     for (const item of MOBILE_NAV_ITEMS) {
-      expect(item.adminOnly === true).toBe(adminOnlyIds.includes(item.id));
+      const dataAdminOnlyIds: string[] = NAV_ITEMS_DATA.filter(
+        (d) => d.adminOnly
+      ).map((d) => d.id);
+      expect(item.adminOnly === true).toBe(dataAdminOnlyIds.includes(item.id));
     }
-    // And the visibility filter honours it: an admin-only item is hidden from
-    // members but shown to admins/owners.
-    const memberVisible = visibleMobileNavItems(MEMBER);
-    for (const id of adminOnlyIds) {
-      expect(
-        memberVisible.find((i) => i.id === id),
-        `admin-only destination "${id}" must not show to members`
-      ).toBeUndefined();
-    }
-    const adminVisible = visibleMobileNavItems(ADMIN);
-    for (const id of adminOnlyIds) {
-      expect(
-        adminVisible.find((i) => i.id === id),
-        `admin-only destination "${id}" must show to admins`
-      ).toBeDefined();
-    }
+
+    // Filter honours it: hidden from members, shown to admins.
+    const memberVisible = visibleMobileNavItems(MEMBER, [
+      adminOnlyItem,
+      ...base,
+    ]);
+    expect(ids(memberVisible)).not.toContain("analytics");
+    const adminVisible = visibleMobileNavItems(ADMIN, [adminOnlyItem, ...base]);
+    expect(ids(adminVisible)).toContain("analytics");
   });
 });
 
