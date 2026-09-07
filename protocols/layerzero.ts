@@ -111,8 +111,12 @@ const ENDPOINT_V2_ADDRESSES: Record<string, string> = {
 // OFT Adapter over USDT: approvalRequired() is true, so a send needs an
 // ERC-20 approval first. The four L2 entries are Mint and Burn OFT
 // Adapters (approvalRequired() false), and on each of them token()
-// returns the separate USDT0 token contract listed in the map below, not
-// the OFT itself.
+// returns a separate ERC-20 listed in the map below, not the OFT itself.
+// That ERC-20 is not USDT0 everywhere: on 10 and 8453 it is USD₮0
+// proper, while on 137 and 42161 token() returns the chain's older
+// bridged Tether USDT (name "Tether USDt", symbol USDT). Both shapes are
+// legitimate here - approvalRequired() is false on all four regardless -
+// but do not read the map as "USDT0 on every L2".
 //
 // The two testnet entries are a third-party USDT+ test-token pair wired
 // to each other via peers(). There the OFT is the token, so token()
@@ -292,9 +296,27 @@ const TEST_DATA: ProtocolTestData = {
       "endpoint-get-config": [{ notEmpty: true }],
       "endpoint-is-supported-eid": [{ equals: "true" }],
     },
-    skipped: {
-      "oft-approve":
-        "write requiring a USDT balance the read-only sweep does not provision",
+    // oft-approve runs. An earlier revision skipped it as "a write
+    // requiring a USDT balance"; that reason was wrong twice over. ERC-20
+    // approve records an allowance and never reads the caller's balance,
+    // and the chain-1 sweep is not read-only anyway - wrapped.ts writes on
+    // the same mainnet fork and sky.ts provisions tokens through
+    // requiredTokens. Leaving it skipped left the protocol's only write
+    // with no end-to-end coverage.
+    //
+    // The real constraint is USDT-specific and worth knowing before this
+    // fixture is edited: USDT's approve reverts when it would move a
+    // non-zero allowance straight to another non-zero value
+    // (`require(!((_value != 0) && (allowed[msg.sender][_spender] != 0)))`).
+    // The fixture is safe because each CI run forks mainnet fresh and the
+    // persistent test wallet has no live USDT allowance to the adapter, so
+    // the write always starts from zero. It is also why the oracle below
+    // asserts nonZero rather than equals: writeExpectations must stay
+    // history-safe on a long-lived fork.
+    writeExpectations: {
+      "oft-approve": [
+        { read: "oft-check-allowance", expect: { nonZero: true } },
+      ],
     },
   },
 };
@@ -402,6 +424,23 @@ export default defineAbiProtocol({
       },
     },
 
+    // The ERC-20 ABI declares approve as returning bool, which is the
+    // general ERC-20 shape but not USDT's - USDT returns no data at all,
+    // and chain 1's reference token is USDT. That mismatch is inert on
+    // every path a protocol action can take, which was worth establishing
+    // rather than assuming:
+    //   - the write path (protocol-write.ts -> writeContractCore) never
+    //     calls decodeFunctionResult; a write step returns no result;
+    //   - the one simulate path that does decode
+    //     (lib/execute/simulate.ts) guards on `returnData !== "0x"` and
+    //     falls back to the raw data inside a catch, so USDT's empty
+    //     return takes neither branch;
+    //   - the one place a decode failure is fatal
+    //     (batch-write-contract-core.ts, "Failed to decode result") is the
+    //     web3/batch-write-contract node, reachable only with a
+    //     hand-written ABI, not through a protocol action.
+    // Keep bool: it is correct for every other token this contract entry
+    // accepts, and narrowing it to no outputs would misdescribe them.
     oftToken: {
       label: "OFT Underlying Token (ERC-20)",
       userSpecifiedAddress: true,

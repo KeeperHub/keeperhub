@@ -33,7 +33,7 @@
     "oft-approve": {
       "to": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
       "data": "0x095ea7b30000000000000000000000006c96de32cea08842dcc4058c14d3aaad7fa41dee00000000000000000000000000000000000000000000000000000000000f4240",
-      "skipped": true
+      "skipped": false
     },
     "oft-check-balance": {
       "to": "0xdAC17F958D2ee523a2206206994597C13D831ec7",

@@ -107,6 +107,38 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     expect(layerzeroDef.contracts.oftToken.userSpecifiedAddress).toBe(true);
   });
 
+  it("oft and oftToken cover exactly the endpoint's chains", () => {
+    // The reference maps are fallbacks for a user-specified address, so a
+    // chain silently missing from one of them does not fail any hex-shape
+    // check - it just leaves that chain with no default target. Pin the
+    // membership, not only the shape, and pin it against endpointV2 so
+    // adding a chain to one map without the others fails here.
+    const chains = Object.keys(
+      layerzeroDef.contracts.endpointV2.addresses
+    ).sort();
+    for (const key of ["oft", "oftToken"] as const) {
+      expect(
+        Object.keys(layerzeroDef.contracts[key].addresses).sort(),
+        key
+      ).toEqual(chains);
+    }
+  });
+
+  it("pins the testnet pairs where the OFT is its own token", () => {
+    // On the two testnet entries the OFT is the token, so both maps hold
+    // the same address. On the five mainnet entries they must differ: an
+    // adapter that returned itself from token() would mean the reference
+    // pair was mis-transcribed.
+    const oft = layerzeroDef.contracts.oft.addresses;
+    const token = layerzeroDef.contracts.oftToken.addresses;
+    for (const chain of ["11155111", "84532"]) {
+      expect(token[chain], chain).toBe(oft[chain]);
+    }
+    for (const chain of ["1", "10", "137", "8453", "42161"]) {
+      expect(token[chain], chain).not.toBe(oft[chain]);
+    }
+  });
+
   it("peers is an OFT read, not an endpoint read", () => {
     const peer = action("oft-peer");
     expect(peer.contract).toBe("oft");
