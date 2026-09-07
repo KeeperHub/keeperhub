@@ -407,6 +407,11 @@ export type OrganizationAuthContext =
       // Undefined for session callers and unscoped keys, which scopeSatisfies()
       // treats as full access.
       scope?: string;
+      // Set on the session branch only. True when the session belongs to an
+      // anonymous (throwaway) better-auth account. Callers that must reject
+      // anonymous visitors check this; callers that serve anonymous
+      // exploration (the default) ignore it.
+      isAnonymous?: boolean;
     }
   | AuthFailure;
 
@@ -481,6 +486,7 @@ export async function resolveOrganizationId(
     organizationId: orgResult.organizationId,
     authMethod: "session",
     apiKeyId: null,
+    isAnonymous: isAnonymousUserShape(session.user),
   };
 }
 
