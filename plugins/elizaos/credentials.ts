@@ -1,5 +1,5 @@
-export interface ElizaOSCredentials {
-  apiKey?: string;
-  endpointUrl: string;
-  agentId?: string;
-}
+﻿export type ElizaOSCredentials = {
+  ELIZAOS_ENDPOINT_URL?: string;
+  ELIZAOS_API_KEY?: string;
+  ELIZAOS_AGENT_ID?: string;
+};
