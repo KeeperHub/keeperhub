@@ -146,7 +146,7 @@ Fetch pending multisig transactions that have not been executed yet. Optionally 
 
 **Outputs:** `success`, `transactions` (array), `count`, `error`
 
-Each transaction includes: `safeTxHash`, `to`, `value`, `data`, `operation` (0=CALL, 1=DELEGATECALL), `operationLabel`, `nonce`, `confirmations`, `confirmationsRequired`, `confirmationsCollected`, `dataDecoded`, `submissionDate`, `safe`
+Each transaction includes: `safeTxHash`, `to`, `value`, `data`, `operation` (0=CALL, 1=DELEGATECALL), `operationLabel`, `nonce`, `confirmations`, `confirmationsRequired`, `confirmationsCollected`, `dataDecoded`, `safeTxGas`, `baseGas`, `gasPrice`, `gasToken`, `refundReceiver`, `submissionDate`, `safe`
 
 **When to use:** Monitor your Safe for new transactions awaiting your signature, verify transaction calldata before signing, detect suspicious proposals (DELEGATECALL, proxy upgrades, unknown targets).
 
