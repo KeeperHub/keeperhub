@@ -1,6 +1,10 @@
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { NextResponse } from "next/server";
+import {
+  type AbiItemComponent,
+  computeSelector,
+} from "@/lib/abi/utils";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { apiError } from "@/lib/api-error";
 import { db } from "@/lib/db";
@@ -312,18 +316,32 @@ async function getDiamondFacets(
 }
 
 /**
- * Get function selector for an ABI item
+ * Get function selector for an ABI item.
+ *
+ * Goes through computeSelector so tuple parameters expand into their component
+ * types. A signature built from the raw `input.type` renders every struct as
+ * the literal "tuple", so two different tuple-taking overloads hash to the same
+ * value -- and this selector is what combineAbis dedupes facet ABIs on, which
+ * would drop one of them from the merged ABI entirely.
+ *
+ * Returns null for an entry that cannot be canonicalised, which keeps the entry
+ * out of deduplication rather than discarding it: the ABI is fetched from an
+ * explorer, and one malformed entry must not decide the fate of the functions
+ * around it.
  */
 function getFunctionSelector(abiItem: {
   type: string;
   name?: string;
-  inputs?: Array<{ type: string; name?: string }>;
+  inputs?: Array<{ type: string; name?: string; components?: AbiItemComponent[] }>;
 }): string | null {
   if (abiItem.type !== "function" || !abiItem.name || !abiItem.inputs) {
     return null;
   }
-  const signature = `${abiItem.name}(${abiItem.inputs.map((i) => i.type).join(",")})`;
-  return ethers.id(signature).slice(0, 10); // First 4 bytes
+  try {
+    return computeSelector(abiItem.name, abiItem.inputs);
+  } catch {
+    return null;
+  }
 }
 
 /**

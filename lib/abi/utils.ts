@@ -16,7 +16,7 @@ type AbiInput = {
  * e.g. a tuple with (uint32, bytes32) becomes "(uint32,bytes32)"
  * and a tuple[] becomes "(uint32,bytes32)[]"
  */
-function canonicalType(input: AbiInput): string {
+export function canonicalType(input: AbiInput): string {
   // The ABI is user-supplied, so `type` can be absent at runtime. Fail loudly
   // rather than fabricating a signature that would encode the wrong call.
   if (typeof input?.type !== "string") {
@@ -63,41 +63,138 @@ export type AbiItem = {
 export type AbiFunctionItem = AbiItem & { name: string };
 
 /**
+ * Canonical signature of a function entry, e.g.
+ * `send((uint32,bytes32),address)`. This is the spelling `ethers` accepts.
+ *
+ * Returns undefined when the entry cannot be canonicalised at all -- the ABI
+ * is user-pasted JSON, so an input may be missing its `type` or carry a
+ * malformed `components`. Callers treat such an entry as "not a canonical
+ * match" and keep looking, rather than failing the whole lookup: one broken
+ * entry must not hide the healthy functions next to it.
+ */
+function canonicalSignature(item: AbiItem): string | undefined {
+  try {
+    const inputs = Array.isArray(item.inputs) ? item.inputs : [];
+    return `${item.name}(${inputs.map((i) => canonicalType(i)).join(",")})`;
+  } catch {
+    return;
+  }
+}
+
+/**
+ * Signature built from the raw ABI types, the spelling qualified keys were
+ * stored in before tuples were expanded. Undefined when any input is missing
+ * its `type`, so a corrupt entry cannot be matched by a key that stringifies
+ * to the same text.
+ */
+function legacySignature(item: AbiItem): string | undefined {
+  const inputs = Array.isArray(item.inputs) ? item.inputs : [];
+  if (!inputs.every((i) => typeof i?.type === "string")) {
+    return;
+  }
+  return `${item.name}(${inputs.map((i) => i.type).join(",")})`;
+}
+
+/** Why a qualified key did not resolve to exactly one function. */
+export type AbiFunctionResolution =
+  | { status: "found"; entry: AbiFunctionItem; canonicalKey: string }
+  | { status: "not_found" }
+  | { status: "ambiguous"; candidates: AbiFunctionItem[] };
+
+/**
+ * Resolve a function key to a single ABI entry, reporting *why* it failed.
+ *
+ * Prefer this over `findAbiFunction` wherever the caller can surface an error,
+ * because `undefined` alone cannot tell "no such function" from "this key
+ * matches several overloads".
+ *
+ * Qualified keys are matched canonically first (`send((uint32,bytes32),address)`)
+ * and then against the legacy raw spelling (`send(tuple,address)`), which older
+ * saved workflows and external API callers still send. A legacy key resolves
+ * when it identifies exactly one overload; it is reported as `ambiguous` only
+ * when two overloads share the same raw spelling, which is the one case where
+ * the choice was never recoverable from what was stored.
+ */
+export function resolveAbiFunction(
+  abi: AbiItem[],
+  key: string | undefined | null
+): AbiFunctionResolution {
+  if (!key) {
+    return { status: "not_found" };
+  }
+
+  const parenIdx = key.indexOf("(");
+  const name = parenIdx === -1 ? key : key.slice(0, parenIdx);
+
+  const named = abi.filter(
+    (item): item is AbiFunctionItem =>
+      item != null && item.type === "function" && item.name === name
+  );
+
+  if (parenIdx === -1) {
+    // Plain names keep their long-standing first-match behaviour.
+    const entry = named[0];
+    return entry
+      ? { status: "found", entry, canonicalKey: canonicalSignature(entry) ?? key }
+      : { status: "not_found" };
+  }
+
+  const canonical = named.filter((item) => canonicalSignature(item) === key);
+  if (canonical.length === 1) {
+    return { status: "found", entry: canonical[0], canonicalKey: key };
+  }
+
+  const legacy = named.filter((item) => legacySignature(item) === key);
+  if (legacy.length === 1) {
+    const entry = legacy[0];
+    return {
+      status: "found",
+      entry,
+      canonicalKey: canonicalSignature(entry) ?? key,
+    };
+  }
+  if (legacy.length > 1) {
+    return { status: "ambiguous", candidates: legacy };
+  }
+
+  return { status: "not_found" };
+}
+
+/**
+ * Explain an ambiguous legacy key, naming the overloads to choose between.
+ *
+ * The stored key is a raw-type signature that two overloads share, so which
+ * one the user picked was never recorded. Nothing can recover it -- the message
+ * has to send them back to the function selector.
+ */
+export function describeAmbiguousKey(
+  key: string,
+  candidates: AbiFunctionItem[]
+): string {
+  const options = candidates
+    .map((c) => canonicalSignature(c) ?? legacySignature(c) ?? c.name)
+    .join(", ");
+  return `Function '${key}' matches ${candidates.length} overloads in this ABI, so the one to call cannot be determined. Re-select the function to store its full signature: ${options}`;
+}
+
+/**
  * Find a function in a parsed ABI by key.
  *
- * The key can be a plain name (`"send"`) or a qualified signature
- * (`"send(address,uint256,bytes)"`).  Plain names match when the ABI
- * contains at most one function with that name.  Qualified signatures
- * are used for overloaded functions.
+ * The key can be a plain name (`"send"`) or a qualified signature, either
+ * canonical (`"send((uint32,bytes32),address)"`) or in the legacy raw spelling
+ * (`"send(tuple,address)"`).  Plain names return the first function with that
+ * name.  Qualified signatures select one overload.
+ *
+ * Total by design: it never throws, so the UI helpers that call it outside a
+ * try/catch (`resolveFunctionInputs`, `deriveStateMutability`) keep failing
+ * closed on a malformed ABI. It returns undefined when a legacy key matches
+ * several overloads -- use `resolveAbiFunction` where that needs saying out
+ * loud.
  */
 export function findAbiFunction(
   abi: AbiItem[],
   key: string | undefined | null
 ): AbiFunctionItem | undefined {
-  if (!key) {
-    return;
-  }
-  const parenIdx = key.indexOf("(");
-  if (parenIdx === -1) {
-    return abi.find(
-      (item): item is AbiFunctionItem =>
-        item != null && item.type === "function" && item.name === key
-    );
-  }
-
-  const name = key.slice(0, parenIdx);
-  const typesStr = key.slice(parenIdx + 1, -1);
-  const targetTypes = typesStr === "" ? [] : typesStr.split(",");
-
-  return abi.find((item): item is AbiFunctionItem => {
-    if (item == null || item.type !== "function" || item.name !== name) {
-      return false;
-    }
-    const rawInputs = Array.isArray(item.inputs) ? item.inputs : [];
-    const inputTypes = rawInputs.map((i) => i?.type);
-    if (inputTypes.length !== targetTypes.length) {
-      return false;
-    }
-    return inputTypes.every((t, idx) => t === targetTypes[idx]);
-  });
+  const resolution = resolveAbiFunction(abi, key);
+  return resolution.status === "found" ? resolution.entry : undefined;
 }

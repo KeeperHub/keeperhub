@@ -29,11 +29,12 @@ import { ArrayInputField } from "@/components/workflow/config/array-input-field"
 import { MalformedAbiArgsNotice } from "@/components/workflow/config/malformed-abi-notice";
 import { TupleInputField } from "@/components/workflow/config/tuple-input-field";
 import {
+  type AbiFunctionInput,
   isValidAbiInput,
   resolveFunctionInputs,
 } from "@/lib/abi/function-inputs";
 import { parseAbiFunctionArgs } from "@/lib/abi/parse-args";
-import { computeSelector } from "@/lib/abi/utils";
+import { canonicalType, computeSelector } from "@/lib/abi/utils";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { parseAddressBookSelection } from "@/lib/address-book-selection";
 import { toChecksumAddress } from "@/lib/address-utils";
@@ -518,8 +519,17 @@ export function AbiFunctionSelectField({
           .join(", ");
         const selector = complete ? computeSelector(func.name, inputs) : null;
         const isOverloaded = (nameCounts.get(func.name) ?? 0) > 1;
+        // The stored key must expand tuples the same way the selector above
+        // does: a raw `input.type` renders a struct as the literal "tuple",
+        // which ethers rejects as a fragment and which cannot tell two
+        // overloads apart when they differ only inside the struct. Falls back
+        // to the raw types when the ABI is too malformed to canonicalise --
+        // the same condition that already suppresses the selector.
+        const keyTypes = complete
+          ? inputs.map((input: AbiFunctionInput) => canonicalType(input))
+          : inputTypes;
         const key = isOverloaded
-          ? `${func.name}(${inputTypes.join(",")})`
+          ? `${func.name}(${keyTypes.join(",")})`
           : func.name;
         return {
           key,
