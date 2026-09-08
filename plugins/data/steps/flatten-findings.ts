@@ -107,9 +107,8 @@ function itemsFromObject(value: Record<string, unknown>): unknown[] {
       return candidate;
     }
   }
-  if (value.success === false) {
-    return [value];
-  }
+  // No recognised array key: the user listed this source explicitly, so the
+  // object itself is the finding. A failed upstream node lands here too.
   return [value];
 }
 

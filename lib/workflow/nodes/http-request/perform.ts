@@ -217,7 +217,7 @@ type AttemptOutcome =
   | { kind: "success"; data: unknown; status: number }
   | { kind: "http-error"; status: number; error: string }
   | { kind: "network-error"; error: string }
-  | { kind: "fatal"; error: string; status?: number };
+  | { kind: "fatal"; error: string };
 
 async function attemptHttpRequest(
   endpoint: string,
@@ -308,7 +308,7 @@ function toResult(
     return { success: true, data: outcome.data, status: outcome.status };
   }
   if (outcome.kind === "fatal") {
-    return { success: false, error: outcome.error, status: outcome.status };
+    return { success: false, error: outcome.error };
   }
   const status = outcome.kind === "http-error" ? outcome.status : null;
   if (failOnError) {
