@@ -381,10 +381,19 @@ export async function getUnconfirmedExecutionCountsFromDb(): Promise<Unconfirmed
   }
 }
 
-// KEEP-1291: how long a `pending` row has to sit before it counts as stuck.
-// Fifteen minutes is well past normal inclusion on every supported chain, so a
-// row over the line is a real backlog rather than ordinary block latency.
+// How long a `pending` row has to sit before it counts as stuck. Fifteen
+// minutes is well past normal inclusion on every supported chain, so a row
+// over the line is a real backlog rather than ordinary block latency.
 const STUCK_PENDING_TX_THRESHOLD_MS = 15 * 60 * 1000;
+
+// How old a row can be and still count. Nothing reaps a `pending` row that
+// the wallet-scoped reconciler never revisits - validateAndReconcile runs
+// only at workflow start, for one wallet and chain, and deliberately leaves a
+// row pending whenever a different RPC endpoint answered than the one that
+// gave the chain nonce. Without a ceiling a single orphan from an abandoned
+// wallet holds the gauge above zero for the lifetime of the table, and a
+// `> 0` alert can never clear. Rows past this age drop out of the count.
+const STUCK_PENDING_TX_CEILING_MS = 24 * 60 * 60 * 1000;
 
 export type StuckPendingTransactionCounts = Array<{
   chainId: number;
@@ -392,34 +401,43 @@ export type StuckPendingTransactionCounts = Array<{
 }>;
 
 /**
- * Pending transactions that have not moved off `pending` within
- * STUCK_PENDING_TX_THRESHOLD_MS, grouped by chain.
+ * Pending transactions that have not moved off `pending` for longer than
+ * STUCK_PENDING_TX_THRESHOLD_MS but less than STUCK_PENDING_TX_CEILING_MS,
+ * grouped by chain.
  *
- * KEEP-1291 removed an unreferenced same-nonce fee-escalation implementation
- * from lib/web3/gas-strategy.ts. Nothing replaced it, and nothing else in the
+ * An unreferenced same-nonce fee-escalation implementation was removed from
+ * lib/web3/gas-strategy.ts. Nothing replaced it, and nothing else in the
  * codebase re-prices a transaction at the same nonce, so a stuck transaction
  * is resolved by a human and the backlog has to be visible. This gauge is that
  * visibility and the only consumer of the "stuck" notion.
  *
+ * The window is bounded at both ends, and the ceiling is the load-bearing
+ * half. It is what lets the alert recover: a backlog that forms is counted,
+ * and rows nothing will ever resolve leave the count on their own instead of
+ * pinning it above zero forever. The cost is explicit - a transaction still
+ * genuinely stuck past the ceiling stops being counted, so this gauge answers
+ * "is a backlog forming now", not "is anything stuck".
+ *
  * Deliberately pure SQL. Confirming a row is genuinely stuck (rather than
  * merely old) means comparing its nonce against the chain's, which is one RPC
- * call per wallet - too expensive for a scrape. The precise version is
- * KEEP-1315; this over-counts rows the reconciler has not yet reaped, which is
- * the safe direction for an alert.
+ * call per wallet - too expensive for a scrape. Within the window this
+ * over-counts rows the reconciler has not yet reaped, which is the safe
+ * direction for an alert. The nonce-accurate version is tracked separately.
  *
  * Served by idx_pending_tx_stuck (drizzle/0152), partial on status='pending'
- * and leading on submitted_at, so this is a bounded range scan over the
- * in-flight set. It cannot use idx_pending_tx_status, which leads on
- * wallet_address. The index is not optional: nothing prunes
- * pending_transactions, so without it this becomes a sequential scan that
- * grows with lifetime transaction volume on every scrape.
+ * and leading on submitted_at, so both bounds are one range scan. It cannot
+ * use idx_pending_tx_status, which leads on wallet_address. The index is not
+ * optional: nothing prunes pending_transactions, so without it this becomes a
+ * sequential scan that grows with lifetime transaction volume on every scrape.
  *
  * Returns null on query error; the caller leaves the gauge untouched so the
  * last real value stands rather than a misleading 0.
  */
 export async function getStuckPendingTransactionCountsFromDb(): Promise<StuckPendingTransactionCounts | null> {
   try {
-    const cutoff = new Date(Date.now() - STUCK_PENDING_TX_THRESHOLD_MS);
+    const now = Date.now();
+    const cutoff = new Date(now - STUCK_PENDING_TX_THRESHOLD_MS);
+    const floor = new Date(now - STUCK_PENDING_TX_CEILING_MS);
     const rows = await db
       .select({
         chainId: pendingTransactions.chainId,
@@ -429,7 +447,8 @@ export async function getStuckPendingTransactionCountsFromDb(): Promise<StuckPen
       .where(
         and(
           eq(pendingTransactions.status, "pending"),
-          lt(pendingTransactions.submittedAt, cutoff)
+          lt(pendingTransactions.submittedAt, cutoff),
+          gte(pendingTransactions.submittedAt, floor)
         )
       )
       .groupBy(pendingTransactions.chainId);

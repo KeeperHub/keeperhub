@@ -199,18 +199,19 @@ const executionsUnconfirmed = getOrCreateGauge(
   ["kind"]
 );
 
-// KEEP-1291: pending_transactions rows still in `pending` more than 15 minutes
-// after submission, by chain. KEEP-1291 deleted an unreferenced same-nonce
-// fee-escalation path from lib/web3/gas-strategy.ts; nothing bumps a stuck
-// transaction automatically, so this gauge is the whole response - it makes a
-// backlog page a human instead of failing silently. DB-sourced (see
-// getStuckPendingTransactionCountsFromDb), so the value is the same on every
-// scrape rather than depending on which pod last handled a request.
-// Cardinality is bounded by the number of configured chains.
+// pending_transactions rows still in `pending` between 15 minutes and 24 hours
+// after submission, by chain. An unreferenced same-nonce fee-escalation path
+// was deleted from lib/web3/gas-strategy.ts; nothing bumps a stuck transaction
+// automatically, so this gauge is the whole response - it makes a backlog page
+// a human instead of failing silently. The 24-hour ceiling is what lets it
+// recover: see getStuckPendingTransactionCountsFromDb. DB-sourced, so the
+// value is the same on every scrape rather than depending on which pod last
+// handled a request. Cardinality is bounded by the number of configured
+// chains.
 const web3PendingTransactionsStuck = getOrCreateGauge(
   dbRegistry,
   "keeperhub_web3_pending_transactions_stuck",
-  "Pending transactions still unconfirmed more than 15 minutes after submission, by chain_id",
+  "Pending transactions unconfirmed between 15 minutes and 24 hours after submission, by chain_id",
   ["chain_id"]
 );
 
@@ -1881,7 +1882,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       executionsUnconfirmed.set({ kind: "direct" }, unconfirmedCounts.direct);
     }
 
-    // KEEP-1291: reset before populating so a chain that has drained its
+    // Reset before populating so a chain that has drained its
     // backlog goes back to reporting nothing rather than pinning its last
     // non-zero value forever. On a query error skip the reset entirely and
     // keep the previous reading, matching the null handling above.

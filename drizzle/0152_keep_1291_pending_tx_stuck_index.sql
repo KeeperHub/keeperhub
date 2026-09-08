@@ -1,10 +1,10 @@
 -- @requires-db-prep
--- KEEP-1291: partial index backing the stuck-pending-transaction gauge
+-- Partial index backing the stuck-pending-transaction gauge
 -- (keeperhub_web3_pending_transactions_stuck).
 --
 -- The gauge counts pending_transactions rows whose status is still 'pending'
--- more than 15 minutes after submitted_at, grouped by chain_id, on every
--- DB-metrics refresh. No existing index serves that predicate:
+-- between 15 minutes and 24 hours after submitted_at, grouped by chain_id, on
+-- every DB-metrics refresh. No existing index serves that predicate:
 -- idx_pending_tx_status leads on wallet_address, which the query does not
 -- filter on. Nothing prunes pending_transactions - there is no DELETE against
 -- it anywhere in the codebase - so without this index the query degrades into
@@ -13,9 +13,11 @@
 -- .github/workflows/metrics-db-review-gate.yml exists to catch.
 --
 -- The index is partial on status = 'pending', so it stays the size of the
--- in-flight set rather than the table, and leading on submitted_at makes the
--- age predicate a bounded range scan. chain_id is included so the GROUP BY is
--- satisfied from the index.
+-- unresolved set rather than the table, and leading on submitted_at makes the
+-- two-sided age predicate a single bounded range scan. chain_id is included so
+-- the GROUP BY is satisfied from the index. Note "unresolved", not "in-flight":
+-- rows the wallet-scoped reconciler never revisits stay 'pending' and stay in
+-- the index, so it grows slowly rather than tracking only live transactions.
 --
 -- The directive on line 1 makes db-prep-check.yml block merge until the
 -- matching db-prepped-<target-branch> label is set. Before setting it, build

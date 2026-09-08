@@ -536,7 +536,7 @@ export type NewWalletLock = typeof walletLocks.$inferInsert;
  * - Provide observability into transaction state
  *
  * Rows that stay `pending` well past their submittedAt are surfaced as the
- * `keeperhub_web3_pending_transactions_stuck` gauge (KEEP-1291) so a backlog
+ * `keeperhub_web3_pending_transactions_stuck` gauge so a backlog
  * can be alerted on. Nothing acts on that signal automatically: no code path
  * re-prices a transaction at the same nonce, so recovery is a human decision.
  *
@@ -564,7 +564,7 @@ export const pendingTransactions = pgTable(
       table.status
     ),
     index("idx_pending_tx_execution").on(table.executionId),
-    // KEEP-1291: backs the stuck-backlog gauge, which filters on status and
+    // Backs the stuck-backlog gauge, which filters on status and
     // submittedAt with no wallet_address to lead idx_pending_tx_status. The
     // table is append-only - nothing prunes it - so an unpartitioned scan
     // would grow with lifetime transaction volume on every metrics scrape.

@@ -630,10 +630,14 @@ describe("keeperhub_executions_unconfirmed gauge", () => {
   });
 });
 
-// KEEP-1291 deleted the unreferenced same-nonce fee-escalation code, so this
-// gauge is the only thing that notices a stuck transaction. It must clear a
-// chain that has drained (otherwise the alert never recovers) while still
-// keeping its last reading through a query error.
+// The unreferenced same-nonce fee-escalation code was deleted, so this gauge
+// is the only thing that notices a stuck transaction. These cases cover the
+// registry contract only - the DB query is mocked, so they assert that a chain
+// absent from the returned counts loses its series and that a null result
+// holds the last reading. What actually puts a chain into or out of those
+// counts is the two-sided submitted_at window in
+// getStuckPendingTransactionCountsFromDb, which is SQL and is not exercised
+// here.
 describe("keeperhub_web3_pending_transactions_stuck gauge", () => {
   const originalTtl = process.env.DB_METRICS_CACHE_TTL_MS;
 
