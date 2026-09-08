@@ -128,10 +128,10 @@ describe("visibleMobileNavItems", () => {
     // Carried flag: the data -> mobile derivation preserves adminOnly.
     const carried = MOBILE_NAV_ITEMS.find((i) => i.id === "analytics");
     expect(carried?.adminOnly).toBeUndefined(); // no real admin-only item today
+    const dataAdminOnlyIds: string[] = NAV_ITEMS_DATA.filter(
+      (d) => d.adminOnly
+    ).map((d) => d.id);
     for (const item of MOBILE_NAV_ITEMS) {
-      const dataAdminOnlyIds: string[] = NAV_ITEMS_DATA.filter(
-        (d) => d.adminOnly
-      ).map((d) => d.id);
       expect(item.adminOnly === true).toBe(dataAdminOnlyIds.includes(item.id));
     }
 

@@ -32,14 +32,13 @@ import {
   type MobileNavItem,
   visibleMobileNavItems,
 } from "./mobile-nav-items";
-import type { MobileReachableNavItemId } from "./nav-items-data";
+import type { NavItemId } from "./nav-items-data";
 
-// Exhaustive over the mobile-reachable destinations (see
-// MobileReachableNavItemId). Keyed by that id set so a destination that can
-// render on mobile added to NAV_ITEMS_DATA without an icon is a compile error
-// here, not a silent Globe at runtime - while a desktop-only flyout does not
-// force an icon on a surface it cannot appear on.
-const ICONS: Record<MobileReachableNavItemId, LucideIcon> = {
+// Exhaustive over the mobile-reachable destinations (all NavItemId except the
+// desktop-only address-book flyout, which never appears on mobile). Keyed by
+// the shared union so a destination added to NAV_ITEMS_DATA without an icon is
+// a compile error here, not a silent Globe at runtime.
+const ICONS: Record<Exclude<NavItemId, "address-book">, LucideIcon> = {
   hub: Globe,
   workflows: WorkflowIcon,
   analytics: BarChart3,

@@ -1,9 +1,13 @@
 import type { LucideIcon } from "lucide-react";
 import { isAnonymousUser } from "@/lib/is-anonymous";
-import { NAV_ITEMS_DATA, SETTINGS_NAV_ITEM_DATA } from "./nav-items-data";
+import {
+  NAV_ITEMS_DATA,
+  type NavItemId,
+  SETTINGS_NAV_ITEM_DATA,
+} from "./nav-items-data";
 
 export type MobileNavItem = {
-  id: string;
+  id: NavItemId;
   /** Presentation-only — resolved to a Lucide icon by the component. Kept off
    *  the data module so tests import zero React/lucide runtime. */
   icon?: LucideIcon;
