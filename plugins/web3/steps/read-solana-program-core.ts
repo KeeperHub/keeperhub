@@ -14,8 +14,13 @@ import {
   parsePublicKey,
   resolveSolanaAccountAddress,
 } from "@/lib/web3/solana-account-reader";
+import {
+  applyReadFailOnError,
+  type ReadDestinationFailure,
+  type ReadFailOnErrorInput,
+} from "./read-fail-on-error-core";
 
-export type ReadSolanaProgramCoreInput = {
+export type ReadSolanaProgramCoreInput = ReadFailOnErrorInput & {
   network: string;
   accountAddress: string;
   programId: string;
@@ -27,12 +32,23 @@ export type ReadSolanaProgramCoreInput = {
 export type ReadSolanaProgramResult =
   | {
       success: true;
+      // Null when failOnError=false softened a failed read into a success
+      // value so the workflow continues; `error` carries the reason.
       result: unknown;
-      owner: string;
-      lamports: number;
+      owner: string | null;
+      lamports: number | null;
       addressLink: string;
+      error?: string;
     }
-  | { success: false; error: string };
+  | (ReadDestinationFailure & { success: false; error: string });
+
+/** Data fields a softened read reports, so a soft failure never looks like a decoded account. */
+const SOFT_ACCOUNT_FIELDS = {
+  result: null,
+  owner: null,
+  lamports: null,
+  addressLink: "",
+} as const;
 
 /**
  * Recursively converts Anchor's decoded value tree into JSON-safe values:
@@ -73,11 +89,21 @@ function serializeAnchorValue(value: unknown): unknown {
 export async function readSolanaProgramCore(
   input: ReadSolanaProgramCoreInput
 ): Promise<ReadSolanaProgramResult> {
+  return applyReadFailOnError(
+    await readSolanaProgramInner(input),
+    input.failOnError,
+    SOFT_ACCOUNT_FIELDS
+  );
+}
+
+async function readSolanaProgramInner(
+  input: ReadSolanaProgramCoreInput
+): Promise<ReadSolanaProgramResult> {
   const { network, accountAddress, programId, idl, accountType } = input;
 
   const resolved = resolveSolanaAccountAddress(network, accountAddress);
   if ("error" in resolved) {
-    return { success: false, error: resolved.error };
+    return { success: false, destinationError: true, error: resolved.error };
   }
   const { adapter, pubkey, chainId } = resolved;
 
@@ -85,6 +111,7 @@ export async function readSolanaProgramCore(
   if (!programPk) {
     return {
       success: false,
+      destinationError: true,
       error: `Invalid Solana program address: ${programId}`,
     };
   }
@@ -128,7 +155,8 @@ export async function readSolanaProgramCore(
     return { success: false, error: fetched.error };
   }
   if (!fetched.accountInfo) {
-    return { success: false, error: `Account not found: ${accountAddress}` };
+    const message = `Account not found: ${accountAddress}`;
+    return { success: false, error: message };
   }
 
   const { owner, lamports, data } = fetched.accountInfo;

@@ -86,10 +86,15 @@ vi.mock("@/lib/billing/execution-guard", () => ({
     "Executions suspended due to unpaid overage invoice. Please update your payment method.",
 }));
 
-vi.mock("@/lib/utils", () => ({
-  getErrorMessage: (err: unknown) =>
-    err instanceof Error ? err.message : String(err),
-}));
+vi.mock("@/lib/utils", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/utils")>("@/lib/utils");
+  return {
+    ...actual,
+    getErrorMessage: (err: unknown) =>
+      err instanceof Error ? err.message : String(err),
+  };
+});
 
 // DB mock -- override global setup mock to support .limit() for the status route
 vi.mock("@/lib/db", () => ({

@@ -100,7 +100,12 @@ vi.mock("drizzle-orm", async (importOriginal) => {
   };
 });
 
-type ExecutionRow = { id: string; workflow_id: string; status: string };
+type ExecutionRow = {
+  id: string;
+  workflowId: string;
+  organizationId: string | null;
+  status: string;
+};
 
 const executionRows: ExecutionRow[] = [];
 
@@ -142,13 +147,14 @@ vi.mock("@/lib/db/schema", () => ({
   users: { id: "id", deactivatedAt: "deactivated_at" },
   workflows: { id: "id", userId: "user_id", organizationId: "organization_id" },
   organization: { id: "id", deactivatedAt: "deactivated_at" },
-  workflowExecutions: { id: "id", workflowId: "workflow_id" },
+  workflowExecutions: { id: "id", workflowId: "workflowId" },
 }));
 vi.mock("@/lib/logging", () => ({
   ErrorCategory: {
     WORKFLOW_ENGINE: "workflow_engine",
     VALIDATION: "validation",
   },
+  logSecurityEvent: vi.fn(),
   logSystemError: vi.fn(),
   logUserError: vi.fn(),
 }));
@@ -379,6 +385,11 @@ describe("execute route - input binding", {
   // workflow in the path is what stops it addressing someone else's -- and
   // these go through a findFirst that actually evaluates the predicate, so an
   // unscoped `where` fails them rather than passing on a stubbed answer.
+  // `staging` reserves a caller-supplied executionId for internal dispatch
+  // (execution_id_not_allowed) and refuses a row belonging to another workflow
+  // by an explicit check after the lookup (execution_id_mismatch). These tests
+  // are written against that design, not the workflow-scoped `where` this
+  // branch previously carried -- see the merge note on the pull request.
   describe("caller-supplied executionId", () => {
     const uniqueViolation = (): Error =>
       Object.assign(new Error("insert failed"), {
@@ -387,10 +398,30 @@ describe("execute route - input binding", {
         }),
       });
 
+    /** Authenticate as internal dispatch, the only caller allowed to name a row. */
+    function asInternalDispatch(): void {
+      mockAuthenticateInternalService.mockResolvedValue({
+        authenticated: true,
+        caller: "scheduler",
+      });
+    }
+
+    it("refuses an envelope executionId from an external caller", async () => {
+      const response = await callExecute(
+        JSON.stringify({ executionId: "exec_pre", input: { amount: "1" } })
+      );
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).code).toBe("execution_id_not_allowed");
+      expect(mockExecutionsFindFirst).not.toHaveBeenCalled();
+    });
+
     it("adopts a pre-created row belonging to this workflow", async () => {
+      asInternalDispatch();
       executionRows.push({
         id: "exec_pre",
-        workflow_id: "wf_1",
+        workflowId: "wf_1",
+        organizationId: "org_1",
         status: "running",
       });
 
@@ -406,15 +437,14 @@ describe("execute route - input binding", {
       expect(mockDbInsertValues).not.toHaveBeenCalled();
     });
 
-    it("answers 409 for an executionId that belongs to another workflow, without disclosing its state", async () => {
+    it("refuses an executionId owned by another workflow, without disclosing its state", async () => {
+      asInternalDispatch();
       executionRows.push({
         id: "exec_other",
-        workflow_id: "wf_2",
+        workflowId: "wf_2",
+        organizationId: "org_2",
         status: "success",
       });
-      mockDbInsertValues.mockImplementationOnce(() =>
-        Promise.reject(uniqueViolation())
-      );
 
       const response = await callExecute(
         JSON.stringify({ executionId: "exec_other", input: { amount: "1" } })
@@ -422,16 +452,39 @@ describe("execute route - input binding", {
 
       expect(response.status).toBe(409);
       const data = await response.json();
-      expect(data.code).toBe("execution_id_conflict");
-      expect(data.executionId).toBe("exec_other");
-      // Not "execution_already_terminal", and no status field: the row is on
-      // another workflow, so its state is not this caller's to read.
+      expect(data.code).toBe("execution_id_mismatch");
+      // Not "execution_already_terminal": the row is on another workflow, so
+      // its state is not this caller's to read.
       expect(data.status).toBeUndefined();
+      expect(mockDbInsertValues).not.toHaveBeenCalled();
+      expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+    });
+
+    // The lookup above answers "free" from a read that has already gone stale
+    // by the time the insert runs. Two dispatches naming the same id both
+    // reach the insert and one loses on the primary key; without this branch
+    // the loser gets a 500 carrying the driver's constraint text.
+    it("answers 409 rather than 500 when the insert loses a race for the id", async () => {
+      asInternalDispatch();
+      mockDbInsertValues.mockImplementationOnce(() =>
+        Promise.reject(uniqueViolation())
+      );
+
+      const response = await callExecute(
+        JSON.stringify({ executionId: "exec_raced", input: { amount: "1" } })
+      );
+
+      expect(response.status).toBe(409);
+      const data = await response.json();
+      expect(data.code).toBe("execution_id_conflict");
+      expect(data.executionId).toBe("exec_raced");
       expect(JSON.stringify(data)).not.toContain("duplicate key");
       expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
     });
 
     it("creates the row when the supplied executionId is free", async () => {
+      asInternalDispatch();
+
       const response = await callExecute(
         JSON.stringify({ executionId: "exec_free", input: { amount: "1" } })
       );
@@ -440,24 +493,18 @@ describe("execute route - input binding", {
       expect(mockDbInsertValues).toHaveBeenCalledWith(
         expect.objectContaining({ id: "exec_free", workflowId: "wf_1" })
       );
-      expect(mockExecuteWorkflowInBackground).toHaveBeenCalledWith(
-        "exec_free",
-        "wf_1",
-        workflow.nodes,
-        workflow.edges,
-        { amount: "1" },
-        expect.anything(),
-        workflow.organizationId,
-        workflow.userId,
-        undefined,
-        undefined
-      );
     });
 
+    // The one that matters most under the gate above: an external caller
+    // sending the bare shape with a field of its own called executionId must
+    // still run. If that key were read as an envelope field it would now be
+    // refused outright -- a hard regression for the kh CLI, which sends
+    // exactly this shape.
     it("does not treat a bare top-level executionId as an envelope field", async () => {
       executionRows.push({
         id: "exec_other",
-        workflow_id: "wf_2",
+        workflowId: "wf_2",
+        organizationId: "org_2",
         status: "success",
       });
 
@@ -466,7 +513,8 @@ describe("execute route - input binding", {
       );
 
       expect(response.status).toBe(200);
-      // Never looked up: in the bare shape that key is the caller's data.
+      // Never looked up, and never refused by the gate: in the bare shape that
+      // key is the caller's data.
       expect(mockExecutionsFindFirst).not.toHaveBeenCalled();
       expect(mockExecuteWorkflowInBackground).toHaveBeenCalledWith(
         "exec_1",

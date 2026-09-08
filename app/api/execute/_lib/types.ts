@@ -1,4 +1,6 @@
 import type { DirectExecutionReceiptEntry } from "@/lib/db/schema";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import type { RevertKind } from "@/lib/web3/decode-revert-error";
 
 /**
  * `unconfirmed` is non-terminal and means a transaction was broadcast but the
@@ -20,10 +22,16 @@ export type ExecuteResponse = {
   status: ExecutionStatus;
   transactionHash?: string | null;
   transactionLink?: string | null;
-  // KEEP-966: present when status is "failed" -- includes the on-chain
-  // reconciliation failure message (e.g. reverted, receipt not found) when
-  // that's what failed the execution, not just a self-reported broadcast error.
+  // When present, includes the on-chain reconciliation failure message
+  // (e.g. reverted, receipt not found) or a self-reported broadcast error.
+  // Protocol write responses omit `error` when `status` is `unconfirmed`
+  // (non-terminal, poll-only). Other execute routes may still include
+  // `error` whenever the outcome set one, including alongside `unconfirmed`.
+  // Callers must not treat a missing or present `error` as a signal to retry.
   error?: string;
+  // Typed revert classification from the write step, when available.
+  rejection?: RevertKind;
+  errorClass?: ExecutionErrorType;
 };
 
 export type ExecutionStatusResponse = {
@@ -59,7 +67,6 @@ export type ExecuteErrorResponse = {
 export type RetryConfig = {
   maxRetries?: number;
   timeoutMs?: number;
-  gasBumpPercent?: number;
 };
 
 export type NodeExecuteRequest = {

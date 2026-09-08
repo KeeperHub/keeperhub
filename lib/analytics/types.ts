@@ -174,6 +174,27 @@ export type RunQueryFilters = {
  */
 export type StatusFacets = Partial<Record<NormalizedStatus, number>>;
 
+/**
+ * Counts for every filter dimension that offers them, each computed with its
+ * own dimension lifted. Networks are keyed by the chain id a run's steps
+ * recorded, and include chains a run merely touched: a filter offering only the
+ * chains that spent gas hides every chain the org reads on.
+ */
+export type RunFacets = {
+  statusCounts: StatusFacets;
+  networkCounts: Record<string, number>;
+  gasCounts: Partial<Record<GasSpend, number>>;
+};
+
+/**
+ * Which counts a facets request wants. They are not equally cheap: status
+ * counts group `workflow_executions` alone, while network and gas both reach
+ * into the step logs - network to decode a chain out of JSONB, gas to run one
+ * count per bucket. Only status is cheap enough to ride the dashboard's poll;
+ * the other two are asked for when their dropdown is opened.
+ */
+export type FacetDimension = "status" | "network" | "gas";
+
 export type RunsFilters = RunQueryFilters & {
   range: TimeRange;
   cursor?: string;

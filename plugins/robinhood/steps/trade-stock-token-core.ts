@@ -16,6 +16,7 @@ import {
   preflightGasBalance,
   resolveFundingHolder,
 } from "@/lib/web3/gas-preflight";
+import { broadcastTransactionHash } from "@/lib/web3/onchain-revert";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import {
   convertAmountForWrite,
@@ -96,7 +97,15 @@ export type TradeStockTokenResult =
       poolFee: number;
       poolTickSpacing: number;
     }
-  | { success: false; error: string };
+  | {
+      success: false;
+      error: string;
+      // Set only when a transaction reached the chain and failed there, so the
+      // finalizer can persist a receipt for the failure. Absent on
+      // pre-broadcast failures, where no transaction exists.
+      transactionHash?: string;
+      chainId?: number;
+    };
 
 /** Refusals that are the caller's to fix, phrased so they can fix them. */
 function refuse(error: string): TradeStockTokenResult {
@@ -457,6 +466,12 @@ export async function tradeStockTokenCore(
       error,
       { plugin_name: "robinhood", action_name: "trade-stock-token" }
     );
-    return refuse(getErrorMessage(error));
+    return {
+      success: false,
+      error: getErrorMessage(error),
+      ...(broadcastTransactionHash(error)
+        ? { transactionHash: broadcastTransactionHash(error), chainId }
+        : {}),
+    };
   }
 }

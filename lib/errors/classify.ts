@@ -62,6 +62,21 @@ type Rule = {
 };
 
 /**
+ * Verdicts the chain returned about the transaction we built, not about the
+ * endpoint that carried them: a nonce the chain has already consumed, a
+ * resubmission it already holds or that did not bump enough, a gas limit below
+ * the intrinsic cost. Like a funding shortfall, every endpoint answers the same
+ * way, so the answer keeps its own fault domain even when a failover-exhaustion
+ * message quotes it.
+ */
+const CHAIN_REJECTION_PATTERNS: readonly RegExp[] = [
+  /nonce too low/i,
+  /replacement transaction underpriced/i,
+  /\balready known\b/i,
+  /intrinsic gas too low/i,
+];
+
+/**
  * Ordered list of rules. First match wins. Order matters when patterns
  * overlap; more specific patterns should come before broader ones.
  */
@@ -285,6 +300,20 @@ const RULES: readonly Rule[] = [
     code: null,
   })),
 
+  // A quoted chain rejection is not an endpoint failure, so it must not be
+  // read as one. This rule exists to deny the RPC wrapper rules below rather
+  // than to reclassify: it reproduces the unmatched-message default exactly,
+  // so these failures keep the plain `error` status, the C-0001 code and the
+  // generic customer message they carry when they arrive unwrapped, instead of
+  // taking N-0001's "a network provider was unavailable". Unanchored and above
+  // the RPC rules for the same reason the funding-shortfall rules are.
+  ...CHAIN_REJECTION_PATTERNS.map((pattern) => ({
+    pattern,
+    errorCategory: ErrorCategory.WORKFLOW_ENGINE,
+    errorType: ExecutionErrorType.SYSTEM,
+    code: DEFAULT_SYSTEM_ERROR_CODE,
+  })),
+
   // System: RPC endpoints are KeeperHub-managed infrastructure, so a failover
   // exhaustion is a platform fault, not a third-party dependency failure.
   {
@@ -293,8 +322,20 @@ const RULES: readonly Rule[] = [
     errorType: ExecutionErrorType.SYSTEM,
     code: "N-0001",
   },
+  // `primary endpoint` is the same exhaustion when no fallback is configured.
   {
-    pattern: /RPC failed on both endpoints/i,
+    pattern: /RPC failed on (both endpoints|primary endpoint)/i,
+    errorCategory: ErrorCategory.NETWORK_RPC,
+    errorType: ExecutionErrorType.SYSTEM,
+    code: "N-0001",
+  },
+  // The RPC managers' per-attempt timeout wrapper produces this shape, so a
+  // timeout that surfaces without the `RPC failed on` prefix is still a
+  // KeeperHub-managed endpoint that did not answer. Start-anchored: a
+  // third-party body quoted after `HTTP NNN:` can carry the same words and
+  // must keep its own rules below.
+  {
+    pattern: /^Timeout after \d+ms/i,
     errorCategory: ErrorCategory.NETWORK_RPC,
     errorType: ExecutionErrorType.SYSTEM,
     code: "N-0001",

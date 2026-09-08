@@ -61,7 +61,7 @@ When a step fails, KeeperHub retries with configurable behavior. Failed runs are
 
 ### Supported Chains
 
-KeeperHub operates on Ethereum, Base, Arbitrum, Polygon, Sepolia, and additional EVM-compatible networks. Chain-specific gas defaults are applied automatically based on network conditions and trigger type. See [Gas Management](/wallet-management/gas) for details.
+KeeperHub operates on Ethereum, Base, Arbitrum, Polygon, Sepolia, and additional EVM-compatible networks. Chain-specific gas defaults are applied automatically. See [Gas Management](/wallet-management/gas) for details.
 
 Solana mainnet and devnet are supported for native SOL transfers and SPL token transfers. The same Turnkey wallet holds both an EVM and a Solana address. Contract calls, protocol plugins, and dry runs are EVM only today. See [Web3 Plugin](/plugins/web3) for the Solana actions and [Turnkey Wallets](/wallet-management/turnkey) for how the addresses are provisioned.
 

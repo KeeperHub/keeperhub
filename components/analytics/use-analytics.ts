@@ -10,7 +10,7 @@ import {
 import type {
   AnalyticsSummary,
   NetworkBreakdown,
-  StatusFacets,
+  RunFacets,
   TimeSeriesBucket,
 } from "@/lib/analytics/types";
 import {
@@ -18,6 +18,7 @@ import {
   analyticsCustomStartAtom,
   analyticsDurationFilterAtom,
   analyticsErrorAtom,
+  analyticsFacetsAtom,
   analyticsGasFiltersAtom,
   analyticsLastUpdatedAtom,
   analyticsLoadingAtom,
@@ -28,7 +29,6 @@ import {
   analyticsRunsAtom,
   analyticsSearchAtom,
   analyticsSourceFiltersAtom,
-  analyticsStatusFacetsAtom,
   analyticsStatusFiltersAtom,
   analyticsSummaryAtom,
   analyticsTimeSeriesAtom,
@@ -111,7 +111,7 @@ export function useAnalytics(): UseAnalyticsReturn {
   const setTimeSeries = useSetAtom(analyticsTimeSeriesAtom);
   const setNetworks = useSetAtom(analyticsNetworksAtom);
   const setRuns = useSetAtom(analyticsRunsAtom);
-  const setStatusFacets = useSetAtom(analyticsStatusFacetsAtom);
+  const setFacets = useSetAtom(analyticsFacetsAtom);
   const setLastUpdated = useSetAtom(analyticsLastUpdatedAtom);
 
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -151,7 +151,14 @@ export function useAnalytics(): UseAnalyticsReturn {
     const runsQuery = buildRunsQuery(filters);
     // The status counts sit under every filter except status itself, so the
     // facets request carries the same query with that one dimension lifted.
-    const facetsQuery = buildRunsQuery({ ...filters, omitStatus: true });
+    // Status only. The network and gas counts read the step logs, and this
+    // request repeats every poll for every open dashboard, so they are fetched
+    // when their dropdown opens instead.
+    const facetsQuery = buildRunsQuery({
+      ...filters,
+      omitStatus: true,
+      dimensions: ["status"],
+    });
 
     const { signal } = controller;
 
@@ -250,14 +257,16 @@ export function useAnalytics(): UseAnalyticsReturn {
         })
       ),
       wrapSection(
-        processSection<{ statusCounts: StatusFacets }>(
-          facetsPromise,
-          "Facets",
-          ctx,
-          (data) => {
-            setStatusFacets(data.statusCounts);
-          }
-        )
+        processSection<RunFacets>(facetsPromise, "Facets", ctx, (data) => {
+          // Take the status counts alone. The response still carries the other
+          // two keys, empty, because they were not computed - spreading the
+          // whole object would blank whichever step-log counts a dropdown had
+          // already loaded, on every poll tick.
+          setFacets((current) => ({
+            ...current,
+            statusCounts: data.statusCounts,
+          }));
+        })
       ),
     ]);
   }, [
@@ -278,7 +287,7 @@ export function useAnalytics(): UseAnalyticsReturn {
     setTimeSeries,
     setNetworks,
     setRuns,
-    setStatusFacets,
+    setFacets,
     setLastUpdated,
   ]);
 

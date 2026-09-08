@@ -1,11 +1,16 @@
 import { HttpStatus } from "@/lib/http-status";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { logAnonymousExecutionBlock } from "@/lib/auth-anonymous-guard";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { chargePaygIfBillable } from "@/lib/billing/payg/charge";
 import { isUniqueViolation } from "@/lib/db/errors";
-import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
+import {
+  ErrorCategory,
+  logSecurityEvent,
+  logSystemError,
+  logUserError,
+} from "@/lib/logging";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { getMetricsCollector } from "@/lib/metrics";
 import { LabelKeys, MetricNames } from "@/lib/metrics/types";
@@ -71,6 +76,14 @@ export async function POST(
     const loaded = await loadWorkflowForExecution(workflowId, {
       requireEnabled: isInternalExecution,
     });
+    if (loaded.status === "not_executable" && loaded.reason === "halted") {
+      // Distinct from not-found so an operator recovering from an incident is
+      // told the org is halted, not misdirected to a missing-workflow 404.
+      return NextResponse.json(
+        { error: "Workflow temporarily halted" },
+        { status: HttpStatus.SERVICE_UNAVAILABLE }
+      );
+    }
     if (loaded.status === "not_found" || loaded.status === "not_executable") {
       return NextResponse.json(
         { error: "Workflow not found" },
@@ -274,16 +287,67 @@ export async function POST(
     // and this one never double-count.
     let createdHere = false;
 
+    // The field exists so the scheduler and queue executor can pre-create the
+    // row and hand its id back. Nothing else has a reason to name a row that
+    // this request did not create, and the workflow access check above
+    // authorises the workflow, not the row, so a caller-supplied id from any
+    // other principal is refused outright.
+    if (executionId && !isInternalExecution) {
+      logSecurityEvent("execution_id_supplied_by_external_caller", {
+        workflowId,
+        organizationId: workflow.organizationId,
+        userId,
+      });
+      return recordIdempotentResponse(
+        idem,
+        NextResponse.json(
+          {
+            error: "executionId is reserved for internal dispatch",
+            code: "execution_id_not_allowed",
+          },
+          { status: HttpStatus.BAD_REQUEST }
+        ),
+        "release"
+      );
+    }
+
     if (executionId) {
       // Scheduler may pre-create a pending row and hand the id back here.
       // Refuse terminal / in-flight reuse before PAYG so a retry cannot
       // charge again or start a second DevKit run.
       const existingExecution = await db.query.workflowExecutions.findFirst({
-        where: and(
-          eq(workflowExecutions.id, executionId),
-          eq(workflowExecutions.workflowId, workflowId)
-        ),
+        where: eq(workflowExecutions.id, executionId),
       });
+
+      // The lookup is by primary key alone, so the row it returns is not
+      // necessarily this workflow's. Adopting a foreign row would write this
+      // run's status, logs and output over it, and falling through to the
+      // insert below would collide on the primary key. Refuse instead.
+      // organizationId is null on rows written before the column existed, so
+      // it is compared only when set; workflowId carries the tenancy.
+      if (
+        existingExecution &&
+        (existingExecution.workflowId !== workflowId ||
+          (existingExecution.organizationId !== null &&
+            existingExecution.organizationId !== workflow.organizationId))
+      ) {
+        logSecurityEvent("execution_id_workflow_mismatch", {
+          workflowId,
+          organizationId: workflow.organizationId,
+          rowWorkflowId: existingExecution.workflowId,
+        });
+        return recordIdempotentResponse(
+          idem,
+          NextResponse.json(
+            {
+              error: "executionId does not belong to this workflow",
+              code: "execution_id_mismatch",
+            },
+            { status: HttpStatus.CONFLICT }
+          ),
+          "release"
+        );
+      }
 
       if (existingExecution) {
         const existingStatus = existingExecution.status;
@@ -323,21 +387,16 @@ export async function POST(
         // pending (scheduler handoff) — continue: charge + start once
         console.log("[API] Using existing execution:", executionId);
       } else {
-        // A miss on the lookup above means "no such execution *on this
-        // workflow*", which is not the same as "this id is free": the row may
-        // exist under another workflow, and the insert below would then
-        // violate the primary key. withBackstopCapture only special-cases
-        // 42501, so that violation would reach the outer catch and answer 500
-        // with the driver's constraint text in it.
+        // A miss on the lookup means the id was free when we read it, not
+        // that it still is: two dispatches naming the same id can both reach
+        // here and only one insert wins. withBackstopCapture special-cases
+        // only 42501, so the loser's primary-key violation would reach the
+        // outer catch and answer 500 with the driver's constraint text in it.
         //
-        // Answering the conflict here keeps the scoping fix from turning a
-        // client mistake into a 500, and the same branch absorbs the race
-        // where two concurrent requests both find the id free. 409 rather
-        // than 404: the caller asked to *create* a run under an id it chose,
-        // and the id is taken -- there is nothing for it to go look up. The
-        // response says only that: naming the owner would confirm a row this
-        // caller cannot see, and would be wrong anyway in the race case,
-        // where the winner is a run of this same workflow.
+        // Answer the conflict directly instead. A foreign id never arrives
+        // here -- the mismatch check above already refused it with
+        // execution_id_mismatch -- so this is the race, and 409 is the same
+        // answer the caller would have got had it lost by a millisecond less.
         try {
           await withBackstopCapture(
             { workflowId, userId, source: triggerSource },

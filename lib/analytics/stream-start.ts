@@ -8,6 +8,7 @@ export const POLL_INTERVAL_MS = 5000;
 export const HEARTBEAT_INTERVAL_MS = 30_000;
 export const MAX_LIFETIME_MS = 5 * 60 * 1000;
 export const MIN_EVENT_INTERVAL_MS = 1000;
+export const MAX_CONSECUTIVE_POLL_FAILURES = 3;
 
 function formatSSE(event: AnalyticsStreamEvent): string {
   return `data: ${JSON.stringify(event)}\n\n`;
@@ -29,6 +30,7 @@ export type AnalyticsStreamConfig = {
   heartbeatIntervalMs?: number;
   maxLifetimeMs?: number;
   minEventIntervalMs?: number;
+  maxConsecutiveFailures?: number;
 };
 
 export type AnalyticsStreamOpts = {
@@ -61,6 +63,8 @@ export function createAnalyticsStreamStart(
   const maxLifetimeMs = config?.maxLifetimeMs ?? MAX_LIFETIME_MS;
   const minEventIntervalMs =
     config?.minEventIntervalMs ?? MIN_EVENT_INTERVAL_MS;
+  const maxConsecutiveFailures =
+    config?.maxConsecutiveFailures ?? MAX_CONSECUTIVE_POLL_FAILURES;
 
   return (controller): void => {
     const encoder = new TextEncoder();
@@ -69,6 +73,8 @@ export function createAnalyticsStreamStart(
     let lastChecksum = "";
     let lastEventTime = 0;
     let closed = false;
+    let primed = false;
+    let consecutiveFailures = 0;
 
     const safeClose = (): void => {
       if (closed) {
@@ -132,6 +138,22 @@ export function createAnalyticsStreamStart(
           return;
         }
 
+        // The poll itself worked, so the stream is healthy. Only the checksum
+        // read counts towards giving up; a failing summary deliberately keeps
+        // the stream open (see the catch).
+        consecutiveFailures = 0;
+
+        // The first checksum only records where this stream started. The client
+        // already fetched the summary over HTTP when it mounted, so pushing one
+        // here buys it nothing - and because maxLifetimeMs closes every stream
+        // after a few minutes, doing so made every viewer force a full summary
+        // recompute on every reconnect, whether or not anything had changed.
+        if (!primed) {
+          primed = true;
+          lastChecksum = checksum;
+          return;
+        }
+
         if (checksum === lastChecksum) {
           return;
         }
@@ -152,7 +174,15 @@ export function createAnalyticsStreamStart(
 
         safeEnqueue(chunk);
       } catch {
-        safeClose();
+        // One failed poll is not fatal. Closing here sent the browser straight
+        // into a reconnect, and the reconnect re-ran the work that had just
+        // failed, which is how a single slow query turned into a sustained
+        // burst on 2026-09-04. Skip the tick instead, and give up only once the
+        // checksum read itself has failed repeatedly.
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= maxConsecutiveFailures) {
+          safeClose();
+        }
       }
     }, pollIntervalMs);
 

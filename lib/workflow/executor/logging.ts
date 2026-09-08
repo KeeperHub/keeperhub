@@ -61,7 +61,10 @@ import {
   FAILED_AFTER_RETRIES_REGEX,
   NO_STEP_COMPLETION_REGEX,
 } from "@/lib/workflow/executor/runner-error-patterns";
-import { getTransactionHashes } from "@/lib/workflow/executor/step-success-tracker";
+import {
+  getTransactionHashes,
+  isRecordableTransactionHash,
+} from "@/lib/workflow/executor/step-success-tracker";
 import { computeTrulyFailedNodes } from "@/lib/workflow/executor/truly-failed-nodes";
 
 // Statuses a late step write must never resurrect: the user stopped the run,
@@ -138,7 +141,10 @@ async function listTrulyFailedNodes(executionId: string): Promise<string[]> {
  * that runs a non-tx step many times (e.g. a For-Each over hundreds of HTTP
  * calls) does not stream every row back to Node just to discard it in JS.
  * The JS-side type guard below stays as the authoritative check: SQL only
- * confirms the key exists in output_raw, not that the value is a 0x string.
+ * confirms the key exists in output_raw, not that the value is shaped like a
+ * hash for the chain the step reported. That shape check is shared with the
+ * in-memory tracker (isRecordableTransactionHash) so the two reconstructions
+ * of the same list cannot drift apart.
  */
 async function loadHashesFromLogs(
   executionId: string
@@ -171,7 +177,7 @@ async function loadHashesFromLogs(
         o === null ||
         typeof o !== "object" ||
         typeof o.transactionHash !== "string" ||
-        !o.transactionHash.startsWith("0x") ||
+        !isRecordableTransactionHash(o.transactionHash, o.chainId) ||
         seen.has(o.transactionHash)
       ) {
         continue;

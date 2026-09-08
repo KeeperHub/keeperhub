@@ -338,31 +338,46 @@ describe("fetchSchedules", () => {
     await expect(fetchSchedules()).resolves.toEqual([]);
   });
 
-  it("throws including the status and body on a non-2xx response", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 503,
-        text: async () => "service unavailable",
-      }),
-    );
-
-    await expect(fetchSchedules()).rejects.toThrow(
-      /API GET \/api\/internal\/schedules failed: 503 service unavailable/,
-    );
+  // A 5xx is retried on the client's backoff schedule (fake timers skip the
+  // waits), so the error only reaches the caller once every attempt failed.
+  it("throws including the status and body once a 5xx exhausts its retries", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: async () => "service unavailable",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    try {
+      const rejection = expect(fetchSchedules()).rejects.toThrow(
+        /API GET \/api\/internal\/schedules failed: 503 service unavailable/,
+      );
+      await vi.runAllTimersAsync();
+      await rejection;
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("propagates fetch network errors to the caller", async () => {
     // fetch itself rejecting (DNS failure, TLS error, socket reset) is a
     // distinct branch from the non-2xx path -- no `response` object exists
-    // to inspect, so the error reaches the caller unwrapped.
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
-    );
-
-    await expect(fetchSchedules()).rejects.toThrow("ECONNREFUSED");
+    // to inspect, so the error reaches the caller unwrapped once the retry
+    // schedule is exhausted.
+    const fetchMock = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    try {
+      const rejection = expect(fetchSchedules()).rejects.toThrow(
+        "ECONNREFUSED",
+      );
+      await vi.runAllTimersAsync();
+      await rejection;
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("calls fetch with the schedules path and HMAC headers", async () => {
@@ -666,9 +681,13 @@ describe("dispatch", () => {
       }),
     );
 
-    await expect(dispatch()).rejects.toThrow(
+    // The 500 is retried on the client's backoff schedule; this describe runs
+    // on fake timers, so drive the waits before awaiting the rejection.
+    const rejection = expect(dispatch()).rejects.toThrow(
       /API GET \/api\/internal\/schedules failed: 500/,
     );
+    await vi.runAllTimersAsync();
+    await rejection;
     expect(mockedSqsSend).not.toHaveBeenCalled();
   });
 

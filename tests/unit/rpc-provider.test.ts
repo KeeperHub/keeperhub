@@ -1,3 +1,4 @@
+import { captureException } from "@sentry/nextjs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // `lib/rpc/providers` now transitively imports `lib/safe-fetch` via
@@ -5,15 +6,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // would otherwise throw under vitest.
 vi.mock("server-only", () => ({}));
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
+const recordErrorMock = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/metrics", () => ({
   getMetricsCollector: () => ({
     incrementCounter: vi.fn(),
     recordLatency: vi.fn(),
-    recordError: vi.fn(),
+    recordError: recordErrorMock,
     setGauge: vi.fn(),
   }),
 }));
 
+import { MetricNames } from "@/lib/metrics/types";
 import {
   clearRpcProviderManagerCache,
   consoleMetricsCollector,
@@ -264,6 +267,133 @@ describe("RpcProviderManager", () => {
 
       await expect(manager.executeWithFailover(mockOperation)).rejects.toThrow(
         "RPC failed on both endpoints"
+      );
+    });
+
+    it("reports an exhausted failover as a system error, not a user warning", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://primary.example.com",
+          fallbackRpcUrl: "https://fallback.example.com",
+          maxRetries: 1,
+          timeoutMs: 100,
+          chainName: "Ethereum",
+        },
+        metricsCollector,
+      });
+
+      await expect(
+        manager.executeWithFailover(
+          vi.fn().mockRejectedValue(new Error("down"))
+        )
+      ).rejects.toThrow("RPC failed on both endpoints");
+
+      expect(recordErrorMock).toHaveBeenCalledTimes(1);
+      expect(recordErrorMock).toHaveBeenCalledWith(
+        MetricNames.NETWORK_RPC_ERRORS,
+        expect.anything(),
+        expect.objectContaining({
+          error_type: "system",
+          event: "RPC_BOTH_ENDPOINTS_FAILED",
+          chain: "Ethereum",
+        })
+      );
+      expect(captureException).toHaveBeenCalledTimes(1);
+      const [reported, context] = vi.mocked(captureException).mock.calls[0];
+      expect(reported).toBeInstanceOf(Error);
+      expect(context).toEqual(
+        expect.objectContaining({
+          tags: expect.objectContaining({ error_category: "network_rpc" }),
+          extra: expect.objectContaining({
+            event: "RPC_BOTH_ENDPOINTS_FAILED",
+          }),
+        })
+      );
+      expect(context).not.toHaveProperty("level");
+    });
+
+    it("records a failover that served the call as a warning, not an error", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://primary.example.com",
+          fallbackRpcUrl: "https://fallback.example.com",
+          maxRetries: 1,
+          timeoutMs: 100,
+          chainName: "Ethereum",
+        },
+        metricsCollector,
+      });
+
+      const operation = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Primary failed"))
+        .mockResolvedValue("fallback success");
+
+      await expect(manager.executeWithFailover(operation)).resolves.toBe(
+        "fallback success"
+      );
+
+      expect(recordErrorMock).not.toHaveBeenCalled();
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(captureException).mock.calls[0][1]).toEqual(
+        expect.objectContaining({
+          level: "warning",
+          tags: expect.objectContaining({ error_category: "network_rpc" }),
+          extra: expect.objectContaining({ event: "RPC_FAILOVER_ACTIVATED" }),
+        })
+      );
+    });
+
+    it("escalates from a warning to a system error when the sticky fallback and primary both fail", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://primary.example.com",
+          fallbackRpcUrl: "https://fallback.example.com",
+          maxRetries: 1,
+          timeoutMs: 100,
+          chainName: "Ethereum",
+        },
+        metricsCollector,
+      });
+
+      const enterFailover = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Primary failed"))
+        .mockResolvedValue("fallback ok");
+      await manager.executeWithFailover(enterFailover);
+      expect(manager.isCurrentlyUsingFallback()).toBe(true);
+      vi.mocked(captureException).mockClear();
+      recordErrorMock.mockClear();
+
+      await expect(
+        manager.executeWithFailover(
+          vi.fn().mockRejectedValue(new Error("down"))
+        )
+      ).rejects.toThrow("RPC failed on both endpoints");
+
+      const contexts = vi
+        .mocked(captureException)
+        .mock.calls.map(([, context]) => context);
+      expect(contexts).toHaveLength(2);
+      expect(contexts[0]).toEqual(
+        expect.objectContaining({
+          level: "warning",
+          extra: expect.objectContaining({ event: "RPC_FALLBACK_FAILED" }),
+        })
+      );
+      expect(contexts[1]).toEqual(
+        expect.objectContaining({
+          extra: expect.objectContaining({
+            event: "RPC_BOTH_ENDPOINTS_FAILED",
+          }),
+        })
+      );
+      expect(contexts[1]).not.toHaveProperty("level");
+      expect(recordErrorMock).toHaveBeenCalledTimes(1);
+      expect(recordErrorMock).toHaveBeenCalledWith(
+        MetricNames.NETWORK_RPC_ERRORS,
+        expect.anything(),
+        expect.objectContaining({ error_type: "system" })
       );
     });
 

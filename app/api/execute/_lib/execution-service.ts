@@ -6,7 +6,9 @@ import {
   type DirectExecutionReceiptEntry,
   directExecutions,
 } from "@/lib/db/schema";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { generateId } from "@/lib/utils/id";
+import type { RevertKind } from "@/lib/web3/decode-revert-error";
 import {
   describeVerificationFailure,
   hasUnreadableReceipt,
@@ -132,8 +134,10 @@ export async function completeExecution(
       estimatedCostUsd: result.estimatedCostUsd ?? null,
       // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
       output: (result.output ?? {}) as any,
-      // An unconfirmed execution has not completed, and the reconciler uses a
-      // null completedAt to find rows that still need settling.
+      // An unconfirmed execution has not completed, so it carries no
+      // completedAt. The reconciler finds rows that still need settling by
+      // status = 'unconfirmed' (lib/execute/reconcile-executions.ts), not by a
+      // null completedAt.
       completedAt: isTerminal ? new Date() : null,
     })
     .where(eq(directExecutions.id, executionId));
@@ -154,6 +158,9 @@ type FailParams = {
   // status route derives `sponsored` from it -- without this a sponsored
   // failure reports sponsored: false.
   sponsored?: boolean;
+  transactionLink?: string;
+  rejection?: RevertKind;
+  errorClass?: ExecutionErrorType;
 };
 
 /**
@@ -203,6 +210,20 @@ export async function failExecution(
       ? "unconfirmed"
       : "failed";
 
+  const failureOutput: Record<string, unknown> = {};
+  if (params.sponsored !== undefined) {
+    failureOutput.sponsored = params.sponsored;
+  }
+  if (params.transactionLink) {
+    failureOutput.transactionLink = params.transactionLink;
+  }
+  if (params.rejection) {
+    failureOutput.rejection = params.rejection;
+  }
+  if (params.errorClass) {
+    failureOutput.errorClass = params.errorClass;
+  }
+
   await db
     .update(directExecutions)
     .set({
@@ -212,12 +233,13 @@ export async function failExecution(
         ? { transactionHash: params.transactionHash }
         : {}),
       ...(receipts.length > 0 ? { receipts } : {}),
-      ...(params.sponsored === undefined
-        ? {}
-        : // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
-          { output: { sponsored: params.sponsored } as any }),
-      // The reconciler finds rows still needing settlement by their null
-      // completedAt, so an unconfirmed row must not carry one.
+      ...(Object.keys(failureOutput).length > 0
+        ? // biome-ignore lint/suspicious/noExplicitAny: jsonb column accepts arbitrary serializable data
+          { output: failureOutput as any }
+        : {}),
+      // The reconciler finds rows still needing settlement by
+      // status = 'unconfirmed' (lib/execute/reconcile-executions.ts); an
+      // unconfirmed row carries no completedAt because it has not finished.
       completedAt: status === "failed" ? new Date() : null,
     })
     .where(eq(directExecutions.id, executionId));

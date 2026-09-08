@@ -1,5 +1,5 @@
 import { ethers, isError } from "ethers";
-import { ErrorCategory, logUserError } from "@/lib/logging";
+import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { sleep } from "@/lib/sleep";
 import { safeEthersGetUrl } from "../safe-ethers-fetch";
 import { redactAllUrls, scrubRpcUrls } from "../scrub-rpc-urls";
@@ -327,8 +327,9 @@ export class RpcProviderManager {
           return fallbackResult.result as T;
         }
 
-        // Fallback failed - try primary in case it recovered
-        logUserError(
+        // Fallback failed - try primary in case it recovered. Not an outage
+        // yet, so a Sentry warning with no error metric and no page.
+        logSystemWarn(
           ErrorCategory.NETWORK_RPC,
           `[RPC] Fallback RPC failed for ${this.config.chainName}, attempting primary recovery`,
           fallbackResult.error,
@@ -371,7 +372,11 @@ export class RpcProviderManager {
 
         // Both failed -- throw without redundant retry
         this.metricsCollector.recordBothFailed(this.config.chainName);
-        logUserError(
+        // Both endpoints are KeeperHub-managed, so exhausting them is a
+        // platform fault: error level and the system-error metric. The Sentry
+        // event only reaches Sentry from the Next.js runtimes - the
+        // workflow-runner pods initialise no Sentry client.
+        logSystemError(
           ErrorCategory.NETWORK_RPC,
           `[RPC] Both primary and fallback RPC failed for ${this.config.chainName}`,
           `Fallback: ${fallbackResult.error}. Primary: ${primaryResult.error}`,
@@ -426,7 +431,9 @@ export class RpcProviderManager {
       );
 
       if (fallbackResult.success) {
-        logUserError(
+        // The call was served, so this is a recovery event rather than an
+        // outage: Sentry warning, no error metric, no page.
+        logSystemWarn(
           ErrorCategory.NETWORK_RPC,
           `[RPC] Primary RPC failed for ${this.config.chainName}, switching to fallback`,
           primaryResult.error,
@@ -443,7 +450,7 @@ export class RpcProviderManager {
       }
 
       this.metricsCollector.recordBothFailed(this.config.chainName);
-      logUserError(
+      logSystemError(
         ErrorCategory.NETWORK_RPC,
         `[RPC] Both primary and fallback RPC failed for ${this.config.chainName}`,
         `Primary: ${primaryResult.error}. Fallback: ${fallbackResult.error}`,

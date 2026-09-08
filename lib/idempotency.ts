@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { and, eq, lt } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { idempotencyRecords } from "@/lib/db/schema-extensions";
+import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { generateId } from "@/lib/utils/id";
 
 // A reserved record holds a short "lock" so a crashed request can't block a
@@ -38,7 +39,8 @@ export type IdempotencyOutcome =
     }
   | { kind: "replay"; responseStatus: number; responseBody: unknown }
   | { kind: "conflict"; originalResourceId: string | null }
-  | { kind: "in_progress" };
+  | { kind: "in_progress" }
+  | { kind: "invalid_key"; message: string };
 
 // Deterministic JSON so two logically-equal request bodies hash identically
 // regardless of key order.
@@ -290,6 +292,25 @@ export async function recordIdempotentResponse<T extends Response>(
   return response;
 }
 
+/** Finalize idempotency without failing the caller when the DB is unhealthy. */
+export async function safeRecordIdempotentResponse<T extends Response>(
+  outcome: IdempotencyOutcome | null,
+  response: T,
+  disposition?: IdempotencyDisposition,
+  context?: string
+): Promise<T> {
+  try {
+    return await recordIdempotentResponse(outcome, response, disposition);
+  } catch (err) {
+    logSystemError(
+      ErrorCategory.DATABASE,
+      context ?? "[idempotency] Finalize failed after work completed",
+      err
+    );
+    return response;
+  }
+}
+
 // Runs `work` while heartbeating the reserved lock so a long-running, fund-
 // moving execution keeps its slot reserved past the base TTL. The interval is
 // cleared once the work settles; if a heartbeat finds the lock was reclaimed
@@ -318,6 +339,8 @@ export async function withIdempotencyHeartbeat<T>(
   }
 }
 
+export const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
+
 // Convenience: reads the `Idempotency-Key` header and reserves a slot, or
 // returns null when the client did not opt in to idempotency.
 export async function beginIdempotentFromRequest(args: {
@@ -329,6 +352,12 @@ export async function beginIdempotentFromRequest(args: {
   const key = args.request.headers.get("Idempotency-Key")?.trim();
   if (!key) {
     return null;
+  }
+  if (key.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+    return {
+      kind: "invalid_key",
+      message: `Idempotency-Key must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters`,
+    };
   }
   return await beginIdempotent({
     organizationId: args.organizationId,
@@ -427,6 +456,11 @@ export function idempotencyEarlyResponse(
           code: "idempotency_in_progress",
           retryable: true,
         },
+      };
+    case "invalid_key":
+      return {
+        status: 400,
+        body: { error: outcome.message },
       };
     default:
       return null;

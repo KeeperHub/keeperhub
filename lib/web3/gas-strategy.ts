@@ -12,7 +12,7 @@
  * scheduled, webhook, event). This eliminates the manual-vs-webhook divergence
  * that surfaced in KEEP-384.
  *
- * @see docs/keeperhub/KEEP-1240/gas.md for full specification
+ * @see docs/wallet-management/gas.md for the user-facing description
  */
 
 import { eq } from "drizzle-orm";

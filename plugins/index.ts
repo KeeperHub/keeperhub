@@ -13,12 +13,13 @@
  * 1. Delete the plugin directory
  * 2. Run: pnpm discover-plugins (or it runs automatically on build)
  *
- * Discovered plugins: blockscout, code, discord, hyperliquid, math, protocol, robinhood, safe, sendgrid, slack, telegram, tempo, web3, webhook
+ * Discovered plugins: blockscout, code, discord, evm-chain, hyperliquid, math, protocol, robinhood, safe, sendgrid, slack, telegram, tempo, web3, webhook
  */
 
 import "./blockscout";
 import "./code";
 import "./discord";
+import "./evm-chain";
 import "./hyperliquid";
 import "./math";
 import "./protocol";

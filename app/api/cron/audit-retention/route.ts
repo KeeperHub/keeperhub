@@ -4,12 +4,17 @@
  * permits deleting rows past that window, so this job is the sole path that
  * can remove audit data and it can only ever remove already-expired rows.
  *
- * Deployment: invoked by an external scheduler (Kubernetes CronJob), e.g.
- * daily. Authorized via `Authorization: Bearer $CRON_SECRET`, mirroring the
- * other cron routes. Fails closed when CRON_SECRET is unset; no NODE_ENV
- * bypass.
+ * Deployment: intended for a Kubernetes CronJob (e.g. daily) that runs
+ * `deploy/scripts/reaper.sh` against this path, the same way the other cron
+ * routes are scheduled. No CronJob is defined for it yet: scheduling a
+ * retention deletion is a product decision that has not been taken.
+ * Authorized via the internal-service HMAC scheme (`X-KH-Caller`,
+ * `X-KH-Timestamp`, `X-KH-Signature` signed with
+ * `INTERNAL_SERVICE_HMAC_SECRET`) through `authenticateInternalService`. Fails
+ * closed when the signature does not verify; there is no NODE_ENV bypass.
  */
 
+import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import {
   AUDIT_RETENTION_DAYS,
@@ -18,17 +23,13 @@ import {
 
 export const dynamic = "force-dynamic";
 
-function isAuthorized(request: Request): boolean {
-  const expected = process.env.CRON_SECRET;
-  if (!expected) {
-    return false;
-  }
-  return request.headers.get("authorization") === `Bearer ${expected}`;
-}
-
 export async function GET(request: Request): Promise<Response> {
-  if (!isAuthorized(request)) {
-    return Response.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await authenticateInternalService(request);
+  if (!auth.authenticated) {
+    return Response.json(
+      { error: auth.error ?? "Unauthorized" },
+      { status: auth.status }
+    );
   }
 
   try {

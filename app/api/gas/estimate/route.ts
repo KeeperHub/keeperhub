@@ -375,7 +375,6 @@ export async function POST(request: Request): Promise<NextResponse> {
       estimatedGas: result.toString(),
       chainDefaults: {
         multiplier: chainDefaults.multiplier,
-        conservative: chainDefaults.conservative,
       },
     });
   } catch (error) {

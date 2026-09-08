@@ -14,6 +14,22 @@ const registry = vi.hoisted(() => ({
   }>,
 }));
 
+const {
+  mockIsGasSponsorshipEnabled,
+  mockExecuteSponsoredContractTransaction,
+  mockResolveSponsoredSendError,
+  mockFindExplorerConfig,
+  mockExplorerGetTransactionUrl,
+} = vi.hoisted(() => ({
+  mockIsGasSponsorshipEnabled: vi.fn().mockReturnValue(false),
+  mockExecuteSponsoredContractTransaction: vi.fn().mockResolvedValue(null),
+  mockResolveSponsoredSendError: vi.fn().mockReturnValue({ fallback: true }),
+  mockFindExplorerConfig: vi.fn().mockResolvedValue(null),
+  mockExplorerGetTransactionUrl: vi
+    .fn()
+    .mockReturnValue("https://etherscan.io/tx/0xsponsored"),
+}));
+
 vi.mock("@/lib/workflow/executor/step-handler", async () =>
   (await import("../mocks/step-mocks")).stepHandlerPassthrough()
 );
@@ -46,11 +62,17 @@ vi.mock("@/lib/db", () => ({
           }),
       }),
     }),
+    query: {
+      explorerConfigs: {
+        findFirst: (...args: unknown[]) => mockFindExplorerConfig(...args),
+      },
+    },
   },
 }));
 
 vi.mock("@/lib/db/schema", () => ({
   workflowExecutions: { id: "id", userId: "userId", workflowId: "workflowId" },
+  explorerConfigs: { chainId: "chainId" },
   supportedTokens: {
     chainId: "chainId",
     tokenAddress: "tokenAddress",
@@ -109,6 +131,8 @@ vi.mock("ethers", () => ({
 vi.mock("@/lib/explorer", () => ({
   getAddressUrl: vi.fn().mockReturnValue("https://etherscan.io/address/0x1234"),
   getTxUrl: vi.fn().mockReturnValue("https://etherscan.io/tx/0xhash"),
+  getTransactionUrl: (...args: unknown[]) =>
+    mockExplorerGetTransactionUrl(...args),
 }));
 
 vi.mock("@/lib/abi/struct-args", () => ({
@@ -122,19 +146,20 @@ vi.mock("@/lib/abi/function-key", () => ({
 
 // Spy on executeContractCall so tests can inspect the gasOverrides arg.
 // Hoisted so the mock factory below sees an initialized value at module load.
-const { mockExecuteContractCall } = vi.hoisted(() => ({
+const { mockExecuteContractCall, mockGetTransactionUrl } = vi.hoisted(() => ({
   mockExecuteContractCall: vi.fn().mockResolvedValue({
     hash: "0xhash",
     gasUsed: BigInt(21_000),
     effectiveGasPrice: BigInt(1_000_000_000),
   }),
+  mockGetTransactionUrl: vi
+    .fn()
+    .mockResolvedValue("https://etherscan.io/tx/0xhash"),
 }));
 vi.mock("@/lib/web3/chain-adapter", () => ({
   getChainAdapter: vi.fn().mockReturnValue({
     executeContractCall: mockExecuteContractCall,
-    getTransactionUrl: vi
-      .fn()
-      .mockResolvedValue("https://etherscan.io/tx/0xhash"),
+    getTransactionUrl: mockGetTransactionUrl,
   }),
 }));
 
@@ -180,6 +205,20 @@ vi.mock("@/lib/safe/signer-resolver", () => ({
     kind: "eoa",
     ownerAddress: "0xwalletaddress",
   }),
+}));
+
+vi.mock("@/lib/web3/sponsored-transaction-manager", () => ({
+  executeSponsoredContractTransaction: (...args: unknown[]) =>
+    mockExecuteSponsoredContractTransaction(...args),
+}));
+
+vi.mock("@/lib/web3/sponsored-send-error", () => ({
+  resolveSponsoredSendError: (...args: unknown[]) =>
+    mockResolveSponsoredSendError(...args),
+}));
+
+vi.mock("@/lib/web3/sponsorship-feature-flag", () => ({
+  isGasSponsorshipEnabled: () => mockIsGasSponsorshipEnabled(),
 }));
 
 vi.mock("@/lib/safe/execute-as-safe", () => ({
@@ -574,6 +613,8 @@ describe("writeContractCore broadcast with an unreadable receipt", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.transactionHash).toBe("0xpending");
+      expect(result.transactionLink).toBe("https://etherscan.io/tx/0xhash");
+      expect(mockGetTransactionUrl).toHaveBeenCalledWith("0xpending");
       expect(result.errorClass).toBe(ExecutionErrorType.SYSTEM);
     }
 
@@ -620,5 +661,57 @@ describe("writeContractCore broadcast with an unreadable receipt", () => {
       expect(result.errorClass).toBeUndefined();
     }
     expect(applyFailOnError(result, false).success).toBe(true);
+  });
+});
+
+describe("writeContractCore sponsored-relay failure link", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+    mockIsGasSponsorshipEnabled.mockReturnValue(false);
+    mockExecuteSponsoredContractTransaction.mockResolvedValue(null);
+    mockResolveSponsoredSendError.mockReturnValue({ fallback: true });
+    mockFindExplorerConfig.mockResolvedValue(null);
+  });
+
+  it("sets transactionLink from explorerConfigs when the sponsored send fails with a hash", async () => {
+    mockIsGasSponsorshipEnabled.mockReturnValue(true);
+    mockExecuteSponsoredContractTransaction.mockRejectedValueOnce(
+      new Error("sponsored send reverted")
+    );
+    mockResolveSponsoredSendError.mockReturnValue({
+      fallback: false,
+      error: "sponsored send reverted",
+      transactionHash: "0xsponsored",
+      errorClass: ExecutionErrorType.EXTERNAL,
+    });
+    mockFindExplorerConfig.mockResolvedValueOnce({ chainId: 1 });
+    mockExplorerGetTransactionUrl.mockReturnValue(
+      "https://etherscan.io/tx/0xsponsored"
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.transactionHash).toBe("0xsponsored");
+      expect(result.transactionLink).toBe(
+        "https://etherscan.io/tx/0xsponsored"
+      );
+      expect(result.sponsored).toBe(true);
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+    }
+    expect(mockExplorerGetTransactionUrl).toHaveBeenCalledWith(
+      { chainId: 1 },
+      "0xsponsored"
+    );
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
   });
 });
