@@ -181,72 +181,99 @@ describe("safeEvaluateCondition - semantics", () => {
   });
 
   describe("numeric strings in relational comparisons", () => {
-    // Template resolution hands the evaluator its values as strings, so the operands of a
-    // relational comparison are usually strings even when the builder called the operator
-    // numeric. These assert the documented contract rather than code-unit ordering.
+    // Template resolution hands the evaluator its values as strings, so the
+    // operands of a relational comparison are usually strings even when the
+    // builder called the operator numeric. These assert the documented
+    // contract rather than code-unit ordering.
+    const cmp = (operator: string, a: unknown, b: unknown) =>
+      safeEvaluateCondition(`__v0 ${operator} __v1`, { __v0: a, __v1: b });
+    const lt = (a: unknown, b: unknown) => cmp("<", a, b);
+    const gt = (a: unknown, b: unknown) => cmp(">", a, b);
+    const lte = (a: unknown, b: unknown) => cmp("<=", a, b);
+    const gte = (a: unknown, b: unknown) => cmp(">=", a, b);
+
     it("compares digit strings by magnitude, not by code unit", () => {
-      expect(safeEvaluateCondition("__v0 < __v1", { __v0: "9", __v1: "10" })).toBe(true);
-      expect(safeEvaluateCondition("__v0 < __v1", { __v0: "99", __v1: "100" })).toBe(true);
-      expect(safeEvaluateCondition("__v0 > __v1", { __v0: "10", __v1: "9" })).toBe(true);
-      expect(safeEvaluateCondition("__v0 >= __v1", { __v0: "9", __v1: "10" })).toBe(false);
+      // All under MAX_SAFE_INTEGER, so needsBigIntMode is false and
+      // applyBigIntConversion leaves them as strings: the evaluator is the
+      // only thing that can order them.
+      expect(lt("9", "10")).toBe(true);
+      expect(lt("99", "100")).toBe(true);
+      expect(gt("10", "9")).toBe(true);
+      expect(gte("9", "10")).toBe(false);
+      expect(lt("999999999999999", "1000000000000000")).toBe(true);
     });
 
-    it("compares across the MAX_SAFE_INTEGER boundary", () => {
-      // 9007199254740991 is MAX_SAFE_INTEGER, so it does not trip needsBigIntMode and used
-      // to be compared as text; 9007199254740992 is the first integer past it.
-      const max = "9007199254740991";
-      const past = "9007199254740992";
-      expect(safeEvaluateCondition("__v0 < __v1", { __v0: max, __v1: past })).toBe(true);
-      expect(safeEvaluateCondition("__v0 > __v1", { __v0: max, __v1: past })).toBe(false);
-      expect(safeEvaluateCondition("__v0 < __v1", { __v0: max, __v1: max })).toBe(false);
-      // Either side of the 15-to-16 digit step, which is where the old behaviour flipped.
-      expect(
-        safeEvaluateCondition("__v0 < __v1", {
-          __v0: "999999999999999",
-          __v1: "1000000000000000",
-        })
-      ).toBe(true);
+    it("orders signed operands, whichever side carries the sign", () => {
+      expect(lt("-5", "-3")).toBe(true);
+      expect(gt("-5", "-3")).toBe(false);
+      expect(lt("-5", "3")).toBe(true);
+      expect(lt("+5", "10")).toBe(true);
+      expect(gt("+5", "3")).toBe(true);
+      expect(lt("-0", "0")).toBe(false);
     });
 
-    it("keeps digit strings exact at wei scale", () => {
-      expect(
-        safeEvaluateCondition("__v0 < __v1", {
-          __v0: "1000000000000000000",
-          __v1: "1000000000000000001",
-        })
-      ).toBe(true);
+    it("keeps a decimal exact past the double precision limit", () => {
+      // Number() rounds the left operand to 1e18 and calls these equal.
+      expect(gt("1000000000000000000.5", "1000000000000000000")).toBe(true);
+      expect(lt("1000000000000000000", "1000000000000000000.5")).toBe(true);
+      expect(gt("0.30000000000000004", "0.3")).toBe(true);
     });
 
-    it("compares decimal strings as numbers, in both regimes", () => {
-      expect(safeEvaluateCondition("__v0 < __v1", { __v0: "9.5", __v1: "10.2" })).toBe(true);
-      expect(safeEvaluateCondition("__v0 >= __v1", { __v0: "9.5", __v1: "10.2" })).toBe(
-        false
-      );
-      // In BigInt mode a decimal string is left alone by applyBigIntConversion, so it used
-      // to reach StringToBigInt and make both directions false at once.
-      expect(
-        safeEvaluateCondition("__v0 < __v1", { __v0: BigInt(10), __v1: "10.5" })
-      ).toBe(true);
-      expect(
-        safeEvaluateCondition("__v0 >= __v1", { __v0: BigInt(10), __v1: "10.5" })
-      ).toBe(false);
+    it("compares decimals through every relational operator", () => {
+      expect(lt("9.5", "10.2")).toBe(true);
+      expect(gt("10.2", "9.5")).toBe(true);
+      expect(lte("9.5", "9.5")).toBe(true);
+      expect(lte("10.2", "9.5")).toBe(false);
+      expect(gte("9.5", "10.2")).toBe(false);
+      // A decimal string in BigInt mode used to reach StringToBigInt, which
+      // rejects the point and made both directions false at once.
+      expect(lt(BigInt(10), "10.5")).toBe(true);
+      expect(gte(BigInt(10), "10.5")).toBe(false);
     });
 
-    it("leaves equality, mixed types and non-numeric strings alone", () => {
+    it("moves neither operand unless both are decimals", () => {
+      // A hex or address-shaped operand is not a decimal, so the pair keeps
+      // the code-unit ordering it has today instead of reversing once the
+      // other side has become a BigInt.
+      const addr = "0x0000000000000000000000000000000000000002";
+      expect(lt("1", addr)).toBe(false);
+      expect(gt("1", addr)).toBe(true);
+      expect(lt("10", "0x1f")).toBe(false);
+      // Exponent notation is outside the grammar the builder emits bare.
+      expect(lt("1e3", "9")).toBe(true);
+      // Surrounding whitespace and the empty string are not decimals either.
+      expect(lt(" 9", "10")).toBe(true);
+      expect(lt("", "0")).toBe(true);
+    });
+
+    it("keeps a digit string orderable against a word", () => {
+      // The trap this avoids: with one side converted and the other coerced
+      // by the engine, <, > and === are all false at once, and no set of
+      // branches an author can write is exhaustive.
+      expect(lt("9", "apple")).toBe(true);
+      expect(gt("9", "apple")).toBe(false);
+      expect(cmp("===", "9", "apple")).toBe(false);
+    });
+
+    it("leaves non-string operands to the operator", () => {
+      expect(lt("9", null)).toBe(false);
+      expect(gt("9", null)).toBe(true);
+      expect(lt("9", true)).toBe(false);
+      expect(lt("0", true)).toBe(true);
+      // Not a safe integer, so it is not converted here; JavaScript already
+      // orders a Number against a BigInt exactly.
+      expect(lt("9", 9.5)).toBe(true);
+      expect(lt(BigInt(10), 10.5)).toBe(true);
+    });
+
+    it("leaves equality and non-numeric strings alone", () => {
       const addr = "0xAbC0000000000000000000000000000000000001";
-      expect(safeEvaluateCondition("__v0 === __v1", { __v0: addr, __v1: addr })).toBe(true);
+      expect(cmp("===", addr, addr)).toBe(true);
       expect(safeEvaluateCondition('__v0 == "9"', { __v0: "9" })).toBe(true);
-      expect(safeEvaluateCondition("__v0 < __v1", { __v0: "9", __v1: 10 })).toBe(true);
-      expect(safeEvaluateCondition("__v0 < __v1", { __v0: "apple", __v1: "banana" })).toBe(
-        true
-      );
-      // Two points, so not a decimal: semver keeps the ordering it has today.
-      expect(safeEvaluateCondition("__v0 < __v1", { __v0: "1.2.3", __v1: "1.10.0" })).toBe(
-        false
-      );
-      expect(
-        safeEvaluateCondition("__v0 < __v1", { __v0: "2026-09-05", __v1: "2026-10-01" })
-      ).toBe(true);
+      expect(lt("apple", "banana")).toBe(true);
+      // Two points, so not a decimal: semver keeps today's ordering.
+      expect(lt("1.2.3", "1.10.0")).toBe(false);
+      expect(lt("2026-09-05", "2026-10-01")).toBe(true);
     });
   });
 });

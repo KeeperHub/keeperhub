@@ -548,38 +548,95 @@ function resolveMissingOperands(
   };
 }
 
-/** A string of digits only. Promoted to BigInt so magnitude never limits exactness. */
-const INTEGER_OPERAND_RE = /^\d+$/;
 /**
- * A decimal with digits on both sides of a single point. BigInt cannot represent it, so it
- * becomes a Number and carries the usual double precision limit. One point, so semver
- * ("1.2.3") is not a decimal; digits only, so dates and addresses are not either.
+ * Decimal grammar for a relational operand: integer or fixed-point, with an
+ * optional sign. Deliberately the same shape as `NUMERIC_LITERAL_RE` in
+ * ./expression.ts, which is what the visual builder uses to decide whether a
+ * value may be emitted as a bare number rather than a quoted string. Hex and
+ * exponent forms are excluded there, so they are excluded here too: a value the
+ * builder would have quoted is not one this evaluator reads as a number.
  */
-const DECIMAL_OPERAND_RE = /^\d+\.\d+$/;
+const NUMERIC_OPERAND_RE = /^[+-]?\d+(\.\d+)?$/;
+
+/** A decimal operand split into sign, integer digits and fraction digits. */
+type DecimalOperand = {
+  negative: boolean;
+  integer: string;
+  fraction: string;
+};
+
+function splitDecimal(literal: string): DecimalOperand {
+  const negative = literal.startsWith("-");
+  const unsigned =
+    negative || literal.startsWith("+") ? literal.slice(1) : literal;
+  const point = unsigned.indexOf(".");
+  return {
+    negative,
+    integer: point === -1 ? unsigned : unsigned.slice(0, point),
+    fraction: point === -1 ? "" : unsigned.slice(point + 1),
+  };
+}
 
 /**
- * Coerce a relational operand so that numbers written as strings compare as numbers.
+ * The operand as a decimal, or undefined when it is not one. A string has to
+ * match the grammar above. A number has to be a safe integer, that being the
+ * range whose decimal form is exact; anything else is left to the relational
+ * operator, where JavaScript already orders numbers and BigInts exactly.
+ */
+function asDecimalOperand(value: unknown): DecimalOperand | undefined {
+  if (typeof value === "string") {
+    return NUMERIC_OPERAND_RE.test(value) ? splitDecimal(value) : undefined;
+  }
+  if (typeof value === "bigint") {
+    return splitDecimal(value.toString());
+  }
+  if (typeof value === "number" && Number.isSafeInteger(value)) {
+    return splitDecimal(value.toString());
+  }
+  return undefined;
+}
+
+/** -1, 0 or 1. Fractions are padded and never rounded, so this stays exact. */
+function compareDecimals(left: DecimalOperand, right: DecimalOperand): number {
+  const width = Math.max(left.fraction.length, right.fraction.length);
+  const scaled = (operand: DecimalOperand): bigint => {
+    const padded = operand.fraction.padEnd(width, "0");
+    const digits = BigInt(operand.integer + padded);
+    return operand.negative ? -digits : digits;
+  };
+  const a = scaled(left);
+  const b = scaled(right);
+  if (a < b) {
+    return -1;
+  }
+  return a > b ? 1 : 0;
+}
+
+/**
+ * Order two relational operands, or undefined to leave the comparison alone.
  *
  * `<`, `<=`, `>` and `>=` are documented as numeric ("Numeric less than" in
- * docs/workflows/creating.md, `category: "number"` in the operator metadata the builder
- * shows the user), but template resolution hands the evaluator its values as strings, so
- * two operands would reach JavaScript's code-unit ordering and `"9" < "10"` would be false.
+ * docs/workflows/creating.md, `category: "number"` in the operator metadata the
+ * builder shows the user), but template resolution hands the evaluator its
+ * values as strings, so two numbers would reach JavaScript's code-unit ordering
+ * and `"9" < "10"` would be false.
  *
- * Only digit strings move. Everything else - dates, semver, addresses, hashes, prose -
- * keeps the behaviour it has today, because the only pairing that changes is a numeric
- * string against another numeric value.
+ * Both operands have to be decimals before either one moves, and the comparison
+ * happens here rather than at the operator. Converting one side and letting the
+ * engine coerce the other is what reverses a digit string against a hex string,
+ * and what makes `<`, `>` and `===` false all at once against a word. A pair
+ * this does not recognise is handed back untouched.
  */
-function toRelationalOperand(value: unknown): unknown {
-  if (typeof value !== "string") {
-    return value;
+function compareRelational(left: unknown, right: unknown): number | undefined {
+  const a = asDecimalOperand(left);
+  if (a === undefined) {
+    return undefined;
   }
-  if (INTEGER_OPERAND_RE.test(value)) {
-    return BigInt(value);
+  const b = asDecimalOperand(right);
+  if (b === undefined) {
+    return undefined;
   }
-  if (DECIMAL_OPERAND_RE.test(value)) {
-    return Number(value);
-  }
-  return value;
+  return compareDecimals(a, b);
 }
 
 function applyBinary(
@@ -600,18 +657,30 @@ function applyBinary(
     case "!=":
       // biome-ignore lint/suspicious/noDoubleEquals: condition grammar intentionally supports loose != for cross-type comparisons
       return left != right;
-    case ">":
-      return (toRelationalOperand(left) as number) >
-        (toRelationalOperand(right) as number);
-    case "<":
-      return (toRelationalOperand(left) as number) <
-        (toRelationalOperand(right) as number);
-    case ">=":
-      return (toRelationalOperand(left) as number) >=
-        (toRelationalOperand(right) as number);
-    case "<=":
-      return (toRelationalOperand(left) as number) <=
-        (toRelationalOperand(right) as number);
+    case ">": {
+      const order = compareRelational(left, right);
+      return order === undefined
+        ? (left as number) > (right as number)
+        : order > 0;
+    }
+    case "<": {
+      const order = compareRelational(left, right);
+      return order === undefined
+        ? (left as number) < (right as number)
+        : order < 0;
+    }
+    case ">=": {
+      const order = compareRelational(left, right);
+      return order === undefined
+        ? (left as number) >= (right as number)
+        : order >= 0;
+    }
+    case "<=": {
+      const order = compareRelational(left, right);
+      return order === undefined
+        ? (left as number) <= (right as number)
+        : order <= 0;
+    }
     case "+":
       return (left as number) + (right as number);
     case "-":
