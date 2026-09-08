@@ -160,6 +160,47 @@ export const SYSTEM_ACTIONS = {
         "boolean - True if the breaker had been engaged; false if it was already clear.",
     },
   },
+  "State Get": {
+    actionType: "State Get",
+    label: "State Get",
+    description:
+      "Read one key from this workflow's persistent state. State survives between runs and is scoped to this workflow only - use it for monitor cursors like 'last block scanned' or 'transactions already alerted on'. Pair with State Set for read-modify-write: pass State Get's version as State Set's expectedVersion to fail instead of losing a race.",
+    category: "System",
+    requiredFields: {
+      key: 'string - The state key to read (e.g. "lastScannedBlock")',
+    },
+    optionalFields: {},
+    outputFields: {
+      exists: "boolean - Whether a live (non-expired) value exists for the key",
+      value: "unknown - The stored value (null when the key does not exist)",
+      version:
+        "number - Current version of the key; pass it as expectedVersion to State Set for a race-free read-modify-write",
+    },
+  },
+  "State Set": {
+    actionType: "State Set",
+    label: "State Set",
+    description:
+      "Write one key to this workflow's persistent state. The write is an atomic upsert; pass expectedVersion (from State Get) to turn it into a compare-and-set when two overlapping executions could race on the same key - on mismatch the step fails with a conflict error instead of silently overwriting. Limits, enforced: values up to 8 KB serialized, 100 keys per workflow, ttl clamped to 365 days.",
+    category: "System",
+    requiredFields: {
+      key: 'string - The state key to write (e.g. "lastScannedBlock")',
+      value:
+        "unknown - The value to store. Objects and arrays from template references are stored as-is; a string that is JSON object/array text is stored parsed. Max 8 KB serialized.",
+    },
+    optionalFields: {
+      ttl: "number - Seconds until the key expires (min 1, clamped to 365 days). Omit for no expiry; expired keys read as not-existing and are evicted.",
+      expectedVersion:
+        "number - Compare-and-set: only write if the key's current version matches this. On mismatch the step fails; re-read with State Get and retry.",
+    },
+    outputFields: {
+      success: "boolean - Always true on a successful write",
+      created:
+        "boolean - True when this call created the key rather than overwriting it",
+      version:
+        "number - The key's version after this write; feed it back as expectedVersion for the next compare-and-set",
+    },
+  },
 } as const;
 
 // =============================================================================

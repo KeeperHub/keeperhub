@@ -126,7 +126,7 @@ describe("TRIGGERS exports", () => {
 });
 
 describe("SYSTEM_ACTIONS exports", () => {
-  it("has exactly the 7 expected system action keys", () => {
+  it("has exactly the 9 expected system action keys", () => {
     const keys = Object.keys(SYSTEM_ACTIONS).sort();
     expect(keys).toEqual([
       "Collect",
@@ -135,6 +135,8 @@ describe("SYSTEM_ACTIONS exports", () => {
       "For Each",
       "HTTP Request",
       "Reset Circuit Breaker",
+      "State Get",
+      "State Set",
       "Trip Circuit Breaker",
     ]);
   });

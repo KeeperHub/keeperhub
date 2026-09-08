@@ -30,6 +30,11 @@ export const SYSTEM_ACTION_EGRESS: Record<SystemActionType, EgressTier> = {
   // they carry no egress and are not swept into the user-destination plan gate.
   "Trip Circuit Breaker": "none",
   "Reset Circuit Breaker": "none",
+  // Workflow state actions: an in-process DB read/write scoped to the
+  // executing workflow's own (org, workflow) row set. No outbound network, no
+  // user-chosen destination - same classification as the circuit breakers.
+  "State Get": "none",
+  "State Set": "none",
 };
 
 const SYSTEM_ACTION_TYPE_SET: ReadonlySet<string> = new Set(

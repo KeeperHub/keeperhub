@@ -637,6 +637,130 @@ function CollectFields() {
   );
 }
 
+// State Get fields component
+function StateGetFields({
+  config,
+  onUpdateConfig,
+  disabled,
+}: {
+  config: Record<string, unknown>;
+  onUpdateConfig: (key: string, value: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor="stateKey">Key</Label>
+      <Input
+        disabled={disabled}
+        id="stateKey"
+        onChange={(e) => onUpdateConfig("key", e.target.value)}
+        placeholder="lastScannedBlock"
+        value={(config?.key as string) || ""}
+      />
+      <p className="text-muted-foreground text-xs">
+        Reads this workflow&apos;s own persistent state - it survives between
+        runs and no other workflow can see it. Use @ to build the key from
+        previous node values. The step outputs exists, value, and version
+        (feed version into State Set&apos;s expectedVersion for a safe
+        read-modify-write).
+      </p>
+    </div>
+  );
+}
+
+// State Set fields component
+function StateSetFields({
+  config,
+  onUpdateConfig,
+  disabled,
+}: {
+  config: Record<string, unknown>;
+  onUpdateConfig: (key: string, value: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <>
+      <div className="space-y-2">
+        <Label htmlFor="stateSetKey">Key</Label>
+        <Input
+          disabled={disabled}
+          id="stateSetKey"
+          onChange={(e) => onUpdateConfig("key", e.target.value)}
+          placeholder="lastScannedBlock"
+          value={(config?.key as string) || ""}
+        />
+      </div>
+      <div className="space-y-2">
+        <Label>Value</Label>
+        <TemplateCodeEditor
+          disabled={disabled}
+          editorOptions={{
+            minimap: { enabled: false },
+            lineNumbers: "on",
+            scrollBeyondLastLine: false,
+            fontSize: 12,
+            wordBasedSuggestions: "off",
+            quickSuggestions: false,
+            wordWrap: "off",
+          }}
+          height="100px"
+          language="json"
+          onChange={(v) => onUpdateConfig("value", v)}
+          value={(config?.value as string) || ""}
+        />
+        <p className="text-muted-foreground text-xs">
+          Objects and arrays from @ references are stored as-is; a JSON object
+          or array pasted here is stored parsed. Max 8 KB per value, 100 keys
+          per workflow.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="stateTtl">TTL (seconds, optional)</Label>
+        <Input
+          disabled={disabled}
+          id="stateTtl"
+          min={1}
+          onChange={(e) => {
+            const raw = e.target.value.replace(/[^0-9]/g, "");
+            onUpdateConfig("ttl", raw);
+          }}
+          placeholder="No expiry"
+          type="number"
+          value={(config?.ttl as string) || ""}
+        />
+        <p className="text-muted-foreground text-xs">
+          Seconds until the key expires and reads back as not-existing.
+          Clamped to 365 days. Leave empty to keep the key until the workflow
+          is deleted.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="stateExpectedVersion">
+          expectedVersion (optional, advanced)
+        </Label>
+        <Input
+          disabled={disabled}
+          id="stateExpectedVersion"
+          min={1}
+          onChange={(e) => {
+            const raw = e.target.value.replace(/[^0-9]/g, "");
+            onUpdateConfig("expectedVersion", raw);
+          }}
+          placeholder="No compare-and-set"
+          type="number"
+          value={(config?.expectedVersion as string) || ""}
+        />
+        <p className="text-muted-foreground text-xs">
+          Advanced: compare-and-set for cursor updates. Pass the version
+          returned by State Get (as @ reference); the write only applies if
+          the key has not changed since. On mismatch the step fails instead of
+          silently overwriting - re-read and retry.
+        </p>
+      </div>
+    </>
+  );
+}
+
 // System action fields wrapper - extracts conditional rendering to reduce complexity
 function SystemActionFields({
   actionType,
@@ -684,6 +808,22 @@ function SystemActionFields({
       );
     case "Collect":
       return <CollectFields />;
+    case "State Get":
+      return (
+        <StateGetFields
+          config={config}
+          disabled={disabled}
+          onUpdateConfig={onUpdateConfig}
+        />
+      );
+    case "State Set":
+      return (
+        <StateSetFields
+          config={config}
+          disabled={disabled}
+          onUpdateConfig={onUpdateConfig}
+        />
+      );
     default:
       return null;
   }
@@ -696,6 +836,8 @@ const SYSTEM_ACTIONS: Array<{ id: string; label: string }> = [
   { id: "Condition", label: "Condition" },
   { id: "For Each", label: "For Each" },
   { id: "Collect", label: "Collect" },
+  { id: "State Get", label: "State Get" },
+  { id: "State Set", label: "State Set" },
 ];
 
 const SYSTEM_ACTION_IDS = SYSTEM_ACTIONS.map((a) => a.id);
