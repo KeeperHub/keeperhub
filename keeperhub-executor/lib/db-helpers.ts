@@ -450,6 +450,7 @@ export type DiscardReason =
   | "deleted"
   | "deactivated"
   | "org_deactivated"
+  | "halted"
   | "disabled"
   | "schedule_invalid";
 

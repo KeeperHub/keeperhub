@@ -7,7 +7,12 @@ export type LoadWorkflowForExecutionResult =
   | { status: "not_found" }
   | {
       status: "not_executable";
-      reason: "deleted" | "deactivated" | "org_deactivated" | "disabled";
+      reason:
+        | "deleted"
+        | "deactivated"
+        | "org_deactivated"
+        | "halted"
+        | "disabled";
     }
   | {
       status: "ok";
@@ -36,6 +41,7 @@ export async function loadWorkflowForExecution(
     .select({
       workflow: workflows,
       orgDeactivatedAt: organization.deactivatedAt,
+      orgHaltedAt: organization.haltedAt,
       organizationName: organization.name,
     })
     .from(workflows)
@@ -52,6 +58,7 @@ export async function loadWorkflowForExecution(
     deletedAt: row.workflow.deletedAt,
     deactivatedAt: row.workflow.deactivatedAt,
     orgDeactivatedAt: row.orgDeactivatedAt ?? null,
+    orgHaltedAt: row.orgHaltedAt ?? null,
   });
 
   if (!executability.executable) {
