@@ -8,6 +8,7 @@ import {
   Copy,
   ExternalLink,
   Play,
+  Radio,
   Webhook,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -31,6 +32,7 @@ import type { ActionConfigField } from "@/plugins/registry";
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { CronScheduleBuilder } from "./cron-schedule-builder";
 import { SchemaBuilder } from "./schema-builder";
+import { PythTriggerConfig } from "./pyth-trigger-config";
 
 type TriggerConfigProps = {
   config: Record<string, unknown>;
@@ -83,6 +85,12 @@ export function TriggerConfig({
             <SelectValue placeholder="Select trigger type" />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value="Pyth Price">
+              <div className="flex items-center gap-2">
+                <Radio className="h-4 w-4" />
+                Pyth Price
+              </div>
+            </SelectItem>
             <SelectItem value="Manual">
               <div className="flex items-center gap-2">
                 <Play className="h-4 w-4" />
@@ -123,6 +131,9 @@ export function TriggerConfig({
         </Select>
       </div>
 
+      {config?.triggerType === "Pyth Price" && (
+        <PythTriggerConfig config={config} disabled={disabled} onUpdateConfig={onUpdateConfig} />
+      )}
       {/* Webhook fields */}
       {config?.triggerType === "Webhook" && (
         <>

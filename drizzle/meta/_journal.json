@@ -1065,6 +1065,13 @@
       "when": 1788839868869,
       "tag": "0151_keep_1328_org_circuit_breaker",
       "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1788887093139,
+      "tag": "0152_pyth_trigger_checkpoints",
+      "breakpoints": true
     }
   ]
 }

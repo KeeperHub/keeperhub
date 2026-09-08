@@ -18,6 +18,7 @@ export enum WorkflowTriggerEnum {
   EVENT = "Event", // keeperhub custom field //
   BLOCK = "Block", // keeperhub custom field //
   TEMPO_PAYMENT = "Transfer", // keeperhub custom field //
+  PYTH_PRICE = "Pyth Price",
 }
 
 export type WorkflowTriggerType = `${WorkflowTriggerEnum}`;
@@ -30,6 +31,7 @@ export function shouldShowEnableSwitch(
   triggerType: WorkflowTriggerType | undefined
 ): boolean {
   return (
+    triggerType === WorkflowTriggerEnum.PYTH_PRICE ||
     triggerType === WorkflowTriggerEnum.EVENT ||
     triggerType === WorkflowTriggerEnum.SCHEDULE ||
     triggerType === WorkflowTriggerEnum.BLOCK ||

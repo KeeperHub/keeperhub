@@ -546,6 +546,7 @@ services:
     restart: unless-stopped
     environment:
       WATCH_MODE: "true"
+      PYTH_API_KEY: ${PYTH_API_KEY:-}
       KEEPERHUB_API_URL: http://keeperhub:3000
       INTERNAL_SERVICE_HMAC_SECRET: ${INTERNAL_SERVICE_HMAC_SECRET:-bG9jYWwtZGV2LWludGVybmFsLXNlcnZpY2UtaG1hYzA=}
       REDIS_HOST: redis

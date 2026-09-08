@@ -167,6 +167,38 @@ export const SYSTEM_ACTIONS = {
 // To add a new trigger: add entry here and implement in trigger-config.tsx
 // =============================================================================
 export const TRIGGERS = {
+  "Pyth Price": {
+    triggerType: "Pyth Price",
+    label: "Pyth Price",
+    description:
+      "Native Pyth Hermes price threshold crossing. Upstream signals are speculative, consume the normal execution allowance, and do not guarantee transaction ordering. Startup and reconnect establish a fresh baseline; missed crossings are not replayed. Requires the operator to configure a Pyth API key on the event worker.",
+    requiredFields: {
+      feedId:
+        "string - Pyth feed ID, 64 hexadecimal characters, optional 0x prefix",
+      direction: 'string - "above" (at or above) or "below" (at or below)',
+      threshold:
+        "string - Decimal quote-currency price, up to 18 decimal places",
+      rearmThreshold:
+        "string - Price must return here before firing again; below the threshold for above, above for below",
+    },
+    optionalFields: {
+      maxAgeSeconds:
+        "number or integer string - Signal lifetime, 5 to 300 seconds; default 30. Expired updates and queued signals are discarded.",
+    },
+    outputFields: {
+      feedId: "string - Pyth feed ID",
+      price: "string - Integer price; multiply by 10^exponent",
+      confidence: "string - Integer confidence interval with the same exponent",
+      exponent: "number - Base-ten price exponent",
+      publishTime: "number - Source publication time in Unix seconds",
+      sourceUpdateId: "string - Stable feed/publication identity",
+      expiresAt: "number - Signal expiration in Unix milliseconds",
+      speculative: "boolean - Always true",
+      direction: 'string - "above" or "below"',
+      threshold: "string - Configured decimal price",
+      triggeredAt: "string - ISO execution trigger timestamp",
+    },
+  },
   Manual: {
     triggerType: "Manual",
     label: "Manual",

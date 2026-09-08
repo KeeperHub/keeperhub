@@ -6,6 +6,7 @@ import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { authFailureResponse, getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { db } from "@/lib/db";
+import { findPythConfig } from "@/lib/pyth/trigger-config";
 import { validateWorkflowIntegrations } from "@/lib/db/integrations";
 import { extractActionTypeNodes } from "@/lib/features";
 import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
@@ -399,6 +400,14 @@ export async function PATCH(
     }
 
     const updateData = buildUpdateData(body);
+
+    if (body.enabled === true || (existingWorkflow.enabled && body.enabled !== false && Array.isArray(body.nodes))) {
+      try {
+        findPythConfig(updateData.nodes ?? existingWorkflow.nodes);
+      } catch (error) {
+        return NextResponse.json({ error: "INVALID_PYTH_TRIGGER", message: error instanceof Error ? error.message : "Invalid Pyth trigger" }, { status: 400 });
+      }
+    }
 
     if (Array.isArray(body.nodes)) {
       // KEEP-468: parse every `{{...}}` token at save time so grammar typos

@@ -5,11 +5,37 @@ import { chainProviderManager } from "./chains/provider-manager";
 import { createRegistry } from "./listener/factory";
 import type { ListenerRegistry } from "./listener/registry";
 import { buildRegistration } from "./listener/workflow-mapper";
+import { fetchPythRegistrations } from "./pyth/client";
+import { PythRegistry } from "./pyth/registry";
 
 // Lazy: creating the registry opens a Redis connection for dedup. Defer
 // construction until the first reconcile so unit tests that import this
 // module without env wiring do not connect on import.
 let registry: ListenerRegistry | null = null;
+let pythRegistry: PythRegistry | null = null;
+let pythSyncing = false;
+let shuttingDown = false;
+
+async function synchronizePyth(): Promise<void> {
+  if (shuttingDown || !process.env.PYTH_API_KEY || pythSyncing) {
+    return;
+  }
+  pythSyncing = true;
+  try {
+    const registrations = await fetchPythRegistrations();
+    if (shuttingDown) {
+      return;
+    }
+    pythRegistry ??= new PythRegistry(process.env.PYTH_API_KEY);
+    await pythRegistry.reconcile(registrations);
+  } catch {
+    logger.warn(
+      "[Pyth] workflow synchronization failed; retaining existing subscriptions",
+    );
+  } finally {
+    pythSyncing = false;
+  }
+}
 
 function getRegistry(): ListenerRegistry {
   if (!registry) {
@@ -30,9 +56,8 @@ function getRegistry(): ListenerRegistry {
  * ever invoked it, so those outlived the listeners they existed for.
  */
 async function shutdownRegistry(): Promise<void> {
-  if (registry) {
-    await registry.stopAll();
-  }
+  shuttingDown = true;
+  await Promise.all([pythRegistry?.stopAll(), registry?.stopAll()]);
   await chainProviderManager.destroy();
 }
 
@@ -112,9 +137,16 @@ async function reconcile(
 }
 
 async function synchronizeData(): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
   logger.log("Synchronizing data");
+  const pythSync = synchronizePyth();
   try {
     const result = await fetchActiveWorkflows();
+    if (shuttingDown) {
+      return;
+    }
     if (!result) {
       logger.warn("No data received from worker, skipping sync cycle");
       return;
@@ -133,6 +165,8 @@ async function synchronizeData(): Promise<void> {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error(`Error during synchronization: ${message}`);
+  } finally {
+    await pythSync;
   }
 }
 
