@@ -143,7 +143,9 @@ async function synchronizeData(): Promise<void> {
   logger.log("Synchronizing data");
   const pythSync = synchronizePyth();
   try {
-    const result = await fetchActiveWorkflows();
+    // A stalled legacy events endpoint must not block startup and prevent
+    // subsequent Pyth discovery retries.
+    const result = await fetchActiveWorkflows(AbortSignal.timeout(8000));
     if (shuttingDown) {
       return;
     }
