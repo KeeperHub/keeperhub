@@ -120,9 +120,14 @@ vi.mock("@/lib/workflow/executor/step-handler", () => ({
 }));
 
 // Mock utils
-vi.mock("@/lib/utils", () => ({
-  getErrorMessage: vi.fn((error) => error?.message || String(error)),
-}));
+vi.mock("@/lib/utils", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/utils")>("@/lib/utils");
+  return {
+    ...actual,
+    getErrorMessage: vi.fn((error) => error?.message || String(error)),
+  };
+});
 
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";

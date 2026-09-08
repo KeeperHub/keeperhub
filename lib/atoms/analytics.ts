@@ -7,7 +7,7 @@ import type {
   NormalizedStatus,
   RunSource,
   RunsResponse,
-  StatusFacets,
+  RunFacets,
   TimeRange,
   TimeSeriesBucket,
 } from "@/lib/analytics/types";
@@ -37,7 +37,11 @@ export const analyticsGasFiltersAtom = atom<GasSpend[]>([]);
 export const analyticsDurationFilterAtom = atom<DurationPresetId | null>(null);
 
 // Run counts per status, for the counts beside each status option.
-export const analyticsStatusFacetsAtom = atom<StatusFacets>({});
+export const analyticsFacetsAtom = atom<RunFacets>({
+  statusCounts: {},
+  networkCounts: {},
+  gasCounts: {},
+});
 
 export const analyticsSearchAtom = atom("");
 

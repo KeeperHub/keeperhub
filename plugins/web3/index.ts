@@ -10,8 +10,7 @@ import {
   executedCallContractAddressOutput,
   executedCallRevertedOutput,
   executedCallSponsoredOutput,
-  queryErrorOutput,
-  querySuccessOutput,
+  readFailOnErrorField,
   receiptChainIdOutput,
   solanaNetworkField,
   tokenConfigField,
@@ -90,6 +89,7 @@ const web3Plugin: IntegrationPlugin = {
           example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
           required: true,
         },
+        readFailOnErrorField(),
       ],
     },
     {
@@ -150,6 +150,7 @@ const web3Plugin: IntegrationPlugin = {
           required: true,
         },
         tokenConfigField(),
+        readFailOnErrorField(),
       ],
     },
     {
@@ -218,6 +219,7 @@ const web3Plugin: IntegrationPlugin = {
             '{"mode":"custom","customToken":{"address":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","symbol":"USDC"}}',
           required: true,
         },
+        readFailOnErrorField(),
       ],
     },
     {
@@ -582,11 +584,13 @@ const web3Plugin: IntegrationPlugin = {
       outputFields: [
         {
           field: "success",
-          description: "Whether the read succeeded",
+          description:
+            "Whether the read succeeded. Also true when failOnError is off and a failed read was softened; `exists` is null and `error` is set.",
         },
         {
           field: "exists",
-          description: "Whether the account exists on-chain",
+          description:
+            "Whether the account exists on-chain. Null on a soft-failed (failOnError=false) read, where the answer is unknown -- test for null before treating it as absent.",
         },
         {
           field: "owner",
@@ -618,7 +622,8 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           field: "error",
-          description: "Error message if the read failed",
+          description:
+            "Error message if the read failed. Also set when failOnError is off and a failed read was softened into success=true.",
         },
       ],
       configFields: [
@@ -631,6 +636,7 @@ const web3Plugin: IntegrationPlugin = {
           example: "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
           required: true,
         },
+        readFailOnErrorField(),
       ],
     },
     {
@@ -644,7 +650,8 @@ const web3Plugin: IntegrationPlugin = {
       outputFields: [
         {
           field: "success",
-          description: "Whether the read succeeded",
+          description:
+            "Whether the read succeeded. Also true when failOnError is off and a failed read was softened; `result` is null and `error` is set.",
         },
         {
           field: "result",
@@ -664,7 +671,8 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           field: "error",
-          description: "Error message if the read or decode failed",
+          description:
+            "Error message if the read or decode failed. Also set when failOnError is off and a failed read was softened into success=true.",
         },
       ],
       configFields: [
@@ -707,6 +715,7 @@ const web3Plugin: IntegrationPlugin = {
             "The name of the account type to decode as, exactly as it appears in the IDL's accounts array.",
           required: true,
         },
+        readFailOnErrorField(),
       ],
     },
     {
@@ -718,7 +727,11 @@ const web3Plugin: IntegrationPlugin = {
       stepFunction: "querySolanaProgramEventsStep",
       stepImportPath: "query-solana-program-events",
       outputFields: [
-        querySuccessOutput(),
+        {
+          field: "success",
+          description:
+            "Whether the query succeeded. Also true when failOnError is off and a failed query was softened; the data fields are null and `error` is set.",
+        },
         {
           field: "events",
           description:
@@ -760,7 +773,11 @@ const web3Plugin: IntegrationPlugin = {
           description:
             "When eventName is set, the distinct names of other decoded events that were filtered out - empty if nothing else was seen, useful for catching an eventName typo",
         },
-        queryErrorOutput(),
+        {
+          field: "error",
+          description:
+            "Error message if the query failed. Also set when failOnError is off and a failed query was softened into success=true.",
+        },
       ],
       configFields: [
         solanaNetworkField(),
@@ -820,6 +837,7 @@ const web3Plugin: IntegrationPlugin = {
             },
           ],
         },
+        readFailOnErrorField(),
       ],
     },
     {
@@ -832,16 +850,18 @@ const web3Plugin: IntegrationPlugin = {
       outputFields: [
         {
           field: "success",
-          description: "Whether the contract call succeeded",
+          description:
+            "Whether the contract call succeeded. Also true when failOnError is off and a failed read (RPC error or revert) was softened; check `error` to tell them apart.",
         },
         {
           field: "result",
           description:
-            "The contract function return value (structured based on ABI outputs)",
+            "The contract function return value (structured based on ABI outputs). Null on a soft-failed (failOnError=false) read.",
         },
         {
           field: "error",
-          description: "Error message if the call failed",
+          description:
+            "Error message if the call failed. Also set when failOnError is off and a failed read was softened into success=true. Match this string in a downstream Condition node (contains/matchesRegex) to filter known errors from ones that should alert.",
         },
       ],
       configFields: [
@@ -872,6 +892,7 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           abiFunctionField: "abiFunction",
         },
+        readFailOnErrorField(),
       ],
     },
     {
@@ -885,7 +906,8 @@ const web3Plugin: IntegrationPlugin = {
       outputFields: [
         {
           field: "success",
-          description: "Whether the transaction was found",
+          description:
+            "Whether the transaction was found. Also true when failOnError is off and a failed lookup (RPC error, or no such transaction) was softened; every detail field is null and `error` is set.",
         },
         {
           field: "hash",
@@ -939,7 +961,8 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           field: "error",
-          description: "Error message if the lookup failed",
+          description:
+            "Error message if the lookup failed. Also set when failOnError is off and a failed lookup was softened into success=true.",
         },
       ],
       configFields: [
@@ -960,6 +983,7 @@ const web3Plugin: IntegrationPlugin = {
             "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060",
           required: true,
         },
+        readFailOnErrorField(),
       ],
     },
     {
@@ -1131,7 +1155,11 @@ const web3Plugin: IntegrationPlugin = {
       stepFunction: "queryEventsStep",
       stepImportPath: "query-events",
       outputFields: [
-        querySuccessOutput(),
+        {
+          field: "success",
+          description:
+            "Whether the query succeeded. Also true when failOnError is off and a failed query was softened; the data fields are null and `error` is set.",
+        },
         {
           field: "events",
           description:
@@ -1149,7 +1177,11 @@ const web3Plugin: IntegrationPlugin = {
           field: "eventCount",
           description: "Number of events returned",
         },
-        queryErrorOutput(),
+        {
+          field: "error",
+          description:
+            "Error message if the query failed. Also set when failOnError is off and a failed query was softened into success=true.",
+        },
       ],
       configFields: [
         evmNetworkField(),
@@ -1203,6 +1235,7 @@ const web3Plugin: IntegrationPlugin = {
             },
           ],
         },
+        readFailOnErrorField(),
       ],
     },
     {
@@ -1214,7 +1247,11 @@ const web3Plugin: IntegrationPlugin = {
       stepFunction: "queryTransactionsStep",
       stepImportPath: "query-transactions",
       outputFields: [
-        querySuccessOutput(),
+        {
+          field: "success",
+          description:
+            "Whether the query succeeded. Also true when failOnError is off and a failed query was softened; the data fields are null and `error` is set.",
+        },
         {
           field: "transactions",
           description:
@@ -1242,7 +1279,11 @@ const web3Plugin: IntegrationPlugin = {
           field: "contractAddressLink",
           description: "Block explorer link for the contract",
         },
-        queryErrorOutput(),
+        {
+          field: "error",
+          description:
+            "Error message if the query failed. Also set when failOnError is off and a failed query was softened into success=true.",
+        },
       ],
       configFields: [
         evmNetworkField(),
@@ -1305,6 +1346,7 @@ const web3Plugin: IntegrationPlugin = {
             },
           ],
         },
+        readFailOnErrorField(),
       ],
     },
     {
@@ -1318,12 +1360,13 @@ const web3Plugin: IntegrationPlugin = {
       outputFields: [
         {
           field: "success",
-          description: "Whether the batch call succeeded",
+          description:
+            "Whether the batch call succeeded. Also true when failOnError is off and a failed batch was softened; `results` is null and `error` is set. A single call reverting is reported in its own `results` entry and is unaffected by that setting.",
         },
         {
           field: "results",
           description:
-            "Array of results in call order, each with { success, result, error? }",
+            "Array of results in call order, each with { success, result, error? }. Null on a soft-failed (failOnError=false) batch.",
         },
         {
           field: "totalCalls",
@@ -1331,7 +1374,8 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           field: "error",
-          description: "Error message if the entire batch failed",
+          description:
+            "Error message if the entire batch failed. Also set when failOnError is off and a failed batch was softened into success=true.",
         },
       ],
       configFields: [
@@ -1431,6 +1475,7 @@ const web3Plugin: IntegrationPlugin = {
             },
           ],
         },
+        readFailOnErrorField(),
       ],
     },
     {
@@ -1640,7 +1685,8 @@ const web3Plugin: IntegrationPlugin = {
       outputFields: [
         {
           field: "success",
-          description: "Whether the allowance check succeeded",
+          description:
+            "Whether the allowance check succeeded. Also true when failOnError is off and a failed read was softened; the allowance fields are null and `error` is set.",
         },
         {
           field: "allowance",
@@ -1672,6 +1718,7 @@ const web3Plugin: IntegrationPlugin = {
           example: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
           required: true,
         },
+        readFailOnErrorField(),
       ],
     },
     {

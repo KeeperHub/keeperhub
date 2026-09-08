@@ -21,6 +21,10 @@ import { getAbiFunctionKey } from "@/lib/abi/function-key";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import { formatContractError } from "@/lib/web3/decode-revert-error";
 import {
+  applyReadFailOnError,
+  type ReadDestinationFailure,
+} from "@/plugins/web3/steps/read-fail-on-error-core";
+import {
   type AbiOutputParam,
   structureAbiOutputs,
 } from "@/plugins/web3/steps/structure-abi-result";
@@ -31,20 +35,47 @@ export type ReadContractCoreInput = {
   abi: string;
   abiFunction: string;
   functionArgs?: string;
+  // See applyReadFailOnError in read-fail-on-error-core.ts. When false, no
+  // failure of this step fails the run.
+  failOnError?: boolean;
   _context?: { executionId?: string; organizationId?: string };
 };
 
 export type ReadContractResult =
-  | { success: true; result: unknown; addressLink: string }
-  | { success: false; error: string; errorClass?: ExecutionErrorType };
+  | {
+      success: true;
+      result: unknown;
+      addressLink: string;
+      // Present only when failOnError=false softened a failed read into a
+      // success value so the workflow continues. Absent on a genuine read;
+      // `result` is null when it is set.
+      error?: string;
+    }
+  | (ReadDestinationFailure & {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+    });
 
 /**
  * Core read contract logic
  *
  * Shared between the web3 read-contract step and the future protocol-read step.
+ * Every failure exit runs through applyReadFailOnError, so the toggle covers
+ * the validation exits above the chain call as well as the call itself.
  */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Contract interaction requires extensive validation
 export async function readContractCore(
+  input: ReadContractCoreInput
+): Promise<ReadContractResult> {
+  return applyReadFailOnError(
+    await readContractInner(input),
+    input.failOnError,
+    { result: null, addressLink: "" }
+  );
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Contract interaction requires extensive validation
+async function readContractInner(
   input: ReadContractCoreInput
 ): Promise<ReadContractResult> {
   const { contractAddress, network, abi, abiFunction, functionArgs, _context } =
@@ -78,6 +109,7 @@ export async function readContractCore(
     );
     return {
       success: false,
+      destinationError: true,
       error: `Invalid contract address: ${contractAddress}`,
       errorClass: ExecutionErrorType.USER,
     };
@@ -189,7 +221,12 @@ export async function readContractCore(
       error,
       { plugin_name: "web3", action_name: "read-contract" }
     );
-    return { success: false, error: getErrorMessage(error), errorClass: ExecutionErrorType.USER };
+    return {
+      success: false,
+      destinationError: true,
+      error: getErrorMessage(error),
+      errorClass: ExecutionErrorType.USER,
+    };
   }
 
   // Resolve RPC provider
@@ -207,7 +244,12 @@ export async function readContractCore(
         chain_id: String(chainId),
       }
     );
-    return { success: false, error: getErrorMessage(error), errorClass: ExecutionErrorType.SYSTEM };
+    return {
+      success: false,
+      destinationError: true,
+      error: getErrorMessage(error),
+      errorClass: ExecutionErrorType.SYSTEM,
+    };
   }
 
   const contractInterface = new ethers.Interface(
@@ -276,9 +318,10 @@ export async function readContractCore(
         chain_id: String(chainId),
       }
     );
+    const message = formatContractError(error, contractInterface);
     return {
       success: false,
-      error: formatContractError(error, contractInterface),
+      error: message,
       errorClass: ExecutionErrorType.USER,
     };
   }

@@ -55,9 +55,6 @@ jobs:
     # (anvil/redis/localstack stuck, or vitest deadlock) worth surfacing
     # as failure rather than burning the default 6h GHA budget.
     timeout-minutes: 15
-    # staging env carries LOCALSTACK_AUTH_TOKEN (the localstack image now
-    # requires it even for community SQS use). Mirrors e2e-tests-ephemeral.
-    environment: staging
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-events-deps
@@ -71,10 +68,9 @@ jobs:
         # Bring up only the services events tests need (anvil, localstack,
         # redis). --wait blocks until healthchecks pass. Excludes test-app /
         # test-dispatcher / test-executor — heavy main-app stack the events
-        # tests don't touch. LOCALSTACK_AUTH_TOKEN is required by the
-        # current localstack/localstack:latest image even for SQS-only use.
-        env:
-          LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+        # tests don't touch. No secrets: test-localstack is pinned to a
+        # LocalStack release that serves community SQS without a licence, so
+        # this job runs identically on a fork, where GitHub passes none.
         run: docker compose --profile test up -d --wait test-anvil test-localstack test-redis
       - name: Run integration tests
         working-directory: keeperhub-events

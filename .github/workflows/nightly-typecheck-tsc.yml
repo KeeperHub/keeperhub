@@ -1,0 +1,111 @@
+name: Nightly Type Check Cross-Check
+
+# KEEP-1210 compile surface phase 3. The pull request gate runs tsgo, the
+# native TypeScript port, because it checks this program in a fraction of
+# tsc's time. tsgo is a preview compiler, so the gate rests on observed
+# agreement with tsc rather than on a guarantee.
+#
+# This is the safety net for that. It runs both compilers over the same
+# staging commit and fails on disagreement, so a tsgo checking gap surfaces
+# within a day instead of silently letting broken types onto staging.
+#
+# Disagreement is compared on pass/fail, never on diagnostic text. The two
+# compilers are known to word some diagnostics differently and to pick a
+# different error code for the same fault: on commit 9f010b285 tsc reported
+# TS2345 where tsgo reported TS2740, at the same file, line and column, and
+# both failed. That difference is expected and is not a gate failure.
+#
+# A red run here means one of:
+#   - tsc fails, tsgo passes: a tsgo gap. Broken types reached staging.
+#     Point the `typecheck` job in pr-checks.yml back at `type-check:tsc`
+#     while the gap is reported upstream.
+#   - tsgo fails, tsc passes: a tsgo false positive that would have blocked
+#     pull requests. Same revert, opposite reason.
+#   - both fail: staging is genuinely broken and the gate was bypassed.
+
+on:
+  schedule:
+    # 03:17 UTC. An off-round minute because scheduled workflows queue behind
+    # the crowd that picks the top of the hour.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cross-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staging
+        uses: actions/checkout@v7
+        with:
+          ref: staging
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          # The generated plugin registry is a real input to the program.
+          # Without it both compilers report phantom missing-module errors,
+          # which would agree with each other and tell us nothing.
+          discover-plugins: "true"
+
+      - name: Run tsgo
+        id: tsgo
+        run: |
+          set +e
+          pnpm type-check
+          root=$?
+          pnpm type-check:executor
+          executor=$?
+          if [ "$root" -eq 0 ] && [ "$executor" -eq 0 ]; then
+            echo "result=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=failure" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Run tsc
+        id: tsc
+        run: |
+          set +e
+          pnpm type-check:tsc
+          root=$?
+          pnpm type-check:tsc:executor
+          executor=$?
+          if [ "$root" -eq 0 ] && [ "$executor" -eq 0 ]; then
+            echo "result=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=failure" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Compare
+        env:
+          TSGO_RESULT: ${{ steps.tsgo.outputs.result }}
+          TSC_RESULT: ${{ steps.tsc.outputs.result }}
+        run: |
+          {
+            echo "### tsgo / tsc cross-check on staging"
+            echo ""
+            echo "| Compiler | Result |"
+            echo "| --- | --- |"
+            echo "| tsgo (gates pull requests) | \`$TSGO_RESULT\` |"
+            echo "| tsc (reference) | \`$TSC_RESULT\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$TSGO_RESULT" = "$TSC_RESULT" ]; then
+            echo "Compilers agree (\`$TSGO_RESULT\`)." >> "$GITHUB_STEP_SUMMARY"
+            # Both failing is agreement about the code, not about the compilers,
+            # and still means staging does not type check.
+            if [ "$TSGO_RESULT" = "failure" ]; then
+              echo "Both failed: staging does not type check." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            exit 0
+          fi
+
+          echo "MISMATCH: tsgo=\`$TSGO_RESULT\` tsc=\`$TSC_RESULT\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Point the typecheck job at type-check:tsc until this is understood." >> "$GITHUB_STEP_SUMMARY"
+          exit 1

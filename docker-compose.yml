@@ -718,18 +718,22 @@ services:
       - test
 
   test-localstack:
-    image: localstack/localstack:latest
+    # Pinned, and deliberately not `latest`. LocalStack's CalVer line (the
+    # 2026.* tags `latest` now points at) refuses to start without a valid
+    # LOCALSTACK_AUTH_TOKEN even for community SQS - it exits 55 on "License
+    # activation failed". That made this service unusable on pull requests
+    # from forks, which GitHub does not pass secrets to, so the events
+    # integration job could never pass for an outside contributor. 4.14.0 is
+    # the last release that serves SQS with no credentials at all. These
+    # tests only need community SQS, so the token is not passed here in any
+    # environment: fork runs, team branches and local dev all behave alike.
+    image: localstack/localstack:4.14.0
     container_name: keeperhub-test-localstack
     ports:
       - "4567:4566"
     environment:
       - SERVICES=sqs
       - DEBUG=0
-      # Recent localstack/localstack:latest builds require an auth token
-      # even for community-edition use; without it the container exits 55.
-      # CI passes the team token from GH secrets; local dev needs the var
-      # set in the host shell or .env to use the test profile.
-      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 10s

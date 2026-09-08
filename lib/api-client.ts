@@ -293,18 +293,24 @@ function processStreamLine(
     return;
   }
 
+  let message: StreamMessage;
   try {
-    const message = JSON.parse(line) as StreamMessage;
-
-    if (message.type === "operation" && message.operation) {
-      applyOperation(message.operation, state);
-      onUpdate({ ...state.currentData });
-    } else if (message.type === "error") {
-      console.error("[API Client] Error:", message.error);
-      throw new Error(message.error);
-    }
+    message = JSON.parse(line) as StreamMessage;
   } catch (error) {
     console.error("[API Client] Failed to parse JSONL line:", error);
+    return;
+  }
+
+  if (!message || typeof message !== "object") {
+    return;
+  }
+
+  if (message.type === "operation" && message.operation) {
+    applyOperation(message.operation, state);
+    onUpdate({ ...state.currentData });
+  } else if (message.type === "error") {
+    console.error("[API Client] Error:", message.error);
+    throw new Error(message.error || "Failed to generate workflow");
   }
 }
 
@@ -388,6 +394,13 @@ export const aiApi = {
       }
 
       return state.currentData;
+    } catch (error) {
+      try {
+        await reader.cancel(error);
+      } catch {
+        // Preserve the original stream or callback error if cleanup fails.
+      }
+      throw error;
     } finally {
       reader.releaseLock();
     }

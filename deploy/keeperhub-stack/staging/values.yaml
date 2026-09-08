@@ -25,6 +25,14 @@ app:
       type: parameterStore
       name: workflow-postgres-url
       parameter_name: /eks/techops-staging/keeperhub/db-url
+    # KEEP-1305: the request-path statement_timeout for the lib/db pool. The
+    # code defaults to the same 30000, so this entry exists to make the value
+    # visible in the deploy config and to let an operator raise it without a
+    # rebuild. The CronJobs run as HTTP calls into these pods, so it bounds
+    # their statements too. The RDS parameter group holds the 120s backstop.
+    APP_STATEMENT_TIMEOUT_MS:
+      type: kv
+      value: "30000"
     CHAIN_RPC_CONFIG:
       type: parameterStore
       name: chain-rpc-config
@@ -119,6 +127,33 @@ app:
         args:
           - |
             set -e
+            # KEEP-1305: this container opts out of the request-path
+            # statement_timeout. A migration file runs as one transaction and its
+            # DDL can wait far longer than 30s for a lock, so the 30s app-pool cap
+            # and the 120s RDS parameter-group cap would abort it mid-deploy.
+            # lock_timeout replaces the cap that statement_timeout=0 removes: a
+            # migration that cannot take its lock fails the deploy instead of
+            # wedging every reader on the table behind a pending
+            # AccessExclusiveLock. 60s outlasts a normal app statement (capped at
+            # 30s) and still gives up well before an operator psql session does.
+            #
+            # Both settings go on the URL as bare parameters. Verified 2026-09-03
+            # against Postgres 17 that this is the only form that both reaches the
+            # server through BOTH drivers - drizzle-kit and world-postgres use
+            # `pg`, the tsx seed and backfill use `postgres.js` - and overrides the
+            # pool-level connection option lib/db sets. The `options=-c ...` form
+            # loses to that pool option and silently leaves the 30s cap in place,
+            # and PGOPTIONS reaches `pg` only.
+            if [ -z "${DATABASE_URL:-}" ]; then
+              echo "[deploy] DATABASE_URL is empty, refusing to migrate" >&2
+              exit 1
+            fi
+            case "$DATABASE_URL" in
+              *\?*) MIGRATOR_URL="${DATABASE_URL}&statement_timeout=0&lock_timeout=60000" ;;
+              *)    MIGRATOR_URL="${DATABASE_URL}?statement_timeout=0&lock_timeout=60000" ;;
+            esac
+            export DATABASE_URL="$MIGRATOR_URL"
+            export WORKFLOW_POSTGRES_URL="$MIGRATOR_URL"
             echo "Setting up workflow postgres tables..."
             export WORKFLOW_POSTGRES_URL=$(tsx scripts/encode-pg-url.ts)
             # Called by path, not through the `bootstrap` bin: .npmrc public-hoists

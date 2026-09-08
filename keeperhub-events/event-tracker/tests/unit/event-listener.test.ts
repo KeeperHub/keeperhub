@@ -16,6 +16,7 @@ import {
   EventListener,
   type EventListenerOptions,
 } from "../../src/listener/event-listener";
+import { TokenBucketPacer } from "../../src/listener/pacer";
 
 // KEEP-693: stub the phantom helpers so the listener does not call the internal
 // API. Default (no id) keeps existing SQS-path tests on the id-less path.
@@ -436,11 +437,121 @@ describe("EventListener", () => {
       expect(sqs.send).toHaveBeenCalledTimes(1);
     });
 
+    it("uses the shared pacer (lone event forwards immediately) instead of jitter", async () => {
+      const providerMock = makeProviderManagerMock();
+      const sqs = makeSqsMock();
+      // A fresh bucket is full, so the first take() does not wait: a lone
+      // matched event on an idle chain must not pay the old fixed delay.
+      const pacer = new TokenBucketPacer(1000);
+      const listener = new EventListener(
+        buildOptions({
+          providerManager: providerMock.manager,
+          sqs,
+          pacer,
+        }),
+      );
+      await listener.start();
+
+      const started = Date.now();
+      await providerMock.capturedHandler!(
+        makeLog({
+          txHash:
+            "0x9999000000000000000000000000000000000000000000000000000000000000",
+          sender: SENDER,
+          value: 1n,
+        }),
+      );
+      expect(sqs.send).toHaveBeenCalledTimes(1);
+      // A full token bucket returns immediately (well under the old 0-10s
+      // jitter cap).
+      expect(Date.now() - started).toBeLessThan(200);
+    });
+
+    it("paces a burst through the shared pacer rather than a per-event sleep", async () => {
+      const providerMock = makeProviderManagerMock();
+      const sqs = makeSqsMock();
+      // Slow drain rate so the pacing effect is measurable with real timers.
+      const pacer = new TokenBucketPacer(10); // 1 token per 100ms
+      const listener = new EventListener(
+        buildOptions({
+          providerManager: providerMock.manager,
+          sqs,
+          pacer,
+        }),
+      );
+      await listener.start();
+
+      // Drain the initial burst (capacity == drain rate == 10).
+      const drain = async () => {
+        for (let i = 0; i < 10; i++) {
+          await providerMock.capturedHandler!(
+            makeLog({
+              txHash: `0x${"a".repeat(60)}${i.toString(16).padStart(4, "0")}`,
+              sender: SENDER,
+              value: 1n,
+            }),
+          );
+        }
+      };
+      const started = Date.now();
+      await drain();
+      const burstElapsed = Date.now() - started;
+      // First 10 = bucket capacity, no waiting expected.
+      expect(burstElapsed).toBeLessThan(500);
+
+      // Next event must wait for the drain rate (100ms per token).
+      const pacedStart = Date.now();
+      await providerMock.capturedHandler!(
+        makeLog({
+          txHash: `0x${"b".repeat(64)}`,
+          sender: SENDER,
+          value: 1n,
+        }),
+      );
+      const pacedElapsed = Date.now() - pacedStart;
+      // The bucket is empty after the 10-token burst, so the 11th event must
+      // wait ~1 drain interval (100ms at 10/s). Allow generous slack for timer
+      // granularity — the point is it waited (vs the burst's ~0ms), not the
+      // exact millisecond.
+      expect(pacedElapsed).toBeGreaterThanOrEqual(50);
+      expect(pacedElapsed).toBeLessThan(500);
+      expect(sqs.send.mock.calls.length).toBe(11);
+    });
+
+    it("releases a jittered dispatch immediately when shutdown aborts", async () => {
+      const providerMock = makeProviderManagerMock();
+      const sqs = makeSqsMock();
+      const controller = new AbortController();
+      const listener = new EventListener(
+        buildOptions({
+          providerManager: providerMock.manager,
+          sqs,
+          // No pacer: this is the legacy jitter branch, which is what the
+          // deployed tracker runs until this PR's pacer reaches it.
+          jitterMs: 10_000,
+          shutdownSignal: controller.signal,
+        }),
+      );
+      await listener.start();
+
+      const started = Date.now();
+      const dispatch = providerMock.capturedHandler!(
+        makeLog({
+          txHash: `0x${"c".repeat(64)}`,
+          sender: SENDER,
+          value: 1n,
+        }),
+      );
+      controller.abort();
+      await dispatch;
+
+      // Abort forwards the event now rather than cancelling it: the send
+      // still happens, it just does not wait out the remaining jitter.
+      expect(sqs.send).toHaveBeenCalledTimes(1);
+      expect(Date.now() - started).toBeLessThan(500);
+    });
+
     it("applies jitter up to the configured cap before forwarding", async () => {
-      // Pin Math.random() to 1 so the jitter is exactly the cap, and use
-      // fake timers so the test does not actually wait. The goal is to
-      // verify the jitter branch executes and respects the cap; precise
-      // timing is out of scope.
       const randomSpy = vi.spyOn(Math, "random").mockReturnValue(1);
       vi.useFakeTimers();
       try {

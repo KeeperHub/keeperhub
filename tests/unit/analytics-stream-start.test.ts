@@ -121,4 +121,120 @@ describe("createAnalyticsStreamStart", () => {
 
     expect(controller.close).toHaveBeenCalledTimes(1);
   });
+
+  // The client already has the summary from its own HTTP fetch on mount, and
+  // maxLifetimeMs forces a reconnect every few minutes. Pushing on the first
+  // checksum therefore made every viewer recompute the summary on a fixed
+  // interval regardless of activity.
+  it("primes on the first poll without computing a summary", async () => {
+    const { opts } = makeOpts();
+    const controller = makeController();
+
+    const start = createAnalyticsStreamStart(opts);
+    start(controller);
+
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(opts.deps.getChecksum).toHaveBeenCalledTimes(1);
+    expect(opts.deps.getSummary).not.toHaveBeenCalled();
+    expect(controller.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("pushes a summary once the checksum moves off the primed value", async () => {
+    const checksums = ["first", "second"];
+    const { opts } = makeOpts({
+      deps: {
+        getChecksum: vi.fn(async () => checksums.shift() ?? "second"),
+        getSummary: vi.fn(async () => EMPTY_SUMMARY),
+      },
+    });
+    const controller = makeController();
+
+    const start = createAnalyticsStreamStart(opts);
+    start(controller);
+
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(opts.deps.getSummary).toHaveBeenCalledTimes(1);
+    expect(controller.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the stream open when a single poll fails", async () => {
+    const getChecksum = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error("statement timeout"))
+      .mockResolvedValue("recovered");
+    const { opts } = makeOpts({
+      deps: { getChecksum, getSummary: vi.fn(async () => EMPTY_SUMMARY) },
+    });
+    const controller = makeController();
+
+    const start = createAnalyticsStreamStart(opts);
+    start(controller);
+
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(getChecksum).toHaveBeenCalledTimes(2);
+    expect(controller.close).not.toHaveBeenCalled();
+  });
+
+  it("closes once the checksum has failed maxConsecutiveFailures times", async () => {
+    const { opts } = makeOpts({
+      deps: {
+        getChecksum: vi.fn(() =>
+          Promise.reject(new Error("statement timeout"))
+        ),
+        getSummary: vi.fn(async () => EMPTY_SUMMARY),
+      },
+      config: {
+        pollIntervalMs: 100,
+        heartbeatIntervalMs: 10_000,
+        maxLifetimeMs: 5000,
+        minEventIntervalMs: 50,
+        maxConsecutiveFailures: 3,
+      },
+    });
+    const controller = makeController();
+
+    const start = createAnalyticsStreamStart(opts);
+    start(controller);
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(controller.close).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(controller.close).toHaveBeenCalledTimes(1);
+  });
+
+  // A failing summary is the case that caused the outage. Closing on it sent the
+  // browser into a reconnect that recomputes the very query that just failed, so
+  // only the checksum read counts towards giving up.
+  it("does not close when the summary keeps failing but the checksum works", async () => {
+    let n = 0;
+    const { opts } = makeOpts({
+      deps: {
+        getChecksum: vi.fn(async () => {
+          n += 1;
+          return `checksum-${n}`;
+        }),
+        getSummary: vi.fn(() => Promise.reject(new Error("statement timeout"))),
+      },
+      config: {
+        pollIntervalMs: 100,
+        heartbeatIntervalMs: 10_000,
+        maxLifetimeMs: 5000,
+        minEventIntervalMs: 50,
+        maxConsecutiveFailures: 3,
+      },
+    });
+    const controller = makeController();
+
+    const start = createAnalyticsStreamStart(opts);
+    start(controller);
+
+    await vi.advanceTimersByTimeAsync(650);
+
+    expect(opts.deps.getSummary).toHaveBeenCalled();
+    expect(controller.close).not.toHaveBeenCalled();
+  });
 });
