@@ -12,7 +12,7 @@ import {
   buildWithdrawableAssets,
   hasFundedMirrorRow,
   isTempoChain,
-  NATIVE_MIRRORS_TOKEN_CHAIN_IDS,
+  NATIVE_MIRROR_TOKEN_ADDRESS,
   type WithdrawableAsset,
 } from "@/lib/wallet/build-withdrawable-assets";
 import {
@@ -89,7 +89,7 @@ type AccountsPayload = {
   trackedTokens: TokenData[];
 };
 
-type ServerToken = {
+export type ServerToken = {
   address?: string;
   tokenAddress?: string;
   symbol: string;
@@ -99,7 +99,7 @@ type ServerToken = {
   explorerUrl?: string | null;
 };
 
-type ServerChainBalance = {
+export type ServerChainBalance = {
   chainId: number;
   chainName: string;
   symbol: string;
@@ -149,14 +149,20 @@ function fundedAssets(
   const assets: Omit<DigestAsset, "usdValue">[] = [];
   for (const chain of balances) {
     // Tempo hides its native row unconditionally (no native gas token). Arc
-    // only hides its native row once a matching supported-token row has
-    // actually loaded and is funded; a partial token-seed failure must not
-    // make the balance both invisible and unwithdrawable. Shares the same
-    // "funded" predicate as the withdraw path so the two can't drift.
+    // only hides its native row once its specific mirror token's row has
+    // actually loaded and is funded; a partial token-seed failure, or a
+    // different token funded on the same chain, must not make the balance
+    // both invisible and unwithdrawable. Shares the same "funded mirror"
+    // predicate as the withdraw path so the two can't drift. Rows here are
+    // already scoped to this chain, so there is no chainId to filter on --
+    // that is why this reads the mapping directly rather than going through
+    // `hidesNativeRow`/`nativeMirrorsSupportedToken`, which expect
+    // chainId-tagged rows.
+    const mirrorTokenAddress = NATIVE_MIRROR_TOKEN_ADDRESS.get(chain.chainId);
     const hidesNativeRow =
       isTempoChain(chain.chainId) ||
-      (NATIVE_MIRRORS_TOKEN_CHAIN_IDS.has(chain.chainId) &&
-        hasFundedMirrorRow(chain.supportedTokens ?? []));
+      (mirrorTokenAddress !== undefined &&
+        hasFundedMirrorRow(chain.supportedTokens ?? [], mirrorTokenAddress));
     if (!hidesNativeRow && positive(chain.nativeBalance)) {
       assets.push({
         balance: chain.nativeBalance,
@@ -384,3 +390,5 @@ export function useWalletDigest(
     total,
   };
 }
+
+export { fundedAssets as __fundedAssetsForTesting };

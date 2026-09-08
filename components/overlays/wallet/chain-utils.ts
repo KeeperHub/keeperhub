@@ -2,6 +2,7 @@
 // which chains can have their native balance mirrored by a supported-token
 // row -- see lib/wallet/build-withdrawable-assets.ts.
 export {
+  hidesNativeRow,
   isTempoChain,
   nativeMirrorsSupportedToken,
 } from "@/lib/wallet/build-withdrawable-assets";

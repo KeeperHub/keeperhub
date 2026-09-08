@@ -48,6 +48,8 @@ const ARC_TESTNET: ChainData = {
   isTestnet: true,
 };
 
+const ARC_USDC_ADDRESS = "0x3600000000000000000000000000000000000000";
+
 function nativeBalance(overrides: Partial<ChainBalance> = {}): ChainBalance {
   return {
     chainId: 1,
@@ -229,6 +231,7 @@ describe("buildWithdrawableAssets", () => {
         supportedTokenBalances: [
           supportedTokenBalance({
             chainId: ARC_TESTNET.chainId,
+            tokenAddress: ARC_USDC_ADDRESS,
             balance: "0.083134",
           }),
         ],
@@ -237,6 +240,45 @@ describe("buildWithdrawableAssets", () => {
     expect(assets.filter((a) => a.type === "native")).toEqual([]);
     expect(assets).toHaveLength(1);
     expect(assets[0]).toMatchObject({ type: "token", symbol: "USDC" });
+  });
+
+  it("keeps Arc's native USDC visible when a different funded token (EURC) shares the chain but USDC's own row is unfunded", () => {
+    // The mirror check must key on the specific USDC row, not "any funded
+    // row on this chain" -- otherwise a second seeded token (e.g. EURC)
+    // suppresses the native row while leaving a real USDC balance stranded,
+    // reproducing the bug the chainId-keyed version had.
+    const assets = buildWithdrawableAssets(
+      emptyInput({
+        chains: [ARC_TESTNET],
+        balances: [
+          nativeBalance({
+            chainId: ARC_TESTNET.chainId,
+            name: ARC_TESTNET.name,
+            symbol: "USDC",
+            balance: "378.263571",
+          }),
+        ],
+        supportedTokenBalances: [
+          supportedTokenBalance({
+            chainId: ARC_TESTNET.chainId,
+            tokenAddress: ARC_USDC_ADDRESS,
+            balance: "0",
+          }),
+          supportedTokenBalance({
+            chainId: ARC_TESTNET.chainId,
+            tokenAddress: "0x89b50855aa3be2f677cd6303cec089b5f319d72a",
+            symbol: "EURC",
+            name: "EURC",
+            balance: "12.500000",
+          }),
+        ],
+      })
+    );
+    expect(assets.filter((a) => a.type === "native")).toHaveLength(1);
+    expect(assets.find((a) => a.type === "native")).toMatchObject({
+      symbol: "USDC",
+      balance: "378.263571",
+    });
   });
 
   it("keeps a candidate chain's native balance visible when no supported-token row has loaded yet", () => {
@@ -280,6 +322,7 @@ describe("buildWithdrawableAssets", () => {
         supportedTokenBalances: [
           supportedTokenBalance({
             chainId: ARC_TESTNET.chainId,
+            tokenAddress: ARC_USDC_ADDRESS,
             balance: "0",
           }),
         ],

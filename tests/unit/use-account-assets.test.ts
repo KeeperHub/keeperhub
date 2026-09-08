@@ -10,6 +10,7 @@ import type { AccountDetailState } from "@/lib/wallet/use-account-detail";
 
 const ARC_CHAIN_ID = 5_042_002;
 const TEMPO_CHAIN_ID = 4217;
+const ARC_USDC_ADDRESS = "0x3600000000000000000000000000000000000000";
 
 const TURNKEY_ACCOUNT: WalletAccountKind = {
   kind: "turnkey",
@@ -47,7 +48,7 @@ function supportedTokenBalance(
 ): SupportedTokenBalance {
   return {
     chainId: ARC_CHAIN_ID,
-    tokenAddress: "0x2f3363b7ef4a480f78e3fd0c8b3b0e5e2f0f2d1a",
+    tokenAddress: ARC_USDC_ADDRESS,
     symbol: "USDC",
     name: "USD Coin",
     logoUrl: null,
@@ -118,6 +119,31 @@ describe("useAccountAssets / computeAccountAssets", () => {
     );
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0]).toMatchObject({ kind: "native", symbol: "USDC" });
+  });
+
+  it("keeps Arc's native row visible when a different funded token (EURC) shares the chain but USDC's own row is unfunded", () => {
+    const result = computeAccountAssets(
+      TURNKEY_ACCOUNT,
+      detailState({
+        balances: [nativeBalance({ balance: "378.263571" })],
+        supportedTokenBalances: [
+          supportedTokenBalance({ balance: "0" }),
+          supportedTokenBalance({
+            tokenAddress: "0x89b50855aa3be2f677cd6303cec089b5f319d72a",
+            symbol: "EURC",
+            name: "EURC",
+            balance: "12.5",
+          }),
+        ],
+      }),
+      [ARC_CHAIN],
+      false
+    );
+    expect(result.rows.filter((r) => r.kind === "native")).toHaveLength(1);
+    expect(result.rows.find((r) => r.kind === "native")).toMatchObject({
+      symbol: "USDC",
+      balance: "378.263571",
+    });
   });
 
   it("hides Tempo's native row unconditionally, even with no supported-token row", () => {

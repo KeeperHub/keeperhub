@@ -2,10 +2,7 @@
 
 import { useMemo } from "react";
 import type { WalletAccountKind } from "@/components/overlays/wallet/account-row";
-import {
-  isTempoChain,
-  nativeMirrorsSupportedToken,
-} from "@/lib/wallet/build-withdrawable-assets";
+import { hidesNativeRow } from "@/lib/wallet/build-withdrawable-assets";
 import type { ChainData } from "@/lib/wallet/types";
 import type { AccountDetailState } from "@/lib/wallet/use-account-detail";
 
@@ -51,18 +48,9 @@ function computeAccountAssets(
   const rows: AssetRow[] = [];
 
   for (const balance of scoped) {
-    // Tempo hides its native row unconditionally (no native gas token). Arc
-    // hides its native row only once a funded supported-token row already
-    // represents the same balance -- otherwise a partial token-seed
-    // failure would make the balance both invisible and unwithdrawable.
-    // Shares the predicate with the withdraw path and the wallet digest.
-    if (
-      isTempoChain(balance.chainId) ||
-      nativeMirrorsSupportedToken(
-        balance.chainId,
-        detail.supportedTokenBalances
-      )
-    ) {
+    // Shares the single hides-native-row decision with the withdraw path
+    // and the wallet digest so this table can't drift from either.
+    if (hidesNativeRow(balance.chainId, detail.supportedTokenBalances)) {
       continue;
     }
     rows.push({
