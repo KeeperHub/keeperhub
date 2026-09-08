@@ -10,8 +10,7 @@
 -- it anywhere in the codebase - so without this index the query degrades into
 -- a sequential scan that grows with lifetime transaction volume, on a table
 -- that is only ever appended to. That is the failure mode
--- metrics-db-review-gate.yml exists to catch (see
--- docs/incidents/2026-05-29-db-cpu-spike.md).
+-- .github/workflows/metrics-db-review-gate.yml exists to catch.
 --
 -- The index is partial on status = 'pending', so it stays the size of the
 -- in-flight set rather than the table, and leading on submitted_at makes the

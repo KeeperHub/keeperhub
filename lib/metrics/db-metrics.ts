@@ -407,7 +407,7 @@ export type StuckPendingTransactionCounts = Array<{
  * KEEP-1315; this over-counts rows the reconciler has not yet reaped, which is
  * the safe direction for an alert.
  *
- * Served by idx_pending_tx_stuck (drizzle/0150), partial on status='pending'
+ * Served by idx_pending_tx_stuck (drizzle/0152), partial on status='pending'
  * and leading on submitted_at, so this is a bounded range scan over the
  * in-flight set. It cannot use idx_pending_tx_status, which leads on
  * wallet_address. The index is not optional: nothing prunes

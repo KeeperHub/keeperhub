@@ -539,9 +539,6 @@ export type NewWalletLock = typeof walletLocks.$inferInsert;
  * `keeperhub_web3_pending_transactions_stuck` gauge (KEEP-1291) so a backlog
  * can be alerted on. Nothing acts on that signal automatically: no code path
  * re-prices a transaction at the same nonce, so recovery is a human decision.
- * (`app/api/execute/_lib/retry.ts` computes a gas-bump multiplier on retry,
- * but neither call site accepts the overrides argument, so no caller ever
- * applies it. KEEP-1293 removes that vestigial plumbing.)
  *
  * Status lifecycle: pending -> confirmed | dropped | replaced
  */
