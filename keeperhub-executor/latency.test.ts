@@ -3,6 +3,7 @@ import {
   ExecutionLatency,
   generateCorrelationId,
 } from "./latency";
+import { executorMessageSchema } from "./message-schema";
 import { LabelKeys, MetricNames } from "../lib/metrics/types";
 
 describe("generateCorrelationId", () => {
@@ -123,6 +124,45 @@ describe("ExecutionLatency", () => {
     expect(fields.startedAt).toBeUndefined();
     expect(fields.totalMs).toBe(100);
   });
+
+  it("tracks the tracker-observed stage and derives the queue leg", () => {
+    const latency = new ExecutionLatency("tracker-minted-id");
+    // The tracker mints the id and stamps observedAt; the executor reuses the
+    // id (issue #2289) and marks observed from the message field.
+    latency.mark("observed", 1_000);
+    latency.mark("received", 1_500);
+    latency.mark("started", 1_700);
+    latency.mark("completed", 2_500);
+
+    expect(latency.stageMs("observed", "received")).toBe(500); // queue leg
+    expect(latency.stageMs("received", "started")).toBe(200); // pre-engine
+    // totalMs is the executor lifetime (received -> completed); the full
+    // tracker-to-terminal pipeline is observed -> completed.
+    expect(latency.totalMs()).toBe(1_000);
+    expect(latency.stageMs("observed", "completed")).toBe(1_500);
+
+    const fields = latency.toLogFields();
+    expect(fields.correlationId).toBe("tracker-minted-id");
+    expect(fields.observedAt).toBe(new Date(1_000).toISOString());
+  });
+
+  it("emits observed in the summary line before received", () => {
+    const latency = new ExecutionLatency("corr-obs");
+    latency.mark("observed", 0);
+    latency.mark("received", 100);
+    latency.mark("started", 200);
+    latency.mark("completed", 300);
+    const line = latency.summaryLine({
+      workflowId: "wf-1",
+      executionId: "exec-1",
+      triggerType: "event",
+      dispatchTarget: "in-process",
+    });
+    expect(line.indexOf("observedAt=")).toBeLessThan(
+      line.indexOf("receivedAt=")
+    );
+    expect(line).toContain("correlationId=corr-obs");
+  });
 });
 
 // Drift guards: the wiring in index.ts / in-process.ts references these exact
@@ -136,5 +176,40 @@ describe("latency metric constants", () => {
   it("exposes the correlation/dispatch labels", () => {
     expect(LabelKeys.CORRELATION_ID).toBe("correlation_id");
     expect(LabelKeys.DISPATCH_TARGET).toBe("dispatch_target");
+  });
+});
+
+describe("event message schema with latency correlation", () => {
+  it("accepts an event message carrying correlationId + observedAt", () => {
+    const parsed = executorMessageSchema.safeParse({
+      triggerType: "event",
+      workflowId: "wf-1",
+      userId: "u-1",
+      triggerData: { eventName: "Transfer" },
+      correlationId: "abcd1234efgh5678",
+      observedAt: 123456789,
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("accepts legacy event messages without the correlation fields", () => {
+    const parsed = executorMessageSchema.safeParse({
+      triggerType: "event",
+      workflowId: "wf-1",
+      userId: "u-1",
+      triggerData: { eventName: "Transfer" },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("rejects a malformed observedAt (guards the producer contract)", () => {
+    const parsed = executorMessageSchema.safeParse({
+      triggerType: "event",
+      workflowId: "wf-1",
+      userId: "u-1",
+      triggerData: {},
+      observedAt: "not-a-number",
+    });
+    expect(parsed.success).toBe(false);
   });
 });

@@ -866,11 +866,18 @@ export async function processMessage(
     return;
   }
 
-  // Latency instrumentation (issue #2289): the correlation id is minted at the
-  // earliest point the message is seen and travels with the execution through
-  // dispatch, the runner (KH_CORRELATION_ID) and the in-process engine, so a
-  // single run is traceable across every stage.
-  const latency = new ExecutionLatency();
+  // Latency instrumentation (issue #2289): reuse the correlation id minted by
+  // the event-tracker at observation time when the message carries one (event
+  // triggers), so tracker -> queue -> executor legs share one key; otherwise
+  // mint it at the earliest point the message is seen here. It travels with
+  // the execution through dispatch, the runner (KH_CORRELATION_ID) and the
+  // in-process engine, so a single run is traceable across every stage.
+  const latency = new ExecutionLatency(
+    body.triggerType === "event" ? body.correlationId : undefined
+  );
+  if (body.triggerType === "event" && body.observedAt !== undefined) {
+    latency.mark("observed", body.observedAt);
+  }
   latency.mark("received");
 
   // Authenticate + validate the message before it can drive a

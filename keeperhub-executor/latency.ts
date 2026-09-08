@@ -6,6 +6,9 @@ import { randomBytes } from "node:crypto";
  * Every trigger message that reaches the executor gets a correlation id and a
  * set of stage timestamps as it moves through the pipeline:
  *
+ *   observed   - the triggering event was first seen by the event-tracker
+ *                 (epoch ms carried on the SQS message; absent for legacy
+ *                 messages and non-event triggers)
  *   received   - SQS message arrived at the executor (processMessage)
  *   started    - workflow engine actually began running the workflow
  *   dispatched - dispatch handed the execution to its target
@@ -23,6 +26,7 @@ import { randomBytes } from "node:crypto";
  */
 
 export type LatencyStage =
+  | "observed"
   | "received"
   | "started"
   | "dispatched"
@@ -32,6 +36,7 @@ export type LatencyStage =
 // Canonical order for the emitted JSON. Stages may be skipped (e.g. an
 // in-process run never broadcasts); ordering only applies to what is marked.
 const STAGE_ORDER: readonly LatencyStage[] = [
+  "observed",
   "received",
   "started",
   "dispatched",

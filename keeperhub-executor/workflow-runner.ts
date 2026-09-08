@@ -199,7 +199,15 @@ async function main(): Promise<void> {
   currentExecutionId = executionId;
   currentScheduleId = scheduleId ?? null;
 
-  console.log("[Runner] Starting workflow execution");
+  // Latency correlation (issue #2289): injected by the executor as
+  // KH_CORRELATION_ID on the Job (see k8s-job.ts), joining this pod's logs to
+  // the executor's receive/dispatch stages on one key.
+  const correlationId = process.env.KH_CORRELATION_ID ?? "";
+  const correlationSuffix = correlationId
+    ? ` correlationId=${correlationId}`
+    : "";
+
+  console.log("[Runner] Starting workflow execution" + correlationSuffix);
   console.log(`[Runner] Workflow ID: ${workflowId}`);
   console.log(`[Runner] Execution ID: ${executionId}`);
   console.log(`[Runner] Schedule ID: ${scheduleId || "none"}`);
@@ -276,7 +284,7 @@ async function main(): Promise<void> {
     );
 
     const duration = Date.now() - startTime;
-    console.log(`[Runner] Workflow completed in ${duration}ms`);
+    console.log(`[Runner] Workflow completed in ${duration}ms${correlationSuffix}`);
     console.log(`[Runner] Success: ${result.success}`);
 
     // executeWorkflow is the authoritative writer of the terminal status (with
@@ -298,7 +306,7 @@ async function main(): Promise<void> {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
 
-    console.error(`[Runner] Fatal error after ${duration}ms:`, errorMessage);
+    console.error(`[Runner] Fatal error after ${duration}ms${correlationSuffix}:`, errorMessage);
 
     let dbUpdateSucceeded = false;
     try {

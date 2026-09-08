@@ -49,6 +49,10 @@ const eventMessageSchema = z.object({
   // passes decoded event data through verbatim; keep this permissive so a
   // non-object payload never fails an already-authenticated message.
   triggerData: z.unknown(),
+  // Latency correlation (issue #2289): optional so messages enqueued by
+  // older trackers (without the fields) still validate and dispatch.
+  correlationId: z.string().optional(),
+  observedAt: z.number().optional(),
 });
 
 // manual and webhook share a shape but are separate literal branches so the
