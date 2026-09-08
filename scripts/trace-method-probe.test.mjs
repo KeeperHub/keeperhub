@@ -1,18 +1,26 @@
 /**
- * QA for probe.mjs — the two pure functions.
+ * QA for the pure functions in trace-method-probe.mjs.
  *
  * classify() is the piece the whole survey rests on: if it mislabels a tier
  * gate as "not supported", #2241 gets scoped against a wrong answer. Live
  * probing only exercises whatever the network happened to return today, so the
  * refusal shapes are pinned here instead.
  *
- *   node --test scripts/trace-method-probe.test.mjs
+ * HOW THIS RUNS: `pnpm test:trace-probe`, or `node --test` directly. It is
+ * deliberately outside vitest — `vitest.config.mts` matches only `.ts`/`.tsx`,
+ * and this file tests a dependency-free `.mjs` research script that is not part
+ * of the application build. The package script exists so the cases are executed
+ * rather than being assertions someone has to remember to run.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { classify, parseChainConfig } from "./trace-method-probe.mjs";
+import {
+  classify,
+  parseChainConfig,
+  shouldRetry,
+} from "./trace-method-probe.mjs";
 
 // Point at the repo's own config: the parser must keep working against the
 // real file, not a vendored snapshot that can silently go stale.
@@ -54,14 +62,65 @@ test("standard JSON-RPC method-not-found", () => {
 test("method refusals phrased as prose, not as -32601", () => {
   for (const msg of [
     "debug_traceBlockByNumber is not supported",
-    "method not available on this endpoint",
     "trace_block is disabled",
-    "Method not found",
-    "endpoint unavailable for this method",
     "ots_getBlockTransactions not enabled",
+    "Method trace_block not allowed",
   ]) {
     assert.equal(classify(rpcErr(-32000, msg)), "method-not-found", msg);
   }
+});
+
+test("ambiguous 'not found' / 'not available' prose is surfaced, not bucketed", () => {
+  // These three used to be asserted as method-not-found, which is what put
+  // plasma-mainnet in the report as "no plan lifts it" while it was in fact
+  // answering debug_traceBlockByNumber: the same words are how geth reports a
+  // block it cannot serve. The patterns are gone, so an ambiguous refusal that
+  // carries no -32601 now lands in `error` and is printed verbatim in the
+  // report for a human to judge.
+  //
+  // This is a deliberate trade. An unclassified refusal costs a reader one
+  // line of prose; a wrong capability verdict is what #2241 gets scoped
+  // against. Anything genuinely absent still carries -32601, covered above.
+  for (const msg of [
+    "method not available on this endpoint",
+    "Method not found",
+    "endpoint unavailable for this method",
+    // Also pins the other direction: the block bucket uses `\\bblock\\b`, so a
+    // method name ending in "_block" does not get read as a missing block.
+    "trace_block not found",
+  ]) {
+    assert.equal(classify(rpcErr(-32000, msg)), "error", msg);
+  }
+});
+
+test("REAL: a lagging backend reports the BLOCK, not the method", () => {
+  // rpc.plasma.to is load-balanced; a backend a block or two behind the tip
+  // answers this for the head-minus-5 block the probe picks. Plasma does
+  // implement debug_traceBlockByNumber and the headline cites it as a trace
+  // success, so bucketing this as method-not-found -- which is not retryable --
+  // wrote a permanent verdict from a transient condition.
+  for (const [code, msg] of [
+    [-32001, "block not found"],
+    [-32000, "header not found"],
+    [-32000, "missing trie node abc123 (path ) state is not available"],
+    [-32000, "block 0x12ab is not available"],
+    [-32000, "block does not exist"],
+  ]) {
+    assert.equal(classify(rpcErr(code, msg)), "block-unavailable", msg);
+  }
+});
+
+test("block-unavailable is retryable so the probe can ask again", () => {
+  assert.equal(shouldRetry("block-unavailable", "block not found"), true);
+  // The contrast that makes the bucket worth having: a real absence is final.
+  assert.equal(shouldRetry("method-not-found", "no such method"), false);
+});
+
+test("'does not exist' still reads as absence when it names the method", () => {
+  assert.equal(
+    classify(rpcErr(-32000, "the method trace_block does not exist")),
+    "method-not-found",
+  );
 });
 
 test("tier gates, by status and by message", () => {
@@ -137,6 +196,35 @@ test("rate limits are not mistaken for refusals", () => {
   assert.equal(classify({ httpStatus: 429 }), "rate-limited");
   assert.equal(classify(rpcErr(-32005, "limit exceeded")), "rate-limited");
   assert.equal(classify(rpcErr(-32000, "too many requests")), "rate-limited");
+});
+
+test("a throttle worded as a tier gate is a throttle", () => {
+  // drpc and ankr free tiers throttle in exactly the tier vocabulary. The tier
+  // test used to run first, so a transient throttle was written into the
+  // report's most decision-relevant column as "traces are purchasable here",
+  // with no retry and nothing to tell it apart from a real gate. A full run is
+  // roughly four requests per endpoint across 39 hosts, so meeting one is
+  // routine, not exotic.
+  for (const msg of [
+    "rate limit exceeded for your plan, upgrade for more requests",
+    "You have exceeded the free tier rate-limit. Upgrade your plan.",
+    "monthly quota exceeded - upgrade required",
+    "request throttled; upgrade your api key tier",
+  ]) {
+    assert.equal(classify(rpcErr(-32000, msg)), "rate-limited", msg);
+  }
+});
+
+test("a tier gate with no throttle wording is still a tier gate", () => {
+  // The other direction of the same ordering, so hoisting the rate-limit test
+  // cannot quietly swallow real paywalls.
+  for (const msg of [
+    "This method requires a paid plan",
+    "Archive requests require a personal token",
+    "upgrade to access trace methods",
+  ]) {
+    assert.equal(classify(rpcErr(-32000, msg)), "tier-gated", msg);
+  }
 });
 
 test("transport failures keep timeout separate from everything else", () => {

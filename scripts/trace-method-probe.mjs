@@ -260,12 +260,24 @@ const TIER_PATTERNS = [
   /requires? (a |an )?[\w ]*\b(token|key|account|credential)/,
 ];
 
-/** A refusal no amount of money lifts on this endpoint. */
+/**
+ * A refusal no amount of money lifts on this endpoint.
+ *
+ * Deliberately narrower than the first revision, which also carried
+ * `/not found/` and `/not available|unavailable/`. Both had to go: geth
+ * answers a block it cannot serve with `-32001 "block not found"`,
+ * `-32000 "header not found"` and `"missing trie node ... state is not
+ * available"`, none of which say anything about the method. On a
+ * load-balanced endpoint a backend a block or two behind returns exactly that
+ * for a head-adjacent block, so those patterns wrote "no plan lifts it"
+ * against `plasma-mainnet`, a chain that does implement
+ * `debug_traceBlockByNumber` and that the headline cites as a trace success.
+ * A genuinely absent method always carries `-32601`, which classify() tests
+ * before it reaches these patterns.
+ */
 const NOT_SUPPORTED_PATTERNS = [
   /does not exist/,
-  /not found/,
   /unsupported|not supported/,
-  /not available|unavailable/,
   /disabled|not enabled/,
   // 1rpc.io answers `-32600 "Method trace_block not allowed"` — code -32600 is
   // "invalid request", so without this the verdict falls through to the
@@ -273,6 +285,29 @@ const NOT_SUPPORTED_PATTERNS = [
   // eth-mainnet fallback; tempo says the same thing but with -32601.
   /not allowed|not permitted/,
 ];
+
+/**
+ * The BLOCK is missing, not the method. Retryable: these come from a backend
+ * that is behind the tip or has pruned the state, and on a load-balanced
+ * endpoint the next request may land on one that can serve it.
+ */
+const BLOCK_UNAVAILABLE_PATTERNS = [
+  // `\bblock\b` throughout, never a bare /block/: method names contain the
+  // word. "trace_block not found" is a statement about the method and must not
+  // land here, and `_` is a word character, so the boundary excludes it while
+  // still matching a standalone "block not found".
+  /\bblock\b.{0,24}not found/,
+  /header not found/,
+  /missing trie node/,
+  /state (is )?not available/,
+  /\bblock\b.{0,24}(not available|unavailable)/,
+  // Guards the `/does not exist/` pattern above, which is there for
+  // "Method X does not exist" and must not swallow "block does not exist".
+  /\bblock\b.{0,24}does not exist/,
+];
+
+/** Throttling, in the vocabularies observed across drpc, ankr and publicnode. */
+const RATE_LIMIT_PATTERN = /rate.?limit|too many|429|quota|throttl/;
 
 /**
  * Failures that say "ask again" rather than "no". A survey that records a
@@ -284,13 +319,20 @@ const RETRYABLE = new Set([
   "transport-error",
   "server-error",
   "rate-limited",
+  "block-unavailable",
 ]);
 const RETRYABLE_MESSAGE = /temporary|please retry|try again|internal error/i;
 
-function shouldRetry(status, message) {
+export function shouldRetry(status, message) {
+  const msg = String(message ?? "");
   return (
     RETRYABLE.has(status) ||
-    (status === "error" && RETRYABLE_MESSAGE.test(String(message ?? "")))
+    // Belt and braces for the ordering fix in classify(): if a throttle still
+    // reaches here labelled tier-gated — an HTTP 403 with no JSON body, say,
+    // where there is no message for the classifier to read — the rate-limit
+    // wording still earns it the retry a real gate would not get.
+    (status === "tier-gated" && RATE_LIMIT_PATTERN.test(msg.toLowerCase())) ||
+    (status === "error" && RETRYABLE_MESSAGE.test(msg))
   );
 }
 
@@ -322,12 +364,26 @@ export function classify(r) {
   const err = r.body?.error;
   if (err) {
     const msg = String(err.message ?? "").toLowerCase();
-    // Tier first: "not available on the free plan" matches both vocabularies,
-    // and calling that "never implemented" is the costliest error here.
+    // Rate limit BEFORE tier. drpc and ankr free tiers throttle using exactly
+    // the tier vocabulary ("upgrade", "plan"), and a full run makes roughly
+    // four requests per endpoint across 39 hosts at a fixed spacing, so
+    // meeting one is routine. Testing tier first wrote a transient throttle
+    // into the report's most decision-relevant column as "traces are
+    // purchasable here", with nothing to distinguish it from a real gate. The
+    // cost of this ordering is one-directional: rate-limited is retryable,
+    // tier-gated is not.
+    if (err.code === -32005 || RATE_LIMIT_PATTERN.test(msg)) {
+      return "rate-limited";
+    }
+    // Then tier: "not available on the free plan" matches both the tier and
+    // the not-supported vocabularies, and calling that "never implemented" is
+    // the costliest error here.
     if (TIER_PATTERNS.some((p) => p.test(msg))) return "tier-gated";
     if (err.code === -32601) return "method-not-found";
-    if (err.code === -32005 || /rate limit|too many/.test(msg)) {
-      return "rate-limited";
+    // Ahead of the not-supported patterns: a block this backend cannot serve
+    // is not a statement about the method.
+    if (BLOCK_UNAVAILABLE_PATTERNS.some((p) => p.test(msg))) {
+      return "block-unavailable";
     }
     if (NOT_SUPPORTED_PATTERNS.some((p) => p.test(msg))) {
       return "method-not-found";
@@ -350,7 +406,11 @@ export function classify(r) {
   // consulted first; the raw text is the last resort.
   if (r.parseError) {
     const raw = String(r.rawSnippet ?? "").toLowerCase();
+    if (RATE_LIMIT_PATTERN.test(raw)) return "rate-limited";
     if (TIER_PATTERNS.some((p) => p.test(raw))) return "tier-gated";
+    if (BLOCK_UNAVAILABLE_PATTERNS.some((p) => p.test(raw))) {
+      return "block-unavailable";
+    }
     if (NOT_SUPPORTED_PATTERNS.some((p) => p.test(raw))) return "method-not-found";
     return "invalid-response";
   }
@@ -383,13 +443,37 @@ const TRACE_METHODS = [
   { name: "ots_getBlockTransactions", params: (hex, n) => [n, 0, 25] },
 ];
 
+/**
+ * `rpc` plus the single retry `shouldRetry` licenses.
+ *
+ * The trace-method loop had this inline, but the `eth_chainId` liveness call
+ * and the `eth_blockNumber` head call did not, so a blip on either discarded
+ * all three method findings for that endpoint while the report still claimed
+ * "transient failures are retried once". One helper now backs every call, and
+ * the claim is true.
+ */
+async function rpcWithRetry(url, method, params, timeoutMs) {
+  const first = await rpc(url, method, params, timeoutMs);
+  const status = classify(first);
+  const why = first.body?.error?.message ?? first.transportError;
+  if (!shouldRetry(status, why)) return { r: first, status, retried: false };
+  await sleep(REQUEST_DELAY_MS * 4);
+  process.stderr.write(`    ${method}: ${status} -> retry\n`);
+  const again = await rpc(url, method, params, timeoutMs);
+  return { r: again, status: classify(again), retried: true };
+}
+
 async function probeEvmEndpoint(label, url, expectedChainId) {
   const record = { label, url, methods: {} };
 
   // Liveness control. Distinguishes "this method is refused" from "this
   // endpoint is dead", which is the whole reason the control exists.
-  const live = await rpc(url, "eth_chainId", [], LIVENESS_TIMEOUT_MS);
-  const liveClass = classify(live);
+  const { r: live, status: liveClass } = await rpcWithRetry(
+    url,
+    "eth_chainId",
+    [],
+    LIVENESS_TIMEOUT_MS,
+  );
   record.liveness = {
     status: liveClass,
     httpStatus: live.httpStatus,
@@ -410,9 +494,14 @@ async function probeEvmEndpoint(label, url, expectedChainId) {
 
   await sleep(REQUEST_DELAY_MS);
 
-  const head = await rpc(url, "eth_blockNumber", [], LIVENESS_TIMEOUT_MS);
-  if (classify(head) !== "ok") {
-    record.skipped = "eth_blockNumber failed; no block to trace";
+  const { r: head, status: headStatus } = await rpcWithRetry(
+    url,
+    "eth_blockNumber",
+    [],
+    LIVENESS_TIMEOUT_MS,
+  );
+  if (headStatus !== "ok") {
+    record.skipped = `eth_blockNumber failed (${headStatus}); no block to trace`;
     return record;
   }
   // Trace an block that actually has transactions in it. A quiet chain serves
@@ -421,26 +510,46 @@ async function probeEvmEndpoint(label, url, expectedChainId) {
   // sample has to be comparable or the whole table misleads.
   let blockNum = Number(head.body.result) - BLOCKS_BEHIND_HEAD;
   let txCount = 0;
-  let scanned = 0;
-  for (; scanned < BLOCK_SCAN_LIMIT; scanned++) {
+  let blocksRead = 0;
+  let readable = false;
+  let lastScanStatus = null;
+  for (let i = 0; i < BLOCK_SCAN_LIMIT; i++) {
     await sleep(REQUEST_DELAY_MS);
-    const b = await rpc(
+    blocksRead++;
+    const { r: b, status } = await rpcWithRetry(
       url,
       "eth_getBlockByNumber",
       [`0x${blockNum.toString(16)}`, false],
       LIVENESS_TIMEOUT_MS,
     );
-    if (classify(b) !== "ok") break;
+    lastScanStatus = status;
+    if (status !== "ok") break;
+    readable = true;
     txCount = b.body.result?.transactions?.length ?? 0;
     if (txCount > 0) break;
     blockNum -= 1;
   }
+
+  // Nothing was verified, so nothing is recorded. Previously the loop could
+  // break on the very first unreadable block — a 429 on the block fetch, say —
+  // leaving txCount at 0 and blockNum never advanced, and control fell through
+  // to probe all three trace methods against a block that was never read. The
+  // answers to those probes were then written down as capability findings.
+  if (!readable) {
+    record.skipped = `no readable block (eth_getBlockByNumber: ${lastScanStatus})`;
+    record.block = { number: null, txCount: null, blocksRead, empty: null };
+    return record;
+  }
+
   const blockHex = `0x${blockNum.toString(16)}`;
   record.block = {
     number: blockNum,
     hex: blockHex,
     txCount,
-    blocksScanned: scanned + 1,
+    // Requests actually made, not the loop index. `scanned + 1` read 13 when
+    // the loop exhausted a 12-block limit, and 1 when it broke on the first
+    // unreadable block despite zero successful reads.
+    blocksRead,
     empty: txCount === 0,
   };
   if (txCount === 0) {
@@ -451,22 +560,15 @@ async function probeEvmEndpoint(label, url, expectedChainId) {
 
   for (const m of TRACE_METHODS) {
     await sleep(REQUEST_DELAY_MS);
-    let r = await rpc(url, m.name, m.params(blockHex, blockNum));
-    let status = classify(r);
-    let retried = false;
-
     // One retry, only for failures that describe themselves as transient.
     // Observed: robinhood-testnet's fallback answered `code 19 "Temporary
     // internal error. Please retry"` — recording that as a capability verdict
     // would put a blip in the survey and make the run irreproducible.
-    if (shouldRetry(status, r.body?.error?.message ?? r.transportError)) {
-      await sleep(REQUEST_DELAY_MS * 4);
-      const again = await rpc(url, m.name, m.params(blockHex, blockNum));
-      retried = true;
-      process.stderr.write(`    ${m.name}: ${status} → retry\n`);
-      r = again;
-      status = classify(again);
-    }
+    const { r, status, retried } = await rpcWithRetry(
+      url,
+      m.name,
+      m.params(blockHex, blockNum),
+    );
 
     record.methods[m.name] = {
       retried,
@@ -489,8 +591,12 @@ async function probeEvmEndpoint(label, url, expectedChainId) {
 
 async function probeSolanaEndpoint(label, url) {
   const record = { label, url, methods: {}, note: "solana: no debug_trace*" };
-  const live = await rpc(url, "getVersion", [], LIVENESS_TIMEOUT_MS);
-  const liveClass = classify(live);
+  const { r: live, status: liveClass } = await rpcWithRetry(
+    url,
+    "getVersion",
+    [],
+    LIVENESS_TIMEOUT_MS,
+  );
   record.liveness = {
     status: liveClass,
     httpStatus: live.httpStatus,
@@ -511,22 +617,11 @@ const kb = (n) =>
   n == null ? "—" : n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`;
 const ms = (n) => (n == null ? "—" : `${n} ms`);
 
-const MARK = {
-  ok: "✅",
-  "ok-empty": "☑️",
-  "too-large": "📦",
-  "method-not-found": "❌",
-  "tier-gated": "🔒",
-  "rate-limited": "⏳",
-  timeout: "⌛",
-  "transport-error": "💥",
-  "server-error": "💥",
-  "invalid-response": "⚠️",
-  "null-result": "∅",
-  error: "⚠️",
-  "n/a": "—",
-};
-const mark = (s) => `${MARK[s] ?? "?"} ${s}`;
+// AGENTS.md:42 forbids emoji in code and generated content, and this script
+// writes the report as well as reading it. The status name carries the whole
+// meaning, so it is rendered as code and the legend defines each one, rather
+// than adding a second severity vocabulary that could disagree with it.
+const mark = (s) => `\`${s ?? "n/a"}\``;
 
 /**
  * The headline the issue actually asks for: which chains are trace triggers
@@ -573,7 +668,9 @@ function buildReport(results, meta) {
   const L = [];
   L.push("# Trace-method availability across configured chain upstreams");
   L.push("");
-  L.push(`Survey for #2247. Generated by \`scripts/trace-probe/probe.mjs\`.`);
+  L.push(
+    `Survey for #2247. Generated by \`scripts/trace-method-probe.mjs\`; re-run it to regenerate this file.`,
+  );
   L.push("");
   L.push(`- **Run at:** ${meta.startedAt}`);
   L.push(`- **Config source:** ${meta.configSource}`);
@@ -592,15 +689,17 @@ function buildReport(results, meta) {
   L.push("");
   L.push("## Legend");
   L.push("");
-  L.push("| | Meaning |");
+  L.push("| Status | Meaning |");
   L.push("|---|---|");
-  L.push("| ✅ `ok` | method answered with trace data |");
-  L.push("| ☑️ `ok-empty` | method answered, but the sampled block was empty — supported, size not measurable |");
-  L.push("| ❌ `method-not-found` | method absent on this endpoint; no plan lifts it |");
-  L.push("| 🔒 `tier-gated` | refused for credentials or plan — purchasable |");
-  L.push("| 📦 `too-large` | answered, but exceeded the response cap |");
-  L.push("| ⚠️ `error` | answered with something we decline to bucket — see verbatim below |");
-  L.push("| — | endpoint skipped; the reason is in parentheses |");
+  L.push("| `ok` | method answered with trace data |");
+  L.push("| `ok-empty` | method answered, but the sampled block was empty — supported, size not measurable |");
+  L.push("| `method-not-found` | method absent on this endpoint; no plan lifts it. Reserved for `-32601` and for wording that names the *method*; a block the backend could not serve is `block-unavailable` instead |");
+  L.push("| `tier-gated` | refused for credentials or plan — purchasable |");
+  L.push("| `rate-limited` | throttled. Retried once and still throttled; says nothing about availability, so re-run before reading anything into it |");
+  L.push("| `block-unavailable` | the endpoint could not serve the sampled block (behind the tip, or pruned state). A statement about the block, not the method — retried once |");
+  L.push("| `too-large` | answered, but exceeded the response cap |");
+  L.push("| `error` | answered with something we decline to bucket — see verbatim below |");
+  L.push("| `n/a` | endpoint skipped; the reason is in parentheses |");
   L.push("");
   L.push(summarise(results));
   L.push("");
@@ -670,7 +769,7 @@ function buildReport(results, meta) {
       .map((p) => ({ chain: c, endpoint: p })),
   );
   if (mismatches.length) {
-    L.push("## ⚠️ chainId mismatches");
+    L.push("## chainId mismatches");
     L.push("");
     L.push("The endpoint did not report the chain id `CHAIN_CONFIG` maps it to:");
     L.push("");
@@ -789,6 +888,9 @@ async function main() {
       REQUEST_TIMEOUT_MS,
       MAX_RESPONSE_BYTES,
       BLOCKS_BEHIND_HEAD,
+      // buildReport reads this for the Sampling line; without it every
+      // generated report said "walked back up to undefined blocks".
+      BLOCK_SCAN_LIMIT,
     },
   };
 
