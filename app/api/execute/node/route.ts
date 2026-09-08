@@ -42,6 +42,7 @@ import {
   type TransactionResult,
   transactionRetryOptions,
 } from "../_lib/retry";
+import { refuseSimulateBody, rejectSimulateQuery } from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import type { NodeExecuteRequest, RetryConfig } from "../_lib/types";
 import { requireWallet } from "../_lib/wallet-check";
@@ -504,6 +505,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
+  // #2004: ?simulate= is refused on every /api/execute/* route rather than
+  // silently ignored.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
+  }
+
   const scopeError = requireScope(apiKeyCtx.scope, SCOPE_MCP_WRITE, {
     organizationId: apiKeyCtx.organizationId,
     credentialId: apiKeyCtx.apiKeyId,
@@ -541,6 +549,16 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: "Invalid JSON body" },
       { status: HttpStatus.BAD_REQUEST }
     );
+  }
+
+  // #2004: this route has no dry-run support. A top-level `simulate` used to
+  // be dropped by validateRequest's fixed whitelist and the step broadcast
+  // for real -- the same accept-and-broadcast defect as the protocol route,
+  // reached through a different mechanism. Refuse it loudly, before the
+  // whitelist and before the idempotency key is reserved.
+  const simulateBody = refuseSimulateBody(body);
+  if (simulateBody) {
+    return simulateBody;
   }
 
   const validation = validateRequest(body);
