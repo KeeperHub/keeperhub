@@ -42,13 +42,43 @@ Call `GET /api/analytics/spend-cap` before planning a large transfer. Read `effe
 
 An ERC-20 transfer carries no native value, so the daily caps above cannot see it. A single transaction that moves a recognised stablecoin (any token listed for that chain and flagged as a stablecoin) is limited to **100 USD**, applying the 1:1 peg to the token's own decimals. The limit is per transaction rather than per day, and covers every write path: `/api/execute/transfer`, `/api/execute/contract-call`, protocol actions, `/api/execute/node`, and the equivalent workflow steps. Over the limit nothing is signed or broadcast; the request completes as a failed execution (`202` with `status: "failed"`) whose error reads `Stablecoin transfer of ... exceeds the 100.0 USD per-transaction limit`. Self-hosted deployments can change the figure with `EXECUTE_DEFAULT_STABLECOIN_CAP_MICRO_USD` (micro-USD, so `100000000` is 100 USD).
 
-A dry run reports the same refusal: simulating an over-limit transfer returns a failed simulation carrying the limit, rather than a clean estimate for a transfer that would fail at broadcast.
+On the three endpoints that accept `simulate` a dry run reports the same refusal: simulating an over-limit transfer returns a failed simulation carrying the limit, rather than a clean estimate for a transfer that would fail at broadcast. Protocol actions and `/api/execute/node` have no dry run at all, so the limit is only reported there at broadcast.
 
 `approve` is bounded by the same figure, with one exception. Approving more than the limit is allowed when the spender is a contract belonging to a protocol integration, which is what makes the usual approve-then-swap pattern work. Approving more than the limit to any other address is refused, because an unbounded allowance to an address outside that set is a standing right to move the balance that no later check can see. An approval at or under the limit is always allowed.
 
 Two things this does **not** do: it does not price non-stablecoin ERC-20s, which are not bounded at all, and it does not cover Solana. SPL token transfers are outside the ceiling, and the daily Solana cap counts native SOL only.
 
 ## Safe First-Write Sequence
+
+This sequence is for `/api/execute/transfer`, `/api/execute/contract-call` and
+`/api/execute/check-and-execute` - the three endpoints that accept a `simulate`
+flag. **It does not apply to protocol actions or to `/api/execute/node`**,
+neither of which reads that flag: sent there, `"simulate": true` is ignored for
+dispatch, so step 2 signs and broadcasts a real transaction believing it is a
+dry run. The flag is still recorded as part of the execution's input, so
+reusing one `Idempotency-Key` across a `simulate: true` send and the same send
+with the flag removed returns `409 idempotency_conflict` rather than replaying.
+
+A first write on those two endpoints has no dry run to put in step 2's place,
+so the pre-flight has to happen off this API:
+
+1. Read `GET /api/chains` and choose a chain where `isEnabled` and `isTestnet`
+   are both `true`.
+2. Simulate the call yourself, against your own RPC: an `eth_call` from the
+   account that will be `msg.sender` at the target contract - the
+   organization's EOA, or the Safe when the organization routes writes through
+   one.
+3. Send once, with an `Idempotency-Key`. The key must identify the work rather
+   than the attempt: see [Choosing a stable key](#choosing-a-stable-key).
+4. Save the returned `executionId` and poll
+   [`GET /api/execute/{executionId}/status`](#get-execution-status). Both
+   endpoints return one. `unconfirmed` is not a failure: do not rotate the key
+   and do not re-send, or a transaction that may still land is sent twice.
+5. Read the effect back off chain. A confirmed receipt says a transaction was
+   included; it does not say the contract's state is what you intended.
+
+`/api/execute/node` is named above as a write path the stablecoin limit covers,
+but is not otherwise documented on this page.
 
 Use the same request body from simulation through broadcast so the transaction
 you inspected is the transaction you send:
