@@ -676,7 +676,6 @@ describe("resolveOrganizationId — origin check wiring", () => {
       organizationId: "org_session",
       authMethod: "session",
       apiKeyId: null,
-      isAnonymous: false,
     });
   });
 });

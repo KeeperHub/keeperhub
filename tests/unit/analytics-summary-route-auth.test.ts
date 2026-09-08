@@ -161,6 +161,29 @@ describe("GET /api/analytics/summary auth (session-only -> dual auth)", () => {
     );
   });
 
+  it("denies 403 insufficient_scope when the OAuth token lacks mcp:read", async () => {
+    // The scope gate at the top of the route is the behaviour this PR adds
+    // (a credential that resolves an org but carries no satisfying scope must
+    // not read analytics). Mirror the merged runs-route test: an OAuth token
+    // whose scope does not satisfy mcp:read is denied before the query runs.
+    authenticateOAuthTokenMock.mockResolvedValueOnce({
+      authenticated: true,
+      userId: "user_oauth",
+      organizationId: "org_from_jwt",
+      scope: "",
+    });
+
+    const res = await GET(request("Bearer fake-jwt"));
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as {
+      error: string;
+      required_scope: string;
+    };
+    expect(body.error).toBe("insufficient_scope");
+    expect(body.required_scope).toBe("mcp:read");
+    expect(getAnalyticsSummary).not.toHaveBeenCalled();
+  });
+
   it("serves an anonymous session its own org's analytics (parity with runs/facets)", async () => {
     // OAuth and API-key auth both fail; the session branch resolves. An
     // anonymous session resolves to its own throwaway org and reads its own
