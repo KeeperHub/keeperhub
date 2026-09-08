@@ -34,6 +34,10 @@ export const PLUGIN_CREDENTIAL_MAP: Record<
     "apiKey": "ELIZAOS_API_KEY",
     "agentId": "ELIZAOS_AGENT_ID",
   },
+  "evm-chain": {
+    "EVM_CHAIN_RPC_URL": "EVM_CHAIN_RPC_URL",
+    "EVM_CHAIN_NAME": "EVM_CHAIN_NAME",
+  },
   "sendgrid": {
     "apiKey": "SENDGRID_API_KEY",
   },

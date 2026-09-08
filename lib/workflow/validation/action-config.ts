@@ -1,5 +1,6 @@
 import { ADDRESS_BOOK_SELECTION_KEY } from "@/lib/address-book-selection";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
+import { SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST } from "@/lib/workflow/executor/system-action-types";
 import {
   type ActionConfigField,
   type ActionConfigFieldBase,
@@ -7,13 +8,9 @@ import {
   getAllActions,
 } from "@/plugins/registry";
 
-const SYSTEM_ACTION_TYPES = new Set([
-  "Database Query",
-  "HTTP Request",
-  "Condition",
-  "For Each",
-  "Collect",
-]);
+// Built from the shared union so this validator, the executor dispatch table,
+// and the egress map cannot drift apart when a system action is added.
+const SYSTEM_ACTION_TYPES = new Set<string>(SYSTEM_ACTION_TYPE_LIST);
 
 const RESERVED_CONFIG_KEYS = new Set([
   "actionType",

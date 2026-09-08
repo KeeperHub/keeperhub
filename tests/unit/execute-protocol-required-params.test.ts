@@ -432,7 +432,7 @@ describe("POST /api/execute/{protocol}/{action} required params", () => {
       amount: "1000",
     });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(writeContractCoreMock).toHaveBeenCalledWith(
       expect.objectContaining({
         functionArgs: JSON.stringify(["0xToken", "1000", "0"]),

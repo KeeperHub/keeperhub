@@ -159,6 +159,17 @@ export async function POST(request: Request): Promise<NextResponse> {
       throw error;
     }
 
+    // Run the plan-gate before action-config validation so a plan-gated
+    // action (e.g. Run Code, Send Webhook) reports "upgrade required" instead
+    // of a generic INVALID_ACTION_CONFIG when its config is also incomplete.
+    const featureGuard = await enforceWorkflowFeatures(
+      extractActionTypeNodes(sanitized.nodes),
+      organizationId
+    );
+    if (featureGuard.blocked) {
+      return featureGuard.response;
+    }
+
     const actionConfigValidation = validateWorkflowActionConfigs(
       sanitized.nodes
     );
@@ -167,14 +178,6 @@ export async function POST(request: Request): Promise<NextResponse> {
         formatActionConfigValidationResponse(actionConfigValidation),
         { status: 422 }
       );
-    }
-
-    const featureGuard = await enforceWorkflowFeatures(
-      extractActionTypeNodes(sanitized.nodes),
-      organizationId
-    );
-    if (featureGuard.blocked) {
-      return featureGuard.response;
     }
 
     const workflowId = generateId();

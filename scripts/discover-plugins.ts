@@ -8,7 +8,7 @@
  * the current list of available actions.
  *
  * Plugin Allowlist (Optional):
- * - Create config/plugin-allowlist.json to control which plugins are enabled
+ * - Create plugins/plugin-allowlist.json to control which plugins are enabled
  * - If the file doesn't exist, all discovered plugins are enabled
  * - This prevents disabled plugins from being registered while keeping them in the codebase
  *
@@ -29,6 +29,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
 const PLUGINS_DIR = join(process.cwd(), "plugins");
@@ -68,15 +69,22 @@ const LEADING_WHITESPACE_PATTERN = /^\s*/;
  * Discover protocol definition files in protocols/
  * Returns absolute file paths for all .ts files (excludes .d.ts, index.ts, _-prefixed, .-prefixed)
  */
-function discoverProtocols(): string[] {
+export function discoverProtocols(): string[] {
   if (!existsSync(PROTOCOLS_DIR)) {
     return [];
   }
 
-  const files = readdirSync(PROTOCOLS_DIR);
+  const entries = readdirSync(PROTOCOLS_DIR);
+
+  // A directory nobody has put a protocol in yet is a legitimate zero:
+  // someone with no protocols must still be able to run the generator.
+  if (entries.length === 0) {
+    return [];
+  }
+
   const result: string[] = [];
 
-  for (const file of files) {
+  for (const file of entries) {
     if (
       file.endsWith(".d.ts") ||
       file === "index.ts" ||
@@ -93,6 +101,19 @@ function discoverProtocols(): string[] {
     result.push(join(PROTOCOLS_DIR, file));
   }
 
+  // The directory has entries but none of them survived the filter above --
+  // the directory moved, got renamed, or the filter itself broke. Silently
+  // returning zero here is how a generator writes an empty registry over 24
+  // real protocols and exits 0; that is exactly the failure mode this
+  // module exists to close off.
+  if (result.length === 0) {
+    throw new Error(
+      `protocols/ has ${entries.length} entr${entries.length === 1 ? "y" : "ies"} but none of them is a protocol definition file ` +
+        "(a .ts file other than index.ts, a .d.ts file, or an underscore/dot-prefixed name). " +
+        "Check the directory contents before re-running."
+    );
+  }
+
   return result;
 }
 
@@ -106,55 +127,127 @@ type ProtocolEntry = {
  * Load protocol definitions from discovered files
  * Each file must have a default export that is a ProtocolDefinition
  */
-async function loadProtocolDefinitions(): Promise<ProtocolEntry[]> {
-  const filePaths = discoverProtocols();
+/** A protocol file that could not become a registry entry, and why. */
+export type ProtocolFailure = { filePath: string; reason: string };
+
+/**
+ * Raised when at least one protocol file could not be loaded.
+ *
+ * Thrown rather than logged because the generated `protocols/index.ts` and
+ * `lib/types/integration.ts` are tracked files, not build artefacts: writing a
+ * registry that silently omits a protocol produces a plausible-looking diff
+ * under a "DO NOT EDIT MANUALLY" header, which is how a deletion gets
+ * committed. `lib/step-registry.ts` is gitignored and carries no such risk.
+ */
+export class ProtocolDiscoveryError extends Error {
+  readonly failures: readonly ProtocolFailure[];
+
+  constructor(failures: ProtocolFailure[]) {
+    super(
+      [
+        `${failures.length} protocol file(s) could not be loaded.`,
+        "protocols/index.ts and lib/types/integration.ts were left untouched.",
+        ...failures.map((f) => `  - ${f.filePath}: ${f.reason}`),
+      ].join("\n")
+    );
+    this.name = "ProtocolDiscoveryError";
+    this.failures = failures;
+  }
+}
+
+/** Seams for tests. Production passes nothing and gets the real filesystem. */
+export type ProtocolLoadDeps = {
+  discover?: () => string[];
+  importProtocol?: (filePath: string) => Promise<unknown>;
+};
+
+export async function loadProtocolDefinitions(
+  deps: ProtocolLoadDeps = {}
+): Promise<ProtocolEntry[]> {
+  const discover = deps.discover ?? discoverProtocols;
+  const importProtocol =
+    deps.importProtocol ??
+    // Windows: a bare absolute path ("C:\\...") is not a valid ESM
+    // specifier -- Node's loader rejects it with ERR_UNSUPPORTED_ESM_URL_SCHEME.
+    ((filePath: string) => import(pathToFileURL(filePath).href));
+
+  const filePaths = discover();
 
   if (filePaths.length === 0) {
     console.log("   No protocol definitions found in protocols/");
     return [];
   }
 
-  const results: ProtocolEntry[] = [];
-
-  for (const filePath of filePaths) {
-    try {
-      const mod = await import(filePath);
-      const definition =
-        mod.default as import("@/lib/protocol-registry").ProtocolDefinition;
+  // One rejection path for both ways a file can fail to become a registry
+  // entry -- the import throwing, or a default export with no slug. Runs
+  // concurrently: protocol modules have no import-time side effects
+  // (registerProtocol runs later, from the returned array), so concurrency
+  // does not change registration order, and Promise.allSettled preserves
+  // the input order of filePaths in its results regardless of resolution
+  // order.
+  const settled = await Promise.allSettled(
+    filePaths.map(async (filePath) => {
+      const mod = (await importProtocol(filePath)) as {
+        default?: import("@/lib/protocol-registry").ProtocolDefinition;
+      };
+      const definition = mod?.default;
 
       if (!definition?.slug) {
-        console.warn(
-          `   Warning: ${filePath} has no default export with a slug, skipping`
-        );
-        continue;
+        throw new Error("no default export with a slug");
       }
 
-      const fileStem = basename(filePath, ".ts");
+      return {
+        slug: definition.slug,
+        fileStem: toFileStem(filePath),
+        definition,
+      };
+    })
+  );
 
+  const failures: ProtocolFailure[] = settled.flatMap((result, index) =>
+    result.status === "rejected"
+      ? [{ filePath: filePaths[index], reason: reasonOf(result.reason) }]
+      : []
+  );
+
+  if (failures.length > 0) {
+    throw new ProtocolDiscoveryError(failures);
+  }
+
+  const results: ProtocolEntry[] = [];
+  for (const result of settled) {
+    if (result.status === "fulfilled") {
       console.log(
-        `   Discovered protocol: ${definition.slug} (${definition.name})`
+        `   Discovered protocol: ${result.value.slug} (${result.value.definition.name})`
       );
-      results.push({ slug: definition.slug, fileStem, definition });
-    } catch (error) {
-      console.warn(
-        `   Warning: Failed to import protocol from ${filePath}:`,
-        error
-      );
+      results.push(result.value);
     }
   }
 
   return results;
 }
 
+/** Basename without the `.ts` extension, used as the barrel import specifier. */
+function toFileStem(filePath: string): string {
+  return basename(filePath, ".ts");
+}
+
+/** Normalise a Promise.allSettled rejection reason to a message string. */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * Register all discovered protocols as IntegrationPlugins
  * Populates registeredProtocolSlugs and registeredProtocolEntries for use by other functions
  */
-async function registerProtocolPlugins(): Promise<string[]> {
+async function registerProtocolPlugins(
+  deps: ProtocolLoadDeps = {}
+): Promise<string[]> {
   const { protocolToPlugin, registerProtocol } = await import("@/lib/protocol-registry");
   const { registerIntegration } = await import("../plugins/registry-core");
 
-  const definitions = await loadProtocolDefinitions();
+  const definitions = await loadProtocolDefinitions(deps);
   const slugs: string[] = [];
 
   for (const entry of definitions) {
@@ -261,22 +354,108 @@ async function formatCode(code: string): Promise<string> {
 }
 
 /**
- * Load plugin allowlist from config file
- * Returns null if config doesn't exist (meaning all plugins enabled)
+ * Raised when the allowlist file exists but its content cannot be trusted:
+ * unparsable JSON, or a document that does not match
+ * plugins/plugin-allowlist.schema.json (missing "plugins", or "plugins" not
+ * an array of unique strings).
+ *
+ * An absent file is not an error - it means no restriction was declared, and
+ * every plugin stays enabled. A present-but-broken file means the operator's
+ * intent is known and unreadable, which is exactly when guessing is worst:
+ * silently falling back to "all plugins enabled" discards a stated
+ * restriction, and silently falling back to "[]" disables everything the
+ * operator meant to keep. Neither is a value the caller asked for, so the
+ * script exits non-zero instead of guessing.
  */
-function loadPluginAllowlist(): string[] | null {
-  if (!existsSync(PLUGIN_ALLOWLIST_FILE)) {
+export class PluginAllowlistError extends Error {
+  constructor(
+    readonly filePath: string,
+    reason: string
+  ) {
+    super(`Invalid plugin allowlist at ${filePath}: ${reason}`);
+    this.name = "PluginAllowlistError";
+  }
+}
+
+/** Seams for tests. Production passes nothing and gets the real filesystem. */
+export type PluginAllowlistDeps = {
+  exists?: () => boolean;
+  readFile?: () => string;
+};
+
+/**
+ * Check the parsed document against the shape declared by
+ * plugins/plugin-allowlist.schema.json ("required": ["plugins"], "plugins"
+ * typed as an array of unique strings) by hand, rather than pulling in a
+ * JSON-schema library for one file. `"plugins": []` is a valid document -
+ * it means the operator deliberately wants nothing enabled - so only a
+ * missing/malformed "plugins" key is rejected, not an empty one.
+ */
+function assertValidAllowlist(
+  config: unknown,
+  filePath: string
+): asserts config is { plugins: string[] } {
+  if (typeof config !== "object" || config === null || Array.isArray(config)) {
+    throw new PluginAllowlistError(filePath, "document must be a JSON object");
+  }
+
+  if (!("plugins" in config)) {
+    throw new PluginAllowlistError(
+      filePath,
+      'missing required property "plugins"'
+    );
+  }
+
+  const { plugins } = config as { plugins: unknown };
+
+  if (!Array.isArray(plugins)) {
+    throw new PluginAllowlistError(filePath, '"plugins" must be an array');
+  }
+
+  if (!plugins.every((entry): entry is string => typeof entry === "string")) {
+    throw new PluginAllowlistError(
+      filePath,
+      '"plugins" must be an array of strings'
+    );
+  }
+
+  if (new Set(plugins).size !== plugins.length) {
+    throw new PluginAllowlistError(
+      filePath,
+      '"plugins" must not contain duplicate entries'
+    );
+  }
+}
+
+/**
+ * Load plugin allowlist from config file.
+ * Returns null if the file doesn't exist (meaning all plugins enabled).
+ * Throws PluginAllowlistError if the file exists but cannot be parsed, or
+ * does not match plugins/plugin-allowlist.schema.json.
+ */
+export function loadPluginAllowlist(
+  deps: PluginAllowlistDeps = {}
+): string[] | null {
+  const exists = deps.exists ?? (() => existsSync(PLUGIN_ALLOWLIST_FILE));
+  const readFile =
+    deps.readFile ?? (() => readFileSync(PLUGIN_ALLOWLIST_FILE, "utf-8"));
+
+  if (!exists()) {
     return null; // No allowlist = all plugins enabled
   }
 
+  let config: unknown;
   try {
-    const content = readFileSync(PLUGIN_ALLOWLIST_FILE, "utf-8");
-    const config = JSON.parse(content);
-    return config.plugins || [];
+    config = JSON.parse(readFile());
   } catch (error) {
-    console.warn(`   Warning: Failed to load plugin allowlist: ${error}`);
-    return null; // Fallback to all plugins on error
+    throw new PluginAllowlistError(
+      PLUGIN_ALLOWLIST_FILE,
+      error instanceof Error ? error.message : String(error)
+    );
   }
+
+  assertValidAllowlist(config, PLUGIN_ALLOWLIST_FILE);
+  return config.plugins;
 }
 
 // Track generated codegen templates
@@ -1148,7 +1327,7 @@ export function getOutputDisplayConfig(actionType: string): OutputDisplayConfig 
 /**
  * Main execution
  */
-async function main(): Promise<void> {
+export async function main(deps: ProtocolLoadDeps = {}): Promise<void> {
   console.log("Discovering plugins...");
 
   const plugins = discoverPlugins();
@@ -1168,15 +1347,21 @@ async function main(): Promise<void> {
     }
   }
 
+  // Protocols are loaded and registered before anything is written to disk.
+  // A failed load throws ProtocolDiscoveryError here, ahead of
+  // generateIndexFile()'s write to plugins/index.ts, so a bad protocol file
+  // leaves the whole tree untouched instead of half-regenerated. This also
+  // keeps protocols registered before plugins/index.ts is imported (in
+  // updateReadme() and generateStepRegistry() below), so that plugins which
+  // inject actions into protocol integrations (e.g. safe plugin -> safe
+  // protocol) can find the integration in the registry at import time --
+  // running the load first satisfies both constraints at once.
+  console.log("Registering protocol plugins...");
+  const protocolSlugs = await registerProtocolPlugins(deps);
+  console.log(`Registered ${protocolSlugs.length} protocol(s)`);
+
   console.log("Generating plugins/index.ts...");
   generateIndexFile(plugins.enabled);
-
-  // Register protocols BEFORE importing plugins so that plugins that inject
-  // actions into protocol integrations (e.g. safe plugin -> safe protocol)
-  // can find the integration in the registry at import time.
-  console.log("Registering protocol plugins...");
-  const protocolSlugs = await registerProtocolPlugins();
-  console.log(`Registered ${protocolSlugs.length} protocol(s)`);
 
   console.log("Generating protocols/index.ts...");
   generateProtocolsIndexFile();
@@ -1205,7 +1390,14 @@ async function main(): Promise<void> {
   console.log("Done! Plugin registry updated.\n");
 }
 
-main().catch((error) => {
-  console.error("Error:", error);
-  process.exit(1);
-});
+// Only when run directly, so a test can import loadPluginAllowlist or
+// loadProtocolDefinitions without regenerating the tree.
+// `require.main === module` rather than a
+// `process.argv[1]` suffix test - scripts/check-api-docs-routes.ts records why
+// identity beats comparing path spellings.
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Error:", error);
+    process.exit(1);
+  });
+}

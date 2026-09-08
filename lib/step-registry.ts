@@ -1717,6 +1717,22 @@ export const PLUGIN_STEP_IMPORTERS: Record<string, StepImporter> = {
     importer: () => import("@/plugins/elizaos/steps/execute-agent-action"),
     stepFunction: "executeAgentActionStep",
   },
+  "evm-chain/chain-info": {
+    importer: () => import("@/plugins/evm-chain/steps/chain-info"),
+    stepFunction: "chainInfoStep",
+  },
+  "evm-chain/eth-balance": {
+    importer: () => import("@/plugins/evm-chain/steps/eth-balance"),
+    stepFunction: "ethBalanceStep",
+  },
+  "evm-chain/erc20-balance": {
+    importer: () => import("@/plugins/evm-chain/steps/erc20-balance"),
+    stepFunction: "erc20BalanceStep",
+  },
+  "evm-chain/gas-price": {
+    importer: () => import("@/plugins/evm-chain/steps/gas-price"),
+    stepFunction: "gasPriceStep",
+  },
   "math/aggregate": {
     importer: () => import("@/plugins/math/steps/aggregate"),
     stepFunction: "aggregateStep",
@@ -2287,6 +2303,10 @@ export const ACTION_LABELS: Record<string, string> = {
   "code/run-code": "Run Code",
   "discord/send-message": "Send Discord Message",
   "elizaos/execute-agent-action": "Trigger Agent Action",
+  "evm-chain/chain-info": "Chain info",
+  "evm-chain/eth-balance": "Native token balance",
+  "evm-chain/erc20-balance": "ERC-20 balance",
+  "evm-chain/gas-price": "Gas price",
   "math/aggregate": "Aggregate",
   "sendgrid/send-email": "Send Email",
   "slack/send-message": "Send Slack Message",

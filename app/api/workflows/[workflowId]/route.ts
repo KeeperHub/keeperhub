@@ -555,6 +555,18 @@ export async function PATCH(
         );
       }
 
+      // Run the plan-gate before action-config validation so a plan-gated
+      // action (e.g. Run Code, Send Webhook) reports "upgrade required"
+      // instead of a generic INVALID_ACTION_CONFIG when its config is also
+      // incomplete.
+      const featureGuard = await enforceWorkflowFeatures(
+        extractActionTypeNodes(updateData.nodes),
+        existingWorkflow.organizationId
+      );
+      if (featureGuard.blocked) {
+        return featureGuard.response;
+      }
+
       const actionConfigValidation = validateWorkflowActionConfigs(
         updateData.nodes
       );
@@ -563,14 +575,6 @@ export async function PATCH(
           formatActionConfigValidationResponse(actionConfigValidation),
           { status: 422 }
         );
-      }
-
-      const featureGuard = await enforceWorkflowFeatures(
-        extractActionTypeNodes(updateData.nodes),
-        existingWorkflow.organizationId
-      );
-      if (featureGuard.blocked) {
-        return featureGuard.response;
       }
     }
 
