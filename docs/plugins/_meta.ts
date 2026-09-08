@@ -5,6 +5,7 @@ export default {
   tempo: "Tempo",
   code: "Code",
   math: "Math",
+  data: "Data",
   safe: "Safe",
   blockscout: "Blockscout",
   "aave-v3": "Aave V3",

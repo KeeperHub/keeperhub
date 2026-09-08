@@ -35,6 +35,8 @@ import type { ConditionGroup } from "@/lib/workflow/nodes/condition/builder-type
 import {
   DEFAULT_HTTP_METHOD,
   HTTP_METHODS,
+  MAX_RETRY_ATTEMPTS,
+  MAX_RETRY_DELAY_SECONDS,
 } from "@/lib/workflow/nodes/http-request/constants";
 import {
   createEmptyGroup,
@@ -71,6 +73,8 @@ import {
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { SchemaBuilder } from "./schema-builder";
 import { Web3ConnectionSelect } from "./web3-connection-select";
+
+const DIGITS_ONLY = /[^0-9]/g;
 
 type ConfigValue = string | boolean | Record<string, unknown> | undefined;
 
@@ -261,6 +265,49 @@ function HttpRequestFields({
           How long to wait for a response. Default 5 seconds, max 30.
         </p>
       </div>
+      <div className="space-y-2">
+        <Label htmlFor="retryAttempts">Retry attempts</Label>
+        <Input
+          disabled={disabled}
+          id="retryAttempts"
+          max={MAX_RETRY_ATTEMPTS}
+          min={0}
+          onChange={(e) => {
+            const raw = e.target.value.replace(DIGITS_ONLY, "");
+            onUpdateConfig("retryAttempts", raw);
+          }}
+          placeholder="0"
+          type="number"
+          value={(config?.retryAttempts as string) || ""}
+        />
+        <p className="text-muted-foreground text-xs">
+          Extra attempts after the first, for connection errors, timeouts and
+          retryable statuses (408, 425, 429, 5xx). Default 0, max{" "}
+          {MAX_RETRY_ATTEMPTS}.
+        </p>
+      </div>
+      {Number(config?.retryAttempts ?? 0) > 0 && (
+        <div className="space-y-2">
+          <Label htmlFor="retryDelay">Retry delay (seconds)</Label>
+          <Input
+            disabled={disabled}
+            id="retryDelay"
+            max={MAX_RETRY_DELAY_SECONDS}
+            min={0}
+            onChange={(e) => {
+              const raw = e.target.value.replace(DIGITS_ONLY, "");
+              onUpdateConfig("retryDelay", raw);
+            }}
+            placeholder="1"
+            type="number"
+            value={(config?.retryDelay as string) || ""}
+          />
+          <p className="text-muted-foreground text-xs">
+            Backs off linearly: attempt N waits this many seconds times N.
+            Default 1, max {MAX_RETRY_DELAY_SECONDS}.
+          </p>
+        </div>
+      )}
       <FailOnErrorSwitchField
         description="When off, a non-2xx response or timeout passes a soft error to the next node instead of failing the run."
         disabled={disabled}
