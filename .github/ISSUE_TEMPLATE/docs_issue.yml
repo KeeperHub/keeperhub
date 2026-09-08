@@ -1,0 +1,74 @@
+name: Documentation problem
+description: A docs page is wrong, missing, or contradicts the code.
+labels: ["documentation", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **You may not need this form.** A typo, a broken link, or a statement
+        that simply needs to match code which already behaves that way can go
+        straight to a pull request titled `docs: ...` - no issue required.
+
+        Use this form when the docs and the code genuinely disagree and it is
+        not obvious which one should change, or when a page is missing entirely.
+
+  - type: input
+    id: page
+    attributes:
+      label: Page
+      description: The URL on docs.keeperhub.com, or the path under `docs/`.
+      placeholder: https://docs.keeperhub.com/api/direct-execution
+    validations:
+      required: true
+
+  - type: textarea
+    id: claim
+    attributes:
+      label: "Reason: what the page says"
+      description: Quote the sentence or block, with the line number if you have it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reality
+    attributes:
+      label: "Reason: what the code does"
+      description: >-
+        The file and line that settles it, or the request and response showing
+        the real behaviour. A docs claim is only wrong relative to some code, so
+        this is the field that makes the issue answerable in one pass.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: "Scope: where else this appears"
+      description: >-
+        The same claim often appears on several pages, in a tool description, in
+        an error message, and in a type. List the ones you found, and say where
+        you looked and found it correct. Fixing one page and leaving four is the
+        common failure here.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: plan
+    attributes:
+      label: "Plan: which one changes"
+      options:
+        - The docs - the code is behaving correctly
+        - The code - the docs describe the intended behaviour
+        - Not sure, needs a maintainer to decide
+    validations:
+      required: true
+
+  - type: textarea
+    id: plan_detail
+    attributes:
+      label: "Plan: the correction"
+      description: >-
+        What the page should say instead, or what the code should do. If you
+        picked "not sure" above, say what would settle it.
+    validations:
+      required: true

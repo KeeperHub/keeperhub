@@ -1,0 +1,148 @@
+# Helm values for the keeperhub-sandbox release (staging cluster) via
+# techops-services/common@0.2.1.
+#
+# ECR_REGISTRY and IMAGE_TAG are substituted by deploy-sandbox.yaml at
+# deploy time (sed replacement, same pattern as deploy/event-tracker/).
+#
+# apply order (deploy-sandbox.yaml handles this automatically):
+#   1. helm upgrade --install keeperhub-sandbox ... -f this-file
+#   2. kubectl apply -f deploy/keeperhub-sandbox/staging/sa.yaml
+#   3. kubectl apply -f deploy/keeperhub-sandbox/staging/networkpolicy.yaml
+#   4. kubectl patch deployment --patch-file pod-hardening-patch.yaml
+#
+# Sandbox intentionally has:
+#   - ZERO externalSecrets (no AWS creds, no DB, no Turnkey, no Stripe)
+#   - no IRSA annotation (see sa.yaml)
+#   - automountServiceAccountToken: false at BOTH SA and Pod level
+#   - no RoleBinding targeting keeperhub-sandbox
+#   - distroless runtime image (no /bin/sh, no busybox, no commands)
+#   - readOnlyRootFilesystem with an in-memory tmpfs at /tmp
+#   - all Linux capabilities dropped, runAsNonRoot, seccomp RuntimeDefault
+#   - NetworkPolicy that denies all egress except kube-dns and public 443
+#
+# The security boundary: an escape from user JS yields no main-pod
+# secrets (CHILD_ENV_ALLOWLIST scrub), no K8s API access (no SA token
+# projected), no AWS STS access (no IRSA role), no commands to spawn
+# (distroless), no filesystem to write (readOnlyRootFilesystem), no
+# cluster lateral movement (NetworkPolicy denies postgres/redis/main-app),
+# and no public exfil to arbitrary endpoints (only TCP 443 to public
+# CIDR ranges; non-IP DNS resolution can be added later behind an egress
+# proxy).
+
+replicaCount: 1
+
+service:
+  enabled: true
+  name: keeperhub-sandbox
+  port: 8787
+  type: ClusterIP
+  containerPort: 8787
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-sandbox-staging
+  tag: sandbox-${IMAGE_TAG}
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+  # /tmp must remain writable while the rest of the root filesystem is
+  # read-only (see securityContext.readOnlyRootFilesystem below). Node
+  # uses /tmp for v8 compile cache and any user-code tempfile writes.
+  # The chart only renders sizeLimit here; the medium: Memory override
+  # (so /tmp is backed by tmpfs rather than node disk) is applied via
+  # pod-hardening-patch.yaml because the chart template strips the
+  # medium field.
+  volumes:
+    - name: tmp
+      mountPath: /tmp
+      emptyDir:
+        sizeLimit: 64Mi
+
+# Use the pre-created SA from sa.yaml so automountServiceAccountToken:
+# false is set at the SA object level (chart doesn't expose that toggle).
+serviceAccount:
+  create: false
+  name: keeperhub-sandbox
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 128Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+env:
+  NODE_ENV:
+    type: kv
+    value: "production"
+  SANDBOX_PORT:
+    type: kv
+    value: "8787"
+
+# Pod-level security: matches the local validation manifest exactly so
+# every environment (minikube validation, staging, prod) shares the
+# same posture. The chart wires this into spec.template.spec.securityContext.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security: dropped to the smallest viable surface.
+# readOnlyRootFilesystem: true requires the tmpfs /tmp volume above.
+# capabilities.drop: [ALL] is safe because the sandbox only listens
+# on TCP 8787, which it gets via the chart's containerPort spec - no
+# capability is needed to bind a high port as non-root.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Pin the sandbox Pod to the dedicated Karpenter NodePool whose nodes
+# carry a stripped IAM role (no SSM, no S3, no SecretsManager, no KMS).
+# The NodePool and EC2NodeClass are defined in the infrastructure repo
+# (staging/eks-cluster/karpenter-sandbox.tf, prod/eks-cluster/karpenter-sandbox.tf).
+#
+# Even if a future kernel exploit lets an attacker escape this container
+# to the host node, the instance-profile credentials reachable via IMDS
+# carry no permissions reusable against any other workload.
+#
+# nodeSelector restricts scheduling to nodes labeled by the sandbox
+# NodePool template. tolerations let the Pod be scheduled despite the
+# NoSchedule taint that keeps non-sandbox workloads off these nodes.
+nodeSelector:
+  node-role.keeperhub.io/sandbox-only: "true"
+
+tolerations:
+  - key: node-role.keeperhub.io/sandbox-only
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8787
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: 8787
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3

@@ -1,0 +1,19 @@
+[
+  {
+    "type": "function",
+    "name": "deposit",
+    "stateMutability": "payable",
+    "inputs": [],
+    "outputs": []
+  },
+  {
+    "type": "event",
+    "name": "DepositReceived",
+    "anonymous": false,
+    "inputs": [
+      { "name": "from", "type": "address", "indexed": true },
+      { "name": "amount", "type": "uint256", "indexed": false },
+      { "name": "time", "type": "uint256", "indexed": false }
+    ]
+  }
+]

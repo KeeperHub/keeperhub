@@ -1,0 +1,323 @@
+# Type: reusable | Called by ci-pipeline.yml
+# Builds Docker images via docker-bake.hcl and pushes to ECR.
+# Skips build if images already exist for the current commit SHA (rerun optimization).
+name: Build Images
+
+on:
+  workflow_dispatch: {}
+  workflow_call:
+    outputs:
+      image_tag:
+        description: "Short SHA used as image tag"
+        value: ${{ jobs.build.outputs.image_tag }}
+      sandbox_image:
+        description: "Full ECR ref of the prebuilt sandbox image for e2e to pull"
+        value: ${{ jobs.build.outputs.sandbox_image }}
+      ecr_registry:
+        description: "ECR registry URL"
+        value: ${{ jobs.build.outputs.ecr_registry }}
+      ecr_repo:
+        description: "ECR repository name"
+        value: ${{ jobs.build.outputs.ecr_repo }}
+      ecr_region:
+        description: "AWS region for ECR"
+        value: ${{ jobs.build.outputs.ecr_region }}
+      skip_build:
+        description: "true when [skip build] was in the commit message"
+        value: ${{ jobs.build.outputs.skip_build }}
+      images_exist:
+        description: "true when every pipeline image already exists in ECR for this SHA"
+        value: ${{ jobs.build.outputs.images_exist }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+    outputs:
+      image_tag: ${{ steps.vars.outputs.sha_short }}
+      sandbox_image: ${{ steps.sandbox-image.outputs.sandbox_image }}
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+      ecr_repo: ${{ steps.vars.outputs.ecr_repo }}
+      ecr_region: ${{ steps.vars.outputs.ecr_region }}
+      # Surfaced so the sibling sentry-upload job (ci-pipeline.yml) can reuse the
+      # same skip/rerun guard the build steps use without re-querying ECR.
+      skip_build: ${{ steps.skip.outputs.skip_build }}
+      images_exist: ${{ steps.check-image.outputs.exists }}
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      AWS_ECR_NAME: ${{ vars.TO_ECR_NAME }}
+      # Satellite ECR repos follow the same keeperhub-<component>-<env> convention
+      # the standalone deploy workflows used. All live in the same TechOps account.
+      EXECUTOR_ECR_NAME: keeperhub-executor-${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      SCHEDULER_ECR_NAME: keeperhub-scheduler-${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      COLLECTOR_ECR_NAME: keeperhub-metrics-collector-${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      # Baked alongside the pipeline on push so the e2e jobs pull a prebuilt
+      # image instead of each rebuilding the sandbox locally (~72s/job). Same
+      # convention deploy-sandbox.yaml uses; the sandbox target has its own
+      # Dockerfile and cache scope, so it does not share the app builder stage.
+      SANDBOX_ECR_NAME: keeperhub-sandbox-${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      ENVIRONMENT_TAG: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      # INCLUDE_TEST_ENDPOINTS is derived from ENVIRONMENT_TAG in the
+      # "Derive build flags" step below (KEEP-237).
+      NEXT_PUBLIC_AUTH_PROVIDERS: ${{ vars.NEXT_PUBLIC_AUTH_PROVIDERS }}
+      NEXT_PUBLIC_GITHUB_CLIENT_ID: ${{ vars.NEXT_PUBLIC_GITHUB_CLIENT_ID }}
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${{ vars.NEXT_PUBLIC_GOOGLE_CLIENT_ID }}
+      NEXT_PUBLIC_BILLING_ENABLED: ${{ vars.NEXT_PUBLIC_BILLING_ENABLED }}
+      NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED: ${{ vars.NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED }}
+      NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+      NEXT_PUBLIC_SENTRY_DSN: ${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
+      SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Derive build flags
+        run: |
+          if [[ "$ENVIRONMENT_TAG" != "prod" ]]; then
+            echo "INCLUDE_TEST_ENDPOINTS=true" >> "$GITHUB_ENV"
+          fi
+
+      # docker-bake.hcl reads the repo names under different variable names than
+      # the job env above uses. Export them once, derived from the *_ECR_NAME
+      # values so there is a single source of truth for each repo, and every
+      # later step (both bake attempts) inherits them. KEEP-1206: doing this here
+      # rather than on the bake step means the build and its retry cannot drift
+      # apart, and no repo name is written down twice.
+      - name: Export bake repository variables
+        run: |
+          {
+            echo "ECR_REPO=${AWS_ECR_NAME}"
+            echo "EXECUTOR_ECR_REPO=${EXECUTOR_ECR_NAME}"
+            echo "SCHEDULER_ECR_REPO=${SCHEDULER_ECR_NAME}"
+            echo "METRICS_COLLECTOR_ECR_REPO=${COLLECTOR_ECR_NAME}"
+            echo "SANDBOX_ECR_REPO=${SANDBOX_ECR_NAME}"
+          } >> "$GITHUB_ENV"
+
+      - name: Check commit message for skip flags
+        id: skip
+        run: |
+          MSG=$(git log -1 --format=%B)
+          echo "skip_build=$([[ "$MSG" == *"[skip build]"* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Extract commit hash and ECR coordinates
+        id: vars
+        run: |
+          # --short=7 is pinned, NOT left to `git rev-parse --short`. That
+          # abbreviates to whatever length the local object count needs (7 in
+          # this shallow checkout, 9 in a full clone), which would silently move
+          # every image tag. ci-pipeline.yml's resolve-e2e-image job pins the
+          # same 7 so it can find the image this job pushed. KEEP-1206.
+          SHA=$(git rev-parse --short=7 HEAD)
+          if [[ ${#SHA} -ne 7 ]]; then
+            echo "::error::Expected a 7-character commit SHA, got '${SHA}'. Image tags would move; fix this before building."
+            exit 1
+          fi
+          {
+            echo "sha_short=${SHA}"
+            echo "ecr_repo=${AWS_ECR_NAME}"
+            echo "ecr_region=${REGION}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check if images already exist
+        id: check-image
+        run: |
+          IMAGE_TAG="${{ steps.vars.outputs.sha_short }}"
+          ALL_EXIST=true
+          # repo:prefix pairs for every image in the pipeline bake group.
+          # KEEP-1259: the sandbox is deliberately absent. The bake no longer
+          # writes a per-commit sandbox tag, so there is nothing SHA-keyed to
+          # look for. Its sandbox-latest tag is re-put onto the same digest on
+          # every push, so a skipped rerun still leaves the right image in place,
+          # and the "Resolve the sandbox image" step below reads it either way.
+          for pair in \
+            "${{ env.AWS_ECR_NAME }}:app" \
+            "${{ env.AWS_ECR_NAME }}:migrator" \
+            "${{ env.AWS_ECR_NAME }}:workflow-runner" \
+            "${{ env.EXECUTOR_ECR_NAME }}:executor" \
+            "${{ env.SCHEDULER_ECR_NAME }}:schedule" \
+            "${{ env.SCHEDULER_ECR_NAME }}:block" \
+            "${{ env.COLLECTOR_ECR_NAME }}:collector"; do
+            repo="${pair%%:*}"; prefix="${pair##*:}"
+            if aws ecr describe-images \
+              --repository-name "${repo}" \
+              --image-ids "imageTag=${prefix}-${IMAGE_TAG}" \
+              --region "${{ env.REGION }}" >/dev/null 2>&1; then
+              echo "${repo}:${prefix}-${IMAGE_TAG} exists"
+            else
+              echo "${repo}:${prefix}-${IMAGE_TAG} not found"
+              ALL_EXIST=false
+            fi
+          done
+          echo "exists=${ALL_EXIST}" >> "$GITHUB_OUTPUT"
+
+      - name: Fail fast if build skipped but image missing
+        if: steps.skip.outputs.skip_build == 'true' && steps.check-image.outputs.exists != 'true'
+        run: |
+          echo "::error::Cannot skip build: one or more images for ${{ steps.vars.outputs.sha_short }} do not exist in ECR. Remove [skip build] from the commit message or push a build first."
+          exit 1
+
+      - name: Free runner disk space
+        if: steps.skip.outputs.skip_build != 'true' && steps.check-image.outputs.exists != 'true'
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: false
+
+      - name: Set up Docker Buildx
+        if: steps.skip.outputs.skip_build != 'true' && steps.check-image.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@v4
+
+      # KEEP-1206: the `actions/cache` + `buildkit-cache-dance` pair that used to
+      # sit here is gone. Both existed to carry `.next/cache` across ephemeral
+      # runners so `next build` would run warm. Turbopack (the build default
+      # since Next 16) writes no persistent compile cache, so there was never
+      # anything to carry. Measured on 2026-08-24: after a full production build
+      # `.next/cache` holds only `.tsbuildinfo` plus the workflow DevKit
+      # manifests. The saved cache bore that out - 495 KB, every run. The
+      # Dockerfile keeps its `nextjs-build-cache` mount, which still serialises
+      # targets that share the builder stage within one bake; only the
+      # cross-run persistence is dropped. Restore this only alongside a Next
+      # version that actually persists a build cache, and confirm a cache
+      # larger than a megabyte really appears before trusting it.
+
+      # KEEP-1206. `pnpm build` inside this bake needs more than 16 GiB and at
+      # most 20 GiB (measured 2026-08-24: OOM-killed under a 16 GiB hard limit,
+      # clean at 20 GiB, peak 20.1 GiB, 4 CPUs, swap off). A standard runner has
+      # 16 GiB of RAM plus roughly 4 GiB of swap, so this build only just fits
+      # and it fits by swapping - which is why it takes 17-19 minutes rather than
+      # the ~6 it takes with real headroom, and why it dies outright when
+      # anything else on the runner wants memory. Measured rate: 4 failures in
+      # the last 40 push runs, staging and prod alike, all
+      # `ResourceExhausted: ... cannot allocate memory`.
+      #
+      # The retry below is a STOPGAP, not a fix. It works because BuildKit keeps
+      # the layers the first attempt completed, so the retry resumes rather than
+      # starting cold. It does not reduce the 20 GiB. Upgrading Next is NOT the
+      # way out: 16.3.2 was measured at ~30 GiB on this codebase, half again
+      # worse, and would break this build outright. The real fixes are more
+      # memory for this job or a smaller module graph.
+      #
+      # The verdict step below deliberately shouts when the retry was needed, so
+      # the failure rate stays visible instead of being hidden by the retry.
+      - name: Build and push all images to ECR
+        id: bake
+        if: steps.skip.outputs.skip_build != 'true' && steps.check-image.outputs.exists != 'true'
+        continue-on-error: true
+        uses: docker/bake-action@v7
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+          SENTRY_RELEASE: ${{ steps.vars.outputs.sha_short }}
+        with:
+          files: docker-bake.hcl
+          # sandbox baked in the same session so it pushes under the app-compile
+          # shadow instead of adding a serial ~72s to every e2e job. It has its
+          # own Dockerfile/context and cache scope, so it builds independently
+          # of the shared app builder stage, and from warm cache it costs about
+          # 11 seconds beside a 17-19 minute app compile.
+          #
+          # KEEP-1259: this bake does NOT set SANDBOX_COMMIT_TAG, so it pushes
+          # the sandbox under sandbox-latest and the environment tag only. Baking
+          # it here is what lets the resolve step below hand e2e the digest this
+          # very run produced, so e2e can never pull a stale sandbox.
+          targets: |
+            pipeline
+            sandbox
+          push: true
+
+      - name: Retry the image build once
+        id: bake-retry
+        if: steps.skip.outputs.skip_build != 'true' && steps.check-image.outputs.exists != 'true' && steps.bake.outcome == 'failure'
+        continue-on-error: true
+        uses: docker/bake-action@v7
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+          SENTRY_RELEASE: ${{ steps.vars.outputs.sha_short }}
+        with:
+          files: docker-bake.hcl
+          targets: |
+            pipeline
+            sandbox
+          push: true
+
+      - name: Image build verdict
+        if: steps.skip.outputs.skip_build != 'true' && steps.check-image.outputs.exists != 'true'
+        env:
+          FIRST: ${{ steps.bake.outcome }}
+          RETRY: ${{ steps.bake-retry.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "${FIRST}" == "success" ]]; then
+            echo "Image build succeeded on the first attempt."
+            exit 0
+          fi
+          if [[ "${RETRY}" == "success" ]]; then
+            echo "::warning title=Image build needed its retry::The first bake attempt failed and the retry passed. Open the failed Build and push all images to ECR step and read the last BuildKit error before you record a cause. A memory failure says cannot allocate memory or ResourceExhausted. That build needs up to 20 GiB and a standard runner has about 20 GiB including swap, so the retry resumes from the layers the first attempt finished. Any other error is a transient fault that the retry hid. Track how often this warning appears. If the memory case becomes common, give the job more memory or make the module graph smaller."
+            exit 0
+          fi
+          echo "::error title=Image build failed twice::Both bake attempts failed. Do not assume a cause. Open the Build and push all images to ECR step and read the last BuildKit error. Three signatures are known. 1. cannot allocate memory or ResourceExhausted means the runner ran out of memory, and a re-run does not reliably help because this job needs more memory than a standard runner has. 2. denied, the subject of your artifact has the maximum number of artifacts, means ECR refused an attestation push. Every re-run fails the same way until the attestation is disabled or the referrers are removed, so stop retrying. 3. any other denied or unauthorized is an ECR authentication or repository policy problem. Re-run only when the log shows a fault that is really transient."
+          exit 1
+
+      # e2e pulls the sandbox by digest, not by tag. KEEP-1259.
+      #
+      # The bake above pushes the sandbox under sandbox-latest and the environment
+      # tag, and no longer under a per-commit tag, because the sandbox digest does
+      # not change between commits and ECR caps one image at 1000 tags. Resolving
+      # the digest here rather than passing "sandbox-latest" down matters for two
+      # reasons. Three e2e jobs read this output in parallel, so a floating tag
+      # could be re-pointed under them by a concurrent deploy-sandbox push. And a
+      # tag that does not resolve fails HERE, once, instead of failing three times
+      # inside the e2e jobs.
+      #
+      # This step runs even when the bake was skipped by [skip build] or by the
+      # rerun guard. sandbox-latest is idempotent, so the image is already correct
+      # in those cases and e2e still needs a ref for it.
+      - name: Resolve the sandbox image for e2e
+        id: sandbox-image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "${SANDBOX_ECR_NAME}" \
+            --image-ids imageTag=sandbox-latest \
+            --region "${REGION}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text 2>/dev/null || true)
+          if [[ -z "${DIGEST}" || "${DIGEST}" == "None" ]]; then
+            echo "::error::Could not resolve ${SANDBOX_ECR_NAME}:sandbox-latest to a digest. Every sandbox bake pushes that tag, so its absence means the repository was emptied or this job cannot read it. e2e cannot start a sandbox without it. Run the deploy-sandbox workflow to republish the image, then re-run this pipeline."
+            exit 1
+          fi
+          echo "sandbox-latest resolves to ${DIGEST}"
+          echo "sandbox_image=${REGISTRY}/${SANDBOX_ECR_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # Sentry source-map upload moved out to its own sentry-upload.yml job,
+      # fanned out from build-images in ci-pipeline.yml so it runs parallel to
+      # e2e instead of extending this job's critical path. It consumes the
+      # :cache-app scope this pipeline bake just pushed, so it stays ordered
+      # after build via `needs: [build-images]`.

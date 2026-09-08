@@ -1,0 +1,160 @@
+{
+  "protocol": "chronicle",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "MCP Test: Chronicle All Mainnet Named Feeds",
+  "description": "Test all 8 named feed read actions on mainnet: ETH/USD, BTC/USD, USDC/USD, USDT/USD (read + readWithAge each)",
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 50, "y": 400 },
+      "data": {
+        "type": "trigger",
+        "label": "Manual Trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle",
+        "description": "Run manually"
+      }
+    },
+    {
+      "id": "eth-read",
+      "type": "action",
+      "position": { "x": 350, "y": 50 },
+      "data": {
+        "type": "action",
+        "label": "ETH/USD Read",
+        "description": "Read ETH/USD price from Chronicle mainnet oracle",
+        "config": {
+          "actionType": "chronicle/eth-usd-read",
+          "network": "1",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"ethUsd\",\"functionName\":\"read\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "eth-age",
+      "type": "action",
+      "position": { "x": 350, "y": 150 },
+      "data": {
+        "type": "action",
+        "label": "ETH/USD Read with Age",
+        "description": "Read ETH/USD price with timestamp from Chronicle mainnet oracle",
+        "config": {
+          "actionType": "chronicle/eth-usd-read-with-age",
+          "network": "1",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"ethUsd\",\"functionName\":\"readWithAge\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "btc-read",
+      "type": "action",
+      "position": { "x": 350, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "BTC/USD Read",
+        "description": "Read BTC/USD price from Chronicle mainnet oracle",
+        "config": {
+          "actionType": "chronicle/btc-usd-read",
+          "network": "1",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"btcUsd\",\"functionName\":\"read\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "btc-age",
+      "type": "action",
+      "position": { "x": 350, "y": 350 },
+      "data": {
+        "type": "action",
+        "label": "BTC/USD Read with Age",
+        "description": "Read BTC/USD price with timestamp from Chronicle mainnet oracle",
+        "config": {
+          "actionType": "chronicle/btc-usd-read-with-age",
+          "network": "1",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"btcUsd\",\"functionName\":\"readWithAge\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "usdc-read",
+      "type": "action",
+      "position": { "x": 350, "y": 450 },
+      "data": {
+        "type": "action",
+        "label": "USDC/USD Read",
+        "description": "Read USDC/USD price from Chronicle mainnet oracle",
+        "config": {
+          "actionType": "chronicle/usdc-usd-read",
+          "network": "1",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"usdcUsd\",\"functionName\":\"read\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "usdc-age",
+      "type": "action",
+      "position": { "x": 350, "y": 550 },
+      "data": {
+        "type": "action",
+        "label": "USDC/USD Read with Age",
+        "description": "Read USDC/USD price with timestamp from Chronicle mainnet oracle",
+        "config": {
+          "actionType": "chronicle/usdc-usd-read-with-age",
+          "network": "1",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"usdcUsd\",\"functionName\":\"readWithAge\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "usdt-read",
+      "type": "action",
+      "position": { "x": 350, "y": 650 },
+      "data": {
+        "type": "action",
+        "label": "USDT/USD Read",
+        "description": "Read USDT/USD price from Chronicle mainnet oracle",
+        "config": {
+          "actionType": "chronicle/usdt-usd-read",
+          "network": "1",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"usdtUsd\",\"functionName\":\"read\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "usdt-age",
+      "type": "action",
+      "position": { "x": 350, "y": 750 },
+      "data": {
+        "type": "action",
+        "label": "USDT/USD Read with Age",
+        "description": "Read USDT/USD price with timestamp from Chronicle mainnet oracle",
+        "config": {
+          "actionType": "chronicle/usdt-usd-read-with-age",
+          "network": "1",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"usdtUsd\",\"functionName\":\"readWithAge\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger-1", "target": "eth-read" },
+    { "id": "e2", "source": "trigger-1", "target": "eth-age" },
+    { "id": "e3", "source": "trigger-1", "target": "btc-read" },
+    { "id": "e4", "source": "trigger-1", "target": "btc-age" },
+    { "id": "e5", "source": "trigger-1", "target": "usdc-read" },
+    { "id": "e6", "source": "trigger-1", "target": "usdc-age" },
+    { "id": "e7", "source": "trigger-1", "target": "usdt-read" },
+    { "id": "e8", "source": "trigger-1", "target": "usdt-age" }
+  ]
+}

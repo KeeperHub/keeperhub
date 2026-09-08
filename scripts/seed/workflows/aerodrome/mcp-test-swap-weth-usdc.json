@@ -1,0 +1,77 @@
+{
+  "protocol": "aerodrome",
+  "network": "8453",
+  "networkName": "base",
+  "type": "write",
+  "name": "MCP Test: Base WETH Wrap + Approve + Aerodrome Swap WETH to USDC",
+  "description": "Wrap Base ETH to WETH, approve for Aerodrome router, swap 0.0005 WETH to USDC on Base. Note: routes tuple[] encoding has a known issue -- see work log.",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "wrap",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Wrap ETH to WETH",
+        "type": "action",
+        "config": {
+          "actionType": "wrapped/wrap",
+          "network": "8453",
+          "ethValue": "0.001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "approve",
+      "type": "action",
+      "position": { "x": 544, "y": 0 },
+      "data": {
+        "label": "Approve WETH for Aerodrome",
+        "type": "action",
+        "config": {
+          "actionType": "web3/approve-token",
+          "network": "8453",
+          "tokenConfig": "{\"mode\":\"custom\",\"customToken\":{\"address\":\"0x4200000000000000000000000000000000000006\",\"symbol\":\"WETH\"}}",
+          "spenderAddress": "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43",
+          "amount": "max"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "swap",
+      "type": "action",
+      "position": { "x": 816, "y": 0 },
+      "data": {
+        "label": "Swap WETH to USDC",
+        "type": "action",
+        "config": {
+          "actionType": "aerodrome/swap-exact-tokens",
+          "network": "8453",
+          "amountIn": "500000000000000",
+          "amountOutMin": "0",
+          "routes": "[[\"0x4200000000000000000000000000000000000006\",\"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913\",false,\"0x420DD381b31aEf6683db6B902084cB0FFECe40Da\"]]",
+          "to": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9",
+          "deadline": "9999999999"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "wrap", "type": "animated" },
+    { "id": "e2", "source": "wrap", "target": "approve", "type": "animated" },
+    { "id": "e3", "source": "approve", "target": "swap", "type": "animated" }
+  ]
+}

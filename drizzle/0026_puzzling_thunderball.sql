@@ -1,0 +1,1 @@
+CREATE INDEX "idx_workflow_executions_status" ON "workflow_executions" USING btree ("status");

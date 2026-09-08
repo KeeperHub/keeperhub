@@ -1,0 +1,39 @@
+{
+  "protocol": "lido",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Lido Unwrap wstETH to stETH",
+  "description": "Unwrap 0.002 wstETH to stETH on mainnet",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "unwrap",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Unwrap wstETH",
+        "type": "action",
+        "config": {
+          "actionType": "lido/unwrap",
+          "network": "1",
+          "_wstETHAmount": "2000000000000000"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "unwrap", "type": "animated" }
+  ]
+}

@@ -1,0 +1,233 @@
+name: Cleanup PR Environment
+
+concurrency:
+  group: pr-env-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    types: [closed, unlabeled]
+    branches:
+      - staging
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check-cleanup:
+    runs-on: ubuntu-latest
+    outputs:
+      should-cleanup: ${{ steps.check.outputs.cleanup }}
+    steps:
+      - name: Check if cleanup is needed
+        id: check
+        run: |
+          # Cleanup if PR is closed OR if deploy-pr-environment label was removed
+          if [[ "${{ github.event.action }}" == "closed" ]] || \
+             [[ "${{ github.event.action }}" == "unlabeled" && "${{ github.event.label.name }}" == "deploy-pr-environment" ]]; then
+            echo "cleanup=true" >> $GITHUB_OUTPUT
+          else
+            echo "cleanup=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if environment exists
+        id: check-env
+        if: steps.check.outputs.cleanup == 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # This will be verified in the cleanup job with kubectl
+          echo "pr-number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+
+  cleanup:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write # actions/github-script posts PR comments
+    needs: check-cleanup
+    if: needs.check-cleanup.outputs.should-cleanup == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REGION: ${{ vars.TO_REGION }}
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      NAMESPACE: pr-${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Connect to EKS
+        uses: ./.github/actions/eks-connect
+        with:
+          enabled: ${{ vars.TO_EKS_CONNECT }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          region: ${{ env.REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.REGION }}
+
+      - name: Check if namespace exists
+        id: check-namespace
+        run: |
+          if kubectl get namespace ${{ env.NAMESPACE }} >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Namespace ${{ env.NAMESPACE }} exists and will be deleted"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Namespace ${{ env.NAMESPACE }} does not exist, nothing to clean up"
+          fi
+
+      - name: Get environment info before cleanup
+        if: steps.check-namespace.outputs.exists == 'true'
+        run: |
+          echo "=== Environment Resources Before Cleanup ==="
+          kubectl get all -n ${{ env.NAMESPACE }} || true
+          echo ""
+          echo "=== Persistent Volume Claims ==="
+          kubectl get pvc -n ${{ env.NAMESPACE }} || true
+          echo ""
+          echo "=== PostgreSQL Clusters ==="
+          kubectl get clusters -n ${{ env.NAMESPACE }} || true
+
+      - name: Delete all Helm releases
+        if: steps.check-namespace.outputs.exists == 'true'
+        run: |
+          echo "Listing Helm releases in namespace ${{ env.NAMESPACE }}:"
+          helm list -n ${{ env.NAMESPACE }}
+          for release in $(helm list -n ${{ env.NAMESPACE }} -q 2>/dev/null); do
+            echo "Uninstalling Helm release: $release"
+            helm uninstall "$release" -n ${{ env.NAMESPACE }} --wait --timeout 5m || {
+              echo "Warning: Failed to uninstall $release, continuing with cleanup..."
+            }
+          done
+
+      - name: Delete PostgreSQL cluster
+        if: steps.check-namespace.outputs.exists == 'true'
+        run: |
+          # Delete PostgreSQL cluster to ensure proper cleanup
+          if kubectl get cluster keeperhub-pr-${{ env.PR_NUMBER }}-db -n ${{ env.NAMESPACE }} >/dev/null 2>&1; then
+            echo "Deleting PostgreSQL cluster"
+            kubectl delete cluster keeperhub-pr-${{ env.PR_NUMBER }}-db -n ${{ env.NAMESPACE }} --wait=false
+          fi
+
+      - name: Delete namespace
+        if: steps.check-namespace.outputs.exists == 'true'
+        run: |
+          echo "Deleting namespace ${{ env.NAMESPACE }}"
+          kubectl delete namespace ${{ env.NAMESPACE }} --timeout=10m || {
+            echo "Warning: Namespace deletion timed out or failed"
+            echo "Checking for stuck resources..."
+            kubectl get all -n ${{ env.NAMESPACE }} || true
+
+            # Try to force delete finalizers if namespace is stuck
+            echo "Attempting to remove finalizers..."
+            kubectl patch namespace ${{ env.NAMESPACE }} -p '{"metadata":{"finalizers":[]}}' --type=merge || true
+          }
+
+      - name: Verify cleanup
+        run: |
+          # Wait a bit for cleanup to propagate
+          sleep 10
+
+          if kubectl get namespace ${{ env.NAMESPACE }} >/dev/null 2>&1; then
+            echo "⚠️ Warning: Namespace still exists after cleanup attempt"
+            kubectl get namespace ${{ env.NAMESPACE }}
+            echo ""
+            echo "Resources still in namespace:"
+            kubectl get all -n ${{ env.NAMESPACE }}
+            exit 1
+          else
+            echo "✅ Namespace successfully deleted"
+          fi
+
+      - name: Comment on PR (success)
+        if: success()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const namespace = 'pr-' + prNumber;
+
+            const comment = `## 🧹 PR Environment Cleaned Up
+
+            The PR environment has been successfully deleted.
+
+            **Deleted Resources:**
+            - Namespace: \`${namespace}\`
+            - All Helm releases (Keeperhub, Scheduler, Event services)
+            - PostgreSQL Database (including data)
+            - LocalStack, Redis
+            - All associated secrets and configs
+
+            All resources have been cleaned up and will no longer incur costs.
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Comment on PR (failure)
+        if: failure() && steps.check-namespace.outputs.exists == 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const namespace = 'pr-' + prNumber;
+
+            const comment = `## ⚠️ PR Environment Cleanup Issues
+
+            The PR environment cleanup encountered issues.
+
+            **Namespace:** \`${namespace}\`
+
+            Some resources may still exist. Please check the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+
+            You may need to manually clean up:
+            \`\`\`bash
+            kubectl delete namespace ${namespace} --force --grace-period=0
+            \`\`\`
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Comment on PR (no environment)
+        if: steps.check-namespace.outputs.exists == 'false'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+
+            const comment = `## ℹ️ No PR Environment to Clean Up
+
+            No PR environment was found for this PR. This is expected if:
+            - The PR never had the \`deploy-pr-environment\` label
+            - The environment was already cleaned up
+            - The deployment never completed successfully
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });

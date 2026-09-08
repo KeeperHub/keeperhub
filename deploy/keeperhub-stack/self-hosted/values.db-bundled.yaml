@@ -1,0 +1,42 @@
+# DB_MODE=bundled - the chart runs PostgreSQL as a CloudNativePG Cluster, which
+# brings HA, failover, backup and restore with it.
+#
+# Requires the CloudNativePG operator to be installed cluster-wide first. Its
+# CRDs are cluster-scoped, so they cannot come from this release.
+#
+# No env here. The connection string is read from a Secret in both modes (see
+# values.yaml); in this mode the chart composes it from the credentials it
+# generates and writes that Secret itself. Deliberately not CloudNativePG's own
+# generated Secret: its `uri` and `fqdn-uri` keys use hosts that do not end
+# .svc.cluster.local, so the application forces sslmode=verify-full and then
+# fails TLS against the in-cluster certificate.
+#
+# credentialsSecret is deliberately not set. The chart derives the same name in
+# the Secret it writes and in the Cluster that bootstraps from it, so leaving it
+# empty keeps those two in step. Set it only if you create that Secret yourself.
+postgresql:
+  bundled: true
+  database: keeperhub
+  owner: keeperhub
+  # 3 gives automatic failover and needs that many schedulable nodes; the extra
+  # instances never become ready without them. 1 is the safe default because it
+  # installs anywhere.
+  instances: 1
+  storage:
+    size: 20Gi
+  # CloudNativePG creates an owner, not a superuser, and the upstream test
+  # harness sets session_replication_role to 'replica' so it can delete users
+  # without tripping the append-only trigger on security_audit_log. Without this
+  # grant, two of the three call sites run in Playwright globalSetup, so the
+  # whole run aborts before a single test executes.
+  #
+  # This is not the escalation it looks like. The owner already owns every table
+  # and can ALTER TABLE ... DISABLE TRIGGER, so it can bypass that guard today.
+  # Granting the one parameter adds no capability; it only makes the supported
+  # route work. Remove the entry if you would rather it fail closed.
+  #
+  # It rides on a bootstrap hook CloudNativePG runs once, so an existing database
+  # needs it issued by hand:
+  #   GRANT SET ON PARAMETER session_replication_role TO keeperhub;
+  grantSetOnParameters:
+    - session_replication_role

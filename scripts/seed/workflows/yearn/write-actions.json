@@ -1,0 +1,82 @@
+{
+  "protocol": "yearn",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "Protocol Test: Yearn V3 Write Actions",
+  "description": "Tests all Yearn V3 write actions on Ethereum mainnet using yvUSDC vault",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 200 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-deposit",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Vault Deposit",
+        "description": "Deposit USDC into the yvUSDC vault",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-deposit",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93",
+          "assets": "1000000",
+          "receiver": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-withdraw",
+      "type": "action",
+      "position": { "x": 450, "y": 200 },
+      "data": {
+        "label": "Vault Withdraw",
+        "description": "Withdraw USDC from the yvUSDC vault",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-withdraw",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93",
+          "assets": "1000000",
+          "receiver": "0x0000000000000000000000000000000000000001",
+          "owner": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-redeem",
+      "type": "action",
+      "position": { "x": 450, "y": 400 },
+      "data": {
+        "label": "Vault Redeem",
+        "description": "Redeem yvUSDC shares for USDC",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-redeem",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93",
+          "shares": "1000000",
+          "receiver": "0x0000000000000000000000000000000000000001",
+          "owner": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e-trigger-to-yearn-vault-deposit", "source": "node-1", "target": "yearn-vault-deposit", "type": "animated" },
+    { "id": "e-trigger-to-yearn-vault-withdraw", "source": "node-1", "target": "yearn-vault-withdraw", "type": "animated" },
+    { "id": "e-trigger-to-yearn-vault-redeem", "source": "node-1", "target": "yearn-vault-redeem", "type": "animated" }
+  ]
+}

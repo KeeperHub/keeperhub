@@ -1,0 +1,12 @@
+-- KEEP-395 / KEEP-398: add output_raw column to workflow_execution_logs.
+--
+-- `output` is written by logStepCompleteDb as redactSensitiveData(output) for
+-- observability and UI display. `output_raw` stores the unredacted step payload
+-- so the executor can recover the real value on cross-process / cross-pod SDK
+-- resumes without silently injecting "[REDACTED]" strings into downstream
+-- template rendering.
+--
+-- The column is nullable (no DEFAULT) to remain backward-compatible with rows
+-- already committed before this migration; the executor only reads output_raw
+-- when present, falling back to null (which is the same as a DB miss today).
+ALTER TABLE "workflow_execution_logs" ADD COLUMN "output_raw" jsonb;

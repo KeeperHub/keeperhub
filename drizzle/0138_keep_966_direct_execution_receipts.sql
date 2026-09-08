@@ -1,0 +1,12 @@
+-- KEEP-966: completeExecution() now independently re-verifies every claimed
+-- transaction hash against the chain (receipt.status, plus Safe
+-- ExecutionFailure log detection) before persisting status: "completed".
+-- This column carries the per-hash verification result -- hash, chainId,
+-- verified, receiptStatus, blockNumber, gasUsed, verifiedAt -- regardless of
+-- outcome, so a failed reconciliation stays auditable.
+--
+-- direct_executions is an append-only audit log; adding a jsonb column with a
+-- constant default is metadata-only on PG11+, no table rewrite, no long lock
+-- (no @requires-db-prep needed).
+-- Idempotent: safe to re-run.
+ALTER TABLE "direct_executions" ADD COLUMN IF NOT EXISTS "receipts" jsonb DEFAULT '[]'::jsonb NOT NULL;

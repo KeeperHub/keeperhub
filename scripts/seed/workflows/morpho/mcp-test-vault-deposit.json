@@ -1,0 +1,59 @@
+{
+  "protocol": "morpho",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Morpho Vault Approve USDC + Deposit",
+  "description": "Approve USDC for Steakhouse MetaMorpho vault then deposit 2 USDC on mainnet",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "approve-usdc",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Approve USDC",
+        "type": "action",
+        "config": {
+          "actionType": "web3/approve-token",
+          "network": "1",
+          "tokenConfig": "{\"mode\":\"custom\",\"customToken\":{\"address\":\"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48\",\"symbol\":\"USDC\"}}",
+          "spenderAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB",
+          "amount": "max"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "vault-deposit",
+      "type": "action",
+      "position": { "x": 544, "y": 0 },
+      "data": {
+        "label": "Deposit USDC to Vault",
+        "type": "action",
+        "config": {
+          "actionType": "morpho/vault-deposit",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB",
+          "assets": "2000000",
+          "receiver": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "approve-usdc", "type": "animated" },
+    { "id": "e2", "source": "approve-usdc", "target": "vault-deposit", "type": "animated" }
+  ]
+}

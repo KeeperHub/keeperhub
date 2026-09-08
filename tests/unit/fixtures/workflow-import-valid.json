@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "exportedAt": "2026-04-30T00:00:00.000Z",
+  "workflow": {
+    "name": "Valid Baseline",
+    "description": "Positive case for SEC-06"
+  },
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" }
+      }
+    },
+    {
+      "id": "action-1",
+      "type": "action",
+      "position": { "x": 200, "y": 0 },
+      "data": {
+        "label": "HTTP Request",
+        "type": "action",
+        "config": {
+          "actionType": "HTTP Request",
+          "httpMethod": "GET",
+          "endpoint": "https://example.com/api"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-1",
+      "source": "trigger-1",
+      "target": "action-1",
+      "type": "animated"
+    }
+  ],
+  "integrationBindings": []
+}

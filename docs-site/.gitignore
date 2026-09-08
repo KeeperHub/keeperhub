@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Pagefind search index (generated at build time)
+_pagefind/
+public/_pagefind/
+
+# Production
+build/
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local env files
+.env*.local
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Markdown representations of every docs page, emitted by
+# scripts/emit-markdown.mjs on predev/prebuild. Generated from content/ (a
+# symlink to ../docs), so committing them would duplicate the docs in the repo
+# and let the copy drift from its source. One prefix means one ignore rule that
+# cannot rot as docs sections are added.
+public/_md/

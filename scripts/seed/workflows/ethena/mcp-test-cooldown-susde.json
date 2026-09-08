@@ -1,0 +1,39 @@
+{
+  "protocol": "ethena",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Ethena Cooldown sUSDe Assets",
+  "description": "Initiate cooldown on 1 USDe worth of sUSDe shares. After 7 days, call unstake to claim.",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "cooldown",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Cooldown Assets",
+        "type": "action",
+        "config": {
+          "actionType": "ethena/cooldown-assets",
+          "network": "1",
+          "assets": "1000000000000000000"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "cooldown", "type": "animated" }
+  ]
+}

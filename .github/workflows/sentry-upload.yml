@@ -1,0 +1,89 @@
+# Type: reusable | Called by ci-pipeline.yml
+# Uploads Sentry source maps for the app build. Split out of build-images.yml
+# so it runs parallel to e2e-tests instead of extending the build critical
+# path. The sentry-upload bake target is a pure consumer of the :cache-app
+# registry scope (no cache-to), so this must run AFTER the pipeline bake has
+# pushed that scope - the caller enforces that via `needs: [build-images]`.
+# The NEXT_PUBLIC_* / INCLUDE_TEST_ENDPOINTS args below must match the build
+# job's app target exactly, or BuildKit forks the builder stage and rebuilds
+# from scratch.
+name: Sentry Upload
+
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        description: "Short SHA used as the Sentry release (from build-images)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sentry-upload:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      AWS_ECR_NAME: ${{ vars.TO_ECR_NAME }}
+      ENVIRONMENT_TAG: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      # INCLUDE_TEST_ENDPOINTS is derived from ENVIRONMENT_TAG in the
+      # "Derive build flags" step below, exactly as build-images.yml does.
+      NEXT_PUBLIC_AUTH_PROVIDERS: ${{ vars.NEXT_PUBLIC_AUTH_PROVIDERS }}
+      NEXT_PUBLIC_GITHUB_CLIENT_ID: ${{ vars.NEXT_PUBLIC_GITHUB_CLIENT_ID }}
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${{ vars.NEXT_PUBLIC_GOOGLE_CLIENT_ID }}
+      NEXT_PUBLIC_BILLING_ENABLED: ${{ vars.NEXT_PUBLIC_BILLING_ENABLED }}
+      NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED: ${{ vars.NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED }}
+      NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+      NEXT_PUBLIC_SENTRY_DSN: ${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
+      SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Derive build flags
+        run: |
+          if [[ "$ENVIRONMENT_TAG" != "prod" ]]; then
+            echo "INCLUDE_TEST_ENDPOINTS=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Upload Sentry source maps
+        uses: docker/bake-action@v7
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPO: ${{ env.AWS_ECR_NAME }}
+          NEXT_PUBLIC_AUTH_PROVIDERS: ${{ env.NEXT_PUBLIC_AUTH_PROVIDERS }}
+          NEXT_PUBLIC_GITHUB_CLIENT_ID: ${{ env.NEXT_PUBLIC_GITHUB_CLIENT_ID }}
+          NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${{ env.NEXT_PUBLIC_GOOGLE_CLIENT_ID }}
+          NEXT_PUBLIC_BILLING_ENABLED: ${{ env.NEXT_PUBLIC_BILLING_ENABLED }}
+          NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED: ${{ env.NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ env.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ env.NEXT_PUBLIC_SENTRY_DSN }}
+          INCLUDE_TEST_ENDPOINTS: ${{ env.INCLUDE_TEST_ENDPOINTS }}
+          SENTRY_ORG: ${{ env.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ env.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ env.SENTRY_AUTH_TOKEN }}
+          SENTRY_RELEASE: ${{ inputs.image_tag }}
+        with:
+          files: docker-bake.hcl
+          targets: sentry-upload

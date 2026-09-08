@@ -1,0 +1,165 @@
+{
+  "protocol": "uniswap",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "Protocol Test: Uniswap V3 Read Actions",
+  "description": "Tests all Uniswap V3 read actions on Ethereum mainnet",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 300 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-get-pool",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Get Pool Address",
+        "description": "Find WETH/USDC pool at 0.3% fee tier",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/get-pool",
+          "network": "1",
+          "tokenA": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "tokenB": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          "fee": "3000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-get-position",
+      "type": "action",
+      "position": { "x": 450, "y": 150 },
+      "data": {
+        "label": "Get Position Details",
+        "description": "Get details of position token ID 1",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/get-position",
+          "network": "1",
+          "tokenId": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-balance-of",
+      "type": "action",
+      "position": { "x": 450, "y": 300 },
+      "data": {
+        "label": "Get Position Count",
+        "description": "Check LP position count for a known address",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/balance-of",
+          "network": "1",
+          "owner": "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-owner-of",
+      "type": "action",
+      "position": { "x": 450, "y": 450 },
+      "data": {
+        "label": "Get Position Owner",
+        "description": "Get owner of position token ID 1",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/owner-of",
+          "network": "1",
+          "tokenId": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-quote-exact-input",
+      "type": "action",
+      "position": { "x": 450, "y": 600 },
+      "data": {
+        "label": "Quote Exact Input",
+        "description": "Quote swapping 1 WETH for USDC at 0.3% fee",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/quote-exact-input",
+          "network": "1",
+          "tokenIn": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "tokenOut": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          "amountIn": "1000000000000000000",
+          "fee": "3000",
+          "sqrtPriceLimitX96": "0"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-quote-exact-output",
+      "type": "action",
+      "position": { "x": 450, "y": 750 },
+      "data": {
+        "label": "Quote Exact Output",
+        "description": "Quote how much WETH needed for 1000 USDC at 0.3% fee",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/quote-exact-output",
+          "network": "1",
+          "tokenIn": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "tokenOut": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          "amount": "1000000000",
+          "fee": "3000",
+          "sqrtPriceLimitX96": "0"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-to-uniswap-get-pool",
+      "source": "node-1",
+      "target": "uniswap-get-pool",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-get-position",
+      "source": "node-1",
+      "target": "uniswap-get-position",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-balance-of",
+      "source": "node-1",
+      "target": "uniswap-balance-of",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-owner-of",
+      "source": "node-1",
+      "target": "uniswap-owner-of",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-quote-exact-input",
+      "source": "node-1",
+      "target": "uniswap-quote-exact-input",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-quote-exact-output",
+      "source": "node-1",
+      "target": "uniswap-quote-exact-output",
+      "type": "animated"
+    }
+  ]
+}

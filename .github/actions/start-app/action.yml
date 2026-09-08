@@ -1,0 +1,309 @@
+# Starts the application for e2e tests.
+# Docker path: pulls pre-built image from ECR (push events).
+# Bare-metal path: builds locally with pnpm (PRs, workflow_dispatch).
+name: Start Application
+description: Start application from Docker image or bare-metal build
+
+inputs:
+  image_tag:
+    description: 'ECR image tag. When provided, uses Docker path instead of bare-metal.'
+    required: false
+    default: ''
+  ecr_registry:
+    description: 'ECR registry URL'
+    required: false
+    default: ''
+  ecr_repo:
+    description: 'ECR repository name'
+    required: false
+    default: ''
+  ecr_region:
+    description: 'AWS region for ECR'
+    required: false
+    default: ''
+  role_arn:
+    description: 'IAM role ARN to assume via OIDC (for ECR login)'
+    required: false
+    default: ''
+  database_url:
+    description: 'Database connection URL'
+    required: true
+  better_auth_secret:
+    description: 'BetterAuth secret'
+    required: true
+  test_api_key:
+    description: 'TEST_API_KEY for rate limit bypass via X-Test-API-Key header'
+    required: false
+    default: ''
+  chain_rpc_config:
+    description: 'CHAIN_RPC_CONFIG JSON for reliable RPC endpoints (avoids flaky public RPCs)'
+    required: false
+    default: ''
+  integration_encryption_key:
+    description: 'INTEGRATION_ENCRYPTION_KEY for decrypting integration config (must match the key used by tests when seeding integrations)'
+    required: false
+    default: ''
+  turnkey_api_public_key:
+    description: 'TURNKEY_API_PUBLIC_KEY for the Turnkey-managed org wallet path (lib/turnkey/turnkey-operations.ts)'
+    required: false
+    default: ''
+  turnkey_api_private_key:
+    description: 'TURNKEY_API_PRIVATE_KEY for the Turnkey-managed org wallet path'
+    required: false
+    default: ''
+  turnkey_organization_id:
+    description: 'TURNKEY_ORGANIZATION_ID for the Turnkey-managed org wallet path'
+    required: false
+    default: ''
+  solana_wallet_provisioning_enabled:
+    description: 'SOLANA_WALLET_PROVISIONING_ENABLED - when "true", Turnkey sub-orgs are created with a Solana account alongside the EVM one. Unset leaves wallets EVM-only, so any suite touching a Solana address must set it.'
+    required: false
+    default: ''
+  ai_prompt_enabled:
+    description: 'NEXT_PUBLIC_AI_PROMPT_ENABLED - gates /api/ai/generate (e2e api-key-auth suite). Scoped per-job so AI UI is not surfaced elsewhere.'
+    required: false
+    default: ''
+  anthropic_api_key:
+    description: 'ANTHROPIC_API_KEY for /api/ai/generate'
+    required: false
+    default: ''
+  ai_model:
+    description: 'AI_MODEL - a claude-* id routes /api/ai/generate to Anthropic'
+    required: false
+    default: ''
+  safe_fetch_shadow:
+    description: 'SAFE_FETCH_SHADOW - set "true" for shadow-mode SSRF so the app can reach the localhost anvil fork (safe-roles-orchestrator-fork suite). CI runs under NODE_ENV=production but is CI-exempt, so the flag still takes effect.'
+    required: false
+    default: ''
+  load_test_bypass_token:
+    description: 'LOAD_TEST_BYPASS_TOKEN - the app verifies the x-load-test-mfa-bypass header against it (proxy.ts), clearing the MFA-enrollment gate for playwright auth.setup'
+    required: false
+    default: ''
+  include_test_endpoints:
+    description: 'INCLUDE_TEST_ENDPOINTS - build-time flag baked by next.config.ts. Enables testEndpointsEnabled(), which gates the X-Test-API-Key credential rate-limit bypass (strict-signin/start) so playwright shared-user sign-ins are not throttled. Empty elsewhere keeps prod behavior.'
+    required: false
+    default: ''
+  allow_test_endpoints:
+    description: 'ALLOW_TEST_ENDPOINTS - runtime production opt-in required alongside include_test_endpoints for testEndpointsEnabled() to return true under NODE_ENV=production.'
+    required: false
+    default: ''
+  sandbox_backend:
+    description: 'SANDBOX_BACKEND - set "remote" for jobs that execute workflow step bundles against a live sandbox (start-sandbox). The Docker path forwards it to the container; empty leaves step execution unconfigured. The bare-metal path already hardcodes remote.'
+    required: false
+    default: ''
+  sandbox_url:
+    description: 'SANDBOX_URL - base URL of the code-execution sandbox (e.g. http://localhost:8787) the app dispatches step bundles to (lib/sandbox/client.ts). Forwarded to the container on the Docker path.'
+    required: false
+    default: ''
+  prebuilt:
+    description: 'Set "true" when the job already downloaded a production .next (build-app artifact). Skips the bare-metal build and its cache step; the start step runs pnpm start against the unpacked output. Build-time inputs (ai_prompt_enabled, include_test_endpoints) are baked by the job that produced the artifact and are IGNORED when prebuilt is true - set them in build-app instead; a guard step fails fast if they are passed here. Ignored on the Docker path.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # ai_prompt_enabled and include_test_endpoints only exist as build-time
+    # env (NEXT_PUBLIC_ inlining / next.config.ts env baking), so on the
+    # prebuilt path they are silently ignored - the artifact carries
+    # whatever the build job baked. Fail fast instead of letting a caller
+    # believe it configured them.
+    - name: Guard against ignored build-time inputs
+      if: inputs.prebuilt == 'true' && (inputs.ai_prompt_enabled != '' || inputs.include_test_endpoints != '')
+      shell: bash
+      run: |
+        echo "start-app: ai_prompt_enabled / include_test_endpoints are build-time flags baked into the .next artifact by the job that built it; with prebuilt=true they are ignored here. Set them in the build-app job instead." >&2
+        exit 1
+
+    # --- Docker path ---
+    - name: Configure AWS credentials
+      if: inputs.image_tag != ''
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: ${{ inputs.role_arn }}
+        aws-region: ${{ inputs.ecr_region }}
+
+    - name: Login to AWS ECR
+      if: inputs.image_tag != ''
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Start application (Docker)
+      if: inputs.image_tag != ''
+      shell: bash
+      env:
+        BETTER_AUTH_SECRET: ${{ inputs.better_auth_secret }}
+        ECR_REGISTRY: ${{ inputs.ecr_registry }}
+        ECR_REPO: ${{ inputs.ecr_repo }}
+        IMAGE_TAG: ${{ inputs.image_tag }}
+        DATABASE_URL: ${{ inputs.database_url }}
+        TEST_API_KEY: ${{ inputs.test_api_key }}
+        CHAIN_RPC_CONFIG: ${{ inputs.chain_rpc_config }}
+        INTEGRATION_ENCRYPTION_KEY: ${{ inputs.integration_encryption_key }}
+        TURNKEY_API_PUBLIC_KEY: ${{ inputs.turnkey_api_public_key }}
+        TURNKEY_API_PRIVATE_KEY: ${{ inputs.turnkey_api_private_key }}
+        TURNKEY_ORGANIZATION_ID: ${{ inputs.turnkey_organization_id }}
+        SOLANA_WALLET_PROVISIONING_ENABLED: ${{ inputs.solana_wallet_provisioning_enabled }}
+        ALLOW_TEST_ENDPOINTS: ${{ inputs.allow_test_endpoints }}
+        LOAD_TEST_BYPASS_TOKEN: ${{ inputs.load_test_bypass_token }}
+        SAFE_FETCH_SHADOW: ${{ inputs.safe_fetch_shadow }}
+        SANDBOX_BACKEND: ${{ inputs.sandbox_backend }}
+        SANDBOX_URL: ${{ inputs.sandbox_url }}
+      run: |
+        IMAGE="${ECR_REGISTRY}/${ECR_REPO}:app-${IMAGE_TAG}"
+        echo "Pulling ${IMAGE}..."
+        docker pull "${IMAGE}"
+
+        printf '%s\n' \
+          "DATABASE_URL=${DATABASE_URL}" \
+          "BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}" \
+          "OAUTH_JWT_SECRET=ci-oauth-jwt-test-secret" \
+          "MCP_SESSION_SECRET=ci-mcp-session-test-secret" \
+          "NODE_ENV=production" \
+          "HOSTNAME=0.0.0.0" \
+          "CI=true" \
+          "TEST_API_KEY=${TEST_API_KEY}" \
+          "WORKFLOW_TARGET_WORLD=@workflow/world-postgres" \
+          "SOLANA_WALLET_PROVISIONING_ENABLED=${SOLANA_WALLET_PROVISIONING_ENABLED}" \
+          > /tmp/keeperhub-app.env
+
+        # Jobs that execute workflow step bundles (e.g. the credential-bundle
+        # suite) start a live sandbox and pass sandbox_backend/sandbox_url so the
+        # app dispatches steps to it. Appended only when set so other jobs leave
+        # step execution unconfigured. URL has no special chars, so the env-file
+        # is safe here.
+        if [ -n "${SANDBOX_BACKEND}" ]; then
+          printf '%s\n' \
+            "SANDBOX_BACKEND=${SANDBOX_BACKEND}" \
+            "SANDBOX_URL=${SANDBOX_URL}" \
+            >> /tmp/keeperhub-app.env
+        fi
+
+        # Pass values with potentially special chars (JSON / base64 / =-padding)
+        # via -e rather than the env-file, which parses literally and breaks on
+        # such values. INTEGRATION_ENCRYPTION_KEY must match the test process's
+        # key so getIntegrationById's decryptConfig can read seeded rows.
+        # TURNKEY_* are required for the Turnkey-managed org-wallet path the
+        # protocol-coverage suites exercise. ALLOW_TEST_ENDPOINTS (runtime
+        # opt-in for testEndpointsEnabled, gating the admin OTP endpoint +
+        # rate-limit bypass) and LOAD_TEST_BYPASS_TOKEN (MFA-enrollment bypass,
+        # verified in proxy.ts) are required for the Playwright auth setup -
+        # the bare-metal path already sets them. SAFE_FETCH_SHADOW puts the
+        # app's safeFetch into shadow mode so the protocol-coverage setup
+        # workflows can reach the localhost anvil mainnet fork (chain 1 -> :8548);
+        # it takes effect under NODE_ENV=production because the container is
+        # CI-exempt (CI=true). Empty in other jobs keeps SSRF fully enforced.
+        docker run -d --name keeperhub-app --network host \
+          --env-file /tmp/keeperhub-app.env \
+          -e "CHAIN_RPC_CONFIG=${CHAIN_RPC_CONFIG}" \
+          -e "INTEGRATION_ENCRYPTION_KEY=${INTEGRATION_ENCRYPTION_KEY}" \
+          -e "TURNKEY_API_PUBLIC_KEY=${TURNKEY_API_PUBLIC_KEY}" \
+          -e "TURNKEY_API_PRIVATE_KEY=${TURNKEY_API_PRIVATE_KEY}" \
+          -e "TURNKEY_ORGANIZATION_ID=${TURNKEY_ORGANIZATION_ID}" \
+          -e "ALLOW_TEST_ENDPOINTS=${ALLOW_TEST_ENDPOINTS}" \
+          -e "LOAD_TEST_BYPASS_TOKEN=${LOAD_TEST_BYPASS_TOKEN}" \
+          -e "SAFE_FETCH_SHADOW=${SAFE_FETCH_SHADOW}" \
+          "${IMAGE}"
+
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:3000 > /dev/null 2>&1; then
+            echo "App is ready (Docker)"
+            break
+          fi
+          if [ "$i" -eq 30 ]; then
+            echo "App did not start in 60s"
+            docker logs keeperhub-app
+            exit 1
+          fi
+          sleep 2
+        done
+
+    # --- Bare-metal path ---
+    - name: Cache Next.js build
+      if: inputs.image_tag == '' && inputs.prebuilt != 'true'
+      uses: actions/cache@v5
+      with:
+        path: .next/cache
+        key: ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ hashFiles('**/*.ts', '**/*.tsx') }}
+        restore-keys: |
+          ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-
+          ${{ runner.os }}-nextjs-
+
+    - name: Build application
+      if: inputs.image_tag == '' && inputs.prebuilt != 'true'
+      shell: bash
+      run: pnpm build
+      env:
+        DATABASE_URL: ${{ inputs.database_url }}
+        BETTER_AUTH_SECRET: ${{ inputs.better_auth_secret }}
+        CI: true
+        TEST_API_KEY: ${{ inputs.test_api_key }}
+        NEXT_PUBLIC_BILLING_ENABLED: "true"
+        NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED: "true"
+        NEXT_PUBLIC_AI_PROMPT_ENABLED: ${{ inputs.ai_prompt_enabled }}
+        # Production builds assert SANDBOX_BACKEND=remote and SANDBOX_URL is set
+        # (the /.well-known/workflow/v1/step route guard). Jobs that execute code
+        # start a real sandbox via the start-sandbox action; others use this as a
+        # build-guard placeholder.
+        SANDBOX_BACKEND: remote
+        SANDBOX_URL: http://localhost:8787
+        # Baked by next.config.ts (env block) into the bundle; runtime cannot
+        # flip it. Gates testEndpointsEnabled(), which the strict-signin/start
+        # credential rate-limit bypass checks before honoring X-Test-API-Key.
+        # Set only for jobs whose browser sign-ins must skip the throttle.
+        INCLUDE_TEST_ENDPOINTS: ${{ inputs.include_test_endpoints }}
+
+    - name: Start application
+      if: inputs.image_tag == ''
+      shell: bash
+      run: |
+        # Capture bare-metal app output: a backgrounded process's stdout is
+        # not attributed to later steps' logs, so without this the app's
+        # runtime errors are invisible in CI post-mortems.
+        pnpm start > /tmp/keeperhub-app-baremetal.log 2>&1 &
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:3000 > /dev/null 2>&1; then
+            echo "App is ready"
+            break
+          fi
+          if [ "$i" -eq 30 ]; then
+            echo "App did not start in 60s"
+            exit 1
+          fi
+          sleep 2
+        done
+      env:
+        DATABASE_URL: ${{ inputs.database_url }}
+        BETTER_AUTH_SECRET: ${{ inputs.better_auth_secret }}
+        OAUTH_JWT_SECRET: ci-oauth-jwt-test-secret
+        MCP_SESSION_SECRET: ci-mcp-session-test-secret
+        CI: true
+        TEST_API_KEY: ${{ inputs.test_api_key }}
+        INTEGRATION_ENCRYPTION_KEY: ${{ inputs.integration_encryption_key }}
+        WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
+        CHAIN_RPC_CONFIG: ${{ inputs.chain_rpc_config }}
+        TURNKEY_API_PUBLIC_KEY: ${{ inputs.turnkey_api_public_key }}
+        TURNKEY_API_PRIVATE_KEY: ${{ inputs.turnkey_api_private_key }}
+        TURNKEY_ORGANIZATION_ID: ${{ inputs.turnkey_organization_id }}
+        SOLANA_WALLET_PROVISIONING_ENABLED: ${{ inputs.solana_wallet_provisioning_enabled }}
+        SANDBOX_BACKEND: remote
+        SANDBOX_URL: http://localhost:8787
+        # Present so the production captcha guard (lib/auth.ts) lets the server
+        # boot. CI=true skips the captcha plugin, so signup is never actually
+        # captcha-gated here -- this only satisfies the guard's presence check.
+        TURNSTILE_SECRET_KEY: ci-turnstile-test-secret
+        # AI provider for /api/ai/generate (api-key-auth suite). Empty inputs in
+        # other jobs leave the route gated off; set, it makes real Anthropic calls.
+        NEXT_PUBLIC_AI_PROMPT_ENABLED: ${{ inputs.ai_prompt_enabled }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        AI_MODEL: ${{ inputs.ai_model }}
+        # Shadow-mode SSRF (dev/CI-only opt-in): safeFetch logs but allows,
+        # so the app can reach the localhost anvil fork (safe-roles suite).
+        # Unset/empty = enforced (default), so other jobs keep full SSRF.
+        SAFE_FETCH_SHADOW: ${{ inputs.safe_fetch_shadow }}
+        # App-side verification of the x-load-test-mfa-bypass header (proxy.ts)
+        # so playwright e2e sign-in clears the mandatory-MFA enrollment gate.
+        LOAD_TEST_BYPASS_TOKEN: ${{ inputs.load_test_bypass_token }}
+        # Runtime production opt-in for testEndpointsEnabled(). Paired with the
+        # build-time INCLUDE_TEST_ENDPOINTS above, it lets the credential
+        # rate-limit bypass honor X-Test-API-Key under NODE_ENV=production.
+        ALLOW_TEST_ENDPOINTS: ${{ inputs.allow_test_endpoints }}

@@ -1,0 +1,21 @@
+{
+  "name": "@keeperhub/executor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Unified workflow executor - SQS consumer with K8s Job and in-process execution modes",
+  "scripts": {
+    "executor": "tsx keeperhub-executor/index.ts",
+    "runner": "tsx keeperhub-executor/workflow-runner.ts",
+    "runner:bootstrap": "tsx keeperhub-executor/workflow-runner-bootstrap.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.0.0",
+    "@kubernetes/client-node": "^1.0.0",
+    "cron-parser": "^5.0.0",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0"
+  }
+}

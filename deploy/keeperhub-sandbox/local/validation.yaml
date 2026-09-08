@@ -1,0 +1,119 @@
+# Minikube-only validation manifest — stripped equivalent of the staging
+# Helm-rendered output. Used to smoke-test the Phase 38 security model
+# (scrubbed SA, automountServiceAccountToken at both levels, no IRSA)
+# without needing the techops-services/common chart repo.
+#
+# Apply:
+#   kubectl apply -f deploy/keeperhub-sandbox/local/validation.yaml
+#
+# Verify token file absence (WORK-03):
+#   POD=$(kubectl -n keeperhub get pods -l app.kubernetes.io/instance=keeperhub-sandbox-local -o jsonpath='{.items[0].metadata.name}')
+#   kubectl -n keeperhub exec "$POD" -- ls /var/run/secrets/kubernetes.io/serviceaccount/token
+#   # Expected: No such file or directory
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keeperhub-sandbox-local
+  namespace: keeperhub
+  labels:
+    app.kubernetes.io/name: keeperhub-sandbox
+    app.kubernetes.io/instance: keeperhub-sandbox-local
+# Intentionally no annotations (no IRSA).
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keeperhub-sandbox-local
+  namespace: keeperhub
+  labels:
+    app.kubernetes.io/name: keeperhub-sandbox
+    app.kubernetes.io/instance: keeperhub-sandbox-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: keeperhub-sandbox-local
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keeperhub-sandbox
+        app.kubernetes.io/instance: keeperhub-sandbox-local
+    spec:
+      serviceAccountName: keeperhub-sandbox-local
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+      containers:
+        - name: sandbox
+          image: keeperhub-sandbox:latest
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8787
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: SANDBOX_PORT
+              value: "8787"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8787
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8787
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeperhub-sandbox-local
+  namespace: keeperhub
+  labels:
+    app.kubernetes.io/name: keeperhub-sandbox
+    app.kubernetes.io/instance: keeperhub-sandbox-local
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: keeperhub-sandbox-local
+  ports:
+    - name: http
+      port: 8787
+      targetPort: 8787
+      protocol: TCP

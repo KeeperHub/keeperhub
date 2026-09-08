@@ -1,0 +1,54 @@
+{
+  "1": {
+    "wrap": {
+      "to": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      "data": "0xea598cb00000000000000000000000000000000000000000000000000000000000000001",
+      "skipped": true
+    },
+    "unwrap": {
+      "to": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      "data": "0xde0e9a3e0000000000000000000000000000000000000000000000000000000000000001",
+      "skipped": true
+    },
+    "get-steth-by-wsteth": {
+      "to": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      "data": "0xbb2952fc0000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "get-wsteth-by-steth": {
+      "to": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      "data": "0xb0e389000000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "steth-per-token": {
+      "to": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      "data": "0x035faf82",
+      "skipped": false
+    },
+    "tokens-per-steth": {
+      "to": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      "data": "0x9576a0c8",
+      "skipped": false
+    },
+    "get-wsteth-balance": {
+      "to": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-wsteth-total-supply": {
+      "to": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      "data": "0x18160ddd",
+      "skipped": false
+    },
+    "get-steth-balance": {
+      "to": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "approve-steth": {
+      "to": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
+      "data": "0x095ea7b300000000000000000000000011111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000000000001",
+      "skipped": false
+    }
+  }
+}

@@ -1,0 +1,38 @@
+name: Setup scheduler workspace deps
+description: Install Node, pnpm, and dependencies for the keeperhub-scheduler package.
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: "22"
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 9
+
+    - name: Get pnpm store directory
+      shell: bash
+      run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+    - name: Setup pnpm cache
+      uses: actions/cache@v5
+      with:
+        path: ${{ env.STORE_PATH }}
+        # Key only on the scheduler lockfile so main-app lockfile churn does
+        # not invalidate the scheduler cache.
+        key: ${{ runner.os }}-pnpm-scheduler-${{ hashFiles('keeperhub-scheduler/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-scheduler-
+
+    - name: Install scheduler deps
+      shell: bash
+      working-directory: keeperhub-scheduler
+      # --ignore-workspace prevents pnpm from walking up to the repo-root
+      # pnpm-workspace.yaml (which only includes the main app + sandbox).
+      # The scheduler is a standalone package with its own lockfile, not
+      # a nested workspace like keeperhub-events.
+      run: pnpm install --frozen-lockfile --ignore-workspace

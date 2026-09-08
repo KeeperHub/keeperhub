@@ -1,0 +1,11 @@
+-- v1.11: per-workflow MCP server versioning column.
+--
+-- listingVersion is incremented whenever inputSchema, outputMapping, or
+-- workflowType changes on a listed workflow so that per-workflow MCP
+-- route consumers (e.g. Claude Code, Cursor) can detect stale tool
+-- definitions and re-initialize their session.
+--
+-- Default 1 rather than 0 so all existing listed rows start at a
+-- meaningful version and callers can use "version changed" semantics
+-- without a special zero-state branch.
+ALTER TABLE workflows ADD COLUMN IF NOT EXISTS listing_version integer NOT NULL DEFAULT 1;

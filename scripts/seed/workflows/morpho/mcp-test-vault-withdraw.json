@@ -1,0 +1,42 @@
+{
+  "protocol": "morpho",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Morpho Vault Withdraw USDC",
+  "description": "Withdraw 2 USDC from Steakhouse MetaMorpho vault on mainnet",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "vault-withdraw",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Withdraw USDC from Vault",
+        "type": "action",
+        "config": {
+          "actionType": "morpho/vault-withdraw",
+          "network": "1",
+          "contractAddress": "0xBEEF01735c132Ada46AA9aA4c54623cAA92A64CB",
+          "assets": "2000000",
+          "receiver": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9",
+          "owner": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "vault-withdraw", "type": "animated" }
+  ]
+}

@@ -1,0 +1,74 @@
+# QUEUE_MODE=bundled - the chart runs ElasticMQ.
+#
+# Merged over values.yaml. These keys live here rather than in the base file
+# because the bring-your-own case needs them ABSENT, not empty, and a later -f
+# cannot delete a key: helm's null-deletion only applies to keys present in the
+# chart's own defaults, and setting one to null instead crashes the subchart on a
+# nil dereference.
+#
+# Nothing here is a client input. The queue is the chart's own, so every address
+# is computed from the release namespace and the chart's queue defaults. The one
+# thing to know if you change queue.name: the URLs below name it too, and
+# strictEndpointCheck fails the render if the two disagree. It has to be checked
+# rather than derived, because ElasticMQ resolves the queue from the last path
+# segment and ignores the host - a wrong URL leaves every pod green while every
+# message fails HMAC verification and is dropped.
+#
+# The static credentials matter as much as the endpoint. With the endpoint absent
+# the SDK falls back to its default credential chain, which reads these same
+# variables - so a real-SQS install that inherited "test" here would fail with
+# InvalidClientTokenId. All five keys move together.
+queue:
+  bundled: true
+  name: elasticmq
+
+app:
+  env:
+    AWS_ENDPOINT_URL:
+      type: template
+      value: 'http://elasticmq.{{ .Release.Namespace }}.svc.cluster.local:9324'
+    AWS_ACCESS_KEY_ID: { type: kv, value: "test" }
+    AWS_SECRET_ACCESS_KEY: { type: kv, value: "test" }
+    SQS_QUEUE_URL:
+      type: template
+      value: 'http://elasticmq.{{ .Release.Namespace }}.svc.cluster.local:9324/000000000000/keeperhub-workflow-queue'
+
+executor:
+  env:
+    AWS_ENDPOINT_URL:
+      type: template
+      value: 'http://elasticmq.{{ .Release.Namespace }}.svc.cluster.local:9324'
+    AWS_ACCESS_KEY_ID: { type: kv, value: "test" }
+    AWS_SECRET_ACCESS_KEY: { type: kv, value: "test" }
+    SQS_QUEUE_URL:
+      type: template
+      value: 'http://elasticmq.{{ .Release.Namespace }}.svc.cluster.local:9324/000000000000/keeperhub-workflow-queue'
+    SQS_DLQ_URL:
+      type: template
+      value: 'http://elasticmq.{{ .Release.Namespace }}.svc.cluster.local:9324/000000000000/keeperhub-workflow-queue-dlq'
+
+schedule:
+  env:
+    AWS_ENDPOINT_URL:
+      type: template
+      value: 'http://elasticmq.{{ .Release.Namespace }}.svc.cluster.local:9324'
+    AWS_ACCESS_KEY_ID: { type: kv, value: "test" }
+    AWS_SECRET_ACCESS_KEY: { type: kv, value: "test" }
+    SQS_QUEUE_URL:
+      type: template
+      value: 'http://elasticmq.{{ .Release.Namespace }}.svc.cluster.local:9324/000000000000/keeperhub-workflow-queue'
+
+# The block dispatcher is the fourth producer. Helm merges this whether or not
+# block.enabled is true, and an unrendered component ignores it, so the queue
+# address cannot drift out of step with the other three by being written in one
+# place and forgotten in another.
+block:
+  env:
+    AWS_ENDPOINT_URL:
+      type: template
+      value: 'http://elasticmq.{{ .Release.Namespace }}.svc.cluster.local:9324'
+    AWS_ACCESS_KEY_ID: { type: kv, value: "test" }
+    AWS_SECRET_ACCESS_KEY: { type: kv, value: "test" }
+    SQS_QUEUE_URL:
+      type: template
+      value: 'http://elasticmq.{{ .Release.Namespace }}.svc.cluster.local:9324/000000000000/keeperhub-workflow-queue'

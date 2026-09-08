@@ -1,0 +1,172 @@
+# Type: standalone | Builds and deploys the event tracker.
+# Runs independently from ci-pipeline.yml because events has no shared code
+# with the main app, no e2e tests, and its own ECR repo.
+on:
+  push:
+    branches:
+      - staging
+      - prod
+    paths:
+      - "keeperhub-events/**"
+      - "deploy/event-tracker/**"
+      - "deploy/solana-tracker/**"
+      - ".github/workflows/deploy-events.yaml"
+  workflow_dispatch:
+
+name: deploy-events
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-events-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    environment: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+    runs-on: ubuntu-latest
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      ENVIRONMENT_TAG: ${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      NAMESPACE: keeperhub
+      TRACKER_ECR_NAME: keeperhub-event-${{ github.ref_name == 'prod' && 'prod' || 'staging' }}
+      TRACKER_HELM_FILE: deploy/event-tracker/${{ github.ref_name == 'prod' && 'prod' || 'staging' }}/values.yaml
+      SOLANA_HELM_FILE: deploy/solana-tracker/${{ github.ref_name == 'prod' && 'prod' || 'staging' }}/values.yaml
+      EVENTS_SERVICE_ACCOUNT_ROLE_ARN: ${{ vars.TO_EVENTS_ROLE_ARN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Check commit message for skip flags
+        id: skip
+        run: |
+          MSG=$(git log -1 --format=%B)
+          echo "skip_build=$([[ "$MSG" == *"[skip build]"* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "skip_deploy=$([[ "$MSG" == *"[skip deploy]"* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Connect to EKS
+        uses: ./.github/actions/eks-connect
+        with:
+          enabled: ${{ vars.TO_EKS_CONNECT }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          region: ${{ env.REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        if: steps.skip.outputs.skip_build != 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract commit hash
+        id: vars
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tracker image already exists
+        if: steps.skip.outputs.skip_build == 'true'
+        run: |
+          IMAGE_TAG="${{ steps.vars.outputs.sha_short }}"
+          for prefix in event solana; do
+            if ! aws ecr describe-images \
+              --repository-name "$TRACKER_ECR_NAME" \
+              --image-ids "imageTag=${prefix}-${IMAGE_TAG}" \
+              --region "${{ env.REGION }}" >/dev/null 2>&1; then
+              echo "::error::Cannot skip build: ${prefix}-${IMAGE_TAG} not found in ${TRACKER_ECR_NAME}. Remove [skip build] or push a build first."
+              exit 1
+            fi
+            echo "${prefix}-${IMAGE_TAG} exists in ${TRACKER_ECR_NAME}"
+          done
+
+      - name: Build and push event tracker image
+        if: steps.skip.outputs.skip_build != 'true'
+        uses: docker/bake-action@v7
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          EVENTS_ECR_TRACKER_REPO: ${{ env.TRACKER_ECR_NAME }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+          ENVIRONMENT_TAG: ${{ env.ENVIRONMENT_TAG }}
+        with:
+          files: docker-bake.hcl
+          targets: events
+          push: true
+
+      - name: Replace variables in Helm values files
+        if: steps.skip.outputs.skip_deploy != 'true'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+          AWS_ACCOUNT_ID: ${{ vars.TO_AWS_ACCOUNT_ID }}
+          EVENTS_SERVICE_ACCOUNT_ROLE_ARN: ${{ env.EVENTS_SERVICE_ACCOUNT_ROLE_ARN }}
+        run: |
+          sed -i "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g" "$TRACKER_HELM_FILE"
+          sed -i "s|\${IMAGE_TAG}|${IMAGE_TAG}|g" "$TRACKER_HELM_FILE"
+          sed -i "s|\${AWS_ACCOUNT_ID}|${AWS_ACCOUNT_ID}|g" "$TRACKER_HELM_FILE"
+          sed -i "s|\${EVENTS_SERVICE_ACCOUNT_ROLE_ARN}|${EVENTS_SERVICE_ACCOUNT_ROLE_ARN}|g" "$TRACKER_HELM_FILE"
+          # solana-tracker reuses the events service account (create: false), so
+          # it has no role-arn placeholder - only image/registry/account.
+          sed -i "s|\${ECR_REGISTRY}|${ECR_REGISTRY}|g" "$SOLANA_HELM_FILE"
+          sed -i "s|\${IMAGE_TAG}|${IMAGE_TAG}|g" "$SOLANA_HELM_FILE"
+          sed -i "s|\${AWS_ACCOUNT_ID}|${AWS_ACCOUNT_ID}|g" "$SOLANA_HELM_FILE"
+
+      - name: Configure kubectl
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.REGION }}
+
+      - name: Ensure namespace exists
+        if: steps.skip.outputs.skip_deploy != 'true'
+        run: |
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy event-tracker
+        if: steps.skip.outputs.skip_deploy != 'true'
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.12
+        with:
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          config-files: ${{ env.TRACKER_HELM_FILE }}
+          chart-path: techops-services/common
+          namespace: ${{ env.NAMESPACE }}
+          timeout: 5m0s
+          name: keeperhub-event
+          chart-repository: https://techops-services.github.io/helm-charts
+          # 0.5.0 is the first version that hard-fails the render when the
+          # service account's IRSA role-arn is empty or malformed. The tracker
+          # now creates its own service account, so without this the annotation
+          # would silently render blank if the role-arn variable were unset and
+          # the pod would fall back to the node role. Rendered output is
+          # otherwise identical to 0.2.1 apart from an opt-in helm test hook.
+          version: 0.5.0
+          atomic: true
+
+      # Separate Helm release from event-tracker: same chart, its own values
+      # (solana image tag, port 3001, HTTP health probes) and its own image in
+      # the shared events ECR. Reuses the keeperhub-events service account, so
+      # no role-arn is required here.
+      - name: Deploy solana-tracker
+        if: steps.skip.outputs.skip_deploy != 'true'
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.12
+        with:
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          config-files: ${{ env.SOLANA_HELM_FILE }}
+          chart-path: techops-services/common
+          namespace: ${{ env.NAMESPACE }}
+          timeout: 5m0s
+          name: keeperhub-solana
+          chart-repository: https://techops-services.github.io/helm-charts
+          version: 0.5.0
+          atomic: true

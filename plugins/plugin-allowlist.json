@@ -1,0 +1,21 @@
+{
+  "$schema": "./plugin-allowlist.schema.json",
+  "description": "Plugin allowlist - only plugins listed here will be enabled",
+  "plugins": [
+    "blockscout",
+    "code",
+    "discord",
+    "evm-chain",
+    "hyperliquid",
+    "math",
+    "protocol",
+    "robinhood",
+    "safe",
+    "sendgrid",
+    "slack",
+    "telegram",
+    "tempo",
+    "web3",
+    "webhook"
+  ]
+}

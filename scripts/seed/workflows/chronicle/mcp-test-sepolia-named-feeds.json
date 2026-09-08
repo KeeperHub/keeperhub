@@ -1,0 +1,92 @@
+{
+  "protocol": "chronicle",
+  "network": "11155111",
+  "networkName": "sepolia",
+  "type": "read",
+  "name": "MCP Test: Chronicle Sepolia-Only Named Feeds",
+  "description": "Test all 4 Sepolia-only named feed read actions: DAI/USD and LINK/USD (read + readWithAge each)",
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 50, "y": 250 },
+      "data": {
+        "type": "trigger",
+        "label": "Manual Trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle",
+        "description": "Run manually"
+      }
+    },
+    {
+      "id": "dai-read",
+      "type": "action",
+      "position": { "x": 350, "y": 100 },
+      "data": {
+        "type": "action",
+        "label": "DAI/USD Read",
+        "description": "Read DAI/USD price from Chronicle Sepolia oracle",
+        "config": {
+          "actionType": "chronicle/dai-usd-read",
+          "network": "11155111",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"daiUsd\",\"functionName\":\"read\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "dai-age",
+      "type": "action",
+      "position": { "x": 350, "y": 250 },
+      "data": {
+        "type": "action",
+        "label": "DAI/USD Read with Age",
+        "description": "Read DAI/USD price with timestamp from Chronicle Sepolia oracle",
+        "config": {
+          "actionType": "chronicle/dai-usd-read-with-age",
+          "network": "11155111",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"daiUsd\",\"functionName\":\"readWithAge\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "link-read",
+      "type": "action",
+      "position": { "x": 350, "y": 400 },
+      "data": {
+        "type": "action",
+        "label": "LINK/USD Read",
+        "description": "Read LINK/USD price from Chronicle Sepolia oracle",
+        "config": {
+          "actionType": "chronicle/link-usd-read",
+          "network": "11155111",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"linkUsd\",\"functionName\":\"read\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "link-age",
+      "type": "action",
+      "position": { "x": 350, "y": 550 },
+      "data": {
+        "type": "action",
+        "label": "LINK/USD Read with Age",
+        "description": "Read LINK/USD price with timestamp from Chronicle Sepolia oracle",
+        "config": {
+          "actionType": "chronicle/link-usd-read-with-age",
+          "network": "11155111",
+          "_protocolMeta": "{\"protocolSlug\":\"chronicle\",\"contractKey\":\"linkUsd\",\"functionName\":\"readWithAge\",\"actionType\":\"read\"}"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger-1", "target": "dai-read" },
+    { "id": "e2", "source": "trigger-1", "target": "dai-age" },
+    { "id": "e3", "source": "trigger-1", "target": "link-read" },
+    { "id": "e4", "source": "trigger-1", "target": "link-age" }
+  ]
+}

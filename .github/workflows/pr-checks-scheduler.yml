@@ -1,0 +1,74 @@
+# Type: standalone | PR checks for the keeperhub-scheduler package.
+# Runs only when keeperhub-scheduler/**, this workflow, or the setup
+# composite action change. The scheduler package has its own pnpm
+# lockfile (not part of the root pnpm workspace), so the existing
+# setup-node-pnpm action (which installs from the repo root) is not reused.
+name: PR Checks (Scheduler)
+
+on:
+  pull_request:
+    paths:
+      - "keeperhub-scheduler/**"
+      - ".github/workflows/pr-checks-scheduler.yml"
+      - ".github/actions/setup-scheduler-deps/**"
+
+# Cancel superseded runs on new pushes to the same PR branch. PR checks
+# are advisory; the latest commit is the only one that matters. Mirrors
+# the convention in deploy-scheduler.yaml (which uses
+# cancel-in-progress: false because deploys must not interrupt themselves).
+concurrency:
+  group: pr-checks-scheduler-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Default GHA token grants more than this workflow needs. Restrict to
+# read-only contents access; no job here writes to the repo, comments on
+# the PR, or pushes packages.
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    # Local runs complete in <30s; 5min cap surfaces hangs (network,
+    # registry stalls) without burning the default 6h GHA budget.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-scheduler-deps
+      - name: Run lint
+        working-directory: keeperhub-scheduler
+        run: pnpm lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-scheduler-deps
+      - name: Run typecheck
+        working-directory: keeperhub-scheduler
+        run: pnpm typecheck
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-scheduler-deps
+      - name: Run build
+        # `pnpm build` runs `tsc` (with emit), catching d.ts generation
+        # and rootDir/outDir errors that `--noEmit` typecheck does not.
+        working-directory: keeperhub-scheduler
+        run: pnpm build
+
+  test-unit:
+    # Policy: all test jobs resolve secrets from the staging environment.
+    environment: staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-scheduler-deps
+      - name: Run unit tests
+        working-directory: keeperhub-scheduler
+        run: pnpm test:unit

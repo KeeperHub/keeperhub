@@ -1,0 +1,141 @@
+name: Recheck Issue Link
+
+# `pr-issue-link.yml` decides whether a pull request references an issue that
+# carries `accepted`. It runs on `pull_request_target`, so it re-evaluates on
+# pull request events and never on issue events - which means a red result
+# outlives the condition that produced it. Label an issue `accepted` and every
+# open pull request referencing it keeps its failing `check-issue-link` until
+# someone pushes, edits the title, or churns a label to force a re-run.
+#
+# That is not hypothetical. On #2217 the gate ran at 02:29:38 and failed
+# because #2211 was unlabelled; #2211 was labelled `accepted` 70 seconds later
+# and the red result stood. The same pull request's timeline shows a label
+# added and removed three seconds apart, three times - the manual workaround.
+#
+# This workflow closes the loop from the other side: when an issue gains or
+# loses `accepted`, find the open pull requests that reference it and re-run
+# their gate. It changes no verdict of its own. `pr-issue-link.yml` remains the
+# single place the rule lives; this only makes it look again.
+#
+# The candidate extraction below is duplicated from that workflow rather than
+# shared. It has to be: the gate runs as `pull_request_target` and is forbidden
+# from checking out, so there is no file both jobs can read. When the rule
+# changes there, change it here. The two must agree, or this re-runs the wrong
+# pull requests and leaves the right ones red.
+#
+# SAFETY: this reads pull request titles, bodies and branch names, all of which
+# are contributor-controlled. They are never interpolated into a shell command
+# or a workflow expression - the API response goes to a file and jq does the
+# matching. The only event data used directly is the issue number and the label
+# name, and the label name only in an `if:` expression.
+
+on:
+  issues:
+    types: [labeled, unlabeled]
+
+# Keyed by issue, so two issues labelled at once do not queue behind each
+# other. Not cancel-in-progress: a run part-way through its pull request list
+# has already re-run some and not others, and cancelling it would leave the
+# rest red with nothing to trigger them again.
+concurrency:
+  group: recheck-issue-link-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  recheck:
+    if: github.event.label.name == 'accepted'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Re-run the issue-link gate on pull requests referencing this issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GATE_PATH: .github/workflows/pr-issue-link.yml
+          # Kept in step with the `branches:` list in pr-issue-link.yml. A pull
+          # request the gate never runs on has nothing to re-run.
+          GATE_BASES: staging prod
+        run: |
+          set -euo pipefail
+
+          gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate > pulls.json
+
+          # Same reference shapes as pr-issue-link.yml: every `#N` in the title
+          # or the body with HTML comments stripped, so the pull request
+          # template's own examples do not count, plus an explicit issue-N /
+          # issue/N / gh-N branch name. A bare number in a branch name is not a
+          # reference. First ten distinct candidates only, matching the gate -
+          # if this issue is the eleventh, the gate ignores it and so must we.
+          jq -r --argjson want "$ISSUE_NUMBER" --arg bases "$GATE_BASES" '
+            ($bases | split(" ")) as $ok
+            | .[]
+            | select(.base.ref as $b | $ok | index($b))
+            | . as $pr
+            | (($pr.body // "") | gsub("<!--.*?-->"; ""; "m")) as $body
+            | ( [ ($pr.title, $body) | match("#([0-9]+)"; "g").captures[0].string ]
+                + [ ($pr.head.ref // "")
+                    | match("(^|/)(issue|gh)[-/]?([0-9]+)"; "gi").captures[2].string ]
+              )
+            | map(tonumber)
+            | reduce .[] as $n ([]; if index($n) then . else . + [$n] end)
+            | .[0:10]
+            | select(index($want))
+            | "\($pr.number) \($pr.head.sha)"
+          ' pulls.json > referencing.txt || true
+
+          if [ ! -s referencing.txt ]; then
+            echo "No open pull request references #$ISSUE_NUMBER. Nothing to re-run."
+            exit 0
+          fi
+
+          rerun=0
+          skipped=0
+          missing=0
+
+          while read -r pr sha; do
+            [ -n "$pr" ] || continue
+
+            run_json=$(gh api "repos/$REPO/actions/runs?head_sha=$sha&per_page=100" \
+              --jq "[.workflow_runs[] | select(.path == \"$GATE_PATH\")]
+                    | sort_by(.created_at) | last // empty" 2>/dev/null || true)
+
+            if [ -z "$run_json" ]; then
+              echo "PR #$pr: no $GATE_PATH run on $sha - nothing to re-run."
+              missing=$((missing + 1))
+              continue
+            fi
+
+            run_id=$(printf '%s' "$run_json" | jq -r '.id')
+            status=$(printf '%s' "$run_json" | jq -r '.status')
+            conclusion=$(printf '%s' "$run_json" | jq -r '.conclusion // ""')
+
+            if [ "$status" != "completed" ]; then
+              echo "PR #$pr: run $run_id is $status - it will pick up the label itself."
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            if [ "$conclusion" = "success" ]; then
+              echo "PR #$pr: run $run_id already passed."
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            # Re-runs the whole run rather than only its failed jobs: a run
+            # cancelled by the gate's own concurrency group has no failed job
+            # to re-run, and this workflow has a single job either way.
+            if gh api -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1; then
+              echo "PR #$pr: re-ran run $run_id (was $conclusion)."
+              rerun=$((rerun + 1))
+            else
+              echo "::warning title=recheck-issue-link::PR #$pr: could not re-run run $run_id."
+            fi
+          done < referencing.txt
+
+          echo "Re-ran $rerun, skipped $skipped, no run found for $missing."

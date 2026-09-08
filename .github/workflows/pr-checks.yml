@@ -1,0 +1,403 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: ['**']
+
+permissions:
+  contents: read
+  pull-requests: read
+  id-token: write
+
+jobs:
+  migrate-check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: keeperhub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Check for migration-relevant changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # set -e matters here: this step decides whether every migration check
+          # below runs at all, so a failure to list the PR's files must fail the
+          # job rather than silently resolve to "no migrations changed".
+          set -euo pipefail
+          # per_page is a query parameter, not a gh flag. `gh api --per-page`
+          # exits with "unknown flag", which the old `|| true` swallowed into
+          # relevant=false -- skipping the fresh-database migration and the
+          # drift check while still reporting success.
+          FILES=$(gh api \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files?per_page=100" \
+            --paginate -q '.[].filename')
+          # grep -q inside `if` does not trip set -e when it finds no match.
+          if printf '%s\n' "$FILES" | grep -qE '^(drizzle/|lib/db/schema)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: ./.github/actions/setup-node-pnpm
+        if: steps.changes.outputs.relevant == 'true'
+
+      - name: Run workflow engine migrations
+        if: steps.changes.outputs.relevant == 'true'
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+        run: pnpm db:setup-workflow 2>&1 | tee /tmp/migrate-setup-output.txt
+
+      - name: Run app migrations
+        if: steps.changes.outputs.relevant == 'true'
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+        run: pnpm db:migrate 2>&1 | tee /tmp/migrate-output.txt
+
+      - name: Check for snapshot drift
+        if: steps.changes.outputs.relevant == 'true'
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+        run: |
+          npx drizzle-kit generate 2>&1 | tee /tmp/drizzle-generate-output.txt
+          if ! grep -q "nothing to migrate" /tmp/drizzle-generate-output.txt; then
+            echo "::error::Schema drift detected - run 'pnpm drizzle-kit generate' locally and commit the result."
+            exit 1
+          fi
+
+      - name: Upload migration logs on failure
+        if: failure() && steps.changes.outputs.relevant == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: migrate-check-logs
+          path: /tmp/migrate*.txt
+          retention-days: 7
+
+      - name: Upload drizzle drift output on failure
+        if: failure() && steps.changes.outputs.relevant == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: drizzle-generate-output
+          path: /tmp/drizzle-generate-output.txt
+          retention-days: 7
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          discover-plugins: "true"
+
+      - name: Run check
+        run: pnpm check
+
+      - name: Forbid legacy Tempo chain ID 42420
+        # Canonical Tempo mainnet chain ID is 4217 (see lib/rpc/types.ts).
+        # 42420 is a retired legacy ID; re-introducing it silently routes to
+        # the wrong RPC entry or mismatches the chains table. See KEEP-261.
+        # Uses git grep on the checked-out tree -- no user input is interpolated.
+        run: |
+          MATCHES=$(git grep -nE '\b42420\b' -- \
+            ':!*.md' \
+            ':!drizzle/meta/' \
+            ':!.github/workflows/pr-checks.yml' \
+            || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Legacy Tempo chain ID 42420 found. Use 4217 instead (KEEP-261)."
+            echo "$MATCHES"
+            exit 1
+          fi
+
+      - name: Forbid raw network egress in plugins
+        # Workflow step files run server-side in the executor and must route
+        # egress through safeFetch so the SSRF guard (lib/safe-fetch.ts) sees
+        # every outbound request. Bare fetch()/axios/http.request bypass the
+        # guard and can reach internal metadata endpoints (169.254.169.254)
+        # and RFC1918 hosts. Excluded:
+        #   - *.test.ts: vitest specs mock the network and never egress.
+        #   - plugins/*/test.ts: connection-test files are reachable from the
+        #     client-bundled plugin registry (plugins/index.ts), so they cannot
+        #     import safe-fetch.ts (which is "server-only"). Their egress is a
+        #     separate, server-architecture concern, not a step-file bypass.
+        # Uses git grep on the checked-out tree; no user input is interpolated.
+        run: |
+          MATCHES=$(git grep -nE '(^|[^0-9A-Za-z_.])fetch\(|(^|[^0-9A-Za-z_])axios([^0-9A-Za-z_]|$)|https?\.request\(' -- \
+            'plugins/' \
+            ':!*.test.ts' \
+            ':!plugins/*/test.ts' \
+            ':!*.md' \
+            ':!*.txt' \
+            | grep -vE 'safeFetch\(' || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Raw network egress found under plugins/. Route it through safeFetch(..., { plugin }) from @/lib/safe-fetch so the SSRF guard applies."
+            echo "$MATCHES"
+            exit 1
+          fi
+
+      - name: Forbid KeeperHub-operated hosts in RPC and chain defaults
+        # A deployment that configures no RPCs falls through to the defaults in
+        # lib/rpc/, and scripts/seed/ writes those into the chains table on
+        # every deploy. An endpoint we operate in either place would silently
+        # and durably route that deployment's chain traffic - addresses,
+        # contracts, transaction payloads - through our infrastructure.
+        #
+        # tests/unit/rpc-config.test.ts asserts the same rule over the exported
+        # table, which catches real values; this catches a literal anywhere in
+        # those directories, including one that never reaches the export.
+        # Comments are matched too, on purpose: a commented-out endpoint is an
+        # invitation to paste it back.
+        # Uses git grep on the checked-out tree; no user input is interpolated.
+        run: |
+          MATCHES=$(git grep -nE 'https?://[^"'"'"'`[:space:]]*(techops\.services|keeperhub\.com)' -- \
+            'lib/rpc/' \
+            'scripts/seed/' \
+            ':!*.test.ts' \
+            ':!*.md' \
+            || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::A KeeperHub-operated host is used as an RPC or chain default. Use a third-party public endpoint; deployments that configure nothing inherit these, and the chain seeder makes them durable."
+            echo "$MATCHES"
+            exit 1
+          fi
+
+      - name: Check public API docs match route files
+        # Parses every documented (METHOD /api/...) entry in docs/api/*.md
+        # and asserts the corresponding app/api/<path>/route.ts exists and
+        # exports a handler for that method. Also writes
+        # specs/api-coverage.json which the post-deploy live HEAD check
+        # reads. Hackathon teams reported endpoints that 404 in prod or
+        # return shapes that diverge from docs; this guard blocks new drift
+        # at PR time.
+        run: pnpm check:api-docs
+
+      - name: Detect uncommitted api-coverage drift
+        # specs/api-coverage.json is committed and read by the post-deploy
+        # live HEAD check. If the script regenerated it during this job we
+        # need the contributor to commit the regenerated file.
+        run: |
+          if ! git diff --exit-code specs/api-coverage.json; then
+            echo "::error::specs/api-coverage.json is stale. Run 'pnpm check:api-docs' locally and commit the result."
+            exit 1
+          fi
+
+  # The job name is the required status check on staging and prod. Keep it as
+  # `typecheck` when changing what it runs: renaming it would leave the ruleset
+  # waiting on a check that no longer reports, blocking every pull request.
+  #
+  # KEEP-1210 compile surface phase 3: this gate runs tsgo (the native
+  # TypeScript port) rather than tsc. The root program is check-dominated -
+  # 45.0s of tsc's 56.1s was checker time - so replacing the checker is what
+  # makes the gate fast, with no change to the code being checked.
+  #
+  # tsc has not been retired. It runs nightly against staging in
+  # nightly-typecheck-tsc.yml, which cross-checks the two compilers and fails
+  # on disagreement. That is the safety net for a tsgo checking gap: this
+  # compiler is a preview, and agreement on real code is evidence, not a
+  # guarantee. Revert this job to `pnpm type-check:tsc` to restore the old gate.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          discover-plugins: "true"
+
+      # No tsbuildinfo cache: tsgo does not read or write one. The cold run is
+      # already faster than tsc's warm one.
+      - name: Run type check
+        run: pnpm type-check
+
+      # keeperhub-executor is excluded from the root program (it is the sole
+      # importer of @kubernetes/client-node, 816 .d.ts files) and checked as
+      # its own smaller program, like keeperhub-scheduler/keeperhub-events.
+      - name: Run executor type check
+        run: pnpm type-check:executor
+
+  build:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Check for build-relevant changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FILES=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files \
+            --paginate -q '.[].filename')
+          RELEVANT=$(echo "$FILES" | grep -vE '^(docs/|specs/|\.github/|.*\.md$)' | head -1 || true)
+          if [ -n "$RELEVANT" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.relevant == 'true'
+        uses: docker/setup-buildx-action@v4
+
+      # A pull request from a fork gets no secrets, no OIDC token and no
+      # environment variables, so these two steps cannot succeed on one and
+      # are skipped instead. Bake then runs with ECR_REGISTRY empty, which
+      # docker-bake.hcl turns into no registry tags and no registry cache:
+      # the build is a plain compile check, slower and with empty public
+      # build args. fork-build-notice.yml tells the contributor why.
+      - name: Configure AWS credentials
+        if: >-
+          steps.changes.outputs.relevant == 'true'
+          && github.actor != 'dependabot[bot]'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.TO_REGION }}
+
+      - name: Login to AWS ECR
+        if: >-
+          steps.changes.outputs.relevant == 'true'
+          && github.actor != 'dependabot[bot]'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build images (validate + prime cache)
+        if: steps.changes.outputs.relevant == 'true'
+        uses: docker/bake-action@v7
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPO: ${{ vars.TO_ECR_NAME }}
+          NEXT_PUBLIC_AUTH_PROVIDERS: ${{ vars.NEXT_PUBLIC_AUTH_PROVIDERS }}
+          NEXT_PUBLIC_GITHUB_CLIENT_ID: ${{ vars.NEXT_PUBLIC_GITHUB_CLIENT_ID }}
+          NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${{ vars.NEXT_PUBLIC_GOOGLE_CLIENT_ID }}
+          NEXT_PUBLIC_BILLING_ENABLED: ${{ vars.NEXT_PUBLIC_BILLING_ENABLED }}
+          NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED: ${{ vars.NEXT_PUBLIC_GAS_SPONSORSHIP_ENABLED }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
+        with:
+          files: docker-bake.hcl
+          targets: app
+          push: false
+
+  test-unit:
+    # Policy: all test jobs resolve secrets from the staging environment.
+    environment: staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          discover-plugins: "true"
+
+      - name: Run unit tests
+        # Also run colocated __tests__ suites (lib/**/__tests__) and the
+        # metrics-collector server test; both sit outside tests/unit. The
+        # __tests__ filter is a path substring, so it matches lib/**/__tests__
+        # without pulling in keeperhub-executor/lib (a bare "lib" filter would).
+        run: pnpm test:unit __tests__ keeperhub-metrics-collector
+
+  test-unit-sandbox-remote:
+    # Policy: all test jobs resolve secrets from the staging environment.
+    environment: staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          discover-plugins: "true"
+
+      - name: Run sandbox package unit tests
+        run: pnpm --filter @keeperhub/sandbox test
+
+      - name: Build sandbox dist and run smoke test
+        run: |
+          pnpm --filter @keeperhub/sandbox build
+          pnpm --filter @keeperhub/sandbox test:smoke
+
+      - name: Build sandbox image
+        run: docker build -f sandbox/Dockerfile -t keeperhub-sandbox:ci .
+
+      - name: Start sandbox container
+        run: |
+          docker run -d --name sandbox -p 8787:8787 keeperhub-sandbox:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8787/healthz >/dev/null; then
+              echo "sandbox ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "sandbox did not become ready"
+          docker logs sandbox
+          exit 1
+
+      # Invoke vitest directly rather than via `pnpm test:unit`: that script
+      # already carries a `tests/unit` positional, and vitest ORs positionals
+      # as filters, so `pnpm test:unit <file>` selected all 565 files under
+      # tests/unit rather than the one file. code-run-code.test.ts is the only
+      # suite that reaches the remote sandbox (the other sandbox tests serve
+      # their own loopback servers), so the rest were a duplicate of test-unit.
+      - name: Run unit tests against remote sandbox
+        env:
+          SANDBOX_BACKEND: remote
+          SANDBOX_URL: http://localhost:8787
+        run: pnpm exec vitest run tests/unit/code-run-code.test.ts
+
+      - name: Dump sandbox logs on failure
+        if: failure()
+        run: docker logs sandbox || true
+
+      - name: Stop sandbox
+        if: always()
+        run: docker stop sandbox || true
+
+  test-integration:
+    # Join the staging environment so CHAIN_RPC_CONFIG resolves to the staging
+    # value (single source of truth) rather than the repo-level fallback copy.
+    environment: staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          discover-plugins: "true"
+
+      - name: Run integration tests
+        env:
+          # Shared staging RPC config (AWS Parameter Store -> Helm -> this secret).
+          # Integration tests use the same 3-tier resolution
+          # (CHAIN_RPC_CONFIG -> individual env vars -> public RPC defaults)
+          # as deployed services. Absent secrets fall back to public RPCs
+          # via PUBLIC_RPCS defaults in lib/rpc/rpc-config.ts.
+          CHAIN_RPC_CONFIG: ${{ secrets.CHAIN_RPC_CONFIG }}
+        run: pnpm test:integration

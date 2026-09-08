@@ -1,0 +1,15 @@
+# Makes docs-site its own pnpm workspace root.
+#
+# pnpm walks up from the install directory to find a workspace root. Without
+# this file it reaches the repo-root pnpm-workspace.yaml, which lists only "."
+# and "sandbox". An install started in docs-site then resolves the root
+# workspace and never writes docs-site/pnpm-lock.yaml.
+#
+# Dependabot runs `pnpm install --lockfile-only` in this directory with no
+# --ignore-workspace flag, so it hit that behaviour and opened manifest-only
+# bumps. The docs image installs with --frozen-lockfile and failed on the
+# lockfile that no bump ever updated.
+#
+# keeperhub-events solves this the same way with its own pnpm-workspace.yaml.
+packages:
+  - "."

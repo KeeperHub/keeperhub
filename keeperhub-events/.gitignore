@@ -1,0 +1,7 @@
+.env
+node_modules/
+.worktrees/
+
+*/node_modules/
+dist/
+scripts/

@@ -1,0 +1,19 @@
+{
+  "1": {
+    "wrap": {
+      "to": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      "data": "0xd0e30db0",
+      "skipped": false
+    },
+    "unwrap": {
+      "to": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      "data": "0x2e1a7d4d0000000000000000000000000000000000000000000000000011c37937e08000",
+      "skipped": false
+    },
+    "balance-of": {
+      "to": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    }
+  }
+}

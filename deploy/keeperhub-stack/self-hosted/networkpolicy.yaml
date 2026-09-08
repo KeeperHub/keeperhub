@@ -1,0 +1,156 @@
+# Egress policy for a self-hosted install.
+#
+# Applied by install.sh when EGRESS_POLICY=true. Off by default, because a
+# policy that silently drops traffic is worse for a first install than no policy
+# at all, and because it only does anything on a cluster whose CNI enforces
+# NetworkPolicy. minikube's default CNI accepts these objects and ignores them;
+# the test harness uses calico for that reason.
+#
+# The shape is deny-then-allow. The first policy selects every pod in the
+# namespace with an empty egress list, which denies everything. The rest add
+# back exactly what DEPENDENCIES.md says the product reaches. Kubernetes unions
+# the rules, so a packet is allowed when any policy permits it.
+#
+# What this does NOT do is name hosts. NetworkPolicy matches CIDRs, and every
+# service in the allowlist is a public endpoint behind DNS that resolves to
+# addresses outside our control. The honest control is therefore: allow the
+# public internet, deny every private range. That is exactly what staging and
+# production already enforce for runner pods
+# (deploy/keeperhub-stack/<env>/networkpolicy.yaml), and it is the property that
+# matters - an escaped or hostile workflow step cannot reach the cluster
+# network, the node, the metadata service, or anything else on the private side.
+#
+# install.sh substitutes three variables here: NAMESPACE, and APISERVER_CIDRS
+# and APISERVER_PORTS, which it reads from the cluster. The two API server ones
+# are pre-indented YAML lists rather than single values, because the number of
+# API server endpoints is a property of the cluster.
+#
+# Their names are written without the dollar sign on purpose. envsubst does not
+# know a comment from a value, and a multi-line list expanded inside this
+# paragraph breaks out of it and makes the whole document invalid.
+---
+# Deny every egress packet from every pod. Everything below re-opens a hole.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keeperhub-default-deny-egress
+  namespace: ${NAMESPACE}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress: []
+---
+# DNS. Without this nothing resolves and every other rule is unreachable, so it
+# is first. Both protocols: TCP carries responses too large for a UDP datagram.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keeperhub-allow-dns
+  namespace: ${NAMESPACE}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Traffic between the install's own components: the app, the executor, the two
+# dispatchers, the metrics collector, the sandbox, PostgreSQL and the queue.
+#
+# Scoped to this namespace rather than to the whole cluster, so a component
+# still cannot reach anything else running alongside it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keeperhub-allow-in-namespace
+  namespace: ${NAMESPACE}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ${NAMESPACE}
+---
+# The Kubernetes API server, needed by exactly two things: the executor, which
+# creates a Job per execution, and the dispatchers, which hold a Lease when
+# leader election is on.
+#
+# The addresses and ports are read from the cluster by install.sh, because no
+# constant is right on more than one kind of cluster: the Service address is
+# 10.96.0.1 on kubeadm and minikube and 10.43.0.1 on k3s, and the port is 443
+# through the Service but 6443 or 8443 behind it. APISERVER_CIDR and
+# APISERVER_PORT in config.sh override the discovery.
+#
+# Two addresses are allowed, the Service and the endpoint behind it, because
+# only one of them is the address the CNI matches on and which one it is depends
+# on the CNI. A pod dials the ClusterIP, kube-proxy rewrites the destination to
+# the endpoint, and calico evaluates policy on the rewritten address - measured,
+# with only the ClusterIP allowed every connection to the API server timed out.
+#
+# Allowing the endpoint means allowing a node address on the API server port.
+# That is narrower than it looks: it is one port on the machines that already
+# run the workload, and every other port on them stays denied by the rule below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keeperhub-allow-apiserver
+  namespace: ${NAMESPACE}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+${APISERVER_CIDRS}
+      ports:
+${APISERVER_PORTS}
+---
+# The public internet, minus every private range.
+#
+# This is the allowlist DEPENDENCIES.md describes, expressed the only way
+# NetworkPolicy can express it. It permits the services the product genuinely
+# needs - the chain RPC endpoints, api.sendgrid.com, api.turnkey.com,
+# challenges.cloudflare.com, and whatever URL a user's own workflow step calls -
+# while denying the entire private side.
+#
+# The exclusions are the point, and each one is a real attack path:
+#   10/8, 172.16/12, 192.168/16   the cluster and the network it sits on
+#   169.254.0.0/16                 link-local, which is where the cloud
+#                                  instance metadata service lives
+#   100.64.0.0/10                  carrier-grade NAT, used by some CNIs
+#   127.0.0.0/8                    loopback
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keeperhub-allow-public-egress
+  namespace: ${NAMESPACE}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+              - 127.0.0.0/8

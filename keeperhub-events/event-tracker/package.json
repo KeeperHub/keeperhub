@@ -1,0 +1,42 @@
+{
+  "name": "@techops/events-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "start:prod": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1126.0",
+    "ethers": "^6.17.0",
+    "ioredis": "^5.11.1",
+    "uuid": "^14.0.2",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.13",
+    "tsup": "^8.3.5",
+    "tsx": "^4.23.13",
+    "vite": "^8.2.2",
+    "vitest": "4.1.11"
+  },
+  "pnpm": {
+    "overrides": {
+      "ws": ">=8.21.0",
+      "esbuild@>=0.27.3 <0.28.1": "^0.28.1",
+      "postcss": ">=8.5.18"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+# Type: standalone | Manual emergency deploy: build -> deploy, no e2e.
+# Use when you need to push a fix to prod (or staging) ASAP.
+# Build step is included but skips automatically if images already exist for the SHA.
+#
+# How to use:
+#   1. Go to Actions > Hotfix Deploy > Run workflow
+#   2. Select the branch (prod or staging) -- this determines the target environment
+#   3. Click "Run workflow"
+name: Hotfix Deploy
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-images:
+    uses: ./.github/workflows/build-images.yml
+    secrets: inherit
+
+  deploy:
+    needs: [build-images]
+    uses: ./.github/workflows/deploy-keeperhub.yaml
+    with:
+      image_tag: ${{ needs.build-images.outputs.image_tag }}
+    secrets: inherit

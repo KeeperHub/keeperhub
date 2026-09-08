@@ -1,0 +1,196 @@
+# Runs the v1.9 sandbox escape-matrix E2E suite (TEST-01..05) against a
+# deployed keeperhub env with a planted sentinel in the main app's env.
+#
+# Triggers:
+#   - workflow_dispatch: operator-initiated, choose env (staging or prod).
+#   - workflow_run (deploy-sandbox): fires automatically after a successful
+#     sandbox deploy on staging, so any change that actually lands in the
+#     cluster is regression-tested against the full TEST-01..05 matrix.
+#     Prod promotions stay manual — operators trigger via workflow_dispatch
+#     after the post-promotion soak.
+#
+# In all cases, the job plants an SSM canary, rolls the main app to pick it
+# up, runs the tests, and tears the canary down in a cleanup step.
+
+name: sandbox-escape-matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - prod
+        default: staging
+      skip_canary_plant:
+        description: "Skip plant+rollout (re-use existing canary)"
+        required: false
+        type: boolean
+        default: false
+  workflow_run:
+    workflows: ["deploy-sandbox"]
+    types:
+      - completed
+    branches:
+      - staging
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+concurrency:
+  group: sandbox-escape-matrix-${{ inputs.environment || 'staging' }}
+  cancel-in-progress: false
+
+jobs:
+  escape-matrix:
+    # workflow_run fires on ALL completions (success, failure, cancelled);
+    # skip unless the upstream deploy actually succeeded. For workflow_dispatch,
+    # always run. For workflow_run on prod branch (shouldn't happen per the
+    # branches filter above, but defense-in-depth), skip — prod promotions
+    # stay manual.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'workflow_run' &&
+           github.event.workflow_run.conclusion == 'success' &&
+           github.event.workflow_run.head_branch == 'staging') }}
+    environment: ${{ inputs.environment || 'staging' }}
+    runs-on: ubuntu-latest
+    env:
+      REGION: ${{ vars.TO_REGION }}
+      CLUSTER_NAME: ${{ vars.TO_CLUSTER_NAME }}
+      NAMESPACE: keeperhub
+      KH_RELEASE_NAME: keeperhub
+      CANARY_SSM_PATH: /eks/techops-${{ inputs.environment || 'staging' }}/keeperhub/_sandbox_escape_canary
+      APP_URL: ${{ (inputs.environment || 'staging') == 'prod' && vars.TO_PROD_URL || vars.TO_STAGING_URL }}
+      TARGET_ENV: ${{ inputs.environment || 'staging' }}
+      SKIP_PLANT: ${{ inputs.skip_canary_plant || false }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          discover-plugins: "false"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Connect to EKS
+        uses: ./.github/actions/eks-connect
+        with:
+          enabled: ${{ vars.TO_EKS_CONNECT }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          region: ${{ env.REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION"
+
+      - name: Plant canary sentinel
+        if: ${{ inputs.skip_canary_plant != true }}
+        id: plant
+        run: |
+          CANARY="KH_ESCAPE_CANARY_$(openssl rand -hex 12)"
+          echo "::add-mask::$CANARY"
+          aws ssm put-parameter \
+            --name "$CANARY_SSM_PATH" \
+            --type SecureString \
+            --value "$CANARY" \
+            --overwrite \
+            --region "$REGION" >/dev/null
+          echo "canary=$CANARY" >> "$GITHUB_OUTPUT"
+          echo "Canary planted at $CANARY_SSM_PATH"
+
+      - name: Force ExternalSecrets refresh + rollout
+        if: ${{ inputs.skip_canary_plant != true }}
+        run: |
+          TS=$(date +%s)
+          kubectl -n "$NAMESPACE" annotate externalsecret \
+            "${KH_RELEASE_NAME}-common" \
+            "force-sync=$TS" --overwrite || true
+          sleep 30
+          kubectl -n "$NAMESPACE" rollout restart \
+            deployment/"${KH_RELEASE_NAME}-common"
+          kubectl -n "$NAMESPACE" rollout status \
+            deployment/"${KH_RELEASE_NAME}-common" --timeout=5m
+
+      - name: Fetch canary value for test assertion
+        id: fetch_canary
+        run: |
+          CANARY=$(aws ssm get-parameter \
+            --name "$CANARY_SSM_PATH" \
+            --with-decryption \
+            --region "$REGION" \
+            --query 'Parameter.Value' --output text)
+          echo "::add-mask::$CANARY"
+          echo "canary=$CANARY" >> "$GITHUB_OUTPUT"
+
+      - name: Run escape-matrix suite
+        id: matrix
+        env:
+          STAGING_URL: ${{ env.APP_URL }}
+          STAGING_API_TOKEN: ${{ secrets.TO_ESCAPE_MATRIX_API_TOKEN }}
+          EXPECTED_SENTINEL: ${{ steps.fetch_canary.outputs.canary }}
+        run: |
+          pnpm exec vitest run tests/e2e/sandbox-escape/escape-matrix.spec.ts
+
+      - name: Teardown canary (always)
+        if: always()
+        run: |
+          aws ssm delete-parameter \
+            --name "$CANARY_SSM_PATH" \
+            --region "$REGION" >/dev/null || true
+          TS=$(date +%s)
+          kubectl -n "$NAMESPACE" annotate externalsecret \
+            "${KH_RELEASE_NAME}-common" \
+            "force-sync=$TS" --overwrite || true
+          echo "Canary torn down. Operator should run main-app rollout restart if they want the old canary variable fully evicted from running Pods."
+
+      - name: Summary
+        if: always()
+        env:
+          MATRIX_RESULT: ${{ steps.matrix.outcome }}
+        run: |
+          {
+            echo "## Escape-matrix run — $TARGET_ENV"
+            echo ""
+            echo "- Canary SSM path: \`$CANARY_SSM_PATH\` (deleted)"
+            echo "- Test result: $MATRIX_RESULT"
+            echo ""
+            echo "If the test passed, all TEST-XX assertions held: an escape from the Code action node could NOT read the planted canary (TEST-01..05), spawn a shell or write outside /tmp (TEST-06..07), or reach in-cluster Services / IMDS / RFC1918 destinations (TEST-08..10)."
+            echo ""
+            echo "If TEST-01..05 fail: the env/SA/IRSA strand has regressed - roll the main app back to SANDBOX_BACKEND=local in Helm values immediately."
+            echo ""
+            echo "If TEST-06..10 fail: the image/FS/network strand has regressed but the env/SA/IRSA strand is intact. Re-verify the sandbox runtime image is distroless, the NetworkPolicy is applied, and the pod has readOnlyRootFilesystem. SANDBOX_BACKEND rollback is not required unless TEST-01..05 also fail."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open GitHub issue on failure
+        if: steps.matrix.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "sandbox-escape-matrix failed on ${{ env.TARGET_ENV }}" \
+            --body "The sandbox-escape-matrix suite failed and needs investigation.
+
+          **Environment**: ${{ env.TARGET_ENV }}
+          **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          **Triggered by**: ${{ github.event_name }}
+          **Matrix step outcome**: ${{ steps.matrix.outcome }}
+
+          If TEST-01..05 failed: the env/SA/IRSA strand has regressed. Roll the main app back to \`SANDBOX_BACKEND=local\` in Helm values immediately.
+
+          If TEST-06..10 failed: the image/FS/network strand has regressed. Re-verify the sandbox image is distroless, NetworkPolicy is applied, and \`readOnlyRootFilesystem\` is set. No rollback required unless TEST-01..05 also fail."

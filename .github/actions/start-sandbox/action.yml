@@ -1,0 +1,83 @@
+# Builds and starts the code-execution sandbox container for e2e jobs that
+# exercise the remote sandbox backend (SANDBOX_BACKEND=remote). Mirrors the
+# build+run+health pattern used by pr-checks.yml:test-unit-sandbox-remote.
+# On staging and prod pushes the image is prebuilt and passed via image_ref, so
+# this pulls instead of rebuilding (~72s/job). PRs pass an empty image_ref and
+# build locally. A NON-EMPTY image_ref that fails to pull is a hard error, not a
+# fallback: see the step below. KEEP-1259.
+name: Start Sandbox
+description: Build and start the code-execution sandbox container for e2e tests
+
+inputs:
+  port:
+    description: Host port to publish the sandbox on (reach it at http://localhost:<port>)
+    required: false
+    default: "8787"
+  image_ref:
+    description: Full ECR ref of a prebuilt sandbox image to pull, normally a digest ref. Empty builds locally; a non-empty ref that fails to pull fails the job.
+    required: false
+    default: ""
+  aws_role_arn:
+    description: IAM role to assume for the ECR pull. Only used when image_ref is set.
+    required: false
+    default: ""
+  aws_region:
+    description: AWS region for the ECR login. Only used when image_ref is set.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Authenticate to ECR ourselves rather than relying on a prior start-app
+    # step - the playwright job starts the sandbox before the app, so an
+    # ordering assumption would leave the pull unauthenticated there. Since
+    # KEEP-1259 that fails the job rather than falling back to a local build.
+    # Skipped when image_ref is empty (PRs), which build locally anyway.
+    - name: Configure AWS credentials for sandbox pull
+      if: inputs.image_ref != '' && inputs.aws_role_arn != ''
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: ${{ inputs.aws_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Login to AWS ECR for sandbox pull
+      if: inputs.image_ref != '' && inputs.aws_role_arn != ''
+      uses: aws-actions/amazon-ecr-login@v2
+
+    # KEEP-1259: a failed pull no longer falls back to a local build. The caller
+    # resolves image_ref from an ECR digest it has already confirmed exists, so a
+    # failure here is a permission or resolution fault, never a missing image. The
+    # old fallback cost ~72s in each of three e2e jobs and, worse, quietly tested a
+    # locally built sandbox instead of the one that ships. The empty-ref PR path is
+    # unchanged and still builds locally.
+    - name: Provide sandbox image (pull prebuilt, else build)
+      shell: bash
+      env:
+        IMAGE_REF: ${{ inputs.image_ref }}
+      run: |
+        if [ -z "$IMAGE_REF" ]; then
+          echo "no prebuilt image supplied; building sandbox locally"
+          docker build -f sandbox/Dockerfile -t keeperhub-sandbox:ci .
+        elif docker pull "$IMAGE_REF"; then
+          echo "using prebuilt sandbox image $IMAGE_REF"
+          docker tag "$IMAGE_REF" keeperhub-sandbox:ci
+        else
+          echo "::error::Could not pull $IMAGE_REF. The caller resolved this ref from a digest it already confirmed in ECR, so this is a pull permission or registry fault, not a missing image. Refusing to build the sandbox locally, because that would test a different image than the one that ships. Check the AWS role and the ECR login in this job."
+          exit 1
+        fi
+
+    - name: Start sandbox container
+      shell: bash
+      run: |
+        docker run -d --name sandbox -p ${{ inputs.port }}:8787 keeperhub-sandbox:ci
+        for i in $(seq 1 30); do
+          if curl -sf "http://localhost:${{ inputs.port }}/healthz" >/dev/null; then
+            echo "sandbox ready on :${{ inputs.port }}"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "sandbox did not become ready"
+        docker logs sandbox
+        exit 1

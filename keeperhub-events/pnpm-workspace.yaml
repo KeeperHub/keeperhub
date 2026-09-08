@@ -1,0 +1,3 @@
+packages:
+  - "event-tracker"
+  - "solana-tracker"

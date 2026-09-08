@@ -1,0 +1,51 @@
+# QUEUE_MODE=byo - you supply the queue, including real AWS SQS.
+#
+# Deliberately sets neither AWS_ENDPOINT_URL nor static credentials. Their
+# ABSENCE is what makes the SDK talk to real AWS and resolve credentials the
+# normal way (IRSA, instance profile, or your own Secret); this is how staging
+# and production are configured. Composing files rather than overriding keys is
+# the only way to express that, since a later -f cannot remove a key.
+#
+# Only the queue URLs are set, because they have no default the SDK can infer.
+# Set them once under global.queue below; every component reads the same value.
+global:
+  queue:
+    # Required. The full queue URL, for example
+    # https://sqs.us-east-1.amazonaws.com/123456789012/keeperhub-workflow-queue
+    url: ""
+    # Required. The dead-letter queue. The executor sends messages that fail HMAC
+    # verification here rather than dropping them, which is the only thing that
+    # makes a queue-URL mismatch visible instead of silent.
+    dlqUrl: ""
+
+queue:
+  bundled: false
+
+app:
+  env:
+    SQS_QUEUE_URL:
+      type: template
+      value: '{{ required "set global.queue.url - the full queue URL" .Values.global.queue.url }}'
+
+executor:
+  env:
+    SQS_QUEUE_URL:
+      type: template
+      value: '{{ required "set global.queue.url - the full queue URL" .Values.global.queue.url }}'
+    SQS_DLQ_URL:
+      type: template
+      value: '{{ required "set global.queue.dlqUrl - the dead-letter queue URL" .Values.global.queue.dlqUrl }}'
+
+schedule:
+  env:
+    SQS_QUEUE_URL:
+      type: template
+      value: '{{ required "set global.queue.url - the full queue URL" .Values.global.queue.url }}'
+
+# The fourth producer. Merged whether or not block.enabled is true, so the queue
+# address stays defined in one place for every component that enqueues.
+block:
+  env:
+    SQS_QUEUE_URL:
+      type: template
+      value: '{{ required "set global.queue.url - the full queue URL" .Values.global.queue.url }}'

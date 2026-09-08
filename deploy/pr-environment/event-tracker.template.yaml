@@ -1,0 +1,113 @@
+# Event Tracker for PR environments
+# Default: uses pre-built staging image (event-latest).
+# When the deploy-pr-events label is present on the PR, the deploy
+# workflow sets EVENTS_IMAGE_TAG to event-${sha_short} so the PR env
+# runs PR-specific events code instead of staging events code.
+# Variables to be replaced: ${PR_NUMBER}, ${ECR_REGISTRY}, ${EVENTS_IMAGE_TAG}
+
+replicaCount: 1
+
+service:
+  enabled: true
+  name: event-pr-${PR_NUMBER}
+  port: 3000
+  type: ClusterIP
+  containerPort: 3000
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-event-staging
+  tag: ${EVENTS_IMAGE_TAG}
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+
+serviceAccount:
+  create: false
+  name: keeperhub-pr-${PR_NUMBER}
+
+podAnnotations:
+  reloader.stakater.com/auto: "true"
+
+serviceMonitors:
+  enabled: false
+
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+env:
+  NODE_ENV:
+    type: kv
+    value: "production"
+  LOG_LEVEL:
+    type: kv
+    value: "info"
+  KEEPERHUB_API_URL:
+    type: kv
+    value: "http://keeperhub-pr-${PR_NUMBER}-common:3000"
+  INTERNAL_SERVICE_HMAC_SECRET:
+    type: parameterStore
+    name: internal-service-hmac-secret
+    parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+  REDIS_HOST:
+    type: kv
+    value: "redis.pr-${PR_NUMBER}.svc.cluster.local"
+  REDIS_PORT:
+    type: kv
+    value: "6379"
+  REDIS_PASSWORD:
+    type: kv
+    value: ""
+  JWT_TOKEN_USERNAME:
+    type: parameterStore
+    name: jwt-token-username
+    parameter_name: /eks/techops-staging/keeperhub-events/jwt-token-username
+  JWT_TOKEN_PASSWORD:
+    type: parameterStore
+    name: jwt-token-password
+    parameter_name: /eks/techops-staging/keeperhub-events/jwt-token-password
+  ETHERSCAN_API_KEY:
+    type: parameterStore
+    name: etherscan-api-key
+    parameter_name: /eks/techops-staging/keeperhub/etherscan-api-key
+  SQS_QUEUE_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566/000000000000/keeperhub-workflow-queue"
+  # Route AWS credential/STS resolution to the in-cluster localstack, matching
+  # the other PR-env trackers. Without it the AWS SDK falls through to real AWS
+  # STS and fails AssumeRoleWithWebIdentity, so no detected event reaches SQS.
+  AWS_ENDPOINT_URL:
+    type: kv
+    value: "http://localstack.pr-${PR_NUMBER}.svc.cluster.local:4566"
+  AWS_REGION:
+    type: kv
+    value: "us-east-1"
+
+externalSecrets:
+  clusterSecretStoreName: techops-staging
+
+livenessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - "pgrep -f 'src/index.ts' || exit 1"
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - "pgrep -f 'src/index.ts' || exit 1"

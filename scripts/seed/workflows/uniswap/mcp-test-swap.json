@@ -1,0 +1,63 @@
+{
+  "protocol": "uniswap",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Uniswap Approve+Swap WETH to DAI",
+  "description": "Approve WETH for Uniswap SwapRouter02 then swap 0.005 WETH to DAI on mainnet",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "approve-weth",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Approve WETH",
+        "type": "action",
+        "config": {
+          "actionType": "web3/approve-token",
+          "network": "1",
+          "tokenConfig": "{\"mode\":\"custom\",\"customToken\":{\"address\":\"0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2\",\"symbol\":\"WETH\"}}",
+          "spenderAddress": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+          "amount": "max"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "swap-weth-dai",
+      "type": "action",
+      "position": { "x": 544, "y": 0 },
+      "data": {
+        "label": "Swap WETH to DAI",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/swap-exact-input",
+          "network": "1",
+          "tokenIn": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "tokenOut": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+          "amountIn": "5000000000000000",
+          "amountOutMinimum": "0",
+          "fee": "3000",
+          "sqrtPriceLimitX96": "0",
+          "recipient": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "approve-weth", "type": "animated" },
+    { "id": "e2", "source": "approve-weth", "target": "swap-weth-dai", "type": "animated" }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "exportedAt": "2026-04-30T00:00:00.000Z",
+  "workflow": { "name": "Passthrough Extras" },
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": { "label": "Manual", "type": "trigger" },
+      "secretKey": "leaked"
+    }
+  ],
+  "edges": [],
+  "integrationBindings": []
+}

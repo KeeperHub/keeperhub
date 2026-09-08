@@ -1,0 +1,118 @@
+# Overlay for the throwaway minikube cluster the test harness builds.
+#
+# Merged last, over values.yaml and the mode fragments. It carries only the
+# settings that would be wrong on a real cluster, so the base profile stays the
+# thing a client actually derives from. If you find yourself adding something
+# here that a client would also want, it belongs in values.yaml instead.
+#
+#   ./test-harness/bootstrap-cluster.sh
+#   IMAGE_TAG=$(./test-harness/build-images.sh --print-tag)
+#   ./test-harness/build-images.sh
+#   KUBE_CONTEXT=keeperhub IMAGE_TAG=$IMAGE_TAG PROFILE=minikube ./install.sh
+
+global:
+  image:
+    # NO repository HERE, for the same reason there is no appHost below. It is
+    # written down once, in the settings file named by ENV_FILE, and read from
+    # there by install.sh, build-images.sh and the sandbox manifest alike.
+    #
+    # It used to live here as well, with assert_overlay comparing the two
+    # copies. That guard could report a mismatch but not prevent one, and it
+    # covered only the copy build-images.sh held - the sandbox manifest, which
+    # is applied outside the chart, could still find nothing.
+    #
+    # The kubelet must not try to pull an image that exists only inside the
+    # node. This is the single most client-hostile setting in this file, which
+    # is why it lives here rather than in the base profile.
+    pullPolicy: Never
+
+  # NO appHost HERE, deliberately. The hostname is written down in exactly one
+  # place, the settings file named by ENV_FILE, and install.sh passes it through
+  # as --set global.appHost. A value here would be a second place to change and
+  # a silent winner whenever someone forgot the first.
+  #
+  # Leaving it out means a plain `helm install -f values.minikube.yaml` with no
+  # host stops on the `required` in values.yaml and names the value it wants.
+  # That is the intended behaviour: refusing to install is better than serving
+  # on whatever hostname the profile happened to ship with.
+  #
+  # Use a hostname you own and not a keeperhub.com one. Two reasons. The gate
+  # has to show the product running with no KeeperHub-operated host involved.
+  # And a keeperhub.com host would not exercise the trusted-origin seam at all:
+  # lib/trusted-origins.ts compiles the built-in `https://*.keeperhub.com` to an
+  # anchored regex, so such a host passes the CSRF guard on the built-in entry
+  # rather than on the one the install configured.
+  #
+  # Reaching it needs `minikube tunnel -p keeperhub` and an /etc/hosts entry.
+
+  # The minikube ingress addon.
+  ingressClassName: nginx
+
+  # A ClusterIssuer backed by the developer's own mkcert CA, created by
+  # bootstrap-cluster.sh from `mkcert -CAROOT`.
+  tlsIssuer: mkcert-ca-issuer
+
+  # Cloudflare's documented always-pass test key. A dummy value, not a
+  # credential, and the reason it is here rather than in the base profile: an
+  # install that silently disables its captcha should be something you opt into.
+  turnstileSecretKey: "1x0000000000000000000000000000000AA"
+
+  # Nothing is delivered without a real SendGrid key, so this only has to be
+  # syntactically present. Signup dead-ends at the six-digit code either way.
+  fromAddress: "noreply@keeperhub.local"
+
+app:
+  # A laptop, not a cluster.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  env:
+    LOG_LEVEL:
+      type: kv
+      value: "debug"
+
+executor:
+  env:
+    # A single-node minikube cannot usefully run many concurrent runner pods.
+    MAX_CONCURRENT_JOBS:
+      type: kv
+      value: "2"
+    # Longer than the default on purpose: finished runner pods stay around long
+    # enough to read their logs when debugging.
+    JOB_TTL_SECONDS:
+      type: kv
+      value: "600"
+
+# Both are off in the base profile, for reasons that are about a client's
+# default rather than about correctness: the block dispatcher holds websockets
+# open to public RPC endpoints, and the metrics collector is a scrape target
+# with nothing scraping it. The acceptance run turns them on because the gate
+# has to cover every trigger type and every component the chart ships, so their
+# full configuration lives in values.yaml and only the switch is here.
+block:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+metricsCollector:
+  enabled: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+postgresql:
+  # One instance. Three would sit forever waiting on anti-affinity against a
+  # single node.
+  instances: 1
+  storage:
+    size: 5Gi

@@ -1,0 +1,123 @@
+[
+  {
+    "type": "function",
+    "name": "supply",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      { "name": "reserveId", "type": "uint256" },
+      { "name": "amount", "type": "uint256" },
+      { "name": "onBehalfOf", "type": "address" }
+    ],
+    "outputs": [
+      { "name": "", "type": "uint256" },
+      { "name": "", "type": "uint256" }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "withdraw",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      { "name": "reserveId", "type": "uint256" },
+      { "name": "amount", "type": "uint256" },
+      { "name": "onBehalfOf", "type": "address" }
+    ],
+    "outputs": [
+      { "name": "", "type": "uint256" },
+      { "name": "", "type": "uint256" }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "borrow",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      { "name": "reserveId", "type": "uint256" },
+      { "name": "amount", "type": "uint256" },
+      { "name": "onBehalfOf", "type": "address" }
+    ],
+    "outputs": [
+      { "name": "", "type": "uint256" },
+      { "name": "", "type": "uint256" }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "repay",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      { "name": "reserveId", "type": "uint256" },
+      { "name": "amount", "type": "uint256" },
+      { "name": "onBehalfOf", "type": "address" }
+    ],
+    "outputs": [
+      { "name": "", "type": "uint256" },
+      { "name": "", "type": "uint256" }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "setUsingAsCollateral",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      { "name": "reserveId", "type": "uint256" },
+      { "name": "usingAsCollateral", "type": "bool" },
+      { "name": "onBehalfOf", "type": "address" }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "getReserveId",
+    "stateMutability": "view",
+    "inputs": [
+      { "name": "hub", "type": "address" },
+      { "name": "assetId", "type": "uint256" }
+    ],
+    "outputs": [{ "name": "", "type": "uint256" }]
+  },
+  {
+    "type": "function",
+    "name": "getUserSuppliedAssets",
+    "stateMutability": "view",
+    "inputs": [
+      { "name": "reserveId", "type": "uint256" },
+      { "name": "user", "type": "address" }
+    ],
+    "outputs": [{ "name": "", "type": "uint256" }]
+  },
+  {
+    "type": "function",
+    "name": "getUserDebt",
+    "stateMutability": "view",
+    "inputs": [
+      { "name": "reserveId", "type": "uint256" },
+      { "name": "user", "type": "address" }
+    ],
+    "outputs": [
+      { "name": "", "type": "uint256" },
+      { "name": "", "type": "uint256" }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "getUserAccountData",
+    "stateMutability": "view",
+    "inputs": [{ "name": "user", "type": "address" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          { "name": "riskPremium", "type": "uint256" },
+          { "name": "avgCollateralFactor", "type": "uint256" },
+          { "name": "healthFactor", "type": "uint256" },
+          { "name": "totalCollateralValue", "type": "uint256" },
+          { "name": "totalDebtValueRay", "type": "uint256" },
+          { "name": "activeCollateralCount", "type": "uint256" },
+          { "name": "borrowCount", "type": "uint256" }
+        ]
+      }
+    ]
+  }
+]

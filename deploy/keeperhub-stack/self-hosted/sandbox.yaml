@@ -1,0 +1,146 @@
+# The Code step's execution sandbox.
+#
+# Applied by install.sh when SANDBOX_ENABLED=true, and not part of the
+# keeperhub-stack chart. It is a plain manifest rather than a chart component
+# because its whole value is what it does NOT have, and every one of those
+# properties is a field the common chart does not expose: no projected service
+# account token, no capabilities, a read-only root filesystem, and a tmpfs for
+# the one directory Node must write to.
+#
+# Without it the app and executor still start - they only need SANDBOX_URL to be
+# syntactically present - but a Code step fails at runtime with a connection
+# error, because the address they carry resolves to nothing. The name below is
+# therefore not free: values.yaml points both components at
+# keeperhub-sandbox.<namespace>.svc.cluster.local:8787, so the Service must be
+# called keeperhub-sandbox.
+#
+# ${NAMESPACE}, ${IMAGE_REPO}, ${IMAGE_TAG} and ${IMAGE_PULL_POLICY} are
+# substituted by install.sh.
+#
+# The security model is the same one staging and production run
+# (deploy/keeperhub-sandbox/), reduced to what a single-node cluster can honour.
+# What is deliberately absent here, and why it is absent rather than forgotten:
+#
+#   no service account token   an escape cannot reach the Kubernetes API
+#   no IRSA annotation         an escape cannot reach any cloud credential
+#   no secret and no env       an escape finds no database URL and no API key
+#   distroless image           there is no shell to spawn
+#   read-only root filesystem  there is nothing to write except /tmp
+#   all capabilities dropped   binding 8787 as non-root needs none of them
+#
+# Egress restriction is the one property NOT set here. It belongs with the rest
+# of the install's egress policy rather than in this file, so the whole
+# allowlist stays readable in one place.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keeperhub-sandbox
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: keeperhub-sandbox
+    app.kubernetes.io/instance: keeperhub-sandbox
+# No annotations on purpose. An IRSA or workload-identity annotation here would
+# hand cloud credentials to the one pod that runs code we did not write.
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keeperhub-sandbox
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: keeperhub-sandbox
+    app.kubernetes.io/instance: keeperhub-sandbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: keeperhub-sandbox
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keeperhub-sandbox
+        app.kubernetes.io/instance: keeperhub-sandbox
+    spec:
+      serviceAccountName: keeperhub-sandbox
+      # Set at both the ServiceAccount and the Pod, because either one alone is
+      # enough for a later edit to the other to quietly project a token again.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # Node writes its v8 compile cache here, and user code may write temp
+        # files. Memory-backed so nothing user code writes ever touches the
+        # node's disk, and capped so it cannot exhaust the node's memory.
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+      containers:
+        - name: sandbox
+          image: ${IMAGE_REPO}:sandbox-${IMAGE_TAG}
+          imagePullPolicy: ${IMAGE_PULL_POLICY}
+          ports:
+            - name: http
+              containerPort: 8787
+          # Only the port. The sandbox needs no configuration, and every
+          # variable added here becomes something an escape can read.
+          env:
+            - name: SANDBOX_PORT
+              value: "8787"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8787
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8787
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeperhub-sandbox
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: keeperhub-sandbox
+    app.kubernetes.io/instance: keeperhub-sandbox
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: keeperhub-sandbox
+  ports:
+    - name: http
+      port: 8787
+      targetPort: 8787
+      protocol: TCP

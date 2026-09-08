@@ -1,0 +1,353 @@
+{
+  "protocol": "yearn",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "Protocol Test: Yearn V3 Read Actions",
+  "description": "Tests all Yearn V3 read actions on Ethereum mainnet using yvUSDC vault",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 500 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-asset",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Vault Underlying Asset",
+        "description": "Get the underlying asset address (should be USDC)",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-asset",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-total-assets",
+      "type": "action",
+      "position": { "x": 450, "y": 120 },
+      "data": {
+        "label": "Vault Total Assets",
+        "description": "Get total assets held by the vault",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-total-assets",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-total-supply",
+      "type": "action",
+      "position": { "x": 450, "y": 240 },
+      "data": {
+        "label": "Vault Total Supply",
+        "description": "Get total supply of vault shares",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-total-supply",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-balance",
+      "type": "action",
+      "position": { "x": 450, "y": 360 },
+      "data": {
+        "label": "Vault Share Balance",
+        "description": "Get vault share balance of a zero address",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-balance",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93",
+          "account": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-convert-to-assets",
+      "type": "action",
+      "position": { "x": 450, "y": 480 },
+      "data": {
+        "label": "Convert Shares to Assets",
+        "description": "Convert 1 USDC worth of shares to asset value",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-convert-to-assets",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93",
+          "shares": "1000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-convert-to-shares",
+      "type": "action",
+      "position": { "x": 450, "y": 600 },
+      "data": {
+        "label": "Convert Assets to Shares",
+        "description": "Convert 1 USDC to equivalent vault shares",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-convert-to-shares",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93",
+          "assets": "1000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-preview-deposit",
+      "type": "action",
+      "position": { "x": 450, "y": 720 },
+      "data": {
+        "label": "Preview Vault Deposit",
+        "description": "Preview shares for depositing 1 USDC",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-preview-deposit",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93",
+          "assets": "1000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-preview-redeem",
+      "type": "action",
+      "position": { "x": 450, "y": 840 },
+      "data": {
+        "label": "Preview Vault Redeem",
+        "description": "Preview assets for redeeming 1 USDC of shares",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-preview-redeem",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93",
+          "shares": "1000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-max-deposit",
+      "type": "action",
+      "position": { "x": 450, "y": 960 },
+      "data": {
+        "label": "Max Vault Deposit",
+        "description": "Get max deposit for a receiver",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-max-deposit",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93",
+          "receiver": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-vault-max-withdraw",
+      "type": "action",
+      "position": { "x": 450, "y": 1080 },
+      "data": {
+        "label": "Max Vault Withdraw",
+        "description": "Get max withdrawal for an owner",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/vault-max-withdraw",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93",
+          "owner": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-price-per-share",
+      "type": "action",
+      "position": { "x": 850, "y": 0 },
+      "data": {
+        "label": "Price Per Share",
+        "description": "Get the current price per vault share",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/get-price-per-share",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-total-idle",
+      "type": "action",
+      "position": { "x": 850, "y": 120 },
+      "data": {
+        "label": "Total Idle Assets",
+        "description": "Get total assets sitting idle in the vault",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/get-total-idle",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-total-debt",
+      "type": "action",
+      "position": { "x": 850, "y": 240 },
+      "data": {
+        "label": "Total Debt",
+        "description": "Get total assets deployed to strategies",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/get-total-debt",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-is-shutdown",
+      "type": "action",
+      "position": { "x": 850, "y": 360 },
+      "data": {
+        "label": "Is Vault Shutdown",
+        "description": "Check if the vault has been shut down",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/get-is-shutdown",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-api-version",
+      "type": "action",
+      "position": { "x": 850, "y": 480 },
+      "data": {
+        "label": "API Version",
+        "description": "Get the vault API version string",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/get-api-version",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-profit-max-unlock-time",
+      "type": "action",
+      "position": { "x": 850, "y": 600 },
+      "data": {
+        "label": "Profit Max Unlock Time",
+        "description": "Get the profit unlock duration in seconds",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/get-profit-max-unlock-time",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-full-profit-unlock-date",
+      "type": "action",
+      "position": { "x": 850, "y": 720 },
+      "data": {
+        "label": "Full Profit Unlock Date",
+        "description": "Get the timestamp when profits fully unlock",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/get-full-profit-unlock-date",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-accountant",
+      "type": "action",
+      "position": { "x": 850, "y": 840 },
+      "data": {
+        "label": "Vault Accountant",
+        "description": "Get the accountant contract address",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/get-accountant",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "yearn-deposit-limit",
+      "type": "action",
+      "position": { "x": 850, "y": 960 },
+      "data": {
+        "label": "Deposit Limit",
+        "description": "Get the maximum deposit limit",
+        "type": "action",
+        "config": {
+          "actionType": "yearn/get-deposit-limit",
+          "network": "1",
+          "contractAddress": "0x22028E652a2e937c876F2577f8E78f692d6DAA93"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e-trigger-to-yearn-vault-asset", "source": "node-1", "target": "yearn-vault-asset", "type": "animated" },
+    { "id": "e-trigger-to-yearn-vault-total-assets", "source": "node-1", "target": "yearn-vault-total-assets", "type": "animated" },
+    { "id": "e-trigger-to-yearn-vault-total-supply", "source": "node-1", "target": "yearn-vault-total-supply", "type": "animated" },
+    { "id": "e-trigger-to-yearn-vault-balance", "source": "node-1", "target": "yearn-vault-balance", "type": "animated" },
+    { "id": "e-trigger-to-yearn-vault-convert-to-assets", "source": "node-1", "target": "yearn-vault-convert-to-assets", "type": "animated" },
+    { "id": "e-trigger-to-yearn-vault-convert-to-shares", "source": "node-1", "target": "yearn-vault-convert-to-shares", "type": "animated" },
+    { "id": "e-trigger-to-yearn-vault-preview-deposit", "source": "node-1", "target": "yearn-vault-preview-deposit", "type": "animated" },
+    { "id": "e-trigger-to-yearn-vault-preview-redeem", "source": "node-1", "target": "yearn-vault-preview-redeem", "type": "animated" },
+    { "id": "e-trigger-to-yearn-vault-max-deposit", "source": "node-1", "target": "yearn-vault-max-deposit", "type": "animated" },
+    { "id": "e-trigger-to-yearn-vault-max-withdraw", "source": "node-1", "target": "yearn-vault-max-withdraw", "type": "animated" },
+    { "id": "e-trigger-to-yearn-price-per-share", "source": "node-1", "target": "yearn-price-per-share", "type": "animated" },
+    { "id": "e-trigger-to-yearn-total-idle", "source": "node-1", "target": "yearn-total-idle", "type": "animated" },
+    { "id": "e-trigger-to-yearn-total-debt", "source": "node-1", "target": "yearn-total-debt", "type": "animated" },
+    { "id": "e-trigger-to-yearn-is-shutdown", "source": "node-1", "target": "yearn-is-shutdown", "type": "animated" },
+    { "id": "e-trigger-to-yearn-api-version", "source": "node-1", "target": "yearn-api-version", "type": "animated" },
+    { "id": "e-trigger-to-yearn-profit-max-unlock-time", "source": "node-1", "target": "yearn-profit-max-unlock-time", "type": "animated" },
+    { "id": "e-trigger-to-yearn-full-profit-unlock-date", "source": "node-1", "target": "yearn-full-profit-unlock-date", "type": "animated" },
+    { "id": "e-trigger-to-yearn-accountant", "source": "node-1", "target": "yearn-accountant", "type": "animated" },
+    { "id": "e-trigger-to-yearn-deposit-limit", "source": "node-1", "target": "yearn-deposit-limit", "type": "animated" }
+  ]
+}

@@ -1,0 +1,193 @@
+{
+  "protocol": "spark",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "Protocol Test: Spark Write Actions",
+  "description": "Tests all Spark write actions on Ethereum mainnet (requires funded wallet)",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 400 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-supply",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Supply",
+        "description": "Supply DAI to Spark Pool",
+        "type": "action",
+        "config": {
+          "actionType": "spark/supply",
+          "network": "1",
+          "asset": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+          "amount": "1000000000000000000",
+          "onBehalfOf": "0x0000000000000000000000000000000000000001",
+          "referralCode": "0"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-withdraw",
+      "type": "action",
+      "position": { "x": 450, "y": 150 },
+      "data": {
+        "label": "Withdraw",
+        "description": "Withdraw DAI from Spark Pool",
+        "type": "action",
+        "config": {
+          "actionType": "spark/withdraw",
+          "network": "1",
+          "asset": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+          "amount": "1000000000000000000",
+          "to": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-borrow",
+      "type": "action",
+      "position": { "x": 450, "y": 300 },
+      "data": {
+        "label": "Borrow",
+        "description": "Borrow DAI from Spark Pool",
+        "type": "action",
+        "config": {
+          "actionType": "spark/borrow",
+          "network": "1",
+          "asset": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+          "amount": "1000000000000000000",
+          "interestRateMode": "2",
+          "referralCode": "0",
+          "onBehalfOf": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-repay",
+      "type": "action",
+      "position": { "x": 450, "y": 450 },
+      "data": {
+        "label": "Repay",
+        "description": "Repay DAI to Spark Pool",
+        "type": "action",
+        "config": {
+          "actionType": "spark/repay",
+          "network": "1",
+          "asset": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+          "amount": "1000000000000000000",
+          "interestRateMode": "2",
+          "onBehalfOf": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-set-collateral",
+      "type": "action",
+      "position": { "x": 450, "y": 600 },
+      "data": {
+        "label": "Set Collateral",
+        "description": "Enable DAI as collateral on Spark Pool",
+        "type": "action",
+        "config": {
+          "actionType": "spark/set-collateral",
+          "network": "1",
+          "asset": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+          "useAsCollateral": "true"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-vault-deposit",
+      "type": "action",
+      "position": { "x": 450, "y": 750 },
+      "data": {
+        "label": "Vault Deposit",
+        "description": "Deposit DAI into sDAI vault",
+        "type": "action",
+        "config": {
+          "actionType": "spark/vault-deposit",
+          "network": "1",
+          "assets": "1000000000000000000",
+          "receiver": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "spark-vault-redeem",
+      "type": "action",
+      "position": { "x": 450, "y": 900 },
+      "data": {
+        "label": "Vault Redeem",
+        "description": "Redeem sDAI shares for DAI",
+        "type": "action",
+        "config": {
+          "actionType": "spark/vault-redeem",
+          "network": "1",
+          "shares": "1000000000000000000",
+          "receiver": "0x0000000000000000000000000000000000000001",
+          "owner": "0x0000000000000000000000000000000000000001"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-to-spark-supply",
+      "source": "node-1",
+      "target": "spark-supply",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-spark-withdraw",
+      "source": "node-1",
+      "target": "spark-withdraw",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-spark-borrow",
+      "source": "node-1",
+      "target": "spark-borrow",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-spark-repay",
+      "source": "node-1",
+      "target": "spark-repay",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-spark-set-collateral",
+      "source": "node-1",
+      "target": "spark-set-collateral",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-spark-vault-deposit",
+      "source": "node-1",
+      "target": "spark-vault-deposit",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-spark-vault-redeem",
+      "source": "node-1",
+      "target": "spark-vault-redeem",
+      "type": "animated"
+    }
+  ]
+}

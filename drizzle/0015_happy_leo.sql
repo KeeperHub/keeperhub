@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS "idx_address_book_org_address";

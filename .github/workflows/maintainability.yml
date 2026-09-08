@@ -1,0 +1,452 @@
+name: Maintainability
+
+on:
+  pull_request:
+    branches: [staging]
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      compose: ${{ steps.filter.outputs.compose }}
+      makefile: ${{ steps.filter.outputs.makefile }}
+      shell: ${{ steps.filter.outputs.shell }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+      dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
+      plugins: ${{ steps.filter.outputs.plugins }}
+      selfhosted: ${{ steps.filter.outputs.selfhosted }}
+      bake: ${{ steps.filter.outputs.bake }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            compose:
+              - 'docker-compose*.yml'
+            makefile:
+              - 'Makefile'
+            shell:
+              - '**/*.sh'
+            workflows:
+              - '.github/workflows/**'
+            dockerfiles:
+              - '**/Dockerfile*'
+              - '.hadolint.yaml'
+            plugins:
+              - 'plugins/**'
+            selfhosted:
+              - 'deploy/keeperhub-stack/self-hosted/**'
+            bake:
+              - 'docker-bake.hcl'
+
+  compose-validation:
+    name: Docker Compose Validation
+    needs: changes
+    if: needs.changes.outputs.compose == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Validate docker-compose.yml test profile
+        run: docker compose -f docker-compose.yml --profile test config --quiet
+
+  makefile-dry-run:
+    name: Makefile Dry Run
+    needs: changes
+    if: needs.changes.outputs.makefile == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Dry run core targets
+        run: |
+          failed=0
+          for target in install build dev-up dev-down dev-logs dev-migrate test test-unit test-integration; do
+            if ! make -n "$target" > /dev/null 2>&1; then
+              echo "FAIL: make -n $target"
+              make -n "$target" 2>&1
+              failed=1
+            fi
+          done
+          exit $failed
+
+  fork-markers:
+    name: Fork Marker Integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check balanced markers
+        run: |
+          failed=0
+          for file in $(grep -rl "start custom keeperhub code" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.mjs" --include="*.css" . 2>/dev/null | grep -v node_modules | grep -v .next); do
+            starts=$(grep -c "start custom keeperhub code" "$file")
+            ends=$(grep -c "end keeperhub code" "$file")
+            if [ "$starts" -ne "$ends" ]; then
+              echo "::warning file=$file::Imbalanced fork markers: $starts start(s), $ends end(s)"
+              failed=1
+            fi
+          done
+          if [ "$failed" -eq 1 ]; then
+            echo ""
+            echo "Fork markers must be balanced. Every 'start custom keeperhub code' needs a matching 'end keeperhub code'."
+            exit 1
+          fi
+          echo "All fork markers balanced."
+
+      - name: Check unmarked custom code outside keeperhub/
+        run: |
+          unmarked=""
+          for file in $(grep -rl "from.*[@/]keeperhub/" --include="*.ts" --include="*.tsx" app/ components/ lib/ plugins/ 2>/dev/null | grep -v node_modules | grep -v .next); do
+            if ! grep -q "start custom keeperhub code" "$file"; then
+              unmarked="$unmarked$file\n"
+              echo "::warning file=$file::Imports from keeperhub/ but has no fork markers"
+            fi
+          done
+          if [ -n "$unmarked" ]; then
+            count=$(echo -e "$unmarked" | grep -c .)
+            echo ""
+            echo "$count file(s) outside keeperhub/ import from keeperhub/ without fork markers."
+            echo "Either move these files into keeperhub/ with re-export wrappers, or add start/end markers."
+          fi
+
+  shellcheck:
+    name: Shell Script Lint
+    needs: changes
+    if: needs.changes.outputs.shell == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run shellcheck
+        run: |
+          scripts=$(find . -name "*.sh" -not -path "./node_modules/*" -not -path "./.next/*" -not -path "./.git/*")
+          if [ -z "$scripts" ]; then
+            echo "No shell scripts found."
+            exit 0
+          fi
+          echo "Checking: $scripts"
+          echo "$scripts" | xargs shellcheck --severity=warning --format=gcc
+
+  actionlint:
+    name: GitHub Actions Lint
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install actionlint
+        run: |
+          curl -sL "https://github.com/rhysd/actionlint/releases/download/v1.7.11/actionlint_1.7.11_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin actionlint
+
+      - name: Run actionlint (structural only)
+        run: |
+          output=$(actionlint -shellcheck="" 2>&1) || true
+          if [ -n "$output" ]; then
+            echo "$output"
+            echo ""
+            echo "Structural issues found in GitHub Actions workflows."
+            exit 1
+          fi
+          echo "All workflows structurally valid."
+
+  hadolint:
+    name: Dockerfile Lint
+    needs: changes
+    if: needs.changes.outputs.dockerfiles == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Lint Dockerfiles
+        uses: hadolint/hadolint-action@v3.5.0
+        with:
+          recursive: true
+          failure-threshold: warning
+
+  dockerfile-sources:
+    name: Dockerfile COPY Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check COPY/ADD sources exist
+        run: |
+          failed=0
+          for dockerfile in $(find . -name "Dockerfile" -not -path "./node_modules/*" -not -path "./.git/*"); do
+            dir=$(dirname "$dockerfile")
+            parent=$(dirname "$dir")
+            echo "=== $dockerfile (context: $dir) ==="
+            while read -r instruction; do
+              # Extract source (second token, skip flags like --chown)
+              src=$(echo "$instruction" | sed 's/^[A-Z]* //' | sed 's/--[a-z]*=[^ ]* //g' | awk '{print $1}')
+              # Skip wildcards and current directory
+              case "$src" in
+                .|./) continue ;;
+                *\**) continue ;;
+              esac
+              # Check relative to Dockerfile dir, parent dir (workspace-root context), then repo root
+              if [ ! -e "$dir/$src" ] && [ ! -e "$parent/$src" ] && [ ! -e "./$src" ]; then
+                echo "::error file=$dockerfile::COPY/ADD source does not exist: $src"
+                failed=1
+              fi
+            done < <(grep -E "^(COPY|ADD)" "$dockerfile" | grep -v "\-\-from=")
+          done
+          exit $failed
+
+  bake-provenance:
+    name: Bake Provenance Disabled
+    needs: changes
+    if: needs.changes.outputs.bake == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # docker/bake-action injects
+      # `--set <target>.attest=type=provenance,mode=max` for every target that
+      # declares no provenance entry. ECR indexes each pushed attestation as a
+      # referrer of the image and allows only 100 referrers per subject. The
+      # sandbox image digest does not change between commits, so its referrers
+      # reached 100 and every staging deploy failed for about 14 hours on
+      # 2026-08-29.
+      #
+      # A target that omits the entry re-enables the attestation for itself, and
+      # the two forms that look like a fix are silent no-ops. `attest = []`
+      # disappears from `bake --print`, and `provenance = false` is not a bake
+      # attribute at all. This check reads the resolved definition, so it sees
+      # what buildx sees rather than what the file appears to say.
+      - name: Every bake target disables the provenance attestation
+        run: |
+          set -euo pipefail
+          mapfile -t targets < <(grep -oP '^target "\K[^"]+' docker-bake.hcl)
+          echo "Bake targets declared: ${#targets[@]} (${targets[*]})"
+          docker buildx bake -f docker-bake.hcl --print "${targets[@]}" > /tmp/bake-def.json
+          printed=$(jq -r '.target | length' /tmp/bake-def.json)
+          if [ "$printed" -ne "${#targets[@]}" ]; then
+            echo "::error file=docker-bake.hcl::bake --print resolved $printed targets but the file declares ${#targets[@]}."
+            exit 1
+          fi
+          missing=$(jq -r '.target | to_entries[]
+            | select((.value.attest // []) | any(.type == "provenance" and .disabled == true) | not)
+            | .key' /tmp/bake-def.json)
+          if [ -n "$missing" ]; then
+            echo "::error file=docker-bake.hcl::These targets do not disable the provenance attestation: $(echo "$missing" | tr '\n' ' ')"
+            echo "Add this line to each one, and read the comment above the first target in docker-bake.hcl:"
+            echo '  attest = ["type=provenance,disabled=true"]'
+            exit 1
+          fi
+          echo "All $printed targets disable the provenance attestation."
+
+  env-sync:
+    name: Environment Variable Sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check .env.example completeness
+        run: |
+          # Extract documented vars
+          grep -oP '^[A-Z_][A-Z0-9_]*' .env.example 2>/dev/null | sort -u > /tmp/env-documented
+
+          # Extract vars used in code (excluding node_modules, .next, test files)
+          grep -rhoP 'process\.env\.([A-Z_][A-Z0-9_]*)' \
+            --include="*.ts" --include="*.tsx" --include="*.js" --include="*.mjs" \
+            --exclude-dir=node_modules --exclude-dir=.next \
+            . 2>/dev/null \
+            | sed 's/process\.env\.//' \
+            | sort -u > /tmp/env-used
+
+          # Filter out framework/platform vars that don't belong in .env.example
+          grep -vE '^(NODE_ENV|NODE_OPTIONS|__NEXT_|VERCEL_|CI|HOSTNAME|HOME|PATH|PWD|SHELL|USER|TERM|LANG|LC_|TZ|PORT|npm_|NEXT_RUNTIME|CF_PAGES|DYNO|FLY_|RAILWAY_|RENDER_|AWS_LAMBDA_)' \
+            /tmp/env-used > /tmp/env-used-filtered
+
+          # Vars in code but not documented
+          missing=$(comm -13 /tmp/env-documented /tmp/env-used-filtered)
+          if [ -n "$missing" ]; then
+            echo "Environment variables used in code but missing from .env.example:"
+            echo "$missing" | while read -r var; do
+              echo "  - $var"
+            done
+            echo ""
+            echo "::warning::$(echo "$missing" | wc -l) env var(s) used in code but not documented in .env.example"
+          fi
+
+          # Vars documented but not used
+          dead=$(comm -23 /tmp/env-documented /tmp/env-used)
+          if [ -n "$dead" ]; then
+            echo ""
+            echo "Environment variables in .env.example but not found in code:"
+            echo "$dead" | while read -r var; do
+              echo "  - $var"
+            done
+            echo ""
+            echo "::warning::$(echo "$dead" | wc -l) env var(s) in .env.example may be dead or renamed"
+          fi
+
+  compose-consistency:
+    name: Cross-Compose Consistency
+    needs: changes
+    if: needs.changes.outputs.compose == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compare env vars between dev and test profiles
+        run: |
+          # Extract env var names from dev and test profile configs
+          docker compose --profile dev config 2>/dev/null \
+            | grep -oP '[A-Z_][A-Z0-9_]*(?=[:=])' | sort -u > /tmp/compose-dev-vars
+          docker compose --profile test config 2>/dev/null \
+            | grep -oP '[A-Z_][A-Z0-9_]*(?=[:=])' | sort -u > /tmp/compose-test-vars
+
+          # Vars in dev but not test
+          dev_only=$(comm -23 /tmp/compose-dev-vars /tmp/compose-test-vars)
+
+          # Filter to operationally significant vars (API keys, URLs, service config)
+          significant=$(echo "$dev_only" | grep -E '(API_KEY|API_URL|SERVICE_|_URL|_HOST|_PORT|ENCRYPTION|SECRET|PASSWORD|TOKEN)' || true)
+
+          if [ -n "$significant" ]; then
+            echo "Operationally significant env vars in dev profile but missing from test profile:"
+            echo "$significant" | while read -r var; do
+              echo "  - $var"
+            done
+            echo ""
+            echo "::warning::Test profile may be missing service configuration that dev profile has"
+          else
+            echo "No significant env var gaps between profiles."
+          fi
+
+  plugin-integrity:
+    name: Plugin Discovery Integrity
+    needs: changes
+    if: needs.changes.outputs.plugins == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Validate plugin structure
+        run: |
+          failed=0
+          # Only validate plugins that are imported in the generated index
+          enabled_plugins=$(grep -oP '(?<=import "\./)[^"]+' plugins/index.ts || true)
+          for plugin in $enabled_plugins; do
+            plugin_dir="plugins/$plugin/"
+            for required in index.ts icon.tsx; do
+              if [ ! -f "$plugin_dir$required" ]; then
+                echo "::error::Plugin '$plugin' missing required file: $required"
+                failed=1
+              fi
+            done
+            if [ ! -d "${plugin_dir}steps" ]; then
+              echo "::error::Plugin '$plugin' missing required directory: steps/"
+              failed=1
+            fi
+          done
+          exit $failed
+
+      - name: Verify discovery produces consistent registry
+        run: |
+          cp plugins/index.ts /tmp/plugins-before.ts
+          pnpm discover-plugins
+          if ! diff -q plugins/index.ts /tmp/plugins-before.ts > /dev/null 2>&1; then
+            echo "::error::plugins/index.ts is stale. Run 'pnpm discover-plugins' and commit the result."
+            diff plugins/index.ts /tmp/plugins-before.ts || true
+            exit 1
+          fi
+          echo "Plugin registry is up to date."
+
+  self-hosted-profile:
+    name: Self-hosted Profile Render
+    needs: changes
+    if: needs.changes.outputs.selfhosted == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.18.4
+
+      # Nothing else validates this directory. The values files are the artifact
+      # a client derives an install from, and a change that breaks the render
+      # would otherwise only be found by installing it.
+      - name: Render every supported mode combination
+        working-directory: deploy/keeperhub-stack/self-hosted
+        run: |
+          set -euo pipefail
+          helm repo add techops-services https://techops-services.github.io/helm-charts
+          helm repo update techops-services
+
+          chart_version=$(grep -E '^CHART_VERSION=' config.sh | sed 's/.*:-\([0-9.]*\)}.*/\1/')
+          echo "Rendering against keeperhub-stack $chart_version"
+
+          # Values a client must supply. Synthetic, and identical for every case:
+          # this proves the profile renders, not that any particular value works.
+          common_args=(
+            --namespace keeperhub
+            --version "$chart_version"
+            --set global.image.repository=registry.example.com/keeperhub
+            --set global.image.tag=citest
+            --set global.appHost=keeperhub.example.com
+            --set global.tlsIssuer=ci-issuer
+            --set global.fromAddress=noreply@example.com
+            --set global.turnstileSecretKey=ci-turnstile
+          )
+          byo_args=(
+            --set global.queue.url=https://sqs.us-east-1.amazonaws.com/000000000000/q
+            --set global.queue.dlqUrl=https://sqs.us-east-1.amazonaws.com/000000000000/q-dlq
+            --set secrets.values.DATABASE_URL=postgresql://u:p@db.example.svc.cluster.local:5432/kh
+          )
+
+          failed=0
+          for db in bundled byo; do
+            for queue in bundled byo; do
+              for overlay in "" values.minikube.yaml; do
+                label="db=$db queue=$queue${overlay:+ +minikube}"
+                args=(-f values.yaml -f "values.db-$db.yaml" -f "values.queue-$queue.yaml")
+                [ -n "$overlay" ] && args+=(-f "$overlay")
+                out=$(helm template ci techops-services/keeperhub-stack \
+                        "${common_args[@]}" "${byo_args[@]}" "${args[@]}" 2>&1) || {
+                  echo "::error::render failed for $label"
+                  echo "$out" | head -20
+                  failed=1
+                  continue
+                }
+                # An unsubstituted placeholder or an unrendered action reaching a
+                # manifest is the exact failure this directory used to have.
+                if echo "$out" | grep -nE '\$\{[A-Z_]+\}'; then
+                  echo "::error::$label left an envsubst placeholder in the output"
+                  failed=1
+                fi
+                if echo "$out" | grep -nE '^\s+(image|host|value):.*\{\{'; then
+                  echo "::error::$label left an unrendered template action in the output"
+                  failed=1
+                fi
+                echo "ok: $label ($(echo "$out" | grep -c '^kind:') resources)"
+              done
+            done
+          done
+          exit $failed
+
+      # The values files above are rendered by helm. networkpolicy.yaml is not:
+      # install.sh substitutes it with envsubst, and two of the values it takes
+      # are multi-line YAML lists. The script renders it the way install.sh
+      # does and checks the result. Its docstring says what goes wrong without
+      # it, and it runs locally with no arguments.
+      - name: Render the egress policy
+        working-directory: deploy/keeperhub-stack/self-hosted
+        run: ./test-harness/check-policy-render.py

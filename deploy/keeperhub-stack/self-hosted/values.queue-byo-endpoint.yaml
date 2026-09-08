@@ -1,0 +1,76 @@
+# Merged on top of values.queue-byo.yaml, and ONLY when you run an SQS-compatible
+# endpoint of your own rather than real AWS SQS.
+#
+# It has to be a separate file because presence and absence are the two distinct
+# behaviours and a values file cannot express a conditional key:
+#
+#   endpoint absent  the SDK talks to real AWS SQS and resolves credentials the
+#                    normal way - IRSA, instance profile, environment. This is
+#                    how staging and production are configured.
+#   endpoint present the SDK talks to whatever you point it at. Static
+#                    credentials must come with it: with an endpoint set there is
+#                    no credential chain to fall back on, and the SDK fails to
+#                    sign at all rather than reaching the endpoint unsigned.
+#
+# ElasticMQ ignores the credential values, because it does not verify signatures,
+# but the SDK still refuses to build a request without them.
+#
+# NOTE these two credentials are plain values, so they are readable through
+# `helm get values` and in any file you keep them in. That is acceptable for the
+# dummy pair an ElasticMQ endpoint wants. If your endpoint checks them, use
+# values.queue-aws-credentials.yaml instead, which reads them from a Secret.
+global:
+  queue:
+    # Required. The base endpoint, without a queue path.
+    endpoint: ""
+    staticCredentials:
+      accessKeyId: "test"
+      secretAccessKey: "test"
+
+app:
+  env:
+    AWS_ENDPOINT_URL:
+      type: template
+      value: '{{ required "set global.queue.endpoint - the SQS-compatible base endpoint" .Values.global.queue.endpoint }}'
+    AWS_ACCESS_KEY_ID:
+      type: template
+      value: '{{ .Values.global.queue.staticCredentials.accessKeyId }}'
+    AWS_SECRET_ACCESS_KEY:
+      type: template
+      value: '{{ .Values.global.queue.staticCredentials.secretAccessKey }}'
+
+executor:
+  env:
+    AWS_ENDPOINT_URL:
+      type: template
+      value: '{{ required "set global.queue.endpoint - the SQS-compatible base endpoint" .Values.global.queue.endpoint }}'
+    AWS_ACCESS_KEY_ID:
+      type: template
+      value: '{{ .Values.global.queue.staticCredentials.accessKeyId }}'
+    AWS_SECRET_ACCESS_KEY:
+      type: template
+      value: '{{ .Values.global.queue.staticCredentials.secretAccessKey }}'
+
+schedule:
+  env:
+    AWS_ENDPOINT_URL:
+      type: template
+      value: '{{ required "set global.queue.endpoint - the SQS-compatible base endpoint" .Values.global.queue.endpoint }}'
+    AWS_ACCESS_KEY_ID:
+      type: template
+      value: '{{ .Values.global.queue.staticCredentials.accessKeyId }}'
+    AWS_SECRET_ACCESS_KEY:
+      type: template
+      value: '{{ .Values.global.queue.staticCredentials.secretAccessKey }}'
+
+block:
+  env:
+    AWS_ENDPOINT_URL:
+      type: template
+      value: '{{ required "set global.queue.endpoint - the SQS-compatible base endpoint" .Values.global.queue.endpoint }}'
+    AWS_ACCESS_KEY_ID:
+      type: template
+      value: '{{ .Values.global.queue.staticCredentials.accessKeyId }}'
+    AWS_SECRET_ACCESS_KEY:
+      type: template
+      value: '{{ .Values.global.queue.staticCredentials.secretAccessKey }}'

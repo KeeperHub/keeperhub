@@ -1,0 +1,146 @@
+{
+  "protocol": "aave-v3",
+  "network": "11155111",
+  "networkName": "sepolia",
+  "type": "write",
+  "name": "Protocol Test: Aave V3 Write Actions",
+  "description": "Tests all Aave V3 write actions on Sepolia testnet",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 450 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "aave-supply",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Supply Asset",
+        "description": "Supply DAI to Aave V3 on Sepolia",
+        "type": "action",
+        "config": {
+          "actionType": "aave-v3/supply",
+          "network": "11155111",
+          "asset": "0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357",
+          "amount": "1000000000000000000",
+          "onBehalfOf": "0x0000000000000000000000000000000000000000",
+          "referralCode": "0"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "aave-withdraw",
+      "type": "action",
+      "position": { "x": 450, "y": 150 },
+      "data": {
+        "label": "Withdraw Asset",
+        "description": "Withdraw DAI from Aave V3 on Sepolia",
+        "type": "action",
+        "config": {
+          "actionType": "aave-v3/withdraw",
+          "network": "11155111",
+          "asset": "0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357",
+          "amount": "1000000000000000000",
+          "to": "0x0000000000000000000000000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "aave-borrow",
+      "type": "action",
+      "position": { "x": 450, "y": 300 },
+      "data": {
+        "label": "Borrow Asset",
+        "description": "Borrow DAI from Aave V3 on Sepolia",
+        "type": "action",
+        "config": {
+          "actionType": "aave-v3/borrow",
+          "network": "11155111",
+          "asset": "0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357",
+          "amount": "1000000000000000000",
+          "interestRateMode": "2",
+          "referralCode": "0",
+          "onBehalfOf": "0x0000000000000000000000000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "aave-repay",
+      "type": "action",
+      "position": { "x": 450, "y": 450 },
+      "data": {
+        "label": "Repay Debt",
+        "description": "Repay DAI to Aave V3 on Sepolia",
+        "type": "action",
+        "config": {
+          "actionType": "aave-v3/repay",
+          "network": "11155111",
+          "asset": "0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357",
+          "amount": "1000000000000000000",
+          "interestRateMode": "2",
+          "onBehalfOf": "0x0000000000000000000000000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "aave-set-collateral",
+      "type": "action",
+      "position": { "x": 450, "y": 600 },
+      "data": {
+        "label": "Set Asset as Collateral",
+        "description": "Enable DAI as collateral on Aave V3 Sepolia",
+        "type": "action",
+        "config": {
+          "actionType": "aave-v3/set-collateral",
+          "network": "11155111",
+          "asset": "0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357",
+          "useAsCollateral": "true"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-to-aave-supply",
+      "source": "node-1",
+      "target": "aave-supply",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-aave-withdraw",
+      "source": "node-1",
+      "target": "aave-withdraw",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-aave-borrow",
+      "source": "node-1",
+      "target": "aave-borrow",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-aave-repay",
+      "source": "node-1",
+      "target": "aave-repay",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-aave-set-collateral",
+      "source": "node-1",
+      "target": "aave-set-collateral",
+      "type": "animated"
+    }
+  ]
+}

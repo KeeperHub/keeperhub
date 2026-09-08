@@ -1,0 +1,100 @@
+# Helm values for the keeperhub-sandbox release (prod cluster) via
+# techops-services/common@0.2.1. See
+# deploy/keeperhub-sandbox/staging/values.yaml for the full commentary
+# on the security boundary this release enforces.
+#
+# Prod differences:
+# - replicaCount: 2 (HA)
+# - image repository: keeperhub-sandbox-prod ECR repo
+
+replicaCount: 2
+
+service:
+  enabled: true
+  name: keeperhub-sandbox
+  port: 8787
+  type: ClusterIP
+  containerPort: 8787
+  tls:
+    enabled: false
+
+ingress:
+  enabled: false
+
+image:
+  repository: ${ECR_REGISTRY}/keeperhub-sandbox-prod
+  tag: sandbox-${IMAGE_TAG}
+  pullPolicy: Always
+
+deployment:
+  enabled: true
+  volumes:
+    - name: tmp
+      mountPath: /tmp
+      emptyDir:
+        sizeLimit: 64Mi
+
+serviceAccount:
+  create: false
+  name: keeperhub-sandbox
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+env:
+  NODE_ENV:
+    type: kv
+    value: "production"
+  SANDBOX_PORT:
+    type: kv
+    value: "8787"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Pin to the dedicated sandbox NodePool (see commentary in
+# deploy/keeperhub-sandbox/staging/values.yaml and the infrastructure
+# repo karpenter-sandbox.tf).
+nodeSelector:
+  node-role.keeperhub.io/sandbox-only: "true"
+
+tolerations:
+  - key: node-role.keeperhub.io/sandbox-only
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8787
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: 8787
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3

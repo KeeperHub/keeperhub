@@ -1,0 +1,619 @@
+# Type: reusable | Called by release-pipeline.yml
+name: Docs Sync
+
+on:
+  workflow_call: {}
+  workflow_dispatch:
+    inputs:
+      days_back:
+        description: 'Number of days to look back for code changes'
+        required: false
+        default: '14'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: docs-sync
+  cancel-in-progress: true
+
+jobs:
+  docs-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect changes from release
+        if: github.event_name != 'workflow_dispatch'
+        id: release_changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Triggered by Release workflow completion."
+
+          # Get the two most recent release tags
+          RELEASE_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+          PREV_TAG=$(gh release list --limit 2 --json tagName --jq '.[1].tagName')
+
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "No release tag found. Skipping."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Latest release: $RELEASE_TAG"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+          # Exclusion pattern for non-doc-relevant files
+          EXCLUDE_PATTERN='(og/|metrics/|internal/|db/|test-connection|extensions\.tsx)'
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found. Scanning all files in release tag."
+            RAW_FILES=$(git ls-tree -r --name-only "$RELEASE_TAG" -- \
+              'lib/' \
+              'plugins/' \
+              'app/api/' \
+              | grep -E '\.(ts|tsx|js|jsx)$' \
+              | grep -vE '\.(test|spec|stories)\.' \
+              | grep -vE "$EXCLUDE_PATTERN" \
+              || true)
+          else
+            echo "Previous release: $PREV_TAG"
+            RAW_FILES=$(git diff --name-only "$PREV_TAG".."$RELEASE_TAG" -- \
+              'lib/' \
+              'plugins/' \
+              'app/api/' \
+              | grep -E '\.(ts|tsx|js|jsx)$' \
+              | grep -vE '\.(test|spec|stories)\.' \
+              | grep -vE "$EXCLUDE_PATTERN" \
+              || true)
+          fi
+
+          CHANGED_FILES="$RAW_FILES"
+
+          # Trim trailing newline and cap at 40 files, prioritizing plugins > api > lib
+          CHANGED_FILES=$(echo "$CHANGED_FILES" | sed '/^$/d' \
+            | awk '
+              /plugins\// { print 1, $0; next }
+              /api\//     { print 2, $0; next }
+                          { print 3, $0 }
+            ' | sort -k1,1n -k2 | cut -d' ' -f2- | head -40)
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No relevant code changes detected between tags."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            FILE_COUNT=$(echo "$CHANGED_FILES" | wc -l | tr -d ' ')
+            echo "Found $FILE_COUNT changed files (after filtering)."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+            echo "changed_files<<CHANGED_FILES_EOF" >> "$GITHUB_OUTPUT"
+            echo "$CHANGED_FILES" >> "$GITHUB_OUTPUT"
+            echo "CHANGED_FILES_EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect changes from manual trigger
+        if: github.event_name == 'workflow_dispatch'
+        id: manual_changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DAYS_BACK="${{ github.event.inputs.days_back }}"
+
+          # Validate that days_back is a positive integer
+          if ! echo "$DAYS_BACK" | grep -qE '^[0-9]+$' || [ "$DAYS_BACK" -lt 1 ] || [ "$DAYS_BACK" -gt 365 ]; then
+            echo "Invalid days_back value: $DAYS_BACK. Must be a number between 1 and 365."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Manual trigger: scanning changes from the last $DAYS_BACK days."
+
+          # Try to get the latest release tag for labeling
+          RELEASE_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "manual-sync")
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+          # Exclusion pattern for non-doc-relevant files
+          EXCLUDE_PATTERN='(og/|metrics/|internal/|db/|test-connection|extensions\.tsx)'
+
+          CHANGED_FILES=$(git log --since="${DAYS_BACK} days ago" --name-only --pretty=format: -- \
+            'lib/' \
+            'plugins/' \
+            'app/api/' \
+            | sort -u \
+            | grep -E '\.(ts|tsx|js|jsx)$' \
+            | grep -vE '\.(test|spec|stories)\.' \
+            | grep -vE "$EXCLUDE_PATTERN" \
+            || true)
+
+          # Trim trailing newline and cap at 40 files, prioritizing plugins > api > lib
+          CHANGED_FILES=$(echo "$CHANGED_FILES" | sed '/^$/d' \
+            | awk '
+              /plugins\// { print 1, $0; next }
+              /api\//     { print 2, $0; next }
+                          { print 3, $0 }
+            ' | sort -k1,1n -k2 | cut -d' ' -f2- | head -40)
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No relevant code changes in the last $DAYS_BACK days."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            FILE_COUNT=$(echo "$CHANGED_FILES" | wc -l | tr -d ' ')
+            echo "Found $FILE_COUNT changed files (after filtering)."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+            echo "changed_files<<CHANGED_FILES_EOF" >> "$GITHUB_OUTPUT"
+            echo "$CHANGED_FILES" >> "$GITHUB_OUTPUT"
+            echo "CHANGED_FILES_EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if no changes
+        if: >-
+          (github.event_name != 'workflow_dispatch' && steps.release_changes.outputs.has_changes != 'true') ||
+          (github.event_name == 'workflow_dispatch' && steps.manual_changes.outputs.has_changes != 'true')
+        run: |
+          echo "No relevant code changes detected. Skipping docs sync."
+
+      - name: Set release tag
+        if: >-
+          (github.event_name != 'workflow_dispatch' && steps.release_changes.outputs.has_changes == 'true') ||
+          (github.event_name == 'workflow_dispatch' && steps.manual_changes.outputs.has_changes == 'true')
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "release_tag=${{ steps.release_changes.outputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_tag=${{ steps.manual_changes.outputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pre-read file diffs for Claude context
+        if: steps.tag.outputs.release_tag != ''
+        id: diffs
+        run: |
+          CHANGED_FILES="${{ github.event_name != 'workflow_dispatch' && steps.release_changes.outputs.changed_files || steps.manual_changes.outputs.changed_files }}"
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No changed files to diff."
+            exit 0
+          fi
+
+          # For release trigger, find the base commit from the previous tag
+          # For manual trigger, find the oldest commit in the lookback window
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            PREV_TAG=$(gh release list --limit 2 --json tagName --jq '.[1].tagName' 2>/dev/null || echo "")
+            CURRENT_TAG="${{ steps.tag.outputs.release_tag }}"
+            if [ -n "$PREV_TAG" ]; then
+              BASE_REF="$PREV_TAG"
+              HEAD_REF="$CURRENT_TAG"
+            else
+              BASE_REF=$(git rev-list --max-parents=0 HEAD | head -1)
+              HEAD_REF="$CURRENT_TAG"
+            fi
+          else
+            DAYS_BACK="${{ github.event.inputs.days_back || '30' }}"
+            BASE_REF=$(git log --since="${DAYS_BACK} days ago" --format=%H -- | tail -1)
+            HEAD_REF="HEAD"
+            # Fallback if no commits found in range
+            if [ -z "$BASE_REF" ]; then
+              BASE_REF=$(git rev-list --max-parents=0 HEAD | head -1)
+            fi
+          fi
+
+          echo "Diffing: $BASE_REF..$HEAD_REF"
+
+          # Generate compact, unified diffs (single pass, not per-commit)
+          # Cap each file at 60 lines and total output at 3000 lines
+          FILE_COUNT=0
+          TOTAL_LINES=0
+          MAX_LINES_PER_FILE=60
+          MAX_TOTAL_LINES=3000
+
+          > /tmp/file-diffs.txt
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            FILE_COUNT=$((FILE_COUNT + 1))
+
+            if [ "$TOTAL_LINES" -ge "$MAX_TOTAL_LINES" ]; then
+              echo "=== TRUNCATED: reached ${MAX_TOTAL_LINES} total diff lines ===" >> /tmp/file-diffs.txt
+              break
+            fi
+
+            echo "=== ${file} ===" >> /tmp/file-diffs.txt
+
+            FILE_DIFF=$(git diff "$BASE_REF".."$HEAD_REF" -- "$file" 2>/dev/null | head -"$MAX_LINES_PER_FILE" || echo "(unavailable)")
+
+            if [ -z "$FILE_DIFF" ]; then
+              echo "(no diff available - file may be new)" >> /tmp/file-diffs.txt
+              # Show first 40 lines of new files
+              git show "$HEAD_REF":"$file" 2>/dev/null | head -40 >> /tmp/file-diffs.txt || true
+            else
+              echo "$FILE_DIFF" >> /tmp/file-diffs.txt
+            fi
+
+            echo "" >> /tmp/file-diffs.txt
+            DIFF_LINES=$(echo "$FILE_DIFF" | wc -l | tr -d ' ')
+            TOTAL_LINES=$((TOTAL_LINES + DIFF_LINES))
+          done <<< "$CHANGED_FILES"
+
+          echo "Prepared diffs for $FILE_COUNT files ($TOTAL_LINES total lines)."
+
+          # Prepare the docs directory listing (docs/ uses _meta.ts for nav)
+          find docs -name "*.md" -o -name "_meta.ts" | sort > /tmp/docs-listing.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect removed source items and orphan doc candidates
+        if: steps.tag.outputs.release_tag != ''
+        id: removals
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          DAYS_BACK_INPUT: ${{ github.event.inputs.days_back }}
+          CURRENT_TAG: ${{ steps.tag.outputs.release_tag }}
+        run: |
+          # Resolve the same BASE_REF..HEAD_REF window the diffs step uses,
+          # so we scan the same range for deletions.
+          : > /tmp/removal-candidates.txt
+
+          if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            PREV_TAG=$(gh release list --limit 2 --json tagName --jq '.[1].tagName' 2>/dev/null || echo "")
+            if [ -n "$PREV_TAG" ]; then
+              BASE_REF="$PREV_TAG"
+              HEAD_REF="$CURRENT_TAG"
+            else
+              echo "No previous tag, skipping stale-doc detection."
+              exit 0
+            fi
+          else
+            DAYS_BACK="${DAYS_BACK_INPUT:-30}"
+            BASE_REF=$(git log --since="${DAYS_BACK} days ago" --format=%H -- | tail -1)
+            HEAD_REF="HEAD"
+            if [ -z "$BASE_REF" ]; then
+              echo "No base ref found, skipping stale-doc detection."
+              exit 0
+            fi
+          fi
+
+          echo "Scanning deletions in ${BASE_REF}..${HEAD_REF}"
+
+          DELETED_FILES=$(git diff --name-only --diff-filter=D "$BASE_REF".."$HEAD_REF" -- \
+            'lib/' 'plugins/' 'app/api/' 2>/dev/null || true)
+
+          if [ -z "$DELETED_FILES" ]; then
+            echo "No source file deletions detected."
+            exit 0
+          fi
+
+          # Dedup tokens so many files in the same removed plugin only grep once
+          SEEN_TOKENS=""
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+
+            TOKEN=""
+            KIND=""
+
+            if echo "$file" | grep -qE '^plugins/[^/]+/'; then
+              TOKEN=$(echo "$file" | cut -d/ -f2)
+              KIND="plugin"
+            elif echo "$file" | grep -qE '^app/api/.+/route\.(ts|tsx|js|jsx)$'; then
+              TOKEN=$(echo "$file" | sed 's|^app||' | sed 's|/route\.[a-zA-Z]*$||')
+              KIND="endpoint"
+            else
+              continue
+            fi
+
+            [ -z "$TOKEN" ] && continue
+
+            KEY="${KIND}:${TOKEN}"
+            case " $SEEN_TOKENS " in
+              *" $KEY "*) continue ;;
+            esac
+            SEEN_TOKENS="$SEEN_TOKENS $KEY"
+
+            MATCHES=$(grep -rlF -- "$TOKEN" docs/ 2>/dev/null | head -10 || true)
+
+            if [ -n "$MATCHES" ]; then
+              {
+                echo "=== deleted ${KIND}: ${TOKEN} (source path: ${file}) ==="
+                echo "Docs referencing this item:"
+                echo "$MATCHES" | sed 's/^/  - /'
+                echo ""
+              } >> /tmp/removal-candidates.txt
+            fi
+          done <<< "$DELETED_FILES"
+
+          if [ -s /tmp/removal-candidates.txt ]; then
+            COUNT=$(grep -c "^===" /tmp/removal-candidates.txt || echo 0)
+            echo "Found $COUNT deleted item(s) with matching doc references."
+          else
+            echo "Deletions detected, but no docs reference any of them."
+          fi
+
+      - name: Create docs branch
+        if: steps.tag.outputs.release_tag != ''
+        id: branch
+        run: |
+          RELEASE_TAG="${{ steps.tag.outputs.release_tag }}"
+          TIMESTAMP=$(date +%s)
+          # Sanitize tag for branch name (replace non-alphanumeric with dash)
+          SAFE_TAG=$(echo "$RELEASE_TAG" | sed 's/[^a-zA-Z0-9.-]/-/g')
+          BRANCH_NAME="docs-sync-${SAFE_TAG}-${TIMESTAMP}"
+          echo "Creating branch: $BRANCH_NAME from staging"
+          git checkout -b "$BRANCH_NAME"
+          echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Anthropic API key
+        if: steps.tag.outputs.release_tag != ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d '{"model":"claude-sonnet-4-5-20250929","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}')
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "API key is valid and has sufficient credits."
+          else
+            echo "::error::Anthropic API pre-flight check failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        if: steps.tag.outputs.release_tag != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Write Claude prompt
+        if: steps.tag.outputs.release_tag != ''
+        env:
+          REPO_NAME: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.tag.outputs.release_tag }}
+          CHANGED_FILES: ${{ github.event_name != 'workflow_dispatch' && steps.release_changes.outputs.changed_files || steps.manual_changes.outputs.changed_files }}
+        run: |
+          cat > /tmp/claude-prompt.txt << PROMPT_EOF
+          REPO: ${REPO_NAME}
+          RELEASE TAG: ${RELEASE_TAG}
+
+          CHANGED FILES:
+          ${CHANGED_FILES}
+
+          ---
+
+          You are a documentation maintenance agent for KeeperHub, a blockchain automation
+          platform. A new release has been published and the code files listed above have
+          changed. Your job is to ensure the documentation in /docs/ stays accurate and
+          in sync with the codebase.
+
+          ## CRITICAL: Turn Budget
+
+          You have a maximum of 75 turns. Manage them carefully:
+          - Turns 1-5: Read pre-loaded context files and docs listing.
+          - Turns 6-40: Analyze changes and search/read relevant docs.
+          - Turns 41-65: Make edits to documentation files.
+          - Turns 66-75: Commit changes (git add + git commit). You MUST commit
+            before turn 70. If you reach turn 50 without finding docs that need
+            updates, immediately state "Documentation is up to date" and stop.
+          - Do NOT spend turns reading source files individually when the diff
+            already provides the information you need.
+          - Maximize parallel tool calls -- read multiple docs pages in one turn.
+
+          ## IMPORTANT: Tool Usage
+
+          You have access to: Read, Write, Edit, Glob, Grep, and Bash (git/gh commands only).
+          - Use Glob to find files (NOT find via Bash - it will be denied)
+          - Use Grep to search file contents (NOT grep or rg via Bash)
+          - Use Read to read files (NOT cat or head via Bash)
+          - Use Bash ONLY for git and gh commands
+          - Call multiple tools in parallel when they are independent of each other
+
+          ## Pre-loaded Context
+
+          The file /tmp/file-diffs.txt contains compact unified diffs for all
+          changed files (capped at 60 lines per file, 3000 lines total).
+          The file /tmp/docs-listing.txt contains the full docs directory listing.
+          The file /tmp/removal-candidates.txt lists plugins and API endpoints
+          that were deleted in this range, along with docs pages that mention
+          them. If that file is empty, no deletions were detected and you can
+          skip the stale-doc step.
+
+          Start by reading these three files instead of individually reading each
+          source file. This saves significant time. Only read individual source
+          files if you need more context than the diff provides.
+
+          NOTE: Internal/non-user-facing files (OG images, metrics, db internals,
+          internal APIs) have already been filtered out. All files in the list are
+          potentially docs-relevant.
+
+          ## Documentation Infrastructure
+
+          - Documentation lives in the /docs/ directory at the repository root.
+          - The docs site uses Nextra 4 (a Next.js-based docs framework). Content is plain
+            Markdown with YAML frontmatter.
+          - Navigation is controlled by _meta.ts files in each directory. The root
+            _meta.ts at /docs/_meta.ts defines the top-level sections. Each
+            subdirectory has its own _meta.ts for page ordering within that section.
+            Each file exports a default object mapping page slugs to their display
+            titles, e.g. export default { overview: "Overview", web3: "Web3" };
+            When you add or remove a page, update the matching slug entry here.
+          - There are approximately 35 documentation pages organized across these sections:
+            intro, getting-started, keepers, workflows, keeper-runs, notifications,
+            wallet-management, users-teams-orgs, practices, api, FAQ.
+          - Two sections are hidden from navigation: api and plans-features.
+
+          ## Documentation Style Rules
+
+          Follow these rules strictly when editing or creating documentation:
+
+          - Every page starts with YAML frontmatter containing title and description.
+          - Use one H1 heading per page matching the frontmatter title.
+          - Use H2 for major sections, H3 for subsections.
+          - Write in a professional, instructive tone. Use second person ("you") for
+            instructions and third person for feature descriptions.
+          - Use short paragraphs, bullet lists, and tables. Use bold for emphasis and key
+            terms.
+          - Do NOT use emojis anywhere in the documentation. This is strictly enforced.
+          - Use code blocks for configuration examples, API responses, addresses, and code
+            snippets.
+          - File and directory naming convention is kebab-case.
+
+          ## Your Task
+
+          1. Read /tmp/file-diffs.txt and /tmp/docs-listing.txt first.
+             Analyze the diffs to understand what changed. Focus on: API endpoint changes,
+             plugin interface changes, configuration changes, new features, removed features.
+
+          2. For each meaningful user-facing change, search the /docs/ directory for
+             related documentation pages. Check:
+             - Are code examples in the docs still correct?
+             - Are API signatures, types, and endpoints still accurate?
+             - Are plugin configuration options still complete and correct?
+             - Are instructions and procedures still valid?
+
+          3. Fix ONLY what is broken or inaccurate:
+             - Update incorrect code examples to match the current code.
+             - Fix wrong API signatures, types, and endpoint paths.
+             - Update outdated configuration examples.
+             - Add minimal documentation for significant new features that have absolutely
+               no existing documentation coverage. Only do this for user-facing features.
+             - If a plugin gained new configuration options, add them to the relevant
+               docs table or list.
+
+          4. If /tmp/removal-candidates.txt is non-empty, handle stale docs for
+             the removed items. For each "=== deleted <kind>: <token> ===" entry:
+             - Decide whether the feature was genuinely removed, renamed, or
+               refactored. Cross-check /tmp/file-diffs.txt: a nearby addition
+               with a similar name usually means a rename, not a removal.
+             - Genuinely removed: delete the dedicated doc page with
+               `git rm docs/<path>.md`, then remove the matching slug from the
+               parent _meta.ts file using the Edit tool. Preserve trailing
+               commas, quoting, and surrounding whitespace.
+             - Renamed: update references in the listed doc pages instead of
+               deleting them.
+             - Only mentioned in passing (not the page's primary subject):
+               remove just the mention, keep the page.
+             - Be conservative. When in doubt whether something was truly
+               removed or merely refactored, prefer updating over deleting,
+               and leave a note in the commit body explaining your reasoning.
+
+          5. Do NOT do any of the following:
+             - Do NOT rewrite working documentation for style or tone improvements.
+             - Do NOT add changelog or release notes entries.
+             - Do NOT reorganize existing documentation structure or navigation
+               beyond removing entries for pages you delete in step 4.
+             - Do NOT add sections about internal implementation details.
+             - Do NOT modify documentation that is already accurate.
+             - Do NOT create documentation for test utilities, internal helpers, or
+               non-user-facing code.
+
+          6. If you create any new documentation pages:
+             - Use kebab-case filenames.
+             - Add the page to the appropriate _meta.ts file.
+             - Include proper YAML frontmatter with title and description.
+             - Match the writing style and depth of existing pages in that section.
+
+          7. If after analyzing all changes you determine that no documentation updates
+             are needed (the docs are already accurate), report that finding and do not
+             create a PR. Simply state: "Documentation is up to date. No changes needed."
+
+          8. If you do make changes, commit them to the current branch. Use
+             `git add` for edits/additions and `git rm` for deletions (git rm
+             already stages the removal). Use a commit message format like:
+             "docs: sync documentation with ${RELEASE_TAG}" and include a
+             summary of what was updated, added, or removed and why in the
+             commit body. The CI system will push the branch and create a PR
+             automatically after you commit.
+          PROMPT_EOF
+
+      - name: Run Claude Code docs sync
+        if: steps.tag.outputs.release_tag != ''
+        id: claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          npx -y @anthropic-ai/claude-code@latest \
+            --print \
+            --model claude-sonnet-4-5-20250929 \
+            --max-turns 75 \
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(gh:*)" \
+            < /tmp/claude-prompt.txt
+
+      - name: Push branch and create PR
+        if: steps.claude.outcome == 'success' && steps.branch.outputs.branch_name != ''
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ steps.branch.outputs.branch_name }}"
+          RELEASE_TAG="${{ steps.tag.outputs.release_tag }}"
+
+          # Check if Claude made any commits on this branch beyond staging
+          COMMIT_COUNT=$(git rev-list staging.."$BRANCH" --count 2>/dev/null || echo "0")
+
+          if [ "$COMMIT_COUNT" = "0" ]; then
+            echo "No commits made by Claude. Documentation is up to date."
+            echo "has_pr=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Found $COMMIT_COUNT new commit(s). Pushing branch and creating PR."
+
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git push origin "$BRANCH"
+
+          BODY="Automated documentation sync triggered by release/manual workflow."
+          BODY="${BODY}"$'\n\n'"This PR was generated by Claude Code to keep docs in sync with code changes."
+          BODY="${BODY}"$'\n'"Please review the changes and merge if they look correct."
+
+          PR_URL=$(gh pr create \
+            --base staging \
+            --head "$BRANCH" \
+            --title "docs: sync documentation with ${RELEASE_TAG}" \
+            --body "$BODY")
+
+          echo "Created PR: $PR_URL"
+          PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "has_pr=true" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Discord on docs update
+        if: steps.pr.outputs.has_pr == 'true'
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_GITHUB }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_TAG="${{ steps.tag.outputs.release_tag }}"
+          PR_URL="${{ steps.pr.outputs.pr_url }}"
+          PR_NUMBER="${{ steps.pr.outputs.pr_number }}"
+
+          PR_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body' 2>/dev/null | head -c 1500 || echo "")
+
+          # Build message safely with jq
+          MESSAGE=$(jq -n \
+            --arg tag "$RELEASE_TAG" \
+            --arg body "$PR_BODY" \
+            --arg url "$PR_URL" \
+            '"**Docs Update** for `" + $tag + "`\n\n" + $body + "\n\nPR: " + $url')
+
+          # Send to Discord (jq output is already JSON-escaped string)
+          jq -n --argjson content "$MESSAGE" \
+            '{"username": "KeeperHub Docs Bot", "content": $content}' \
+            | curl -s -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK"

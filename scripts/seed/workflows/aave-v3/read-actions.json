@@ -1,0 +1,68 @@
+{
+  "protocol": "aave-v3",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "Protocol Test: Aave V3 Read Actions",
+  "description": "Tests all Aave V3 read actions on Ethereum mainnet",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 200 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "aave-get-user-account-data",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Get User Account Data",
+        "description": "Get overall account health for a known Aave user",
+        "type": "action",
+        "config": {
+          "actionType": "aave-v3/get-user-account-data",
+          "network": "1",
+          "user": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "aave-get-user-reserve-data",
+      "type": "action",
+      "position": { "x": 450, "y": 200 },
+      "data": {
+        "label": "Get User Reserve Data",
+        "description": "Get per-asset position data for DAI",
+        "type": "action",
+        "config": {
+          "actionType": "aave-v3/get-user-reserve-data",
+          "network": "1",
+          "asset": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+          "user": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-to-aave-get-user-account-data",
+      "source": "node-1",
+      "target": "aave-get-user-account-data",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-aave-get-user-reserve-data",
+      "source": "node-1",
+      "target": "aave-get-user-reserve-data",
+      "type": "animated"
+    }
+  ]
+}

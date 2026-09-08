@@ -1,0 +1,56 @@
+[
+  {
+    "type": "function",
+    "name": "getFee",
+    "stateMutability": "view",
+    "inputs": [
+      { "name": "destinationChainSelector", "type": "uint64" },
+      {
+        "name": "message",
+        "type": "tuple",
+        "components": [
+          { "name": "receiver", "type": "bytes" },
+          { "name": "data", "type": "bytes" },
+          {
+            "name": "tokenAmounts",
+            "type": "tuple[]",
+            "components": [
+              { "name": "token", "type": "address" },
+              { "name": "amount", "type": "uint256" }
+            ]
+          },
+          { "name": "feeToken", "type": "address" },
+          { "name": "extraArgs", "type": "bytes" }
+        ]
+      }
+    ],
+    "outputs": [{ "name": "fee", "type": "uint256" }]
+  },
+  {
+    "type": "function",
+    "name": "ccipSend",
+    "stateMutability": "payable",
+    "inputs": [
+      { "name": "destinationChainSelector", "type": "uint64" },
+      {
+        "name": "message",
+        "type": "tuple",
+        "components": [
+          { "name": "receiver", "type": "bytes" },
+          { "name": "data", "type": "bytes" },
+          {
+            "name": "tokenAmounts",
+            "type": "tuple[]",
+            "components": [
+              { "name": "token", "type": "address" },
+              { "name": "amount", "type": "uint256" }
+            ]
+          },
+          { "name": "feeToken", "type": "address" },
+          { "name": "extraArgs", "type": "bytes" }
+        ]
+      }
+    ],
+    "outputs": [{ "name": "messageId", "type": "bytes32" }]
+  }
+]

@@ -1,0 +1,69 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: workflow-runner-block-imds
+  namespace: keeperhub
+spec:
+  podSelector:
+    matchLabels:
+      app: workflow-runner
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keeperhub
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: keeperhub-sandbox
+      ports:
+        - protocol: TCP
+          port: 8787
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keeperhub
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/serviceName: keeperhub-executor-common
+      ports:
+        - protocol: TCP
+          port: 3080
+    - to:
+        - ipBlock:
+            cidr: 10.1.100.0/24
+        - ipBlock:
+            cidr: 10.1.101.0/24
+        - ipBlock:
+            cidr: 10.1.102.0/24
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - fe80::/10
+              - fc00::/7

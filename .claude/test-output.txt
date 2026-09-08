@@ -1,0 +1,135 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.16 [39m[90m/home/suisuss/.programming/work/TechOps/keeperhub/.worktrees/KEEP-PR-761[39m
+
+ [31m❯[39m tests/unit/x402-call-route.test.ts [2m([22m[2m12 tests[22m[2m | [22m[31m6 failed[39m[2m)[22m[33m 336[2mms[22m[39m
+     [33m[2m✓[22m[39m Test 1: returns 404 for unknown slug [33m 301[2mms[22m[39m
+     [32m✓[39m Test 2: returns 404 for unlisted workflow[32m 1[2mms[22m[39m
+[31m     [31m×[31m Test 3: free workflow (price=0) executes immediately without x402[39m[32m 14[2mms[22m[39m
+[31m     [31m×[31m Test 4: free workflow (priceUsdcPerCall=null) executes without payment[39m[32m 3[2mms[22m[39m
+[31m     [31m×[31m Test 5: paid workflow without PAYMENT-SIGNATURE returns 402[39m[32m 3[2mms[22m[39m
+[31m     [31m×[31m Test 6: paid workflow with valid PAYMENT-SIGNATURE executes and returns executionId[39m[32m 2[2mms[22m[39m
+     [32m✓[39m Test 7: duplicate PAYMENT-SIGNATURE returns original executionId without re-executing[32m 3[2mms[22m[39m
+     [32m✓[39m Test 8: returns 503 when org has no wallet configured[32m 2[2mms[22m[39m
+     [32m✓[39m Test 9: returns 400 when body fails inputSchema validation[32m 2[2mms[22m[39m
+[31m     [31m×[31m Test 10: payment is recorded BEFORE workflow execution starts[39m[32m 1[2mms[22m[39m
+     [32m✓[39m Test 11: OPTIONS returns CORS headers[32m 0[2mms[22m[39m
+[31m     [31m×[31m Test 12: body passing full inputSchema validation proceeds to execution[39m[32m 1[2mms[22m[39m
+ [32m✓[39m tests/unit/x402-reconcile.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 384[2mms[22m[39m
+     [33m[2m✓[22m[39m Test 1: returns true for 'context deadline exceeded' [33m 377[2mms[22m[39m
+ [32m✓[39m tests/unit/listed-workflow-schema.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 6 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/unit/x402-call-route.test.ts[2m > [22mPOST /api/mcp/workflows/[slug]/call[2m > [22mTest 3: free workflow (price=0) executes immediately without x402
+[31m[1mAssertionError[22m: expected 401 to be 200 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 200[39m
+[31m+ 401[39m
+
+[36m [2m❯[22m tests/unit/x402-call-route.test.ts:[2m221:29[22m[39m
+    [90m219| [39m    [35mconst[39m params [33m=[39m [33mPromise[39m[33m.[39m[34mresolve[39m({ slug[33m:[39m [32m"test-workflow"[39m })[33m;[39m
+    [90m220| [39m    [35mconst[39m response [33m=[39m [35mawait[39m [33mPOST[39m(request[33m,[39m { params })[33m;[39m
+    [90m221| [39m    [34mexpect[39m(response[33m.[39mstatus)[33m.[39m[34mtoBe[39m([34m200[39m)[33m;[39m
+    [90m   | [39m                            [31m^[39m
+    [90m222| [39m    [35mconst[39m body [33m=[39m [35mawait[39m response[33m.[39m[34mjson[39m()[33m;[39m
+    [90m223| [39m    [34mexpect[39m(body[33m.[39mexecutionId)[33m.[39m[34mtoBe[39m([32m"exec-free-1"[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/x402-call-route.test.ts[2m > [22mPOST /api/mcp/workflows/[slug]/call[2m > [22mTest 4: free workflow (priceUsdcPerCall=null) executes without payment
+[31m[1mAssertionError[22m: expected 401 to be 200 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 200[39m
+[31m+ 401[39m
+
+[36m [2m❯[22m tests/unit/x402-call-route.test.ts:[2m236:29[22m[39m
+    [90m234| [39m    [35mconst[39m params [33m=[39m [33mPromise[39m[33m.[39m[34mresolve[39m({ slug[33m:[39m [32m"test-workflow"[39m })[33m;[39m
+    [90m235| [39m    [35mconst[39m response [33m=[39m [35mawait[39m [33mPOST[39m(request[33m,[39m { params })[33m;[39m
+    [90m236| [39m    [34mexpect[39m(response[33m.[39mstatus)[33m.[39m[34mtoBe[39m([34m200[39m)[33m;[39m
+    [90m   | [39m                            [31m^[39m
+    [90m237| [39m    [35mconst[39m body [33m=[39m [35mawait[39m response[33m.[39m[34mjson[39m()[33m;[39m
+    [90m238| [39m    [34mexpect[39m(body[33m.[39mexecutionId)[33m.[39m[34mtoBe[39m([32m"exec-free-null"[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/x402-call-route.test.ts[2m > [22mPOST /api/mcp/workflows/[slug]/call[2m > [22mTest 5: paid workflow without PAYMENT-SIGNATURE returns 402
+[31m[1mAssertionError[22m: expected 500 to be 402 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 402[39m
+[31m+ 500[39m
+
+[36m [2m❯[22m tests/unit/x402-call-route.test.ts:[2m249:29[22m[39m
+    [90m247| [39m    [35mconst[39m params [33m=[39m [33mPromise[39m[33m.[39m[34mresolve[39m({ slug[33m:[39m [32m"test-workflow"[39m })[33m;[39m
+    [90m248| [39m    [35mconst[39m response [33m=[39m [35mawait[39m [33mPOST[39m(request[33m,[39m { params })[33m;[39m
+    [90m249| [39m    [34mexpect[39m(response[33m.[39mstatus)[33m.[39m[34mtoBe[39m([34m402[39m)[33m;[39m
+    [90m   | [39m                            [31m^[39m
+    [90m250| [39m    [34mexpect[39m(mockWithX402)[33m.[39m[34mtoHaveBeenCalled[39m()[33m;[39m
+    [90m251| [39m  })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/x402-call-route.test.ts[2m > [22mPOST /api/mcp/workflows/[slug]/call[2m > [22mTest 6: paid workflow with valid PAYMENT-SIGNATURE executes and returns executionId
+[31m[1mAssertionError[22m: expected 500 to be 200 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 200[39m
+[31m+ 500[39m
+
+[36m [2m❯[22m tests/unit/x402-call-route.test.ts:[2m263:29[22m[39m
+    [90m261| [39m    [35mconst[39m params [33m=[39m [33mPromise[39m[33m.[39m[34mresolve[39m({ slug[33m:[39m [32m"test-workflow"[39m })[33m;[39m
+    [90m262| [39m    [35mconst[39m response [33m=[39m [35mawait[39m [33mPOST[39m(request[33m,[39m { params })[33m;[39m
+    [90m263| [39m    [34mexpect[39m(response[33m.[39mstatus)[33m.[39m[34mtoBe[39m([34m200[39m)[33m;[39m
+    [90m   | [39m                            [31m^[39m
+    [90m264| [39m    [35mconst[39m body [33m=[39m [35mawait[39m response[33m.[39m[34mjson[39m()[33m;[39m
+    [90m265| [39m    [34mexpect[39m(body[33m.[39mexecutionId)[33m.[39m[34mtoBe[39m([32m"exec-paid-1"[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/x402-call-route.test.ts[2m > [22mPOST /api/mcp/workflows/[slug]/call[2m > [22mTest 10: payment is recorded BEFORE workflow execution starts
+[31m[1mAssertionError[22m: expected -1 to be greater than or equal to 0[39m
+[36m [2m❯[22m tests/unit/x402-call-route.test.ts:[2m351:23[22m[39m
+    [90m349| [39m    [35mconst[39m recordIdx [33m=[39m callOrder[33m.[39m[34mindexOf[39m([32m"recordPayment"[39m)[33m;[39m
+    [90m350| [39m    [35mconst[39m startIdx [33m=[39m callOrder[33m.[39m[34mindexOf[39m([32m"start"[39m)[33m;[39m
+    [90m351| [39m    [34mexpect[39m(recordIdx)[33m.[39m[34mtoBeGreaterThanOrEqual[39m([34m0[39m)[33m;[39m
+    [90m   | [39m                      [31m^[39m
+    [90m352| [39m    [34mexpect[39m(startIdx)[33m.[39m[34mtoBeGreaterThanOrEqual[39m([34m0[39m)[33m;[39m
+    [90m353| [39m    [34mexpect[39m(recordIdx)[33m.[39m[34mtoBeLessThan[39m(startIdx)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/x402-call-route.test.ts[2m > [22mPOST /api/mcp/workflows/[slug]/call[2m > [22mTest 12: body passing full inputSchema validation proceeds to execution
+[31m[1mAssertionError[22m: expected 401 to be 200 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 200[39m
+[31m+ 401[39m
+
+[36m [2m❯[22m tests/unit/x402-call-route.test.ts:[2m388:29[22m[39m
+    [90m386| [39m    [35mconst[39m params [33m=[39m [33mPromise[39m[33m.[39m[34mresolve[39m({ slug[33m:[39m [32m"test-workflow"[39m })[33m;[39m
+    [90m387| [39m    [35mconst[39m response [33m=[39m [35mawait[39m [33mPOST[39m(request[33m,[39m { params })[33m;[39m
+    [90m388| [39m    [34mexpect[39m(response[33m.[39mstatus)[33m.[39m[34mtoBe[39m([34m200[39m)[33m;[39m
+    [90m   | [39m                            [31m^[39m
+    [90m389| [39m    [35mconst[39m body [33m=[39m [35mawait[39m response[33m.[39m[34mjson[39m()[33m;[39m
+    [90m390| [39m    [34mexpect[39m(body[33m.[39mexecutionId)[33m.[39m[34mtoBe[39m([32m"exec-schema-ok"[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m2 passed[39m[22m[90m (3)[39m
+[2m      Tests [22m [1m[31m6 failed[39m[22m[2m | [22m[1m[32m21 passed[39m[22m[90m (27)[39m
+[2m   Start at [22m 13:02:33
+[2m   Duration [22m 2.49s[2m (transform 690ms, setup 994ms, import 220ms, tests 726ms, environment 1ms)[22m
+

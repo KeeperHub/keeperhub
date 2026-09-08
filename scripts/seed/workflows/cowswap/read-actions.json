@@ -1,0 +1,125 @@
+{
+  "protocol": "cowswap",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "read",
+  "name": "Protocol Test: CoW Swap Read Actions",
+  "description": "Tests all CoW Swap on-chain read actions on Ethereum mainnet",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "trigger",
+      "position": { "x": 100, "y": 300 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "cowswap-get-domain-separator",
+      "type": "action",
+      "position": { "x": 450, "y": 0 },
+      "data": {
+        "label": "Get Domain Separator",
+        "description": "Returns the EIP-712 domain separator for this deployment",
+        "type": "action",
+        "config": {
+          "actionType": "cowswap/get-domain-separator",
+          "network": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "cowswap-get-vault-relayer",
+      "type": "action",
+      "position": { "x": 450, "y": 150 },
+      "data": {
+        "label": "Get Vault Relayer",
+        "description": "Returns the GPv2VaultRelayer address",
+        "type": "action",
+        "config": {
+          "actionType": "cowswap/get-vault-relayer",
+          "network": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "cowswap-get-filled-amount",
+      "type": "action",
+      "position": { "x": 450, "y": 300 },
+      "data": {
+        "label": "Get Order Fill Amount",
+        "description": "Check fill amount for a zero order UID",
+        "type": "action",
+        "config": {
+          "actionType": "cowswap/get-filled-amount",
+          "network": "1",
+          "orderUid": "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "cowswap-get-pre-signature",
+      "type": "action",
+      "position": { "x": 450, "y": 450 },
+      "data": {
+        "label": "Get Pre-Signature Status",
+        "description": "Check pre-signature for a zero order UID",
+        "type": "action",
+        "config": {
+          "actionType": "cowswap/get-pre-signature",
+          "network": "1",
+          "orderUid": "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "cowswap-check-single-order",
+      "type": "action",
+      "position": { "x": 450, "y": 600 },
+      "data": {
+        "label": "Check Conditional Order",
+        "description": "Check if a conditional order exists for the settlement contract",
+        "type": "action",
+        "config": {
+          "actionType": "cowswap/check-single-order",
+          "network": "1",
+          "owner": "0x9008D19f58AAbD9eD0D60971565AA8510560ab41",
+          "orderHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "cowswap-get-cabinet",
+      "type": "action",
+      "position": { "x": 450, "y": 750 },
+      "data": {
+        "label": "Get Cabinet Value",
+        "description": "Read conditional order state from cabinet",
+        "type": "action",
+        "config": {
+          "actionType": "cowswap/get-cabinet",
+          "network": "1",
+          "owner": "0x9008D19f58AAbD9eD0D60971565AA8510560ab41",
+          "key": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e-trigger-to-get-domain-separator", "source": "node-1", "target": "cowswap-get-domain-separator", "type": "animated" },
+    { "id": "e-trigger-to-get-vault-relayer", "source": "node-1", "target": "cowswap-get-vault-relayer", "type": "animated" },
+    { "id": "e-trigger-to-get-filled-amount", "source": "node-1", "target": "cowswap-get-filled-amount", "type": "animated" },
+    { "id": "e-trigger-to-get-pre-signature", "source": "node-1", "target": "cowswap-get-pre-signature", "type": "animated" },
+    { "id": "e-trigger-to-check-single-order", "source": "node-1", "target": "cowswap-check-single-order", "type": "animated" },
+    { "id": "e-trigger-to-get-cabinet", "source": "node-1", "target": "cowswap-get-cabinet", "type": "animated" }
+  ]
+}

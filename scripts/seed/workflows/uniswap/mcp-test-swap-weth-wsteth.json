@@ -1,0 +1,45 @@
+{
+  "protocol": "uniswap",
+  "network": "1",
+  "networkName": "mainnet",
+  "type": "write",
+  "name": "MCP Test: Swap WETH to wstETH",
+  "description": "Swap 0.005 WETH to wstETH via Uniswap V3 on mainnet (for Lido testing)",
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "label": "Manual Trigger",
+        "type": "trigger",
+        "config": { "triggerType": "Manual" },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "swap",
+      "type": "action",
+      "position": { "x": 272, "y": 0 },
+      "data": {
+        "label": "Swap WETH to wstETH",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/swap-exact-input",
+          "network": "1",
+          "tokenIn": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "tokenOut": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+          "amountIn": "5000000000000000",
+          "amountOutMinimum": "0",
+          "fee": "100",
+          "sqrtPriceLimitX96": "0",
+          "recipient": "0xCE2910044c51479D61DB3F8798Df6C5672F51dE9"
+        },
+        "status": "idle"
+      }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "trigger", "target": "swap", "type": "animated" }
+  ]
+}

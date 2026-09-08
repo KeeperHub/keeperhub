@@ -1,0 +1,137 @@
+# Dependencies
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Next.js build output
+.next
+out
+dist
+
+# Development files
+.git
+.gitignore
+.worktrees
+README.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+
+# Directories not needed by any Docker stage
+tests/
+docs/
+docs-site/
+specs/
+analysis/
+.claude/
+.cursor/
+.probes/
+
+# Local-dev sign-in tooling (pnpm dev:login). Never run in production and
+# dev-bootstrap.ts imports from tests/, which is excluded above.
+scripts/seed/dev-bootstrap.ts
+scripts/seed/fixtures/dev-workflows.ts
+scripts/dev-mint-session.ts
+scripts/dev-login.ts
+scripts/dev-login-browser.ts
+
+# Dev-only config files
+playwright.config.ts
+vitest.config.mts
+biome.jsonc
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage
+*.lcov
+
+# nyc test coverage
+.nyc_output
+
+# Dependency directories
+jspm_packages/
+
+# Optional npm cache directory
+.npm
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# parcel-bundler cache (https://parceljs.org/)
+.cache
+.parcel-cache
+
+# next.js build output
+.next
+
+# nuxt.js build output
+.nuxt
+
+# vuepress build output
+.vuepress/dist
+
+# Serverless directories
+.serverless
+
+# FuseBox cache
+.fusebox/
+
+# DynamoDB Local files
+.dynamodb/
+
+# TernJS port file
+.tern-port
+
+# Stores VSCode versions used for testing VSCode extensions
+.vscode-test
+
+# Svelte build output
+.svelte-kit
+
+# Database
+*.db
+*.sqlite
+
+# Temporary files
+tmp/
+temp/
+
+# Build artifacts
+build/
+dist/
