@@ -6,7 +6,19 @@ import { db } from "@/lib/db";
 import { mcpOauthRefreshTokens, member, sessions } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getActiveOrgId } from "@/lib/middleware/org-context";
+import { ArnSegment, Capability, PolicyRole } from "@/lib/policy";
+import { enforceControlPlane } from "@/lib/policy/control-plane";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
+import { getOrgRole } from "@/lib/security/org-role";
+
+/** The caller's role, defaulting to the least authority when it is unknown. */
+async function leaveRoleOf(
+  userId: string,
+  organizationId: string
+): Promise<PolicyRole> {
+  const role = await getOrgRole(userId, organizationId);
+  return (role as PolicyRole | null) ?? PolicyRole.MEMBER;
+}
 
 type LeaveRequestBody = {
   /**
@@ -46,6 +58,19 @@ export async function POST(
 
     if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // Leaving is a membership change, so a rule about who may leave, or about
+    // who must hand ownership on before they do, reaches it here.
+    const policyRefusal = await enforceControlPlane({
+      organizationId,
+      userId: session.user.id,
+      role: await leaveRoleOf(session.user.id, organizationId),
+      capability: Capability.MEMBER_REMOVE,
+      resource: { type: ArnSegment.MEMBER, id: session.user.id },
+    });
+    if (policyRefusal) {
+      return policyRefusal;
     }
 
     const body = (await request.json()) as LeaveRequestBody;

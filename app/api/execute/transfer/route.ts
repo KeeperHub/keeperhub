@@ -17,7 +17,10 @@ import {
 } from "@/lib/idempotency";
 import { SCOPE_MCP_READ, SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
+import { Capability } from "@/lib/policy";
+import { enforceDirectExecutionPolicy } from "@/lib/policy/direct-execution";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
+import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { transferFundsCore } from "@/plugins/web3/steps/transfer-funds-core";
 import { transferTokenCore } from "@/plugins/web3/steps/transfer-token-core";
 import { validateApiKey } from "../_lib/auth";
@@ -241,6 +244,30 @@ export async function POST(request: Request): Promise<NextResponse> {
       reservedValueWei = parsedValue.valueWei;
     }
   }
+  // policy check immediately before the reservation, which is the
+  // last gate before a transaction is built. The direct-execution API never
+  // reaches the workflow engine, so without this the most agent-exposed surface
+  // in the product would be the one surface policy did not cover.
+  const policyRefusal = await enforceDirectExecutionPolicy({
+    organizationId: apiKeyCtx.organizationId,
+    apiKeyId: apiKeyCtx.apiKeyId,
+    capability: isTokenTransfer
+      ? Capability.ASSET_TRANSFER_TOKEN
+      : Capability.ASSET_TRANSFER_NATIVE,
+    // `network` is a normalized alias here (chain id, or a known chain name),
+    // so it is resolved rather than assumed numeric.
+    chainId: getChainIdFromNetwork(network) ?? undefined,
+    tokenAddress: body.tokenAddress as string | undefined,
+    recipient: recipientAddress,
+    // EVM only: lamports are not wei, and pricing them as wei would be wrong
+    // by nine orders of magnitude.
+    nativeValueWei:
+      isTokenTransfer || isSolanaTransfer ? undefined : reservedValueWei,
+  });
+  if (policyRefusal) {
+    return applyRateLimitHeaders(policyRefusal, rateLimit);
+  }
+
   const reserve = await checkAndReserveExecution({
     organizationId: apiKeyCtx.organizationId,
     apiKeyId: apiKeyCtx.apiKeyId,

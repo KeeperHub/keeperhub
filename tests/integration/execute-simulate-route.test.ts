@@ -20,6 +20,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+// Policy has its own suites, including one against a real database. Here it
+// must not stand between the request and the behaviour under test.
+vi.mock("@/lib/policy/direct-execution", () => ({
+  enforceDirectNodePolicy: async () => null,
+  enforceDirectExecutionPolicy: async () => null,
+}));
 
 const FROM_ADDRESS = "0xaa0000000000000000000000000000000000aa00";
 

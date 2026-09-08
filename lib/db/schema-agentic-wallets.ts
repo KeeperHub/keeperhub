@@ -11,7 +11,7 @@ import {
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
-import { users } from "@/lib/db/schema";
+import { organization, users } from "@/lib/db/schema";
 import { generateId } from "@/lib/utils/id";
 
 /**
@@ -73,11 +73,25 @@ export const agenticWallets = pgTable(
     linkedUserId: text("linked_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
+    /**
+     * The organization answerable for what this wallet signs.
+     *
+     * Policy is written by an organization, so a wallet with no organization is
+     * a wallet no rule can reach. It is set when the wallet is linked, because
+     * that is the first moment anybody knows who the wallet belongs to, and it
+     * is nullable because a wallet can be provisioned before it is linked and
+     * because a linking user may belong to more than one organization, which is
+     * a choice to record rather than a guess to make at every signature.
+     */
+    organizationId: text("organization_id").references(() => organization.id, {
+      onDelete: "set null",
+    }),
     linkedAt: timestamp("linked_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
     index("idx_agentic_wallets_linked_user").on(table.linkedUserId),
+    index("idx_agentic_wallets_organization").on(table.organizationId),
     index("idx_agentic_wallets_wallet_base").on(table.walletAddressBase),
     index("idx_agentic_wallets_wallet_tempo").on(table.walletAddressTempo),
   ]

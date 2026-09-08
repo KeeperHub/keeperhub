@@ -38,6 +38,7 @@ import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { resolveSignerMode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
+import { assertSigningAllowed } from "@/lib/policy/signing-guard";
 import { getTurnkeySignerConfig } from "@/lib/turnkey/turnkey-client";
 import { getGasStrategy } from "@/lib/web3/gas-strategy";
 import { getOrganizationWallet } from "@/lib/web3/wallet-helpers";
@@ -412,13 +413,6 @@ export async function signTempoTx(
     throw new Error("Tempo transaction must contain at least one call");
   }
 
-  const signerMode = await resolveSignerMode(organizationId, chainId);
-  if (signerMode.kind !== SIGNER_MODE.EOA) {
-    throw new Error(
-      "Tempo transactions require an EOA wallet. Safe accounts are not supported on Tempo; disable Safe mode for this workflow."
-    );
-  }
-
   // Stablecoin ceiling. Tempo moves TIP-20 stablecoins as its primary asset and
   // carries no native value at all, so the daily value cap never sees a Tempo
   // send. Every Tempo write is signed here, so one check covers transfer-with-
@@ -435,6 +429,29 @@ export async function signTempoTx(
   });
   if (stablecoinDecision.kind !== "allowed") {
     throw new Error(stablecoinDecision.error);
+  }
+
+  // Every call this envelope carries is judged before anything is signed.
+  // Tempo builds and signs its own envelope rather than going through an
+  // ethers signer, so the guard that stands behind every other write does not
+  // stand behind this one unless it is called here.
+  //
+  // After the ceiling above, which is a fixed cap that needs no policy to
+  // decide, and before the wallet is resolved, so a refused payment costs no
+  // wallet read, no RPC round trip and no signature attempt. A call the node
+  // check already cleared carries a receipt and is not charged twice.
+  for (const call of calls) {
+    await assertSigningAllowed(
+      { organizationId, chainId },
+      { to: call.to, data: call.data, value: BigInt(0) }
+    );
+  }
+
+  const signerMode = await resolveSignerMode(organizationId, chainId);
+  if (signerMode.kind !== SIGNER_MODE.EOA) {
+    throw new Error(
+      "Tempo transactions require an EOA wallet. Safe accounts are not supported on Tempo; disable Safe mode for this workflow."
+    );
   }
 
   const wallet = await getOrganizationWallet(organizationId);

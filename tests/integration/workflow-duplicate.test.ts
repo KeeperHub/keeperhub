@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("server-only", () => ({}));
+// Policy has its own suites, including one against a real database. Here it
+// must not stand between the request and the behaviour under test.
+vi.mock("@/lib/middleware/policy-gate", () => ({
+  policyRefusalFor: async () => null,
+}));
+
 const mockSession = {
   user: { id: "user-dup-test", email: "test@example.com", name: "Test User" },
 };

@@ -13,5 +13,6 @@ export default {
   user: "User",
   organizations: "Organizations",
   "api-keys": "API Keys",
+  policies: "Policies",
   errors: "Errors",
 };
