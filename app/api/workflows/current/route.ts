@@ -135,6 +135,17 @@ export async function POST(request: Request) {
       );
     }
 
+    // Run the plan-gate before action-config validation so a plan-gated
+    // action (e.g. Run Code, Send Webhook) reports "upgrade required" instead
+    // of a generic INVALID_ACTION_CONFIG when its config is also incomplete.
+    const featureGuard = await enforceWorkflowFeatures(
+      extractActionTypeNodes(nodes),
+      organizationId
+    );
+    if (featureGuard.blocked) {
+      return featureGuard.response;
+    }
+
     const actionConfigValidation = validateWorkflowActionConfigs(nodes);
     if (!actionConfigValidation.valid) {
       return NextResponse.json(
@@ -155,14 +166,6 @@ export async function POST(request: Request) {
     });
     if (policyRefusal) {
       return policyRefusal;
-    }
-
-    const featureGuard = await enforceWorkflowFeatures(
-      extractActionTypeNodes(nodes),
-      organizationId
-    );
-    if (featureGuard.blocked) {
-      return featureGuard.response;
     }
 
     // Check if current workflow exists for this user in this org.

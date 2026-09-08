@@ -70,6 +70,14 @@ export async function POST(
     const loaded = await loadWorkflowForExecution(workflowId, {
       requireEnabled: isInternalExecution,
     });
+    if (loaded.status === "not_executable" && loaded.reason === "halted") {
+      // Distinct from not-found so an operator recovering from an incident is
+      // told the org is halted, not misdirected to a missing-workflow 404.
+      return NextResponse.json(
+        { error: "Workflow temporarily halted" },
+        { status: HttpStatus.SERVICE_UNAVAILABLE }
+      );
+    }
     if (loaded.status === "not_found" || loaded.status === "not_executable") {
       return NextResponse.json(
         { error: "Workflow not found" },

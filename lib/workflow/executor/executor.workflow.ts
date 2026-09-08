@@ -142,6 +142,18 @@ const SYSTEM_ACTIONS = {
       import("@/lib/workflow/nodes/collect/step") as Promise<any>,
     stepFunction: "collectStep",
   },
+  "Trip Circuit Breaker": {
+    importer: () =>
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic module import matches existing pattern
+      import("@/lib/workflow/nodes/circuit-breaker-trip/step") as Promise<any>,
+    stepFunction: "circuitBreakerTripStep",
+  },
+  "Reset Circuit Breaker": {
+    importer: () =>
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic module import matches existing pattern
+      import("@/lib/workflow/nodes/circuit-breaker-reset/step") as Promise<any>,
+    stepFunction: "circuitBreakerResetStep",
+  },
 } satisfies Record<SystemActionType, StepImporter>;
 
 export {

@@ -337,6 +337,18 @@ export const organization = pgTable("organization", {
   // ceiling, which is what every org predating the setting gets, so nothing
   // an agent already does stops working on deploy.
   mcpMaxScope: text("mcp_max_scope"),
+  // Org-level incident circuit breaker (self-serve kill switch). When set,
+  // every value-moving workflow/protocol step fails closed at the value-ledger
+  // reservation gate (per write, mid run) and no new runs dispatch. Read-only
+  // steps are unaffected. Distinct from deactivatedAt, which is a permanent
+  // admin/ops off-state cleared only by ops; this is reversible and cleared by
+  // an org admin/owner (or an admin-owned Reset action) to resume.
+  haltedAt: timestamp("halted_at"),
+  // Free-text incident note recorded when the breaker is tripped.
+  haltedReason: text("halted_reason"),
+  // Audit trail for who/what tripped the breaker: the workflow id when tripped
+  // by a Trip action, or a user id when tripped by an operator.
+  haltedBy: text("halted_by"),
 });
 
 export const member = pgTable(
