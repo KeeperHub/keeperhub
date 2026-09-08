@@ -1,8 +1,8 @@
-﻿import "server-only";
+import "server-only";
 
 import { fetchCredentials } from "@/lib/credential-fetcher";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import { safeFetch } from "@/lib/safe-fetch";
+import { assertUrlIsPublic, safeFetch, SsrfBlockedError } from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
 import {
   runPluginStep,
@@ -27,6 +27,7 @@ export type ExecuteAgentActionCoreInput = {
   action: string;
   payload?: string | Record<string, unknown>;
   agentId?: string;
+  path?: string;
 };
 
 export type ExecuteAgentActionInput = StepInput &
@@ -76,7 +77,30 @@ async function stepHandler(
     }
   }
 
+  // Resolve target endpoint path:
+  // Allows user-configured path (e.g. /api/agent/action for v2, or custom plugin route),
+  // with optional {agentId} token interpolation. Defaults to /api/agents/{agentId}/action.
+  let resolvedPath: string;
+  if (input.path?.trim()) {
+    resolvedPath = input.path.trim().replace("{agentId}", encodeURIComponent(agentId));
+  } else if (agentId && agentId !== "default") {
+    resolvedPath = `/api/agents/${encodeURIComponent(agentId)}/action`;
+  } else {
+    resolvedPath = "/api/agents/default/action";
+  }
+
+  if (!resolvedPath.startsWith("/")) {
+    resolvedPath = `/${resolvedPath}`;
+  }
+
+  const fullUrl = `${baseUrl}${resolvedPath}`;
+
   try {
+    // SSRF guard: endpointUrl is user-supplied on the integration and path is configurable,
+    // so validate that destination does not point to link-local or RFC1918 internal networks
+    // before any outbound request.
+    await assertUrlIsPublic(fullUrl);
+
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json",
@@ -86,18 +110,15 @@ async function stepHandler(
       headers.Authorization = `Bearer ${credentials.ELIZAOS_API_KEY.trim()}`;
     }
 
-    const response = await safeFetch(
-      `${baseUrl}/api/agents/${encodeURIComponent(agentId)}/action`,
-      {
-        plugin: "elizaos",
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          action,
-          payload: parsedPayload,
-        }),
-      }
-    );
+    const response = await safeFetch(fullUrl, {
+      plugin: "elizaos",
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        action,
+        payload: parsedPayload,
+      }),
+    });
 
     if (!response.ok) {
       const errorData = (await response.json().catch(() => ({}))) as Record<
@@ -117,12 +138,21 @@ async function stepHandler(
       };
     }
 
-    const data = await response.json().catch(() => ({}));
+    // Return the raw text representation of the response body to avoid swallowing text/plain
+    const rawResponse = await response.text();
     return {
       success: true,
-      response: typeof data === "string" ? data : JSON.stringify(data),
+      response: rawResponse,
     };
   } catch (error) {
+    if (error instanceof SsrfBlockedError) {
+      return {
+        success: false,
+        error: `ElizaOS instance URL is not allowed: ${error.message}`,
+        errorClass: ExecutionErrorType.USER,
+      };
+    }
+
     return {
       success: false,
       error: `Failed to execute ElizaOS agent action: ${getErrorMessage(error)}`,

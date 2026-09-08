@@ -1,4 +1,4 @@
-﻿import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -15,10 +15,13 @@ vi.mock("@/lib/credential-fetcher", () => ({
   fetchCredentials: (...args: unknown[]) => mockFetchCredentials(...args),
 }));
 
-const { safeFetch } = vi.hoisted(() => ({ safeFetch: vi.fn() }));
+const { safeFetch, assertUrlIsPublic } = vi.hoisted(() => ({
+  safeFetch: vi.fn(),
+  assertUrlIsPublic: vi.fn(() => Promise.resolve()),
+}));
 vi.mock("@/lib/safe-fetch", () => ({
   safeFetch,
-  assertUrlIsPublic: vi.fn(() => Promise.resolve()),
+  assertUrlIsPublic,
   SsrfBlockedError: class SsrfBlockedError extends Error {},
 }));
 
@@ -38,6 +41,8 @@ function mockFetchOnce(
     ok,
     status,
     statusText: ok ? "OK" : "Error",
+    text: () =>
+      Promise.resolve(typeof body === "string" ? body : JSON.stringify(body)),
     json: () =>
       isJson
         ? Promise.resolve(body)
@@ -49,6 +54,8 @@ describe("elizaos execute-agent-action step", () => {
   beforeEach(() => {
     mockFetchCredentials.mockReset();
     safeFetch.mockReset();
+    assertUrlIsPublic.mockReset();
+    assertUrlIsPublic.mockResolvedValue();
   });
 
   it("fails with USER error class when ELIZAOS_ENDPOINT_URL is missing", async () => {
@@ -101,7 +108,7 @@ describe("elizaos execute-agent-action step", () => {
     }
   });
 
-  it("successfully dispatches action with 200 JSON response", async () => {
+  it("successfully dispatches action with 200 raw text response", async () => {
     mockFetchCredentials.mockResolvedValue({
       ELIZAOS_ENDPOINT_URL: "https://agent.example.com",
       ELIZAOS_API_KEY: "secret-token",
@@ -121,6 +128,9 @@ describe("elizaos execute-agent-action step", () => {
       expect(result.response).toContain("0x123abc");
     }
 
+    expect(assertUrlIsPublic).toHaveBeenCalledWith(
+      "https://agent.example.com/api/agents/agent-default/action"
+    );
     expect(safeFetch).toHaveBeenCalledTimes(1);
     const [url, options] = safeFetch.mock.calls[0];
     expect(url).toBe(
@@ -141,7 +151,7 @@ describe("elizaos execute-agent-action step", () => {
       ELIZAOS_AGENT_ID: "agent-default",
     });
 
-    mockFetchOnce({ ok: true });
+    mockFetchOnce("OK");
 
     const result = await executeAgentActionStep({
       action: "SCAN_RISK",
@@ -154,6 +164,25 @@ describe("elizaos execute-agent-action step", () => {
     expect(url).toBe(
       "https://agent.example.com/api/agents/custom-agent-99/action"
     );
+  });
+
+  it("supports customizable path with {agentId} replacement", async () => {
+    mockFetchCredentials.mockResolvedValue({
+      ELIZAOS_ENDPOINT_URL: "https://agent.example.com",
+      ELIZAOS_AGENT_ID: "my-agent",
+    });
+
+    mockFetchOnce("OK");
+
+    const result = await executeAgentActionStep({
+      action: "SCAN_RISK",
+      path: "/api/agent/custom-action",
+      integrationId: "int-1",
+    } as any);
+
+    expect(result.success).toBe(true);
+    const [url] = safeFetch.mock.calls[0];
+    expect(url).toBe("https://agent.example.com/api/agent/custom-action");
   });
 
   it("handles non-2xx response with error payload", async () => {

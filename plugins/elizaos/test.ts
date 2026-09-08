@@ -1,4 +1,6 @@
-﻿const TRAILING_SLASH_RE = /\/+$/;
+import { assertUrlIsPublic, SsrfBlockedError } from "@/lib/safe-fetch";
+
+const TRAILING_SLASH_RE = /\/+$/;
 
 export async function testElizaOS(
   credentials: Record<string, string>
@@ -13,8 +15,12 @@ export async function testElizaOS(
     }
 
     const baseUrl = rawUrl.replace(TRAILING_SLASH_RE, "");
-    const apiKey = credentials.ELIZAOS_API_KEY?.trim();
+    const healthUrl = `${baseUrl}/health`;
 
+    // Validate that the server URL is not an SSRF target
+    await assertUrlIsPublic(healthUrl);
+
+    const apiKey = credentials.ELIZAOS_API_KEY?.trim();
     const headers: Record<string, string> = {
       Accept: "application/json",
     };
@@ -23,7 +29,7 @@ export async function testElizaOS(
     }
 
     // Lightweight read-only health endpoint to confirm the instance is reachable.
-    const response = await fetch(`${baseUrl}/health`, {
+    const response = await fetch(healthUrl, {
       method: "GET",
       headers,
     });
@@ -37,6 +43,12 @@ export async function testElizaOS(
 
     return { success: true };
   } catch (error) {
+    if (error instanceof SsrfBlockedError) {
+      return {
+        success: false,
+        error: `ElizaOS server URL is not allowed: ${error.message}`,
+      };
+    }
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error),

@@ -1,4 +1,4 @@
-﻿import type { IntegrationPlugin } from "@/plugins/registry";
+import type { IntegrationPlugin } from "@/plugins/registry";
 import { registerIntegration } from "@/plugins/registry-core";
 import { ElizaOSIcon } from "./icon";
 
@@ -60,6 +60,7 @@ const elizaosPlugin: IntegrationPlugin = {
         { field: "success", description: "Whether the agent action executed successfully" },
         { field: "response", description: "Agent response or action output payload" },
         { field: "error", description: "Error description if execution failed" },
+        { field: "errorClass", description: "Fault domain category (user, system, external)" },
       ],
       configFields: [
         {
@@ -84,6 +85,14 @@ const elizaosPlugin: IntegrationPlugin = {
           type: "template-input",
           placeholder: "e.g. default or {{NodeName.agentId}}",
           helpTip: "Target agent character identifier. If omitted, falls back to connection default.",
+          required: false,
+        },
+        {
+          key: "path",
+          label: "Endpoint Path (Optional)",
+          type: "template-input",
+          placeholder: "/api/agents/action, /api/agent/action, or /api/messaging/action",
+          helpTip: "The REST endpoint path on your ElizaOS agent server. Supports {agentId} replacement. Defaults to /api/agents/{agentId}/action.",
           required: false,
         },
       ],
