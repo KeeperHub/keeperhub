@@ -5,7 +5,8 @@
  * `curateDbError` and return the curated message instead of `error.message`.
  *
  * Drizzle wraps the driver error, so the SQLSTATE code can live either on the
- * thrown error or on its `cause`. Check both.
+ * thrown error or somewhere down its `cause` chain. Walk the chain, and take
+ * only a value that actually looks like a SQLSTATE -- see `SQLSTATE_RE`.
  */
 
 export type CuratedDbError = { message: string; status: number };
@@ -18,6 +19,17 @@ export type CuratedDbError = { message: string; status: number };
  */
 const MAX_CAUSE_DEPTH = 5;
 
+/**
+ * A Postgres SQLSTATE: exactly five characters, digits and uppercase letters.
+ * Checked rather than accepting the first string `code` found, because `code`
+ * is a crowded name on errors -- Node sets `ECONNRESET` on a socket error and
+ * `ERR_*` on its own, and app errors carry their own codes. An outer wrapper
+ * bearing one of those would otherwise shadow the driver's real SQLSTATE
+ * further down the chain, turning a `23505` into a generic 500 and making
+ * `isUniqueViolation` answer false for a genuine duplicate.
+ */
+const SQLSTATE_RE = /^[0-9A-Z]{5}$/u;
+
 function pgErrorCode(err: unknown): string | undefined {
   let current: unknown = err;
   for (
@@ -26,7 +38,7 @@ function pgErrorCode(err: unknown): string | undefined {
     depth++
   ) {
     const code = (current as { code?: unknown }).code;
-    if (typeof code === "string") {
+    if (typeof code === "string" && SQLSTATE_RE.test(code)) {
       return code;
     }
     current = (current as { cause?: unknown }).cause;

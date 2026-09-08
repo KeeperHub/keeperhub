@@ -54,6 +54,36 @@ describe("resolveExecutionInput", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.field).toBe("input");
+      // Name the stray field, so the caller does not have to diff the body
+      // against the docs to find it.
+      expect(result.error).toContain("amount");
+    }
+  });
+
+  it("tells a flat-body caller with a field named input to wrap the object", () => {
+    // `kh workflow execute --input '{"input":{...},"other":1}'` posts a flat
+    // bag whose data happens to contain a key called `input`. That caller is
+    // not sending both shapes, so advice to "nest under input" is a no-op for
+    // them -- the 400 has to name their case too.
+    const result = resolveExecutionInput(
+      JSON.stringify({ input: { a: 1 }, other: 1 })
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("wrap the whole object");
+      expect(result.error).toContain('{"input": <your object>}');
+    }
+  });
+
+  it("names every stray field, pluralised, rather than only the first", () => {
+    const result = resolveExecutionInput(
+      JSON.stringify({ input: {}, amount: "1", to: "0xabc" })
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("fields (amount, to)");
     }
   });
 
@@ -227,29 +257,80 @@ describe("resolveExecutionInput", () => {
   });
 
   describe("prototype pollution", () => {
-    it("keeps a __proto__ key as an own property of the bound input", () => {
+    it("drops a __proto__ key from the bound input without polluting anything", () => {
       const result = resolveExecutionInput(
         '{"__proto__":{"isAdmin":true},"amount":"1"}'
       );
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        // Assignment would have hit Object.prototype's setter, leaving an
-        // input whose own keys are empty while a read by name still resolved.
-        expect(Object.keys(result.input)).toContain("amount");
-        expect(
-          (result.input as Record<string, unknown>).isAdmin
-        ).toBeUndefined();
+        const input = result.input as Record<string, unknown>;
+        // The rest-destructure defuses the key -- assignment would have hit
+        // Object.prototype's setter, leaving an input whose own keys are
+        // empty while a read by name still resolved through the prototype.
+        expect(Object.keys(input)).toContain("amount");
+        expect(input.isAdmin).toBeUndefined();
+        // Then it is deleted outright, so it never rides into the workflow
+        // input or the JSONB column. Checked by own-key, not by reading
+        // `input.__proto__`, which always resolves to the prototype.
+        expect(Object.keys(input)).not.toContain("__proto__");
+        expect(Object.hasOwn(input, "__proto__")).toBe(false);
+        expect(Object.getPrototypeOf(input)).toBe(Object.prototype);
       }
       expect(({} as Record<string, unknown>).isAdmin).toBeUndefined();
     });
 
-    it("does not pollute Object.prototype through a nested input either", () => {
+    it("drops __proto__ while binding every other bare field, id included", () => {
+      // The delete is scoped to that one key: a bare body is otherwise bound
+      // whole, including a field named executionId.
       const result = resolveExecutionInput(
-        '{"input":{"__proto__":{"polluted":true}}}'
+        '{"__proto__":{"isAdmin":true},"executionId":"run-42","amount":"1"}'
       );
 
       expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.input).toEqual({ executionId: "run-42", amount: "1" });
+        expect(result.executionId).toBeUndefined();
+        expect(result.deprecated).toBe(true);
+      }
+    });
+
+    it("drops __proto__ from a nested input on the same terms as a bare one", () => {
+      // A nested `input` is no less caller-controlled than a bare body, so
+      // both shapes bind through toBoundInput and neither carries the key on
+      // into the workflow input or the JSONB column.
+      const result = resolveExecutionInput(
+        '{"input":{"__proto__":{"polluted":true},"amount":"1"}}'
+      );
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const input = result.input as Record<string, unknown>;
+        expect(input).toEqual({ amount: "1" });
+        expect(Object.keys(input)).not.toContain("__proto__");
+        expect(Object.hasOwn(input, "__proto__")).toBe(false);
+        expect(input.polluted).toBeUndefined();
+        expect(Object.getPrototypeOf(input)).toBe(Object.prototype);
+      }
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    });
+
+    it("leaves __proto__ nested deeper than the top level alone", () => {
+      // The drop is one level deep by design. A key inside a caller's own
+      // nested value is data the workflow may legitimately need, and it is
+      // inert for the same reason the top-level one was: nothing deep-merges
+      // it. Widening this to a recursive scrub would silently rewrite
+      // caller payloads.
+      const result = resolveExecutionInput(
+        '{"input":{"nested":{"__proto__":{"polluted":true}}}}'
+      );
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const nested = (result.input as { nested: Record<string, unknown> })
+          .nested;
+        expect(Object.hasOwn(nested, "__proto__")).toBe(true);
+      }
       expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     });
   });

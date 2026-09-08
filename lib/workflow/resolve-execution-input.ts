@@ -21,6 +21,10 @@
 // "input" being absent, matching the route's original `?? {}` behavior for
 // that value.
 //
+// A `__proto__` key is dropped from the bound input in both shapes -- see
+// `toBoundInput`. One level deep only: a key nested inside a caller's own
+// value is their data.
+//
 // `executionId` is an envelope field only in the nested shape. In the bare
 // shape there is no envelope -- the caller sent a flat bag of workflow input
 // -- so a field that happens to be named `executionId` is the caller's data
@@ -101,6 +105,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Copy a caller-supplied object into the record that becomes the workflow
+ * input, dropping any `__proto__` key. Both shapes bind through here, so the
+ * two cannot drift apart -- a nested `input` is no less caller-controlled
+ * than a bare body, and the argument below applies identically to both.
+ *
+ * Spread rather than key-by-key assignment. Spread defines own properties, so
+ * a `__proto__` key -- which `JSON.parse` does produce as an own property --
+ * lands on the object. `bound[key] = ...` is an assignment, which would
+ * instead reach `Object.prototype`'s setter and leave an input whose
+ * `Object.keys()` is empty while a read by name still resolved through the
+ * prototype. So the spread, not the delete, is what stops the pollution.
+ *
+ * The delete stops the key riding on into the workflow input and into the
+ * JSONB column, where it is inert only for as long as nothing deep-merges it.
+ * Nothing in lib/workflow/ deep-merges today. Carrying a key whose only
+ * possible use is to reintroduce the hazard buys nothing, and no caller can
+ * mean anything legitimate by sending it.
+ */
+function toBoundInput(
+  source: Record<string, unknown>
+): Record<string, unknown> {
+  const bound = { ...source };
+  Reflect.deleteProperty(bound, "__proto__");
+  return bound;
+}
+
+/**
  * Parses the raw request body and resolves the workflow input, per the rules
  * above. Never throws: an invalid or non-object JSON body
  * resolves to an empty input, matching the route's original "missing or
@@ -125,12 +156,23 @@ export function resolveExecutionInput(rawBody: string): ResolvedExecutionInput {
 
   if (hasInputKey && hasStrayTopLevel) {
     const plural = unrecognizedKeys.length > 1 ? "s" : "";
+    // Two callers land here, and only one of them is sending both shapes.
+    //
+    // The other sent a flat bag whose data happens to contain a key named
+    // `input` -- `kh workflow execute --input '{"input":{...},"other":1}'`
+    // produces exactly that. Telling them to "nest under input, not both
+    // ways at once" is a no-op: they already have an `input` key and are not
+    // sending both ways. So name their case too. A flat body cannot carry a
+    // field of that name, because there is no way to tell it from the
+    // envelope, and wrapping the whole object is the fix for them.
     return {
       ok: false,
       error:
-        `Ambiguous execution body: both a nested "input" object and ` +
-        `top-level field${plural} (${unrecognizedKeys.join(", ")}) were sent. ` +
-        'Send input fields nested under "input", not both ways at once.',
+        `Ambiguous execution body: a nested "input" object and top-level ` +
+        `field${plural} (${unrecognizedKeys.join(", ")}) were both sent. ` +
+        'Send every input field nested under "input". If you meant to send ' +
+        'flat input data containing a field named "input", wrap the whole ' +
+        'object: {"input": <your object>}.',
       field: "input",
     };
   }
@@ -144,19 +186,10 @@ export function resolveExecutionInput(rawBody: string): ResolvedExecutionInput {
   }
 
   if (hasStrayTopLevel) {
-    // Spread rather than key-by-key assignment, for two reasons.
-    //
     // Every top-level key binds, including one named `executionId`: there is
     // no envelope in this shape, so that key is the caller's data. Copying
     // only the unrecognized keys would drop it from the input the workflow
     // receives while leaving the route to read it as an envelope field.
-    //
-    // And rest-destructuring creates own properties. `strayInput[key] = ...`
-    // is an assignment, so a `__proto__` key -- which `JSON.parse` does
-    // produce as an own property -- would reach `Object.prototype`'s setter
-    // instead of landing on the object, leaving an input whose
-    // `Object.keys()` is empty while a read by name still resolved through
-    // the prototype.
     //
     // `input` is the one key held back. Reaching here with an `input` key at
     // all means it was null, and a null `input` is the caller writing
@@ -165,26 +198,16 @@ export function resolveExecutionInput(rawBody: string): ResolvedExecutionInput {
     // it only means anything as an envelope field when an envelope exists.
     const { input: _nullEnvelope, ...bareInput } = rawParsed;
 
-    // Then drop `__proto__` outright. The rest-destructure above has already
-    // defused it -- it lands as an own property rather than reaching
-    // Object.prototype's setter -- so this is not what stops the pollution.
-    // It stops the key from riding on into the workflow input and into the
-    // JSONB column, where it is inert only for as long as nothing deep-merges
-    // it. Nothing in lib/workflow/ deep-merges today. Carrying a key whose
-    // only possible use is to reintroduce the hazard buys nothing, and no
-    // caller can mean anything legitimate by sending it.
-    Reflect.deleteProperty(bareInput, "__proto__");
-
     return {
       ok: true,
-      input: bareInput,
+      input: toBoundInput(bareInput),
       rawParsed,
       deprecated: true,
     };
   }
 
   const input: Record<string, unknown> = hasInputKey
-    ? { ...(rawParsed.input as Record<string, unknown>) }
+    ? toBoundInput(rawParsed.input as Record<string, unknown>)
     : {};
 
   return {

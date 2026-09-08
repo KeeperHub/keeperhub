@@ -175,7 +175,18 @@ async function callExecute(body: string): Promise<Response> {
   return POST(request, { params: Promise.resolve({ workflowId: "wf_1" }) });
 }
 
-describe("execute route - input binding", () => {
+// Every test here imports the execute route, which pulls in the DevKit
+// executor, Drizzle and the billing stack. On a cold runner that transform
+// alone can outlast vitest's 10s default, and the whole file then fails with
+// "Test timed out" -- a message that points at the test rather than at the
+// clock, and that looks identical to a real regression. The work each test
+// does once loaded is milliseconds; this budget is for the import, so a slow
+// runner reads as slow instead of as broken.
+const COLD_IMPORT_TIMEOUT_MS = 60_000;
+
+describe("execute route - input binding", {
+  timeout: COLD_IMPORT_TIMEOUT_MS,
+}, () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthenticateInternalService.mockResolvedValue({
@@ -305,12 +316,17 @@ describe("execute route - input binding", () => {
   // billing failure, not just the happy path -- a caller who only ever sees
   // replays would otherwise never learn the shape is going away.
   //
-  // Two of the five wrapped return sites are unreachable with a deprecated
-  // body and so are not covered here: the terminal-409 and running-200
-  // branches are behind an *envelope* executionId, and a body carrying an
-  // envelope is by definition not the bare shape. Wrapping them anyway keeps
-  // "every post-resolution response carries the notice" true by construction
-  // rather than by case analysis, which is why they stay wrapped.
+  // Three of the six wrapped return sites are unreachable with a deprecated
+  // body and so are not covered here. All three sit inside the route's
+  // `if (executionId)` branch -- the terminal-409, the running-200 and the
+  // executionId-conflict 409 -- and that id comes only from
+  // `resolved.executionId`, which the resolver sets only for the nested
+  // shape. `deprecated` is set only for the bare shape, which carries no
+  // envelope id, so the two are mutually exclusive by construction.
+  // Wrapping them anyway keeps "every post-resolution response carries the
+  // notice" true by construction rather than by case analysis, which is why
+  // they stay wrapped: it survives a later change that lets a bare body
+  // reach that branch.
   describe("deprecation headers on non-success responses", () => {
     it("carries the notice on an idempotent replay", async () => {
       mockBeginIdempotentFromRequest.mockResolvedValue({ key: "idem_1" });
