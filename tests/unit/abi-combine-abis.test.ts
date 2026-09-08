@@ -147,6 +147,43 @@ describe("combineAbis", () => {
     expect(functions(merged)).toHaveLength(2);
   });
 
+  it("keeps two distinct tuple overloads that both lack components", () => {
+    // Without components no real selector can be computed for either entry.
+    // A selector hashed from the literal "tuple" would be the same for both
+    // and one would be dropped as a duplicate of the other.
+    const first = {
+      type: "function",
+      name: "f",
+      inputs: [{ name: "p", type: "tuple" }],
+      outputs: [],
+    };
+    const second = {
+      type: "function",
+      name: "f",
+      inputs: [{ name: "q", type: "tuple" }],
+      outputs: [],
+    };
+    const merged = combineAbis([JSON.stringify([first, second])]);
+    expect(functions(merged)).toHaveLength(2);
+  });
+
+  it("deduplicates a zero-argument function that omits inputs entirely", () => {
+    // Explorer-fetched ABIs sometimes leave the key out instead of emitting
+    // an empty array. Both spell the same selector.
+    const withoutInputs = {
+      type: "function",
+      name: "totalSupply",
+      stateMutability: "view",
+      outputs: [{ name: "", type: "uint256" }],
+    };
+    const withEmptyInputs = { ...withoutInputs, inputs: [] };
+    const merged = combineAbis([
+      JSON.stringify([withoutInputs]),
+      JSON.stringify([withEmptyInputs]),
+    ]);
+    expect(functions(merged)).toHaveLength(1);
+  });
+
   it("skips a facet that does not parse without affecting the others", () => {
     const merged = combineAbis([
       JSON.stringify([TRANSFER]),

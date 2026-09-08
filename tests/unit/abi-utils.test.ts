@@ -285,6 +285,20 @@ describe("canonicalType", () => {
     ).toBe("(uint256)[]");
   });
 
+  it('throws on a tuple with no components rather than returning the literal "tuple"', () => {
+    // The one malformed shape that used to produce a wrong answer silently:
+    // "tuple" is exactly the spelling ethers rejects, and it would otherwise
+    // flow into a stored key, a selector and a canonical signature.
+    expect(() => canonicalType({ type: "tuple" })).toThrow();
+    expect(() => canonicalType({ type: "tuple[]" })).toThrow();
+    expect(() =>
+      canonicalType({
+        type: "tuple",
+        components: { a: "uint256" } as unknown as AbiItem["inputs"],
+      })
+    ).toThrow();
+  });
+
   it("throws on an input with no type rather than fabricating a signature", () => {
     expect(() =>
       canonicalType({ components: [] } as unknown as { type: string })
@@ -391,6 +405,41 @@ describe("resolveAbiFunction", () => {
     expect(resolveAbiFunction(abi, "broken(undefined)")).toEqual({
       status: "not_found",
     });
+  });
+
+  it("does not report a tuple overload with no components as a canonical match", () => {
+    const abi: AbiItem[] = [
+      {
+        type: "function",
+        name: "send",
+        stateMutability: "payable",
+        inputs: [
+          { name: "p", type: "tuple" },
+          { name: "r", type: "address" },
+        ],
+      },
+      {
+        type: "function",
+        name: "send",
+        stateMutability: "nonpayable",
+        inputs: [
+          { name: "to", type: "address" },
+          { name: "amount", type: "uint256" },
+        ],
+      },
+    ];
+    // The legacy spelling still identifies the entry, so it resolves -- but
+    // the key it hands back must not be presented as a canonical signature,
+    // because no encodable one exists for an entry like this.
+    const result = resolveAbiFunction(abi, "send(tuple,address)");
+    expect(result.status).toBe("found");
+    if (result.status === "found") {
+      expect(result.entry.stateMutability).toBe("payable");
+      expect(result.canonicalKey).toBe("send(tuple,address)");
+    }
+    expect(resolveAbiFunction(abi, "send(address,uint256)").status).toBe(
+      "found"
+    );
   });
 
   it("tolerates components that are not an array", () => {

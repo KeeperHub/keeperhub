@@ -22,8 +22,14 @@ export function canonicalType(input: AbiInput): string {
   if (typeof input?.type !== "string") {
     throw new Error("ABI input is missing a type");
   }
-  if (!(input.type.startsWith("tuple") && input.components)) {
+  if (!input.type.startsWith("tuple")) {
     return input.type;
+  }
+  // A tuple without its components has no canonical form: returning the raw
+  // "tuple" here would hand back the one spelling ethers cannot encode, as a
+  // key, a selector and a canonical signature alike. Treat it as malformed.
+  if (!Array.isArray(input.components)) {
+    throw new Error("ABI tuple input is missing its components");
   }
   const inner = input.components.map((c) => canonicalType(c)).join(",");
   const suffix = input.type.slice("tuple".length);

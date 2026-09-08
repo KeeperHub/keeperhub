@@ -24,11 +24,13 @@ function getFunctionSelector(abiItem: {
     components?: AbiItemComponent[];
   }>;
 }): string | null {
-  if (abiItem.type !== "function" || !abiItem.name || !abiItem.inputs) {
+  if (abiItem.type !== "function" || !abiItem.name) {
     return null;
   }
   try {
-    return computeSelector(abiItem.name, abiItem.inputs);
+    // Explorer-fetched ABIs sometimes omit `inputs` on a zero-argument
+    // function instead of emitting `[]`; both mean the same selector.
+    return computeSelector(abiItem.name, abiItem.inputs ?? []);
   } catch {
     return null;
   }
