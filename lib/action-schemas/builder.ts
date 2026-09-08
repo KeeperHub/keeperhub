@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { chains, explorerConfigs } from "@/lib/db/schema";
+import { resolveActionFeature } from "@/lib/features/action-egress";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { synthesizeOutputSchema } from "@/lib/mcp/output-schema";
 import {
@@ -50,6 +51,15 @@ export type ActionSchema = {
   optionalFields: Record<string, string>;
   outputFields: Record<string, string>;
   outputSchema?: Record<string, unknown>;
+  /**
+   * The plan an organization must be on to run this action, or null when the
+   * action is not plan-gated. Emits the static requirement (never the
+   * caller's plan) so /api/mcp/schemas stays anonymous and publicly
+   * cacheable. Resolved via resolveActionFeature so the egress-derived
+   * catch-all gate (action.external-request) is included, not just the
+   * explicit FEATURES registry entries.
+   */
+  requiredPlan: string | null;
 };
 
 export type BuildActionSchemasOptions = {
@@ -134,6 +144,7 @@ export function transformPluginAction(
     integration: plugin.type,
     requiresCredentials:
       action.requiresCredentials ?? plugin.requiresCredentials ?? false,
+    requiredPlan: resolveActionFeature(actionType)?.requiredPlan ?? null,
     requiredFields,
     optionalFields,
     outputFields,
@@ -245,9 +256,25 @@ export async function buildActionSchemasResponse(
 
   const platformCapabilities = derivePlatformCapabilities(allPlugins);
 
+  // Enrich system actions with their plan requirement the same way plugin
+  // actions get it. SYSTEM_ACTIONS is shared with the workflow validator and
+  // the builder UI, so it is not mutated in place - each entry is copied and
+  // the requirement resolved per actionType. System actions with no explicit
+  // feature and no user-destination egress (Condition, For Each, triggers)
+  // resolve to null.
+  const enrichedSystemActions: Record<string, unknown> = {};
+  for (const [key, action] of Object.entries(systemActions)) {
+    const systemAction = action as { actionType: string };
+    enrichedSystemActions[key] = {
+      ...(action as Record<string, unknown>),
+      requiredPlan:
+        resolveActionFeature(systemAction.actionType)?.requiredPlan ?? null,
+    };
+  }
+
   let actions: Record<string, unknown> = {
     ...pluginActions,
-    ...systemActions,
+    ...enrichedSystemActions,
   };
   if (typeFilter) {
     const matched = actions[typeFilter];

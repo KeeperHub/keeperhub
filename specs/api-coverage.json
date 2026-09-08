@@ -150,6 +150,13 @@
     },
     {
       "method": "GET",
+      "path": "/api/features",
+      "route_file": "app/api/features/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 448
+    },
+    {
+      "method": "GET",
       "path": "/api/integrations",
       "route_file": "app/api/integrations/route.ts",
       "source": "docs/api/integrations.md",

@@ -400,7 +400,8 @@ Returns the complete registry of available workflow actions, triggers, and templ
       "requiredFields": { "network": "string (chain ID)", "address": "string" },
       "optionalFields": {},
       "outputFields": { "balance": "..." },
-      "requiresCredentials": false
+      "requiresCredentials": false,
+      "requiredPlan": null
     },
     "Condition": {
       "actionType": "Condition",
@@ -438,3 +439,33 @@ Returns the complete registry of available workflow actions, triggers, and templ
 > - **System actions** use Pascal-case with spaces between words (e.g., `"Condition"`, `"For Each"`, `"HTTP Request"`). System actions do not have a `requiresCredentials` field.
 > - **Triggers** are listed under the `triggers` key (not `actions`) and their values map to `config.triggerType` on trigger nodes.
 > - The endpoint self-documents the correct node and edge shapes under the `workflowStructure` and `edgeStructure` keys — use these as the source of truth for programmatic workflow generation.
+
+Every action carries a `requiredPlan` field: the plan an organization must be on to run the action, or `null` when it is not plan-gated. It is the static requirement, not your organization's plan, so this endpoint stays anonymous and publicly cacheable. Check it before building a workflow so a `POST /api/workflows/create` that needs a paid plan does not fail after the fact. To see which plan your organization is on and which features that plan unlocks, `GET /api/features` returns the org's feature snapshot (plan, enabled feature ids, and the full registry); it authenticates with the same `Authorization` header as every other agent route.
+
+## Get Organization Features
+
+```http
+GET /api/features
+```
+
+Returns the calling organization's feature snapshot so a client can render per-plan lock states or preflight a workflow build.
+
+### Response
+
+```json
+{
+  "plan": "free",
+  "enabledFeatureIds": [],
+  "features": [
+    {
+      "id": "action.database-query",
+      "name": "Database Query action",
+      "category": "workflow-action",
+      "requiredPlan": "pro"
+    }
+  ],
+  "billingEnabled": true
+}
+```
+
+`billingEnabled` is `false` on self-hosted installs where billing is disabled, in which case `plan` is `"enterprise"` and every feature is enabled.
