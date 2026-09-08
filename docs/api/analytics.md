@@ -131,9 +131,9 @@ Returns a unified list of both workflow executions and direct executions with pa
 {
   "runs": [
     {
-      "id": "exec_123",
+      "id": "hjsuassmcb19zvfpzi38r",
       "source": "workflow",
-      "workflowId": "wf_456",
+      "workflowId": "y3y0xneior3njl90uoyih",
       "workflowName": "Monitor ETH Balance",
       "status": "success",
       "createdAt": "2024-01-01T00:00:00Z",
@@ -141,7 +141,7 @@ Returns a unified list of both workflow executions and direct executions with pa
       "durationMs": 5000
     },
     {
-      "id": "direct_789",
+      "id": "9k2x7mwqcp5zvt0hnj1ab",
       "source": "direct",
       "type": "transfer",
       "network": "ethereum",

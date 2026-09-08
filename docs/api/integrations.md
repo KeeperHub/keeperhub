@@ -43,6 +43,7 @@ GET /api/integrations
       "name": "My Discord",
       "type": "discord",
       "isManaged": false,
+      "address": null,
       "createdAt": "2024-01-01T00:00:00Z",
       "updatedAt": "2024-01-01T00:00:00Z"
     }
@@ -51,6 +52,10 @@ GET /api/integrations
 ```
 
 Note: Integration config is excluded from list responses for security.
+
+`address` is the canonical EIP-55 checksummed wallet address for `web3` integrations, and `null`
+for every other type. API consumers must prefer it over `name` when the value is destined for
+an on-chain call such as `onBehalfOf`.
 
 ## Get Integration
 

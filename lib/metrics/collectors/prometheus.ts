@@ -18,7 +18,12 @@ import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import type { ErrorStatus } from "@/lib/errors/execution-status";
 import { ErrorCategory, logSystemWarn, logWarn } from "@/lib/logging";
 import type { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
-import type { ErrorContext, MetricLabels, MetricsCollector } from "../types";
+import {
+  type ErrorContext,
+  type MetricLabels,
+  type MetricsCollector,
+  TRIGGER_TYPES,
+} from "../types";
 
 // Use global singletons to prevent duplicate registration during hot reload
 // This is safe because each pod has its own Node.js process
@@ -868,6 +873,17 @@ const workflowExecutionsStartedTotal = getOrCreateCounter(
   "Workflow executions started (counter), labelled by trigger_type",
   ["trigger_type"]
 );
+
+// prom-client only materialises a labelled child series on its first inc(),
+// so a low-volume label like webhook can go its entire lifetime without ever
+// being observed at 0 (it is "born" already at 1 or 2). increase() over any
+// window then reads 0 even though real executions happened, because there
+// is no earlier sample to diff against. Pre-registering every known
+// trigger_type at 0 on module load (every pod, on every start) guarantees
+// Prometheus always has a starting point to compute increase() from.
+for (const triggerType of TRIGGER_TYPES) {
+  workflowExecutionsStartedTotal.inc({ trigger_type: triggerType }, 0);
+}
 
 // KEEP-612 detection signal. lib/safe-fetch.ts increments this every time
 // a SSRF-blocklisted destination (or DNS-resolve-mismatch) is refused. The

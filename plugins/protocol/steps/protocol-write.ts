@@ -11,9 +11,16 @@ import { resolveAbi } from "@/lib/abi/cache";
 import { type AbiItem, findAbiFunction } from "@/lib/abi/utils";
 import { withStepValueCap } from "@/lib/execute/value-ledger";
 import { ErrorCategory, logUserError } from "@/lib/logging";
-import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
+import {
+  getProtocol,
+  type ProtocolAction,
+  resolveContractAddress,
+} from "@/lib/protocol-registry";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
-import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
+import {
+  applyEncodeTransformsNamed,
+  getEncodeTransform,
+} from "@/lib/protocol-encode-transforms";
 import {
   type ProtocolMeta,
   resolveProtocolMeta,
@@ -98,6 +105,14 @@ function resolveEthValue(
 // Runs before ABI resolution: it only needs `network`, raw `ethValue`, and
 // raw `tokenIn`, so a misconfigured swap fails fast without paying for an
 // Etherscan ABI fetch on the user-specified-address path.
+//
+// Note the seam: this is the one ethValue consumer that reads the field
+// *before* applyEthValueTransform, so it sees the user's raw units. That is
+// harmless today - it only asks "is this zero" and compares tokenIn - and
+// both answers survive a wei-to-ether conversion, since a value is zero in
+// either unit or neither. It stops being harmless the moment this preflight
+// grows a threshold or an amount comparison. If that happens, move it after
+// the transform rather than teaching it about units.
 function checkUniswapNativeEthPreflight(
   input: ProtocolWriteInput,
   meta: ProtocolMeta
@@ -160,19 +175,20 @@ function checkUniswapNativeEthPreflight(
   return { ok: true };
 }
 
+// Both the args builder and the ethValue transform pass need the action the
+// step is executing. Resolved here once so the two paths cannot drift into
+// different lookup rules.
+function findProtocolAction(meta: ProtocolMeta): ProtocolAction | undefined {
+  return getProtocol(meta.protocolSlug)?.actions.find(
+    (a) => a.function === meta.functionName && a.contract === meta.contractKey
+  );
+}
+
 function buildFunctionArgs(
   input: ProtocolWriteInput,
   meta: ProtocolMeta
 ): string | undefined {
-  const protocol = getProtocol(meta.protocolSlug);
-  if (!protocol) {
-    return undefined;
-  }
-
-  const protocolAction = protocol.actions.find(
-    (a) => a.function === meta.functionName && a.contract === meta.contractKey
-  );
-
+  const protocolAction = findProtocolAction(meta);
   if (!protocolAction || protocolAction.inputs.length === 0) {
     return undefined;
   }
@@ -195,6 +211,70 @@ function buildFunctionArgs(
 
   const args = transformed.map((t) => t.value);
   return JSON.stringify(args);
+}
+
+type EthValueTransformResult =
+  | { ok: true; value: unknown }
+  | { ok: false; error: string };
+
+// The ETH Value field is a virtual input resolved on its own path, so the
+// per-input transform pass inside buildFunctionArgs never sees it. A
+// transform registered under the input name "ethValue" is applied here,
+// before resolveEthValue, so the converted value reaches both consumers:
+// the core write and the org daily-value cap. The documented unit of the
+// field stays ether; a registered transform converts into it.
+//
+// This fails closed on an unresolvable action, and that is the point. The
+// lookup runs against `meta`, which resolve-protocol-meta.ts casts out of
+// an unvalidated JSON.parse of the node's stored `_protocolMeta`, so a
+// contractKey or functionName that no longer matches a registered action
+// resolves to nothing. Passing the value through in that case would hand
+// resolveEthValue a raw wei integer that parseEther reads as ether -
+// 10^18 times the intended amount. The daily-value cap normally refuses
+// such a number, but value-ledger.ts returns run() uncapped when a
+// reservation is already held or the organizationId is absent, so on
+// those paths it would reach the wallet and fail only on balance. There
+// is no safe default here: without the action we cannot know whether the
+// field needs converting, so we refuse rather than guess.
+function applyEthValueTransform(
+  rawEthValue: unknown,
+  meta: ProtocolMeta
+): EthValueTransformResult {
+  if (typeof rawEthValue !== "string" || rawEthValue.trim() === "") {
+    return { ok: true, value: rawEthValue };
+  }
+  const protocolAction = findProtocolAction(meta);
+  if (!protocolAction) {
+    // Logged as well as returned: this turns a previously-succeeding
+    // execution into a hard failure for a zero-argument payable action
+    // whose _protocolMeta has drifted, and without a log the affected
+    // nodes are only findable when a user reports one.
+    logUserError(
+      ErrorCategory.CONFIGURATION,
+      `[Protocol Write] Refused a payable value: no action matches function '${meta.functionName}' on contract '${meta.contractKey}' in protocol '${meta.protocolSlug}'`,
+      undefined,
+      {
+        plugin_name: "protocol",
+        action_name: "protocol-write",
+        protocol_slug: meta.protocolSlug,
+        function_name: meta.functionName,
+        contract_key: meta.contractKey,
+      }
+    );
+    return {
+      ok: false,
+      error: `Refusing to send a payable value: no action matches function "${meta.functionName}" on contract "${meta.contractKey}" in protocol "${meta.protocolSlug}", so whether the ETH Value field needs a unit conversion cannot be determined. This usually means the step's stored protocol metadata is stale - re-select the action on this node.`,
+    };
+  }
+  const transform = getEncodeTransform(
+    meta.protocolSlug,
+    protocolAction.slug,
+    "ethValue"
+  );
+  return {
+    ok: true,
+    value: transform ? transform(rawEthValue.trim()) : rawEthValue,
+  };
 }
 
 export async function protocolWriteStep(
@@ -272,8 +352,12 @@ export async function protocolWriteStep(
     const functionArgs = buildFunctionArgs(input, meta);
 
     // 6. Delegate to writeContractCore
+    const transformedEthValue = applyEthValueTransform(input.ethValue, meta);
+    if (!transformedEthValue.ok) {
+      return { success: false, error: transformedEthValue.error };
+    }
     const ethValue = resolveEthValue(
-      input.ethValue,
+      transformedEthValue.value,
       resolvedAbi,
       meta.functionName,
       meta.protocolSlug
