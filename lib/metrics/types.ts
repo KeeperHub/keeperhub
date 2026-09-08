@@ -108,6 +108,12 @@ export const MetricNames = {
   API_STATUS_LATENCY: "api.status.latency_ms",
   PLUGIN_ACTION_DURATION: "plugin.action.duration_ms",
   AI_GENERATION_DURATION: "ai.generation.duration_ms",
+  // Executor pipeline latency (issue #2289): SQS receive -> dispatch handoff,
+  // and the full receive -> terminal lifetime. Split by trigger + dispatch
+  // target so a slow producer, a slow queue, or a slow runner is visible
+  // independently.
+  EXECUTOR_DISPATCH_LATENCY: "executor.dispatch.latency_ms",
+  EXECUTOR_EXECUTION_LATENCY: "executor.execution.latency_ms",
 
   // Traffic metrics
   WORKFLOW_EXECUTIONS_TOTAL: "workflow.executions.total",
@@ -249,6 +255,10 @@ export const LabelKeys = {
   AUTH_RESULT: "auth_result",
   MODE: "mode",
   CLAIM_RESULT: "claim_result",
+  // Latency instrumentation (issue #2289)
+  CORRELATION_ID: "correlation_id",
+  DISPATCH_TARGET: "dispatch_target",
+  STAGE: "stage",
 } as const;
 
 /**
