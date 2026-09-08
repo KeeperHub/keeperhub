@@ -111,12 +111,21 @@ const ENDPOINT_V2_ADDRESSES: Record<string, string> = {
 // OFT Adapter over USDT: approvalRequired() is true, so a send needs an
 // ERC-20 approval first. The four L2 entries are Mint and Burn OFT
 // Adapters (approvalRequired() false), and on each of them token()
-// returns a separate ERC-20 listed in the map below, not the OFT itself.
-// That ERC-20 is not USDT0 everywhere: on 10 and 8453 it is USD₮0
-// proper, while on 137 and 42161 token() returns the chain's older
-// bridged Tether USDT (name "Tether USDt", symbol USDT). Both shapes are
-// legitimate here - approvalRequired() is false on all four regardless -
-// but do not read the map as "USDT0 on every L2".
+// returns the chain's USDT0 deployment listed in the map below, not the
+// OFT itself. On 137 and 42161 that is the legacy bridged-USDT address,
+// rebranded in place: eth_call name() on 2026-09-08 returns "USDT0" on
+// 137 and "USD₮0" on 42161, alongside "USD₮0" on 10 and
+// "Stargate USD₮0 (Bridged)" on 8453. The 137 and 42161 reads are the
+// counter-intuitive ones, so they were taken from several unaffiliated
+// providers rather than one: drpc, 1rpc, Tenderly, publicnode and
+// Arbitrum's own endpoint agree, with no dissent.
+//
+// Two rules follow, both learned the expensive way on this line. Read
+// name() rather than inferring from an address's history: these two are
+// the addresses everyone remembers as bridged USDT. And read it with
+// eth_call rather than an indexed token-metadata API, which serves its
+// own cache and can still return the pre-migration name long after the
+// contract has been rebranded.
 //
 // The two testnet entries are a third-party USDT+ test-token pair wired
 // to each other via peers(). There the OFT is the token, so token()
@@ -308,11 +317,40 @@ const TEST_DATA: ProtocolTestData = {
     // fixture is edited: USDT's approve reverts when it would move a
     // non-zero allowance straight to another non-zero value
     // (`require(!((_value != 0) && (allowed[msg.sender][_spender] != 0)))`).
-    // The fixture is safe because each CI run forks mainnet fresh and the
-    // persistent test wallet has no live USDT allowance to the adapter, so
-    // the write always starts from zero. It is also why the oracle below
-    // asserts nonZero rather than equals: writeExpectations must stay
-    // history-safe on a long-lived fork.
+    // So the fixture depends on the allowance being zero when it runs, and
+    // on it running once per fork.
+    //
+    // Zero at the start, per actor. Tier 1 does not sign at all: it sends
+    // from SIM_WALLET through anvil impersonation, and that account's live
+    // mainnet allowance to the adapter is 0 (eth_call, 2026-09-08). Tier 2
+    // signs with the persistent Turnkey test wallet, whose address lives
+    // in the CI database rather than this repo, so its live allowance is
+    // asserted by the fixture rather than checked here: if that wallet
+    // ever approves USDT to this adapter on real mainnet, every fresh fork
+    // inherits the allowance and this write starts reverting.
+    //
+    // Once per fork. planPhaseFixtures maps one case per action
+    // (lib/test-data/plan.ts), run-fixture.ts fires the webhook once per
+    // case and never re-fires, and the five trigger variants give no test
+    // signal on the webhook path so they are not enumerated (see that
+    // file's header). vitest.config.mts sets no `retry` and the shard
+    // command passes none. A GitHub job re-run starts a new anvil, so it
+    // re-forks rather than replaying against used state; the nightly fork
+    // cache holds anvil's upstream fetches, not local mutations.
+    //
+    // The runner re-fire case is the one worth spelling out, because
+    // `maxRetries = 0` reads like it only governs failures. The executor
+    // re-delivers a step when its completion event is lost, and
+    // @workflow/core's step handler counts `step_started` events and
+    // checks `step.attempt > maxRetries + 1` *before* running the step
+    // body (dist/runtime/step-handler.js:264 in 4.8.5). A re-fire arrives
+    // as attempt 2, trips that guard at 2 > 1, and is failed by event
+    // without calling protocolWriteStep again. So a second approve cannot
+    // be broadcast from one execution.
+    //
+    // The oracle asserts nonZero rather than equals for a different
+    // reason: writeExpectations must stay history-safe on a long-lived
+    // fork.
     writeExpectations: {
       "oft-approve": [
         { read: "oft-check-allowance", expect: { nonZero: true } },

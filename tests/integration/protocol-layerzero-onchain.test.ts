@@ -47,6 +47,7 @@ import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import {
   createRpcUrlResolver,
+  getChainConfig,
   PUBLIC_RPCS,
   parseRpcConfig,
 } from "@/lib/rpc/rpc-config";
@@ -413,4 +414,99 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
     },
     30_000
   );
+});
+
+// The address map exposes seven chains and the tests above only exercise
+// Ethereum, so a wrong entry on any other chain reached a user with
+// nothing between it and them. These two reads per chain are the cheapest
+// thing that can catch it: token() proves the OFT/token pairing in the map
+// is the pairing the deployment reports, and approvalRequired() proves the
+// adapter model the comment above the map claims. Values observed over
+// eth_call on 2026-09-08. Chains resolve through CHAIN_CONFIG rather than
+// retyped keys. itOnchain retries classified RPC infra faults with
+// backoff, which is the whole of the cushion on 8453, 84532 and 11155111:
+// those three declare no publicFallback, so `publicFallback ?? publicDefault`
+// hands executeWithFailover the same URL twice and its failover is a no-op
+// there. Give them a distinct fallback in CHAIN_CONFIG if these ever flake.
+const OTHER_CHAIN_IDS = ["10", "137", "8453", "42161", "11155111", "84532"];
+
+// Both testnet entries are a USDT+ pair where the OFT is its own token;
+// every mainnet L2 entry is a Mint and Burn adapter over a separate ERC-20.
+// Neither shape requires an approval before a send; only chain 1's lock
+// adapter does, and that is asserted in the suite above.
+const APPROVAL_REQUIRED_EXPECTED = false;
+
+describe("LayerZero reference deployments on the other six chains", () => {
+  for (const chainId of OTHER_CHAIN_IDS) {
+    describe(`chain ${chainId}`, () => {
+      let chainManager: RpcProviderManager;
+
+      beforeAll(async () => {
+        const cfg = getChainConfig(Number(chainId));
+        if (!cfg) {
+          throw new Error(
+            `chain ${chainId} is in the LayerZero address map but not in CHAIN_CONFIG, so no RPC can be resolved for it`
+          );
+        }
+        chainManager = await getRpcProviderFromUrls(
+          resolveRpcUrl(cfg.jsonKey, cfg.envKey, cfg.publicDefault, "primary"),
+          resolveRpcUrl(
+            cfg.jsonKey,
+            cfg.fallbackEnvKey,
+            cfg.publicFallback ?? cfg.publicDefault,
+            "fallback"
+          ),
+          Number(chainId),
+          `layerzero-chain-${chainId}`
+        );
+      });
+
+      async function readOnChain(
+        actionSlug: string,
+        toOverride: string
+      ): Promise<ethers.Result> {
+        // oft is a userSpecifiedAddress contract. The override resolves to
+        // the same map entry buildCalldata would have picked, so it is not
+        // what makes the assertion non-circular - comparing a live token()
+        // against the separate oftToken entry is. It is here so a later
+        // change to the address-fallback rules cannot silently retarget
+        // this read.
+        const { to, data, action, contract } = buildCalldata({
+          protocol: layerzeroDef,
+          actionSlug,
+          sampleInputs: {},
+          chainId,
+          toOverride,
+        });
+        const result = await chainManager.executeWithFailover((p) =>
+          p.call({ to, data })
+        );
+        const iface = new ethers.Interface(
+          JSON.parse(contract.abi as string) as ethers.InterfaceAbi
+        );
+        return iface.decodeFunctionResult(action.function, result);
+      }
+
+      itOnchain(
+        "oft-token returns the token this chain's map entry claims",
+        async () => {
+          const oft = layerzeroDef.contracts.oft.addresses[chainId];
+          const expected = layerzeroDef.contracts.oftToken.addresses[chainId];
+          const [token] = await readOnChain("oft-token", oft);
+          expect((token as string).toLowerCase()).toBe(expected.toLowerCase());
+        },
+        30_000
+      );
+
+      itOnchain(
+        "oft-approval-required matches the adapter model in the map comment",
+        async () => {
+          const oft = layerzeroDef.contracts.oft.addresses[chainId];
+          const [required] = await readOnChain("oft-approval-required", oft);
+          expect(required).toBe(APPROVAL_REQUIRED_EXPECTED);
+        },
+        30_000
+      );
+    });
+  }
 });
