@@ -1,10 +1,13 @@
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { validateWorkflowIntegrations } from "../lib/db/integrations";
+import { getMetricsCollector } from "../lib/metrics";
+import { LabelKeys, MetricNames } from "../lib/metrics/types";
 import { buildExecutorInput } from "../lib/workflow/executor/build-executor-input";
 import { executeWorkflow } from "../lib/workflow/executor/executor.workflow";
 import type { WorkflowEdge, WorkflowNode } from "../lib/workflow/store";
 import { loadWorkflowForExecution } from "../lib/workflow/load-for-execution";
 import type { ApiExecuteTriggerType } from "./api-execute";
+import { ExecutionLatency } from "./latency";
 import type { DbSchema } from "./lib/db-helpers";
 import {
   applyExecutionResult,
@@ -25,12 +28,17 @@ export async function executeInProcess(params: {
   triggerType: ApiExecuteTriggerType;
   scheduleId?: string;
   db: PostgresJsDatabase<DbSchema>;
+  /** Latency correlation (issue #2289): the id minted at SQS receive. */
+  correlationId?: string;
 }): Promise<void> {
   const { workflowId, executionId, input, triggerType, scheduleId, db } =
     params;
+  const latency = new ExecutionLatency(params.correlationId);
   const startTime = Date.now();
 
-  console.log("[Executor:InProcess] Starting workflow execution");
+  console.log(
+    `[Executor:InProcess] Starting workflow execution correlationId=${latency.correlationId}`
+  );
   console.log(`[Executor:InProcess] Workflow ID: ${workflowId}`);
   console.log(`[Executor:InProcess] Execution ID: ${executionId}`);
 
@@ -84,6 +92,10 @@ export async function executeInProcess(params: {
     // to "use start()" only applies inside the Next runtime. Tradeoff: there is
     // no checkpoint/resume, so a crash mid-run leaves the row "running" until a
     // sweeper closes it - tracked separately from this dedup work.
+    //
+    // Latency instrumentation (issue #2289): "started" is marked immediately
+    // before the engine runs; "completed" after the terminal status lands.
+    latency.mark("started");
     const result = await executeWorkflow(
       buildExecutorInput(workflow, {
         triggerInput: input,
@@ -92,8 +104,18 @@ export async function executeInProcess(params: {
       })
     );
 
+    latency.mark("completed");
     const duration = Date.now() - startTime;
-    console.log(`[Executor:InProcess] Completed in ${duration}ms`);
+    recordInProcessLatency({
+      latency,
+      workflowId,
+      executionId,
+      triggerType,
+      totalMs: duration,
+    });
+    console.log(
+      `[Executor:InProcess] Completed in ${duration}ms correlationId=${latency.correlationId}`
+    );
 
     // executeWorkflow is the authoritative writer of the terminal status (with
     // reconciliation and richer fields). applyExecutionResult is a guarded
@@ -113,8 +135,11 @@ export async function executeInProcess(params: {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
 
+    // "completed" is not marked on failure: the histogram must only count runs
+    // that reached a terminal state, so a crash/failure is visible as a
+    // missing series rather than a fast fake latency.
     console.error(
-      `[Executor:InProcess] Fatal error after ${duration}ms:`,
+      `[Executor:InProcess] Fatal error after ${duration}ms correlationId=${latency.correlationId}:`,
       errorMessage
     );
 
@@ -133,4 +158,41 @@ export async function executeInProcess(params: {
       );
     }
   }
+}
+
+/**
+ * Latency instrumentation (issue #2289): emit the receive->completed histogram
+ * for an in-process run that reached a terminal state, split by trigger and
+ * target so slow producers vs slow runners are visible independently. The
+ * structured stage log line is emitted here (received/started/completed with
+ * per-stage durations) for the same run.
+ */
+function recordInProcessLatency(params: {
+  latency: ExecutionLatency;
+  workflowId: string;
+  executionId: string;
+  triggerType: string;
+  totalMs: number;
+}): void {
+  const { latency, workflowId, executionId, triggerType, totalMs } = params;
+  const queueToStartMs = latency.stageMs("received", "started");
+  if (queueToStartMs !== undefined) {
+    getMetricsCollector().recordLatency(
+      MetricNames.EXECUTOR_DISPATCH_LATENCY,
+      queueToStartMs,
+      {
+        [LabelKeys.TRIGGER_TYPE]: triggerType,
+        [LabelKeys.DISPATCH_TARGET]: "in-process",
+        [LabelKeys.CORRELATION_ID]: latency.correlationId,
+      }
+    );
+  }
+  getMetricsCollector().recordLatency(MetricNames.EXECUTOR_EXECUTION_LATENCY, totalMs, {
+    [LabelKeys.TRIGGER_TYPE]: triggerType,
+    [LabelKeys.DISPATCH_TARGET]: "in-process",
+    [LabelKeys.CORRELATION_ID]: latency.correlationId,
+  });
+  console.log(
+    latency.summaryLine({ workflowId, executionId, triggerType, dispatchTarget: "in-process" })
+  );
 }
