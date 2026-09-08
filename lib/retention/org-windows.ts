@@ -9,12 +9,23 @@ import {
 import { db } from "@/lib/db";
 import { organization } from "@/lib/db/schema";
 import { organizationSubscriptions } from "@/lib/db/schema-extensions";
-import type { RetentionConfig } from "@/lib/retention/config";
+import { daysBefore, type RetentionConfig } from "@/lib/retention/config";
 
 /** Organizations that share one retention window, in days. */
 export type RetentionWindowGroup = {
   retentionDays: number;
   organizationIds: string[];
+};
+
+/**
+ * How one run should carve up the table: one no-join pass at `floorDays`, and
+ * one per-organization group for every window shorter than that.
+ */
+export type RetentionSchedule = {
+  floorDays: number;
+  groups: RetentionWindowGroup[];
+  /** Every organization's resolved window, for reporting. */
+  windows: Map<string, number>;
 };
 
 /**
@@ -32,7 +43,9 @@ export type RetentionWindowGroup = {
  *
  * Two clamps keep a bad value from deleting live data: the configured floor
  * raises any window below it, and an org with no subscription row falls back to
- * the configured default rather than to zero.
+ * the configured default rather than to zero. On prod that fallback covers most
+ * organizations - 975 of 1409 have no subscription row - and it matches
+ * getOrgPlan, which also reads a missing row as the free plan.
  */
 export async function resolveOrgRetentionWindows(
   config: RetentionConfig
@@ -82,18 +95,31 @@ export function resolveRetentionDays(
 }
 
 /**
- * Collapse the per-org windows into one group per distinct window, dropping
- * every org whose window reaches the global floor. Those are already covered
- * by the floor pass, which needs no join at all, and they are the bulk of the
- * table: skipping them here is what keeps the per-org pass a narrow scan.
+ * Decide which pass owns which organizations.
+ *
+ * The no-join floor pass takes the LONGEST window in use, capped by the
+ * configured ceiling. That matters for cost, not just tidiness: on prod the
+ * organizations on the longest window hold 83% of the table, and the floor pass
+ * is the only one that can reach them with a plain index range on `started_at`
+ * instead of a three-table join. Everything strictly below the floor is grouped
+ * by window and handled per organization.
  */
-export function groupByRetentionWindow(
+export function buildRetentionSchedule(
   windows: Map<string, number>,
   config: RetentionConfig
-): RetentionWindowGroup[] {
+): RetentionSchedule {
+  const longestWindow = Math.max(
+    config.minLogRetentionDays,
+    ...windows.values()
+  );
+  const floorDays = Math.min(
+    config.executionLogFloorRetentionDays,
+    longestWindow
+  );
+
   const byDays = new Map<number, string[]>();
   for (const [organizationId, retentionDays] of windows) {
-    if (retentionDays >= config.executionLogFloorRetentionDays) {
+    if (retentionDays >= floorDays) {
       continue;
     }
     const bucket = byDays.get(retentionDays);
@@ -103,10 +129,44 @@ export function groupByRetentionWindow(
       byDays.set(retentionDays, [organizationId]);
     }
   }
-  return [...byDays.entries()]
+
+  const groups = [...byDays.entries()]
     .map(([retentionDays, organizationIds]) => ({
       retentionDays,
       organizationIds,
     }))
     .sort((a, b) => a.retentionDays - b.retentionDays);
+
+  return { floorDays, groups, windows };
+}
+
+/**
+ * The instant before which this organization's step logs have been removed.
+ *
+ * KEEP-1042 ages step logs out at the plan window while the run row lives far
+ * longer, so a run can legitimately be listed with no steps behind it. Readers
+ * that show step-derived values need this to tell "this run recorded nothing"
+ * from "this run is older than what the plan keeps", which are otherwise the
+ * same empty result.
+ */
+export async function getOrgLogRetentionCutoff(
+  organizationId: string,
+  config: RetentionConfig,
+  now: Date = new Date()
+): Promise<Date> {
+  const rows = await db
+    .select({
+      plan: organizationSubscriptions.plan,
+      tier: organizationSubscriptions.tier,
+      planOverrides: organizationSubscriptions.planOverrides,
+    })
+    .from(organizationSubscriptions)
+    .where(eq(organizationSubscriptions.organizationId, organizationId))
+    .limit(1);
+
+  const days = resolveRetentionDays(
+    rows[0] ?? { plan: null, tier: null, planOverrides: null },
+    config
+  );
+  return daysBefore(now, days);
 }

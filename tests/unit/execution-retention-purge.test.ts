@@ -1,9 +1,9 @@
 /**
  * KEEP-1042: control flow of the retention purge. The drizzle builder and every
  * operator are stubbed, so this asserts what the job DOES -- which passes run,
- * in what order, when it stops, and what a dry run is allowed to touch -- not
- * the SQL it emits. The SQL is exercised against a real database in staging
- * with EXECUTION_RETENTION_DRY_RUN on before the job is enabled for real.
+ * in what order, when it stops, what a dry run is allowed to touch, and that
+ * the watermark only advances on a real drain -- not the SQL it emits. The SQL
+ * is exercised against a real database before the job is enabled for real.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,10 +24,12 @@ vi.mock("drizzle-orm", () => {
     isNotNull: marker("isNotNull"),
     lt: marker("lt"),
     notInArray: marker("notInArray"),
+    sql: marker("sql"),
   };
 });
 
 vi.mock("@/lib/db/schema", () => ({
+  executionRetentionProgress: { id: "progress" },
   organization: { id: "organization.id" },
   workflowExecutionLogs: { id: "logs.id" },
   workflowExecutions: { id: "executions.id" },
@@ -40,7 +42,11 @@ vi.mock("@/lib/db/schema-extensions", () => ({
 vi.mock("@/lib/db/schema-feedback", () => ({ feedback: {} }));
 vi.mock("@/lib/db/schema-payments", () => ({ workflowPayments: {} }));
 vi.mock("@/lib/billing/plans", () => ({
-  getPlanLimits: () => ({ logRetentionDays: 7 }),
+  // Two distinct windows, so the schedule has both a floor pass and a
+  // per-organization group. With one window everything sits at the floor.
+  getPlanLimits: (plan: string) => ({
+    logRetentionDays: plan === "enterprise" ? 365 : 7,
+  }),
   parsePlanName: (value: unknown) => value ?? "free",
   parseTierKey: () => null,
 }));
@@ -49,10 +55,10 @@ vi.mock("@/lib/billing/plans", () => ({
 // load time, which happens before any top-level statement in this file runs.
 const { state, dbStub } = vi.hoisted(() => {
   const hoistedState = {
-    /** Pages returned by successive awaited selects, oldest first. */
-    selectPages: [] as Array<Array<{ id: string }>>,
+    /** Rows returned by successive awaited selects, in call order. */
+    selectPages: [] as unknown[][],
     selectCalls: 0,
-    writes: [] as Array<{ op: "delete" | "update"; table: unknown }>,
+    writes: [] as Array<{ op: string; table: unknown }>,
     /** Predicates handed to every select, in call order. */
     wheres: [] as unknown[],
     transactions: 0,
@@ -77,7 +83,7 @@ const { state, dbStub } = vi.hoisted(() => {
     // stub has to imitate for `await db.select()...` to resolve.
     // biome-ignore lint/suspicious/noThenProperty: the builder under test is awaited directly
     builder.then = (
-      resolve: (rows: Array<{ id: string }>) => unknown,
+      resolve: (rows: unknown[]) => unknown,
       reject?: (error: unknown) => unknown
     ) => {
       try {
@@ -91,9 +97,14 @@ const { state, dbStub } = vi.hoisted(() => {
     return builder;
   }
 
-  function makeWriteBuilder(op: "delete" | "update", table: unknown) {
+  function makeWriteBuilder(op: string, table: unknown) {
     const builder: Record<string, unknown> = {};
     builder.set = () => builder;
+    builder.values = () => builder;
+    builder.onConflictDoUpdate = () => {
+      hoistedState.writes.push({ op, table });
+      return Promise.resolve();
+    };
     builder.where = () => {
       hoistedState.writes.push({ op, table });
       return Promise.resolve();
@@ -105,6 +116,7 @@ const { state, dbStub } = vi.hoisted(() => {
     select: () => makeSelectBuilder(),
     delete: (table: unknown) => makeWriteBuilder("delete", table),
     update: (table: unknown) => makeWriteBuilder("update", table),
+    insert: (table: unknown) => makeWriteBuilder("insert", table),
     transaction: async (callback: (tx: unknown) => Promise<unknown>) => {
       hoistedState.transactions += 1;
       return callback(hoistedDb);
@@ -120,6 +132,17 @@ import { getRetentionConfig } from "@/lib/retention/config";
 import { runRetentionPurge } from "@/lib/retention/purge-executions";
 
 const NOW = new Date("2026-09-07T12:00:00.000Z");
+
+/** Two organizations on two windows, as resolveOrgRetentionWindows sees them. */
+const ORG_ROWS = [
+  { organizationId: "org-free", plan: "free", tier: null, planOverrides: null },
+  {
+    organizationId: "org-ent",
+    plan: "enterprise",
+    tier: null,
+    planOverrides: null,
+  },
+];
 
 function enabledConfig(overrides: Record<string, unknown> = {}) {
   return { ...getRetentionConfig(), enabled: true, ...overrides };
@@ -150,7 +173,7 @@ describe("runRetentionPurge", () => {
   it("touches nothing at all while the switch is off", async () => {
     const result = await runRetentionPurge(getRetentionConfig(), NOW);
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       enabled: false,
       dryRun: false,
       durationMs: 0,
@@ -162,6 +185,8 @@ describe("runRetentionPurge", () => {
   });
 
   it("runs every pass, child rows before parent rows", async () => {
+    state.selectPages = [ORG_ROWS];
+
     const result = await runRetentionPurge(enabledConfig(), NOW);
 
     expect(result.passes.map((pass) => pass.pass)).toEqual([
@@ -171,11 +196,37 @@ describe("runRetentionPurge", () => {
       "logs_soft_deleted",
       "executions_flat_window",
     ]);
-    expect(result.enabled).toBe(true);
+  });
+
+  it("runs the floor pass at the longest window in use, not at the ceiling", async () => {
+    state.selectPages = [ORG_ROWS];
+
+    const result = await runRetentionPurge(enabledConfig(), NOW);
+
+    expect(result.floorDays).toBe(365);
+  });
+
+  it("leaves run rows alone until their own switch is turned on", async () => {
+    state.selectPages = [ORG_ROWS];
+
+    const result = await runRetentionPurge(enabledConfig(), NOW);
+    const executionPass = result.passes.find(
+      (pass) => pass.pass === "executions_flat_window"
+    );
+
+    // Deleting a run row rewrites what a customer was billed, so this pass
+    // ships off and stays off until a durable usage record exists.
+    expect(executionPass).toEqual({
+      pass: "executions_flat_window",
+      rows: 0,
+      budgetExhausted: false,
+      skipped: "disabled",
+    });
+    expect(state.transactions).toBe(0);
   });
 
   it("deletes a page, then stops when the next page is empty", async () => {
-    state.selectPages = [[{ id: "log-1" }, { id: "log-2" }]];
+    state.selectPages = [ORG_ROWS, [{ id: "log-1" }, { id: "log-2" }]];
 
     const result = await runRetentionPurge(enabledConfig(), NOW);
     const floorPass = result.passes.find((pass) => pass.pass === "logs_floor");
@@ -188,8 +239,38 @@ describe("runRetentionPurge", () => {
     expect(state.writes[0]).toEqual({ op: "delete", table: { id: "logs.id" } });
   });
 
+  it("reports the organization count and rows for each window", async () => {
+    // orgs, floor pass, watermarks, then the free group's first page.
+    state.selectPages = [ORG_ROWS, [], [], [{ id: "log-1" }]];
+
+    const result = await runRetentionPurge(enabledConfig(), NOW);
+    const planPass = result.passes.find(
+      (pass) => pass.pass === "logs_plan_window"
+    );
+
+    // A dry run of this is the pre-flight check that every organization
+    // resolved to the window it pays for.
+    expect(planPass?.windows).toEqual([
+      { retentionDays: 7, organizationCount: 1, rows: 1 },
+    ]);
+  });
+
+  it("advances the watermark once an organization has drained", async () => {
+    state.selectPages = [ORG_ROWS, [], [], [{ id: "log-1" }]];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    expect(state.writes).toContainEqual({
+      op: "insert",
+      table: { id: "progress" },
+    });
+  });
+
   it("reports the first eligible page and writes nothing in a dry run", async () => {
-    state.selectPages = [[{ id: "log-1" }, { id: "log-2" }, { id: "log-3" }]];
+    state.selectPages = [
+      ORG_ROWS,
+      [{ id: "log-1" }, { id: "log-2" }, { id: "log-3" }],
+    ];
 
     const result = await runRetentionPurge(
       enabledConfig({ dryRun: true }),
@@ -202,6 +283,8 @@ describe("runRetentionPurge", () => {
       rows: 3,
       budgetExhausted: false,
     });
+    // Including the watermark: a dry run deleted nothing, so it must not claim
+    // an organization has drained.
     expect(state.writes).toEqual([]);
     expect(state.transactions).toBe(0);
   });
@@ -209,7 +292,7 @@ describe("runRetentionPurge", () => {
   it("stops on the runtime budget instead of overlapping the next run", async () => {
     // Endless work: every select returns a full page, so only the budget can
     // end the pass.
-    state.selectPages = new Proxy([] as Array<Array<{ id: string }>>, {
+    state.selectPages = new Proxy([] as unknown[][], {
       get: (_target, prop) =>
         prop === "length" ? Number.MAX_SAFE_INTEGER : [{ id: "log-1" }],
     });
@@ -219,13 +302,13 @@ describe("runRetentionPurge", () => {
       NOW
     );
 
-    expect(result.passes.every((pass) => pass.budgetExhausted)).toBe(true);
+    expect(result.passes.some((pass) => pass.budgetExhausted)).toBe(true);
     expect(state.writes).toEqual([]);
   });
 
   it("nulls output_raw with an UPDATE rather than deleting the row", async () => {
-    // Pass 1 and pass 2 find nothing, pass 3 finds one page.
-    state.selectPages = [[], [], [{ id: "log-9" }]];
+    // orgs, floor, watermarks, free group, then the output_raw page.
+    state.selectPages = [ORG_ROWS, [], [], [], [{ id: "log-9" }]];
 
     const result = await runRetentionPurge(enabledConfig(), NOW);
 
@@ -238,37 +321,15 @@ describe("runRetentionPurge", () => {
     });
   });
 
-  it("skips a run that can still resume in both short-window passes", async () => {
-    // The plan window can be as short as 7 days, and a resumable run's step
-    // logs carry the output_raw the executor reads to pick it back up. The
-    // 400-day floor and flat passes deliberately carry no such guard.
-    state.selectPages = [[], [{ id: "org-a" }], [], [], [], [], []];
-
-    await runRetentionPurge(enabledConfig(), NOW);
-
-    const guards = state.wheres.flatMap((where) =>
-      findMarkers(where, "notInArray")
-    );
-    const statusGuards = guards.filter(
-      (guard) =>
-        Array.isArray(guard.args[1]) &&
-        (guard.args[1] as string[]).includes("running")
-    );
-
-    expect(statusGuards.length).toBeGreaterThanOrEqual(2);
-    expect(statusGuards[0].args[1]).toEqual([
-      "pending",
-      "running",
-      "phantom",
-      "unconfirmed",
-    ]);
-  });
-
   it("retires a run row and its children in one transaction", async () => {
-    // Only the last pass finds anything: four empty pages, then one execution.
-    state.selectPages = [[], [], [], [], [{ id: "exec-1" }]];
+    // Nothing until the last pass: orgs, floor, watermarks, free group,
+    // output_raw, soft-deleted, then one execution.
+    state.selectPages = [ORG_ROWS, [], [], [], [], [], [{ id: "exec-1" }]];
 
-    const result = await runRetentionPurge(enabledConfig(), NOW);
+    const result = await runRetentionPurge(
+      enabledConfig({ executionsEnabled: true }),
+      NOW
+    );
     const executionPass = result.passes.find(
       (pass) => pass.pass === "executions_flat_window"
     );
@@ -276,11 +337,37 @@ describe("runRetentionPurge", () => {
     expect(executionPass?.rows).toBe(1);
     expect(state.transactions).toBe(1);
     // Children first: nothing cascades, so a parent delete with a surviving
-    // child simply fails.
-    expect(state.writes.map((write) => write.table)).toEqual([
-      { id: "logs.id" },
-      {},
-      { id: "executions.id" },
+    // child simply fails. The watermark write from the plan-window pass is not
+    // part of that ordering.
+    expect(
+      state.writes
+        .filter((write) => write.op !== "insert")
+        .map((write) => write.table)
+    ).toEqual([{ id: "logs.id" }, {}, { id: "executions.id" }]);
+  });
+
+  it("skips a run that can still resume in both short-window passes", async () => {
+    // The plan window can be as short as 7 days, and a resumable run's step
+    // logs carry the output_raw the executor reads to pick it back up. The
+    // floor and run-row passes deliberately carry no such guard.
+    state.selectPages = [ORG_ROWS];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    const statusGuards = state.wheres
+      .flatMap((where) => findMarkers(where, "notInArray"))
+      .filter(
+        (guard) =>
+          Array.isArray(guard.args[1]) &&
+          (guard.args[1] as string[]).includes("running")
+      );
+
+    expect(statusGuards.length).toBeGreaterThanOrEqual(2);
+    expect(statusGuards[0].args[1]).toEqual([
+      "pending",
+      "running",
+      "phantom",
+      "unconfirmed",
     ]);
   });
 });

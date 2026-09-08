@@ -22,11 +22,13 @@ const {
   mockRunRetentionPurge,
   mockRecordRows,
   mockRecordRun,
+  mockRecordWindow,
   mockLogSystemError,
 } = vi.hoisted(() => ({
   mockRunRetentionPurge: vi.fn(),
   mockRecordRows: vi.fn(),
   mockRecordRun: vi.fn(),
+  mockRecordWindow: vi.fn(),
   mockLogSystemError: vi.fn(),
 }));
 
@@ -37,6 +39,7 @@ vi.mock("@/lib/retention/purge-executions", () => ({
 vi.mock("@/lib/metrics/collectors/prometheus", () => ({
   recordRetentionRowsPurged: mockRecordRows,
   recordRetentionRun: mockRecordRun,
+  recordRetentionWindow: mockRecordWindow,
 }));
 
 vi.mock("@/lib/logging", () => ({
@@ -56,11 +59,27 @@ function createRequest(): Request {
 function purgeResult(overrides: Record<string, unknown> = {}) {
   return {
     enabled: true,
+    executionsEnabled: false,
     dryRun: false,
     durationMs: 1200,
+    floorDays: 365,
     passes: [
       { pass: "logs_floor", rows: 0, budgetExhausted: false },
-      { pass: "logs_plan_window", rows: 4200, budgetExhausted: false },
+      {
+        pass: "logs_plan_window",
+        rows: 4200,
+        budgetExhausted: false,
+        windows: [
+          { retentionDays: 7, organizationCount: 975, rows: 4000 },
+          { retentionDays: 30, organizationCount: 9, rows: 200 },
+        ],
+      },
+      {
+        pass: "executions_flat_window",
+        rows: 0,
+        budgetExhausted: false,
+        skipped: "disabled",
+      },
     ],
     totalRows: 4200,
     ...overrides,
@@ -109,6 +128,16 @@ describe("/api/internal/retention", () => {
     expect(mockRecordRun).toHaveBeenCalledWith("success");
   });
 
+  it("reports the organizations resolved onto each window", async () => {
+    // This is what makes a run auditable: most organizations have no
+    // subscription row and fall back to the default window, and nothing read
+    // logRetentionDays before this job, so a wrong value could sit unnoticed.
+    await GET(createRequest());
+
+    expect(mockRecordWindow).toHaveBeenCalledWith(7, 975, 4000);
+    expect(mockRecordWindow).toHaveBeenCalledWith(30, 9, 200);
+  });
+
   it("does not move the counters on a dry run, whose rows were never deleted", async () => {
     mockRunRetentionPurge.mockResolvedValue(purgeResult({ dryRun: true }));
 
@@ -116,14 +145,17 @@ describe("/api/internal/retention", () => {
 
     expect(response.status).toBe(200);
     expect(mockRecordRows).not.toHaveBeenCalled();
+    expect(mockRecordWindow).not.toHaveBeenCalled();
     expect(mockRecordRun).not.toHaveBeenCalled();
   });
 
   it("does not move the counters while the job is switched off", async () => {
     mockRunRetentionPurge.mockResolvedValue({
       enabled: false,
+      executionsEnabled: false,
       dryRun: false,
       durationMs: 0,
+      floorDays: 400,
       passes: [],
       totalRows: 0,
     });

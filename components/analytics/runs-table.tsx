@@ -404,12 +404,30 @@ function StepLogRow({ step }: StepLogRowProps): ReactNode {
   );
 }
 
+/**
+ * KEEP-1042: whether this run is old enough that retention has taken its step
+ * logs. The run row itself lives far longer than its steps, so an empty step
+ * list is an expected state for an old run and a real signal for a recent one -
+ * the UI has to tell those apart rather than showing one blank for both.
+ */
+function stepLogsExpired(run: UnifiedRun, cutoff?: string): boolean {
+  if (!cutoff) {
+    return false;
+  }
+  return new Date(run.startedAt).getTime() < new Date(cutoff).getTime();
+}
+
+const STEP_LOGS_EXPIRED_MESSAGE =
+  "Step details for this run are past your plan's log retention window and have been removed.";
+
 function ExpandedStepRows({
   loadingSteps,
+  retentionCutoff,
   run,
   steps,
 }: {
   loadingSteps: boolean;
+  retentionCutoff?: string;
   run: UnifiedRun;
   steps: StepLog[];
 }): ReactNode {
@@ -467,7 +485,11 @@ function ExpandedStepRows({
               </TooltipContent>
             </Tooltip>
           ) : (
-            <span>No step logs available</span>
+            <span>
+              {stepLogsExpired(run, retentionCutoff)
+                ? STEP_LOGS_EXPIRED_MESSAGE
+                : "No step logs available"}
+            </span>
           )}
           {errorMessage ? <CopyErrorButton text={errorMessage} /> : null}
         </div>
@@ -477,14 +499,19 @@ function ExpandedStepRows({
 }
 
 type ExpandableRunRowProps = {
+  retentionCutoff?: string;
   run: UnifiedRun;
 };
 
-function ExpandableRunRow({ run }: ExpandableRunRowProps): ReactNode {
+function ExpandableRunRow({
+  retentionCutoff,
+  run,
+}: ExpandableRunRowProps): ReactNode {
   const chains = useChainDisplay();
   const [expanded, setExpanded] = useState(false);
   const [steps, setSteps] = useState<StepLog[]>([]);
   const [loadingSteps, setLoadingSteps] = useState(false);
+  const stepsExpired = stepLogsExpired(run, retentionCutoff);
 
   const handleToggleExpand = useCallback(async (): Promise<void> => {
     if (expanded) {
@@ -569,19 +596,35 @@ function ExpandableRunRow({ run }: ExpandableRunRowProps): ReactNode {
         </td>
         <td
           className="whitespace-nowrap py-3 pr-3 text-sm text-muted-foreground"
-          title={run.networks.map(chains.name).join(", ")}
+          title={
+            stepsExpired
+              ? STEP_LOGS_EXPIRED_MESSAGE
+              : run.networks.map(chains.name).join(", ")
+          }
         >
-          {formatNetworks(run.networks, chains)}
+          {/* Network and Gas are the two columns read off the step logs, so
+              they are the two that empty out once retention has taken them.
+              An em dash with the reason on hover beats a blank cell that
+              reads as "this run spent nothing". */}
+          {stepsExpired ? "—" : formatNetworks(run.networks, chains)}
         </td>
-        <td className="whitespace-nowrap py-3 pr-3 text-sm text-muted-foreground">
-          {runGasDisplay(run, chains)}
+        <td
+          className="whitespace-nowrap py-3 pr-3 text-sm text-muted-foreground"
+          title={stepsExpired ? STEP_LOGS_EXPIRED_MESSAGE : undefined}
+        >
+          {stepsExpired ? "—" : runGasDisplay(run, chains)}
         </td>
         <td className="whitespace-nowrap py-3 pr-3 text-right text-sm text-muted-foreground">
           {formatTimeAgo(run.startedAt)}
         </td>
       </tr>
       {expanded ? (
-        <ExpandedStepRows loadingSteps={loadingSteps} run={run} steps={steps} />
+        <ExpandedStepRows
+          loadingSteps={loadingSteps}
+          retentionCutoff={retentionCutoff}
+          run={run}
+          steps={steps}
+        />
       ) : null}
     </>
   );
@@ -649,11 +692,13 @@ function Pagination({
 function RunsTableContent({
   loading,
   isEmpty,
+  retentionCutoff,
   runs,
   pageLoading,
 }: {
   loading: boolean;
   isEmpty: boolean;
+  retentionCutoff?: string;
   runs: UnifiedRun[];
   pageLoading: boolean;
 }): ReactNode {
@@ -686,7 +731,11 @@ function RunsTableContent({
         </thead>
         <tbody>
           {runs.map((run) => (
-            <ExpandableRunRow key={run.id} run={run} />
+            <ExpandableRunRow
+              key={run.id}
+              retentionCutoff={retentionCutoff}
+              run={run}
+            />
           ))}
         </tbody>
       </table>
@@ -852,6 +901,7 @@ export function RunsTable(): ReactNode {
               isEmpty={isEmpty}
               loading={loading}
               pageLoading={pageLoading}
+              retentionCutoff={runsData?.stepLogRetentionCutoff}
               runs={runs}
             />
           </CardContent>

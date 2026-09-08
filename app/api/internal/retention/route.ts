@@ -4,6 +4,7 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import {
   recordRetentionRowsPurged,
   recordRetentionRun,
+  recordRetentionWindow,
 } from "@/lib/metrics/collectors/prometheus";
 import { runRetentionPurge } from "@/lib/retention/purge-executions";
 
@@ -14,8 +15,13 @@ export const dynamic = "force-dynamic";
  *
  * KEEP-1042: age out workflow execution data. Deletes step logs at the window
  * the owning org's plan sells, nulls `output_raw` once a run can no longer
- * resume, hard-deletes step logs a user already purged, and retires run rows
- * past a flat, billing-safe window.
+ * resume, and hard-deletes step logs a user already purged. Retiring run rows
+ * is a separate pass behind a switch of its own, off until a durable per-period
+ * usage record exists, because the invoices page recounts that table live.
+ *
+ * The response reports each pass separately and, for the plan-window pass, the
+ * organization count and rows per window. A dry run is therefore usable as the
+ * pre-flight check that every organization resolved to the window it pays for.
  *
  * Called by the `retention` K8s CronJob through deploy/scripts/reaper.sh, which
  * signs the request and fails the job on any non-2xx. Authorized by the same
@@ -39,6 +45,13 @@ export async function GET(request: Request): Promise<NextResponse> {
     if (result.enabled && !result.dryRun) {
       for (const pass of result.passes) {
         recordRetentionRowsPurged(pass.pass, pass.rows);
+        for (const window of pass.windows ?? []) {
+          recordRetentionWindow(
+            window.retentionDays,
+            window.organizationCount,
+            window.rows
+          );
+        }
       }
       recordRetentionRun("success");
     }

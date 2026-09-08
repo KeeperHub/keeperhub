@@ -35,6 +35,8 @@ import {
   sumOrgSolanaValueTodayLamports,
   sumOrgValueTodayWei,
 } from "@/lib/execute/value-ledger";
+import { getRetentionConfig } from "@/lib/retention/config";
+import { getOrgLogRetentionCutoff } from "@/lib/retention/org-windows";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
@@ -228,20 +230,6 @@ function directSearchCondition(term: string): SQL {
 // asking for "runs over 30s" means.
 const directDurationMs = sql`(EXTRACT(EPOCH FROM (${directExecutions.completedAt} - ${directExecutions.createdAt})) * 1000)`;
 
-// Per-step gas, read straight off the denormalised column that migration 0117
-// added. This was COALESCE(column, JSONB extract) while the backfill still had
-// rows to reach; the backfill has since run - gas_used_wei is populated back to
-// 2026-02-24, and eight sample slices spanning the last 31 days found no row
-// whose JSONB carried gas the column did not.
-//
-// The JSONB arm was the entire cost of a gas filter. Reading `output` per row
-// de-TOASTs and re-parses it, which no index can avoid, so filtering by gas
-// walked every step the organization ran in the window: cost 925,055 for the
-// largest organization over 30 days. Off the column it is 4,382 (see
-// scopedGasLogs), because the scan can be driven by a partial index instead.
-const filterStepGasWei = sql`${workflowExecutionLogs.gasUsedWei}`;
-const filterStepSponsored = sql`${workflowExecutionLogs.outputRaw}->>'sponsored' = 'true'`;
-
 /**
  * The chain a step ran on. The denormalised column is only populated on rows
  * the executor wrote after it was added, and on what the backfill has reached,
@@ -292,57 +280,38 @@ function scopedLogs(scope: LogScope): SQL {
 }
 
 /**
- * `scopedLogs` narrowed to the steps that actually recorded gas.
+ * Gas per execution, read off the run row rather than rolled up from its steps.
  *
- * Every reader of the gas dimension only asks about gas-bearing steps, and they
- * are a rounding error on this table: 21,481 of the step-log rows in the 30 days
- * to 2026-09-04 carried gas, against the millions a bare window scan reads. The
- * predicate matches `idx_exec_logs_gas_started_at` (btree(started_at) WHERE
- * gas_used_wei IS NOT NULL), so the planner drives the scan off that index and
- * never touches a step that could not have contributed.
+ * KEEP-1042 made this a correctness question, not just a cost one. Retention
+ * deletes step logs at the window the organization's plan sells while the run
+ * row lives far longer, so a rollup over `workflow_execution_logs` answers "no
+ * gas" for a run whose logs have aged out - and a wallet-paid run then satisfies
+ * the `free` predicate below. Not missing from the list: filed under the wrong
+ * bucket. `workflow_executions.gas_used_wei` is written by the same finalize
+ * that wrote the steps and is never purged, so it keeps answering.
  *
- * `> 0` rather than `IS NOT NULL` because a recorded zero contributes nothing to
- * any of the three categories, and the index still serves it as a filter.
- */
-function scopedGasLogs(scope: LogScope): SQL {
-  return sql`${scopedLogs(scope)} AND ${filterStepGasWei} > 0`;
-}
-
-/**
- * Gas facts per execution, aggregated once over the window.
+ * Measured against the rollup it replaces over 30 days of prod: identical
+ * buckets for all 1,938,753 runs in the window.
  *
- * These were correlated subqueries on workflow_executions.id, so the planner
- * re-ran them - up to four, each decoding JSONB - for every candidate row in
- * the range. Selecting a gas filter over a wide range therefore walked
- * workflow_execution_logs once per execution, which is what pinned prod on
- * 2026-09-02: the listing and its count both paid it and neither ever
- * finished. Uncorrelated, it is evaluated once and hash-semi-joined instead.
- *
- * The lower bound is the only bound, and it is safe in both directions: a step
- * cannot start before the run that owns it, so every log of an execution
- * inside the window has started_at >= the window start; and a step may finish
- * after the window closes, so there is no upper bound to apply.
- *
- * Restricted to gas-bearing steps, which leaves both surviving columns
- * value-identical: SUM ignores the NULL a gas-free step contributes, and
- * `unsponsored_gas_step` already required gas above zero, so the rows dropped
- * could only ever have added false to its BOOL_OR.
- *
- * The old `sponsored_step` column is gone. Every group here now has gas above
- * zero, so `step_gas_wei > 0 OR sponsored_step` reduced to its first arm and the
- * second could not change an answer. What it used to add - a sponsored marker on
- * a step that recorded no gas - is a sponsored transfer that errored before
- * broadcast, which spends nothing and now reads as free. See workflowGasCondition.
+ * Uncorrelated, like the rollup was. These were correlated subqueries on
+ * workflow_executions.id once, and the planner re-ran them for every candidate
+ * row in the range, which is what pinned prod on 2026-09-02.
  */
 function workflowGasTotals(scope: LogScope): SQL {
+  const project = scope.projectId
+    ? sql` AND gas_wf.project_id = ${scope.projectId}`
+    : sql``;
+  const from = scope.rangeStart.toISOString();
+  const to = scope.rangeEnd.toISOString();
   return sql`(
-    SELECT ${workflowExecutionLogs.executionId} AS execution_id,
-           COALESCE(SUM(${filterStepGasWei}), 0) AS step_gas_wei,
-           COALESCE(BOOL_OR(
-             ${workflowExecutionLogs.outputRaw}->>'sponsored' IS DISTINCT FROM 'true'
-           ), false) AS unsponsored_gas_step
-    ${scopedGasLogs(scope)}
-     GROUP BY ${workflowExecutionLogs.executionId}
+    SELECT gas_exec.id AS execution_id,
+           COALESCE(CAST(gas_exec.gas_used_wei AS NUMERIC), 0) AS step_gas_wei
+      FROM ${workflowExecutions} AS gas_exec
+      JOIN ${workflows} AS gas_wf ON gas_wf.id = gas_exec.workflow_id
+     WHERE gas_wf.organization_id = ${scope.organizationId}
+       AND gas_exec.started_at >= ${from}
+       AND gas_exec.started_at < ${to}
+       AND gas_exec.gas_used_wei IS NOT NULL${project}
   )`;
 }
 
@@ -370,54 +339,43 @@ function workflowLedgerTotals(scope: LogScope): SQL {
 /**
  * One predicate per gas category. Sponsored is "gas credit covered a leg";
  * wallet is "the run burned more than credit covered", which is what makes a
- * part-sponsored run answer to both. Free is the complement of the two, so a
- * run with no step rows at all - absent from the aggregate rather than present
- * with a zero - still reads as free.
+ * part-sponsored run answer to both. Free is the complement of the two.
+ *
+ * Both sources here - the run row's own `gas_used_wei` and the gas-credit
+ * ledger - outlive the step logs, so the answer does not change when retention
+ * removes a run's steps. The step-log marker this used to read for `sponsored`
+ * is gone: `gas_credit_usage` records the same sponsorship and is never purged,
+ * and on 30 days of prod the two agreed on every run.
  */
 function workflowGasCondition(value: GasSpend, scope: LogScope): SQL {
+  const ledger = workflowLedgerTotals(scope);
   if (value === "sponsored") {
-    // Only the marker decides this one, so it reads output_raw directly rather
-    // than building the gas rollup the other two branches need. Scoped to
-    // gas-bearing steps for the same reason free is: a sponsored step that
-    // recorded no gas never reached the chain, and letting it answer here while
-    // free also claims it would put one run in two mutually exclusive buckets.
-    return sql`(
-      ${workflowExecutions.id} IN (
-        SELECT ${workflowExecutionLogs.executionId}
-        ${scopedGasLogs(scope)}
-           AND ${filterStepSponsored}
-      )
-      OR ${workflowExecutions.id} IN (
-        SELECT s.execution_id FROM ${workflowLedgerTotals(scope)} AS s
-         WHERE s.sponsored_gas_wei > 0
-      )
+    return sql`${workflowExecutions.id} IN (
+      SELECT s.execution_id FROM ${ledger} AS s
+       WHERE s.sponsored_gas_wei > 0
     )`;
   }
   const totals = workflowGasTotals(scope);
   if (value === "wallet") {
-    // Both signals have to agree there is an unsponsored share: a step that
-    // burned gas without the sponsored marker, and a total the ledger did not
-    // fully cover. Either alone misfiles a run that only one of the two
-    // recorded.
+    // What the run burned, minus what credit covered. A fully sponsored run
+    // nets to zero and drops out; a part-sponsored one stays, which is why it
+    // answers to both this and `sponsored`.
     return sql`${workflowExecutions.id} IN (
       SELECT g.execution_id
         FROM ${totals} AS g
-        LEFT JOIN ${workflowLedgerTotals(scope)} AS s ON s.execution_id = g.execution_id
-       WHERE g.unsponsored_gas_step
-         AND g.step_gas_wei > COALESCE(s.sponsored_gas_wei, 0)
+        LEFT JOIN ${ledger} AS s ON s.execution_id = g.execution_id
+       WHERE g.step_gas_wei > COALESCE(s.sponsored_gas_wei, 0)
     )`;
   }
-  // `step_gas_wei > 0` is already true of every group the rollup returns, so it
-  // reads as intent rather than as a filter: free is "no step of this run put
-  // gas on a chain", and the ledger arm below covers a run whose sponsorship was
-  // only ever recorded as a credit charge.
+  // Free is "this run put no gas on a chain and drew no credit". The ledger arm
+  // covers a run whose sponsorship was only ever recorded as a credit charge.
   return sql`(
     ${workflowExecutions.id} NOT IN (
       SELECT g.execution_id FROM ${totals} AS g
        WHERE g.step_gas_wei > 0
     )
     AND ${workflowExecutions.id} NOT IN (
-      SELECT s.execution_id FROM ${workflowLedgerTotals(scope)} AS s
+      SELECT s.execution_id FROM ${ledger} AS s
        WHERE s.sponsored_gas_wei > 0
     )
   )`;
@@ -1296,6 +1254,14 @@ export async function getUnifiedRuns(
   total: number;
   page: number;
   pageSize: number;
+  /**
+   * KEEP-1042: the instant before which this organization's step logs have been
+   * removed. Run rows outlive their steps, so the table can legitimately list a
+   * run whose Gas and Network cells have nothing behind them and whose expanded
+   * view has no steps. Without this the UI cannot tell that from a run that
+   * never recorded any, and shows the same blank for both.
+   */
+  stepLogRetentionCutoff: string;
 }> {
   const {
     cursor,
@@ -1317,37 +1283,41 @@ export async function getUnifiedRuns(
   // the merged, sorted result set.
   const fetchLimit = cursor ? pageLimit + 1 : offset + pageLimit + 1;
 
-  // Fire run fetches and count queries in parallel
-  const [workflowRuns, directRuns, total] = await Promise.all([
-    wanted.workflow
-      ? fetchWorkflowRuns(
-          organizationId,
-          rangeStart,
-          rangeEnd,
-          filters,
-          cursor,
-          fetchLimit,
-          projectId
-        )
-      : ([] as UnifiedRun[]),
-    wanted.direct
-      ? fetchDirectRuns(
-          organizationId,
-          rangeStart,
-          rangeEnd,
-          filters,
-          cursor,
-          fetchLimit
-        )
-      : ([] as UnifiedRun[]),
-    getUnifiedRunsTotal(
-      organizationId,
-      rangeStart,
-      rangeEnd,
-      filters,
-      projectId
-    ),
-  ]);
+  // Fire run fetches and count queries in parallel. The retention cutoff joins
+  // them rather than running on its own: it is a single indexed row read, and
+  // serialising it would add a round trip to every page of the runs table.
+  const [workflowRuns, directRuns, total, stepLogRetentionCutoff] =
+    await Promise.all([
+      wanted.workflow
+        ? fetchWorkflowRuns(
+            organizationId,
+            rangeStart,
+            rangeEnd,
+            filters,
+            cursor,
+            fetchLimit,
+            projectId
+          )
+        : ([] as UnifiedRun[]),
+      wanted.direct
+        ? fetchDirectRuns(
+            organizationId,
+            rangeStart,
+            rangeEnd,
+            filters,
+            cursor,
+            fetchLimit
+          )
+        : ([] as UnifiedRun[]),
+      getUnifiedRunsTotal(
+        organizationId,
+        rangeStart,
+        rangeEnd,
+        filters,
+        projectId
+      ),
+      getOrgLogRetentionCutoff(organizationId, getRetentionConfig()),
+    ]);
 
   // Merge both sources, sort by time, then apply offset for the requested page
   const allRuns = [...workflowRuns, ...directRuns].sort(
@@ -1360,7 +1330,14 @@ export async function getUnifiedRuns(
   const pagedRuns = sliced.slice(0, pageLimit);
   const nextCursor = hasMore ? (pagedRuns.at(-1)?.startedAt ?? null) : null;
 
-  return { runs: pagedRuns, nextCursor, total, page, pageSize: pageLimit };
+  return {
+    runs: pagedRuns,
+    nextCursor,
+    total,
+    page,
+    pageSize: pageLimit,
+    stepLogRetentionCutoff: stepLogRetentionCutoff.toISOString(),
+  };
 }
 
 async function fetchWorkflowRuns(

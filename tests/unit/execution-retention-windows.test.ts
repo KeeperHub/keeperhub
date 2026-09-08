@@ -1,8 +1,8 @@
 /**
  * KEEP-1042: the rules that decide how long execution data lives. Pure
- * functions only -- config parsing, the per-organization window, and the
- * grouping that keeps the per-org pass a narrow scan. The database side is
- * covered by tests/integration/retention-route.test.ts.
+ * functions only -- config parsing and its clamps, the per-organization window,
+ * and the schedule that decides which pass owns which organizations. The
+ * database side is covered by tests/integration/retention-route.test.ts.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,16 +12,16 @@ vi.mock("@/lib/db", () => ({ db: {} }));
 
 import { daysBefore, getRetentionConfig } from "@/lib/retention/config";
 import {
-  groupByRetentionWindow,
+  buildRetentionSchedule,
   resolveRetentionDays,
 } from "@/lib/retention/org-windows";
 
 const RETENTION_ENV_KEYS = [
   "EXECUTION_RETENTION_ENABLED",
+  "EXECUTION_RETENTION_EXECUTIONS_ENABLED",
   "EXECUTION_RETENTION_DRY_RUN",
   "EXECUTION_RETENTION_DEFAULT_DAYS",
   "EXECUTION_RETENTION_MIN_DAYS",
-  "EXECUTION_RETENTION_LOOKBACK_DAYS",
   "EXECUTION_LOG_FLOOR_RETENTION_DAYS",
   "EXECUTION_LOG_OUTPUT_RAW_RETENTION_DAYS",
   "EXECUTION_RETENTION_DAYS",
@@ -37,18 +37,18 @@ afterEach(() => {
 });
 
 describe("getRetentionConfig", () => {
-  it("is off by default, so deploying the job changes nothing", () => {
-    expect(getRetentionConfig().enabled).toBe(false);
+  it("is off by default, and run-row deletion has a second switch of its own", () => {
+    const config = getRetentionConfig();
+
+    expect(config.enabled).toBe(false);
+    expect(config.executionsEnabled).toBe(false);
   });
 
   it("carries the documented defaults", () => {
-    const config = getRetentionConfig();
-
-    expect(config).toMatchObject({
+    expect(getRetentionConfig()).toMatchObject({
       dryRun: false,
       defaultLogRetentionDays: 7,
       minLogRetentionDays: 7,
-      lookbackDays: 7,
       executionLogFloorRetentionDays: 400,
       outputRawRetentionDays: 7,
       executionRetentionDays: 400,
@@ -60,10 +60,10 @@ describe("getRetentionConfig", () => {
 
   it("reads every window from the environment", () => {
     process.env.EXECUTION_RETENTION_ENABLED = "true";
+    process.env.EXECUTION_RETENTION_EXECUTIONS_ENABLED = "true";
     process.env.EXECUTION_RETENTION_DRY_RUN = "true";
     process.env.EXECUTION_RETENTION_MIN_DAYS = "3";
     process.env.EXECUTION_RETENTION_DEFAULT_DAYS = "14";
-    process.env.EXECUTION_RETENTION_LOOKBACK_DAYS = "2";
     process.env.EXECUTION_LOG_FLOOR_RETENTION_DAYS = "180";
     process.env.EXECUTION_LOG_OUTPUT_RAW_RETENTION_DAYS = "5";
     process.env.EXECUTION_RETENTION_DAYS = "500";
@@ -73,10 +73,10 @@ describe("getRetentionConfig", () => {
 
     expect(getRetentionConfig()).toEqual({
       enabled: true,
+      executionsEnabled: true,
       dryRun: true,
       defaultLogRetentionDays: 14,
       minLogRetentionDays: 3,
-      lookbackDays: 2,
       executionLogFloorRetentionDays: 180,
       outputRawRetentionDays: 5,
       executionRetentionDays: 500,
@@ -99,19 +99,39 @@ describe("getRetentionConfig", () => {
   it.each(["0", "-5", "not-a-number", ""])(
     "falls back to the default rather than to 0 for %o",
     (value) => {
-      process.env.EXECUTION_RETENTION_DAYS = value;
+      process.env.EXECUTION_RETENTION_SOFT_DELETE_GRACE_DAYS = value;
 
       // A 0 window would mean "delete everything", which is the one outcome a
       // typo must never produce.
-      expect(getRetentionConfig().executionRetentionDays).toBe(400);
+      expect(getRetentionConfig().softDeleteGraceDays).toBe(30);
     }
   );
 
-  it("raises the default window to the floor when the floor is higher", () => {
+  it.each([
+    ["EXECUTION_RETENTION_DEFAULT_DAYS", "defaultLogRetentionDays"],
+    ["EXECUTION_LOG_FLOOR_RETENTION_DAYS", "executionLogFloorRetentionDays"],
+    ["EXECUTION_LOG_OUTPUT_RAW_RETENTION_DAYS", "outputRawRetentionDays"],
+  ] as const)("raises %s to the configured floor", (envKey, field) => {
     process.env.EXECUTION_RETENTION_MIN_DAYS = "30";
-    process.env.EXECUTION_RETENTION_DEFAULT_DAYS = "7";
+    process.env[envKey] = "1";
 
-    expect(getRetentionConfig().defaultLogRetentionDays).toBe(30);
+    expect(getRetentionConfig()[field]).toBe(30);
+  });
+
+  it("will not let the run-row window be shortened below its hard floor", () => {
+    // Everything that reads workflow_executions for billing has no date floor
+    // of its own, so a short value here moves live quotas and rewrites past
+    // invoices in a single run. The variable can lengthen the window only; the
+    // way to stop the pass is its switch.
+    process.env.EXECUTION_RETENTION_DAYS = "30";
+
+    expect(getRetentionConfig().executionRetentionDays).toBe(400);
+  });
+
+  it("still lets the run-row window be lengthened", () => {
+    process.env.EXECUTION_RETENTION_DAYS = "800";
+
+    expect(getRetentionConfig().executionRetentionDays).toBe(800);
   });
 });
 
@@ -138,6 +158,9 @@ describe("resolveRetentionDays", () => {
   });
 
   it("uses the default for an organization with no subscription row", () => {
+    // 975 of 1409 prod organizations are in this state, so the fallback is the
+    // common case rather than the edge one. It matches getOrgPlan, which also
+    // reads a missing row as the free plan.
     expect(
       resolveRetentionDays(
         { plan: null, tier: null, planOverrides: null },
@@ -191,45 +214,73 @@ describe("resolveRetentionDays", () => {
   });
 });
 
-describe("groupByRetentionWindow", () => {
+describe("buildRetentionSchedule", () => {
   const config = getRetentionConfig();
 
-  it("collapses organizations that share a window and orders shortest first", () => {
-    const groups = groupByRetentionWindow(
+  it("gives the no-join pass the longest window in use", () => {
+    // Not the configured ceiling: the organizations on the longest window hold
+    // most of the table, and the floor pass is the only one that can reach them
+    // without a three-table join.
+    const schedule = buildRetentionSchedule(
       new Map([
-        ["org-a", 7],
-        ["org-b", 30],
-        ["org-c", 7],
+        ["free-org", 7],
+        ["pro-org", 30],
+        ["enterprise-org", 365],
       ]),
       config
     );
 
-    expect(groups).toEqual([
+    expect(schedule.floorDays).toBe(365);
+    expect(schedule.groups).toEqual([
+      { retentionDays: 7, organizationIds: ["free-org"] },
+      { retentionDays: 30, organizationIds: ["pro-org"] },
+    ]);
+  });
+
+  it("collapses organizations that share a window and orders shortest first", () => {
+    const schedule = buildRetentionSchedule(
+      new Map([
+        ["org-a", 7],
+        ["org-b", 30],
+        ["org-c", 7],
+        ["org-long", 365],
+      ]),
+      config
+    );
+
+    expect(schedule.groups).toEqual([
       { retentionDays: 7, organizationIds: ["org-a", "org-c"] },
       { retentionDays: 30, organizationIds: ["org-b"] },
     ]);
   });
 
-  it("drops organizations already covered by the floor pass", () => {
-    // Enterprise at 365 days is under the 400-day floor, so it still needs the
-    // join; an org whose override reaches the floor does not.
-    const groups = groupByRetentionWindow(
+  it("caps the floor at the configured ceiling and drops what reaches it", () => {
+    // An override asking for more than the ceiling does not get it: the ceiling
+    // is the absolute limit, and the floor pass enforces it.
+    const schedule = buildRetentionSchedule(
       new Map([
-        ["enterprise-org", 365],
-        ["floor-org", config.executionLogFloorRetentionDays],
-        ["above-floor-org", config.executionLogFloorRetentionDays + 100],
+        ["org-a", 30],
+        ["override-org", 730],
       ]),
       config
     );
 
-    expect(groups).toEqual([
-      { retentionDays: 365, organizationIds: ["enterprise-org"] },
+    expect(schedule.floorDays).toBe(config.executionLogFloorRetentionDays);
+    expect(schedule.groups).toEqual([
+      { retentionDays: 30, organizationIds: ["org-a"] },
     ]);
   });
 
-  it("returns nothing when every organization is at the floor", () => {
-    expect(groupByRetentionWindow(new Map([["org-a", 400]]), config)).toEqual(
-      []
+  it("leaves no per-organization work when every window is the same", () => {
+    const schedule = buildRetentionSchedule(
+      new Map([
+        ["org-a", 7],
+        ["org-b", 7],
+      ]),
+      config
     );
+
+    expect(schedule.floorDays).toBe(7);
+    expect(schedule.groups).toEqual([]);
   });
 });

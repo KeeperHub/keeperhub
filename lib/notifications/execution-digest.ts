@@ -235,7 +235,13 @@ export async function getOrgExecutionDigest(
       : ([] as SkippedWorkflow[]);
 
   // Sponsored-tx count is only meaningful (and only queried) when gas
-  // sponsorship is enabled. Sponsored step runs stamp output_raw.sponsored.
+  // sponsorship is enabled. Sponsored step runs stamp the marker on both output
+  // and output_raw, and this reads `output` deliberately. KEEP-1042 nulls
+  // `output_raw` once a run can no longer resume, which is well inside a monthly
+  // window, so counting off it would report roughly the last week of the month
+  // and print it as the month's total. `sponsored` is not a redacted key
+  // (lib/utils/redact.ts), so the two carry the same value and `output` is never
+  // stripped.
   let sponsoredTransactionCount: number | undefined;
   if (isGasSponsorshipEnabled()) {
     const [sponsoredRow] = await db
@@ -249,7 +255,7 @@ export async function getOrgExecutionDigest(
       .where(
         and(
           windowFilter,
-          sql`${workflowExecutionLogs.outputRaw}->>'sponsored' = 'true'`
+          sql`${workflowExecutionLogs.output}->>'sponsored' = 'true'`
         )
       );
     sponsoredTransactionCount = Number(sponsoredRow?.value) || 0;

@@ -1265,6 +1265,38 @@ export function recordRetentionRun(result: "success" | "failure"): void {
   }
 }
 
+// How many organizations the job resolved onto each retention window. This is
+// the check that the window an organization gets is the window it pays for:
+// most organizations have no subscription row and fall back to the default, and
+// until this job nothing ever read `logRetentionDays`, so a wrong or missing
+// plan value cost nothing and could be sitting there unnoticed. Bounded
+// cardinality -- one series per distinct window, four today.
+const retentionWindowOrganizations = getOrCreateGauge(
+  apiRegistry,
+  "keeperhub_execution_retention_window_organizations",
+  "Organizations resolved onto each step-log retention window, by window length in days",
+  ["retention_days"]
+);
+
+const retentionWindowRows = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_execution_retention_window_rows_total",
+  "Step-log rows purged by the plan-window pass, by window length in days",
+  ["retention_days"]
+);
+
+export function recordRetentionWindow(
+  retentionDays: number,
+  organizationCount: number,
+  rows: number
+): void {
+  const label = { retention_days: String(retentionDays) };
+  retentionWindowOrganizations.set(label, organizationCount);
+  if (rows > 0) {
+    retentionWindowRows.inc(label, rows);
+  }
+}
+
 const slowQueries = getOrCreateCounter(
   apiRegistry,
   "keeperhub_db_query_slow_total",

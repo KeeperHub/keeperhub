@@ -43,6 +43,14 @@ app:
     EXECUTION_RETENTION_ENABLED:
       type: kv
       value: "true"
+    # Second switch, for run rows only. Every billing count reads
+    # workflow_executions by started_at with no floor and the invoices page
+    # recounts it per period on every load, so deleting a run row rewrites what
+    # a customer was billed. Stays "false" until a durable per-period usage
+    # record exists.
+    EXECUTION_RETENTION_EXECUTIONS_ENABLED:
+      type: kv
+      value: "false"
     # Report what each pass would touch and delete nothing. Staging ships
     # enabled-but-dry so the CronJob and the queries are exercised; flip to
     # "false" once the reported counts look right.
@@ -62,11 +70,6 @@ app:
     # output_raw is the executor's resume input, so it is only dropped once a run
     # can no longer be picked up. The redacted `output` the UI shows is untouched.
     EXECUTION_LOG_OUTPUT_RAW_RETENTION_DAYS:
-      type: kv
-      value: "7"
-    # How far back before each cutoff a run looks. Covers a missed run; a longer
-    # outage is caught by the floor pass above.
-    EXECUTION_RETENTION_LOOKBACK_DAYS:
       type: kv
       value: "7"
     EXECUTION_RETENTION_BATCH_SIZE:
