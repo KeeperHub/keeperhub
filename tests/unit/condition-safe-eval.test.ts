@@ -15,11 +15,24 @@ describe("safeEvaluateCondition - semantics", () => {
       expect(safeEvaluateCondition("__v0 === 5", { __v0: 6 })).toBe(false);
     });
 
-    it("distinguishes loose == from strict === across types", () => {
+    it("distinguishes loose == from strict === outside numbers", () => {
+      // Both operators read a numeric pair by magnitude, so "0" and 0 are the
+      // same value to either one. That is deliberate: the visual builder emits
+      // a typed number bare and template resolution hands the other side over
+      // as a string, so a rule an author builds is usually exactly this pair,
+      // and === answering false to it made "equals" unusable in the UI.
       expect(safeEvaluateCondition('"0" == 0', {})).toBe(true);
-      expect(safeEvaluateCondition('"0" === 0', {})).toBe(false);
+      expect(safeEvaluateCondition('"0" === 0', {})).toBe(true);
       expect(safeEvaluateCondition('"0" != 0', {})).toBe(false);
-      expect(safeEvaluateCondition('"0" !== 0', {})).toBe(true);
+      expect(safeEvaluateCondition('"0" !== 0', {})).toBe(false);
+
+      // What still separates them is every pair that is not two numbers.
+      expect(safeEvaluateCondition('"" == 0', {})).toBe(true);
+      expect(safeEvaluateCondition('"" === 0', {})).toBe(false);
+      expect(safeEvaluateCondition("__v0 == 1", { __v0: true })).toBe(true);
+      expect(safeEvaluateCondition("__v0 === 1", { __v0: true })).toBe(false);
+      expect(safeEvaluateCondition("null == undefined", {})).toBe(true);
+      expect(safeEvaluateCondition("null === undefined", {})).toBe(false);
     });
 
     it("evaluates relational operators", () => {
@@ -260,20 +273,120 @@ describe("safeEvaluateCondition - semantics", () => {
       expect(gt("9", null)).toBe(true);
       expect(lt("9", true)).toBe(false);
       expect(lt("0", true)).toBe(true);
-      // Not a safe integer, so it is not converted here; JavaScript already
-      // orders a Number against a BigInt exactly.
+      // A number is a decimal too, so these two are compared by magnitude
+      // here rather than left to the operator. The first pair would otherwise
+      // put the string through ToNumber, which is where precision goes.
       expect(lt("9", 9.5)).toBe(true);
       expect(lt(BigInt(10), 10.5)).toBe(true);
+      expect(gt("9007199254740993", 9_007_199_254_740_992)).toBe(true);
     });
 
-    it("leaves equality and non-numeric strings alone", () => {
+    it("leaves a pair that is not two decimals alone", () => {
       const addr = "0xAbC0000000000000000000000000000000000001";
       expect(cmp("===", addr, addr)).toBe(true);
       expect(safeEvaluateCondition('__v0 == "9"', { __v0: "9" })).toBe(true);
       expect(lt("apple", "banana")).toBe(true);
-      // Two points, so not a decimal: semver keeps today's ordering.
+      // Two points, so not a decimal: semver keeps today's ordering. Two
+      // components do match the grammar, though, and are read as decimals.
       expect(lt("1.2.3", "1.10.0")).toBe(false);
+      expect(lt("1.10", "1.9")).toBe(true);
       expect(lt("2026-09-05", "2026-10-01")).toBe(true);
+      // Spelled-out numbers are strings like any other.
+      expect(lt("Infinity", "9")).toBe(false);
+      expect(gt("Infinity", "9")).toBe(true);
+      expect(cmp("===", "NaN", "NaN")).toBe(true);
+      expect(cmp("===", Number.NaN, Number.NaN)).toBe(false);
+    });
+
+    it("orders digit strings either side of the double limit", () => {
+      // 1e18 against 1e18 + 1. ToNumber gives both operands the same double,
+      // which is the comparison the issue was filed for, and neither operand
+      // reaches applyBigIntConversion when the test calls the evaluator
+      // directly. The 16th digit is the one that has to survive.
+      expect(lt("1000000000000000000", "1000000000000000001")).toBe(true);
+      expect(gt("1000000000000000001", "1000000000000000000")).toBe(true);
+      expect(gte("1000000000000000000", "1000000000000000001")).toBe(false);
+      expect(cmp("===", "1000000000000000000", "1000000000000000001")).toBe(
+        false
+      );
+    });
+
+    it("answers exactly one of <, > and === for every numeric pair", () => {
+      // Ordering numeric with equality still textual left all three false at
+      // once for a pair that is equal by magnitude and different as text, so
+      // a Condition branching on <, > and === took no branch at all. These
+      // are the shapes a formatter and an author produce between them.
+      const equalPairs: [unknown, unknown][] = [
+        ["1", "1.0"],
+        ["1000000000000000000", "1000000000000000000.0"],
+        ["007", "7"],
+        ["0.5", "0.50"],
+        ["-0", "0"],
+        ["+1", "1"],
+        ["100", 100],
+        ["1.5", 1.5],
+        [BigInt(9), "9"],
+      ];
+      for (const [a, b] of equalPairs) {
+        // The operands ride along so a failure names the pair that broke.
+        expect([String(a), lt(a, b), gt(a, b), cmp("===", a, b)]).toEqual([
+          String(a),
+          false,
+          false,
+          true,
+        ]);
+        expect(cmp("!==", a, b)).toBe(false);
+        expect(cmp("==", a, b)).toBe(true);
+        expect(cmp("!=", a, b)).toBe(false);
+      }
+
+      // And an unequal pair still answers exactly one, on the other side.
+      const lesser: [unknown, unknown][] = [
+        ["9", "10"],
+        ["1000000000000000000", "1000000000000000001"],
+        ["007", "8"],
+        ["-5", "-3"],
+        ["1.10", "1.9"],
+      ];
+      for (const [a, b] of lesser) {
+        expect([String(a), lt(a, b), gt(a, b), cmp("===", a, b)]).toEqual([
+          String(a),
+          true,
+          false,
+          false,
+        ]);
+      }
+    });
+
+    it("stops converting past a length no chain value reaches", () => {
+      // A uint256 is 78 digits and the same value formatted with 18 decimals
+      // is 97 characters, so the cap is far above anything a read produces.
+      const uint256Max = "1".repeat(78);
+      expect(lt(uint256Max, `9${uint256Max.slice(1)}`)).toBe(true);
+      expect(lt("9".repeat(256), `1${"0".repeat(256)}`)).toBe(true);
+
+      // Past it the pair keeps code-unit ordering rather than paying a BigInt
+      // parse that grows with the square of the length: measured on this
+      // file, two 1,000,000-digit operands cost 2,644 ms a comparison without
+      // the cap and 0.01 ms with it. Code-unit ordering is still a total
+      // order, so all three answers stay available to an author.
+      const nines = "9".repeat(300);
+      const larger = `1${"0".repeat(300)}`;
+      expect(lt(nines, larger)).toBe(false);
+      expect(gt(nines, larger)).toBe(true);
+      expect(cmp("===", nines, larger)).toBe(false);
+    });
+
+    it("leaves a missing or absent operand where it was", () => {
+      // undefined is not a decimal, so both sides keep the answer they have
+      // always had. Against itself that is equality; against a string it is
+      // ToNumber and NaN, which is false in every direction. That predates
+      // this change and is plain JavaScript, not something decimals reach.
+      expect(cmp("===", undefined, undefined)).toBe(true);
+      expect(cmp("!==", undefined, undefined)).toBe(false);
+      expect(lt(undefined, "9")).toBe(false);
+      expect(gt(undefined, "9")).toBe(false);
+      expect(cmp("===", undefined, "9")).toBe(false);
     });
   });
 });

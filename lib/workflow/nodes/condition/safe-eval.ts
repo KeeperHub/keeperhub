@@ -578,20 +578,55 @@ function splitDecimal(literal: string): DecimalOperand {
 }
 
 /**
- * The operand as a decimal, or undefined when it is not one. A string has to
- * match the grammar above. A number has to be a safe integer, that being the
- * range whose decimal form is exact; anything else is left to the relational
- * operator, where JavaScript already orders numbers and BigInts exactly.
+ * Digits past this many on one side are refused rather than converted, and the
+ * pair falls back to the comparison it had before this file converted
+ * anything. A uint256 is 78 digits, and that same value formatted with 18
+ * decimals is 97 characters, so no on-chain read comes near the cap.
+ *
+ * It exists because parsing a decimal string into a BigInt grows with the
+ * square of its length. Measured on this file, a comparison of two
+ * 1,000,000-digit operands costs 2,644 ms with the cap lifted and 0.01 ms with
+ * it in place. Whether a node output that long can reach a Condition is not
+ * something I traced, so the cap is a bound on the cost rather than a fix for
+ * a path known to be reachable.
+ */
+const MAX_OPERAND_DIGITS = 256;
+
+/** A sign and a point are the only non-digits the grammar admits. */
+const withinDigitCap = (literal: string): boolean =>
+  literal.length <= MAX_OPERAND_DIGITS + 2;
+
+/**
+ * The operand as a decimal, or undefined when it is not one. Strings, BigInts
+ * and numbers all arrive: the builder emits a value the author typed as a bare
+ * number when it looks like one (`NUMERIC_LITERAL_RE` in ./expression.ts), and
+ * template resolution hands the other side over as a string, so a rule built
+ * in the UI is usually a string against a number.
+ *
+ * A value is read through its own decimal form, and has to match the grammar
+ * above to count. For a number that means `toString`, which is the shortest
+ * decimal that reads back as the same double: exact for the safe integers,
+ * and past them the value the literal actually became, so
+ * `"9007199254740993" > 9007199254740992` answers true here where handing the
+ * pair to the operator would put the string through ToNumber and lose it.
+ * Ordering by that form is the same ordering as by value, since two different
+ * doubles never print the same.
+ *
+ * NaN, the infinities and any number large or small enough to print in
+ * exponent form are not decimals, and neither is a string outside the grammar.
+ * Those are handed back untouched.
  */
 function asDecimalOperand(value: unknown): DecimalOperand | undefined {
   if (typeof value === "string") {
-    return NUMERIC_OPERAND_RE.test(value) ? splitDecimal(value) : undefined;
+    return withinDigitCap(value) && NUMERIC_OPERAND_RE.test(value)
+      ? splitDecimal(value)
+      : undefined;
   }
-  if (typeof value === "bigint") {
-    return splitDecimal(value.toString());
-  }
-  if (typeof value === "number" && Number.isSafeInteger(value)) {
-    return splitDecimal(value.toString());
+  if (typeof value === "bigint" || typeof value === "number") {
+    const literal = value.toString();
+    return withinDigitCap(literal) && NUMERIC_OPERAND_RE.test(literal)
+      ? splitDecimal(literal)
+      : undefined;
   }
   return undefined;
 }
@@ -626,8 +661,26 @@ function compareDecimals(left: DecimalOperand, right: DecimalOperand): number {
  * engine coerce the other is what reverses a digit string against a hex string,
  * and what makes `<`, `>` and `===` false all at once against a word. A pair
  * this does not recognise is handed back untouched.
+ *
+ * The equality operators ask this too. Ordering on its own is not enough: for
+ * a pair that is numerically equal and textually different, a formatter's
+ * "1000000000000000000.0" against the integer an author typed, numeric `<` and
+ * `>` beside a textual `===` leave all three false and the Condition takes no
+ * branch at all. Which is the same hole as the one above, in the place the
+ * author is most likely to meet it. One notion of equality for all of them is
+ * what closes it, so ordering and equality both come through here.
  */
 function compareRelational(left: unknown, right: unknown): number | undefined {
+  // Both operands are BigInts whenever applyBigIntConversion has fired, which
+  // is every wei-scale comparison the executor reaches. Order them as they
+  // are, rather than printing and reparsing each one on every comparison.
+  if (typeof left === "bigint" && typeof right === "bigint") {
+    if (left < right) {
+      return -1;
+    }
+    return left > right ? 1 : 0;
+  }
+
   const a = asDecimalOperand(left);
   if (a === undefined) {
     return undefined;
@@ -647,16 +700,27 @@ function applyBinary(
   const { left, right } = resolveMissingOperands(operator, rawLeft, rawRight);
 
   switch (operator) {
-    case "===":
-      return left === right;
-    case "!==":
-      return left !== right;
-    case "==":
+    // A pair compareRelational recognises is equal when it compares equal, so
+    // that these four and the four below agree on when two operands are the
+    // same value. Everything else keeps the equality it has always had.
+    case "===": {
+      const order = compareRelational(left, right);
+      return order === undefined ? left === right : order === 0;
+    }
+    case "!==": {
+      const order = compareRelational(left, right);
+      return order === undefined ? left !== right : order !== 0;
+    }
+    case "==": {
+      const order = compareRelational(left, right);
       // biome-ignore lint/suspicious/noDoubleEquals: condition grammar intentionally supports loose == for cross-type comparisons
-      return left == right;
-    case "!=":
+      return order === undefined ? left == right : order === 0;
+    }
+    case "!=": {
+      const order = compareRelational(left, right);
       // biome-ignore lint/suspicious/noDoubleEquals: condition grammar intentionally supports loose != for cross-type comparisons
-      return left != right;
+      return order === undefined ? left != right : order !== 0;
+    }
     case ">": {
       const order = compareRelational(left, right);
       return order === undefined
