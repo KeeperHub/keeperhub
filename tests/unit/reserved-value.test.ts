@@ -16,7 +16,10 @@ describe("parseNativeValueEther", () => {
   });
 
   it("treats undefined/null/empty as 0", () => {
-    expect(parseNativeValueEther(undefined)).toEqual({ ok: true, valueWei: "0" });
+    expect(parseNativeValueEther(undefined)).toEqual({
+      ok: true,
+      valueWei: "0",
+    });
     expect(parseNativeValueEther(null)).toEqual({ ok: true, valueWei: "0" });
     expect(parseNativeValueEther("")).toEqual({ ok: true, valueWei: "0" });
   });
