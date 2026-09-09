@@ -60,7 +60,7 @@ describe("authorizeMetricsScrape", () => {
     expect(authenticateInternalService).not.toHaveBeenCalled();
   });
 
-  it("allows a signed internal caller arriving through the edge", async () => {
+  it("allows a signed internal caller reaching the pod directly", async () => {
     authenticateInternalService.mockResolvedValue({
       authenticated: true,
       caller: "mcp",
@@ -69,7 +69,6 @@ describe("authorizeMetricsScrape", () => {
 
     const result = await authorizeMetricsScrape(
       request({
-        "cf-connecting-ip": "1.2.3.4",
         "x-kh-caller": "mcp",
         "x-kh-timestamp": "1700000000",
         "x-kh-signature": "a".repeat(64),
@@ -78,6 +77,42 @@ describe("authorizeMetricsScrape", () => {
 
     expect(result).toEqual({ allowed: true });
   });
+
+  // A caller header alone used to reach the verifier and come back 401, which
+  // told a prober the route was real. From the edge the answer is 404 whether
+  // the request is signed, half-signed or unsigned.
+  it.each([
+    ["unsigned", {}],
+    ["a caller header only", { "x-kh-caller": "mcp" }],
+    [
+      "a full valid signature",
+      {
+        "x-kh-caller": "mcp",
+        "x-kh-timestamp": "1700000000",
+        "x-kh-signature": "a".repeat(64),
+      },
+    ],
+  ])(
+    "refuses an edge request with %s, without reaching the verifier",
+    async (_label, headers) => {
+      authenticateInternalService.mockResolvedValue({
+        authenticated: true,
+        caller: "mcp",
+        scheme: "hmac",
+      });
+
+      const result = await authorizeMetricsScrape(
+        request({ "cf-connecting-ip": "1.2.3.4", ...headers })
+      );
+
+      expect(result).toEqual({
+        allowed: false,
+        status: 404,
+        message: "Not Found",
+      });
+      expect(authenticateInternalService).not.toHaveBeenCalled();
+    }
+  );
 
   it("propagates the verifier's rejection for a bad signature", async () => {
     authenticateInternalService.mockResolvedValue({

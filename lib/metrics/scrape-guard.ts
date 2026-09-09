@@ -15,9 +15,10 @@
  * Presence of any of them therefore means the request came through
  * app.keeperhub.com and is refused.
  *
- * A caller that must read metrics from outside the cluster signs the request
- * with the internal service HMAC (lib/internal-service-auth.ts), the same
- * scheme the /api/internal routes use.
+ * The edge check runs first and is unconditional. An in-cluster caller may
+ * additionally sign with the internal service HMAC (lib/internal-service-auth.ts),
+ * the same scheme the /api/internal routes use, but a signature does not buy a
+ * way in from the public host: the answer there is 404 either way.
  */
 
 import "server-only";
@@ -59,18 +60,19 @@ function hasAnyHeader(request: Request, names: readonly string[]): boolean {
 export async function authorizeMetricsScrape(
   request: Request
 ): Promise<MetricsScrapeGuardResult> {
+  // Edge check first. Answering a signed request differently from an unsigned
+  // one would let a prober confirm the route exists by sending a caller header
+  // and reading 401 instead of 404, so nothing from the edge gets that far.
+  if (hasAnyHeader(request, EDGE_FORWARDED_HEADERS)) {
+    return { allowed: false, status: 404, message: "Not Found" };
+  }
+
   if (hasAnyHeader(request, HMAC_HEADERS)) {
     const auth = await authenticateInternalService(request);
     if (auth.authenticated) {
       return { allowed: true };
     }
     return { allowed: false, status: auth.status, message: auth.error };
-  }
-
-  if (hasAnyHeader(request, EDGE_FORWARDED_HEADERS)) {
-    // Indistinguishable from a route that does not exist, so the endpoint does
-    // not confirm itself to an unauthenticated prober.
-    return { allowed: false, status: 404, message: "Not Found" };
   }
 
   return { allowed: true };
