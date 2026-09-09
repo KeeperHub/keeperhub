@@ -307,7 +307,11 @@ const BLOCK_UNAVAILABLE_PATTERNS = [
 ];
 
 /** Throttling, in the vocabularies observed across drpc, ankr and publicnode. */
-const RATE_LIMIT_PATTERN = /rate.?limit|too many|429|quota|throttl/;
+// `429` is word-anchored: unanchored it matched any message containing those
+// three digits, and this pattern is tested before every other body branch. It
+// would have claimed `block 4291234 not found` and `missing trie node 429a1f0b`
+// as throttling — exactly the messages BLOCK_UNAVAILABLE_PATTERNS exists for.
+const RATE_LIMIT_PATTERN = /rate.?limit|too many|\b429\b|quota|throttl/;
 
 /**
  * Failures that say "ask again" rather than "no". A survey that records a
@@ -327,10 +331,12 @@ export function shouldRetry(status, message) {
   const msg = String(message ?? "");
   return (
     RETRYABLE.has(status) ||
-    // Belt and braces for the ordering fix in classify(): if a throttle still
-    // reaches here labelled tier-gated — an HTTP 403 with no JSON body, say,
-    // where there is no message for the classifier to read — the rate-limit
-    // wording still earns it the retry a real gate would not get.
+    // Unreachable on today's ordering, and kept deliberately. Hoisting
+    // RATE_LIMIT_PATTERN above TIER_PATTERNS in classify() means a message that
+    // would match here was already classified `rate-limited`, and the only other
+    // route to `tier-gated` is the bodiless 401/403, where `message` is
+    // undefined. This is a guard against a future reordering, not a live path;
+    // delete it if the ordering is ever made explicit some other way.
     (status === "tier-gated" && RATE_LIMIT_PATTERN.test(msg.toLowerCase())) ||
     (status === "error" && RETRYABLE_MESSAGE.test(msg))
   );
@@ -463,6 +469,38 @@ async function rpcWithRetry(url, method, params, timeoutMs) {
   return { r: again, status: classify(again), retried: true };
 }
 
+/**
+ * Pick the block to trace from what the walk-back actually observed.
+ *
+ * Separated from the loop because the loop does I/O and this does not, and
+ * because the defect it exists to prevent has now been found twice in the same
+ * place: the scan can end holding a block number it never read. `blockNum` is
+ * decremented after every empty read, so on both non-"found transactions" exits
+ * it points one block past anything verified — a failure mid-walk, and an
+ * exhausted BLOCK_SCAN_LIMIT. Tracing that block records capability findings
+ * for a block nobody fetched.
+ *
+ * @param {{block:number, status:string, txCount:number}[]} reads
+ *        one entry per iteration, in order, including the failing one.
+ * @returns {{sampledBlock:number|null, txCount:number, blocksRead:number,
+ *            readable:boolean, scanEndedOn:string|null}}
+ */
+export function selectSample(reads) {
+  const ok = reads.filter((r) => r.status === "ok");
+  const last = ok.at(-1) ?? null;
+  const ended = reads.at(-1)?.status ?? null;
+  return {
+    sampledBlock: last ? last.block : null,
+    txCount: last ? last.txCount : 0,
+    // Blocks that came back ok - not the loop index, and not the request count:
+    // rpcWithRetry may make two requests for one block, and a failed fetch is
+    // not a read at all.
+    blocksRead: ok.length,
+    readable: ok.length > 0,
+    scanEndedOn: ended === "ok" ? null : ended,
+  };
+}
+
 async function probeEvmEndpoint(label, url, expectedChainId) {
   const record = { label, url, methods: {} };
 
@@ -509,26 +547,23 @@ async function probeEvmEndpoint(label, url, expectedChainId) {
   // real block against an empty one — the size column is scope item 3, so the
   // sample has to be comparable or the whole table misleads.
   let blockNum = Number(head.body.result) - BLOCKS_BEHIND_HEAD;
-  let txCount = 0;
-  let blocksRead = 0;
-  let readable = false;
-  let lastScanStatus = null;
+  const reads = [];
   for (let i = 0; i < BLOCK_SCAN_LIMIT; i++) {
     await sleep(REQUEST_DELAY_MS);
-    blocksRead++;
     const { r: b, status } = await rpcWithRetry(
       url,
       "eth_getBlockByNumber",
       [`0x${blockNum.toString(16)}`, false],
       LIVENESS_TIMEOUT_MS,
     );
-    lastScanStatus = status;
-    if (status !== "ok") break;
-    readable = true;
-    txCount = b.body.result?.transactions?.length ?? 0;
-    if (txCount > 0) break;
+    const txs = status === "ok" ? (b.body.result?.transactions?.length ?? 0) : 0;
+    reads.push({ block: blockNum, status, txCount: txs });
+    if (status !== "ok" || txs > 0) break;
     blockNum -= 1;
   }
+  const { sampledBlock, txCount, blocksRead, readable, scanEndedOn } =
+    selectSample(reads);
+  const lastScanStatus = scanEndedOn ?? "ok";
 
   // Nothing was verified, so nothing is recorded. Previously the loop could
   // break on the very first unreadable block — a 429 on the block fetch, say —
@@ -541,16 +576,19 @@ async function probeEvmEndpoint(label, url, expectedChainId) {
     return record;
   }
 
-  const blockHex = `0x${blockNum.toString(16)}`;
+  const blockHex = `0x${sampledBlock.toString(16)}`;
   record.block = {
-    number: blockNum,
+    number: sampledBlock,
     hex: blockHex,
     txCount,
-    // Requests actually made, not the loop index. `scanned + 1` read 13 when
-    // the loop exhausted a 12-block limit, and 1 when it broke on the first
-    // unreadable block despite zero successful reads.
+    // Blocks that came back `ok`, not the loop index and not the request count:
+    // a retried fetch is one block, and a failed one is none.
     blocksRead,
     empty: txCount === 0,
+    // A scan that ended on a failure still produced a usable sample from an
+    // earlier iteration, but the reader has to be able to tell that the walk
+    // stopped early rather than finding what it wanted.
+    ...(scanEndedOn ? { scanEndedOn } : {}),
   };
   if (txCount === 0) {
     process.stderr.write(
@@ -699,7 +737,8 @@ function buildReport(results, meta) {
   L.push("| `block-unavailable` | the endpoint could not serve the sampled block (behind the tip, or pruned state). A statement about the block, not the method — retried once |");
   L.push("| `too-large` | answered, but exceeded the response cap |");
   L.push("| `error` | answered with something we decline to bucket — see verbatim below |");
-  L.push("| `n/a` | endpoint skipped; the reason is in parentheses |");
+  L.push("| `—` | endpoint skipped; the reason is in parentheses |");
+  L.push("| `n/a` | the method does not apply to this endpoint — non-EVM chains carry no trace surface |");
   L.push("");
   L.push(summarise(results));
   L.push("");

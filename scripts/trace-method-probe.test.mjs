@@ -19,6 +19,7 @@ import { readFile } from "node:fs/promises";
 import {
   classify,
   parseChainConfig,
+  selectSample,
   shouldRetry,
 } from "./trace-method-probe.mjs";
 
@@ -388,5 +389,108 @@ test("non-JSON 200 body is still read for a verdict before giving up", () => {
   assert.equal(
     classify({ httpStatus: 200, parseError: "Unexpected token <", rawSnippet: "<html>502</html>" }),
     "invalid-response",
+  );
+});
+
+// --- selectSample -------------------------------------------------------
+// The defect these pin was found twice in the same walk-back loop: the scan can
+// finish holding a block number it never read, because blockNum is decremented
+// after every empty read. Both non-"found transactions" exits reach that state.
+
+test("selectSample traces the last block that was actually read, not the next candidate", () => {
+  // B reads ok and is empty -> the loop steps to B-1; B-1 is throttled.
+  // The block to trace is B. Tracing B-1 would record capability findings for
+  // a block no request ever returned.
+  const out = selectSample([
+    { block: 100, status: "ok", txCount: 0 },
+    { block: 99, status: "rate-limited", txCount: 0 },
+  ]);
+  assert.equal(out.sampledBlock, 100);
+  assert.equal(out.readable, true);
+  assert.equal(out.txCount, 0);
+});
+
+test("selectSample reports the status the scan ended on when it ended on a failure", () => {
+  const out = selectSample([
+    { block: 100, status: "ok", txCount: 0 },
+    { block: 99, status: "rate-limited", txCount: 0 },
+  ]);
+  assert.equal(out.scanEndedOn, "rate-limited");
+});
+
+test("selectSample leaves scanEndedOn null when the walk ended cleanly", () => {
+  const out = selectSample([{ block: 100, status: "ok", txCount: 7 }]);
+  assert.equal(out.scanEndedOn, null);
+  assert.equal(out.sampledBlock, 100);
+  assert.equal(out.txCount, 7);
+});
+
+test("selectSample does not trace past the end of an exhausted scan", () => {
+  // Every read succeeded and every block was empty. The loop leaves blockNum at
+  // 97; the last block actually read is 98.
+  const out = selectSample([
+    { block: 100, status: "ok", txCount: 0 },
+    { block: 99, status: "ok", txCount: 0 },
+    { block: 98, status: "ok", txCount: 0 },
+  ]);
+  assert.equal(out.sampledBlock, 98);
+  assert.equal(out.blocksRead, 3);
+});
+
+test("selectSample counts blocks read, never attempts", () => {
+  // A failed fetch is not a read. blocksRead used to be incremented before the
+  // call, so a first-iteration failure recorded 1 despite zero successful reads.
+  const out = selectSample([{ block: 100, status: "rate-limited", txCount: 0 }]);
+  assert.equal(out.blocksRead, 0);
+  assert.equal(out.readable, false);
+  assert.equal(out.sampledBlock, null);
+});
+
+// --- the 429 digit coincidence -----------------------------------------
+// RATE_LIMIT_PATTERN is tested before every other body branch, so an unanchored
+// `429` pre-empted the bucket that block-unavailable messages belong in.
+
+test("a block number containing 429 is block-unavailable, not throttling", () => {
+  assert.equal(
+    classify({
+      httpStatus: 200,
+      body: { error: { code: -32000, message: "block 4291234 not found" } },
+    }),
+    "block-unavailable",
+  );
+});
+
+test("a trie-node hash starting 429 is not throttling", () => {
+  assert.notEqual(
+    classify({
+      httpStatus: 200,
+      body: {
+        error: {
+          code: -32000,
+          message: "missing trie node 429a1f0b (path ) state is not available",
+        },
+      },
+    }),
+    "rate-limited",
+  );
+});
+
+test("a request id containing 429 is not throttling", () => {
+  assert.notEqual(
+    classify({
+      httpStatus: 200,
+      body: { error: { code: -32000, message: "request id 42917: unauthorized" } },
+    }),
+    "rate-limited",
+  );
+});
+
+test("a real 429 in a message body is still throttling", () => {
+  assert.equal(
+    classify({
+      httpStatus: 200,
+      body: { error: { code: -32000, message: "429 Too Many Requests" } },
+    }),
+    "rate-limited",
   );
 });
