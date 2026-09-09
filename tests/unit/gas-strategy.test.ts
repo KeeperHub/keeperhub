@@ -46,11 +46,8 @@ vi.mock("ethers", () => ({
 // Import after mocks
 import {
   AdaptiveGasStrategy,
-  DEFAULT_RETRY_CONFIG,
-  executeWithRetry,
   getGasStrategy,
   resetGasStrategy,
-  TransactionStuckError,
 } from "@/lib/web3/gas-strategy";
 
 // Helper to create mock provider
@@ -914,40 +911,5 @@ describe("AdaptiveGasStrategy", () => {
 
       expect(config.gasLimit).toBe(BigInt(150_000)); // Exactly 1.5x
     });
-  });
-});
-
-describe("executeWithRetry types and config", () => {
-  it("should have correct default retry config", () => {
-    expect(DEFAULT_RETRY_CONFIG).toEqual({
-      maxAttempts: 3,
-      escalationFactor: 1.5,
-      checkIntervalMs: 5000,
-      stuckThresholdMs: 30_000,
-    });
-  });
-
-  it("should expose TransactionStuckError class", () => {
-    const error = new TransactionStuckError("0x123abc", 3);
-
-    expect(error).toBeInstanceOf(Error);
-    expect(error.name).toBe("TransactionStuckError");
-    expect(error.txHash).toBe("0x123abc");
-    expect(error.attempts).toBe(3);
-    expect(error.message).toContain("stuck after 3 attempt(s)");
-  });
-
-  it("should have proper TransactionStuckError inheritance", () => {
-    const error = new TransactionStuckError("0xabc123", 2);
-
-    expect(error instanceof Error).toBe(true);
-    expect(error.stack).toBeDefined();
-    expect(error.message).toBe(
-      "Transaction 0xabc123 stuck after 2 attempt(s). Consider manual intervention."
-    );
-  });
-
-  it("should export executeWithRetry as a function", () => {
-    expect(typeof executeWithRetry).toBe("function");
   });
 });

@@ -112,6 +112,22 @@ Gauge metrics tracking resource usage and capacity.
 | `workflow.queue.depth` | Pending workflow jobs | - | < 50 | DB |
 | `workflow.concurrent.count` | Concurrent workflow executions | - | gauge | DB |
 
+### Stuck Pending Transactions
+
+Broadcast transactions that never reached a terminal state. Declared directly on the DB registry rather than routed through `MetricNames`, so the Prometheus name is listed in full.
+
+| Metric Name | Description | Labels | Threshold | Source |
+|-------------|-------------|--------|-----------|--------|
+| `keeperhub_web3_pending_transactions_stuck` | Rows in `pending_transactions` still `pending` between 15 minutes and 24 hours after `submitted_at` | `chain_id` | 0 sustained | DB |
+
+The window is bounded at both ends. The 24-hour ceiling is what makes the alert able to recover: `validateAndReconcile` runs only at workflow start, for one wallet and chain, and deliberately leaves a row `pending` whenever a different RPC endpoint answered than the one that supplied the chain nonce. Nothing else resolves such a row, so without a ceiling one orphan from an abandoned wallet would hold the gauge above zero for the lifetime of the table and a `> 0` rule could never clear. The cost is stated rather than hidden: a transaction still genuinely stuck past 24 hours stops being counted, so this answers "is a backlog forming now", not "is anything stuck".
+
+Counted in SQL alone: no RPC call is made to check whether a row sits at the wallet's current chain nonce, so within the window the value includes transactions that have in fact confirmed but whose row the reconciler has not yet updated. It over-counts rather than under-counts, which is the safe direction for an alert. A nonce-accurate version is tracked separately.
+
+Nothing reacts to this gauge automatically. An unreferenced same-nonce fee-escalation implementation was removed from `lib/web3/gas-strategy.ts`, and nothing anywhere in the codebase re-prices a transaction at the same nonce, so a stuck transaction is resolved by a human. The Grafana alert rule lives in the infra repo.
+
+Series are reset on every refresh, so a chain that drains its backlog stops emitting rather than pinning its last non-zero value. A failed query leaves the previous reading in place instead of reporting a misleading 0.
+
 ### Process Memory
 
 Per-pod Node.js memory, emitted from `lib/metrics/instrumentation/process-memory.ts`. These are registered directly on the API-process registry rather than through `setGauge()`, so they appear on `/api/metrics/api` only and have no console-collector equivalent. Prometheus names are listed in full because these gauges are not routed through `MetricNames`.
@@ -418,6 +434,7 @@ The following tables are queried:
 - `api_keys` - API key count
 - `chains` - blockchain network count
 - `organization_wallets` - Active org wallet count
+- `pending_transactions` - Transactions still pending well past submission, by chain
 
 ### Multi-Pod Aggregation (Important)
 
