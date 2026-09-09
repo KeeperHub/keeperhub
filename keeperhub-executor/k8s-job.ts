@@ -101,8 +101,10 @@ export async function createWorkflowJob(params: {
   scheduleId?: string;
   /** Latency correlation (issue #2289): the id minted at SQS receive. */
   correlationId?: string;
+  /** Latency observation anchors (issue #2289): stage timestamps for the pod. */
+  latencyEpochs?: { receivedAt?: number; observedAt?: number };
 }): Promise<V1Job> {
-  const { workflowId, executionId, input, triggerType, scheduleId, correlationId } =
+  const { workflowId, executionId, input, triggerType, scheduleId, correlationId, latencyEpochs } =
     params;
   // Prefix with "keeperhub-" so the runner pod is captured by the Loki
   // security alert rules, which match pod=~".*keeperhub.*" (KEEP-612).
@@ -119,9 +121,18 @@ export async function createWorkflowJob(params: {
     { name: "TRIGGER_TYPE", value: triggerType },
     // Latency correlation (issue #2289): the runner pod inherits the id minted
     // at SQS receive, so its engine-level logs can be joined to the executor's
-    // receive/dispatch stages on one key.
+    // receive/dispatch stages on one key. KH_RECEIVED_AT / KH_OBSERVED_AT let
+    // the pod ship point latency observations back over the metrics ingest
+    // (histogram observations cannot be merged across pods; point samples
+    // can).
     ...(correlationId
       ? [{ name: "KH_CORRELATION_ID", value: correlationId }]
+      : []),
+    ...(latencyEpochs?.receivedAt !== undefined
+      ? [{ name: "KH_RECEIVED_AT", value: String(latencyEpochs.receivedAt) }]
+      : []),
+    ...(latencyEpochs?.observedAt !== undefined
+      ? [{ name: "KH_OBSERVED_AT", value: String(latencyEpochs.observedAt) }]
       : []),
     // With readOnlyRootFilesystem the only writable path is the /tmp emptyDir
     // below. tsx/esbuild and any plugin temp writes resolve through TMPDIR, so

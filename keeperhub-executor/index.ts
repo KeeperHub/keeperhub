@@ -69,7 +69,18 @@ import {
   resolveToSkipped,
 } from "./lib/db-helpers";
 import { InFlightTracker } from "./lib/in-flight";
-import { applyCounterDeltas, isIngestPayload } from "./lib/metrics-shipping";
+import { applyLatencyObservations } from "./lib/metrics-shipping";
+import { registerLatencyObservationApplier } from "./lib/observation-applier";
+import {
+  applyCounterDeltas,
+  isIngestPayload,
+  type LatencyObservation,
+} from "./lib/metrics-shipping";
+import {
+  peekLatency,
+  takeLatency,
+  trackLatency,
+} from "./lib/correlation-map";
 import { recordSkippedSample } from "./lib/terminal-counters";
 import { toJsonSafe } from "./lib/serialize";
 import { executorMessageSchema } from "./message-schema";
@@ -274,6 +285,10 @@ async function dispatchExecution(params: {
           triggerType,
           scheduleId,
           correlationId: latency?.correlationId,
+          latencyEpochs: {
+            receivedAt: latency?.at("received"),
+            observedAt: latency?.at("observed"),
+          },
         });
 
         console.log(
@@ -878,6 +893,11 @@ export async function processMessage(
   }
   latency.mark("received");
 
+  // Latency observations from this run's runner pod arrive asynchronously
+  // over the metrics ingest; keep the timeline reachable by correlation id
+  // until they land (see lib/correlation-map.ts).
+  trackLatency(latency);
+
   // Authenticate + validate the message before it can drive a
   // fund-moving execution. In "warn" mode we record metrics but still process
   // (so shipping this ahead of every producer signing cannot cause an outage);
@@ -1068,8 +1088,20 @@ async function listen(): Promise<void> {
             return;
           }
           const { applied, skipped } = await applyCounterDeltas(body.deltas);
+          // Pod latency observations (issue #2289): fold them into the
+          // originating run's timeline and the central histograms. Never
+          // fails the ingest - a bad observation is skipped, not rejected.
+          let obsApplied = 0;
+          let obsSkipped = 0;
+          if (body.observations && body.observations.length > 0) {
+            const obs = applyLatencyObservations(body.observations);
+            obsApplied = obs.applied;
+            obsSkipped = obs.skipped;
+          }
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ applied, skipped }));
+          res.end(
+            JSON.stringify({ applied, skipped, obsApplied, obsSkipped })
+          );
         } catch (error) {
           console.error("[Executor] Metrics ingest failed:", error);
           res.writeHead(500);
@@ -1083,6 +1115,9 @@ async function listen(): Promise<void> {
     res.end();
   });
 
+  // Latency observations from runner pods arrive on the metrics ingest;
+  // register the applier before the server can receive any.
+  registerLatencyObservationApplier();
   healthServer.listen(CONFIG.healthPort, () => {
     console.log(
       `[Executor] Health check server listening on port ${CONFIG.healthPort}`

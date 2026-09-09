@@ -37,7 +37,7 @@ describe("shipMetricsToExecutor", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("skips posting when there are no deltas", async () => {
+  it("skips posting when there are no deltas and no observations", async () => {
     process.env.METRICS_COLLECTOR = "prometheus";
     process.env.EXECUTOR_METRICS_INGEST_URL = "http://executor:3080";
     collectCounterDeltasMock.mockResolvedValue([]);
@@ -45,6 +45,31 @@ describe("shipMetricsToExecutor", () => {
     await shipMetricsToExecutor();
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("posts when there are no deltas but observations are pending", async () => {
+    process.env.METRICS_COLLECTOR = "prometheus";
+    process.env.EXECUTOR_METRICS_INGEST_URL = "http://executor:3080";
+    collectCounterDeltasMock.mockResolvedValue([]);
+    fetchMock.mockResolvedValue({ ok: true, status: 200, statusText: "OK" });
+
+    await shipMetricsToExecutor([
+      {
+        correlationId: "corr-1",
+        executionId: "exec-1",
+        workflowId: "wf-1",
+        triggerType: "event",
+        dispatchTarget: "k8s-job",
+        stage: "observed-broadcast",
+        durationMs: 4200,
+      },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.deltas).toEqual([]);
+    expect(body.observations).toHaveLength(1);
+    expect(body.observations[0].stage).toBe("observed-broadcast");
   });
 
   it("posts to /metrics/ingest, stripping a trailing slash from the base URL", async () => {
