@@ -72,13 +72,13 @@ When a workflow does not behave as expected, the Runs panel provides the informa
 3. Verify contract function parameters
 4. Wait for pending transactions to clear
 
-> **Gas preflight failures**: if the error reads `Insufficient ETH balance
-> ... Fund <address> ...`, the gas preflight stopped the transaction before
-> broadcast, so there is no transaction hash to look up. On a
-> sponsorship-eligible network (gas credits remaining, supported network,
-> direct-wallet sender, public mempool) this additionally means sponsorship fell
-> back; otherwise it means the funding address cannot cover gas. Fund the
-> address named in the message and retry
+> **Gas preflight failures**: if the error reads `Insufficient <token> balance
+> ... Fund <address> ...` -- where `<token>` is the chain's native gas token, so
+> the wording differs per network -- the gas preflight stopped the transaction
+> before broadcast, so there is no transaction hash to look up. It means the
+> funding address cannot cover gas. On a network where sponsorship applies it
+> may also mean a sponsored attempt fell back to direct signing, which the run
+> output does not distinguish. Fund the address named in the message and retry
 > (see [Gas Management](/wallet-management/gas)).
 
 ### Slow Execution Times

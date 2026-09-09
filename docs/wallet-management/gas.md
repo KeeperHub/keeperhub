@@ -120,14 +120,19 @@ What the fallback does next depends on the wallet balance:
   ```
 
   Nothing was broadcast at this point, so there is no transaction hash to look
-  up. Fund the address named in the message and retry.
+  up. Fund the address named in the message and retry. The preflight caches the
+  balance and the gas price for about ten seconds, so a retry started right
+  after the funds land can repeat the same error; give it a few seconds.
 
-This message is emitted by every EVM write action. On a sponsorship-eligible
-network it additionally means sponsorship fell back; funding the address fixes
-the run either way. For a write that sends no native value, restoring the
-eligibility conditions above also fixes it without funding. A write that sends
-native value always needs that value in the wallet, because sponsorship covers
-the fee only (see [What sponsorship covers](#what-sponsorship-covers)).
+The preflight runs in the Web3 plugin's EVM write actions and in the protocol
+actions built on them. Actions on chains with their own transaction path, such
+as Tempo, do not run it. Reaching the preflight means the wallet is paying gas
+itself -- either the step was never eligible for sponsorship, or a sponsored
+attempt fell back -- and funding the address fixes the run either way. For a
+write that sends no native value, restoring the eligibility conditions above can
+also fix it without funding. A write that sends native value always needs that
+value in the wallet, because sponsorship covers the fee only (see
+[What sponsorship covers](#what-sponsorship-covers)).
 
 ## FAQ
 
