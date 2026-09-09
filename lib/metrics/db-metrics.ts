@@ -425,10 +425,14 @@ export type StuckPendingTransactionCounts = Array<{
  * direction for an alert. The nonce-accurate version is tracked separately.
  *
  * Served by idx_pending_tx_stuck (drizzle/0152), partial on status='pending'
- * and leading on submitted_at, so both bounds are one range scan. It cannot
- * use idx_pending_tx_status, which leads on wallet_address. The index is not
- * optional: nothing prunes pending_transactions, so without it this becomes a
- * sequential scan that grows with lifetime transaction volume on every scrape.
+ * and leading on submitted_at, so both bounds are one range scan. At current
+ * production volume it would also be served by idx_pending_tx_status - a
+ * bitmap index scan needs no leading-column match, so that index's leading
+ * wallet_address does not disqualify it. idx_pending_tx_stuck exists for the
+ * crossover: nothing prunes pending_transactions, and once the pending set is
+ * large enough that scanning idx_pending_tx_status plus its heap fetches loses
+ * to a sequential scan, this query would otherwise start scaling with lifetime
+ * transaction volume on every scrape.
  *
  * Returns null on query error; the caller leaves the gauge untouched so the
  * last real value stands rather than a misleading 0.

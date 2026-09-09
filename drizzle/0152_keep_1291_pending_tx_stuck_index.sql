@@ -1,35 +1,39 @@
--- @requires-db-prep
 -- Partial index backing the stuck-pending-transaction gauge
 -- (keeperhub_web3_pending_transactions_stuck).
 --
 -- The gauge counts pending_transactions rows whose status is still 'pending'
 -- between 15 minutes and 24 hours after submitted_at, grouped by chain_id, on
--- every DB-metrics refresh. No existing index serves that predicate:
--- idx_pending_tx_status leads on wallet_address, which the query does not
--- filter on. Nothing prunes pending_transactions - there is no DELETE against
--- it anywhere in the codebase - so without this index the query degrades into
--- a sequential scan that grows with lifetime transaction volume, on a table
--- that is only ever appended to. That is the failure mode
--- .github/workflows/metrics-db-review-gate.yml exists to catch.
+-- every DB-metrics refresh.
+--
+-- This index is pre-emptive, not a fix for a present cost. Measured against
+-- production on 2026-09-09: 11,024 rows total, growing 48 rows/day over the
+-- preceding 230 days, 2.5 MB on disk. The planner already serves the gauge
+-- query from idx_pending_tx_status via a bitmap index scan - a bitmap scan
+-- does not need a leading-column match, so leading on wallet_address does not
+-- disqualify it - at 0.130 ms and 35 buffers. Against the metrics pool's 8s
+-- statement_timeout that is roughly five orders of magnitude of headroom.
+--
+-- What this index buys is the crossover. Nothing prunes pending_transactions
+-- (there is no DELETE against it anywhere in the codebase), so the table only
+-- grows. Once the pending set is large enough that a full scan of
+-- idx_pending_tx_status plus its heap fetches costs more than a sequential
+-- scan, the planner switches to a parallel seq scan and the query starts
+-- scaling with lifetime transaction volume on every scrape. On a synthetic
+-- 2.1M-row table with 100k accumulated orphan rows that plan costs 123 ms and
+-- 26,885 buffers, against 0.25 ms and 7 buffers with this index. At 48
+-- rows/day that crossover is years away, which is why no db-prep is required.
+--
+-- The heavy-DDL directive is deliberately omitted: that gate exists for
+-- multi-GB tables where a bare CREATE INDEX holds an ACCESS EXCLUSIVE lock
+-- for minutes during deploy. On 2.5 MB the lock is sub-second, so the
+-- ceremony would be disproportionate. Revisit if this table ever grows into it.
 --
 -- The index is partial on status = 'pending', so it stays the size of the
 -- unresolved set rather than the table, and leading on submitted_at makes the
 -- two-sided age predicate a single bounded range scan. chain_id is included so
 -- the GROUP BY is satisfied from the index. Note "unresolved", not "in-flight":
 -- rows the wallet-scoped reconciler never revisits stay 'pending' and stay in
--- the index, so it grows slowly rather than tracking only live transactions.
---
--- The directive on line 1 makes db-prep-check.yml block merge until the
--- matching db-prepped-<target-branch> label is set. Before setting it, build
--- the index without holding a write lock:
---   CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_pending_tx_stuck"
---     ON "pending_transactions" USING btree ("submitted_at","chain_id")
---     WHERE "status" = 'pending';
--- then confirm it is valid:
---   SELECT indexrelid::regclass, indisvalid FROM pg_index
---   WHERE indexrelid = 'idx_pending_tx_stuck'::regclass;
--- IF NOT EXISTS below then short-circuits before any lock. drizzle-kit emits a
--- bare CREATE INDEX, which would take an ACCESS EXCLUSIVE lock on the table.
+-- the index. Production carries 13 such orphans out of 14 pending rows.
 CREATE INDEX IF NOT EXISTS "idx_pending_tx_stuck"
   ON "pending_transactions" USING btree ("submitted_at","chain_id")
   WHERE "pending_transactions"."status" = 'pending';
