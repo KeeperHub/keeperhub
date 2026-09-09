@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import type { PlanName } from "@/lib/billing/plans";
 import { db } from "@/lib/db";
 import { chains, explorerConfigs } from "@/lib/db/schema";
 import { resolveActionFeature } from "@/lib/features/action-egress";
@@ -59,7 +60,17 @@ export type ActionSchema = {
    * catch-all gate (action.external-request) is included, not just the
    * explicit FEATURES registry entries.
    */
-  requiredPlan: string | null;
+  requiredPlan: PlanName | null;
+  /**
+   * True when the gating feature's master switch is on. A feature with
+   * `enabled: false` is treated as gated for every plan (the rollback
+   * switch), so an action can carry a `requiredPlan` and still be
+   * unavailable to an org on that plan until the feature is re-enabled.
+   * Always true when `requiredPlan` is null. Latent today - every feature
+   * is enabled - but it is the half of the gate that `requiredPlan` alone
+   * cannot express.
+   */
+  featureEnabled: boolean;
 };
 
 export type BuildActionSchemasOptions = {
@@ -108,6 +119,27 @@ function mapFieldType(field: ActionConfigFieldBase): string {
   }
 }
 
+/**
+ * The disclosed plan gate for an action: the plan its gating feature requires
+ * (null when ungated) plus whether the feature's master switch is on. Both
+ * halves come from resolveActionFeature so the egress-derived catch-all is
+ * included, and both are static - never the caller's plan - so the schema
+ * stays anonymous and publicly cacheable.
+ */
+function resolveDisclosedGate(actionType: string): {
+  requiredPlan: PlanName | null;
+  featureEnabled: boolean;
+} {
+  const feature = resolveActionFeature(actionType);
+  if (!feature) {
+    return { requiredPlan: null, featureEnabled: true };
+  }
+  return {
+    requiredPlan: feature.requiredPlan,
+    featureEnabled: feature.enabled,
+  };
+}
+
 export function transformPluginAction(
   plugin: IntegrationPlugin,
   action: PluginAction
@@ -135,6 +167,7 @@ export function transformPluginAction(
   }
 
   const outputSchema = synthesizeOutputSchema(action);
+  const gate = resolveDisclosedGate(actionType);
 
   return {
     actionType,
@@ -144,7 +177,8 @@ export function transformPluginAction(
     integration: plugin.type,
     requiresCredentials:
       action.requiresCredentials ?? plugin.requiresCredentials ?? false,
-    requiredPlan: resolveActionFeature(actionType)?.requiredPlan ?? null,
+    requiredPlan: gate.requiredPlan,
+    featureEnabled: gate.featureEnabled,
     requiredFields,
     optionalFields,
     outputFields,
@@ -256,19 +290,20 @@ export async function buildActionSchemasResponse(
 
   const platformCapabilities = derivePlatformCapabilities(allPlugins);
 
-  // Enrich system actions with their plan requirement the same way plugin
-  // actions get it. SYSTEM_ACTIONS is shared with the workflow validator and
-  // the builder UI, so it is not mutated in place - each entry is copied and
-  // the requirement resolved per actionType. System actions with no explicit
-  // feature and no user-destination egress (Condition, For Each, triggers)
-  // resolve to null.
+  // Enrich system actions with their plan gate the same way plugin actions
+  // get it. SYSTEM_ACTIONS is shared with the workflow validator and the
+  // builder UI, so it is not mutated in place - each entry is copied and the
+  // gate resolved. Every system action's map key equals its actionType (the
+  // constant is keyed by the label), so the key resolves the gate with no
+  // cast. System actions with no explicit feature and no user-destination
+  // egress (Condition, For Each, triggers) resolve to null.
   const enrichedSystemActions: Record<string, unknown> = {};
   for (const [key, action] of Object.entries(systemActions)) {
-    const systemAction = action as { actionType: string };
+    const gate = resolveDisclosedGate(key);
     enrichedSystemActions[key] = {
       ...(action as Record<string, unknown>),
-      requiredPlan:
-        resolveActionFeature(systemAction.actionType)?.requiredPlan ?? null,
+      requiredPlan: gate.requiredPlan,
+      featureEnabled: gate.featureEnabled,
     };
   }
 

@@ -2370,6 +2370,7 @@ export function registerMetaTools(
             optionalFields?: Record<string, string>;
             requiresCredentials?: boolean;
             requiredPlan?: string | null;
+            featureEnabled?: boolean;
           }
         >;
 
@@ -2399,6 +2400,7 @@ export function registerMetaTools(
           optionalFields: a.optionalFields,
           requiresCredentials: a.requiresCredentials,
           requiredPlan: a.requiredPlan ?? null,
+          featureEnabled: a.featureEnabled ?? true,
         }));
 
         return {

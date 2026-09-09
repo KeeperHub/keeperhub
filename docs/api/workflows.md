@@ -401,7 +401,8 @@ Returns the complete registry of available workflow actions, triggers, and templ
       "optionalFields": {},
       "outputFields": { "balance": "..." },
       "requiresCredentials": false,
-      "requiredPlan": null
+      "requiredPlan": null,
+      "featureEnabled": true
     },
     "Condition": {
       "actionType": "Condition",
@@ -409,7 +410,9 @@ Returns the complete registry of available workflow actions, triggers, and templ
       "category": "System",
       "requiredFields": { "condition": "string (JS expression)" },
       "optionalFields": { "conditionConfig": "object (visual builder state)" },
-      "sourceHandles": ["true", "false"]
+      "sourceHandles": ["true", "false"],
+      "requiredPlan": null,
+      "featureEnabled": true
     }
   },
   "triggers": {
@@ -440,7 +443,15 @@ Returns the complete registry of available workflow actions, triggers, and templ
 > - **Triggers** are listed under the `triggers` key (not `actions`) and their values map to `config.triggerType` on trigger nodes.
 > - The endpoint self-documents the correct node and edge shapes under the `workflowStructure` and `edgeStructure` keys — use these as the source of truth for programmatic workflow generation.
 
-Every action carries a `requiredPlan` field: the plan an organization must be on to run the action, or `null` when it is not plan-gated. It is the static requirement, not your organization's plan, so this endpoint stays anonymous and publicly cacheable. Check it before building a workflow so a `POST /api/workflows/create` that needs a paid plan does not fail after the fact. To see which plan your organization is on and which features that plan unlocks, `GET /api/features` returns the org's feature snapshot (plan, enabled feature ids, and the full registry); it authenticates with the same `Authorization` header as every other agent route.
+Every action carries a `requiredPlan` field (the plan an organization must be on to run the
+action, or `null` when it is not plan-gated) and a `featureEnabled` field (false only when the
+gating feature has been rolled back for every plan). Both are the static requirement, never
+your organization's plan, so this endpoint stays anonymous and publicly cacheable. Check them
+before building a workflow so a `POST /api/workflows/create` that needs a paid plan does not
+fail after the fact. To see which plan your organization is on and which features that plan
+unlocks, `GET /api/features` returns the org's feature snapshot (plan, enabled feature ids,
+and the full registry); it authenticates with the same `Authorization` header as every other
+agent route.
 
 ## Get Organization Features
 
@@ -460,8 +471,11 @@ Returns the calling organization's feature snapshot so a client can render per-p
     {
       "id": "action.database-query",
       "name": "Database Query action",
+      "description": "Run SQL queries against connected databases inside workflows.",
       "category": "workflow-action",
-      "requiredPlan": "pro"
+      "enabled": true,
+      "requiredPlan": "pro",
+      "actionTypes": ["Database Query"]
     }
   ],
   "billingEnabled": true
