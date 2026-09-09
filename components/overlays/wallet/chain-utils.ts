@@ -4,7 +4,6 @@
 export {
   hidesNativeRow,
   isTempoChain,
-  nativeMirrorsSupportedToken,
 } from "@/lib/wallet/build-withdrawable-assets";
 
 // Chains whose token lineup doesn't mirror Ethereum mainnet's stablecoin set

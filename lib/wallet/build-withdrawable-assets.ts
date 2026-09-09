@@ -64,18 +64,26 @@ function hasPositiveBalance(raw: string): boolean {
   return Number.isFinite(parsed) && parsed > 0;
 }
 
+// At least one of the two address fields must be present -- a row with
+// neither is not a candidate row at all, and should fail to compile rather
+// than silently reading as "not the mirror token" via optional chaining.
+type MirrorCandidateRow = { balance: string } & (
+  | { tokenAddress: string; address?: string }
+  | { tokenAddress?: string; address: string }
+);
+
 /**
- * Shape-agnostic: true when at least one row in a pre-filtered (already
- * scoped to one chain) list is the mirror token itself and carries a funded
- * balance. Callers with a `chainId` field filter first; callers whose rows
- * are already nested under a chain (no `chainId` field of their own) pass
- * them straight through. Matches on address rather than "any row" so a
- * second, unrelated token on the same chain can't suppress the native
- * asset. This is the one place "funded mirror" is decided so the withdraw
- * path and the wallet digest can't drift on what counts as a real row.
+ * True when at least one row in a pre-filtered (already scoped to one
+ * chain) list is the mirror token itself and carries a funded balance.
+ * Callers with a `chainId` field filter first; callers whose rows are
+ * already nested under a chain (no `chainId` field of their own) pass them
+ * straight through. Matches on address rather than "any row" so a second,
+ * unrelated token on the same chain can't suppress the native asset. This
+ * is the one place "funded mirror" is decided so the withdraw path and the
+ * wallet digest can't drift on what counts as a real row.
  */
 export function hasFundedMirrorRow(
-  rows: readonly { tokenAddress?: string; address?: string; balance: string }[],
+  rows: readonly MirrorCandidateRow[],
   mirrorTokenAddress: string
 ): boolean {
   const target = mirrorTokenAddress.toLowerCase();
@@ -99,12 +107,7 @@ export function hasFundedMirrorRow(
  */
 export function nativeMirrorsSupportedToken(
   chainId: number,
-  supportedTokenBalances: readonly {
-    chainId: number;
-    tokenAddress?: string;
-    address?: string;
-    balance: string;
-  }[]
+  supportedTokenBalances: readonly (MirrorCandidateRow & { chainId: number })[]
 ): boolean {
   const mirrorTokenAddress = NATIVE_MIRROR_TOKEN_ADDRESS.get(chainId);
   if (mirrorTokenAddress === undefined) {
@@ -125,12 +128,7 @@ export function nativeMirrorsSupportedToken(
  */
 export function hidesNativeRow(
   chainId: number,
-  supportedTokenBalances: readonly {
-    chainId: number;
-    tokenAddress?: string;
-    address?: string;
-    balance: string;
-  }[]
+  supportedTokenBalances: readonly (MirrorCandidateRow & { chainId: number })[]
 ): boolean {
   return (
     isTempoChain(chainId) ||

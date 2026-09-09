@@ -142,6 +142,15 @@ function positive(raw: string): boolean {
   return Number.isFinite(parsed) && parsed > 0;
 }
 
+// hasFundedMirrorRow requires a row carry one of its two address fields;
+// the raw server payload's ServerToken leaves both optional, so narrow to
+// the rows that actually have one before handing them to it.
+function hasTokenAddress(
+  token: ServerToken
+): token is ServerToken & { tokenAddress: string } {
+  return typeof token.tokenAddress === "string";
+}
+
 /** Every funded holding, before prices are attached. */
 function fundedAssets(
   balances: ServerChainBalance[]
@@ -159,11 +168,14 @@ function fundedAssets(
     // `hidesNativeRow`/`nativeMirrorsSupportedToken`, which expect
     // chainId-tagged rows.
     const mirrorTokenAddress = NATIVE_MIRROR_TOKEN_ADDRESS.get(chain.chainId);
-    const hidesNativeRow =
+    const hidesNativeBalanceRow =
       isTempoChain(chain.chainId) ||
       (mirrorTokenAddress !== undefined &&
-        hasFundedMirrorRow(chain.supportedTokens ?? [], mirrorTokenAddress));
-    if (!hidesNativeRow && positive(chain.nativeBalance)) {
+        hasFundedMirrorRow(
+          (chain.supportedTokens ?? []).filter(hasTokenAddress),
+          mirrorTokenAddress
+        ));
+    if (!hidesNativeBalanceRow && positive(chain.nativeBalance)) {
       assets.push({
         balance: chain.nativeBalance,
         chainId: chain.chainId,
