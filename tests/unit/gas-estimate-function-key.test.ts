@@ -102,6 +102,38 @@ describe("gas estimate function keys", () => {
     expect(estimateGas).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["a human-readable ABI", ["function send((uint256 n) p)"]],
+    ["a mixed ABI", ["function send((uint256 n) p)", scalar]],
+    [
+      "a function beside a string ethers cannot parse",
+      ["not a fragment at all", "function send((uint256 n) p)"],
+    ],
+  ])("estimates with %s", async (_label, abi) => {
+    const warn = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const response = await estimate(abi, "send(tuple)");
+    expect(response.status).toBe(200);
+    expect(estimateGas).toHaveBeenCalledTimes(1);
+    expect(estimateGas).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: new ethers.Interface([tuple]).encodeFunctionData(
+          "send((uint256))",
+          [[7]]
+        ),
+      })
+    );
+    warn.mockRestore();
+  });
+
+  it("reports a function missing from a human-readable ABI as not found", async () => {
+    const response = await estimate(["function send((uint256 n) p)"], "burn");
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: expect.stringContaining("not found in ABI"),
+    });
+    expect(estimateGas).not.toHaveBeenCalled();
+  });
+
   it("rejects ambiguous bare names without estimating an arbitrary overload", async () => {
     const response = await estimate([tuple, scalar], "send", [7]);
     expect(response.status).toBe(400);

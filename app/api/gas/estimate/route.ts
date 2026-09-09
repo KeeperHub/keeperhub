@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { NextResponse } from "next/server";
+import { normalizeAbiEntries } from "@/lib/abi/normalize";
 import {
   type AbiItem,
   describeAmbiguousKey,
@@ -161,17 +162,9 @@ function estimateWriteContract(
   if (!Array.isArray(parsedAbi)) {
     return badRequest("ABI must be a JSON array");
   }
-  // ethers also accepts JSON arrays of human-readable fragments. Normalize
-  // those entries for the shared resolver without discarding malformed objects.
-  try {
-    parsedAbi = parsedAbi.map((entry) =>
-      typeof entry === "string"
-        ? JSON.parse(ethers.Fragment.from(entry).format("json"))
-        : entry
-    );
-  } catch {
-    return badRequest("Invalid ABI fragment");
-  }
+  // ethers also accepts human-readable fragments in the array; the resolver
+  // needs them as objects.
+  parsedAbi = normalizeAbiEntries(parsedAbi) as ethers.InterfaceAbi;
   const resolution = resolveAbiFunction(
     parsedAbi as AbiItem[],
     config.abiFunction

@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { normalizeAbiEntries } from "@/lib/abi/normalize";
 import {
   type AbiItem,
   describeAmbiguousKey,
@@ -176,8 +177,12 @@ function generateSingleWriteCalldata(
 
   // The stored key may be a legacy raw spelling such as `send(tuple,address)`,
   // which the workflow engine accepts but ethers cannot encode. Resolve it the
-  // same way the engine does and encode with the canonical signature.
-  const resolution = resolveAbiFunction(parsedAbi as AbiItem[], abiFunction);
+  // same way the engine does and encode with the canonical signature. The ABI
+  // itself still goes to ethers as stored, human-readable entries included.
+  const resolution = resolveAbiFunction(
+    normalizeAbiEntries(parsedAbi) as AbiItem[],
+    abiFunction
+  );
   if (resolution.status === "ambiguous") {
     return {
       success: false,

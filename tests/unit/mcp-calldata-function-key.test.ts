@@ -97,6 +97,37 @@ describe("generateCalldataForWorkflow function keys", () => {
     }
   });
 
+  const humanTuple =
+    "function send((uint32 id, bytes32 to) params, address recipient)";
+
+  it.each([
+    ["a human-readable ABI", [humanTuple]],
+    ["a mixed ABI", [humanTuple, scalar]],
+    [
+      "a function beside a string ethers cannot parse",
+      ["not a fragment at all", humanTuple],
+    ],
+  ])("encodes a legacy tuple key against %s", (_label, abi) => {
+    const warn = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const result = generateCalldataForWorkflow(
+      nodes(abi, "send(tuple,address)", tupleArgs),
+      {}
+    );
+    expect(result).toMatchObject({ success: true, data: expected });
+    warn.mockRestore();
+  });
+
+  it("reports a function missing from a human-readable ABI as not found", () => {
+    const result = generateCalldataForWorkflow(
+      nodes([humanTuple], "burn", []),
+      {}
+    );
+    expect(result).toMatchObject({
+      success: false,
+      error: "Function 'burn' not found in ABI",
+    });
+  });
+
   it("reports a missing function and a non-array ABI as such", () => {
     const missing = generateCalldataForWorkflow(nodes([tuple], "burn", []), {});
     expect(missing).toMatchObject({
