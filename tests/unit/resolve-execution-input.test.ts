@@ -254,6 +254,62 @@ describe("resolveExecutionInput", () => {
         expect(result.executionId).toBeUndefined();
       }
     });
+
+    it("still reports a non-string envelope executionId as present", () => {
+      // The route's gate is on presence: the field is reserved for internal
+      // dispatch, and an external caller sending a number is probing that
+      // reservation exactly as one sending a string is. Reporting only the
+      // typed value would answer 200 to the number and lose the security
+      // signal on the shape most likely to be a probe.
+      for (const executionId of [42, true, ["exec_1"], { id: "x" }]) {
+        const result = resolveExecutionInput(
+          JSON.stringify({ input: {}, executionId })
+        );
+
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.executionIdPresent).toBe(true);
+          expect(result.executionId).toBeUndefined();
+        }
+      }
+    });
+
+    it("reports a bare-shape executionId as absent from the envelope", () => {
+      // Presence tracks the envelope, not the key: in the bare shape the key
+      // is the caller's data and must not trip the reservation gate.
+      const result = resolveExecutionInput(
+        JSON.stringify({ executionId: "run-42", amount: "1" })
+      );
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.executionIdPresent).toBeFalsy();
+      }
+    });
+
+    it("reports no executionId when the body carries none", () => {
+      const result = resolveExecutionInput(JSON.stringify({ input: {} }));
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.executionIdPresent).toBe(false);
+      }
+    });
+
+    it("reads a null executionId as the field being absent", () => {
+      // The same reading `input: null` gets: a caller serialising "no id",
+      // not one naming a row. Refusing it would newly 400 a body that runs
+      // today.
+      const result = resolveExecutionInput(
+        JSON.stringify({ input: {}, executionId: null })
+      );
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.executionIdPresent).toBe(false);
+        expect(result.executionId).toBeUndefined();
+      }
+    });
   });
 
   describe("prototype pollution", () => {

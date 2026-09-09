@@ -99,11 +99,22 @@ export type ResolvedExecutionInput =
       rawParsed: ExecuteBody;
       /**
        * The envelope `executionId`, when the body carried one *as an envelope
-       * field*. Undefined for the bare shape, where a key of that name is the
-       * caller's own input data. The route must use this rather than reading
-       * `rawParsed.executionId`, which cannot tell the two apart.
+       * field* and it is a string. Undefined for the bare shape, where a key
+       * of that name is the caller's own input data. The route must use this
+       * rather than reading `rawParsed.executionId`, which cannot tell the two
+       * apart.
        */
       executionId?: string;
+      /**
+       * Whether the envelope carried an `executionId` key at all, whatever
+       * its type. The gate in the route is on presence, not on type: the
+       * field is reserved for internal dispatch, and an external caller
+       * sending `{"executionId": 12345}` is probing that reservation just as
+       * much as one sending a string. Keying the refusal off `executionId`
+       * alone would answer 200 to the non-string probe and drop the
+       * `execution_id_supplied_by_external_caller` signal with it.
+       */
+      executionIdPresent?: boolean;
       deprecated?: boolean;
     }
   | { ok: false; error: string; field: string };
@@ -222,6 +233,15 @@ export function resolveExecutionInput(rawBody: string): ResolvedExecutionInput {
     ok: true,
     input,
     rawParsed,
+    // Presence and value are reported separately. The route refuses the field
+    // outright for an external caller, so it needs to know the key was there
+    // even when the value is not a usable id; only a string can go on to
+    // address a row.
+    //
+    // A null value is read as the field being absent, the same reading `input`
+    // gets above: it is a caller serialising "no id", not one naming a row.
+    executionIdPresent:
+      "executionId" in rawParsed && rawParsed.executionId !== null,
     executionId:
       typeof rawParsed.executionId === "string"
         ? rawParsed.executionId

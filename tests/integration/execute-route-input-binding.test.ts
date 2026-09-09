@@ -149,12 +149,14 @@ vi.mock("@/lib/db/schema", () => ({
   organization: { id: "id", deactivatedAt: "deactivated_at" },
   workflowExecutions: { id: "id", workflowId: "workflowId" },
 }));
+const mockLogSecurityEvent = vi.fn();
+
 vi.mock("@/lib/logging", () => ({
   ErrorCategory: {
     WORKFLOW_ENGINE: "workflow_engine",
     VALIDATION: "validation",
   },
-  logSecurityEvent: vi.fn(),
+  logSecurityEvent: mockLogSecurityEvent,
   logSystemError: vi.fn(),
   logUserError: vi.fn(),
 }));
@@ -428,6 +430,40 @@ describe("execute route - input binding", {
 
       expect(response.status).toBe(400);
       expect((await response.json()).code).toBe("execution_id_not_allowed");
+      expect(mockExecutionsFindFirst).not.toHaveBeenCalled();
+    });
+
+    // The gate is on the key being present, not on its value being usable.
+    // Typing it would answer 200 to `{"executionId": 12345}` and take the
+    // probe-detection signal with it -- and a caller sending a number is
+    // reaching for the reserved field just as much as one sending a string.
+    it("refuses and reports a non-string envelope executionId from an external caller", async () => {
+      for (const executionId of [12_345, true, ["exec_pre"]]) {
+        vi.clearAllMocks();
+        const response = await callExecute(
+          JSON.stringify({ executionId, input: { amount: "1" } })
+        );
+
+        expect(response.status).toBe(400);
+        expect((await response.json()).code).toBe("execution_id_not_allowed");
+        expect(mockLogSecurityEvent).toHaveBeenCalledWith(
+          "execution_id_supplied_by_external_caller",
+          expect.objectContaining({ workflowId: "wf_1" })
+        );
+        expect(mockExecutionsFindFirst).not.toHaveBeenCalled();
+        expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+      }
+    });
+
+    it("runs a null envelope executionId as no id at all", async () => {
+      // `null` is a caller serialising "no id", the same reading `input: null`
+      // gets. Refusing it would newly 400 a body that runs today.
+      const response = await callExecute(
+        JSON.stringify({ executionId: null, input: { amount: "1" } })
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockLogSecurityEvent).not.toHaveBeenCalled();
       expect(mockExecutionsFindFirst).not.toHaveBeenCalled();
     });
 

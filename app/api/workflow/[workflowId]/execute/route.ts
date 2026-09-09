@@ -308,7 +308,15 @@ export async function POST(
     // this request did not create, and the workflow access check above
     // authorises the workflow, not the row, so a caller-supplied id from any
     // other principal is refused outright.
-    if (executionId && !isInternalExecution) {
+    //
+    // Gated on the key being present, not on it having parsed to a usable id.
+    // `{"executionId": 12345}` from an external caller is the same probe as
+    // the string form, and answering it 200 would drop the security signal on
+    // the shape most likely to be a probe. An internal caller sending a
+    // non-string gets a fresh row instead of the id it named -- no shipped
+    // dispatcher does that, and it is preferable to feeding a non-string to a
+    // primary-key lookup.
+    if (resolved.executionIdPresent && !isInternalExecution) {
       logSecurityEvent("execution_id_supplied_by_external_caller", {
         workflowId,
         organizationId: workflow.organizationId,
