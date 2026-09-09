@@ -1,3 +1,7 @@
+import {
+  assertEncodeTransformsLegalFor,
+  setActionInputsLookup,
+} from "@/lib/protocol-encode-transforms";
 import { solidityTypeToFieldType } from "@/lib/solidity-type-fields";
 import type { IntegrationType } from "@/lib/types/integration";
 
@@ -269,8 +273,28 @@ export function defineAbiProtocol(
 // Runtime protocol registry
 const protocolRegistry = new Map<string, ProtocolDefinition>();
 
+// Give the encode-transform registry a way to see an action's declared ABI
+// inputs so it can refuse an illegal weiToEther registration at the moment
+// it happens. The dependency runs one way (registry -> transforms) on
+// purpose: the transform module must not import this one, or the two form
+// a cycle.
+setActionInputsLookup(
+  (protocolSlug, actionSlug) =>
+    protocolRegistry
+      .get(protocolSlug)
+      ?.actions.find((a) => a.slug === actionSlug)?.inputs
+);
+
 export function registerProtocol(def: ProtocolDefinition): void {
   defineProtocol(def);
+  // Transforms are registered eagerly at module load, so a protocol often
+  // arrives after its own transforms and the check inside
+  // registerEncodeTransform could not see the action yet. Re-check here,
+  // now that it can - and re-check BEFORE the insert, reading the
+  // definition's own actions, so a caller that catches the throw is not
+  // left with the protocol registered and the illegal transform still in
+  // place.
+  assertEncodeTransformsLegalFor(def.slug, def.actions);
   protocolRegistry.set(def.slug, def);
 }
 

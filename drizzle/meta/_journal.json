@@ -1069,15 +1069,22 @@
     {
       "idx": 152,
       "version": "7",
-      "when": 1788880279201,
-      "tag": "0152_keep_1042_execution_retention_indexes",
+      "when": 1788862439420,
+      "tag": "0152_keep_1291_pending_tx_stuck_index",
       "breakpoints": true
     },
     {
       "idx": 153,
       "version": "7",
+      "when": 1788880279201,
+      "tag": "0153_keep_1042_execution_retention_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
       "when": 1788880444654,
-      "tag": "0153_keep_1042_execution_retention_progress",
+      "tag": "0154_keep_1042_execution_retention_progress",
       "breakpoints": true
     }
   ]

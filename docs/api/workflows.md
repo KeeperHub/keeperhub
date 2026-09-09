@@ -48,7 +48,7 @@ GET /api/workflows?projectId=proj_123&tagId=tag_456
 ```json
 [
   {
-    "id": "wf_123",
+    "id": "wm3k8nq7xcz2jv4hpbtd5",
     "name": "My Workflow",
     "description": "Monitors ETH balance",
     "visibility": "private",
@@ -72,7 +72,7 @@ Returns a single workflow by ID.
 
 ```json
 {
-  "id": "wf_123",
+  "id": "wm3k8nq7xcz2jv4hpbtd5",
   "name": "My Workflow",
   "description": "Monitors ETH balance",
   "visibility": "private",
@@ -257,7 +257,7 @@ The `input` field is optional. It maps to the workflow's trigger input and is pa
 ### Example
 
 ```bash
-curl -X POST https://app.keeperhub.com/api/workflows/wf_123/execute \
+curl -X POST https://app.keeperhub.com/api/workflows/wm3k8nq7xcz2jv4hpbtd5/execute \
   -H "Authorization: Bearer $KEEPERHUB_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input": {}}'
@@ -267,7 +267,7 @@ curl -X POST https://app.keeperhub.com/api/workflows/wf_123/execute \
 
 ```json
 {
-  "executionId": "exec_123",
+  "executionId": "k6r4t9yqmn2xwv8jsz0a3",
   "status": "running"
 }
 ```
@@ -352,7 +352,7 @@ Returns all public workflows with optional filtering.
 ```json
 [
   {
-    "id": "wf_123",
+    "id": "wm3k8nq7xcz2jv4hpbtd5",
     "name": "Public Workflow",
     "description": "Description",
     "nodes": [...],

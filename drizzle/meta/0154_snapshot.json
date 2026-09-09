@@ -1,6 +1,6 @@
 {
-  "id": "8e64064c-0796-4040-a0f6-146df6af8a10",
-  "prevId": "b08c29c9-b6ea-4d56-92bb-a9d5d549a941",
+  "id": "327f5d4b-475f-47c7-adea-9f25598d6f07",
+  "prevId": "135cb20e-6d81-43c3-9736-d3a9363bc892",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4575,6 +4575,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_pending_tx_stuck": {
+          "name": "idx_pending_tx_stuck",
+          "columns": [
+            {
+              "expression": "submitted_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "chain_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"pending_transactions\".\"status\" = 'pending'",
           "concurrently": false,
           "method": "btree",
           "with": {}

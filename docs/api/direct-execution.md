@@ -335,7 +335,7 @@ Successful broadcast requests return HTTP `202 Accepted`:
 
 ```json
 {
-  "executionId": "direct_123",
+  "executionId": "n3364uzl2s6aram5v558c",
   "status": "completed",
   "transactionHash": "0x...",
   "transactionLink": "https://etherscan.io/tx/0x..."
@@ -421,7 +421,7 @@ Read functions return immediately with the result value.
 
 ```json
 {
-  "executionId": "direct_123",
+  "executionId": "n3364uzl2s6aram5v558c",
   "status": "completed",
   "transactionHash": "0x...",
   "transactionLink": "https://etherscan.io/tx/0x..."
@@ -471,7 +471,7 @@ the write step produced one (including on revert).
 
 ```json
 {
-  "executionId": "direct_123",
+  "executionId": "n3364uzl2s6aram5v558c",
   "status": "failed",
   "transactionHash": "0x...",
   "transactionLink": "https://etherscan.io/tx/0x...",
@@ -570,7 +570,7 @@ not part of the supported request shape.
 ```json
 {
   "executed": true,
-  "executionId": "direct_123",
+  "executionId": "n3364uzl2s6aram5v558c",
   "status": "completed",
   "conditionResult": {
     "met": true,
@@ -772,7 +772,7 @@ Check the status of a direct execution.
 
 ```json
 {
-  "executionId": "direct_123",
+  "executionId": "n3364uzl2s6aram5v558c",
   "status": "completed",
   "type": "transfer",
   "network": "11155111",
