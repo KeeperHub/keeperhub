@@ -204,6 +204,22 @@ const executionsUnconfirmed = getOrCreateGauge(
   ["kind"]
 );
 
+// pending_transactions rows still in `pending` between 15 minutes and 24 hours
+// after submission, by chain. An unreferenced same-nonce fee-escalation path
+// was deleted from lib/web3/gas-strategy.ts; nothing bumps a stuck transaction
+// automatically, so this gauge is the whole response - it makes a backlog page
+// a human instead of failing silently. The 24-hour ceiling is what lets it
+// recover: see getStuckPendingTransactionCountsFromDb. DB-sourced, so the
+// value is the same on every scrape rather than depending on which pod last
+// handled a request. Cardinality is bounded by the number of configured
+// chains.
+const web3PendingTransactionsStuck = getOrCreateGauge(
+  dbRegistry,
+  "keeperhub_web3_pending_transactions_stuck",
+  "Pending transactions unconfirmed between 15 minutes and 24 hours after submission, by chain_id",
+  ["chain_id"]
+);
+
 // KEEP-545: the previous DB-sourced gauge `keeperhub_workflow_execution_errors_total`
 // has been removed. It was named with the `_total` counter suffix but was
 // actually a poll-driven gauge that overwrote itself on every scrape with the
@@ -1794,6 +1810,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       getWorkflowStatsFromDb,
       getLastFinishedExecutionAgeSecondsFromDb,
       getUnconfirmedExecutionCountsFromDb,
+      getStuckPendingTransactionCountsFromDb,
       getWorkflowErrorsByWorkflowFromDb,
       getSystemErrorsByCategoryFromDb,
       getStepStatsFromDb,
@@ -1813,6 +1830,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       workflowStats,
       lastFinishedAgeSeconds,
       unconfirmedCounts,
+      stuckPendingTxCounts,
       errorsByWorkflow,
       systemErrorsByCategoryRows,
       stepStats,
@@ -1831,6 +1849,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       getWorkflowStatsFromDb(),
       getLastFinishedExecutionAgeSecondsFromDb(),
       getUnconfirmedExecutionCountsFromDb(),
+      getStuckPendingTransactionCountsFromDb(),
       getWorkflowErrorsByWorkflowFromDb(),
       getSystemErrorsByCategoryFromDb(),
       getStepStatsFromDb(),
@@ -1877,6 +1896,20 @@ async function refreshDbMetricsNow(): Promise<void> {
         unconfirmedCounts.workflow
       );
       executionsUnconfirmed.set({ kind: "direct" }, unconfirmedCounts.direct);
+    }
+
+    // Reset before populating so a chain that has drained its
+    // backlog goes back to reporting nothing rather than pinning its last
+    // non-zero value forever. On a query error skip the reset entirely and
+    // keep the previous reading, matching the null handling above.
+    if (stuckPendingTxCounts !== null) {
+      web3PendingTransactionsStuck.reset();
+      for (const row of stuckPendingTxCounts) {
+        web3PendingTransactionsStuck.set(
+          { chain_id: String(row.chainId) },
+          row.count
+        );
+      }
     }
 
     // KEEP-545: the per-org error gauge that used to live here was removed.
