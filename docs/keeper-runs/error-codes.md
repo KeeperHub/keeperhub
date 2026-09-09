@@ -38,30 +38,39 @@ include the code and the time of the run.
 
 ## Action failures with structured codes (simulate responses)
 
-Some action failures carry a machine-readable failure code alongside the
-message. On the run path this applies to the **simulate** surface: `/api/execute/*`
-simulate responses and MCP simulate results return it as `SimulateFailureCode`.
-Run steps themselves surface the plain message only -- branch on the message
-text, not on the code, when reading run logs or run webhooks.
+Some action failures carry a machine-readable code alongside the message. This
+applies to the **simulate** surface only: `/api/execute/*` responses with
+`simulate: true` return it in the `code` field, and MCP simulate results surface
+it as a `Reason code:` line. Run steps carry the plain message with no code --
+when reading run logs or run webhooks, key on the message text.
 
 ### `insufficient_balance` (simulate responses)
 
-**What happened**: the gas preflight found the sending wallet could not cover
-the transaction before it was broadcast, so nothing was signed or sent.
+**What happened**: the simulator found that the funding address could not cover
+the native value the call sends. The comparison is against that value only; the
+simulator adds no gas term. A call that sends no native value therefore never
+produces this code -- an empty wallet on a zero-value call fails with the node's
+own revert message instead. See [Direct Execution](/api/direct-execution) for
+the full response shape.
 
-**Message on the run path** (plain text, no code):
+**Related message on the run path** (plain text, no code): before an EVM write
+action signs anything, a gas preflight checks that the funding address holds the
+native value plus the minimum gas any transaction costs. When it does not, the
+step fails before broadcast with:
 
 ```
 Insufficient ETH balance. Have: 0.0, Need: 0.000000231. Fund
 0x...orgWallet with at least 0.000000231 ETH on this chain and retry.
 ```
 
-This message is emitted on every direct-signing write path. On a
-sponsorship-eligible network it additionally means sponsorship fell back (see
+This message is emitted by every EVM write action. On a sponsorship-eligible
+network it additionally means sponsorship fell back (see
 [Gas Management -- When sponsorship falls back](/wallet-management/gas)); on
-other setups it simply means the sending wallet cannot cover the gas.
+other setups it simply means the funding address cannot cover the gas.
 
-**What to do**: fund the wallet address named in the message with at least the
-stated shortfall, then retry. On Turnkey-managed wallets on sponsored networks,
-restoring the sponsorship conditions (gas credits, supported network,
-direct-wallet sender, public mempool) also fixes the run without funding.
+**What to do**: fund the address named in the message with at least the stated
+shortfall, then retry. For a write that sends no native value on a
+sponsorship-eligible network, restoring the sponsorship conditions (gas credits,
+supported network, direct-wallet sender, public mempool) also fixes the run
+without funding. A write that sends native value always needs that value in the
+wallet; sponsorship covers the fee only.

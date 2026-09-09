@@ -97,9 +97,16 @@ Sponsored gas is metered in USD against your plan's monthly gas credit cap (show
 ### When sponsorship falls back
 
 Sponsorship is attempted first and falls back to direct signing (your wallet pays
-the gas) when the attempt returns no sponsored client. A fallback run simply lacks
-the **Gas sponsored** badge that a sponsored run carries in the Runs panel; the
-run output does not say why sponsorship was skipped.
+the gas) whenever any eligibility condition above is not met. Sponsorship can
+also be unavailable for a specific organization or wallet even when all of them
+hold: Turnkey can reject an activity at submission time, and the step then falls
+back the same way.
+
+The Runs panel shows a **Gas sponsored** badge on each sponsored step; a step
+that fell back has no badge. The badge is per step, so a run with one sponsored
+step and one fallback step still shows it on the sponsored step. The run-level
+**Sponsored** filter (under **Used gas**) lists runs that drew on gas credits.
+The run output does not say why sponsorship was skipped.
 
 What the fallback does next depends on the wallet balance:
 
@@ -115,16 +122,12 @@ What the fallback does next depends on the wallet balance:
   Nothing was broadcast at this point, so there is no transaction hash to look
   up. Fund the address named in the message and retry.
 
-This message is emitted on every direct-signing write path. On a
-sponsorship-eligible network (see the conditions above, plus the Turnkey-managed
-wallet requirement) it additionally means sponsorship fell back -- funding the
-address fixes the run either way.
-
-The eligibility conditions are the user-controllable subset. Sponsorship can
-still be unavailable per organization and wallet even when all of them hold: the
-sponsored client is only created when the organization's active wallet is
-Turnkey-managed (a self-imported wallet never gets a sponsored client), and
-Turnkey can still reject an activity at submission time.
+This message is emitted by every EVM write action. On a sponsorship-eligible
+network it additionally means sponsorship fell back; funding the address fixes
+the run either way. For a write that sends no native value, restoring the
+eligibility conditions above also fixes it without funding. A write that sends
+native value always needs that value in the wallet, because sponsorship covers
+the fee only (see [What sponsorship covers](#what-sponsorship-covers)).
 
 ## FAQ
 
