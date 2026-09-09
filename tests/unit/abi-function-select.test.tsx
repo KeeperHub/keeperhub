@@ -91,6 +91,13 @@ beforeEach(() => {
   store = createStore();
   store.set(currentWorkflowIdAtom, "saved-legacy-workflow");
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  // jsdom has no pointer capture or scrolling; Radix Select needs both to open.
+  Object.assign(HTMLElement.prototype, {
+    hasPointerCapture: () => false,
+    setPointerCapture: () => undefined,
+    releasePointerCapture: () => undefined,
+    scrollIntoView: () => undefined,
+  });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -131,6 +138,35 @@ async function render(
     )
   );
   return config;
+}
+
+async function choose(optionText: string) {
+  const trigger = container.querySelector("[role=combobox]") as HTMLElement;
+  await act(async () => {
+    trigger.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        button: 0,
+        pointerType: "mouse",
+      })
+    );
+  });
+  const option = Array.from(document.querySelectorAll("[role=option]")).find(
+    (o) => o.textContent?.includes(optionText)
+  ) as HTMLElement | undefined;
+  if (!option) {
+    throw new Error(`No option containing ${optionText}`);
+  }
+  await act(async () => {
+    option.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" })
+    );
+  });
+  await act(async () => {
+    option.dispatchEvent(
+      new PointerEvent("pointerup", { bubbles: true, pointerType: "mouse" })
+    );
+  });
 }
 
 describe("saved ABI function selection", () => {
@@ -232,6 +268,29 @@ describe("saved ABI function selection", () => {
     expect(
       container.querySelector("[role=combobox]")?.textContent
     ).not.toContain("send(");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("qualifies the key when the only other overload is hidden by the filter", async () => {
+    // One `send` is view, the other is a write. The write dropdown lists one
+    // `send`, but every lookup resolves against the whole ABI, where the name
+    // is overloaded: a bare key would be ambiguous the moment it was saved.
+    const readOnly = { ...scalar, stateMutability: "view" };
+    await render([readOnly, tuple], "");
+    await choose("send(tuple params");
+    expect(onChange).toHaveBeenCalledWith(
+      "abiFunction",
+      "send((uint32,bytes32),address)"
+    );
+    onChange.mockClear();
+
+    await render([readOnly, tuple], "send((uint32,bytes32),address)", args);
+    expect(container.querySelector("[role=combobox]")?.textContent).toContain(
+      "send(tuple params"
+    );
+    expect(
+      container.querySelector("#functionArgs-0-id")?.getAttribute("value")
+    ).toBe("7");
     expect(onChange).not.toHaveBeenCalled();
   });
 

@@ -502,10 +502,14 @@ export function AbiFunctionSelectField({
 
       const filtered = abi.filter(filterFn);
 
-      // Count how many times each function name appears to detect overloads
+      // Count overloads across the whole ABI, not the filtered list: a read
+      // overload hidden here still shares the name, and a bare key would be
+      // ambiguous to every lookup that resolves against the full ABI.
       const nameCounts = new Map<string, number>();
-      for (const func of filtered) {
-        nameCounts.set(func.name, (nameCounts.get(func.name) ?? 0) + 1);
+      for (const func of abi) {
+        if (func?.type === "function") {
+          nameCounts.set(func.name, (nameCounts.get(func.name) ?? 0) + 1);
+        }
       }
 
       return filtered.map((func) => {
