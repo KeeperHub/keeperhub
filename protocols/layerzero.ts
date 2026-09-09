@@ -343,7 +343,12 @@ const TEST_DATA: ProtocolTestData = {
     // re-delivers a step when its completion event is lost, and
     // @workflow/core's step handler counts `step_started` events and
     // checks `step.attempt > maxRetries + 1` *before* running the step
-    // body (dist/runtime/step-handler.js:264 in 4.8.5). A re-fire arrives
+    // body. That package is not a direct dependency, which is why no
+    // version for it appears in package.json: it arrives under
+    // `workflow` 4.8.5 (package.json:158) and is pinned as
+    // `@workflow/core@4.8.5` in pnpm-lock.yaml, so the citation is
+    // checkable from the repo - dist/runtime/step-handler.js:264 in
+    // that version, verified 2026-09-09. A re-fire arrives
     // as attempt 2, trips that guard at 2 > 1, and is failed by event
     // without calling protocolWriteStep again. So a second approve cannot
     // be broadcast from one execution.

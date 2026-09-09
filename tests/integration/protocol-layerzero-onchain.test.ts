@@ -36,7 +36,7 @@
  */
 
 import { ethers } from "ethers";
-import { beforeAll, describe, expect, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 // `lib/rpc/providers` transitively imports `lib/safe-fetch` (via the
 // safe-ethers adapter), which declares `import "server-only"` and would
@@ -51,7 +51,7 @@ import {
   PUBLIC_RPCS,
   parseRpcConfig,
 } from "@/lib/rpc/rpc-config";
-import layerzeroDef from "@/protocols/layerzero";
+import layerzeroDef, { LAYERZERO_EIDS } from "@/protocols/layerzero";
 import { buildCalldata } from "./_shared/build-calldata";
 import { itOnchain } from "./_shared/onchain-rpc";
 
@@ -422,19 +422,47 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
 // thing that can catch it: token() proves the OFT/token pairing in the map
 // is the pairing the deployment reports, and approvalRequired() proves the
 // adapter model the comment above the map claims. Values observed over
-// eth_call on 2026-09-08. Chains resolve through CHAIN_CONFIG rather than
-// retyped keys. itOnchain retries classified RPC infra faults with
-// backoff, which is the whole of the cushion on 8453, 84532 and 11155111:
-// those three declare no publicFallback, so `publicFallback ?? publicDefault`
+// eth_call on 2026-09-09. Chains resolve through CHAIN_CONFIG rather than
+// retyped keys, and the chain set itself is derived from the address map
+// rather than retyped, so an eighth entry is covered the moment it is
+// added instead of being silently skipped.
+//
+// itOnchain retries classified RPC infra faults with backoff, which is the
+// whole of the cushion on 8453, 84532 and 11155111: those three declare no
+// publicFallback (lib/rpc/rpc-config.ts), so `publicFallback ?? publicDefault`
 // hands executeWithFailover the same URL twice and its failover is a no-op
-// there. Give them a distinct fallback in CHAIN_CONFIG if these ever flake.
-const OTHER_CHAIN_IDS = ["10", "137", "8453", "42161", "11155111", "84532"];
+// there. Deployed environments and CI supply keyed endpoints through
+// CHAIN_RPC_CONFIG, which takes priority, so this only bites a run with
+// neither that nor the env vars set. Giving those three a distinct
+// publicFallback is the fix if it ever does; it is left out of this PR
+// because CHAIN_CONFIG is shared by every chain consumer and this is a
+// protocol change.
+const OTHER_CHAIN_IDS = Object.keys(
+  layerzeroDef.contracts.oft.addresses
+).filter((chainId) => chainId !== CHAIN_ID);
 
-// Both testnet entries are a USDT+ pair where the OFT is its own token;
-// every mainnet L2 entry is a Mint and Burn adapter over a separate ERC-20.
-// Neither shape requires an approval before a send; only chain 1's lock
-// adapter does, and that is asserted in the suite above.
-const APPROVAL_REQUIRED_EXPECTED = false;
+// Expected approvalRequired() per chain, declared rather than shared as one
+// constant. It cannot be derived from the address maps: chain 1 and chain
+// 137 both pair an OFT with a different token address, and only chain 1
+// requires an approval. A single `false` would therefore assert the wrong
+// thing for the next lock adapter someone adds, which is exactly the entry
+// most worth catching. The completeness guard below fails when a chain is
+// added to the address map without a row here, so the choice has to be
+// made deliberately rather than inherited.
+//
+// Chain 1 is an OFT Adapter that locks USDT, hence true; the four mainnet
+// L2 entries are Mint and Burn adapters and the two testnet entries are a
+// USDT+ pair where the OFT is its own token, all false. Read over eth_call
+// on 2026-09-09.
+const APPROVAL_REQUIRED_EXPECTED: Record<string, boolean> = {
+  "1": true,
+  "10": false,
+  "137": false,
+  "8453": false,
+  "42161": false,
+  "11155111": false,
+  "84532": false,
+};
 
 describe("LayerZero reference deployments on the other six chains", () => {
   for (const chainId of OTHER_CHAIN_IDS) {
@@ -503,10 +531,82 @@ describe("LayerZero reference deployments on the other six chains", () => {
         async () => {
           const oft = layerzeroDef.contracts.oft.addresses[chainId];
           const [required] = await readOnChain("oft-approval-required", oft);
-          expect(required).toBe(APPROVAL_REQUIRED_EXPECTED);
+          expect(required).toBe(APPROVAL_REQUIRED_EXPECTED[chainId]);
         },
         30_000
       );
     });
+  }
+});
+
+// APPROVAL_REQUIRED_EXPECTED is declared in this file, so nothing else can
+// notice when it falls behind the address map. Without this guard, adding an
+// eighth OFT address gives that chain an `expect(required).toBe(undefined)`
+// that fails with a confusing message, or - if the value happened to be
+// undefined-ish - passes for the wrong reason. The other three maps already
+// pin each other in tests/unit/protocol-layerzero.test.ts ("oft and oftToken
+// cover exactly the endpoint's chains" and "publishes the endpoint IDs for
+// every chain in the endpoint map"), so only this one needs a guard here.
+// Pure map comparison, no RPC, so it fails fast and offline.
+describe("LayerZero reference map completeness", () => {
+  it("declares an approval model for every chain with an OFT address", () => {
+    expect(Object.keys(APPROVAL_REQUIRED_EXPECTED).sort()).toEqual(
+      Object.keys(layerzeroDef.contracts.oft.addresses).sort()
+    );
+  });
+});
+
+// endpointV2 is the only contract in the definition that is not
+// userSpecifiedAddress: `oft` and `oftToken` are supplied by the user at
+// runtime and their maps are reference data, but ENDPOINT_V2_ADDRESSES is
+// what the runtime actually calls, with nothing between it and the user.
+// It was also the only one left on a hex-shape unit assertion, so a
+// plausible-looking wrong address would have passed. eid() is the read that
+// closes it: it is self-identifying, so a right-shaped address on the wrong
+// chain - or the mainnet endpoint copied into a testnet row - fails here.
+//
+// This one read is built with a local Interface rather than through
+// buildCalldata, unlike every other assertion in this file. The reason is
+// deliberate: eid() is not in protocols/abis/layerzero-endpoint-v2.json, and
+// every function in that file becomes a user-facing action
+// (deriveActionsFromAbi in lib/abi/protocol-derive.ts:309-325 derives one per
+// entry, with no opt-out). Adding it to reach it from a test would put a
+// fourth endpoint action in front of users to serve a test, so the address
+// map - which is the thing under test here - is checked directly instead.
+// Values read over eth_call on 2026-09-09; all seven match LAYERZERO_EIDS.
+const EID_ABI = ["function eid() view returns (uint32)"];
+
+describe("LayerZero EndpointV2 deployments identify their own chain", () => {
+  for (const chainId of Object.keys(LAYERZERO_EIDS)) {
+    itOnchain(
+      `chain ${chainId} endpoint reports EID ${LAYERZERO_EIDS[chainId]}`,
+      async () => {
+        const cfg = getChainConfig(Number(chainId));
+        if (!cfg) {
+          throw new Error(
+            `chain ${chainId} is in LAYERZERO_EIDS but not in CHAIN_CONFIG, so no RPC can be resolved for it`
+          );
+        }
+        const manager = await getRpcProviderFromUrls(
+          resolveRpcUrl(cfg.jsonKey, cfg.envKey, cfg.publicDefault, "primary"),
+          resolveRpcUrl(
+            cfg.jsonKey,
+            cfg.fallbackEnvKey,
+            cfg.publicFallback ?? cfg.publicDefault,
+            "fallback"
+          ),
+          Number(chainId),
+          `layerzero-endpoint-eid-${chainId}`
+        );
+        const iface = new ethers.Interface(EID_ABI);
+        const endpoint = layerzeroDef.contracts.endpointV2.addresses[chainId];
+        const result = await manager.executeWithFailover((p) =>
+          p.call({ to: endpoint, data: iface.encodeFunctionData("eid") })
+        );
+        const [eid] = iface.decodeFunctionResult("eid", result);
+        expect(Number(eid)).toBe(LAYERZERO_EIDS[chainId]);
+      },
+      30_000
+    );
   }
 });
