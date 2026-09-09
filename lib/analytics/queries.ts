@@ -44,6 +44,7 @@ import { likePattern } from "./like-pattern";
 import {
   getBucketInterval,
   getPreviousPeriodStart,
+  getTimeRangeEnd,
   getTimeRangeStart,
 } from "./time-range";
 import type {
@@ -186,18 +187,45 @@ function directStatusesCondition(statuses: NormalizedStatus[]): SQL {
 }
 
 /**
- * A workflow run has no chain of its own: its chains live on its step logs, the
- * same COALESCE(column, JSONB) the listing reads them through. EXISTS keeps a
- * run that touched any selected chain without multiplying it per matching step.
+ * The chains a run recorded a transaction on, read off the run row.
+ *
+ * `transaction_hashes` is written at terminal finalize next to `gas_used_wei`
+ * (lib/workflow/executor/logging.ts) and each entry carries the chain its step
+ * targeted. Unlike gas, a run legitimately spans several chains, so there is no
+ * single run-level column to denormalise into -- but the array is a run-level
+ * set, and retention never touches it. It is also cheap to read: a short array
+ * on the run row, not the step-log `output` blobs whose de-TOASTing is what
+ * saturated the database on 2026-09-02.
+ */
+const runTransactionNetworks = sql`(
+  SELECT ARRAY_AGG(DISTINCT entry->>'network')
+    FROM jsonb_array_elements(${workflowExecutions.transactionHashes}) AS entry
+   WHERE entry->>'network' IS NOT NULL
+)`;
+
+/**
+ * A workflow run has no single chain of its own: its chains live on its step
+ * logs, the same COALESCE(column, JSONB) the listing reads them through.
+ *
+ * It reads the run row as well, because the step logs age out at the plan
+ * window while the run row lives far longer. On step logs alone a run that
+ * really did transact on the selected chain simply left the filtered list once
+ * its logs were purged, and its network facet count dropped with it -- the same
+ * class of silent miscount the gas buckets used to have, and fixed the same
+ * way, by preferring what survives.
  */
 function workflowNetworkCondition(networks: string[], scope: LogScope): SQL {
-  return sql`${workflowExecutions.id} IN (
-    SELECT ${workflowExecutionLogs.executionId}
-    ${scopedLogs(scope)}
-       AND ${stepNetwork} IN (${sql.join(
-         networks.map((network) => sql`${network}`),
-         sql`, `
-       )})
+  const wanted = sql.join(
+    networks.map((network) => sql`${network}`),
+    sql`, `
+  );
+  return sql`(
+    ${workflowExecutions.id} IN (
+      SELECT ${workflowExecutionLogs.executionId}
+      ${scopedLogs(scope)}
+         AND ${stepNetwork} IN (${wanted})
+    )
+    OR ${runTransactionNetworks} && ARRAY[${wanted}]::text[]
   )`;
 }
 
@@ -600,7 +628,7 @@ async function computeAnalyticsSummary(
   projectId?: string
 ): Promise<AnalyticsSummary> {
   const rangeStart = getTimeRangeStart(range, customStart);
-  const rangeEnd = customEnd ? new Date(customEnd) : new Date();
+  const rangeEnd = getTimeRangeEnd(customEnd);
 
   const skipDirect = Boolean(projectId);
 
@@ -972,7 +1000,7 @@ async function computeTimeSeries(
   projectId?: string
 ): Promise<TimeSeriesBucket[]> {
   const rangeStart = getTimeRangeStart(range, customStart);
-  const rangeEnd = customEnd ? new Date(customEnd) : new Date();
+  const rangeEnd = getTimeRangeEnd(customEnd);
   const { sqlInterval } = getBucketInterval(range);
   const bucketExpr = bucketSql(sqlInterval);
 
@@ -1118,7 +1146,7 @@ async function computeNetworkBreakdown(
   projectId?: string
 ): Promise<NetworkBreakdown[]> {
   const rangeStart = getTimeRangeStart(range, customStart);
-  const rangeEnd = customEnd ? new Date(customEnd) : new Date();
+  const rangeEnd = getTimeRangeEnd(customEnd);
   const skipDirect = Boolean(projectId);
 
   const [directResult, workflowResult] = await Promise.all([
@@ -1273,7 +1301,7 @@ export async function getUnifiedRuns(
     ...filters
   } = options;
   const rangeStart = getTimeRangeStart(range, customStart);
-  const rangeEnd = customEnd ? new Date(customEnd) : new Date();
+  const rangeEnd = getTimeRangeEnd(customEnd);
   const pageLimit = Math.min(limit, 100);
   const wanted = resolveSources(filters.sources, projectId);
   const offset = cursor ? 0 : (page - 1) * pageLimit;
@@ -1777,7 +1805,7 @@ async function computeRunFacets(
   projectId?: string
 ): Promise<RunFacets> {
   const rangeStart = getTimeRangeStart(range, customStart);
-  const rangeEnd = customEnd ? new Date(customEnd) : new Date();
+  const rangeEnd = getTimeRangeEnd(customEnd);
   const wanted = resolveSources(filters.sources, projectId);
 
   // Both of these read the step logs, the table that took prod down when the
@@ -1870,37 +1898,45 @@ async function computeNetworkFacets(
   const wanted = resolveSources(filters.sources, projectId);
   const withoutNetworks: RunQueryFilters = { ...filters, networks: undefined };
 
+  // Driven from the run row rather than from the step logs, with each run's
+  // chains gathered in a lateral that unions both sources. Counting off the
+  // logs alone dropped a run's contribution the moment retention took its
+  // steps, even though the run had really transacted on that chain. The UNION
+  // de-duplicates per run, so a chain named by both sources still counts once.
   const workflowRows = wanted.workflow
-    ? await db
-        .select({
-          network: sql<string | null>`${stepNetwork}`,
-          value: sql<number>`COUNT(DISTINCT ${workflowExecutions.id})`,
-        })
-        .from(workflowExecutionLogs)
-        .innerJoin(
-          workflowExecutions,
-          eq(workflowExecutionLogs.executionId, workflowExecutions.id)
-        )
-        .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
-        .where(
-          and(
-            eq(workflows.organizationId, organizationId),
-            projectId ? eq(workflows.projectId, projectId) : undefined,
-            gte(workflowExecutions.startedAt, rangeStart),
-            lt(workflowExecutions.startedAt, rangeEnd),
-            isNull(workflowExecutions.deletedAt),
-            sql`${stepNetwork} IS NOT NULL`,
-            ...workflowFilterConditions(withoutNetworks, {
-              organizationId,
-              rangeStart,
-              rangeEnd,
-              projectId,
-            })
-          )
-        )
-        // Ordinal, because the expression carries bound parameters that would
-        // bind a second time and stop matching the select.
-        .groupBy(sql`1`)
+    ? (
+        await db.execute<{ network: string | null; value: string }>(sql`
+          SELECT net.network AS network,
+                 COUNT(DISTINCT ${workflowExecutions.id}) AS value
+            FROM ${workflowExecutions}
+            JOIN ${workflows} ON ${workflows.id} = ${workflowExecutions.workflowId}
+            CROSS JOIN LATERAL (
+              SELECT DISTINCT chain AS network FROM (
+                SELECT ${stepNetwork} AS chain
+                  FROM ${workflowExecutionLogs}
+                 WHERE ${workflowExecutionLogs.executionId} = ${workflowExecutions.id}
+                UNION
+                SELECT entry->>'network' AS chain
+                  FROM jsonb_array_elements(${workflowExecutions.transactionHashes}) AS entry
+              ) sources
+              WHERE chain IS NOT NULL
+            ) AS net
+           WHERE ${and(
+             eq(workflows.organizationId, organizationId),
+             projectId ? eq(workflows.projectId, projectId) : undefined,
+             gte(workflowExecutions.startedAt, rangeStart),
+             lt(workflowExecutions.startedAt, rangeEnd),
+             isNull(workflowExecutions.deletedAt),
+             ...workflowFilterConditions(withoutNetworks, {
+               organizationId,
+               rangeStart,
+               rangeEnd,
+               projectId,
+             })
+           )}
+           GROUP BY net.network
+        `)
+      ).map((row) => ({ network: row.network, value: Number(row.value) }))
     : [];
 
   const directRows = wanted.direct

@@ -58,6 +58,24 @@ export function getTimeRangeStart(
 }
 
 /**
+ * The end of the window, from an optional `customEnd` off the query string.
+ *
+ * Same guard as the start above, for the same reason. `new Date(customEnd)`
+ * with no validation yields an Invalid Date for anything unparseable, and every
+ * comparison against it answers false: the analytics endpoints returned
+ * "Invalid time value" rather than a result. An absent or unparseable value
+ * means now, which is what a caller asking for an open-ended window wants.
+ */
+export function getTimeRangeEnd(customEnd?: string): Date {
+  const now = new Date();
+  const parsed = customEnd ? new Date(customEnd) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) {
+    return now;
+  }
+  return parsed > now ? now : parsed;
+}
+
+/**
  * Get the previous period start for comparison deltas.
  * e.g. if range is 24h, previous period is 48h-24h ago.
  */

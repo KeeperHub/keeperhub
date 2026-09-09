@@ -57,7 +57,9 @@ app:
     EXECUTION_RETENTION_DRY_RUN:
       type: kv
       value: "true"
-    # Backstop for step logs: nothing survives past this, whatever the plan says.
+    # Ceiling on the no-join backstop pass. That pass runs at the longest
+    # window any organization is actually on, capped here, so raising this
+    # only bites once some plan sells a longer window than the value below.
     EXECUTION_LOG_FLOOR_RETENTION_DAYS:
       type: kv
       value: "400"
@@ -917,8 +919,9 @@ app:
       # the owning org's plan sells, output_raw is nulled once a run can no
       # longer resume, and run rows retire on a flat billing-safe window.
       # Hourly: every pass works on a bounded slice, so it only has to keep up
-      # with rows crossing their boundary, and EXECUTION_RETENTION_LOOKBACK_DAYS
-      # covers a missed run. Off until EXECUTION_RETENTION_ENABLED is "true".
+      # with rows crossing their boundary. A missed run is covered by the
+      # per-organization watermark, which only advances on a real drain.
+      # Off until EXECUTION_RETENTION_ENABLED is "true".
       - name: retention
         image:
           repository: ${ECR_REGISTRY}/keeperhub-staging
