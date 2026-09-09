@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { logInputField, logOutputField } from "@/lib/db/execution-log-fields";
+import type { TransactionHashEntry } from "@/lib/db/schema";
 import {
   workflowExecutionLogs,
   workflowExecutions,
@@ -919,9 +920,28 @@ async function getSponsoredGasTotal(
  */
 function unionNetworks(
   fromLogs: string[] | null,
-  fromLedger: string[] | null
+  fromLedger: string[] | null,
+  fromTransactions?: TransactionHashEntry[] | null
 ): string[] {
-  return [...new Set([...(fromLogs ?? []), ...(fromLedger ?? [])])];
+  return [
+    ...new Set([
+      ...(fromLogs ?? []),
+      ...(fromLedger ?? []),
+      ...(fromTransactions ?? [])
+        .map((entry) => entry.network)
+        .filter((network): network is string => Boolean(network)),
+    ]),
+  ];
+}
+
+/** The first of these that names a real amount, treating "0" as absent. */
+function firstNonZero(...values: Array<string | null>): string | null {
+  for (const value of values) {
+    if (value && value !== "0") {
+      return value;
+    }
+  }
+  return null;
 }
 
 function computeAvgDuration(sum: number, durationCount: number): number | null {
@@ -1533,6 +1553,11 @@ async function fetchWorkflowRuns(
       totalSteps: workflowExecutions.totalSteps,
       completedSteps: workflowExecutions.completedSteps,
       gasUsedWei: logSummary.gasUsedWei,
+      // The run row's own total, written at terminal finalize. The rollup above
+      // is the step-log sum, which empties out once retention takes the steps,
+      // and the summary tiles read this column - so without it the Gas column
+      // and the "Gas Spent" tile above it disagree on the same screen.
+      runGasUsedWei: workflowExecutions.gasUsedWei,
       network: logSummary.network,
       networks: logSummary.networks,
       gasNetworks: logSummary.gasNetworks,
@@ -1568,13 +1593,20 @@ async function fetchWorkflowRuns(
     workflowName: row.workflowName ?? "(Deleted)",
     directType: null,
     network: row.network ?? row.ledgerNetworks?.[0] ?? null,
-    networks: unionNetworks(row.networks, row.ledgerNetworks),
-    gasNetworks: unionNetworks(row.gasNetworks, row.ledgerNetworks),
+    networks: unionNetworks(
+      row.networks,
+      row.ledgerNetworks,
+      row.transactionHashes
+    ),
+    gasNetworks: unionNetworks(
+      row.gasNetworks,
+      row.ledgerNetworks,
+      row.transactionHashes
+    ),
     gasCostWei:
       row.gasCostWei && row.gasCostWei !== "0" ? row.gasCostWei : null,
     transactionHashes: row.transactionHashes,
-    gasUsedWei:
-      row.gasUsedWei && row.gasUsedWei !== "0" ? row.gasUsedWei : null,
+    gasUsedWei: firstNonZero(row.gasUsedWei, row.runGasUsedWei),
     totalSteps: row.totalSteps ? Number(row.totalSteps) : null,
     completedSteps: row.completedSteps ? Number(row.completedSteps) : null,
     // Redact on read so rows persisted before URL redaction existed do not
