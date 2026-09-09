@@ -80,9 +80,16 @@ export async function setPurgeWatermark(
  * `started_at`, but only until the floor pass deletes its logs outright.
  */
 export async function advanceWatermarksToFloor(through: Date): Promise<void> {
+  // sql.param, not a bare Date. postgres.js has no encoder for a raw JS Date in
+  // a template hole and throws ERR_INVALID_ARG_TYPE on the whole statement;
+  // binding it through the column carries the timestamp type mapper.
+  const cutoff = sql.param(
+    through,
+    executionRetentionProgress.executionsPurgedThrough
+  );
   await db.execute(sql`
     INSERT INTO execution_retention_progress (organization_id, executions_purged_through, updated_at)
-    SELECT id, ${through}, now() FROM organization
+    SELECT id, ${cutoff}, now() FROM organization
     ON CONFLICT (organization_id) DO UPDATE
       SET executions_purged_through = GREATEST(
             execution_retention_progress.executions_purged_through,
