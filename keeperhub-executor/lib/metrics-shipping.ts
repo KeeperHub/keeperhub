@@ -9,7 +9,10 @@
  * Only counters are shipped. Gauges carry state (not accumulations) and
  * histograms cannot be merged without losing bucket fidelity. RPC latency
  * histograms from Job pods are intentionally dropped; executor-native
- * workflows still record them directly.
+ * workflows still record them directly. The executor broadcast counter is
+ * included: it is bumped by the pod that performed the broadcast and merged
+ * additively on the executor side, giving the #2289 broadcast stage a
+ * fleet-visible total even where the per-run timestamp is not shipped.
  */
 
 import type { Counter } from "prom-client";
@@ -27,10 +30,11 @@ export type IngestPayload = {
 async function loadShippableCounters(): Promise<
   Record<string, Counter<string>>
 > {
-  const { rpcMetrics, workflowCounterMetrics } = await import(
+  const { rpcMetrics, workflowCounterMetrics, executorBroadcastsTotal } = await import(
     "../../lib/metrics/collectors/prometheus"
   );
   return {
+    keeperhub_executor_broadcasts_total: executorBroadcastsTotal,
     keeperhub_rpc_primary_attempts_total: rpcMetrics.primaryAttempts,
     keeperhub_rpc_primary_failures_total: rpcMetrics.primaryFailures,
     keeperhub_rpc_fallback_attempts_total: rpcMetrics.fallbackAttempts,
@@ -47,6 +51,7 @@ async function loadShippableCounters(): Promise<
 }
 
 export const SHIPPABLE_COUNTER_NAMES = [
+  "keeperhub_executor_broadcasts_total",
   "keeperhub_rpc_primary_attempts_total",
   "keeperhub_rpc_primary_failures_total",
   "keeperhub_rpc_fallback_attempts_total",

@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 
+import { logInfo } from "../lib/logging";
+
 /**
  * End-to-end execution latency instrumentation (issue #2289).
  *
@@ -19,10 +21,11 @@ import { randomBytes } from "node:crypto";
  * overwrite the first observation. Durations are derived from the recorded
  * marks rather than stored, keeping the class a pure observer.
  *
- * The `recordExecutionLatency` helper emits BOTH a structured log line (so the
- * correlation id and per-stage timestamps land in Loki / CloudWatch and a run
- * can be traced across executor, runner pod and API) AND a histogram sample via
- * the collector's existing recordLatency surface.
+ * The `emitLatencyLog` helper in index.ts / in-process.ts emits the canonical
+ * structured line (via lib/logging logInfo) carrying the correlation id and
+ * per-stage timestamps, so a run is traceable across tracker, executor and
+ * runner pod logs. Histogram samples go through the collector's recordLatency
+ * surface, labeled by stage/trigger/target only - never by correlation id.
  */
 
 export type LatencyStage =
@@ -45,8 +48,13 @@ const STAGE_ORDER: readonly LatencyStage[] = [
 ];
 
 /**
- * 16 hex chars from a CSPRNG. Short enough for labels and URLs, unique enough
- * to correlate a single execution across systems. No dependency beyond node:crypto.
+ * 16 hex chars from a CSPRNG. Unique enough to correlate a single execution
+ * across systems via logs and the KH_CORRELATION_ID env var. Deliberately NOT
+ * used as a metric label: a fresh value per execution would create one time
+ * series per run (#2289 rules out even per-workflow labels as a metrics-cost
+ * problem). It travels in the structured log lines instead, where it already
+ * joins the tracker, executor and runner on one key. No dependency beyond
+ * node:crypto.
  */
 export function generateCorrelationId(): string {
   return randomBytes(8).toString("hex");
@@ -113,27 +121,47 @@ export class ExecutionLatency {
   }
 
   /**
-   * Single-line structured summary matching the executor's JSON log shape
-   * (`[Component] key=value ...`). Parsable with a plain key=value splitter.
+   * The interval #2289 exists for: trigger observed by the tracker to the
+   * transaction actually broadcast to the chain. Undefined until both stages
+   * are marked (legacy messages have no `observed`; non-write runs never
+   * broadcast).
    */
-  summaryLine(params: {
+  broadcastMs(): number | undefined {
+    return this.stageMs("observed", "broadcast");
+  }
+
+  /**
+   * Emit the canonical structured latency line for this run via logInfo
+   * (lib/logging). The correlation id rides as a label so tracker, executor
+   * and runner logs join on one key; stage timestamps and derived durations
+   * ride as extra fields. Deliberately NOT mirrored into metric labels - a
+   * fresh id per execution would create one time series per run.
+   */
+  emitLog(params: {
     workflowId: string;
-    executionId?: string;
+    executionId: string;
     triggerType: string;
     dispatchTarget: string;
-  }): string {
+  }): void {
     const { workflowId, executionId, triggerType, dispatchTarget } = params;
-    const fields = this.toLogFields();
-    const parts = [
-      "correlationId=" + this.correlationId,
-      "workflowId=" + workflowId,
-      "triggerType=" + triggerType,
-      "dispatchTarget=" + dispatchTarget,
-    ];
-    if (executionId) parts.push("executionId=" + executionId);
-    for (const [key, value] of Object.entries(fields)) {
-      if (value !== undefined) parts.push(`${key}=${value}`);
+    const labels: Record<string, string> = {
+      component: "executor_latency",
+      correlation_id: this.correlationId,
+      workflow_id: workflowId,
+      execution_id: executionId,
+      trigger_type: triggerType,
+      dispatch_target: dispatchTarget,
+    };
+    const extras: Record<string, string> = {};
+    for (const [key, value] of Object.entries(this.toLogFields())) {
+      if (key !== "correlationId" && value !== undefined) {
+        extras[key] = String(value);
+      }
     }
-    return `[Executor:Latency] ${parts.join(" ")}`;
+    const obsToBroadcast = this.broadcastMs();
+    if (obsToBroadcast !== undefined) {
+      extras.observed_to_broadcast_ms = String(obsToBroadcast);
+    }
+    logInfo("execution latency stages", { ...labels, ...extras });
   }
 }

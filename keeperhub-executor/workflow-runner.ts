@@ -43,6 +43,7 @@ import {
   updateExecutionStatus,
   updateScheduleStatus,
 } from "./lib/db-helpers";
+import { takeBroadcastMarker } from "./lib/broadcast-marker";
 import { shipMetricsToExecutor } from "./lib/ship-metrics";
 
 // Validate required environment variables
@@ -282,6 +283,22 @@ async function main(): Promise<void> {
         organizationName,
       })
     );
+
+    // Latency instrumentation (issue #2289): the write path marked its
+    // broadcast into the sidecar (same pod). Read and clear it now that the
+    // run has returned and the marker can only belong to this execution, and
+    // log it joined on correlation id + execution id so the observed ->
+    // broadcast interval is derivable per run in Loki. Job pods do not ship
+    // histogram observations (see lib/metrics-shipping.ts), so the log line
+    // is the per-run record for the k8s-job path.
+    const marker = takeBroadcastMarker();
+    if (marker && marker.executionId === executionId) {
+      console.log(
+        `[Runner] Broadcast stage: executionId=${executionId}${correlationSuffix} broadcastAt=${new Date(
+          marker.broadcastAt
+        ).toISOString()}`
+      );
+    }
 
     const duration = Date.now() - startTime;
     console.log(`[Runner] Workflow completed in ${duration}ms${correlationSuffix}`);

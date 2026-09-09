@@ -3,6 +3,7 @@ import { logWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
+import { markBroadcast } from "@/keeperhub-executor/lib/broadcast-marker";
 import {
   isOnChainPendingError,
   OnChainPendingError,
@@ -111,15 +112,21 @@ export class EvmChainAdapter implements ChainAdapter {
       maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
       chainId: this.chainId,
     };
-    const tx = options.rpcManager
-      ? (
-          await submitSignedTransactionWithFailover(
-            signer,
-            txRequest,
-            options.rpcManager
-          )
-        ).response
-      : await signer.sendTransaction(txRequest);
+    let tx: ethers.TransactionResponse;
+    if (options.rpcManager) {
+      tx = (
+        await submitSignedTransactionWithFailover(
+          signer,
+          txRequest,
+          options.rpcManager
+        )
+      ).response;
+    } else {
+      tx = await signer.sendTransaction(txRequest);
+    }
+    // Issue #2289: the transaction is on the wire - record the broadcast
+    // stage (sidecar marker + process-local counter, best-effort).
+    markBroadcast();
 
     return this.confirmTransaction(tx, session, nonce, gasConfig, options);
   }
@@ -237,6 +244,9 @@ export class EvmChainAdapter implements ChainAdapter {
         ...(request.value ? { value: request.value } : {}),
       });
     }
+    // Issue #2289: the transaction is on the wire - record the broadcast
+    // stage (sidecar marker + process-local counter, best-effort).
+    markBroadcast();
 
     return this.confirmTransaction(tx, session, nonce, gasConfig, options);
   }

@@ -1,4 +1,5 @@
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { takeBroadcastMarker } from "./lib/broadcast-marker";
 import { validateWorkflowIntegrations } from "../lib/db/integrations";
 import { getMetricsCollector } from "../lib/metrics";
 import { LabelKeys, MetricNames } from "../lib/metrics/types";
@@ -162,10 +163,15 @@ export async function executeInProcess(params: {
 
 /**
  * Latency instrumentation (issue #2289): emit the receive->completed histogram
- * for an in-process run that reached a terminal state, split by trigger and
- * target so slow producers vs slow runners are visible independently. The
- * structured stage log line is emitted here (received/started/completed with
- * per-stage durations) for the same run.
+ * for an in-process run that reached a terminal state, split by trigger,
+ * target and stage so slow producers vs slow runners are visible
+ * independently. The structured stage log line is emitted here
+ * (received/started/completed with per-stage durations) for the same run.
+ *
+ * The broadcast stage is read back from the sidecar marker the write path
+ * dropped at the broadcast point (same process, engine already returned): the
+ * observed -> broadcast histogram - the interval issue #2289 exists for - is
+ * recorded here when both endpoints are known.
  */
 function recordInProcessLatency(params: {
   latency: ExecutionLatency;
@@ -175,6 +181,12 @@ function recordInProcessLatency(params: {
   totalMs: number;
 }): void {
   const { latency, workflowId, executionId, triggerType, totalMs } = params;
+  // The write path marked its broadcast into the sidecar; pick it up now that
+  // the run has returned and the marker can only belong to this execution.
+  const marker = takeBroadcastMarker();
+  if (marker && marker.executionId === executionId) {
+    latency.mark("broadcast", marker.broadcastAt);
+  }
   const queueToStartMs = latency.stageMs("received", "started");
   if (queueToStartMs !== undefined) {
     getMetricsCollector().recordLatency(
@@ -183,16 +195,25 @@ function recordInProcessLatency(params: {
       {
         [LabelKeys.TRIGGER_TYPE]: triggerType,
         [LabelKeys.DISPATCH_TARGET]: "in-process",
-        [LabelKeys.CORRELATION_ID]: latency.correlationId,
+        [LabelKeys.STAGE]: "started",
       }
     );
   }
   getMetricsCollector().recordLatency(MetricNames.EXECUTOR_EXECUTION_LATENCY, totalMs, {
     [LabelKeys.TRIGGER_TYPE]: triggerType,
     [LabelKeys.DISPATCH_TARGET]: "in-process",
-    [LabelKeys.CORRELATION_ID]: latency.correlationId,
+    [LabelKeys.STAGE]: "completed",
   });
-  console.log(
-    latency.summaryLine({ workflowId, executionId, triggerType, dispatchTarget: "in-process" })
-  );
+  const obsToBroadcast = latency.stageMs("observed", "broadcast");
+  if (obsToBroadcast !== undefined) {
+    getMetricsCollector().recordLatency(
+      MetricNames.EXECUTOR_BROADCAST_LATENCY,
+      obsToBroadcast,
+      {
+        [LabelKeys.TRIGGER_TYPE]: triggerType,
+        [LabelKeys.DISPATCH_TARGET]: "in-process",
+      }
+    );
+  }
+  latency.emitLog({ workflowId, executionId, triggerType, dispatchTarget: "in-process" });
 }

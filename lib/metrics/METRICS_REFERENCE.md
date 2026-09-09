@@ -61,6 +61,9 @@ Histogram metrics tracking duration/response times.
 | `api.status.latency_ms` | Status polling response time | `status_code`, `status`, `execution_status` | P95 < 30ms | API |
 | `plugin.action.duration_ms` | Plugin action execution time | `plugin_name`, `action_name`, `status` | P95 < 1000ms | API |
 | `ai.generation.duration_ms` | AI workflow generation time | `status` | P95 < 5000ms | API |
+| `executor.dispatch.latency_ms` | SQS receive -> dispatch hand-off (or engine start for in-process runs) | `trigger_type`, `dispatch_target`, `stage` | P95 < 2500ms | Executor |
+| `executor.execution.latency_ms` | Full executor-visible lifetime (receive -> terminal, in-process runs) | `trigger_type`, `dispatch_target`, `stage` | P95 < 30000ms | Executor |
+| `executor.broadcast.latency_ms` | Trigger observed -> transaction broadcast (issue #2289) | `trigger_type`, `dispatch_target` | P95 < 10000ms | Executor |
 
 ---
 
@@ -641,6 +644,10 @@ Prometheus metrics are prefixed with `keeperhub_` and use snake_case:
 | `api.status.latency_ms` | `keeperhub_api_status_latency_ms` | histogram |
 | `plugin.action.duration_ms` | `keeperhub_plugin_action_duration_ms` | histogram |
 | `ai.generation.duration_ms` | `keeperhub_ai_generation_duration_ms` | histogram |
+| `executor.dispatch.latency_ms` | `keeperhub_executor_dispatch_latency_ms` | histogram |
+| `executor.execution.latency_ms` | `keeperhub_executor_execution_latency_ms` | histogram |
+| `executor.broadcast.latency_ms` | `keeperhub_executor_broadcast_latency_ms` | histogram |
+| `executor.broadcasts.total` | `keeperhub_executor_broadcasts_total` | counter |
 | `plugin.invocations.total` | `keeperhub_plugin_invocations_total` | counter |
 | `plugin.action.errors` | `keeperhub_plugin_action_errors_total` | counter |
 | `api.errors.total` | `keeperhub_api_errors_total` | counter |

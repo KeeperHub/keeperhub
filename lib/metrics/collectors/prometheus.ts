@@ -752,6 +752,64 @@ const aiDuration = getOrCreateHistogram(
   [500, 1000, 2000, 5000, 10_000, 20_000]
 );
 
+// Executor pipeline latency histograms (issue #2289) -> apiRegistry (per-pod,
+// scrape all pods). The executor records these in its own process for the
+// receive->dispatch hand-off and for in-process runs end-to-end.
+//
+// Runtime histograms are the right choice here despite the note above
+// histogramMap saying workflow execution/step metrics moved to DB-sourced
+// gauges: that decision covers workflow.execution.duration_ms and
+// workflow.step.duration_ms, whose per-row data the database already holds.
+// These two measure the SQS queue leg and the dispatch hand-off - intervals
+// between stages that happen in memory and leave no database timestamps - so
+// a DB-sourced gauge cannot reconstruct them. Deliberate exception, not an
+// oversight.
+const EXECUTOR_LATENCY_LABELS = ["trigger_type", "dispatch_target", "stage"];
+
+const executorDispatchLatency = getOrCreateHistogram(
+  apiRegistry,
+  "keeperhub_executor_dispatch_latency_ms",
+  "Time from SQS receive to the dispatch hand-off (or to engine start for in-process runs), split by trigger, dispatch target and stage",
+  EXECUTOR_LATENCY_LABELS,
+  [50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000]
+);
+
+const executorExecutionLatency = getOrCreateHistogram(
+  apiRegistry,
+  "keeperhub_executor_execution_latency_ms",
+  "Full executor-visible execution lifetime (SQS receive to terminal state) for in-process runs, split by trigger, dispatch target and stage",
+  EXECUTOR_LATENCY_LABELS,
+  [100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 300_000]
+);
+
+// The headline measurement issue #2289 asks for: the distribution of time
+// from the trigger event being observed by the tracker to the transaction
+// actually being broadcast to the chain. Populated where both endpoints are
+// known: in-process runs (sidecar marker read back after the run). k8s-job
+// runs expose the same interval per-run in the pod's structured log lines -
+// ephemeral pods do not ship histogram observations (see
+// keeperhub-executor/lib/metrics-shipping.ts), so a central histogram for
+// Jobs would need point-sample ingestion first.
+const executorBroadcastLatency = getOrCreateHistogram(
+  apiRegistry,
+  "keeperhub_executor_broadcast_latency_ms",
+  "Time from trigger observed by the tracker to the transaction broadcast to the chain, split by trigger and dispatch target",
+  ["trigger_type", "dispatch_target"],
+  [250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 120_000, 300_000]
+);
+
+// Broadcast attempts, bumped by the process that performed the broadcast and
+// merged into the executor's registry via the counter-delta ingest. The
+// workflow.executions counters on Job pods use the same channel; the delta
+// ingest deliberately avoids re-scaling fleet-wide rates from per-pod totals,
+// so broadcast visibility is additive here rather than approximate.
+const executorBroadcastsTotal = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_executor_broadcasts_total",
+  "Transactions broadcast to the chain by executor-dispatched runs, merged from pod counter deltas",
+  []
+);
+
 // Sponsorship counters
 const SPONSORSHIP_LABELS = ["chain_id", "organization_id"];
 
@@ -1422,9 +1480,15 @@ const histogramMap: Record<string, Histogram> = {
   "api.status.latency_ms": statusLatency,
   "plugin.action.duration_ms": pluginDuration,
   "ai.generation.duration_ms": aiDuration,
+  // Executor pipeline latency (issue #2289). See the registration above for
+  // why these are runtime histograms rather than DB-sourced gauges.
+  "executor.dispatch.latency_ms": executorDispatchLatency,
+  "executor.execution.latency_ms": executorExecutionLatency,
+  "executor.broadcast.latency_ms": executorBroadcastLatency,
 };
 
 const counterMap: Record<string, Counter> = {
+  "executor.broadcasts.total": executorBroadcastsTotal,
   "plugin.invocations.total": pluginInvocations,
   "workflow.executions.started.total": workflowExecutionsStartedTotal,
   "db.query.slow_count": slowQueries,

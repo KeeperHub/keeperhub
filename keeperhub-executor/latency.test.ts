@@ -1,10 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ExecutionLatency,
   generateCorrelationId,
 } from "./latency";
 import { executorMessageSchema } from "./message-schema";
+import { logInfo } from "../lib/logging";
 import { LabelKeys, MetricNames } from "../lib/metrics/types";
+
+vi.mock("../lib/logging", () => ({ logInfo: vi.fn() }));
+
+const logInfoMock = vi.mocked(logInfo);
+
+beforeEach(() => {
+  logInfoMock.mockClear();
+});
 
 describe("generateCorrelationId", () => {
   it("returns a 16-hex-char id", () => {
@@ -87,33 +96,70 @@ describe("ExecutionLatency", () => {
     );
   });
 
-  it("emits a key=value summary line with context", () => {
+  it("emits the canonical structured latency line via logInfo", () => {
     const latency = new ExecutionLatency("corr-1");
     latency.mark("received", 0);
     latency.mark("started", 50);
     latency.mark("completed", 200);
 
-    const line = latency.summaryLine({
+    latency.emitLog({
       workflowId: "wf-1",
       executionId: "exec-1",
       triggerType: "event",
       dispatchTarget: "in-process",
     });
 
-    expect(line).toContain("[Executor:Latency]");
-    expect(line).toContain("correlationId=corr-1");
-    expect(line).toContain("workflowId=wf-1");
-    expect(line).toContain("executionId=exec-1");
-    expect(line).toContain("triggerType=event");
-    expect(line).toContain("dispatchTarget=in-process");
-    expect(line).toContain("receivedAt=");
-    expect(line).toContain("completedAt=");
-    expect(line).toContain("queueToStartMs=50");
-    expect(line).toContain("totalMs=200");
-    // Grep-parsable: exactly one space between key=value tokens, no raw objects.
-    expect(line.split(" ")).toEqual(
-      expect.arrayContaining(["correlationId=corr-1", "totalMs=200"])
-    );
+    expect(logInfoMock).toHaveBeenCalledTimes(1);
+    const [message, labels] = logInfoMock.mock.calls[0];
+    expect(message).toBe("execution latency stages");
+    expect(labels).toMatchObject({
+      component: "executor_latency",
+      correlation_id: "corr-1",
+      workflow_id: "wf-1",
+      execution_id: "exec-1",
+      trigger_type: "event",
+      dispatch_target: "in-process",
+      receivedAt: new Date(0).toISOString(),
+      startedAt: new Date(50).toISOString(),
+      completedAt: new Date(200).toISOString(),
+      queueToStartMs: "50",
+      totalMs: "200",
+    });
+  });
+
+  it("carries the observed -> broadcast duration in the log line", () => {
+    const latency = new ExecutionLatency("corr-obs");
+    latency.mark("observed", 0);
+    latency.mark("received", 100);
+    latency.mark("started", 200);
+    latency.mark("broadcast", 250);
+    latency.mark("completed", 300);
+
+    latency.emitLog({
+      workflowId: "wf-1",
+      executionId: "exec-1",
+      triggerType: "event",
+      dispatchTarget: "in-process",
+    });
+
+    const [, labels] = logInfoMock.mock.calls[0];
+    expect(labels).toMatchObject({
+      observedAt: new Date(0).toISOString(),
+      broadcastAt: new Date(250).toISOString(),
+      observed_to_broadcast_ms: "250",
+    });
+    // Stage ordering follows STAGE_ORDER.
+    const keys = Object.keys(labels ?? {});
+    expect(keys.indexOf("observedAt")).toBeLessThan(keys.indexOf("receivedAt"));
+    expect(keys.indexOf("receivedAt")).toBeLessThan(keys.indexOf("broadcastAt"));
+  });
+
+  it("derives the #2289 observed -> broadcast interval only when both are marked", () => {
+    const latency = new ExecutionLatency();
+    latency.mark("observed", 1_000);
+    expect(latency.broadcastMs()).toBeUndefined(); // never broadcast
+    latency.mark("broadcast", 4_250);
+    expect(latency.broadcastMs()).toBe(3_250);
   });
 
   it("keeps the ordering contract: skipped stages are simply absent", () => {
@@ -146,22 +192,24 @@ describe("ExecutionLatency", () => {
     expect(fields.observedAt).toBe(new Date(1_000).toISOString());
   });
 
-  it("emits observed in the summary line before received", () => {
+  it("emits observed before received in the log line", () => {
     const latency = new ExecutionLatency("corr-obs");
     latency.mark("observed", 0);
     latency.mark("received", 100);
     latency.mark("started", 200);
     latency.mark("completed", 300);
-    const line = latency.summaryLine({
+
+    latency.emitLog({
       workflowId: "wf-1",
       executionId: "exec-1",
       triggerType: "event",
       dispatchTarget: "in-process",
     });
-    expect(line.indexOf("observedAt=")).toBeLessThan(
-      line.indexOf("receivedAt=")
-    );
-    expect(line).toContain("correlationId=corr-obs");
+
+    const [, labels] = logInfoMock.mock.calls[0];
+    const keys = Object.keys(labels ?? {});
+    expect(keys.indexOf("observedAt")).toBeLessThan(keys.indexOf("receivedAt"));
+    expect(labels).toMatchObject({ correlation_id: "corr-obs" });
   });
 });
 
@@ -171,11 +219,15 @@ describe("latency metric constants", () => {
   it("exposes the executor latency metric names", () => {
     expect(MetricNames.EXECUTOR_DISPATCH_LATENCY).toBe("executor.dispatch.latency_ms");
     expect(MetricNames.EXECUTOR_EXECUTION_LATENCY).toBe("executor.execution.latency_ms");
+    expect(MetricNames.EXECUTOR_BROADCAST_LATENCY).toBe("executor.broadcast.latency_ms");
   });
 
-  it("exposes the correlation/dispatch labels", () => {
-    expect(LabelKeys.CORRELATION_ID).toBe("correlation_id");
+  it("exposes the dispatch/stage labels and no correlation-id label", () => {
     expect(LabelKeys.DISPATCH_TARGET).toBe("dispatch_target");
+    expect(LabelKeys.STAGE).toBe("stage");
+    // The correlation id must never be a metric label (one time series per
+    // execution); it lives in logs and KH_CORRELATION_ID only.
+    expect(Object.values(LabelKeys)).not.toContain("correlation_id");
   });
 });
 

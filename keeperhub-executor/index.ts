@@ -338,18 +338,16 @@ async function dispatchExecution(params: {
         {
           [LabelKeys.TRIGGER_TYPE]: triggerType,
           [LabelKeys.DISPATCH_TARGET]: target,
-          [LabelKeys.CORRELATION_ID]: latency.correlationId,
+          [LabelKeys.STAGE]: "dispatched",
         }
       );
     }
-    console.log(
-      latency.summaryLine({
-        workflowId,
-        executionId,
-        triggerType,
-        dispatchTarget: target,
-      })
-    );
+    latency.emitLog({
+      workflowId,
+      executionId,
+      triggerType,
+      dispatchTarget: target,
+    });
   }
 }
 

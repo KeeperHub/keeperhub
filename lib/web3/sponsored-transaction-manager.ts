@@ -14,6 +14,7 @@ import {
 } from "@/lib/billing/gas-credits";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
+import { markBroadcast } from "@/keeperhub-executor/lib/broadcast-marker";
 import { MetricNames } from "@/lib/metrics/types";
 import { resolveRpcConfig } from "@/lib/rpc/config-service";
 import {
@@ -138,6 +139,10 @@ export async function executeSponsoredTransaction(
     return null;
   }
 
+  // Issue #2289: Turnkey's Gas Station has broadcast the transaction from its
+  // own infrastructure - record the broadcast stage (best-effort).
+  markBroadcast();
+
   return await settleSponsoredTx(
     submitResult.txHash,
     submitResult.sendTransactionStatusId,
@@ -203,6 +208,10 @@ export async function executeSponsoredContractTransaction(
   if (submitResult === null) {
     return null;
   }
+
+  // Issue #2289: Turnkey's Gas Station has broadcast the transaction from its
+  // own infrastructure - record the broadcast stage (best-effort).
+  markBroadcast();
 
   return await settleSponsoredTx(
     submitResult.txHash,
