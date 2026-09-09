@@ -1,5 +1,6 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import { fetchCredentials } from "@/lib/credential-fetcher";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { assertUrlIsPublic, safeFetch, SsrfBlockedError } from "@/lib/safe-fetch";
@@ -25,8 +26,9 @@ export type ExecuteAgentActionResult =
 
 export type ExecuteAgentActionCoreInput = {
   action: string;
-  payload?: string | Record<string, unknown>;
   agentId?: string;
+  payload?: string | Record<string, unknown>;
+  userId?: string;
   path?: string;
 };
 
@@ -58,7 +60,14 @@ async function stepHandler(
   }
 
   const baseUrl = rawUrl.replace(TRAILING_SLASH_RE, "");
-  const agentId = input.agentId?.trim() || credentials.ELIZAOS_AGENT_ID?.trim() || "default";
+  const agentId = input.agentId?.trim() || credentials.ELIZAOS_AGENT_ID?.trim();
+  if (!agentId) {
+    return {
+      success: false,
+      error: "Agent ID is required. Please specify a valid agent UUID.",
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
 
   let parsedPayload: Record<string, unknown> = {};
   if (input.payload) {
@@ -77,51 +86,81 @@ async function stepHandler(
     }
   }
 
-  // Resolve target endpoint path:
-  // Allows user-configured path (e.g. /api/agent/action for v2, or custom plugin route),
-  // with optional {agentId} token interpolation. Defaults to /api/agents/{agentId}/action.
-  let resolvedPath: string;
-  if (input.path?.trim()) {
-    resolvedPath = input.path.trim().replace("{agentId}", encodeURIComponent(agentId));
-  } else if (agentId && agentId !== "default") {
-    resolvedPath = `/api/agents/${encodeURIComponent(agentId)}/action`;
-  } else {
-    resolvedPath = "/api/agents/default/action";
-  }
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
 
-  if (!resolvedPath.startsWith("/")) {
-    resolvedPath = `/${resolvedPath}`;
+  if (credentials.ELIZAOS_API_KEY?.trim()) {
+    headers.Authorization = `Bearer ${credentials.ELIZAOS_API_KEY.trim()}`;
   }
-
-  const fullUrl = `${baseUrl}${resolvedPath}`;
 
   try {
-    // SSRF guard: endpointUrl is user-supplied on the integration and path is configurable,
-    // so validate that destination does not point to link-local or RFC1918 internal networks
-    // before any outbound request.
-    await assertUrlIsPublic(fullUrl);
+    // Mode 1: Custom endpoint path provided (for plugin-mounted routes or custom APIs)
+    if (input.path?.trim()) {
+      let resolvedPath = input.path.trim().replaceAll("{agentId}", encodeURIComponent(agentId));
+      if (!resolvedPath.startsWith("/")) {
+        resolvedPath = `/${resolvedPath}`;
+      }
+      const fullUrl = `${baseUrl}${resolvedPath}`;
 
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    };
+      // SSRF guard: ensure public destination before egress
+      await assertUrlIsPublic(fullUrl);
 
-    if (credentials.ELIZAOS_API_KEY?.trim()) {
-      headers.Authorization = `Bearer ${credentials.ELIZAOS_API_KEY.trim()}`;
+      const response = await safeFetch(fullUrl, {
+        plugin: "elizaos",
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          action,
+          payload: parsedPayload,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = (await response.json().catch(() => ({}))) as Record<
+          string,
+          unknown
+        >;
+        return {
+          success: false,
+          error:
+            (typeof errorData.message === "string" && errorData.message) ||
+            (typeof errorData.error === "string" && errorData.error) ||
+            `HTTP ${response.status}: ElizaOS agent action failed`,
+          errorClass:
+            response.status >= 500
+              ? ExecutionErrorType.EXTERNAL
+              : ExecutionErrorType.USER,
+        };
+      }
+
+      const rawResponse = await response.text();
+      return {
+        success: true,
+        response: rawResponse,
+      };
     }
 
-    const response = await safeFetch(fullUrl, {
+    // Mode 2: Out-of-the-box default targeting the published ElizaOS v1 Sessions API:
+    // Step A: POST /api/messaging/sessions with agentId (UUID) and userId (UUID)
+    const sessionUrl = `${baseUrl}/api/messaging/sessions`;
+    await assertUrlIsPublic(sessionUrl);
+
+    const callerUserId = input.userId?.trim() || randomUUID();
+
+    const sessionRes = await safeFetch(sessionUrl, {
       plugin: "elizaos",
       method: "POST",
       headers,
       body: JSON.stringify({
-        action,
-        payload: parsedPayload,
+        agentId,
+        userId: callerUserId,
       }),
     });
 
-    if (!response.ok) {
-      const errorData = (await response.json().catch(() => ({}))) as Record<
+    if (!sessionRes.ok) {
+      const errorData = (await sessionRes.json().catch(() => ({}))) as Record<
         string,
         unknown
       >;
@@ -130,16 +169,79 @@ async function stepHandler(
         error:
           (typeof errorData.message === "string" && errorData.message) ||
           (typeof errorData.error === "string" && errorData.error) ||
-          `HTTP ${response.status}: ElizaOS agent action failed`,
+          `HTTP ${sessionRes.status}: Failed to create ElizaOS messaging session`,
         errorClass:
-          response.status >= 500
+          sessionRes.status >= 500
             ? ExecutionErrorType.EXTERNAL
             : ExecutionErrorType.USER,
       };
     }
 
-    // Return the raw text representation of the response body to avoid swallowing text/plain
-    const rawResponse = await response.text();
+    const sessionData = (await sessionRes.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const sessionId =
+      (typeof sessionData.id === "string" && sessionData.id) ||
+      (typeof sessionData.sessionId === "string" && sessionData.sessionId) ||
+      (typeof (sessionData.data as Record<string, unknown> | undefined)?.id === "string" &&
+        ((sessionData.data as Record<string, unknown>).id as string)) ||
+      (typeof (sessionData.session as Record<string, unknown> | undefined)?.id === "string" &&
+        ((sessionData.session as Record<string, unknown>).id as string));
+
+    if (!sessionId) {
+      return {
+        success: false,
+        error: "Failed to obtain sessionId from ElizaOS session creation response.",
+        errorClass: ExecutionErrorType.EXTERNAL,
+      };
+    }
+
+    // Step B: POST /api/messaging/sessions/{sessionId}/messages with { content }
+    const messageUrl = `${baseUrl}/api/messaging/sessions/${encodeURIComponent(sessionId)}/messages`;
+    await assertUrlIsPublic(messageUrl);
+
+    const contentText =
+      typeof parsedPayload.text === "string" && parsedPayload.text
+        ? parsedPayload.text
+        : Object.keys(parsedPayload).length > 0
+          ? `${action}: ${JSON.stringify(parsedPayload)}`
+          : action;
+
+    const content = {
+      text: contentText,
+      action,
+      ...parsedPayload,
+    };
+
+    const messageRes = await safeFetch(messageUrl, {
+      plugin: "elizaos",
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        content,
+      }),
+    });
+
+    if (!messageRes.ok) {
+      const errorData = (await messageRes.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      return {
+        success: false,
+        error:
+          (typeof errorData.message === "string" && errorData.message) ||
+          (typeof errorData.error === "string" && errorData.error) ||
+          `HTTP ${messageRes.status}: Failed to dispatch message to ElizaOS session`,
+        errorClass:
+          messageRes.status >= 500
+            ? ExecutionErrorType.EXTERNAL
+            : ExecutionErrorType.USER,
+      };
+    }
+
+    const rawResponse = await messageRes.text();
     return {
       success: true,
       response: rawResponse,
