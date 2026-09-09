@@ -197,6 +197,12 @@ app:
   podAnnotations:
     reloader.stakater.com/auto: "true"
 
+  # The app is the only component with an ingress, and it routes every path on
+  # its host to these pods, so /api/metrics* is reachable from the internet at
+  # the network layer. What keeps the per-org series private is that these
+  # scrapes arrive on the pod port directly, without the headers the edge adds,
+  # which is the signal the handlers authorize on (lib/metrics/scrape-guard.ts).
+  # Putting a proxy in front of this scrape would break it.
   serviceMonitors:
     enabled: true
     monitors:
