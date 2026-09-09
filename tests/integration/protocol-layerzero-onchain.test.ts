@@ -179,11 +179,27 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
 
   /**
    * Simulates an eth_call against the deployed bytecode and resolves
-   * cleanly if the calldata was accepted: either the call returned hex
-   * data (a token whose approve returns nothing gives back "0x") or it
-   * reverted with CALL_EXCEPTION at the contract level (an acceptable
-   * business revert). Any other error class is rethrown so the test
-   * fails; that signals an ABI/bytecode mismatch.
+   * cleanly only if the calldata was actually accepted - the call must
+   * return hex data, which for a token whose approve returns nothing is
+   * "0x". Any error fails the test.
+   *
+   * This deliberately tolerates no revert, unlike the version of this
+   * helper that other protocol suites carry. That version returns
+   * successfully on any CALL_EXCEPTION, on the theory that a revert may be
+   * an acceptable business rejection rather than an ABI mismatch. Here it
+   * admitted only failures, and this suite's one write proved it: giving
+   * `approve` the signature `approve(address,uint128)` - wrong selector,
+   * valid shape, so the calldata builder is happy - made USDT reject the
+   * call, and the test still passed green.
+   *
+   * The tolerance has nothing to cover on this action. USDT's approve
+   * reverts on exactly one condition, moving a non-zero allowance straight
+   * to another non-zero value, and TEST_ADDRESS holds no allowance to the
+   * adapter, so a revert here can only mean the deployed bytecode rejected
+   * our calldata. The ambiguous shape - CALL_EXCEPTION with no data, which
+   * _shared/onchain-rpc.ts classifies as a degraded endpoint rather than a
+   * contract rejection - is left to itOnchain's retry: four attempts
+   * against a real fault still fail the test rather than passing it.
    *
    * Throws-instead-of-asserts so the helper does not contain expect()
    * calls outside an it() block. Call sites use
@@ -193,25 +209,13 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
     to: string;
     data: string;
   }): Promise<void> {
-    try {
-      const result = await manager.executeWithFailover((p) =>
-        p.call({ ...tx, from: TEST_ADDRESS })
+    const result = await manager.executeWithFailover((p) =>
+      p.call({ ...tx, from: TEST_ADDRESS })
+    );
+    if (!TX_RESULT_HEX_PREFIX.test(result)) {
+      throw new Error(
+        `Expected hex-prefixed return from eth_call, got: ${result}`
       );
-      if (!TX_RESULT_HEX_PREFIX.test(result)) {
-        throw new Error(
-          `Expected hex-prefixed return from eth_call, got: ${result}`
-        );
-      }
-    } catch (err: unknown) {
-      if (
-        typeof err === "object" &&
-        err !== null &&
-        "code" in err &&
-        err.code === "CALL_EXCEPTION"
-      ) {
-        return;
-      }
-      throw err;
     }
   }
 
