@@ -18,7 +18,8 @@ vi.mock("@/lib/internal-service-auth", () => ({
     authenticateInternalService(request, rawBody),
 }));
 
-const { authorizeMetricsScrape } = await import("@/lib/metrics/scrape-guard");
+const { authorizeMetricsScrape, EDGE_HEADERS, NEXT_SYNTHESIZED_HEADERS } =
+  await import("@/lib/metrics/scrape-guard");
 
 function request(headers: Record<string, string> = {}): Request {
   return new Request("https://app.keeperhub.com/api/metrics", { headers });
@@ -35,22 +36,50 @@ describe("authorizeMetricsScrape", () => {
     });
   });
 
-  it.each([
-    "cf-connecting-ip",
-    "cf-ray",
-    "forwarded",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-forwarded-proto",
-  ])("refuses a request forwarded by the edge (%s)", async (header) => {
-    const result = await authorizeMetricsScrape(
-      request({ [header]: "1.2.3.4" })
+  it.each(["cf-connecting-ip", "cf-ray", "forwarded"])(
+    "refuses a request forwarded by the edge (%s)",
+    async (header) => {
+      const result = await authorizeMetricsScrape(
+        request({ [header]: "1.2.3.4" })
+      );
+
+      expect(result).toEqual({
+        allowed: false,
+        status: 404,
+        message: "Not Found",
+      });
+    }
+  );
+
+  // The 2026-09-09 outage: matching on x-forwarded-* refused every scrape,
+  // because Next.js fills those in from the socket when the client sent none.
+  // A guard header must be one Next.js never invents.
+  it("matches no header Next.js sets on its own", () => {
+    const overlap = EDGE_HEADERS.filter((header) =>
+      NEXT_SYNTHESIZED_HEADERS.includes(header)
     );
 
-    expect(result).toEqual({
-      allowed: false,
-      status: 404,
-      message: "Not Found",
+    expect(overlap).toEqual([]);
+  });
+
+  it.each(NEXT_SYNTHESIZED_HEADERS)(
+    "allows an in-cluster scrape carrying %s, which Next.js adds itself",
+    async (header) => {
+      const result = await authorizeMetricsScrape(
+        request({ [header]: "10.0.2.244" })
+      );
+
+      expect(result).toEqual({ allowed: true });
+    }
+  );
+
+  it("allows a scrape carrying the full set Next.js synthesizes", async () => {
+    const headers = Object.fromEntries(
+      NEXT_SYNTHESIZED_HEADERS.map((header) => [header, "10.0.2.244"])
+    );
+
+    await expect(authorizeMetricsScrape(request(headers))).resolves.toEqual({
+      allowed: true,
     });
   });
 
