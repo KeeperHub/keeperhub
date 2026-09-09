@@ -156,6 +156,67 @@ function resetSpies(): void {
 }
 
 describe("simulateContractCall", () => {
+  it("B2 refuses a bare overloaded name before RPC", async () => {
+    resetSpies();
+    executeWithFailover.mockResolvedValue([BigInt(45_000), "0x"]);
+    const abi = [
+      {
+        type: "function",
+        name: "swap",
+        inputs: [{ name: "amount", type: "uint256" }],
+        outputs: [],
+      },
+      {
+        type: "function",
+        name: "swap",
+        inputs: [
+          {
+            name: "params",
+            type: "tuple",
+            components: [
+              { name: "token", type: "address" },
+              { name: "amount", type: "uint256" },
+            ],
+          },
+        ],
+        outputs: [],
+      },
+    ];
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: JSON.stringify(abi),
+      functionName: "swap",
+      functionArgs: "[1]",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("matches 2 overloads");
+    }
+    expect(getRpcProvider).not.toHaveBeenCalled();
+    expect(executeWithFailover).not.toHaveBeenCalled();
+  });
+
+  it("B2 accepts duplicate entries of the same canonical signature", async () => {
+    resetSpies();
+    executeWithFailover.mockResolvedValueOnce([BigInt(45_000), "0x"]);
+    const entry = JSON.parse(WRITE_ABI)[0];
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: JSON.stringify([
+        entry,
+        { ...entry, inputs: [{ name: "renamed", type: "uint256" }] },
+      ]),
+      functionName: "setValue",
+      functionArgs: "[1]",
+    });
+    expect(result.success).toBe(true);
+    expect(executeWithFailover).toHaveBeenCalledTimes(1);
+  });
+
   // The contract-call route calls this function directly rather than going
   // through simulateTokenTransfer, so gating only the latter left
   // POST /api/execute/contract-call?simulate=true reporting a clean dry run

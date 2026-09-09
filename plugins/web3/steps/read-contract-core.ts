@@ -176,6 +176,28 @@ async function readContractInner(
   const functionAbi = resolution.entry;
   const abiFunctionKey = getAbiFunctionKey(parsedAbi, abiFunction, functionAbi);
 
+  // Fragment errors are deterministic user input errors, not provider failures.
+  // Validate before entering the adapter's RPC failover loop.
+  let contractInterface: ethers.Interface;
+  try {
+    contractInterface = new ethers.Interface(parsedAbi as ethers.InterfaceAbi);
+    if (!contractInterface.getFunction(abiFunctionKey)) {
+      throw new Error(`Function '${abiFunction}' has no valid ABI fragment`);
+    }
+  } catch (error) {
+    logUserError(
+      ErrorCategory.VALIDATION,
+      "[Read Contract] Invalid ABI function:",
+      error,
+      { plugin_name: "web3", action_name: "read-contract" }
+    );
+    return {
+      success: false,
+      error: `Invalid ABI function '${abiFunction}': ${getErrorMessage(error)}`,
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
+
   // Parse function arguments
   let args: unknown[] = [];
   if (functionArgs && functionArgs.trim() !== "") {
@@ -266,10 +288,6 @@ async function readContractInner(
       errorClass: ExecutionErrorType.SYSTEM,
     };
   }
-
-  const contractInterface = new ethers.Interface(
-    parsedAbi as ethers.InterfaceAbi
-  );
 
   const adapter = getChainAdapter(chainId);
   const isView =

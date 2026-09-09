@@ -142,29 +142,33 @@ beforeEach(() => {
 });
 
 describe("contract-call with a legacy key two overloads share", () => {
-  it("returns 400 naming the signatures to choose from", async () => {
-    const response = await (POST as (req: Request) => Promise<Response>)(
-      post("permit(address,tuple,bytes)")
-    );
-    const body = (await response.json()) as { error: string; field?: string };
+  it.each(["permit", "permit(address,tuple,bytes)"])(
+    "returns 400 naming the signatures for %s",
+    async (key) => {
+      const response = await (POST as (req: Request) => Promise<Response>)(
+        post(key)
+      );
+      const body = (await response.json()) as { error: string; field?: string };
 
-    expect(response.status).toBe(400);
-    expect(body.field).toBe("functionName");
-    expect(body.error).toContain("matches 2 overloads");
-    expect(body.error).toContain("permit(address,(address,uint160),bytes)");
-    expect(body.error).toContain("permit(address,(address,uint256),bytes)");
-    expect(body.error).not.toContain("not found in ABI");
-  });
+      expect(response.status).toBe(400);
+      expect(body.field).toBe("functionName");
+      expect(body.error).toContain("matches 2 overloads");
+      expect(body.error).toContain("permit(address,(address,uint160),bytes)");
+      expect(body.error).toContain("permit(address,(address,uint256),bytes)");
+      expect(body.error).not.toContain("not found in ABI");
+    }
+  );
 
-  it("never reaches the read or write path", async () => {
-    await (POST as (req: Request) => Promise<Response>)(
-      post("permit(address,tuple,bytes)")
-    );
+  it.each(["permit", "permit(address,tuple,bytes)"])(
+    "never reaches execution for %s",
+    async (key) => {
+      await (POST as (req: Request) => Promise<Response>)(post(key));
 
-    expect(mockReadContractCore).not.toHaveBeenCalled();
-    expect(mockWriteContractCore).not.toHaveBeenCalled();
-    expect(mockBeginIdempotentFromRequest).not.toHaveBeenCalled();
-  });
+      expect(mockReadContractCore).not.toHaveBeenCalled();
+      expect(mockWriteContractCore).not.toHaveBeenCalled();
+      expect(mockBeginIdempotentFromRequest).not.toHaveBeenCalled();
+    }
+  );
 
   it("still reports a genuinely missing function as not found", async () => {
     const response = await (POST as (req: Request) => Promise<Response>)(

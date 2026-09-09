@@ -1,5 +1,5 @@
+import { ethers } from "ethers";
 import { describe, expect, it } from "vitest";
-
 import {
   type AbiItem,
   canonicalType,
@@ -8,6 +8,7 @@ import {
   findAbiFunction,
   resolveAbiFunction,
 } from "@/lib/abi/utils";
+import { TUPLE_SHAPES } from "../fixtures/abi-tuple-shapes";
 
 const SELECTOR_PATTERN = /^0x[\da-f]{8}$/;
 
@@ -367,12 +368,9 @@ describe("resolveAbiFunction", () => {
     }
   });
 
-  it("keeps first-match behaviour for a plain name", () => {
-    const result = resolveAbiFunction(OVERLOADED_ABI, "send");
-    expect(result).toMatchObject({ status: "found" });
-    if (result.status === "found") {
-      expect(result.entry.stateMutability).toBe("payable");
-    }
+  it("reports a bare overloaded name as ambiguous while the UI helper stays total", () => {
+    expect(resolveAbiFunction(OVERLOADED_ABI, "send").status).toBe("ambiguous");
+    expect(findAbiFunction(OVERLOADED_ABI, "send")).toBe(OVERLOADED_ABI[0]);
   });
 
   it("reports an unknown key as not found", () => {
@@ -550,5 +548,32 @@ describe("describeAmbiguousKey", () => {
     );
     expect(message).toContain("permit(address,(address,uint160),bytes)");
     expect(message).toContain("permit(address,(address,uint256),bytes)");
+  });
+});
+
+describe("canonical tuple shapes against ethers", () => {
+  it.each(TUPLE_SHAPES)("$label", ({ input, canonical }) => {
+    expect(canonicalType(input)).toBe(canonical);
+    const fragment = ethers.FunctionFragment.from({
+      type: "function",
+      name: "f",
+      inputs: [input],
+    });
+    expect(fragment.format("sighash")).toBe(`f(${canonical})`);
+    expect(computeSelector("f", [input])).toBe(fragment.selector);
+  });
+
+  it("combines a tuple and a scalar in one selector", () => {
+    const inputs = [
+      TUPLE_SHAPES[0].input,
+      { name: "recipient", type: "address" },
+    ];
+    const fragment = ethers.FunctionFragment.from({
+      type: "function",
+      name: "send",
+      inputs,
+    });
+    expect(fragment.format("sighash")).toBe("send((uint32,bytes32),address)");
+    expect(computeSelector("send", inputs)).toBe(fragment.selector);
   });
 });

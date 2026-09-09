@@ -147,8 +147,9 @@ describe("combineAbis", () => {
     expect(functions(merged)).toHaveLength(2);
   });
 
-  it("keeps two distinct tuple overloads that both lack components", () => {
-    // Without components no real selector can be computed for either entry.
+  it("keeps two malformed tuple entries that both lack components", () => {
+    // Parameter names do not distinguish signatures. These are malformed
+    // entries, not proven distinct overloads; neither has a real selector.
     // A selector hashed from the literal "tuple" would be the same for both
     // and one would be dropped as a duplicate of the other.
     const first = {

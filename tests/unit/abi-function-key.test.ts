@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { describe, expect, it, vi } from "vitest";
+import { TUPLE_SHAPES } from "../fixtures/abi-tuple-shapes";
 
 vi.mock("server-only", () => ({}));
 
@@ -126,4 +127,28 @@ describe("resolve then encode", () => {
       iface.encodeFunctionData(resolution.canonicalKey, tupleArgs)
     ).not.toThrow();
   });
+});
+
+describe("tuple shape keys against ethers", () => {
+  it.each(TUPLE_SHAPES)(
+    "resolves canonical and legacy $label keys",
+    ({ input, canonical }) => {
+      const abi: AbiItem[] = [
+        { name: "f", type: "function", inputs: [input] },
+        {
+          name: "f",
+          type: "function",
+          inputs: [{ name: "n", type: "uint256" }],
+        },
+      ];
+      const iface = new ethers.Interface(abi as ethers.InterfaceAbi);
+      for (const key of [`f(${canonical})`, `f(${input.type})`]) {
+        const canonicalKey = keyFor(abi, key);
+        expect(canonicalKey).toBe(`f(${canonical})`);
+        expect(iface.getFunction(canonicalKey)?.format("sighash")).toBe(
+          canonicalKey
+        );
+      }
+    }
+  );
 });

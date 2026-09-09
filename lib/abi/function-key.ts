@@ -42,8 +42,9 @@ export function getAbiFunctionKey(
   } catch {
     // The ABI is user-supplied and this entry is malformed enough that no
     // canonical signature exists. Fall back to the key as it was passed in:
-    // the call still fails, but at the encoder, naming the fragment -- rather
-    // than here, silently, against whichever overload happened to be first.
+    // no canonical signature can be supplied. Callers must validate this key
+    // before entering RPC failover; the original spelling is not proof that
+    // an ethers fragment exists.
     return functionName;
   }
 }

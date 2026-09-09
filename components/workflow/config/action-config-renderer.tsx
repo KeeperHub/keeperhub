@@ -34,7 +34,11 @@ import {
   resolveFunctionInputs,
 } from "@/lib/abi/function-inputs";
 import { parseAbiFunctionArgs } from "@/lib/abi/parse-args";
-import { canonicalType, computeSelector } from "@/lib/abi/utils";
+import {
+  canonicalType,
+  computeSelector,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { parseAddressBookSelection } from "@/lib/address-book-selection";
 import { toChecksumAddress } from "@/lib/address-utils";
@@ -472,18 +476,18 @@ export function AbiFunctionSelectField({
   abiValue,
   functionFilter = "read",
 }: AbiFunctionSelectProps) {
-  // Parse ABI and extract functions
-  const functions = React.useMemo(() => {
-    if (!abiValue || abiValue.trim() === "") {
+  const abi = React.useMemo(() => {
+    try {
+      const parsed = JSON.parse(abiValue);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
       return [];
     }
+  }, [abiValue]);
 
+  // Parse ABI and extract functions
+  const functions = React.useMemo(() => {
     try {
-      const abi = JSON.parse(abiValue);
-      if (!Array.isArray(abi)) {
-        return [];
-      }
-
       // Filter functions based on functionFilter prop
       const filterFn =
         functionFilter === "write"
@@ -506,8 +510,8 @@ export function AbiFunctionSelectField({
 
       return filtered.map((func) => {
         const inputs = Array.isArray(func.inputs) ? func.inputs : [];
-        // A parameter with no type cannot be encoded, so the function is still
-        // listed (selecting it explains the problem) but gets no selector.
+        // Missing types or tuple components cannot be encoded. Keep the entry
+        // visible, but withhold its selector and show the malformed ABI notice.
         const complete = inputs.every(isValidAbiInput);
         const inputTypes = inputs.map((input: { type?: unknown }) =>
           typeof input?.type === "string" ? input.type : "?"
@@ -533,6 +537,7 @@ export function AbiFunctionSelectField({
           : func.name;
         return {
           key,
+          entry: func,
           label: `${func.name}(${params})`,
           stateMutability: func.stateMutability || "nonpayable",
           selector,
@@ -541,7 +546,17 @@ export function AbiFunctionSelectField({
     } catch {
       return [];
     }
-  }, [abiValue, functionFilter]);
+  }, [abi, functionFilter]);
+
+  // Resolve only for display. Opening a saved workflow must not mutate its
+  // config, and an ambiguous legacy key must not select the first overload.
+  // Resolve against the entire ABI: a hidden read/write overload can also
+  // make the stored key ambiguous.
+  const resolution = resolveAbiFunction(abi, value);
+  const displayValue =
+    resolution.status === "found"
+      ? functions.find((func) => func.entry === resolution.entry)?.key ?? ""
+      : "";
 
   if (functions.length === 0) {
     return (
@@ -554,7 +569,7 @@ export function AbiFunctionSelectField({
   }
 
   return (
-    <Select disabled={disabled} onValueChange={onChange} value={value}>
+    <Select disabled={disabled} onValueChange={onChange} value={displayValue}>
       <SelectTrigger className="w-full" id={field.key}>
         <SelectValue placeholder={field.placeholder || "Select a function"} />
       </SelectTrigger>

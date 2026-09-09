@@ -101,7 +101,7 @@ function legacySignature(item: AbiItem): string | undefined {
   return `${item.name}(${inputs.map((i) => i.type).join(",")})`;
 }
 
-/** Why a qualified key did not resolve to exactly one function. */
+/** Why a key did not resolve to exactly one function. */
 export type AbiFunctionResolution =
   | { status: "found"; entry: AbiFunctionItem; canonicalKey: string }
   | { status: "not_found" }
@@ -118,8 +118,8 @@ export type AbiFunctionResolution =
  * and then against the legacy raw spelling (`send(tuple,address)`), which older
  * saved workflows and external API callers still send. A legacy key resolves
  * when it identifies exactly one overload; it is reported as `ambiguous` only
- * when two overloads share the same raw spelling, which is the one case where
- * the choice was never recoverable from what was stored.
+ * when two overloads share the same raw spelling. Bare names are also ambiguous
+ * when they name distinct signatures; neither key records an overload choice.
  */
 export function resolveAbiFunction(
   abi: AbiItem[],
@@ -138,8 +138,13 @@ export function resolveAbiFunction(
   );
 
   if (parenIdx === -1) {
-    // Plain names keep their long-standing first-match behaviour.
-    const entry = named[0];
+    // Execution must not pick an arbitrary overload for a bare name. Repeated
+    // entries of the same signature still identify one function.
+    const distinct = distinctBySignature(named);
+    if (distinct.length > 1) {
+      return { status: "ambiguous", candidates: distinct };
+    }
+    const entry = distinct[0];
     return entry
       ? {
           status: "found",
@@ -193,9 +198,9 @@ function distinctBySignature(entries: AbiFunctionItem[]): AbiFunctionItem[] {
 }
 
 /**
- * Explain an ambiguous legacy key, naming the overloads to choose between.
+ * Explain an ambiguous key, naming the overloads to choose between.
  *
- * The stored key is a raw-type signature that two overloads share, so which
+ * The stored key is a bare name or raw-type signature shared by overloads, so which
  * one the user picked was never recorded. Nothing can recover it -- the message
  * has to send them back to the function selector.
  */
@@ -227,6 +232,14 @@ export function findAbiFunction(
   abi: AbiItem[],
   key: string | undefined | null
 ): AbiFunctionItem | undefined {
+  // Preserve the UI helper's historical plain-name behaviour. Execution
+  // boundaries use resolveAbiFunction and report ambiguity explicitly.
+  if (key && !key.includes("(")) {
+    return abi.find(
+      (item): item is AbiFunctionItem =>
+        item != null && item.type === "function" && item.name === key
+    );
+  }
   const resolution = resolveAbiFunction(abi, key);
   return resolution.status === "found" ? resolution.entry : undefined;
 }
