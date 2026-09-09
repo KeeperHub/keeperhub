@@ -147,9 +147,10 @@ describe("elizaos execute-agent-action step", () => {
         status: 200,
         statusText: "OK",
         text: () =>
-          Promise.resolve(JSON.stringify({ status: "success", txHash: "0x123abc" })),
-        json: () =>
-          Promise.resolve({ status: "success", txHash: "0x123abc" }),
+          Promise.resolve(
+            JSON.stringify({ status: "success", txHash: "0x123abc" })
+          ),
+        json: () => Promise.resolve({ status: "success", txHash: "0x123abc" }),
       });
 
     const result = await executeAgentActionStep({
@@ -192,7 +193,7 @@ describe("elizaos execute-agent-action step", () => {
     expect(opt2.headers.Authorization).toBe("Bearer secret-token");
     expect(JSON.parse(opt2.body)).toEqual({
       content: {
-        text: "REBALANCE_DEFI: {\"minHealthFactor\":1.5}",
+        text: 'REBALANCE_DEFI: {"minHealthFactor":1.5}',
         action: "REBALANCE_DEFI",
         minHealthFactor: 1.5,
       },
@@ -328,50 +329,36 @@ describe("elizaos test connection", () => {
   });
 
   it("returns success when endpoint responds 200 OK", async () => {
-    const originalFetch = global.fetch;
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-    } as any);
+    safeFetch.mockResolvedValue({ ok: true, status: 200 } as never);
 
-    try {
-      const res = await testElizaOS({
-        ELIZAOS_ENDPOINT_URL: "https://agent.example.com/",
-        ELIZAOS_API_KEY: "secret",
-      });
+    const res = await testElizaOS({
+      ELIZAOS_ENDPOINT_URL: "https://agent.example.com/",
+      ELIZAOS_API_KEY: "secret",
+    });
 
-      expect(res.success).toBe(true);
-      expect(global.fetch).toHaveBeenCalledWith(
-        "https://agent.example.com/health",
-        {
-          method: "GET",
-          headers: {
-            Accept: "application/json",
-            Authorization: "Bearer secret",
-          },
-        }
-      );
-    } finally {
-      global.fetch = originalFetch;
-    }
+    expect(res.success).toBe(true);
+    // safeFetch rather than global fetch: the connection test reaches the same
+    // user-supplied host as the step, so it needs the per-redirect IP check,
+    // not only the entry validation assertUrlIsPublic does.
+    expect(safeFetch).toHaveBeenCalledWith("https://agent.example.com/health", {
+      plugin: "elizaos",
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: "Bearer secret",
+      },
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it("returns error details when endpoint responds with 401 Unauthorized", async () => {
-    const originalFetch = global.fetch;
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 401,
-    } as any);
+    safeFetch.mockResolvedValue({ ok: false, status: 401 } as never);
 
-    try {
-      const res = await testElizaOS({
-        ELIZAOS_ENDPOINT_URL: "https://agent.example.com",
-      });
+    const res = await testElizaOS({
+      ELIZAOS_ENDPOINT_URL: "https://agent.example.com",
+    });
 
-      expect(res.success).toBe(false);
-      expect(res.error).toContain("HTTP 401");
-    } finally {
-      global.fetch = originalFetch;
-    }
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("HTTP 401");
   });
 });

@@ -11,6 +11,10 @@ import {
 } from "@/lib/workflow/executor/step-handler";
 import type { ElizaOSCredentials } from "../credentials";
 
+// The instance URL is user-supplied and the default flow makes two sequential
+// calls, so a hung server would otherwise hold the step open on both.
+const FETCH_TIMEOUT_MS = 10_000;
+
 const TRAILING_SLASH_RE = /\/+$/;
 
 export type ExecuteAgentActionResult =
@@ -110,6 +114,7 @@ async function stepHandler(
       const response = await safeFetch(fullUrl, {
         plugin: "elizaos",
         method: "POST",
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         headers,
         body: JSON.stringify({
           action,
@@ -152,6 +157,7 @@ async function stepHandler(
     const sessionRes = await safeFetch(sessionUrl, {
       plugin: "elizaos",
       method: "POST",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers,
       body: JSON.stringify({
         agentId,
@@ -217,6 +223,7 @@ async function stepHandler(
     const messageRes = await safeFetch(messageUrl, {
       plugin: "elizaos",
       method: "POST",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers,
       body: JSON.stringify({
         content,

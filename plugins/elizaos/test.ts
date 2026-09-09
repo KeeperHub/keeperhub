@@ -1,4 +1,11 @@
-import { assertUrlIsPublic, SsrfBlockedError } from "@/lib/safe-fetch";
+import {
+  assertUrlIsPublic,
+  safeFetch,
+  SsrfBlockedError,
+} from "@/lib/safe-fetch";
+
+// Matches the step: the connection test hits the same user-supplied host.
+const FETCH_TIMEOUT_MS = 10_000;
 
 const TRAILING_SLASH_RE = /\/+$/;
 
@@ -29,9 +36,11 @@ export async function testElizaOS(
     }
 
     // Lightweight read-only health endpoint to confirm the instance is reachable.
-    const response = await fetch(healthUrl, {
+    const response = await safeFetch(healthUrl, {
+      plugin: "elizaos",
       method: "GET",
       headers,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
 
     if (!response.ok) {
