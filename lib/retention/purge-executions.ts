@@ -1,6 +1,16 @@
 import "server-only";
 
-import { and, eq, gte, inArray, isNotNull, lt, notInArray } from "drizzle-orm";
+import {
+  and,
+  count,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  lt,
+  min,
+  notInArray,
+} from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   workflowExecutionLogs,
@@ -21,6 +31,7 @@ import {
   resolveOrgRetentionWindows,
 } from "@/lib/retention/org-windows";
 import {
+  advanceWatermarksToFloor,
   getPurgeWatermarks,
   RETENTION_EPOCH,
   setPurgeWatermark,
@@ -33,10 +44,14 @@ import {
  * plan-window pass nor the output_raw pass may touch them at any age. Typed
  * against WorkflowExecutionStatus so a new status forces a decision here.
  *
- * The floor and run-row passes deliberately do NOT apply this guard. A run that
- * has sat in `running` for more than a year is not resumable by any definition
- * -- the reaper closes a stuck run after 30 minutes -- and skipping those rows
- * would leak them forever, which is the failure this job exists to end.
+ * The floor and run-row passes deliberately do NOT apply this guard, and they
+ * are the reason a skipped row cannot leak forever. The floor pass runs at the
+ * longest window in use, which is as far back as any organization's data is
+ * kept, so a run still sitting in a resumable status by the time it gets there
+ * is not resumable by any definition -- the reaper closes a stuck run after 30
+ * minutes and reconciliation force-settles an unconfirmed one after a day. Note
+ * this is a shorter horizon than the configured ceiling: on a deployment where
+ * every organization is on the free plan the floor is seven days, not 400.
  */
 const RESUMABLE_EXECUTION_STATUSES: readonly WorkflowExecutionStatus[] = [
   "pending",
@@ -147,9 +162,24 @@ export async function runRetentionPurge(
   );
   const passes: RetentionPassResult[] = [];
 
-  passes.push(
-    await purgeLogsPastFloor(config, now, budget, schedule.floorDays)
+  const floor = await purgeLogsPastFloor(
+    config,
+    now,
+    budget,
+    schedule.floorDays
   );
+  passes.push(floor);
+
+  // Record what the floor pass proved, before the per-organization pass reads
+  // the watermarks. It deletes every step log past its cutoff with no
+  // organization scope and no status guard, so once it drains, that instant is
+  // true for every organization -- including the ones whose window is at or
+  // above the floor, which never enter the pass below and would otherwise never
+  // have a watermark at all.
+  if (!(floor.budgetExhausted || config.dryRun)) {
+    await advanceWatermarksToFloor(daysBefore(now, schedule.floorDays));
+  }
+
   passes.push(
     await purgeLogsPastPlanWindow(config, now, budget, schedule.groups)
   );
@@ -181,6 +211,7 @@ function purgeLogsPastFloor(
   floorDays: number
 ): Promise<RetentionPassResult> {
   const cutoff = daysBefore(now, floorDays);
+  const eligible = lt(workflowExecutionLogs.startedAt, cutoff);
   return runBatched({
     pass: "logs_floor",
     config,
@@ -189,9 +220,16 @@ function purgeLogsPastFloor(
       db
         .select({ id: workflowExecutionLogs.id })
         .from(workflowExecutionLogs)
-        .where(lt(workflowExecutionLogs.startedAt, cutoff))
+        .where(eligible)
         .orderBy(workflowExecutionLogs.startedAt)
         .limit(limit),
+    countEligible: async () =>
+      (
+        await db
+          .select({ n: count() })
+          .from(workflowExecutionLogs)
+          .where(eligible)
+      )[0].n,
     apply: (ids) =>
       db
         .delete(workflowExecutionLogs)
@@ -236,6 +274,13 @@ async function purgeLogsPastPlanWindow(
         continue;
       }
 
+      const eligible = and(
+        eq(workflows.organizationId, organizationId),
+        gte(workflowExecutions.startedAt, from),
+        lt(workflowExecutions.startedAt, cutoff),
+        notInArray(workflowExecutions.status, [...RESUMABLE_EXECUTION_STATUSES])
+      );
+
       const result = await runBatched({
         pass: "logs_plan_window",
         config,
@@ -252,17 +297,23 @@ async function purgeLogsPastPlanWindow(
               workflows,
               eq(workflows.id, workflowExecutions.workflowId)
             )
-            .where(
-              and(
-                eq(workflows.organizationId, organizationId),
-                gte(workflowExecutions.startedAt, from),
-                lt(workflowExecutions.startedAt, cutoff),
-                notInArray(workflowExecutions.status, [
-                  ...RESUMABLE_EXECUTION_STATUSES,
-                ])
-              )
-            )
+            .where(eligible)
             .limit(limit),
+        countEligible: async () =>
+          (
+            await db
+              .select({ n: count() })
+              .from(workflowExecutionLogs)
+              .innerJoin(
+                workflowExecutions,
+                eq(workflowExecutions.id, workflowExecutionLogs.executionId)
+              )
+              .innerJoin(
+                workflows,
+                eq(workflows.id, workflowExecutions.workflowId)
+              )
+              .where(eligible)
+          )[0].n,
         apply: (ids) =>
           db
             .delete(workflowExecutionLogs)
@@ -274,10 +325,24 @@ async function purgeLogsPastPlanWindow(
         budgetExhausted = true;
         break;
       }
-      // Drained: nothing of this organization older than the cutoff still has
-      // step logs. A dry run must not claim that, since it deleted nothing.
+      // Drained -- but "drained" means the SELECT came back empty, and that
+      // SELECT excludes runs that can still resume. Advancing to the cutoff
+      // would move the lower bound past those rows, and since the bound is
+      // inclusive-below they would never be selected again: a run that is
+      // phantom today and succeeds tomorrow would keep its step logs until the
+      // floor pass, hundreds of days past the window its plan sells. So the
+      // watermark stops at the oldest run this pass had to skip. A dry run must
+      // not claim anything at all, since it deleted nothing.
       if (!config.dryRun) {
-        await setPurgeWatermark(organizationId, cutoff);
+        const skipped = await earliestResumableStartedAt(
+          organizationId,
+          from,
+          cutoff
+        );
+        await setPurgeWatermark(
+          organizationId,
+          skipped && skipped < cutoff ? skipped : cutoff
+        );
       }
     }
 
@@ -293,6 +358,35 @@ async function purgeLogsPastPlanWindow(
   }
 
   return { pass: "logs_plan_window", rows, budgetExhausted, windows };
+}
+
+/**
+ * The oldest run in `[from, cutoff)` that the plan-window pass had to skip
+ * because it can still resume, or null when it skipped nothing.
+ *
+ * Same join and the same range as the drain query, minus the step-log side: the
+ * question is which run held the pass up, not how many logs it carries. The
+ * range bound is inclusive below, so writing this instant as the watermark
+ * re-selects that run on the next pass with no epsilon needed.
+ */
+async function earliestResumableStartedAt(
+  organizationId: string,
+  from: Date,
+  cutoff: Date
+): Promise<Date | null> {
+  const rows = await db
+    .select({ oldest: min(workflowExecutions.startedAt) })
+    .from(workflowExecutions)
+    .innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+    .where(
+      and(
+        eq(workflows.organizationId, organizationId),
+        gte(workflowExecutions.startedAt, from),
+        lt(workflowExecutions.startedAt, cutoff),
+        inArray(workflowExecutions.status, [...RESUMABLE_EXECUTION_STATUSES])
+      )
+    );
+  return rows[0]?.oldest ?? null;
 }
 
 /**
@@ -313,6 +407,11 @@ function stripExpiredOutputRaw(
   budget: RunBudget
 ): Promise<RetentionPassResult> {
   const cutoff = daysBefore(now, config.outputRawRetentionDays);
+  const eligible = and(
+    lt(workflowExecutionLogs.startedAt, cutoff),
+    isNotNull(workflowExecutionLogs.outputRaw),
+    notInArray(workflowExecutions.status, [...RESUMABLE_EXECUTION_STATUSES])
+  );
   return runBatched({
     pass: "output_raw",
     config,
@@ -325,16 +424,19 @@ function stripExpiredOutputRaw(
           workflowExecutions,
           eq(workflowExecutions.id, workflowExecutionLogs.executionId)
         )
-        .where(
-          and(
-            lt(workflowExecutionLogs.startedAt, cutoff),
-            isNotNull(workflowExecutionLogs.outputRaw),
-            notInArray(workflowExecutions.status, [
-              ...RESUMABLE_EXECUTION_STATUSES,
-            ])
-          )
-        )
+        .where(eligible)
         .limit(limit),
+    countEligible: async () =>
+      (
+        await db
+          .select({ n: count() })
+          .from(workflowExecutionLogs)
+          .innerJoin(
+            workflowExecutions,
+            eq(workflowExecutions.id, workflowExecutionLogs.executionId)
+          )
+          .where(eligible)
+      )[0].n,
     apply: (ids) =>
       db
         .update(workflowExecutionLogs)
@@ -354,6 +456,7 @@ function purgeSoftDeletedLogs(
   budget: RunBudget
 ): Promise<RetentionPassResult> {
   const cutoff = daysBefore(now, config.softDeleteGraceDays);
+  const eligible = lt(workflowExecutionLogs.deletedAt, cutoff);
   return runBatched({
     pass: "logs_soft_deleted",
     config,
@@ -362,8 +465,15 @@ function purgeSoftDeletedLogs(
       db
         .select({ id: workflowExecutionLogs.id })
         .from(workflowExecutionLogs)
-        .where(lt(workflowExecutionLogs.deletedAt, cutoff))
+        .where(eligible)
         .limit(limit),
+    countEligible: async () =>
+      (
+        await db
+          .select({ n: count() })
+          .from(workflowExecutionLogs)
+          .where(eligible)
+      )[0].n,
     apply: (ids) =>
       db
         .delete(workflowExecutionLogs)
@@ -406,29 +516,50 @@ async function purgeExecutionsPastFlatWindow(
   const limit = executionBatchSize(config);
   let rows = 0;
 
+  // Retired only when nothing has been paid for the run. `payg_payments`
+  // declares execution_id NOT NULL, but `workflow_payments` does not -- a
+  // calldata-only sale carries no execution -- and one NULL row would make
+  // `NOT IN` answer NULL for every candidate, turning this pass into a silent
+  // no-op. The isNotNull below is what keeps that from happening.
+  const eligible = and(
+    lt(workflowExecutions.startedAt, cutoff),
+    notInArray(
+      workflowExecutions.id,
+      db.select({ executionId: paygPayments.executionId }).from(paygPayments)
+    ),
+    notInArray(
+      workflowExecutions.id,
+      db
+        .select({ executionId: workflowPayments.executionId })
+        .from(workflowPayments)
+        .where(isNotNull(workflowPayments.executionId))
+    )
+  );
+
+  if (config.dryRun) {
+    if (budget.exhausted) {
+      return { pass: "executions_flat_window", rows: 0, budgetExhausted: true };
+    }
+    const [{ n }] = await db
+      .select({ n: count() })
+      .from(workflowExecutions)
+      .where(eligible);
+    return {
+      pass: "executions_flat_window",
+      rows: n,
+      budgetExhausted: false,
+    };
+  }
+
   for (;;) {
     if (budget.exhausted) {
       return { pass: "executions_flat_window", rows, budgetExhausted: true };
     }
 
-    const paidExecutionIds = db
-      .select({ executionId: paygPayments.executionId })
-      .from(paygPayments);
-    const workflowPaidExecutionIds = db
-      .select({ executionId: workflowPayments.executionId })
-      .from(workflowPayments)
-      .where(isNotNull(workflowPayments.executionId));
-
     const victims = await db
       .select({ id: workflowExecutions.id })
       .from(workflowExecutions)
-      .where(
-        and(
-          lt(workflowExecutions.startedAt, cutoff),
-          notInArray(workflowExecutions.id, paidExecutionIds),
-          notInArray(workflowExecutions.id, workflowPaidExecutionIds)
-        )
-      )
+      .where(eligible)
       .orderBy(workflowExecutions.startedAt)
       .limit(limit);
 
@@ -437,14 +568,6 @@ async function purgeExecutionsPastFlatWindow(
     }
 
     const ids = victims.map((victim) => victim.id);
-
-    if (config.dryRun) {
-      return {
-        pass: "executions_flat_window",
-        rows: rows + ids.length,
-        budgetExhausted: false,
-      };
-    }
 
     // One transaction so a run row can never survive the deletion of its own
     // logs. Children first: workflow_execution_logs and feedback both reference
@@ -469,6 +592,12 @@ type BatchedPass = {
   budget: RunBudget;
   selectIds: (limit: number) => Promise<Array<{ id: string }>>;
   apply: (ids: string[]) => Promise<unknown>;
+  /**
+   * How many rows this pass would touch, over the same predicate `selectIds`
+   * uses and with no limit. Only ever called on a dry run, which is the one
+   * mode whose whole purpose is to report a number an operator will act on.
+   */
+  countEligible: () => Promise<number>;
 };
 
 /**
@@ -487,7 +616,20 @@ async function runBatched({
   budget,
   selectIds,
   apply,
+  countEligible,
 }: BatchedPass): Promise<RetentionPassResult> {
+  // A dry run counts instead of deleting. It cannot loop -- with nothing
+  // changed the same page would come back forever -- so counting one page and
+  // reporting that was capping every figure at `batchSize`, per pass and per
+  // organization. The number the operator reads before turning dry-run off is
+  // the whole point of the mode, so it has to be the real one.
+  if (config.dryRun) {
+    if (budget.exhausted) {
+      return { pass, rows: 0, budgetExhausted: true };
+    }
+    return { pass, rows: await countEligible(), budgetExhausted: false };
+  }
+
   let rows = 0;
 
   for (;;) {
@@ -498,12 +640,6 @@ async function runBatched({
     const victims = await selectIds(config.batchSize);
     if (victims.length === 0) {
       return { pass, rows, budgetExhausted: false };
-    }
-
-    // A dry run reports the first eligible page and stops. It never loops:
-    // with nothing changed the same page would come back forever.
-    if (config.dryRun) {
-      return { pass, rows: rows + victims.length, budgetExhausted: false };
     }
 
     await apply(victims.map((victim) => victim.id));

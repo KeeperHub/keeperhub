@@ -216,7 +216,7 @@ export type RunsResponse = {
    * Network cells and the expanded view have to say that rather than render the
    * same blank a run that never recorded anything produces.
    */
-  stepLogRetentionCutoff?: string;
+  stepLogRetentionCutoff?: string | null;
 };
 
 export type StepLog = {

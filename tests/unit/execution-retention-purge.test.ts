@@ -23,6 +23,8 @@ vi.mock("drizzle-orm", () => {
     inArray: marker("inArray"),
     isNotNull: marker("isNotNull"),
     lt: marker("lt"),
+    count: marker("count"),
+    min: marker("min"),
     notInArray: marker("notInArray"),
     sql: marker("sql"),
   };
@@ -55,16 +57,42 @@ vi.mock("@/lib/billing/plans", () => ({
 // load time, which happens before any top-level statement in this file runs.
 const { state, dbStub } = vi.hoisted(() => {
   const hoistedState = {
-    /** Rows returned by successive awaited selects, in call order. */
+    /** Rows returned by successive awaited id selects, in call order. */
     selectPages: [] as unknown[][],
     selectCalls: 0,
+    /** Counts returned to a dry run's countEligible, in call order. */
+    counts: [] as number[],
+    countCalls: 0,
+    /** Oldest still-resumable run per drained organization, in call order. */
+    oldest: [] as Array<Date | null>,
+    oldestCalls: 0,
+    /** Instants handed to setPurgeWatermark, in call order. */
+    watermarks: [] as unknown[],
     writes: [] as Array<{ op: string; table: unknown }>,
     /** Predicates handed to every select, in call order. */
     wheres: [] as unknown[],
     transactions: 0,
   };
 
-  function makeSelectBuilder() {
+  // The aggregate selects -- countEligible and earliestResumableStartedAt --
+  // are answered from their own shape rather than from the page queue, so
+  // adding one does not shift every page index in every test.
+  function makeSelectBuilder(projection?: Record<string, unknown>) {
+    const shape = projection ? Object.keys(projection) : [];
+    let aggregate: (() => unknown[]) | null = null;
+    if (shape.includes("n")) {
+      aggregate = () => {
+        const n = hoistedState.counts[hoistedState.countCalls] ?? 0;
+        hoistedState.countCalls += 1;
+        return [{ n }];
+      };
+    } else if (shape.includes("oldest")) {
+      aggregate = () => {
+        const oldest = hoistedState.oldest[hoistedState.oldestCalls] ?? null;
+        hoistedState.oldestCalls += 1;
+        return [{ oldest }];
+      };
+    }
     const builder: Record<string, unknown> = {};
     for (const method of [
       "from",
@@ -87,6 +115,9 @@ const { state, dbStub } = vi.hoisted(() => {
       reject?: (error: unknown) => unknown
     ) => {
       try {
+        if (aggregate) {
+          return Promise.resolve(resolve(aggregate()));
+        }
         const page = hoistedState.selectPages[hoistedState.selectCalls] ?? [];
         hoistedState.selectCalls += 1;
         return Promise.resolve(resolve(page));
@@ -100,7 +131,10 @@ const { state, dbStub } = vi.hoisted(() => {
   function makeWriteBuilder(op: string, table: unknown) {
     const builder: Record<string, unknown> = {};
     builder.set = () => builder;
-    builder.values = () => builder;
+    builder.values = (row: Record<string, unknown>) => {
+      hoistedState.watermarks.push(row?.executionsPurgedThrough);
+      return builder;
+    };
     builder.onConflictDoUpdate = () => {
       hoistedState.writes.push({ op, table });
       return Promise.resolve();
@@ -113,10 +147,15 @@ const { state, dbStub } = vi.hoisted(() => {
   }
 
   const hoistedDb: Record<string, unknown> = {
-    select: () => makeSelectBuilder(),
+    select: (projection?: Record<string, unknown>) =>
+      makeSelectBuilder(projection),
     delete: (table: unknown) => makeWriteBuilder("delete", table),
     update: (table: unknown) => makeWriteBuilder("update", table),
     insert: (table: unknown) => makeWriteBuilder("insert", table),
+    execute: (statement: unknown) => {
+      hoistedState.writes.push({ op: "execute", table: statement });
+      return Promise.resolve([]);
+    },
     transaction: async (callback: (tx: unknown) => Promise<unknown>) => {
       hoistedState.transactions += 1;
       return callback(hoistedDb);
@@ -151,6 +190,11 @@ function enabledConfig(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   state.selectPages = [];
   state.selectCalls = 0;
+  state.counts = [];
+  state.countCalls = 0;
+  state.oldest = [];
+  state.oldestCalls = 0;
+  state.watermarks = [];
   state.writes = [];
   state.wheres = [];
   state.transactions = 0;
@@ -266,21 +310,48 @@ describe("runRetentionPurge", () => {
     });
   });
 
-  it("reports the first eligible page and writes nothing in a dry run", async () => {
-    state.selectPages = [
-      ORG_ROWS,
-      [{ id: "log-1" }, { id: "log-2" }, { id: "log-3" }],
-    ];
+  it("stops the watermark at the oldest run it had to skip", async () => {
+    // The drain query excludes runs that can still resume, so an empty page
+    // does not mean the range is empty. Advancing to the cutoff would move the
+    // lower bound past those rows and, because the bound is inclusive below,
+    // they would never be selected again -- a run that is phantom today and
+    // succeeds tomorrow would keep its step logs until the floor pass.
+    const skipped = new Date("2026-08-18T12:00:00.000Z");
+    state.selectPages = [ORG_ROWS, [], [], []];
+    state.oldest = [skipped];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    expect(state.watermarks).toEqual([skipped]);
+  });
+
+  it("advances to the cutoff when it skipped nothing", async () => {
+    state.selectPages = [ORG_ROWS, [], [], []];
+    state.oldest = [null];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    // org-free is on the 7-day window; org-ent sits at the floor and never
+    // enters the per-organization pass.
+    expect(state.watermarks).toEqual([new Date("2026-08-31T12:00:00.000Z")]);
+  });
+
+  it("counts every eligible row and writes nothing in a dry run", async () => {
+    // Deliberately more rows than one batch: the reported figure used to be
+    // the first page, so it was silently capped at batchSize per pass and per
+    // organization. An operator reads this number before turning dry-run off.
+    state.selectPages = [ORG_ROWS];
+    state.counts = [4200];
 
     const result = await runRetentionPurge(
-      enabledConfig({ dryRun: true }),
+      enabledConfig({ dryRun: true, batchSize: 2 }),
       NOW
     );
 
     expect(result.dryRun).toBe(true);
     expect(result.passes[0]).toEqual({
       pass: "logs_floor",
-      rows: 3,
+      rows: 4200,
       budgetExhausted: false,
     });
     // Including the watermark: a dry run deleted nothing, so it must not claim
@@ -341,7 +412,7 @@ describe("runRetentionPurge", () => {
     // part of that ordering.
     expect(
       state.writes
-        .filter((write) => write.op !== "insert")
+        .filter((write) => write.op !== "insert" && write.op !== "execute")
         .map((write) => write.table)
     ).toEqual([{ id: "logs.id" }, {}, { id: "executions.id" }]);
   });

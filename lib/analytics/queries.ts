@@ -36,7 +36,7 @@ import {
   sumOrgValueTodayWei,
 } from "@/lib/execute/value-ledger";
 import { getRetentionConfig } from "@/lib/retention/config";
-import { getOrgLogRetentionCutoff } from "@/lib/retention/org-windows";
+import { getOrgLogRetentionCutoff } from "@/lib/retention/progress";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
@@ -1261,7 +1261,7 @@ export async function getUnifiedRuns(
    * view has no steps. Without this the UI cannot tell that from a run that
    * never recorded any, and shows the same blank for both.
    */
-  stepLogRetentionCutoff: string;
+  stepLogRetentionCutoff: string | null;
 }> {
   const {
     cursor,
@@ -1336,7 +1336,7 @@ export async function getUnifiedRuns(
     total,
     page,
     pageSize: pageLimit,
-    stepLogRetentionCutoff: stepLogRetentionCutoff.toISOString(),
+    stepLogRetentionCutoff: stepLogRetentionCutoff?.toISOString() ?? null,
   };
 }
 

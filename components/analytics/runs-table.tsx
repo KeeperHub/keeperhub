@@ -405,13 +405,21 @@ function StepLogRow({ step }: StepLogRowProps): ReactNode {
 }
 
 /**
- * KEEP-1042: whether this run is old enough that retention has taken its step
- * logs. The run row itself lives far longer than its steps, so an empty step
- * list is an expected state for an old run and a real signal for a recent one -
- * the UI has to tell those apart rather than showing one blank for both.
+ * KEEP-1042: whether retention has taken this run's step logs. The run row
+ * lives far longer than its steps, so an empty step list is an expected state
+ * for an old run and a real signal for a recent one - the UI has to tell those
+ * apart rather than showing one blank for both.
+ *
+ * Only workflow runs have step logs. A direct execution carries its network and
+ * gas on its own row, which retention never touches, so it can never be in this
+ * state no matter how old it is.
+ *
+ * This explains an empty cell. It must never blank a populated one: the cutoff
+ * says step logs are gone, and the cells below read more than step logs -
+ * sponsored gas comes from the credit ledger, which no pass deletes.
  */
-function stepLogsExpired(run: UnifiedRun, cutoff?: string): boolean {
-  if (!cutoff) {
+function stepLogsExpired(run: UnifiedRun, cutoff?: string | null): boolean {
+  if (!cutoff || run.source !== "workflow") {
     return false;
   }
   return new Date(run.startedAt).getTime() < new Date(cutoff).getTime();
@@ -427,7 +435,7 @@ function ExpandedStepRows({
   steps,
 }: {
   loadingSteps: boolean;
-  retentionCutoff?: string;
+  retentionCutoff?: string | null;
   run: UnifiedRun;
   steps: StepLog[];
 }): ReactNode {
@@ -499,7 +507,7 @@ function ExpandedStepRows({
 }
 
 type ExpandableRunRowProps = {
-  retentionCutoff?: string;
+  retentionCutoff?: string | null;
   run: UnifiedRun;
 };
 
@@ -512,6 +520,10 @@ function ExpandableRunRow({
   const [steps, setSteps] = useState<StepLog[]>([]);
   const [loadingSteps, setLoadingSteps] = useState(false);
   const stepsExpired = stepLogsExpired(run, retentionCutoff);
+  // Per cell, because they empty out independently: a run can have kept its
+  // sponsored gas in the credit ledger while its networks went with the steps.
+  const networkExpired = stepsExpired && run.networks.length === 0;
+  const gasExpired = stepsExpired && !(run.gasUsedWei ?? run.gasCostWei);
 
   const handleToggleExpand = useCallback(async (): Promise<void> => {
     if (expanded) {
@@ -594,25 +606,27 @@ function ExpandableRunRow({
         <td className="whitespace-nowrap py-3 pr-3 text-sm text-muted-foreground">
           {formatDuration(run.durationMs)}
         </td>
+        {/* Network and Gas are the two columns read off the step logs, so they
+            are the two that empty out once retention has taken them. The
+            cutoff only ever explains an already-empty cell: it says step logs
+            are gone, which is not the same as saying this cell has no value.
+            Sponsored gas comes from the credit ledger, which no pass deletes,
+            and blanking it on age would hide a number that is still there. */}
         <td
           className="whitespace-nowrap py-3 pr-3 text-sm text-muted-foreground"
           title={
-            stepsExpired
+            networkExpired
               ? STEP_LOGS_EXPIRED_MESSAGE
               : run.networks.map(chains.name).join(", ")
           }
         >
-          {/* Network and Gas are the two columns read off the step logs, so
-              they are the two that empty out once retention has taken them.
-              An em dash with the reason on hover beats a blank cell that
-              reads as "this run spent nothing". */}
-          {stepsExpired ? "—" : formatNetworks(run.networks, chains)}
+          {networkExpired ? "—" : formatNetworks(run.networks, chains)}
         </td>
         <td
           className="whitespace-nowrap py-3 pr-3 text-sm text-muted-foreground"
-          title={stepsExpired ? STEP_LOGS_EXPIRED_MESSAGE : undefined}
+          title={gasExpired ? STEP_LOGS_EXPIRED_MESSAGE : undefined}
         >
-          {stepsExpired ? "—" : runGasDisplay(run, chains)}
+          {gasExpired ? "—" : runGasDisplay(run, chains)}
         </td>
         <td className="whitespace-nowrap py-3 pr-3 text-right text-sm text-muted-foreground">
           {formatTimeAgo(run.startedAt)}
@@ -698,7 +712,7 @@ function RunsTableContent({
 }: {
   loading: boolean;
   isEmpty: boolean;
-  retentionCutoff?: string;
+  retentionCutoff?: string | null;
   runs: UnifiedRun[];
   pageLoading: boolean;
 }): ReactNode {

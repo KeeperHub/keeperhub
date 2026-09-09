@@ -9,7 +9,7 @@ import {
 import { db } from "@/lib/db";
 import { organization } from "@/lib/db/schema";
 import { organizationSubscriptions } from "@/lib/db/schema-extensions";
-import { daysBefore, type RetentionConfig } from "@/lib/retention/config";
+import type { RetentionConfig } from "@/lib/retention/config";
 
 /** Organizations that share one retention window, in days. */
 export type RetentionWindowGroup = {
@@ -138,35 +138,4 @@ export function buildRetentionSchedule(
     .sort((a, b) => a.retentionDays - b.retentionDays);
 
   return { floorDays, groups, windows };
-}
-
-/**
- * The instant before which this organization's step logs have been removed.
- *
- * KEEP-1042 ages step logs out at the plan window while the run row lives far
- * longer, so a run can legitimately be listed with no steps behind it. Readers
- * that show step-derived values need this to tell "this run recorded nothing"
- * from "this run is older than what the plan keeps", which are otherwise the
- * same empty result.
- */
-export async function getOrgLogRetentionCutoff(
-  organizationId: string,
-  config: RetentionConfig,
-  now: Date = new Date()
-): Promise<Date> {
-  const rows = await db
-    .select({
-      plan: organizationSubscriptions.plan,
-      tier: organizationSubscriptions.tier,
-      planOverrides: organizationSubscriptions.planOverrides,
-    })
-    .from(organizationSubscriptions)
-    .where(eq(organizationSubscriptions.organizationId, organizationId))
-    .limit(1);
-
-  const days = resolveRetentionDays(
-    rows[0] ?? { plan: null, tier: null, planOverrides: null },
-    config
-  );
-  return daysBefore(now, days);
 }

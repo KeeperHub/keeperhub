@@ -424,6 +424,12 @@ export async function getExecutionRetentionStatsFromDb(): Promise<ExecutionReten
     logSystemWarn(
       ErrorCategory.DATABASE,
       "[Metrics] Failed to query execution retention stats from DB",
+      error
+    );
+    return null;
+  }
+}
+
 // How long a `pending` row has to sit before it counts as stuck. Fifteen
 // minutes is well past normal inclusion on every supported chain, so a row
 // over the line is a real backlog rather than ordinary block latency.

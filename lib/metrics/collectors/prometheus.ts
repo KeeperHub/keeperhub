@@ -222,6 +222,8 @@ const executionTableBytes = getOrCreateGauge(
   "keeperhub_execution_table_bytes",
   "Total on-disk size (heap, indexes and TOAST) of an execution table, by table",
   ["table"]
+);
+
 // pending_transactions rows still in `pending` between 15 minutes and 24 hours
 // after submission, by chain. An unreferenced same-nonce fee-escalation path
 // was deleted from lib/web3/gas-strategy.ts; nothing bumps a stuck transaction
@@ -2009,6 +2011,8 @@ async function refreshDbMetricsNow(): Promise<void> {
         { table: "workflow_executions" },
         retentionStats.executionTableBytes
       );
+    }
+
     // Reset before populating so a chain that has drained its
     // backlog goes back to reporting nothing rather than pinning its last
     // non-zero value forever. On a query error skip the reset entirely and
