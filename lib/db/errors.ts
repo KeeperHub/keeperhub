@@ -6,7 +6,7 @@
  *
  * Drizzle wraps the driver error, so the SQLSTATE code can live either on the
  * thrown error or somewhere down its `cause` chain. Walk the chain, and take
- * only a value that actually looks like a SQLSTATE -- see `SQLSTATE_RE`.
+ * only a value that actually is a SQLSTATE -- see `isSqlState`.
  */
 
 export type CuratedDbError = { message: string; status: number };
@@ -28,7 +28,35 @@ const MAX_CAUSE_DEPTH = 5;
  * further down the chain, turning a `23505` into a generic 500 and making
  * `isUniqueViolation` answer false for a genuine duplicate.
  */
-const SQLSTATE_RE = /^[0-9A-Z]{5}$/u;
+const SQLSTATE_SHAPE_RE = /^([0-9A-Z]{2})[0-9A-Z]{3}$/u;
+
+/**
+ * The condition classes Postgres actually defines (Appendix A, "PostgreSQL
+ * Error Codes"). The five-character shape alone does not separate a SQLSTATE
+ * from a Node errno: `EPIPE`, `EPERM`, `EBUSY` and `EROFS` are all five
+ * uppercase characters and would pass it, which is exactly the shadowing this
+ * check exists to stop -- a driver error whose cause chain carries `EPIPE`
+ * would be kept as the innermost "SQLSTATE" and hide a real `23505` above it.
+ *
+ * No defined class begins with `E`, so matching the class rejects every one of
+ * those, and rejects five-character app codes (`ABORT`) as a bonus. The list
+ * is stable: a class has not been added to Postgres in many releases, and an
+ * unlisted one would only ever fall through to the generic curated error the
+ * unknown-code path already returns.
+ */
+const SQLSTATE_CLASSES = new Set(
+  (
+    "00 01 02 03 08 09 0A 0B 0F 0L 0P 0Z " +
+    "20 21 22 23 24 25 26 27 28 2B 2D 2F " +
+    "34 38 39 3B 3D 3F 40 42 44 " +
+    "53 54 55 57 58 72 F0 HV P0 XX"
+  ).split(" ")
+);
+
+function isSqlState(code: string): boolean {
+  const sqlStateClass = SQLSTATE_SHAPE_RE.exec(code)?.[1];
+  return sqlStateClass !== undefined && SQLSTATE_CLASSES.has(sqlStateClass);
+}
 
 /**
  * The innermost SQLSTATE in the chain wins, not the first one reached.
@@ -49,7 +77,7 @@ function pgErrorCode(err: unknown): string | undefined {
     depth++
   ) {
     const code = (current as { code?: unknown }).code;
-    if (typeof code === "string" && SQLSTATE_RE.test(code)) {
+    if (typeof code === "string" && isSqlState(code)) {
       innermost = code;
     }
     current = (current as { cause?: unknown }).cause;

@@ -84,12 +84,36 @@ describe("pgErrorCode chain walk", () => {
     for (const code of ["2350", "235055", "23a05", "23-05", ""]) {
       expect(isUniqueViolation({ code })).toBe(false);
     }
-    // A five-character uppercase app code is indistinguishable from a
-    // SQLSTATE by shape, and is accepted as one. It maps to no known code,
-    // so it still curates to the generic fallback.
+    // Right shape, but no Postgres condition class: not a SQLSTATE, and it
+    // curates to the generic fallback rather than being kept as one.
     expect(curateDbError({ code: "ABORT" })).toEqual({
       message: "Something went wrong. Please try again.",
       status: 500,
+    });
+  });
+
+  it("does not mistake a five-character Node errno for a SQLSTATE", () => {
+    // EPIPE, EPERM, EBUSY and EROFS are five uppercase characters, so a
+    // shape-only check accepts them. None is a Postgres condition class.
+    for (const code of ["EPIPE", "EPERM", "EBUSY", "EROFS"]) {
+      expect(isUniqueViolation({ code })).toBe(false);
+    }
+  });
+
+  it("keeps a real SQLSTATE that an EPIPE deeper in the chain would shadow", () => {
+    // The regression: `pgErrorCode` keeps the *innermost* match, so a socket
+    // errno accepted as a SQLSTATE anywhere below the driver error wins over
+    // the driver's own 23505 -- isUniqueViolation answers false for a genuine
+    // duplicate and curateDbError falls through to a generic 500.
+    const wrapped = {
+      code: "23505",
+      cause: { code: "EPIPE", cause: { message: "socket hang up" } },
+    };
+
+    expect(isUniqueViolation(wrapped)).toBe(true);
+    expect(curateDbError(wrapped)).toEqual({
+      message: "This record already exists.",
+      status: 409,
     });
   });
 
