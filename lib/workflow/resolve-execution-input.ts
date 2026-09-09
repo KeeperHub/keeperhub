@@ -25,6 +25,14 @@
 // `toBoundInput`. One level deep only: a key nested inside a caller's own
 // value is their data.
 //
+// This is a silent mutation, and on the nested shape it is a new one: a body
+// like {"input":{"__proto__":x,"amount":"1"}} used to deliver that key as an
+// own property, and now runs without it and without an error. A workflow with
+// a field genuinely named `__proto__` therefore loses it. That is judged the
+// lesser harm -- the alternative is either carrying a key whose only use is to
+// reintroduce the prototype hazard the moment anything deep-merges the input,
+// or rejecting a body outright over a key no real caller sends.
+//
 // `executionId` is an envelope field only in the nested shape. In the bare
 // shape there is no envelope -- the caller sent a flat bag of workflow input
 // -- so a field that happens to be named `executionId` is the caller's data

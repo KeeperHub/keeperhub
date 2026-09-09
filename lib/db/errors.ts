@@ -30,8 +30,19 @@ const MAX_CAUSE_DEPTH = 5;
  */
 const SQLSTATE_RE = /^[0-9A-Z]{5}$/u;
 
+/**
+ * The innermost SQLSTATE in the chain wins, not the first one reached.
+ *
+ * The code this function replaced read `e.cause?.code ?? e.code` -- cause
+ * before wrapper, one hop. Walking outward-in would silently invert that
+ * wherever a wrapper and its cause both carry SQLSTATE-shaped codes: the
+ * wrapper's would start winning. The driver error that actually raised the
+ * SQLSTATE is the deepest link, and anything above it is a re-thrower, so
+ * keeping the innermost preserves the old precedence at any depth.
+ */
 function pgErrorCode(err: unknown): string | undefined {
   let current: unknown = err;
+  let innermost: string | undefined;
   for (
     let depth = 0;
     depth < MAX_CAUSE_DEPTH && current && typeof current === "object";
@@ -39,11 +50,11 @@ function pgErrorCode(err: unknown): string | undefined {
   ) {
     const code = (current as { code?: unknown }).code;
     if (typeof code === "string" && SQLSTATE_RE.test(code)) {
-      return code;
+      innermost = code;
     }
     current = (current as { cause?: unknown }).cause;
   }
-  return undefined;
+  return innermost;
 }
 
 /** Postgres `unique_violation`. */

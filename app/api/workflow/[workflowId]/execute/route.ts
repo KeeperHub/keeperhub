@@ -47,6 +47,21 @@ import {
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Workflow execution requires complex error handling and validation
+/**
+ * Set the bare-shape deprecation headers on a response.
+ *
+ * The single place they are written. `withDeprecation` inside the handler
+ * gates this on the body actually having used the deprecated shape; the
+ * mixed-shape 400 calls it directly, because a rejected body carries no flag
+ * to gate on and that caller needs the migration link most of all.
+ */
+function applyDeprecationHeaders(response: NextResponse): NextResponse {
+  for (const [name, value] of topLevelInputDeprecationHeaders()) {
+    response.headers.set(name, value);
+  }
+  return response;
+}
+
 export async function POST(
   request: Request,
   context: { params: Promise<{ workflowId: string }> }
@@ -218,9 +233,16 @@ export async function POST(
     // mixed or malformed body is a 400.
     const resolved = resolveExecutionInput(rawBody);
     if (!resolved.ok) {
-      return NextResponse.json(
-        { error: resolved.error, field: resolved.field },
-        { status: HttpStatus.BAD_REQUEST }
+      // This 400 carries the notice unconditionally. A body that mixes the two
+      // shapes is sent by a caller who is half-migrated already, and this is
+      // the response they are most likely to read -- withDeprecation below
+      // cannot serve it, since a rejected body has no `deprecated` flag to
+      // test.
+      return applyDeprecationHeaders(
+        NextResponse.json(
+          { error: resolved.error, field: resolved.field },
+          { status: HttpStatus.BAD_REQUEST }
+        )
       );
     }
     const { input } = resolved;
@@ -229,14 +251,8 @@ export async function POST(
     // response this handler returns from here on -- replays included. A caller
     // retrying with an Idempotency-Key would otherwise see it once and never
     // again, which is the opposite of what a migration window needs.
-    const withDeprecation = (response: NextResponse): NextResponse => {
-      if (resolved.deprecated) {
-        for (const [name, value] of topLevelInputDeprecationHeaders()) {
-          response.headers.set(name, value);
-        }
-      }
-      return response;
-    };
+    const withDeprecation = (response: NextResponse): NextResponse =>
+      resolved.deprecated ? applyDeprecationHeaders(response) : response;
 
     // Idempotency: a retry with the same key + body replays the original
     // executionId instead of starting the workflow again. Scoped per workflow.
@@ -300,12 +316,14 @@ export async function POST(
       });
       return recordIdempotentResponse(
         idem,
-        NextResponse.json(
-          {
-            error: "executionId is reserved for internal dispatch",
-            code: "execution_id_not_allowed",
-          },
-          { status: HttpStatus.BAD_REQUEST }
+        withDeprecation(
+          NextResponse.json(
+            {
+              error: "executionId is reserved for internal dispatch",
+              code: "execution_id_not_allowed",
+            },
+            { status: HttpStatus.BAD_REQUEST }
+          )
         ),
         "release"
       );
@@ -338,12 +356,14 @@ export async function POST(
         });
         return recordIdempotentResponse(
           idem,
-          NextResponse.json(
-            {
-              error: "executionId does not belong to this workflow",
-              code: "execution_id_mismatch",
-            },
-            { status: HttpStatus.CONFLICT }
+          withDeprecation(
+            NextResponse.json(
+              {
+                error: "executionId does not belong to this workflow",
+                code: "execution_id_mismatch",
+              },
+              { status: HttpStatus.CONFLICT }
+            )
           ),
           "release"
         );

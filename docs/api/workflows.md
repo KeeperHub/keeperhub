@@ -252,7 +252,7 @@ Manually trigger a workflow execution. The singular form `POST /api/workflow/{wo
 }
 ```
 
-The `input` field is optional. It maps to the workflow's trigger input and is passed to the first node of the run. Input fields should be nested under `input`; a body with fields at the top level instead (e.g. `{"amount": "1"}` rather than `{"input": {"amount": "1"}}`) is still accepted and now binds correctly, but the response carries the standard `Deprecation`, `Sunset`, and `Link` headers -- support for the unnested shape will be removed no earlier than the `Sunset` date. Every response to such a request carries them, including idempotent replays. In the unnested shape every top-level field binds as input, `executionId` included; it is only read as an envelope field alongside a nested `input`. A body mixing both shapes, or with `input` set to something other than an object, returns a 400. One consequence worth knowing if you send the unnested shape: a flat body cannot carry a field of its own named `input`, because there is no way to tell it from the envelope. If your input data has a field by that name, wrap the whole object -- `{"input": <your object>}`. This differs deliberately from the [webhook trigger](#webhook-trigger) route, which takes the entire request body as the input: a webhook carries an external caller's payload that can't be asked to nest itself under `input`, whereas the execute route uses KeeperHub's own envelope and so can require the nested shape.
+The `input` field is optional. It maps to the workflow's trigger input and is passed to the first node of the run. Input fields should be nested under `input`; a body with fields at the top level instead (e.g. `{"amount": "1"}` rather than `{"input": {"amount": "1"}}`) is still accepted and now binds correctly, but the response carries the standard `Deprecation`, `Sunset`, and `Link` headers -- support for the unnested shape will be removed no earlier than the `Sunset` date. Every response to such a request carries them, including idempotent replays. In the unnested shape every top-level field binds as input, `executionId` included; it is only read as an envelope field alongside a nested `input` -- with one exception. A flat body whose *only* key is `executionId` is indistinguishable from the envelope shape, so it is read as an envelope field and rejected (see [`executionId` is not yours to set](#executionid-is-not-yours-to-set)). Send at least one other field, or nest your data under `input`. A body mixing both shapes, or with `input` set to something other than an object, returns a 400. One consequence worth knowing if you send the unnested shape: a flat body cannot carry a field of its own named `input`, because there is no way to tell it from the envelope. If your input data has a field by that name, wrap the whole object -- `{"input": <your object>}`. This differs deliberately from the [webhook trigger](#webhook-trigger) route, which takes the entire request body as the input: a webhook carries an external caller's payload that can't be asked to nest itself under `input`, whereas the execute route uses KeeperHub's own envelope and so can require the nested shape.
 
 ### Example
 
@@ -272,19 +272,22 @@ curl -X POST https://app.keeperhub.com/api/workflows/wm3k8nq7xcz2jv4hpbtd5/execu
 }
 ```
 
-### Supplying your own executionId
+### `executionId` is not yours to set
 
-A nested-shape body may carry an `executionId` alongside `input` to run under
-an id you have already issued. The id is resolved within the workflow in the
-path, so it can only ever address a run belonging to that workflow.
+The run's id is assigned by KeeperHub and returned to you as `executionId`.
+Sending one is reserved for internal dispatch -- the scheduler and the queue
+executor, which pre-create the row before routing back through this endpoint.
+A request authenticated with an API key or a session is never internal, so a
+body carrying the field is refused:
 
 | Status | `code` | Meaning |
 | --- | --- | --- |
-| 200 | -- | The id names a run of this workflow that is already in flight; the existing run is returned rather than a second one started. |
-| 409 | `execution_already_terminal` | The id names a run of this workflow that has already finished. Retrying under the same id would charge twice. |
-| 409 | `execution_id_conflict` | The id is already taken by a run you cannot address from this workflow. Nothing about that run is disclosed -- retry with a different id. |
+| 400 | `execution_id_not_allowed` | The body carried an `executionId`. Omit it and read the id from the response. |
 
-An id that is free is created and run.
+This applies to the nested shape, where `executionId` sits alongside `input`
+and is read as an envelope field. In the unnested shape it is ordinary input
+data and binds like any other key -- except in the one case noted above, where
+it is the body's only key and the two shapes cannot be told apart.
 
 ## Webhook Trigger
 

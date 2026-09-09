@@ -56,6 +56,20 @@ describe("pgErrorCode chain walk", () => {
     }
   });
 
+  it("prefers the innermost SQLSTATE when a wrapper carries one too", () => {
+    // The check this replaced read `cause` before the outer error, so where
+    // both links are SQLSTATE-shaped the inner one won. Walking outward-in
+    // would invert that silently; the driver error that raised the SQLSTATE is
+    // the deepest link and anything above it is a re-thrower.
+    const wrapped = { code: "40001", cause: { code: "23505" } };
+
+    expect(isUniqueViolation(wrapped)).toBe(true);
+    expect(curateDbError(wrapped)).toEqual({
+      message: "This record already exists.",
+      status: 409,
+    });
+  });
+
   it("ignores a non-SQLSTATE code with no SQLSTATE anywhere in the chain", () => {
     const err = { code: "ECONNRESET", cause: { code: "ETIMEDOUT" } };
     expect(isUniqueViolation(err)).toBe(false);

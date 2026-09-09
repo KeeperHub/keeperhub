@@ -278,6 +278,20 @@ describe("execute route - input binding", {
     );
   });
 
+  // The caller who lands on this 400 is half-migrated by definition, so it is
+  // the response most likely to be read -- and the only rejection that carries
+  // the migration link.
+  it("carries the migration notice on the mixed-shape 400", async () => {
+    const response = await callExecute(
+      JSON.stringify({ input: { amount: "1" }, amount: "2" })
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Deprecation")).toMatch(/^@\d+$/);
+    expect(response.headers.get("Sunset")).toBeTruthy();
+    expect(response.headers.get("Link")).toContain('rel="deprecation"');
+  });
+
   it("rejects a body mixing a nested input with stray top-level fields, and never starts an execution", async () => {
     const response = await callExecute(
       JSON.stringify({ input: { amount: "1" }, amount: "2" })
