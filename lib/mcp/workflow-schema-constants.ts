@@ -128,6 +128,38 @@ export const SYSTEM_ACTIONS = {
       count: "number - Number of iterations completed",
     },
   },
+  "Trip Circuit Breaker": {
+    actionType: "Trip Circuit Breaker",
+    label: "Trip Circuit Breaker",
+    description:
+      "Engage the organization's incident circuit breaker. Once tripped, every value-moving workflow and protocol step in the organization fails closed (per write, including runs already in progress) and no new runs start, until an admin or owner resets it. Read-only actions keep running. Use this as an incident kill switch: have a monitoring workflow trip it when it detects a problem. Always affects the organization that owns the running workflow - there is no target field.",
+    category: "System",
+    requiredFields: {},
+    optionalFields: {
+      reason:
+        "string - Free-text incident note recorded on the organization (e.g. why the breaker was tripped).",
+    },
+    outputFields: {
+      halted: "boolean - Always true; the breaker is engaged after this step.",
+      tripped:
+        "boolean - True if this step engaged the breaker; false if it was already engaged.",
+      haltedAt: "string - ISO timestamp the breaker was (or had been) engaged.",
+    },
+  },
+  "Reset Circuit Breaker": {
+    actionType: "Reset Circuit Breaker",
+    label: "Reset Circuit Breaker",
+    description:
+      "Clear the organization's incident circuit breaker so runs resume. Privileged: only succeeds when the workflow's creator is a current admin or owner of the organization; otherwise the step fails. Always affects the organization that owns the running workflow - there is no target field.",
+    category: "System",
+    requiredFields: {},
+    optionalFields: {},
+    outputFields: {
+      reset: "boolean - Always true on success; the breaker is cleared.",
+      wasHalted:
+        "boolean - True if the breaker had been engaged; false if it was already clear.",
+    },
+  },
 } as const;
 
 // =============================================================================

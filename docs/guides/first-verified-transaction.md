@@ -95,8 +95,15 @@ Confirm, in order:
 
 ## 6. Simulate
 
-Every execute tool and endpoint takes a `simulate` flag that estimates gas and catches
-reverts without signing or broadcasting:
+Three direct-execution tools take a `simulate` flag: `execute_transfer`,
+`execute_contract_call`, and `execute_check_and_execute`, and so do their HTTP routes
+(`POST /api/execute/transfer`, `/contract-call`, and `/check-and-execute`). Simulating
+estimates gas and catches reverts without signing or broadcasting. `execute_protocol_action`
+has no dry run: it executes the action when called and silently ignores a `simulate` flag if
+one is passed (it does not stop the broadcast) - the same is true of its HTTP route,
+`POST /api/execute/{protocol}/{action}`. A protocol read action
+(for example a `chronicle/eth-usd-read` actionType) returns current state but cannot predict
+whether a particular write will revert. For example:
 
 ```json
 {
@@ -110,6 +117,10 @@ reverts without signing or broadcasting:
 
 `simulate` must be the JSON boolean `true`. The string `"true"` is rejected, deliberately,
 so a typo cannot fall through to a real broadcast.
+
+Simulation is EVM-only. Over MCP, on a known Solana chain a `simulate: true` request errors
+with `simulation_unsupported_chain` and sends nothing; a Solana transfer sent without
+`simulate` broadcasts directly, so there is no dry run to fall back on there.
 
 A deterministic dry-run failure answers HTTP 400 with `wouldRevert: true`. Classify the
 body by a string `code` first, then by `failureKind`: `insufficient_balance` is an
@@ -147,7 +158,11 @@ Change nothing else between the dry run and the broadcast, so the transaction yo
 inspected is the transaction you send. The key must name the *work*, not the attempt, so
 a retry reuses it: see [Choosing a stable key](/api/direct-execution#choosing-a-stable-key).
 
-Save the returned `executionId`.
+Save the returned `executionId`. If the terms in this flow are not yet
+familiar — what an execution is versus the transaction that lands onchain —
+the
+[Headless and Agent Onboarding](/api/headless-onboarding#the-ids-in-the-direct-execution-flow)
+glossary defines them in one table.
 
 ## 8. Verify
 

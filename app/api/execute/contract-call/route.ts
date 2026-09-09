@@ -238,15 +238,15 @@ async function handleWriteCall(
   // against the execution, so withholding it from the response leaves the
   // caller with less than the row it just wrote.
   //
-  // transactionLink stays on the success arm because the failure return does
-  // not set one.
+  // transactionLink is returned whenever core set one, including a
+  // sponsored-relay failure that still produced an explorer URL.
   const responseBody: ExecuteResponse = {
     executionId,
     status: outcome.status,
     ...(result.transactionHash
       ? { transactionHash: result.transactionHash }
       : {}),
-    ...(result.success && result.transactionLink
+    ...(result.transactionLink
       ? { transactionLink: result.transactionLink }
       : {}),
     ...(outcome.error ? { error: outcome.error } : {}),

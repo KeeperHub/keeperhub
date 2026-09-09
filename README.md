@@ -228,6 +228,7 @@ All trigger services (schedule dispatcher, block dispatcher, event tracker) send
 Plugins extend workflow capabilities. Located in `keeperhub/plugins/`:
 
 - `web3` - Blockchain operations (balance, transfers, contract calls)
+- `evm-chain` - Read-only EVM chain diagnostics via any public JSON-RPC endpoint (no credentials)
 - `discord` - Discord notifications
 - `sendgrid` - Email via SendGrid
 - `webhook` - HTTP integrations
@@ -251,7 +252,7 @@ See [API Documentation](docs/api/index.md) for full reference.
 
 ## Observability
 
-Prometheus metrics exposed at `/api/metrics`:
+Prometheus metrics exposed at `/api/metrics`, readable from inside the cluster only:
 
 - Workflow execution performance
 - API latency

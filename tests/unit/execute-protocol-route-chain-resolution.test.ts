@@ -118,7 +118,7 @@ describe("KEEP-490: /api/execute/[...slug] resolves chain names and chainId alia
     writeContractCoreMock.mockClear();
     const response = await postWithBody({ network: "sepolia" });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(writeContractCoreMock).toHaveBeenCalledWith(
       expect.objectContaining({
         contractAddress: "0xSepoliaRouter",
@@ -131,7 +131,7 @@ describe("KEEP-490: /api/execute/[...slug] resolves chain names and chainId alia
     writeContractCoreMock.mockClear();
     const response = await postWithBody({ chainId: 8453 });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(writeContractCoreMock).toHaveBeenCalledWith(
       expect.objectContaining({
         contractAddress: "0xBaseRouter",

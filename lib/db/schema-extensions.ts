@@ -533,8 +533,12 @@ export type NewWalletLock = typeof walletLocks.$inferInsert;
  * Tracks pending blockchain transactions for validation and recovery.
  * Used by NonceManager to:
  * - Reconcile pending txs with chain state at workflow start
- * - Detect stuck transactions that may need gas bumping
  * - Provide observability into transaction state
+ *
+ * Rows that stay `pending` well past their submittedAt are surfaced as the
+ * `keeperhub_web3_pending_transactions_stuck` gauge so a backlog
+ * can be alerted on. Nothing acts on that signal automatically: no code path
+ * re-prices a transaction at the same nonce, so recovery is a human decision.
  *
  * Status lifecycle: pending -> confirmed | dropped | replaced
  */
@@ -547,7 +551,7 @@ export const pendingTransactions = pgTable(
     txHash: text("tx_hash").notNull(),
     executionId: text("execution_id").notNull(),
     workflowId: text("workflow_id"),
-    gasPrice: text("gas_price"), // for stuck tx analysis
+    gasPrice: text("gas_price"), // fee actually paid, recorded for post-hoc review
     submittedAt: timestamp("submitted_at", { withTimezone: true }).defaultNow(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
     status: text("status").default("pending"), // pending, confirmed, dropped, replaced
@@ -560,6 +564,17 @@ export const pendingTransactions = pgTable(
       table.status
     ),
     index("idx_pending_tx_execution").on(table.executionId),
+    // Backs the stuck-backlog gauge. Pre-emptive rather than a present fix:
+    // at production volume (11k rows, 48/day as of 2026-09-09) the planner
+    // already serves that query from idx_pending_tx_status via a bitmap scan
+    // in 0.13ms, since a bitmap scan needs no leading-column match. The table
+    // is append-only - nothing prunes it - so this exists for the crossover
+    // where a full index scan plus heap fetches loses to a sequential scan.
+    // Partial on status = 'pending', so it stays the size of the unresolved
+    // set rather than the table.
+    index("idx_pending_tx_stuck")
+      .on(table.submittedAt, table.chainId)
+      .where(sql`${table.status} = 'pending'`),
   ]
 );
 

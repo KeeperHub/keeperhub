@@ -108,9 +108,11 @@ vi.mock("@/lib/db", () => ({
 
 import {
   beginIdempotent,
+  beginIdempotentFromRequest,
   hashRequest,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
+  MAX_IDEMPOTENCY_KEY_LENGTH,
   recordIdempotentResponse,
 } from "@/lib/idempotency";
 
@@ -157,6 +159,17 @@ describe("hashRequest", () => {
 describe("idempotencyEarlyResponse", () => {
   it("returns null for a proceed outcome", () => {
     expect(idempotencyEarlyResponse(proceedFns())).toBeNull();
+  });
+
+  it("maps invalid_key to 400 with the message", () => {
+    const early = idempotencyEarlyResponse({
+      kind: "invalid_key",
+      message: "Idempotency-Key must be at most 255 characters",
+    });
+    expect(early).toEqual({
+      status: 400,
+      body: { error: "Idempotency-Key must be at most 255 characters" },
+    });
   });
 
   it("maps replay to the stored status and body, marked as a replay", () => {
@@ -482,5 +495,44 @@ describe("beginIdempotent", () => {
     expect((rows[0].expiresAt as Date).getTime()).toBeGreaterThan(
       before - 1000
     );
+  });
+});
+
+describe("beginIdempotentFromRequest", () => {
+  it("returns null when the Idempotency-Key header is absent", async () => {
+    const outcome = await beginIdempotentFromRequest({
+      request: new Request("http://localhost/", { method: "POST" }),
+      organizationId: "org-1",
+      scope: "execute:transfer",
+      requestBody: { a: 1 },
+    });
+    expect(outcome).toBeNull();
+  });
+
+  it("returns invalid_key for an over-long key without throwing", async () => {
+    const outcome = await beginIdempotentFromRequest({
+      request: new Request("http://localhost/", {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": "k".repeat(MAX_IDEMPOTENCY_KEY_LENGTH + 1),
+        },
+      }),
+      organizationId: "org-1",
+      scope: "execute:transfer",
+      requestBody: { a: 1 },
+    });
+    if (outcome?.kind !== "invalid_key") {
+      throw new Error(`expected invalid_key, got ${JSON.stringify(outcome)}`);
+    }
+    expect(outcome.message).toBe(
+      `Idempotency-Key must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters`
+    );
+    expect(idempotencyEarlyResponse(outcome)).toEqual({
+      status: 400,
+      body: {
+        error: `Idempotency-Key must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters`,
+      },
+    });
+    expect(rows).toHaveLength(0);
   });
 });
