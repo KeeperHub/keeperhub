@@ -7,6 +7,14 @@ description: "KeeperHub Analytics API - monitor workflow performance, gas usage,
 
 The Analytics API provides insights into workflow and direct execution performance, gas usage, and execution trends across your organization.
 
+## Authentication
+
+All analytics routes accept either a session cookie or an organization API key (`Authorization: Bearer $KEEPERHUB_API_KEY`) except the two that are session-only:
+
+- **`GET /api/analytics/summary`**, **`GET /api/analytics/time-series`**, **`GET /api/analytics/networks`**, **`GET /api/analytics/runs`**, and **`GET /api/analytics/spend-cap`** accept a `kh_` organization key with the `mcp:read` scope. A legacy key with no scope is admitted (an unscoped key means full access). A session caller carries no scope and is unaffected - the scope gate applies to key callers only.
+- **`GET /api/analytics/stream`** is session-only: it is a server-sent-events feed consumed by a browser `EventSource`, which cannot send an `Authorization` header, so a key has no way to use it.
+- **`GET /api/analytics/runs/{executionId}/steps`** is session-only: it reads the caller's organization from the session.
+
 ## Get Analytics Summary
 
 ```http
