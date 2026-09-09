@@ -61,6 +61,99 @@ function applyDeprecationHeaders(response: NextResponse): NextResponse {
   return response;
 }
 
+/** The `workflow_executions` columns the pre-created-id path reads. */
+type ExistingExecutionRow = {
+  workflowId: string;
+  organizationId: string | null;
+  status: string;
+};
+
+/**
+ * Adopt the row (`adopt: true`, caller continues on it) or answer for it.
+ */
+type ExistingExecutionOutcome =
+  | { adopt: true }
+  | {
+      adopt: false;
+      response: NextResponse;
+      disposition: "success" | "release";
+    };
+
+/**
+ * The answer for a pre-created executionId that already names a row: refuse a
+ * foreign row, refuse a terminal one, ack a running one, adopt a pending one.
+ *
+ * Both sides of the pre-create race resolve through here -- the lookup before
+ * the insert, and the re-read after the insert loses on the primary key. A
+ * re-dispatch that arrives a millisecond after the winner commits and one that
+ * arrives mid-insert are the same request, and answering them differently
+ * would make a legitimate retry succeed or fail on timing alone.
+ */
+function existingExecutionOutcome(
+  existing: ExistingExecutionRow,
+  params: { workflowId: string; organizationId: string; executionId: string }
+): ExistingExecutionOutcome {
+  // organizationId is null on rows written before the column existed, so it is
+  // compared only when set; workflowId carries the tenancy. Adopting a foreign
+  // row would write this run's status, logs and output over it.
+  if (
+    existing.workflowId !== params.workflowId ||
+    (existing.organizationId !== null &&
+      existing.organizationId !== params.organizationId)
+  ) {
+    logSecurityEvent("execution_id_workflow_mismatch", {
+      workflowId: params.workflowId,
+      organizationId: params.organizationId,
+      rowWorkflowId: existing.workflowId,
+    });
+    return {
+      adopt: false,
+      disposition: "release",
+      response: NextResponse.json(
+        {
+          error: "executionId does not belong to this workflow",
+          code: "execution_id_mismatch",
+        },
+        { status: HttpStatus.CONFLICT }
+      ),
+    };
+  }
+
+  if (
+    existing.status === "success" ||
+    existing.status === "error" ||
+    existing.status === "cancelled"
+  ) {
+    return {
+      adopt: false,
+      disposition: "release",
+      response: NextResponse.json(
+        {
+          error: "Execution already completed",
+          code: "execution_already_terminal",
+          executionId: params.executionId,
+          status: existing.status,
+        },
+        { status: HttpStatus.CONFLICT }
+      ),
+    };
+  }
+
+  if (existing.status === "running") {
+    return {
+      adopt: false,
+      disposition: "success",
+      response: NextResponse.json({
+        executionId: params.executionId,
+        status: "running",
+      }),
+    };
+  }
+
+  // pending (scheduler handoff) -- adopt: charge + start once.
+  return { adopt: true };
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Workflow execution requires complex error handling and validation
 export async function POST(
   request: Request,
@@ -338,81 +431,33 @@ export async function POST(
     }
 
     if (executionId) {
+      const outcomeParams = {
+        workflowId,
+        organizationId: workflow.organizationId,
+        executionId,
+      };
+
       // Scheduler may pre-create a pending row and hand the id back here.
       // Refuse terminal / in-flight reuse before PAYG so a retry cannot
-      // charge again or start a second DevKit run.
+      // charge again or start a second DevKit run. The lookup is by primary
+      // key alone, so the row it returns is not necessarily this workflow's --
+      // existingExecutionOutcome is what refuses a foreign one.
       const existingExecution = await db.query.workflowExecutions.findFirst({
         where: eq(workflowExecutions.id, executionId),
       });
+      const existing = existingExecution
+        ? existingExecutionOutcome(existingExecution, outcomeParams)
+        : null;
 
-      // The lookup is by primary key alone, so the row it returns is not
-      // necessarily this workflow's. Adopting a foreign row would write this
-      // run's status, logs and output over it, and falling through to the
-      // insert below would collide on the primary key. Refuse instead.
-      // organizationId is null on rows written before the column existed, so
-      // it is compared only when set; workflowId carries the tenancy.
-      if (
-        existingExecution &&
-        (existingExecution.workflowId !== workflowId ||
-          (existingExecution.organizationId !== null &&
-            existingExecution.organizationId !== workflow.organizationId))
-      ) {
-        logSecurityEvent("execution_id_workflow_mismatch", {
-          workflowId,
-          organizationId: workflow.organizationId,
-          rowWorkflowId: existingExecution.workflowId,
-        });
+      if (existing && !existing.adopt) {
         return recordIdempotentResponse(
           idem,
-          withDeprecation(
-            NextResponse.json(
-              {
-                error: "executionId does not belong to this workflow",
-                code: "execution_id_mismatch",
-              },
-              { status: HttpStatus.CONFLICT }
-            )
-          ),
-          "release"
+          withDeprecation(existing.response),
+          existing.disposition
         );
       }
 
-      if (existingExecution) {
-        const existingStatus = existingExecution.status;
-        if (
-          existingStatus === "success" ||
-          existingStatus === "error" ||
-          existingStatus === "cancelled"
-        ) {
-          return recordIdempotentResponse(
-            idem,
-            withDeprecation(
-              NextResponse.json(
-                {
-                  error: "Execution already completed",
-                  code: "execution_already_terminal",
-                  executionId,
-                  status: existingStatus,
-                },
-                { status: HttpStatus.CONFLICT }
-              )
-            ),
-            "release"
-          );
-        }
-        if (existingStatus === "running") {
-          return recordIdempotentResponse(
-            idem,
-            withDeprecation(
-              NextResponse.json({
-                executionId,
-                status: "running",
-              })
-            ),
-            "success"
-          );
-        }
-        // pending (scheduler handoff) — continue: charge + start once
+      if (existing) {
         console.log("[API] Using existing execution:", executionId);
       } else {
         // A miss on the lookup means the id was free when we read it, not
@@ -420,11 +465,6 @@ export async function POST(
         // here and only one insert wins. withBackstopCapture special-cases
         // only 42501, so the loser's primary-key violation would reach the
         // outer catch and answer 500 with the driver's constraint text in it.
-        //
-        // Answer the conflict directly instead. A foreign id never arrives
-        // here -- the mismatch check above already refused it with
-        // execution_id_mismatch -- so this is the race, and 409 is the same
-        // answer the caller would have got had it lost by a millisecond less.
         try {
           await withBackstopCapture(
             { workflowId, userId, source: triggerSource },
@@ -440,34 +480,63 @@ export async function POST(
                 executedWorkflowHash,
               })
           );
+          console.log("[API] Created execution with provided ID:", executionId);
+          createdHere = true;
         } catch (error) {
           if (!isUniqueViolation(error)) {
             throw error;
           }
-          logUserError(
-            ErrorCategory.VALIDATION,
-            "[Execute] executionId already in use",
-            undefined,
-            { workflowId, endpoint: "/api/workflow/[workflowId]/execute" }
-          );
-          return recordIdempotentResponse(
-            idem,
-            withDeprecation(
-              NextResponse.json(
-                {
-                  error:
-                    "The provided executionId is already in use. Retry with a different id.",
-                  code: "execution_id_conflict",
-                  executionId,
-                },
-                { status: HttpStatus.CONFLICT }
-              )
-            ),
-            "release"
+          // Losing the race is the lookup above arriving one instant early:
+          // the winner committed the row between the read and the insert. So
+          // re-read it and take the same branch the lookup would have taken,
+          // rather than answering a 409 the earlier arrival would not have
+          // got. The dispatcher cannot re-issue under a different id -- the
+          // executionId is pre-created and fixed -- and executeViaApi throws
+          // on any non-2xx, so a 409 here turns a legitimate re-dispatch into
+          // a hard executor failure decided by scheduling jitter.
+          const winner = await db.query.workflowExecutions.findFirst({
+            where: eq(workflowExecutions.id, executionId),
+          });
+          if (!winner) {
+            // The insert says the id was taken and the re-read says no row
+            // holds it: the winner rolled back in between. There is nothing
+            // to adopt, and retrying the dispatch under the same id will now
+            // find it free.
+            logUserError(
+              ErrorCategory.VALIDATION,
+              "[Execute] executionId claimed by a dispatch that rolled back",
+              undefined,
+              { workflowId, endpoint: "/api/workflow/[workflowId]/execute" }
+            );
+            return recordIdempotentResponse(
+              idem,
+              withDeprecation(
+                NextResponse.json(
+                  {
+                    error:
+                      "The provided executionId was claimed by a concurrent dispatch that did not complete. Retry the dispatch with the same id.",
+                    code: "execution_id_conflict",
+                    executionId,
+                  },
+                  { status: HttpStatus.CONFLICT }
+                )
+              ),
+              "release"
+            );
+          }
+          const raced = existingExecutionOutcome(winner, outcomeParams);
+          if (!raced.adopt) {
+            return recordIdempotentResponse(
+              idem,
+              withDeprecation(raced.response),
+              raced.disposition
+            );
+          }
+          console.log(
+            "[API] Adopting execution created by a concurrent dispatch:",
+            executionId
           );
         }
-        console.log("[API] Created execution with provided ID:", executionId);
-        createdHere = true;
       }
     } else {
       // Create new execution record

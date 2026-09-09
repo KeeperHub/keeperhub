@@ -515,8 +515,77 @@ describe("execute route - input binding", {
     // by the time the insert runs. Two dispatches naming the same id both
     // reach the insert and one loses on the primary key; without this branch
     // the loser gets a 500 carrying the driver's constraint text.
-    it("answers 409 rather than 500 when the insert loses a race for the id", async () => {
+    //
+    // The three that follow are the same re-dispatch arriving at three points
+    // around the winner's commit, and the first two have to answer alike: a
+    // pre-created executionId cannot be re-issued under a different id, and
+    // executeViaApi throws on any non-2xx, so a 409 decided by scheduling
+    // jitter is a hard executor failure for a legitimate retry.
+    it("adopts the winner's row when the insert loses a race for the id", async () => {
       asInternalDispatch();
+      // The winner commits between our lookup and our insert.
+      mockDbInsertValues.mockImplementationOnce(() => {
+        executionRows.push({
+          id: "exec_raced",
+          workflowId: "wf_1",
+          organizationId: "org_1",
+          status: "running",
+        });
+        return Promise.reject(uniqueViolation());
+      });
+
+      const response = await callExecute(
+        JSON.stringify({ executionId: "exec_raced", input: { amount: "1" } })
+      );
+
+      // Identical to the answer a re-dispatch arriving one instant later gets
+      // from the lookup, rather than a 409 that depends on the timing.
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        executionId: "exec_raced",
+        status: "running",
+      });
+      expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+    });
+
+    it("adopts and starts a pending row the race left behind", async () => {
+      asInternalDispatch();
+      mockDbInsertValues.mockImplementationOnce(() => {
+        executionRows.push({
+          id: "exec_raced_pending",
+          workflowId: "wf_1",
+          organizationId: "org_1",
+          status: "pending",
+        });
+        return Promise.reject(uniqueViolation());
+      });
+
+      const response = await callExecute(
+        JSON.stringify({
+          executionId: "exec_raced_pending",
+          input: { amount: "1" },
+        })
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockExecuteWorkflowInBackground).toHaveBeenCalledWith(
+        "exec_raced_pending",
+        "wf_1",
+        workflow.nodes,
+        workflow.edges,
+        { amount: "1" },
+        expect.anything(),
+        workflow.organizationId,
+        workflow.userId,
+        undefined,
+        undefined
+      );
+    });
+
+    it("answers 409 rather than 500 when the racing dispatch rolled back", async () => {
+      asInternalDispatch();
+      // The insert says the id was taken; nothing holds it by the time we
+      // re-read, so there is no row to adopt.
       mockDbInsertValues.mockImplementationOnce(() =>
         Promise.reject(uniqueViolation())
       );
@@ -530,6 +599,35 @@ describe("execute route - input binding", {
       expect(data.code).toBe("execution_id_conflict");
       expect(data.executionId).toBe("exec_raced");
       expect(JSON.stringify(data)).not.toContain("duplicate key");
+      // The id is the scheduler's to reuse, so the message must not send it
+      // looking for a different one.
+      expect(data.error).not.toContain("different id");
+      expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+    });
+
+    it("refuses a row the race left on another workflow", async () => {
+      asInternalDispatch();
+      mockDbInsertValues.mockImplementationOnce(() => {
+        executionRows.push({
+          id: "exec_raced_foreign",
+          workflowId: "wf_2",
+          organizationId: "org_2",
+          status: "running",
+        });
+        return Promise.reject(uniqueViolation());
+      });
+
+      const response = await callExecute(
+        JSON.stringify({
+          executionId: "exec_raced_foreign",
+          input: { amount: "1" },
+        })
+      );
+
+      expect(response.status).toBe(409);
+      const data = await response.json();
+      expect(data.code).toBe("execution_id_mismatch");
+      expect(data.status).toBeUndefined();
       expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
     });
 
