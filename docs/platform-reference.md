@@ -277,14 +277,20 @@ Additive changes ship inside a version and need no action from you: new
 endpoints, new optional fields, new enum members, new response headers. Treat
 unknown fields as forward compatibility rather than as errors.
 
-A breaking change ships as a new version, never in place. When an endpoint or a
-version is scheduled for removal its responses carry:
+A breaking change ships as a new version, never in place. When an endpoint, a
+version, or one accepted request shape is scheduled for removal, the responses
+that carry it also carry:
 
 | Header | Meaning |
 |---|---|
-| `Deprecation: <http-date>` | RFC 9745. The date the deprecation took effect. The endpoint still works. |
-| `Sunset: <http-date>` | RFC 8594. The earliest date it may stop answering. |
-| `Link: <url>; rel="deprecation"` | Where to read what replaces it. |
+| `Deprecation: @<epoch-seconds>` | RFC 9745. The date the deprecation took effect, as a Structured Fields Date. Not an HTTP-date, unlike `Sunset`. What is deprecated still works. |
+| `Sunset: <http-date>` | RFC 8594. The earliest date the deprecated thing may stop being accepted. |
+| `Link: <url>; rel="deprecation"` | Where to read what replaces it, and what exactly is being removed. |
+
+Read the `Link` target before acting on a `Sunset` date. These headers ride the
+response that carries the deprecated thing, which is not always the whole
+endpoint: where only one accepted request shape is deprecated, the endpoint
+keeps answering past the sunset date and only that shape stops being accepted.
 
 **A sunset date is never less than 180 days after the `Deprecation` header first
 appears.** Log these headers rather than discarding them — they are the only

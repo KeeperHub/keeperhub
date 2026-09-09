@@ -443,9 +443,9 @@ export async function GET(request: Request): Promise<Response> {
       deprecation: {
         headers: ["Deprecation", "Sunset", "Link"],
         deprecationHeader:
-          'RFC 9745. Present once an endpoint or version is deprecated; carries the date the deprecation took effect as a Structured Fields Date - an "@" sigil followed by integer seconds since the Unix epoch, e.g. "@1789516800". Not an HTTP-date; Sunset is.',
+          'RFC 9745. Present once an endpoint, a version, or one accepted request shape is deprecated; carries the date the deprecation took effect as a Structured Fields Date - an "@" sigil followed by integer seconds since the Unix epoch, e.g. "@1789516800". Not an HTTP-date; Sunset is.',
         sunsetHeader:
-          "RFC 8594. The earliest date the endpoint may stop answering, as an HTTP-date.",
+          "RFC 8594. The earliest date the deprecated thing may stop being accepted, as an HTTP-date. Where an endpoint or a version is deprecated, that is the date it may stop answering. Where only one accepted request shape is deprecated, the endpoint keeps answering and the shape stops being accepted; the Link target says which case applies.",
         linkHeader:
           'Link: <url>; rel="deprecation" points at the migration note.',
         minimumNoticeDays: DEPRECATION_NOTICE_DAYS,
