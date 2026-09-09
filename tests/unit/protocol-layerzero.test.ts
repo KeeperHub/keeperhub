@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { getEncodeTransformKind } from "@/lib/protocol-encode-transforms";
+import {
+  getEncodeTransform,
+  getEncodeTransformKind,
+} from "@/lib/protocol-encode-transforms";
 import { getProtocol, registerProtocol } from "@/lib/protocol-registry";
 import layerzeroDef, {
   DEFAULT_EXTRA_OPTIONS,
@@ -184,13 +187,32 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     );
   });
 
-  it("registers padAddressToBytes on the recipient of both quote actions", () => {
-    expect(getEncodeTransformKind("layerzero", "oft-quote-send", "to")).toBe(
-      "padAddressToBytes"
-    );
-    expect(getEncodeTransformKind("layerzero", "oft-quote-oft", "to")).toBe(
-      "padAddressToBytes"
-    );
+  // Asserting the registered kind alone would pass against a padAddressToBytes
+  // that returns its input unchanged, so each case applies the function the
+  // registry hands back rather than trusting the label on it.
+  it("pads the recipient of both quote actions to bytes32", () => {
+    const address = "0x1111111111111111111111111111111111111111";
+    const padded = `0x${"0".repeat(24)}${address.slice(2)}`;
+
+    for (const slug of ["oft-quote-send", "oft-quote-oft"]) {
+      expect(getEncodeTransformKind("layerzero", slug, "to")).toBe(
+        "padAddressToBytes"
+      );
+
+      const transform = getEncodeTransform("layerzero", slug, "to");
+      expect(transform, `${slug}/to has no registered transform`).toBeDefined();
+
+      const result = transform?.(address);
+      expect(result, slug).toBe(padded);
+      // 0x plus one 32-byte word: the width quoteSend's bytes32 field needs.
+      expect(result, slug).toHaveLength(66);
+
+      // A template reference is left for the executor to resolve, so an
+      // unresolved value is not padded into a malformed address.
+      expect(transform?.("{{@node1:Trigger.recipient}}"), slug).toBe(
+        "{{@node1:Trigger.recipient}}"
+      );
+    }
   });
 
   it("every input carries an allowed docUrl", () => {
