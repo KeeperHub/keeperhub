@@ -26,7 +26,9 @@ vi.mock("drizzle-orm", () => {
     count: marker("count"),
     min: marker("min"),
     notInArray: marker("notInArray"),
-    sql: marker("sql"),
+    // sql doubles as a namespace: the watermark backfill binds its timestamp
+    // through sql.param, because postgres.js has no encoder for a bare Date.
+    sql: Object.assign(marker("sql"), { param: marker("param") }),
   };
 });
 
