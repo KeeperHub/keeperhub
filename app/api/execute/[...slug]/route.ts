@@ -41,6 +41,7 @@ import {
 import { buildProtocolFunctionArgs } from "../_lib/protocol-function-args";
 import { checkRateLimit } from "../_lib/rate-limit";
 import { parseNativeValueWei } from "../_lib/reserved-value";
+import { refuseSimulateBody, rejectSimulateQuery } from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import type { ExecuteResponse } from "../_lib/types";
 import { requireWallet } from "../_lib/wallet-check";
@@ -377,6 +378,13 @@ export async function POST(
     );
   }
 
+  // #2004: ?simulate= is refused on every /api/execute/* route rather than
+  // silently ignored.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
+  }
+
   const scopeError = requireScope(apiKeyCtx.scope, SCOPE_MCP_WRITE, {
     organizationId: apiKeyCtx.organizationId,
     credentialId: apiKeyCtx.apiKeyId,
@@ -409,6 +417,16 @@ export async function POST(
       { error: "Invalid JSON body" },
       { status: HttpStatus.BAD_REQUEST }
     );
+  }
+
+  // #2004 (the severe half): this route has no dry-run support, and a body
+  // `simulate` used to fall through as an unknown field while the protocol
+  // action broadcast for real (issue #1929). Refuse it loudly, before the
+  // idempotency key is reserved so a refused request consumes no execution
+  // and leaves no lock to release.
+  const simulateBody = refuseSimulateBody(body);
+  if (simulateBody) {
+    return simulateBody;
   }
 
   const idem = await beginIdempotentFromRequest({

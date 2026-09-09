@@ -33,7 +33,7 @@ import {
 } from "../_lib/execution-service";
 import { checkRateLimit } from "../_lib/rate-limit";
 import { parseNativeValueWei } from "../_lib/reserved-value";
-import { parseSimulateFlag } from "../_lib/simulate-flag";
+import { parseSimulateFlag, rejectSimulateQuery } from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import type { ExecuteResponse } from "../_lib/types";
 import { validateContractCallInput } from "../_lib/validate";
@@ -266,6 +266,16 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: apiKeyCtx.error },
       { status: apiKeyCtx.status }
     );
+  }
+
+  // #2004: ?simulate= is refused on every /api/execute/* route rather than
+  // silently ignored. This route honours the flag only in the body; the
+  // old "query string must NOT be honoured" position is retired deliberately
+  // -- a family where transfer rejects and this route ignores is the worst
+  // of the three uniform answers.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
   }
 
   // Parsed before the scope gate because the required scope depends on

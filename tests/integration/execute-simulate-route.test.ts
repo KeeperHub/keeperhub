@@ -8,11 +8,19 @@
  *   - body.simulate === true (strict boolean) routes to the simulator
  *   - any non-boolean simulate value is rejected with 400 before any
  *     reserve / broadcast happens
+ *   - a `simulate` query parameter is rejected with 400 on every route
+ *     (#2004: a flag in the wrong place is the same hazard as a flag of
+ *     the wrong type -- the old "the query string must NOT be honoured"
+ *     position is retired deliberately)
  *   - checkAndReserveExecution is NOT called on the simulate path
  *   - markRunning is NOT called on the simulate path
  *   - the broadcast cores (writeContractCore, transferFundsCore,
  *     transferTokenCore) are NOT called
  *   - the route returns the simulate response shape
+ *
+ * The route-family-wide invariant (every route declares honours-or-
+ * refuses, enforced by filesystem enumeration) lives in
+ * tests/integration/execute-simulate-invariant.test.ts.
  *
  * Run with: pnpm vitest tests/integration/execute-simulate-route.test.ts
  */
@@ -269,22 +277,15 @@ describe("/api/execute/contract-call simulate", () => {
     expect(writeContractCore).not.toHaveBeenCalled();
   });
 
-  it("query-string simulate is ignored (one shape per input)", async () => {
+  it("rejects a ?simulate=true query parameter with 400 (#2004), never broadcasting", async () => {
     resetSpies();
-    // Without body.simulate, the query string must NOT be honoured —
-    // there is exactly one way to ask for a dry-run.
-    writeContractCore.mockResolvedValueOnce({
-      success: true,
-      transactionHash: "0xabc",
-      transactionLink: null,
-      gasUsed: "21000",
-      effectiveGasPrice: "1",
-    });
-    checkAndReserveExecution.mockResolvedValueOnce({
-      allowed: true,
-      executionId: "exec_1",
-    });
-
+    // The old contract here asserted 202 + a real broadcast, on the position
+    // that the query string must NOT be honoured ("there is exactly one way
+    // to ask for a dry-run"). #2004 retires that position deliberately: a
+    // family where transfer rejects the query flag and contract-call ignores
+    // it is the worst of the three uniform answers, and a caller that asked
+    // for a dry run and got a broadcast cannot tell the difference on the
+    // wire. The query flag is now a 400 before anything is reserved.
     const res = await contractCallPOST(
       jsonRequest("/api/execute/contract-call?simulate=true", {
         contractAddress: "0xbb0000000000000000000000000000000000bb00",
@@ -295,10 +296,35 @@ describe("/api/execute/contract-call simulate", () => {
       })
     );
 
-    expect(res.status).toBe(202);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("unsupported_param");
+    expect(body.field).toBe("simulate");
     expect(simulateContractCallMock).not.toHaveBeenCalled();
-    expect(checkAndReserveExecution).toHaveBeenCalledTimes(1);
-    expect(writeContractCore).toHaveBeenCalledTimes(1);
+    expect(checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(markRunning).not.toHaveBeenCalled();
+    expect(writeContractCore).not.toHaveBeenCalled();
+  });
+
+  it("rejects ?simulate=false and ?simulate= the same as ?simulate=true", async () => {
+    resetSpies();
+    // Any `simulate` query key is refused -- a "false" or empty value must
+    // not read as "no dry run requested" when the caller is plainly holding
+    // the flag in the wrong place.
+    for (const query of ["?simulate=false", "?simulate="]) {
+      const res = await contractCallPOST(
+        jsonRequest(`/api/execute/contract-call${query}`, {
+          contractAddress: "0xbb0000000000000000000000000000000000bb00",
+          network: "1",
+          functionName: "setValue",
+          abi: WRITE_ABI,
+          functionArgs: JSON.stringify(["1"]),
+        })
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(writeContractCore).not.toHaveBeenCalled();
   });
 
   it("returns HTTP 400 when the simulator reports a revert", async () => {
