@@ -336,13 +336,14 @@ describe("execute route - input binding", {
   // billing failure, not just the happy path -- a caller who only ever sees
   // replays would otherwise never learn the shape is going away.
   //
-  // Three of the six wrapped return sites are unreachable with a deprecated
-  // body and so are not covered here. All three sit inside the route's
-  // `if (executionId)` branch -- the terminal-409, the running-200 and the
-  // executionId-conflict 409 -- and that id comes only from
-  // `resolved.executionId`, which the resolver sets only for the nested
-  // shape. `deprecated` is set only for the bare shape, which carries no
-  // envelope id, so the two are mutually exclusive by construction.
+  // Five of the eight wrapped return sites are unreachable with a deprecated
+  // body and so are not covered here. All five sit behind the route's
+  // envelope `executionId` -- the external-caller 400, the workflow-mismatch
+  // 409, the terminal-409, the running-200 and the executionId-conflict 409
+  // -- and that id comes only from `resolved.executionId`, which the
+  // resolver sets only for the nested shape. `deprecated` is set only for
+  // the bare shape, which carries no envelope id, so the two are mutually
+  // exclusive by construction.
   // Wrapping them anyway keeps "every post-resolution response carries the
   // notice" true by construction rather than by case analysis, which is why
   // they stay wrapped: it survives a later change that lets a bare body

@@ -46,7 +46,6 @@ import {
 } from "@/lib/workflow/resolve-execution-input";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Workflow execution requires complex error handling and validation
 /**
  * Set the bare-shape deprecation headers on a response.
  *
@@ -62,6 +61,7 @@ function applyDeprecationHeaders(response: NextResponse): NextResponse {
   return response;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Workflow execution requires complex error handling and validation
 export async function POST(
   request: Request,
   context: { params: Promise<{ workflowId: string }> }
