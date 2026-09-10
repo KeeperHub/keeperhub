@@ -10,6 +10,7 @@
     "evm-chain",
     "hyperliquid",
     "math",
+    "openclaw",
     "pagerduty",
     "protocol",
     "robinhood",
