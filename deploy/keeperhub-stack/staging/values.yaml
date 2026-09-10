@@ -924,7 +924,7 @@ app:
       # KEEP-1042: age out workflow execution data. Step logs go at the window
       # the owning org's plan sells, output_raw is nulled once a run can no
       # longer resume, and run rows retire on a flat billing-safe window.
-      # Hourly: every pass works on a bounded slice, so it only has to keep up
+      # Daily: every pass works on a bounded slice, so it only has to keep up
       # with rows crossing their boundary. A missed run is covered by the
       # per-organization watermark, which only advances on a real drain.
       # Off until EXECUTION_RETENTION_ENABLED is "true".
@@ -933,7 +933,14 @@ app:
           repository: ${ECR_REGISTRY}/keeperhub-staging
           tag: app-${IMAGE_TAG}
           imagePullPolicy: Always
-        schedule: "48 * * * *" # hourly, offset by 48 minutes to clear every other job in this list
+        # Daily, not hourly, and that is a product decision rather than a cost
+        # one. A plan downgrade drops the org to the free window, so the run
+        # after it deletes everything between the old window and the new one.
+        # Daily gives someone who cancels or lets a trial lapse a full day to
+        # resubscribe before that happens. The deletion itself is intended and
+        # the pricing page states the window; the point is only that an
+        # accidental lapse should not be irreversible within the hour.
+        schedule: "48 3 * * *" # 03:48 UTC, offset to clear every other job in this list
         command: ["/bin/sh"]
         args:
           - "/app/deploy/scripts/reaper.sh"
