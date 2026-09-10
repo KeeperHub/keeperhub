@@ -2,19 +2,31 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   BlockSource,
   ConnectionHealth,
+  ConnectionState,
   Endpoint,
 } from "../../src/ingest/block-source";
 import { CompositeSource } from "../../src/ingest/composite-source";
 
 const ENDPOINTS: Endpoint[] = [{ rpcUrl: "https://rpc", wssUrl: "wss://ws" }];
 
-function health(connected: boolean, endpoint = "wss://ws"): ConnectionHealth {
+function health(
+  connected: boolean,
+  endpoint = "wss://ws",
+  state: ConnectionState = connected ? "live" : "failed",
+): ConnectionHealth {
   return {
     chainId: 101,
+    source: "signatures",
     connected,
+    state,
     reconnecting: false,
     lastSlotAt: null,
+    subscribedAt: null,
     activeEndpoint: endpoint,
+    endpointIndex: 0,
+    endpointCount: 1,
+    reconnects: 0,
+    abandonedSubscriptions: 0,
     lastError: connected ? null : "down",
   };
 }

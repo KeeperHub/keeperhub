@@ -1,8 +1,19 @@
 import type { Commitment } from "@solana/web3.js";
+import { redactRpcUrl } from "../../lib/utils/redact-url";
 import type { NormalizedBlock } from "../match/types";
-import type { ConnectionHealth, Endpoint } from "./solana-connection";
+import type {
+  ConnectionHealth,
+  ConnectionSource,
+  ConnectionState,
+  Endpoint,
+} from "./solana-connection";
 
-export type { ConnectionHealth, Endpoint } from "./solana-connection";
+export type {
+  ConnectionHealth,
+  ConnectionSource,
+  ConnectionState,
+  Endpoint,
+} from "./solana-connection";
 
 /**
  * A BlockSource produces `NormalizedBlock`s for one chain, in slot order. It is
@@ -40,15 +51,26 @@ export interface BlockSource {
 /** Health shown before a source has connected / after it stops. */
 export function disconnectedHealth(
   chainId: number,
+  source: ConnectionSource,
   endpoints: Endpoint[],
   reason: string,
+  state: ConnectionState = "failed",
 ): ConnectionHealth {
   return {
     chainId,
+    source,
     connected: false,
+    state,
     reconnecting: false,
     lastSlotAt: null,
-    activeEndpoint: endpoints[0]?.wssUrl ?? "",
+    subscribedAt: null,
+    // Redacted: chain-config puts the provider key in the URL path and this
+    // value is served on /healthz. See lib/utils/redact-url.ts.
+    activeEndpoint: redactRpcUrl(endpoints[0]?.wssUrl ?? null) ?? "",
+    endpointIndex: 0,
+    endpointCount: endpoints.length,
+    reconnects: 0,
+    abandonedSubscriptions: 0,
     lastError: reason,
   };
 }

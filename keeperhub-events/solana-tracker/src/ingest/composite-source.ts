@@ -3,9 +3,26 @@ import { formatError } from "../format-error";
 import {
   type BlockSource,
   type ConnectionHealth,
+  type ConnectionState,
   type Endpoint,
   disconnectedHealth,
 } from "./block-source";
+
+/**
+ * Worst-member-wins ordering for a composite chain's reported health. Higher
+ * wins. "unimplemented" outranks the healthy states because a chain routed to
+ * an unwired source really is not ingesting, but stays below the states that
+ * describe a live fault, so a genuine failure is never masked by a seam.
+ */
+const STATE_SEVERITY: Record<ConnectionState, number> = {
+  live: 0,
+  subscribing: 1,
+  idle: 2,
+  unimplemented: 3,
+  reconnecting: 4,
+  stale: 5,
+  failed: 6,
+};
 
 /**
  * Runs several BlockSources for one chain behind the single BlockSource
@@ -60,10 +77,22 @@ export class CompositeSource implements BlockSource {
   getHealth(): ConnectionHealth {
     const healths = this.sources.map((source) => source.getHealth());
     if (healths.length === 0) {
-      return disconnectedHealth(this.chainId, this.endpoints, "no sources");
+      return disconnectedHealth(
+        this.chainId,
+        "composite",
+        this.endpoints,
+        "no sources",
+      );
     }
     // Healthy only when every member is: one disconnected member means a whole
     // trigger type has stopped being served, which the chain's health must show.
-    return healths.find((health) => !health.connected) ?? healths[0];
+    //
+    // Ranked by severity rather than by array order. Picking the first
+    // unhealthy member made the reported endpoint and error depend on which
+    // source happened to be constructed first, so a composite with a genuinely
+    // failed member could report an unimplemented one instead.
+    return [...healths].sort(
+      (a, b) => STATE_SEVERITY[b.state] - STATE_SEVERITY[a.state],
+    )[0];
   }
 }

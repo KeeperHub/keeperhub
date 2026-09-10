@@ -17,7 +17,10 @@ import { formatError } from "../format-error";
 import { type BlockFire, matchBlocks } from "../match/block-matcher";
 import { type EventFire, matchEvents } from "../match/event-matcher";
 import type { NormalizedBlock } from "../match/types";
-import type { ChainRegistration } from "../registrations";
+import {
+  type ChainRegistration,
+  registrationEndpoints,
+} from "../registrations";
 import type { BlockSource, ConnectionHealth, Endpoint } from "./block-source";
 import { createBlockSource } from "./source-factory";
 
@@ -157,16 +160,16 @@ export class BlockIngestor {
   }
 
   private endpoints(): Endpoint[] {
-    const endpoints: Endpoint[] = [
-      { rpcUrl: this.registration.rpcUrl, wssUrl: this.registration.wssUrl },
-    ];
-    if (this.registration.fallbackWssUrl) {
-      endpoints.push({
-        rpcUrl: this.registration.fallbackRpcUrl ?? this.registration.rpcUrl,
-        wssUrl: this.registration.fallbackWssUrl,
-      });
-    }
-    return endpoints;
+    return registrationEndpoints(this.registration);
+  }
+
+  /**
+   * Whether start() completed. The reconciler needs this before dropping an
+   * ingestor from the registry: deleting one that is still running orphans its
+   * connection, its watchdog and its socket with no way to reach them again.
+   */
+  isStarted(): boolean {
+    return this.started;
   }
 
   private rebuildDecoders(): void {
