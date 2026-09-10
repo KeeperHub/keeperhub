@@ -81,6 +81,19 @@ type UnconfirmedWorkflowExecution = {
   workflowId: string;
   transactionHashes: TransactionHashEntry[] | null;
   startedAt: Date;
+  // KEEP-1281: which way this row entered `unconfirmed`.
+  //
+  // The finalizer writes a classification only when the run had a failure of
+  // its own (a step errored) and is being held open solely because one of its
+  // broadcasts is unreadable. A run held open by the KEEP-966 success gate --
+  // no step failure, just a receipt it could not read -- carries null here, by
+  // the same rule that says an unread receipt is not an error outcome.
+  //
+  // So a non-null errorType means "this run has already failed"; the chain can
+  // only tell us what happened to its transaction, never that the run
+  // succeeded. `error` is the failure to restore when it settles.
+  errorType: string | null;
+  error: string | null;
 };
 
 function emptySummary(): ReconcileSummary {
@@ -283,6 +296,15 @@ async function reconcileWorkflow(
   execution: UnconfirmedWorkflowExecution,
   now: Date
 ): Promise<SettleOutcome> {
+  // KEEP-1281: a run held open because one of its own failed steps left a
+  // transaction in flight has ALREADY failed. Re-reading the chain can tell us
+  // what became of that transaction; it can never tell us the run succeeded,
+  // because the steps after the failure never ran. So this row may only ever
+  // settle to error -- settling it "success" on the strength of its hashes
+  // verifying would erase a real failure and clear its message.
+  const failureOrigin = Boolean(execution.errorType);
+  const originalError = execution.error ?? "Workflow execution failed";
+
   const entries = execution.transactionHashes ?? [];
   const verifiable = entries.filter(
     (entry): entry is TransactionHashEntry & { chainId: number } =>
@@ -293,7 +315,9 @@ async function reconcileWorkflow(
     await settleWorkflow(
       execution,
       "error",
-      "On-chain verification failed: no verifiable transaction hashes"
+      failureOrigin
+        ? originalError
+        : "On-chain verification failed: no verifiable transaction hashes"
     );
     return "failed";
   }
@@ -302,7 +326,7 @@ async function reconcileWorkflow(
     verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId }))
   );
 
-  if (allVerified) {
+  if (allVerified && !failureOrigin) {
     await settleWorkflow(execution, "success", null);
     return "completed";
   }
@@ -311,6 +335,15 @@ async function reconcileWorkflow(
   const age = now.getTime() - execution.startedAt.getTime();
   if (stillUnreadable && age < DROPPED_AFTER_MS) {
     return "unconfirmed";
+  }
+
+  // The run's own failure is what finalized it, so that message is what the
+  // row settles with. What became of the broadcast is recorded on the
+  // enriched transaction_hashes entries rather than overwriting the reason
+  // the run actually failed.
+  if (failureOrigin) {
+    await settleWorkflow(execution, "error", originalError);
+    return "failed";
   }
 
   await settleWorkflow(
@@ -430,6 +463,8 @@ export async function reconcileUnconfirmedExecutions(
     workflowId: workflowExecutions.workflowId,
     transactionHashes: workflowExecutions.transactionHashes,
     startedAt: workflowExecutions.startedAt,
+    errorType: workflowExecutions.errorType,
+    error: workflowExecutions.error,
   };
   const workflowEligible = and(
     eq(workflowExecutions.status, "unconfirmed"),

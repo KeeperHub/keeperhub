@@ -241,6 +241,41 @@ describe("EvmChainAdapter post-broadcast failures (non-Tempo)", () => {
     expect(broadcastTransactionHash(error)).toBe(TX_HASH);
   });
 
+  /**
+   * KEEP-1281: unbounded, tx.wait() waits for as long as the step is allowed
+   * to live. A transaction that never mines pinned the step to the pod
+   * deadline and was then swept by the 30-minute reaper, which records no
+   * hash -- so the broadcast never entered the reconciler's scan at all.
+   */
+  it("bounds the receipt wait rather than waiting for as long as the step may live", async () => {
+    const h = createHarness(vi.fn().mockResolvedValue(buildReceipt(TX_HASH)));
+
+    await send(h);
+
+    const [confirms, timeoutMs] = h.wait.mock.calls[0] as [number, number];
+    expect(confirms).toBe(1);
+    expect(timeoutMs).toBeGreaterThan(0);
+    // Inside the 300s wallet lock TTL: waiting past the lock that protects the
+    // nonce would be waiting without the guarantee that makes the answer good.
+    expect(timeoutMs).toBeLessThan(300_000);
+  });
+
+  it("carries the hash when the bounded wait expires", async () => {
+    const h = createHarness(
+      vi.fn().mockRejectedValue(
+        Object.assign(new Error("wait for transaction timeout"), {
+          code: "TIMEOUT",
+        })
+      )
+    );
+
+    const error = await sendAndCatch(h);
+
+    // The deadline says we stopped looking, never that the transaction failed.
+    expect(isOnChainPendingError(error)).toBe(true);
+    expect(broadcastTransactionHash(error)).toBe(TX_HASH);
+  });
+
   it("carries the hash when the provider fails mid-wait", async () => {
     const h = createHarness(
       vi.fn().mockRejectedValue(

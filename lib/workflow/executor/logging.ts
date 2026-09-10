@@ -137,6 +137,11 @@ async function listTrulyFailedNodes(executionId: string): Promise<string[]> {
  * Returns [] on query failure -- losing the hash list is preferable to
  * failing the UPDATE that flips status to success.
  *
+ * `rowStatus` selects which step rows to read. Success rows feed the KEEP-966
+ * reconciliation gate. Error rows feed the KEEP-1281 in-flight check: a failed
+ * step that broadcast before it failed carries its hash in output_raw exactly
+ * the same way, because step logging writes output_raw regardless of status.
+ *
  * The transactionHash IS NOT NULL filter is pushed into Postgres so a workflow
  * that runs a non-tx step many times (e.g. a For-Each over hundreds of HTTP
  * calls) does not stream every row back to Node just to discard it in JS.
@@ -147,13 +152,14 @@ async function listTrulyFailedNodes(executionId: string): Promise<string[]> {
  * of the same list cannot drift apart.
  */
 async function loadHashesFromLogs(
-  executionId: string
+  executionId: string,
+  rowStatus: "success" | "error" = "success"
 ): Promise<TransactionHashEntry[]> {
   try {
     const rows = await db.query.workflowExecutionLogs.findMany({
       where: and(
         eq(workflowExecutionLogs.executionId, executionId),
-        eq(workflowExecutionLogs.status, "success"),
+        eq(workflowExecutionLogs.status, rowStatus),
         sql`${workflowExecutionLogs.outputRaw}->>'transactionHash' IS NOT NULL`
       ),
       columns: {
@@ -301,6 +307,54 @@ async function reconcileTransactionHashes(
     };
   }
   return { ok: true, hashes: merged };
+}
+
+/**
+ * KEEP-1281: verify hashes harvested from FAILED steps, to decide whether a
+ * run that is finalizing as a failure still has a transaction in flight.
+ *
+ * Deliberately NOT reconcileTransactionHashes. That function answers "may this
+ * run be called a success", so every non-success receipt fails it. Here the run
+ * has already failed for its own reasons and the only open question is whether
+ * the chain has answered at all. A reverted receipt IS an answer: the run stays
+ * a terminal failure and records the revert. Only an unreadable receipt -- the
+ * transaction is out there and no provider can see it yet -- holds the run open.
+ *
+ * A hash carrying no chainId cannot be verified on any chain, so it cannot be
+ * waited on either. It is still recorded, but it never holds the run open:
+ * doing so would park the row in a state the reconciler can only resolve by
+ * timing out hours later.
+ *
+ * Never throws. This runs on the failure finalize path, where an exception
+ * would convert an ordinary failed run into an unfinalized one; a verification
+ * outage should cost the in-flight check, not the terminal write.
+ */
+async function inspectFailureBroadcasts(
+  entries: TransactionHashEntry[]
+): Promise<{ hashes: TransactionHashEntry[]; unreadable: boolean }> {
+  const verifiable = entries.filter(
+    (entry): entry is TransactionHashEntry & { chainId: number } =>
+      entry.chainId !== undefined
+  );
+  if (verifiable.length === 0) {
+    return { hashes: entries, unreadable: false };
+  }
+  try {
+    const { results } = await verifyExecutionReceipts(
+      verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId }))
+    );
+    return {
+      hashes: mergeReceiptResults(entries, results),
+      unreadable: hasUnreadableReceipt(results),
+    };
+  } catch (verifyError) {
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[Workflow Logging] Failed to verify broadcasts from failed steps; finalizing as a terminal failure",
+      verifyError
+    );
+    return { hashes: entries, unreadable: false };
+  }
 }
 
 /**
@@ -951,6 +1005,10 @@ export async function logWorkflowCompleteDb(
   // Demoting it to error instead would tell an operator a broadcast run failed
   // and invite a re-run of transactions that may already have landed.
   let unreadableReceipts = false;
+  // Captured before the gate below, which can itself flip resolvedStatus to
+  // "error": the failure harvest that follows is for runs that arrived here
+  // already failing, not for a success demoted by its own reconciliation.
+  const finalizingAsFailure = resolvedStatus !== "success";
   if (resolvedStatus === "success" && transactionHashes.length > 0) {
     const reconciled = await reconcileTransactionHashes(transactionHashes);
     verifiedTransactionHashes = reconciled.hashes;
@@ -958,6 +1016,27 @@ export async function logWorkflowCompleteDb(
       unreadableReceipts = !reconciled.conclusive;
       resolvedStatus = "error";
       resolvedError = reconciled.error;
+    }
+  }
+
+  // KEEP-1281: a run finalizing as a failure can still have left a transaction
+  // in flight. The write cores already put the hash on the failed step result
+  // (broadcastTransactionHash off OnChainPendingError) and step logging
+  // persists output_raw for error rows too -- but the harvest above reads
+  // success rows only, so that hash was dropped and the run was stamped
+  // terminally failed for a broadcast that may yet land. An operator reading
+  // that row sees a failure with no transaction and re-runs it, moving the
+  // funds twice.
+  //
+  // Harvest those hashes so the row records the broadcast either way, and hold
+  // the run open only when one is genuinely unreadable.
+  let failureOriginUnconfirmed = false;
+  if (finalizingAsFailure) {
+    const broadcasts = await loadHashesFromLogs(params.executionId, "error");
+    if (broadcasts.length > 0) {
+      const inspected = await inspectFailureBroadcasts(broadcasts);
+      verifiedTransactionHashes = inspected.hashes;
+      failureOriginUnconfirmed = inspected.unreadable;
     }
   }
 
@@ -994,7 +1073,14 @@ export async function logWorkflowCompleteDb(
             : null
         )
       : resolvedStatus;
-  if (unreadableReceipts) {
+  // Both routes to `unconfirmed` mean the same thing -- a broadcast whose fate
+  // the chain has not yet revealed -- but they differ in what else is true of
+  // the run, and persistedClassification above encodes that difference:
+  // unreadableReceipts suppresses the classification (the run had no failure
+  // of its own), while failureOriginUnconfirmed keeps it (a step really did
+  // fail). reconcileWorkflow reads error_type back to decide which way the row
+  // may settle, so a run that failed is never resolved into a success.
+  if (unreadableReceipts || failureOriginUnconfirmed) {
     executionStatus = "unconfirmed";
   }
 

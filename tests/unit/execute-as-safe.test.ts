@@ -68,6 +68,7 @@ import {
 import type { NonceSession } from "@/lib/web3/nonce-manager";
 import {
   broadcastTransactionHash,
+  isOnChainPendingError,
   isOnChainRevertError,
 } from "@/lib/web3/onchain-revert";
 
@@ -125,6 +126,23 @@ function makeRpcManager(receipt: ethers.TransactionReceipt | null): {
     options: { chainId: 1, workflowId: "wf-1", rpcManager },
     waitForTransaction,
   };
+}
+
+/**
+ * An rpcManager whose receipt wait rejects the way exhausting every provider
+ * does (~186s of failover), while the pre-broadcast gas estimate still works.
+ */
+function makeExhaustedRpcManager(reason: Error): ExecuteAsSafeOptions {
+  const provider = {
+    estimateGas: vi.fn().mockResolvedValue(BigInt(50_000)),
+    waitForTransaction: vi.fn().mockRejectedValue(reason),
+  } as unknown as ethers.JsonRpcProvider;
+  const rpcManager = {
+    executeWithFailover: (
+      op: (p: ethers.JsonRpcProvider) => Promise<unknown>
+    ) => op(provider),
+  } as unknown as ExecuteAsSafeOptions["rpcManager"];
+  return { chainId: 1, workflowId: "wf-1", rpcManager };
 }
 
 type Invoke = (options: ExecuteAsSafeOptions) => Promise<unknown>;
@@ -241,6 +259,42 @@ describe.each(cases)("%s", (_name, invoke) => {
 
     expect(isOnChainRevertError(error)).toBe(true);
     expect(waitForTransaction).not.toHaveBeenCalled();
+    expect(mocks.confirmTransaction).not.toHaveBeenCalled();
+  });
+
+  /**
+   * KEEP-1281: both of these are post-broadcast. The transaction is on the
+   * network and the nonce is spent, so a throw that drops the hash stamps a
+   * terminal failure on a transaction that exists on-chain and nowhere in our
+   * data -- the finalizer harvests the hash off the error, and there was none.
+   *
+   * OnChainPendingError, never OnChainRevertError: failing to READ a receipt
+   * says nothing about whether the transaction succeeded.
+   */
+  it("carries the hash when the receipt wait exhausts every provider", async () => {
+    const options = makeExhaustedRpcManager(new Error("all providers failed"));
+
+    const error: unknown = await invoke(options).catch((e: unknown) => e);
+
+    expect(isOnChainPendingError(error)).toBe(true);
+    expect(broadcastTransactionHash(error)).toBe(TX_HASH);
+    expect((error as Error).message).toContain(
+      "sent but receipt could not be read"
+    );
+    expect((error as Error).message).toContain("all providers failed");
+    expect(mocks.recordTransaction).toHaveBeenCalledOnce();
+    expect(mocks.confirmTransaction).not.toHaveBeenCalled();
+    expect(mocks.finishMetrics).toHaveBeenCalledWith("failure");
+  });
+
+  it("carries the hash when the wait resolves without a receipt", async () => {
+    const { options } = makeRpcManager(null);
+
+    const error: unknown = await invoke(options).catch((e: unknown) => e);
+
+    expect(isOnChainPendingError(error)).toBe(true);
+    expect(broadcastTransactionHash(error)).toBe(TX_HASH);
+    expect((error as Error).message).toContain("sent but receipt unavailable");
     expect(mocks.confirmTransaction).not.toHaveBeenCalled();
   });
 

@@ -268,6 +268,13 @@ vi.mock("@/lib/db", () => ({
           if (isOrphanSiblingProbe) {
             return Promise.resolve(siblingErrorRows);
           }
+          // loadHashesFromLogs is the only reader that asks for output_raw
+          // (KEEP-470 harvests success rows, KEEP-1281 harvests error rows).
+          // It is not a listTrulyFailedNodes probe, so it must not advance
+          // that counter or consume the late-commit script.
+          if (cols.outputRaw === true) {
+            return Promise.resolve(allLogs);
+          }
           trulyFailedProbes += 1;
           return Promise.resolve(
             lateCommitLogs && trulyFailedProbes > 1 ? lateCommitLogs : allLogs
@@ -1012,6 +1019,147 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
     clearExecution(executionId);
   });
 
+  /**
+   * KEEP-1281: the write cores put the broadcast hash on a failed step result
+   * and step logging persists it in output_raw for error rows, but the harvest
+   * above reads success rows only -- so a run whose step broadcast and then
+   * could not read the receipt was stamped terminally failed with no hash,
+   * outside the reconciler's scan. An operator saw a failure with no
+   * transaction and re-ran it, moving the funds twice.
+   */
+  it("holds a failing run unconfirmed and records the hash when a failed step's broadcast cannot be read", async () => {
+    const executionId = "exec_failed_step_inflight";
+    allLogs = [
+      {
+        id: "log_a",
+        nodeId: "write-contract-1",
+        nodeName: "Write Contract",
+        status: "error",
+        iterationIndex: null,
+        outputRaw: {
+          transactionHash: "0xinflight",
+          chainId: 1,
+          network: "mainnet",
+        },
+      },
+    ] as unknown as LogRow[];
+
+    verifyExecutionReceiptsMock.mockResolvedValueOnce({
+      allVerified: false,
+      results: [
+        {
+          hash: "0xinflight",
+          chainId: 1,
+          verified: false,
+          status: "not_found" as const,
+          verifiedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    await logWorkflowCompleteDb({
+      executionId,
+      status: "error",
+      error: "Transaction sent but receipt could not be read",
+      startTime: Date.now() - 1000,
+    });
+
+    const update = getExecUpdate();
+    // Non-terminal: the transaction may still land.
+    expect(update?.set.status).toBe("unconfirmed");
+    // The run's own failure is preserved rather than replaced by the
+    // receipt-read problem.
+    expect(update?.set.error).toBe(
+      "Transaction sent but receipt could not be read"
+    );
+    // The discriminator the reconciler reads back: a classification present
+    // means this run already failed, so it may only ever settle to error.
+    expect(update?.set.errorType).not.toBeNull();
+    expect(update?.set.transactionHashes).toEqual([
+      expect.objectContaining({
+        hash: "0xinflight",
+        nodeId: "write-contract-1",
+        receiptStatus: "not_found",
+      }),
+    ]);
+  });
+
+  it("keeps a failing run terminal, with the hash recorded, once the broadcast resolves", async () => {
+    const executionId = "exec_failed_step_reverted";
+    allLogs = [
+      {
+        id: "log_a",
+        nodeId: "write-contract-1",
+        nodeName: "Write Contract",
+        status: "error",
+        iterationIndex: null,
+        outputRaw: {
+          transactionHash: "0xreverted",
+          chainId: 1,
+          network: "mainnet",
+        },
+      },
+    ] as unknown as LogRow[];
+
+    verifyExecutionReceiptsMock.mockResolvedValueOnce({
+      allVerified: false,
+      results: [
+        {
+          hash: "0xreverted",
+          chainId: 1,
+          verified: false,
+          status: "reverted" as const,
+          verifiedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    await logWorkflowCompleteDb({
+      executionId,
+      status: "error",
+      error: "Transaction reverted on-chain",
+      startTime: Date.now() - 1000,
+    });
+
+    const update = getExecUpdate();
+    // A revert is the chain's answer, not an absence of one, so there is
+    // nothing left to wait for and the run stays terminal.
+    expect(update?.set.status).not.toBe("unconfirmed");
+    expect(update?.set.transactionHashes).toEqual([
+      expect.objectContaining({
+        hash: "0xreverted",
+        receiptStatus: "reverted",
+      }),
+    ]);
+  });
+
+  it("leaves a failing run terminal when its failed step never broadcast", async () => {
+    const executionId = "exec_failed_pre_broadcast";
+    allLogs = [
+      {
+        id: "log_a",
+        nodeId: "write-contract-1",
+        nodeName: "Write Contract",
+        status: "error",
+        iterationIndex: null,
+        outputRaw: { error: "insufficient funds" },
+      },
+    ] as unknown as LogRow[];
+
+    await logWorkflowCompleteDb({
+      executionId,
+      status: "error",
+      error: "insufficient funds",
+      startTime: Date.now() - 1000,
+    });
+
+    // Nothing reached the chain, so there is nothing to verify or hold open.
+    expect(verifyExecutionReceiptsMock).not.toHaveBeenCalled();
+    const update = getExecUpdate();
+    expect(update?.set.status).not.toBe("unconfirmed");
+    expect(update?.set.transactionHashes).toEqual([]);
+  });
+
   it("does not call verifyExecutionReceipts when the run produced no hashes", async () => {
     const executionId = "exec_no_hashes";
 
@@ -1029,9 +1177,11 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
 
   it("writes an empty array on error terminations", async () => {
     const executionId = "exec_error_no_hashes";
-    // Even if the tracker has data (e.g. partial run before error), an
-    // error termination must not pollute transactionHashes -- we have no
-    // signal that an error run's hashes should surface at the top level.
+    // The success tracker is never the source on an error termination. Since
+    // KEEP-1281 an error run does surface hashes, but only ones harvested from
+    // its own failed step rows (output_raw); a hash the tracker collected from
+    // an earlier successful step is not evidence about the failure, so it
+    // stays out.
     recordTransactionHashIfPresent(ctx({ executionId }), {
       transactionHash: "0xshouldnotappear",
       chainId: 1,
