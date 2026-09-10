@@ -121,8 +121,8 @@ vi.mock("@/lib/abi/cache", () => ({
   resolveAbi: vi.fn(() => Promise.resolve({ abi: "[]" })),
 }));
 
-vi.mock("@/lib/abi/utils", () => ({
-  findAbiFunction: (_abi: unknown, name: string) => {
+vi.mock("@/lib/abi/utils", () => {
+  const findAbiFunction = (_abi: unknown, name: string) => {
     if (name === "setValue") {
       return { name, type: "function", stateMutability: "nonpayable" };
     }
@@ -135,8 +135,21 @@ vi.mock("@/lib/abi/utils", () => ({
       };
     }
     return;
-  },
-}));
+  };
+  // The routes resolve through resolveAbiFunction and only fall back to the
+  // ambiguity message on a real collision; neither fixture here has one.
+  return {
+    findAbiFunction,
+    resolveAbiFunction: (abi: unknown, name: string) => {
+      const entry = findAbiFunction(abi, name);
+      return entry
+        ? { status: "found", entry, canonicalKey: name }
+        : { status: "not_found" };
+    },
+    describeAmbiguousKey: (key: string) =>
+      `Function '${key}' matches several overloads in this ABI`,
+  };
+});
 
 vi.mock("../../app/api/execute/_lib/condition", () => ({
   evaluateCondition: () => ({ met: true }),

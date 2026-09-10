@@ -76,6 +76,22 @@ vi.mock("@/plugins/registry", () => ({
   computeActionId: (pluginType: string, slug: string) =>
     `${pluginType}.${slug}`,
   flattenConfigFields: (fields: unknown[]) => fields,
+  // The builder resolves each action's plan gate through
+  // lib/features/action-egress, which reads the live registry by action id
+  // and plugin type (the egress-derived catch-all). The mock plugins carry no
+  // `egress`, so these resolve the action and fall through to "unknown"
+  // egress - ungated, which is what the fixture asserts.
+  findActionById: (actionId: string) => {
+    const parsed = actionId.split(".");
+    if (parsed.length < 2) {
+      return undefined;
+    }
+    const [type, slug] = parsed;
+    const plugin = mockPlugins.find((p) => p.type === type);
+    const action = plugin?.actions.find((a) => a.slug === slug);
+    return action ? { ...action, id: actionId, integration: type } : undefined;
+  },
+  getIntegration: (type: string) => mockPlugins.find((p) => p.type === type),
 }));
 
 vi.mock("@/lib/mcp/workflow-schema-constants", () => ({

@@ -15,7 +15,10 @@ import { validateArgsForAbi } from "@/lib/abi/validate-args";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
-import { findAbiFunction } from "@/lib/abi/utils";
+import {
+  describeAmbiguousKey,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import { getErrorMessage } from "@/lib/utils";
 import { getAbiFunctionKey } from "@/lib/abi/function-key";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
@@ -143,9 +146,20 @@ async function readContractInner(
     return { success: false, error: "ABI must be a JSON array", errorClass: ExecutionErrorType.USER };
   }
 
-  const functionAbi = findAbiFunction(parsedAbi, abiFunction);
+  const resolution = resolveAbiFunction(parsedAbi, abiFunction);
 
-  if (!functionAbi) {
+  if (resolution.status === "ambiguous") {
+    const error = describeAmbiguousKey(abiFunction, resolution.candidates);
+    logUserError(
+      ErrorCategory.VALIDATION,
+      "[Read Contract] Ambiguous function key:",
+      abiFunction,
+      { plugin_name: "web3", action_name: "read-contract" }
+    );
+    return { success: false, error, errorClass: ExecutionErrorType.USER };
+  }
+
+  if (resolution.status !== "found") {
     logUserError(
       ErrorCategory.VALIDATION,
       "[Read Contract] Function not found in ABI:",
@@ -159,7 +173,30 @@ async function readContractInner(
     };
   }
 
+  const functionAbi = resolution.entry;
   const abiFunctionKey = getAbiFunctionKey(parsedAbi, abiFunction, functionAbi);
+
+  // Fragment errors are deterministic user input errors, not provider failures.
+  // Validate before entering the adapter's RPC failover loop.
+  let contractInterface: ethers.Interface;
+  try {
+    contractInterface = new ethers.Interface(parsedAbi as ethers.InterfaceAbi);
+    if (!contractInterface.getFunction(abiFunctionKey)) {
+      throw new Error(`Function '${abiFunction}' has no valid ABI fragment`);
+    }
+  } catch (error) {
+    logUserError(
+      ErrorCategory.VALIDATION,
+      "[Read Contract] Invalid ABI function:",
+      error,
+      { plugin_name: "web3", action_name: "read-contract" }
+    );
+    return {
+      success: false,
+      error: `Invalid ABI function '${abiFunction}': ${getErrorMessage(error)}`,
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
 
   // Parse function arguments
   let args: unknown[] = [];
@@ -251,10 +288,6 @@ async function readContractInner(
       errorClass: ExecutionErrorType.SYSTEM,
     };
   }
-
-  const contractInterface = new ethers.Interface(
-    parsedAbi as ethers.InterfaceAbi
-  );
 
   const adapter = getChainAdapter(chainId);
   const isView =

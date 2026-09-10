@@ -9,18 +9,26 @@
  * route returns 404 so the heavy aggregate scan never runs on the
  * request-serving pods (the app's db-metrics ServiceMonitor is removed too).
  * The flag keeps the cutover reversible via config without a code revert.
+ *
+ * Security: answers in-cluster callers only; see lib/metrics/scrape-guard.ts.
  */
 
 import { NextResponse } from "next/server";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { authorizeMetricsScrape } from "@/lib/metrics/scrape-guard";
 
-export async function GET(): Promise<NextResponse> {
+export async function GET(request: Request): Promise<NextResponse> {
   if (process.env.METRICS_DB_OFFLOADED === "true") {
     return new NextResponse("Not Found", { status: 404 });
   }
 
   if (process.env.METRICS_COLLECTOR !== "prometheus") {
     return new NextResponse("Not Found", { status: 404 });
+  }
+
+  const guard = await authorizeMetricsScrape(request);
+  if (!guard.allowed) {
+    return new NextResponse(guard.message, { status: guard.status });
   }
 
   try {
