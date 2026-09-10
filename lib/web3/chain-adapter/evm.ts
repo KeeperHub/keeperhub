@@ -8,6 +8,7 @@ import {
   OnChainPendingError,
   OnChainRevertError,
 } from "@/lib/web3/onchain-revert";
+import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import { submitSignedTransactionWithFailover } from "@/lib/web3/submit-signed";
 import type { AdaptiveGasStrategy, GasConfig } from "../gas-strategy";
 import type { NonceManager, NonceSession } from "../nonce-manager";
@@ -367,7 +368,14 @@ export class EvmChainAdapter implements ChainAdapter {
     tx: ethers.TransactionResponse
   ): Promise<ethers.TransactionReceipt> {
     try {
-      const receipt = await tx.wait();
+      // Bounded (see RECEIPT_WAIT_TIMEOUT_MS): ethers rejects with code
+      // TIMEOUT once the deadline passes, which the unknown-code default at
+      // the end of the catch below turns into an OnChainPendingError carrying
+      // the hash. That is the correct reading -- the deadline tells us we
+      // stopped looking, never that the transaction failed -- so the row
+      // settles `unconfirmed` and the reconciler keeps watching, instead of
+      // the step hanging until the reaper takes it and loses the hash.
+      const receipt = await tx.wait(1, RECEIPT_WAIT_TIMEOUT_MS);
       if (receipt) {
         return receipt;
       }

@@ -82,6 +82,16 @@ protocol exposes a read action (for example a `chronicle/eth-usd-read` or
 `morpho/get-position` actionType), calling that first returns current state, but it cannot
 tell you whether a particular write will revert; there is no substitute for a dry run here.
 
+**Know the wallet that signs direct executions.** Broadcasts come from your organization's
+Turnkey wallet, not your own. Discover its address over REST with `GET /api/user/wallet`
+(`walletAddress` for EVM, `solanaAddress` for Solana) or `GET /api/integrations` (canonical
+EIP-55 checksummed `address`, preferred when an address must match exactly). Over MCP, call
+`list_integrations` to find the web3 integration, then `get_wallet_integration` with that
+integration's id - it returns the address as `walletAddress`. What a direct execution debits
+from the wallet is the value a write moves, not the gas: on sponsored chains a relayer pays
+the network fee. (A step configured against a Safe spends the Safe's balance instead.) See
+[User API](/api/user) and [Integrations](/api/integrations).
+
 Always preflight the three simulate-capable tools:
 
 1. Call the tool with `simulate: true`.

@@ -18,7 +18,12 @@ import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import type { ErrorStatus } from "@/lib/errors/execution-status";
 import { ErrorCategory, logSystemWarn, logWarn } from "@/lib/logging";
 import type { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
-import type { ErrorContext, MetricLabels, MetricsCollector } from "../types";
+import {
+  type ErrorContext,
+  type MetricLabels,
+  type MetricsCollector,
+  TRIGGER_TYPES,
+} from "../types";
 
 // Use global singletons to prevent duplicate registration during hot reload
 // This is safe because each pod has its own Node.js process
@@ -197,6 +202,22 @@ const executionsUnconfirmed = getOrCreateGauge(
   "keeperhub_executions_unconfirmed",
   "Executions currently in the unconfirmed state (transaction broadcast, receipt not yet readable), by kind (workflow or direct)",
   ["kind"]
+);
+
+// pending_transactions rows still in `pending` between 15 minutes and 24 hours
+// after submission, by chain. An unreferenced same-nonce fee-escalation path
+// was deleted from lib/web3/gas-strategy.ts; nothing bumps a stuck transaction
+// automatically, so this gauge is the whole response - it makes a backlog page
+// a human instead of failing silently. The 24-hour ceiling is what lets it
+// recover: see getStuckPendingTransactionCountsFromDb. DB-sourced, so the
+// value is the same on every scrape rather than depending on which pod last
+// handled a request. Cardinality is bounded by the number of configured
+// chains.
+const web3PendingTransactionsStuck = getOrCreateGauge(
+  dbRegistry,
+  "keeperhub_web3_pending_transactions_stuck",
+  "Pending transactions unconfirmed between 15 minutes and 24 hours after submission, by chain_id",
+  ["chain_id"]
 );
 
 // KEEP-545: the previous DB-sourced gauge `keeperhub_workflow_execution_errors_total`
@@ -868,6 +889,17 @@ const workflowExecutionsStartedTotal = getOrCreateCounter(
   "Workflow executions started (counter), labelled by trigger_type",
   ["trigger_type"]
 );
+
+// prom-client only materialises a labelled child series on its first inc(),
+// so a low-volume label like webhook can go its entire lifetime without ever
+// being observed at 0 (it is "born" already at 1 or 2). increase() over any
+// window then reads 0 even though real executions happened, because there
+// is no earlier sample to diff against. Pre-registering every known
+// trigger_type at 0 on module load (every pod, on every start) guarantees
+// Prometheus always has a starting point to compute increase() from.
+for (const triggerType of TRIGGER_TYPES) {
+  workflowExecutionsStartedTotal.inc({ trigger_type: triggerType }, 0);
+}
 
 // KEEP-612 detection signal. lib/safe-fetch.ts increments this every time
 // a SSRF-blocklisted destination (or DNS-resolve-mismatch) is refused. The
@@ -1778,6 +1810,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       getWorkflowStatsFromDb,
       getLastFinishedExecutionAgeSecondsFromDb,
       getUnconfirmedExecutionCountsFromDb,
+      getStuckPendingTransactionCountsFromDb,
       getWorkflowErrorsByWorkflowFromDb,
       getSystemErrorsByCategoryFromDb,
       getStepStatsFromDb,
@@ -1797,6 +1830,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       workflowStats,
       lastFinishedAgeSeconds,
       unconfirmedCounts,
+      stuckPendingTxCounts,
       errorsByWorkflow,
       systemErrorsByCategoryRows,
       stepStats,
@@ -1815,6 +1849,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       getWorkflowStatsFromDb(),
       getLastFinishedExecutionAgeSecondsFromDb(),
       getUnconfirmedExecutionCountsFromDb(),
+      getStuckPendingTransactionCountsFromDb(),
       getWorkflowErrorsByWorkflowFromDb(),
       getSystemErrorsByCategoryFromDb(),
       getStepStatsFromDb(),
@@ -1861,6 +1896,20 @@ async function refreshDbMetricsNow(): Promise<void> {
         unconfirmedCounts.workflow
       );
       executionsUnconfirmed.set({ kind: "direct" }, unconfirmedCounts.direct);
+    }
+
+    // Reset before populating so a chain that has drained its
+    // backlog goes back to reporting nothing rather than pinning its last
+    // non-zero value forever. On a query error skip the reset entirely and
+    // keep the previous reading, matching the null handling above.
+    if (stuckPendingTxCounts !== null) {
+      web3PendingTransactionsStuck.reset();
+      for (const row of stuckPendingTxCounts) {
+        web3PendingTransactionsStuck.set(
+          { chain_id: String(row.chainId) },
+          row.count
+        );
+      }
     }
 
     // KEEP-545: the per-org error gauge that used to live here was removed.

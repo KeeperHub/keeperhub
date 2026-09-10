@@ -143,3 +143,21 @@ describe("isValidAbiInput", () => {
     expect(isValidAbiInput({ type: "tuple", components: {} })).toBe(false);
   });
 });
+
+it("rejects missing tuple components recursively but accepts an explicit empty tuple", () => {
+  for (const type of ["tuple", "tuple[]", "tuple[2]"]) {
+    expect(isValidAbiInput({ type })).toBe(false);
+    expect(isValidAbiInput({ type, components: [] })).toBe(true);
+    expect(isValidAbiInput({ type, components: [{ type: "tuple" }] })).toBe(
+      false
+    );
+    expect(
+      resolveFunctionInputs(
+        JSON.stringify([
+          { type: "function", name: "f", inputs: [{ name: "p", type }] },
+        ]),
+        "f"
+      ).malformed
+    ).toBe(true);
+  }
+});

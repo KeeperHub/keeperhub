@@ -1069,8 +1069,15 @@
     {
       "idx": 152,
       "version": "7",
-      "when": 1788887093139,
-      "tag": "0152_pyth_trigger_checkpoints",
+      "when": 1788862439420,
+      "tag": "0152_keep_1291_pending_tx_stuck_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1789033994390,
+      "tag": "0153_pyth_trigger_checkpoints",
       "breakpoints": true
     }
   ]
