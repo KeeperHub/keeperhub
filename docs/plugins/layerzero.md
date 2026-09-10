@@ -256,7 +256,10 @@ Approve an OFT Adapter to pull the underlying token. Needed only when OFT Approv
 
 | Output | Type | Description |
 |--------|------|-------------|
-| result | bool | Result |
+| success | bool | Whether the approval succeeded |
+| error | string | Error message if the approval failed |
+| transactionHash | string | Transaction hash |
+| transactionLink | string | Explorer link to the transaction |
 
 Note which contract this runs against: the approval is granted on the token, not on the OFT, so `contractAddress` is the underlying token address from OFT Underlying Token, and `spender` is the OFT Adapter.
 

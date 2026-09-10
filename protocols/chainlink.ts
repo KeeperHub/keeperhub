@@ -504,6 +504,17 @@ export default defineAbiProtocol({
       },
     },
 
+    // Both token contracts below declare approve with no outputs rather
+    // than the bool the general ERC-20 shape returns, for the reason set
+    // out on layerzero.ts's oftToken entry: they take a user-supplied
+    // token address, USDT is a CCIP-supported bridge and fee token, and
+    // USDT's approve returns no data. On the EOA path the adapter's
+    // preflight staticCall decodes that return against these outputs and
+    // throws BAD_DATA, failing the approve before it is broadcast.
+    //
+    // The coverage fixture does not catch this: CCIP_ERC20_ADDRESSES
+    // points at WETH/WBNB/WMATIC/WAVAX, which all return bool, and both
+    // approve actions are skipped there in any case.
     ccipBridgeToken: {
       label: "Bridge Token (ERC-20 for CCIP)",
       userSpecifiedAddress: true,
