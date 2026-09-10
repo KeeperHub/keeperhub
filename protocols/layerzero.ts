@@ -467,23 +467,24 @@ export default defineAbiProtocol({
       },
     },
 
-    // The ERC-20 ABI declares approve as returning bool, which is the
-    // general ERC-20 shape but not USDT's - USDT returns no data at all,
-    // and chain 1's reference token is USDT. That mismatch is inert on
-    // every path a protocol action can take, which was worth establishing
-    // rather than assuming:
-    //   - the write path (protocol-write.ts -> writeContractCore) never
-    //     calls decodeFunctionResult; a write step returns no result;
-    //   - the one simulate path that does decode
-    //     (lib/execute/simulate.ts) guards on `returnData !== "0x"` and
-    //     falls back to the raw data inside a catch, so USDT's empty
-    //     return takes neither branch;
-    //   - the one place a decode failure is fatal
-    //     (batch-write-contract-core.ts, "Failed to decode result") is the
-    //     web3/batch-write-contract node, reachable only with a
-    //     hand-written ABI, not through a protocol action.
-    // Keep bool: it is correct for every other token this contract entry
-    // accepts, and narrowing it to no outputs would misdescribe them.
+    // The ERC-20 ABI declares approve with no outputs, rather than the bool
+    // the general ERC-20 shape returns. USDT returns no data at all, and
+    // chain 1's reference token is USDT, so the declaration has to cover
+    // both shapes.
+    //
+    // The mismatch is not inert on the write path, which is what a bool
+    // declaration would assume. Before broadcasting,
+    // EvmChainAdapter.executeContractCall runs a preflight `staticCall`
+    // (lib/web3/chain-adapter/evm.ts), and ethers decodes that call's return
+    // data against the declared outputs. Against USDT it decodes "0x" as a
+    // bool and throws BAD_DATA, so the approve fails before it is sent, with
+    // "Contract returned no data, but the ABI you supplied declares 1 output
+    // (bool)". It is a decode error reported as a contract failure.
+    //
+    // An empty `outputs` decodes both shapes: ethers reads nothing and
+    // ignores the 32 bytes a conforming token returns. Nothing downstream
+    // loses information, because a write step surfaces no return value
+    // either way - writeContractCore returns `result: undefined`.
     oftToken: {
       label: "OFT Underlying Token (ERC-20)",
       userSpecifiedAddress: true,
