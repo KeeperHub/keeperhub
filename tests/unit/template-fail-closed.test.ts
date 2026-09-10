@@ -698,3 +698,145 @@ describe("extractTemplateParameters strict integration", () => {
     expect(tracker.unresolved[0]?.reason).toBe("no-path");
   });
 });
+
+describe("processTemplates renders tokens inside arrays (#2359)", () => {
+  // scanForLeftoverLiterals walks arrays, so as long as the renderer skipped
+  // them a token in an array was never rendered and then always reported, and
+  // the error named a reference that was correct. Both halves have to agree
+  // on what a container is; these pin that they do.
+  const WHO = "0x4F256eD4420136dfD1e595044626F0dDb9Ac2503";
+  const outputs = {
+    trigger: {
+      label: "Trigger",
+      data: { who: WHO, amount: "250000", note: "payroll" },
+    },
+  };
+  const render = (config: Record<string, unknown>) => {
+    const tracker = createTracker();
+    const processed = processTemplates(config, outputs, tracker);
+    return { tracker, processed };
+  };
+
+  it("renders a token that is an array element", () => {
+    const { tracker, processed } = render({
+      functionArgs: ["{{@trigger:Trigger.who}}"],
+    });
+    expect(processed.functionArgs).toEqual([WHO]);
+    expect(tracker.unresolved).toHaveLength(0);
+    expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+  });
+
+  it("renders a token inside an object inside an array", () => {
+    const { tracker, processed } = render({
+      calls: [
+        {
+          contractAddress: "{{@trigger:Trigger.who}}",
+          abi: "[]",
+          abiFunction: "transfer",
+        },
+      ],
+    });
+    expect(processed.calls).toEqual([
+      { contractAddress: WHO, abi: "[]", abiFunction: "transfer" },
+    ]);
+    expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+  });
+
+  it("renders a token inside an array inside an object inside an array", () => {
+    const { tracker, processed } = render({
+      calls: [
+        { args: ["{{@trigger:Trigger.who}}", "{{@trigger:Trigger.amount}}"] },
+      ],
+    });
+    expect(processed.calls).toEqual([{ args: [WHO, "250000"] }]);
+    expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+  });
+
+  it("passes non-string elements through and keeps their order", () => {
+    const { processed } = render({
+      list: [1, true, null, "{{@trigger:Trigger.note}}", { n: 2 }, [3]],
+    });
+    expect(processed.list).toEqual([1, true, null, "payroll", { n: 2 }, [3]]);
+  });
+
+  it("still reports an unresolved token inside an array", () => {
+    // Rendering arrays must not make the scan blind to them: a reference that
+    // does not resolve is recorded by the tracker exactly as a scalar one is,
+    // and the gate still closes.
+    const { tracker, processed } = render({
+      functionArgs: ["{{@trigger:Trigger.missing}}"],
+    });
+    expect(tracker.unresolved[0]?.reason).toBe("no-path");
+    expect(() => assertResolved(tracker, processed, {})).toThrow(
+      UNRESOLVED_REF_MESSAGE
+    );
+  });
+
+  it("leaves scalar and nested-object rendering as it was", () => {
+    const { processed } = render({
+      to: "{{@trigger:Trigger.who}}",
+      meta: { to: "{{@trigger:Trigger.who}}", keep: 7 },
+    });
+    expect(processed.to).toBe(WHO);
+    expect(processed.meta).toEqual({ to: WHO, keep: 7 });
+  });
+
+  describe("the step inputs that accept a native array", () => {
+    // These three declare `string | unknown[]` and are the cases where the
+    // array shape is supported end to end, so the renderer skipping them was
+    // a functional hole rather than a shape mismatch: a token in `payouts`
+    // was a literal {{...}} where a recipient address belongs, and the
+    // KEEP-468 gate was the only thing stopping it.
+
+    it("calls on web3/batch-write-contract", () => {
+      const { tracker, processed } = render({
+        network: "ethereum",
+        calls: [
+          {
+            contractAddress: "{{@trigger:Trigger.who}}",
+            abi: "[]",
+            abiFunction: "transfer",
+            args: ["{{@trigger:Trigger.who}}", "{{@trigger:Trigger.amount}}"],
+          },
+        ],
+      });
+      expect(processed.calls).toEqual([
+        {
+          contractAddress: WHO,
+          abi: "[]",
+          abiFunction: "transfer",
+          args: [WHO, "250000"],
+        },
+      ]);
+      expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+    });
+
+    it("functionArgs on web3/query-transactions", () => {
+      const { tracker, processed } = render({
+        abiFunction: "transfer",
+        functionArgs: ["{{@trigger:Trigger.who}}", ""],
+      });
+      expect(processed.functionArgs).toEqual([WHO, ""]);
+      expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+    });
+
+    it("payouts on tempo/batch-payout", () => {
+      const { tracker, processed } = render({
+        network: "tempo",
+        payouts: [
+          {
+            recipient: "{{@trigger:Trigger.who}}",
+            amount: "{{@trigger:Trigger.amount}}",
+            memo: "{{@trigger:Trigger.note}}",
+          },
+          { recipient: WHO, amount: "1" },
+        ],
+      });
+      expect(processed.payouts).toEqual([
+        { recipient: WHO, amount: "250000", memo: "payroll" },
+        { recipient: WHO, amount: "1" },
+      ]);
+      expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+    });
+  });
+});

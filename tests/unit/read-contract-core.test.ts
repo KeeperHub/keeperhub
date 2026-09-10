@@ -126,6 +126,16 @@ const PURE_ABI = [
   },
 ];
 
+const NO_ARG_ABI = [
+  {
+    name: "totalSupply",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "supply", type: "uint256" }],
+  },
+];
+
 const NONPAYABLE_ABI = [
   {
     name: "quoteExactInputSingle",
@@ -613,5 +623,66 @@ describe("ABI fragment validation before RPC failover", () => {
     }
     expect(mockGetRpcProvider).not.toHaveBeenCalled();
     expect(mockContractFunction).not.toHaveBeenCalled();
+  });
+});
+
+describe("read-contract-core - functionArgs as a native array (#2359)", () => {
+  // The executor renders templates inside arrays now, so functionArgs can
+  // reach this step as an array rather than the JSON string the UI sends.
+  // Before, the declared type was string only and the step called .trim() on
+  // it, so an array threw a TypeError instead of running or being refused.
+  it("produces the same call from an array as from its JSON string", async () => {
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValue(BigInt(42));
+    const fromString = await readContractCore(
+      makeInput({
+        abi: JSON.stringify(PURE_ABI),
+        abiFunction: "add",
+        functionArgs: JSON.stringify(["10", "32"]),
+      })
+    );
+    const stringCall = mockContractFunction.mock.calls[0];
+
+    vi.clearAllMocks();
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValue(BigInt(42));
+    const fromArray = await readContractCore(
+      makeInput({
+        abi: JSON.stringify(PURE_ABI),
+        abiFunction: "add",
+        functionArgs: ["10", "32"],
+      })
+    );
+    const arrayCall = mockContractFunction.mock.calls[0];
+
+    expect(fromString.success).toBe(true);
+    expect(fromArray.success).toBe(true);
+    expect(arrayCall).toEqual(stringCall);
+  });
+
+  it("refuses a JSON string that is not an array, as before", async () => {
+    setupRpcMocks();
+    const result = await readContractCore(
+      makeInput({ functionArgs: JSON.stringify({ account: VALID_ADDRESS }) })
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe("Function arguments must be a JSON array");
+    }
+    expect(mockContractFunction).not.toHaveBeenCalled();
+  });
+
+  it("treats an empty string as no arguments, as before", async () => {
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValue(BigInt(7));
+    const result = await readContractCore(
+      makeInput({
+        abi: JSON.stringify(NO_ARG_ABI),
+        abiFunction: "totalSupply",
+        functionArgs: "",
+      })
+    );
+    expect(result.success).toBe(true);
+    expect(mockContractFunction).toHaveBeenCalledWith();
   });
 });
