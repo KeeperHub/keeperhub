@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getTimeSeries } from "@/lib/analytics/queries";
-import { parseTimeRange } from "@/lib/analytics/time-range";
+import { parseTimeRange, parseTimeZone } from "@/lib/analytics/time-range";
 import { apiError } from "@/lib/api-error";
 import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
@@ -28,16 +28,20 @@ export async function GET(req: NextRequest): Promise<Response> {
     const customStart = params.get("customStart") ?? undefined;
     const customEnd = params.get("customEnd") ?? undefined;
     const projectId = params.get("projectId") ?? undefined;
+    // Buckets are truncated in the viewer's zone: truncating in the server's
+    // put the whole chart a day out for anyone west of UTC.
+    const timeZone = parseTimeZone(params.get("tz"));
 
-    const buckets = await getTimeSeries(
+    const { buckets, intervalMs } = await getTimeSeries(
       authCtx.organizationId,
       range,
       customStart,
       customEnd,
-      projectId
+      projectId,
+      timeZone
     );
 
-    return NextResponse.json({ buckets });
+    return NextResponse.json({ buckets, intervalMs });
   } catch (error: unknown) {
     return apiError(error, "Failed to fetch analytics time series");
   }
