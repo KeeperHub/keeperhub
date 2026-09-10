@@ -1,5 +1,6 @@
--- Issue #2305: move a Condition node's rule group from the unread top-level `group`
--- key to `conditionConfig`, which is the shape the runtime reads.
+-- Issue #2305: remove a Condition node's rule group from the unread top-level `group`
+-- key, which is what aborts the run, and promote it to `conditionConfig` only where
+-- doing so cannot change which expression the node evaluates.
 --
 -- lib/workflow/node-builders.ts emitted `data.config.group`. processActionConfig lifts
 -- only `condition` and `conditionConfig` out of the config before rendering templates,
@@ -15,30 +16,50 @@
 -- within USER_EDIT_EPSILON_MS of its `seededAt`, matches neither by id nor by age. Every
 -- organization provisioned so far therefore holds rows only a migration can repair.
 --
--- Both guards test `jsonb_typeof(... 'group') = 'object'` rather than key presence, so a
--- node carrying `"group": null` or a non-object `group` is left exactly as it is. Writing
+-- Removing the stale key is the whole repair. resolveConditionExpression has never read
+-- the top-level `group`, so deleting it cannot change what runs, and the editor rebuilds
+-- `conditionConfig` from the `condition` string the next time the node is opened. What
+-- the editor could not do is delete the key, which is the one thing this does.
+--
+-- Promotion is the part that can change what runs, so it is narrow. resolveConditionExpression
+-- (lib/workflow/nodes/condition/resolver.ts:24-31) prefers `conditionConfig.group` and falls
+-- through to `config.condition` only when it is absent, and handleModeSwitch("expression")
+-- (components/workflow/config/action-config.tsx:350-353) clears `conditionConfig` precisely
+-- so the raw string wins. Nothing clears the top-level `group`: sanitize-nodes.ts:168 spreads
+-- `...config`, so on a seeded workflow it survives every save. A seeded Condition a user
+-- switched to expression mode and edited therefore reaches this statement as
+-- `{group: <seeded>, condition: <the user's>}`, and promoting the group would silently
+-- start evaluating the seeded condition instead of theirs.
+--
+-- Shape alone cannot tell that row from an untouched seeded one, which arrives as
+-- `{group: <seeded>, condition: <generated from that group>}`. The two differ only in
+-- whether `condition` equals visualConditionToExpression(group), which SQL cannot compute
+-- without a second copy of the generator. So the group is promoted only where there is no
+-- expression to outrank, and dropped everywhere else. Dropping still repairs the abort,
+-- which skipping the row would not.
+--
+-- Both group guards test `jsonb_typeof(... 'group') = 'object'` rather than key presence, so
+-- a node carrying `"group": null` or a non-object `group` is left exactly as it is. Writing
 -- `{"group": null}` into `conditionConfig` would be worse than the state being repaired:
 -- action-config.tsx calls visualConditionToExpression whenever conditionConfig is truthy
 -- and groupToExpression dereferences `group.rules`, so the editor would throw on open.
 --
--- `conditionConfig` is merged only when it is itself an object. `||` concatenates rather
--- than merges when either side is not an object, so a JSON `null` or an array would have
--- produced `[null, {"group": ...}]`, which resolveConditionExpression reads `.group` off
--- as undefined and sanitize-nodes.ts declines to repair. Anything that is not an object
--- is replaced outright, which is the shape the runtime reads.
+-- The expression test is `jsonb_typeof(...) = 'string' AND #>> ... <> ''`. `#>` returns SQL
+-- NULL for an absent key, and jsonb_typeof of that is NULL, so an absent `condition` fails
+-- the test and the group is promoted rather than dropped.
 --
--- The type test is IS DISTINCT FROM rather than <> because an absent `conditionConfig`
--- makes `#>` return SQL NULL, not JSON null. `<>` would be NULL there, the CASE would
--- fall through to the merge, `NULL || anything` is NULL, and jsonb_set would return NULL
--- for the whole node - replacing the node with JSON null in the array. That is the common
--- case, so it is covered by the first two fixtures in the test.
---
--- Idempotent. A row whose Condition nodes already carry only `conditionConfig` is not
--- matched. Where both keys exist the existing `conditionConfig` wins and only the stale
--- `group` is dropped, so re-running changes nothing.
+-- Idempotent. A row whose Condition nodes no longer carry a top-level `group` is not
+-- matched, so a second run reports UPDATE 0. Covered by
+-- tests/unit/migration-0152-condition-group-to-condition-config.test.ts.
 --
 -- `updated_at` is deliberately left alone: this is a repair, not a user edit, and
 -- moving it would reorder every affected workflow in the user's list.
+--
+-- Under READ COMMITTED the subquery computes `fixed.nodes` from the pre-statement snapshot,
+-- so a workflow saved inside the statement's window is re-checked for the join qualifier and
+-- then overwritten with the already-computed value, discarding that save. The window is the
+-- statement's own runtime, about a second at 50k rows. Run it against the real row count
+-- before shipping, and if it is long enough to matter, batch it by id range.
 
 UPDATE workflows AS w
 SET nodes = fixed.nodes
@@ -49,20 +70,37 @@ FROM (
       CASE
         WHEN node #>> '{data,config,actionType}' = 'Condition'
              AND jsonb_typeof(node #> '{data,config,group}') = 'object'
-        THEN jsonb_set(
-               node #- '{data,config,group}',
-               '{data,config,conditionConfig}',
-               CASE
-                 WHEN jsonb_typeof(node #> '{data,config,conditionConfig}')
-                      IS DISTINCT FROM 'object'
-                 THEN jsonb_build_object('group', node #> '{data,config,group}')
-                 WHEN jsonb_exists(node #> '{data,config,conditionConfig}', 'group')
-                 THEN node #> '{data,config,conditionConfig}'
-                 ELSE node #> '{data,config,conditionConfig}'
-                      || jsonb_build_object('group', node #> '{data,config,group}')
-               END,
-               true
-             )
+        THEN
+          CASE
+            -- An expression is already what this node evaluates, so the stale group is
+            -- not a repair candidate. Removing it is the repair.
+            WHEN jsonb_typeof(node #> '{data,config,condition}') = 'string'
+                 AND node #>> '{data,config,condition}' <> ''
+            THEN node #- '{data,config,group}'
+            -- No expression to outrank, so the group becomes the condition. An object
+            -- conditionConfig is merged into rather than replaced, and one that already
+            -- carries a group wins outright.
+            WHEN jsonb_typeof(node #> '{data,config,conditionConfig}') = 'object'
+            THEN CASE
+                   WHEN jsonb_exists(node #> '{data,config,conditionConfig}', 'group')
+                   THEN node #- '{data,config,group}'
+                   ELSE jsonb_set(
+                          node #- '{data,config,group}',
+                          '{data,config,conditionConfig}',
+                          node #> '{data,config,conditionConfig}'
+                          || jsonb_build_object('group', node #> '{data,config,group}'),
+                          true
+                        )
+                 END
+            -- Anything that is not an object, including an absent key, a JSON null and
+            -- an array, is replaced. `||` would concatenate those rather than merge.
+            ELSE jsonb_set(
+                   node #- '{data,config,group}',
+                   '{data,config,conditionConfig}',
+                   jsonb_build_object('group', node #> '{data,config,group}'),
+                   true
+                 )
+          END
         ELSE node
       END
       ORDER BY ord
