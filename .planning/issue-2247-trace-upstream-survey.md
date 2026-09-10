@@ -2,9 +2,11 @@
 
 Research survey for [#2247](https://github.com/KeeperHub/keeperhub/issues/2247). No trigger implementation. No Aetherlay changes. No secrets.
 
+**What #2241 is.** [#2241](https://github.com/KeeperHub/keeperhub/issues/2241) is the parent issue this survey serves: it proposes sourcing triggers from block traces so that workflows can see reverted transactions, internal ETH transfers, `delegatecall` and unlogged privileged calls, none of which `eth_getLogs` can see. #2247 was split out of it because #2241 cannot be scoped or estimated until upstream trace capability, pricing tier and response size are known. Every reference to #2241 below means that parent issue and the decision it is waiting on.
+
 **Tree:** `CHAIN_CONFIG` / `PUBLIC_RPCS` at `staging` (`lib/rpc/rpc-config.ts`). 24 entries: 12 mainnets (11 EVM + Solana) and 12 testnets.
 
-**What this can and cannot see.** Production primary/fallback URLs live in `CHAIN_RPC_CONFIG` (AWS Parameter Store / Helm), which is not in this repository. `rpc-config.ts` resolves `JSON config → env var → PUBLIC_RPCS`. `scripts/seed/seed-chains.ts` writes `PUBLIC_RPCS` into the chains table and re-seeds on every deploy, so the public defaults are what a self-hosted or unconfigured install actually runs. This survey measures those defaults live, and records commercial-provider tiers from public docs for whoever production is actually pointed at. Filling the production-plan cells needs a maintainer with Parameter Store and billing access.
+**What this can and cannot see.** Production primary/fallback URLs live in `CHAIN_RPC_CONFIG` (AWS Parameter Store / Helm), which is not in this repository. `rpc-config.ts` resolves `JSON config → env var → PUBLIC_RPCS`. `scripts/seed/seed-chains.ts` writes the **resolved** primary and fallback into the chains table — the output of `getRpcUrlByChainId(chainId, "primary" | "fallback")`, not `PUBLIC_RPCS` literally — and re-seeds on every deploy. On a configured install that resolution lands on the JSON config or the env vars; on a self-hosted or unconfigured install it falls through to `PUBLIC_RPCS`, which is why the public defaults are what such an install actually runs. This survey measures those defaults live, and records commercial-provider tiers from public docs for whoever production is actually pointed at. Filling the production-plan cells needs a maintainer with Parameter Store and billing access.
 
 **Probe window:** 2026-09-03, ~11:12–11:20 ICT. Unauthenticated POST only. Sequential, one recent block per endpoint (typically ~8 blocks behind `latest`, then a block with ≥1 tx on endpoints that answered). No API keys. If a request required a key, the cell is **unverified** and filled from docs.
 
@@ -24,7 +26,7 @@ That path is **not in this repository**. Evidence:
 
 The only in-tree mention is a comment in `keeperhub-events/event-tracker/src/chains/provider-manager.ts` (Aetherlay Prometheus counters vs WebSocket tunnelling). That does not confirm or deny a JSON-RPC method allowlist.
 
-**Conclusion from public evidence:** the no-allowlist claim is **maintainer-asserted**, not verified here. Whether production Aetherlay would pass `debug_*` / `trace_*` / `ots_*` through is out of scope of this tree.
+**Conclusion from public evidence:** the no-allowlist claim is **maintainer-asserted**, not verified here. That is a statement about this tree, not about the question: Aetherlay is a separate repository — the Go RPC load balancer that fronts these upstreams — so whether production Aetherlay passes `debug_*` / `trace_*` / `ots_*` through is settled by reading the method handling in that repository, by someone with access to it. It is out of scope here only because the code is not here.
 
 ---
 
@@ -36,8 +38,8 @@ A negative result on the established EVM mainnets is the useful result.
 
 | Chain | Why |
 |---|---|
-| Plasma mainnet (`9745`) | Official `https://rpc.plasma.to` served `debug_traceBlockByNumber`, `trace_block`, **and** `ots_*` without a key. 5-tx block: 63 KiB / 101 KiB / 7.5 KiB, 172–325 ms fetch. |
-| Tempo mainnet (`4217`) | Official `https://rpc.tempo.xyz` served `debug_traceBlockByNumber` and `trace_block`. 1-tx block: 6.2 KiB / 3.7 KiB, ~70 ms. `ots_*` is `method not allowed`. |
+| Plasma mainnet (`9745`) | Official `https://rpc.plasma.to` served `debug_traceBlockByNumber`, `trace_block`, **and** `ots_*` without a key. 5-tx block: 63 kB / 101 kB / 7.5 kB, 172–325 ms fetch. |
+| Tempo mainnet (`4217`) | Official `https://rpc.tempo.xyz` served `debug_traceBlockByNumber` and `trace_block`. 1-tx block: 6.2 kB / 3.7 kB, ~70 ms. `ots_*` is `method not allowed`. |
 | Plasma testnet, Tempo testnet | Same methods as their mainnets, small payloads. |
 | Base Sepolia, BNB testnet, ETH Sepolia (`trace_block` on PublicNode), OP Sepolia (`trace_block` on PublicNode), Robinhood testnet (`debug_*` on dRPC) | Useful for developing a trigger, not a production coverage story. |
 
@@ -45,7 +47,7 @@ A negative result on the established EVM mainnets is the useful result.
 
 Ethereum, Base, Arbitrum, Polygon, BNB mainnet, OP mainnet, Avalanche, Robinhood mainnet, 0G official RPC, and both Solana networks. Exact refusal bodies differ (`method not found`, `rpc method is not whitelisted`, `rpc method is unsupported`, PublicNode archive-token gate, Ankr/1RPC key-or-quota gate, Robinhood 429) but the outcome is the same: **the last-resort upstreams do not give a keeper a full-block trace.**
 
-0G's **fallback** `https://0g.drpc.org` did answer `debug_traceBlockByNumber` (15 KiB, 153 ms) without a key, while dRPC's Ethereum docs say debug/trace are paid-only. Treat that as chain-specific leakage, not a plan we can design around. `trace_block` on the same host failed to route.
+0G's **fallback** `https://0g.drpc.org` did answer `debug_traceBlockByNumber` (15 kB, 153 ms) without a key, while dRPC's Ethereum docs say debug/trace are paid-only. Treat that as chain-specific leakage, not a plan we can design around. `trace_block` on the same host failed to route.
 
 **If production is Alchemy / Infura / QuickNode / Ankr** (unverified against `CHAIN_RPC_CONFIG`):
 
@@ -63,7 +65,11 @@ Ethereum, Base, Arbitrum, Polygon, BNB mainnet, OP mainnet, Avalanche, Robinhood
 
 ## Size and time bounds (only sourced numbers)
 
-Measured `callTracer` / `trace_block` payloads in this survey ranged from **2 KiB to 3.6 MiB**, with fetch **53–325 ms**. `json.loads` of those bodies was **<1 ms** on the probe host; fetch dominates.
+**Units.** Every byte figure measured in this survey is decimal: kB = 1 000 B, MB = 1 000 000 B. The raw byte counts in the tables are the measurement; the kB and MB figures beside them are rounded from those counts. The Tatum caps quoted below are left in the binary units (MiB) that Tatum's own documentation uses.
+
+Measured `callTracer` / `trace_block` payloads for **non-empty** blocks in this survey ranged from **1 718 B to 3 635 528 B** (1.7 kB to 3.6 MB), with fetch **53–325 ms**. Empty blocks fall outside that range rather than at its bottom: they return a 36-byte `[]` wrapper (see the method notes below), so a minimum-length sanity check written off the 1 718 B floor would reject exactly the case a trigger has to tolerate. `json.loads` of those bodies was **<1 ms** on the probe host; fetch dominates.
+
+**These sizes are one-block samples, and the block-to-block spread is several-fold.** Trace size scales with a block's internal **call depth**, not with its transaction count, so a second sample of the same chain at the same transaction count can differ by a large multiple. Concretely: the probe added in [#2277](https://github.com/KeeperHub/keeperhub/pull/2277) measured a different 5-tx plasma-mainnet block at 348 kB / 562 kB for `debug_traceBlockByNumber` / `trace_block`, against the 63 kB / 101 kB recorded here, while `ots_getBlockTransactions` came out at 7.5 kB in both runs — `ots_` scales with transaction count, the tracers do not. Neither run is wrong. Do not size capacity off a single figure in these tables; re-run the probe across a range of blocks to bound the envelope #2241 needs.
 
 Provider-agnostic upper bounds, **not** measured here:
 
@@ -78,12 +84,12 @@ A keeper that used the default opcode tracer would hit those caps. `callTracer` 
 
 | chain | primary upstream | fallback | trace methods exposed | pricing tier + free/public plan includes it? | typical / worst-case full-block trace size | approx fetch+parse | source URL |
 |---|---|---|---|---|---|---|---|
-| eth-mainnet `1` | `ethereum-rpc.publicnode.com` | `1rpc.io/eth` | **none** on public defaults. Primary: `debug_*` / `ots_*` → `-32601` method does not exist; `trace_block` → `-32602` "Archive requests require a personal token" (Allnodes). Fallback: `eth_chainId` already quota-limited (`-32001` upgrade at 1rpc.io). | PublicNode free RPC: no debug; `trace_block` is archive/token-gated. 1RPC public: quota-gated, trace **unverified** (could not live-probe). Alchemy/Infura/QuickNode/Ankr free plans: **no** (see provider table). | Not measured here (method refused). Cross-chain bound: Tatum 160 MiB opcode / `callTracer` 10–100× smaller. Closest live analogue: ETH Sepolia PublicNode `trace_block` **1.91 MiB** for a 185-tx block. | n/a on mainnet public defaults. Sepolia analogue: 155 ms fetch, parse <1 ms. | Probe error bodies; <https://www.allnodes.com/publicnode>; 1RPC `-32001`; <https://www.alchemy.com/docs/reference/pricing-plans.md>; <https://docs.infura.io/reference/ethereum/json-rpc-methods/trace-methods.md>; <https://www.ankr.com/docs/rpc-service/service-plans/>; Tatum size doc above |
+| eth-mainnet `1` | `ethereum-rpc.publicnode.com` | `1rpc.io/eth` | **none** on public defaults. Primary: `debug_*` / `ots_*` → `-32601` method does not exist; `trace_block` → `-32602` "Archive requests require a personal token" (Allnodes). Fallback: `eth_chainId` already quota-limited (`-32001` upgrade at 1rpc.io). | PublicNode free RPC: no debug; `trace_block` is archive/token-gated. 1RPC public: quota-gated, trace **unverified** (could not live-probe). Alchemy/Infura/QuickNode/Ankr free plans: **no** (see provider table). | Not measured here (method refused). Cross-chain bound: Tatum 160 MiB opcode / `callTracer` 10–100× smaller. Closest live analogue: ETH Sepolia PublicNode `trace_block` **1.91 MB** for a 185-tx block. | n/a on mainnet public defaults. Sepolia analogue: 155 ms fetch, parse <1 ms. | Probe error bodies; <https://www.allnodes.com/publicnode>; 1RPC `-32001`; <https://www.alchemy.com/docs/reference/pricing-plans.md>; <https://docs.infura.io/reference/ethereum/json-rpc-methods/trace-methods.md>; <https://www.ankr.com/docs/rpc-service/service-plans/>; Tatum size doc above |
 | base-mainnet `8453` | `mainnet.base.org` | *(none in `CHAIN_CONFIG`)* | **none.** All four methods → `rpc method is unsupported` (`-32601`). | Official public RPC does not expose debug/trace/ots. Commercial free plans: **no**. | Not measured (refused). | n/a (refusal in 36–47 ms). | Probe; <https://www.alchemy.com/docs/reference/debug-api-quickstart> |
 | arbitrum-mainnet `42161` | `arb1.arbitrum.io/rpc` | `rpc.ankr.com/arbitrum` | **none.** Primary: `-32601` method does not exist/is not available for all four. Fallback: `eth_chainId` → Ankr `-32000` "You must authenticate your request with an API key" — **unverified** without a key. Ankr docs: Trace/Debug are Premium-only. | Official public: no. Ankr public/Freemium: **no**. Ankr Premium: yes. | Not measured (refused). | n/a (primary refusal ~50–64 ms). | Probe; <https://www.ankr.com/docs/rpc-service/service-plans/> |
 | polygon-mainnet `137` | `polygon-bor-rpc.publicnode.com` | `rpc.ankr.com/polygon` | **none.** Same shape as Arbitrum: PublicNode `-32601` for all four; Ankr fallback requires an API key. | PublicNode free: no. Ankr public: key required, Trace/Debug still Premium. | Not measured (refused). | n/a (~39–47 ms refusals). | Probe; Ankr service-plans |
-| bsc-mainnet `56` | `bsc-dataseed.binance.org` | `rpc.ankr.com/bsc` | **none.** Primary: `-32002` "the resource debug_traceBlockByNumber / trace_block is not available"; `ots_*` `-32601`. Ankr fallback requires API key. | Official dataseed: no. Ankr public: no. | Not measured on mainnet. Tatum: BSC opcode traces can exceed **512 MiB**; `callTracer` 10–100× smaller. BNB **testnet** analogue: 778 KiB `callTracer` for 6 txs. | n/a on mainnet (~210–237 ms resource-unavailable). | Probe; <https://docs.tatum.io/docs/evm-handling-response-is-too-big-32008-on-debug-trace-methods> |
-| op-mainnet `10` | `mainnet.optimism.io` | `optimism-rpc.publicnode.com` | **none.** Primary: `rpc method is not whitelisted` for all four. Fallback: `debug_*`/`ots_*` `-32601`; `trace_block` PublicNode archive-token gate (same Allnodes message as ETH mainnet). | Official public: allowlist excludes debug/trace. PublicNode: no debug; archive token for `trace_block`. | Not measured (refused). OP Sepolia PublicNode analogue: `trace_block` **1.7 KiB** for a 1-tx block. | n/a (primary ~256–279 ms whitelist refusal). | Probe; Allnodes token URL in error |
+| bsc-mainnet `56` | `bsc-dataseed.binance.org` | `rpc.ankr.com/bsc` | **none.** Primary: `-32002` "the resource debug_traceBlockByNumber / trace_block is not available"; `ots_*` `-32601`. Ankr fallback requires API key. | Official dataseed: no. Ankr public: no. | Not measured on mainnet. Tatum: BSC opcode traces can exceed **512 MiB**; `callTracer` 10–100× smaller. BNB **testnet** analogue: 778 kB `callTracer` for 6 txs. | n/a on mainnet (~210–237 ms resource-unavailable). | Probe; <https://docs.tatum.io/docs/evm-handling-response-is-too-big-32008-on-debug-trace-methods> |
+| op-mainnet `10` | `mainnet.optimism.io` | `optimism-rpc.publicnode.com` | **none.** Primary: `rpc method is not whitelisted` for all four. Fallback: `debug_*`/`ots_*` `-32601`; `trace_block` PublicNode archive-token gate (same Allnodes message as ETH mainnet). | Official public: allowlist excludes debug/trace. PublicNode: no debug; archive token for `trace_block`. | Not measured (refused). OP Sepolia PublicNode analogue: `trace_block` **1.7 kB** for a 1-tx block. | n/a (primary ~256–279 ms whitelist refusal). | Probe; Allnodes token URL in error |
 | avax-mainnet `43114` | `api.avax.network/ext/bc/C/rpc` | `avalanche-c-chain-rpc.publicnode.com` | **none.** Both: `-32601` method does not exist for all four. | Official + PublicNode: no. Commercial free: no. | Not measured (refused). | n/a (~37–89 ms). | Probe |
 | tempo-mainnet `4217` | `rpc.tempo.xyz` | *(none)* | **`debug_traceBlockByNumber` and `trace_block`.** `ots_*` → `method not allowed`. | Official public RPC includes debug+trace. No API key. | Typical (1-tx block `0x240048a`): debug **6 237 B**, `trace_block` **3 705 B**. Empty blocks return `[]` (36 B). Worst-case not measured; Tatum/Dwellir bounds apply if Tempo ever carries dense blocks. | debug 74 ms; `trace_block` 72 ms; parse <1 ms. | Probe of `https://rpc.tempo.xyz` |
 | plasma-mainnet `9745` | `rpc.plasma.to` | `plasma.drpc.org` | **Primary: `debug_traceBlockByNumber`, `trace_block`, and `ots_*`.** Fallback dRPC: `eth_chainId` → code 35 "chain is not available on free plan". | Official public RPC includes all three families. dRPC free: **no** (chain not on free plan). | Typical (5-tx block `0x1e02bde`): debug **62 749 B**, `trace_block` **101 311 B** (139 traces), `ots_getBlockTransactions` **7 572 B**. First sample (same order of magnitude): debug 60 763 B / trace 102 308 B. | debug 212 ms; `trace_block` 325 ms; ots 172 ms; parse <1 ms. | Probe of `https://rpc.plasma.to`; dRPC error body; <https://drpc.org/docs/ethereum-api/debugandtrace> |
@@ -151,7 +157,17 @@ Until (1) and (2) are filled, #2241 should treat "works on all EVM mainnets" as 
 
 ## Reproducing a cell
 
-Unauthenticated, no key:
+A committed harness now exists: `scripts/trace-method-probe.mjs`, added by [#2277](https://github.com/KeeperHub/keeperhub/pull/2277). It parses the chain list out of `lib/rpc/rpc-config.ts` at run time, probes `debug_traceBlockByNumber`, `trace_block` and `ots_getBlockTransactions` against both the primary and the fallback of every entry, and records the verbatim response body, raw and gzipped size, and fetch and parse time — the same methods, endpoints and quantities this survey reports.
+
+```bash
+node scripts/trace-method-probe.mjs --dry-run    # resolve targets, make no requests
+node scripts/trace-method-probe.mjs --mainnets   # EVM mainnets only
+node scripts/trace-method-probe.mjs              # all chains
+```
+
+**What re-running reproduces, and what it does not.** The tables above were built from single manual `curl` probes taken in the window given at the top of this document, before that harness existed. Re-running regenerates the availability and refusal matrix, and that part is stable: the negative cells are deterministic method-and-tier refusals. It will **not** reproduce the byte counts or the latencies cell for cell, because a different block is sampled and trace size varies several-fold with call depth. Treat the positive size and timing cells as single observations, not as reproducible constants.
+
+A single cell by hand, unauthenticated, no key:
 
 ```bash
 curl -sS -X POST "$RPC_URL" \
