@@ -305,3 +305,89 @@ export async function resolveExecutedCall(
     reverted: decoded.reverted,
   };
 }
+
+/**
+ * A block-trace trigger filter (issue #2241). Every field is optional and
+ * unset fields are wildcards, so an empty filter matches every executed call
+ * frame. Addresses are compared case-insensitively; the selector is the first
+ * four calldata bytes; `minValue` is a wei threshold as a bigint.
+ *
+ * Unlike `findDecodedCalls`, this does not need an ABI: it matches on the raw
+ * frame surface (`caller`, `callee`, `selector`, `value`, revert status), which
+ * is exactly what `eth_getLogs` cannot see. A reverted drain attempt, an
+ * internal ETH transfer, a `delegatecall` into an unlogged implementation, or
+ * an unlogged privileged call all appear here even though they emit no event.
+ */
+export type TraceCallFilter = {
+  /** Restrict to frames sent from this address (case-insensitive). */
+  caller?: string;
+  /** Restrict to frames whose `to` is this address (case-insensitive). */
+  callee?: string;
+  /** Restrict to a 4-byte selector, e.g. "0x8456cb59" for `pause()`. */
+  selector?: string;
+  /** Restrict to specific opcode call types, e.g. ["DELEGATECALL"]. */
+  callTypes?: readonly string[];
+  /** Minimum wei value moved by the frame. */
+  minValue?: bigint;
+  /**
+   * Which revert states to include:
+   *   "success" - only frames that did not revert (default)
+   *   "reverted" - only reverted frames (the highest-value security signal)
+   *   "any" - both
+   */
+  status?: "success" | "reverted" | "any";
+};
+
+/** The 4-byte selector of a call frame, or "0x" when it carries no calldata. */
+export function callSelector(call: FlatCall): string {
+  return call.input.length >= 10 ? call.input.slice(0, 10).toLowerCase() : "0x";
+}
+
+function frameValueWei(call: FlatCall): bigint {
+  try {
+    return BigInt(call.value || "0x0");
+  } catch {
+    return BigInt(0);
+  }
+}
+
+function frameMatches(call: FlatCall, filter: TraceCallFilter): boolean {
+  const status = filter.status ?? "success";
+  if (status === "success" && call.reverted) {
+    return false;
+  }
+  if (status === "reverted" && !call.reverted) {
+    return false;
+  }
+  if (filter.caller && call.from !== filter.caller.toLowerCase()) {
+    return false;
+  }
+  if (filter.callee && call.to !== filter.callee.toLowerCase()) {
+    return false;
+  }
+  if (filter.selector && callSelector(call) !== filter.selector.toLowerCase()) {
+    return false;
+  }
+  if (
+    filter.callTypes &&
+    !filter.callTypes.some((t) => t.toUpperCase() === call.type)
+  ) {
+    return false;
+  }
+  if (filter.minValue !== undefined && frameValueWei(call) < filter.minValue) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Select every executed call frame in a trace tree that matches `filter`,
+ * in execution order. This is the pure matching seam a Trace trigger consumes:
+ * it flattens the tree once and keeps the frames a workflow should fire on.
+ */
+export function matchTraceCalls(
+  root: RawCallFrame | null,
+  filter: TraceCallFilter = {}
+): FlatCall[] {
+  return flattenCallTree(root).filter((call) => frameMatches(call, filter));
+}
