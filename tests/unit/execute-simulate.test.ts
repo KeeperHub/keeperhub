@@ -156,6 +156,67 @@ function resetSpies(): void {
 }
 
 describe("simulateContractCall", () => {
+  it("B2 refuses a bare overloaded name before RPC", async () => {
+    resetSpies();
+    executeWithFailover.mockResolvedValue([BigInt(45_000), "0x"]);
+    const abi = [
+      {
+        type: "function",
+        name: "swap",
+        inputs: [{ name: "amount", type: "uint256" }],
+        outputs: [],
+      },
+      {
+        type: "function",
+        name: "swap",
+        inputs: [
+          {
+            name: "params",
+            type: "tuple",
+            components: [
+              { name: "token", type: "address" },
+              { name: "amount", type: "uint256" },
+            ],
+          },
+        ],
+        outputs: [],
+      },
+    ];
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: JSON.stringify(abi),
+      functionName: "swap",
+      functionArgs: "[1]",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("matches 2 overloads");
+    }
+    expect(getRpcProvider).not.toHaveBeenCalled();
+    expect(executeWithFailover).not.toHaveBeenCalled();
+  });
+
+  it("B2 accepts duplicate entries of the same canonical signature", async () => {
+    resetSpies();
+    executeWithFailover.mockResolvedValueOnce([BigInt(45_000), "0x"]);
+    const entry = JSON.parse(WRITE_ABI)[0];
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: JSON.stringify([
+        entry,
+        { ...entry, inputs: [{ name: "renamed", type: "uint256" }] },
+      ]),
+      functionName: "setValue",
+      functionArgs: "[1]",
+    });
+    expect(result.success).toBe(true);
+    expect(executeWithFailover).toHaveBeenCalledTimes(1);
+  });
+
   // The contract-call route calls this function directly rather than going
   // through simulateTokenTransfer, so gating only the latter left
   // POST /api/execute/contract-call?simulate=true reporting a clean dry run
@@ -230,6 +291,52 @@ describe("simulateContractCall", () => {
       expect.any(Function),
       "preflight"
     );
+  });
+
+  it("decodes the return value when the key is a legacy tuple spelling", async () => {
+    // API callers still send keys stored before tuples were expanded, such as
+    // `f(tuple)`. Resolving that key is only half the job: the call data and
+    // the returned bytes both have to go through a signature ethers accepts,
+    // or the decode fails silently and the caller gets raw hex back.
+    resetSpies();
+    const encoded42 =
+      "0x000000000000000000000000000000000000000000000000000000000000002a";
+    executeWithFailover.mockResolvedValueOnce([BigInt(30_000), encoded42]);
+
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: JSON.stringify([
+        {
+          type: "function",
+          name: "f",
+          inputs: [{ name: "x", type: "uint256" }],
+          outputs: [{ name: "", type: "uint256" }],
+          stateMutability: "view",
+        },
+        {
+          type: "function",
+          name: "f",
+          inputs: [
+            {
+              name: "p",
+              type: "tuple",
+              components: [{ name: "a", type: "uint256" }],
+            },
+          ],
+          outputs: [{ name: "", type: "uint256" }],
+          stateMutability: "view",
+        },
+      ]),
+      functionName: "f(tuple)",
+      functionArgs: JSON.stringify([{ a: "7" }]),
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.simulatedReturnValue).toBe("42");
+    }
   });
 
   it("returns wouldRevert with a decoded reason when failover rejects", async () => {

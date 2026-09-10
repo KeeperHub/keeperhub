@@ -18,7 +18,10 @@ import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
 import { validateArgsForAbi } from "@/lib/abi/validate-args";
-import { findAbiFunction } from "@/lib/abi/utils";
+import {
+  describeAmbiguousKey,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import { getAbiFunctionKey } from "@/lib/abi/function-key";
 import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
@@ -392,13 +395,20 @@ function buildCallWithMeta(
     return { ok: false, error: `Call at index ${index}: ABI must be a JSON array` };
   }
 
-  const functionAbi = findAbiFunction(parsedAbi, rawCall.abiFunction);
-  if (!functionAbi) {
+  const resolution = resolveAbiFunction(parsedAbi, rawCall.abiFunction);
+  if (resolution.status === "ambiguous") {
+    return {
+      ok: false,
+      error: `Call at index ${index}: ${describeAmbiguousKey(rawCall.abiFunction, resolution.candidates)}`,
+    };
+  }
+  if (resolution.status !== "found") {
     return {
       ok: false,
       error: `Call at index ${index}: Function '${rawCall.abiFunction}' not found in ABI`,
     };
   }
+  const functionAbi = resolution.entry;
   const functionKey = getAbiFunctionKey(parsedAbi, rawCall.abiFunction, functionAbi);
 
   const { args, error: argsError } = coerceAndValidateArgs(

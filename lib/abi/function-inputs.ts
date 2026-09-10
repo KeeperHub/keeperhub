@@ -26,7 +26,7 @@ export function isValidAbiInput(input: unknown): boolean {
   }
 
   if (components === undefined) {
-    return true;
+    return !type.startsWith("tuple");
   }
 
   return Array.isArray(components) && components.every(isValidAbiInput);
