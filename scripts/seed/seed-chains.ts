@@ -624,6 +624,41 @@ const DEFAULT_CHAINS: NewChain[] = [
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "solana-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "solana-testnet" }),
   },
+  // Arc Mainnet (Circle) - USDC is the native gas token, not ETH.
+  //
+  // No EXPLORER_CONFIG_TEMPLATES entry and no chainToDefaultIdMap line,
+  // deliberately: Arc mainnet has no reachable block explorer. arcscan.app
+  // does not resolve, arc-scan.org serves a Next.js app rather than a
+  // Blockscout API and returns 403 on /tx and /address to a non-browser
+  // client, and explorer.arc.io is behind Circle's Cloudflare Access. There is
+  // nothing for explorerUrl or explorerApiUrl to point at, so the chain is
+  // seeded without an explorer_configs row - the EXPLORER_CONFIGS map below
+  // warns and skips rather than throwing. Add both entries the day Circle
+  // ships a public explorer.
+  {
+    chainId: getChainConfigValue("arc-mainnet", "chainId", 5042),
+    name: "Arc",
+    symbol: getChainConfigValue("arc-mainnet", "symbol", "USDC"),
+    chainType: "evm",
+    defaultPrimaryRpc: getRpcUrlByChainId(5042, "primary"),
+    defaultFallbackRpc: getRpcUrlByChainId(5042, "fallback"),
+    defaultPrimaryWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[5042].jsonKey,
+      type: "primary",
+    }),
+    defaultFallbackWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[5042].jsonKey,
+      type: "fallback",
+    }),
+    isTestnet: getChainConfigValue("arc-mainnet", "isTestnet", false),
+    isEnabled: getChainConfigValue("arc-mainnet", "isEnabled", true),
+    status: "experimental",
+    usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "arc-mainnet" }),
+    defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "arc-mainnet" }),
+    aliases: ["arc"],
+  },
   // Arc Testnet (Circle) - USDC is the native gas token, not ETH
   {
     chainId: getChainConfigValue("arc-testnet", "chainId", 5_042_002),

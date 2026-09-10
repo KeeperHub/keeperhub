@@ -308,6 +308,20 @@ const TOKEN_CONFIGS: TokenConfig[] = [
   },
 
   // ==========================================================================
+  // Arc Mainnet (chainId: 5042)
+  // ==========================================================================
+  // Same fixed precompile address as the testnet, and it reports the same
+  // 6 decimals on mainnet - verified with eth_call decimals() against
+  // https://rpc.arc-scan.org, which returns 0x...06.
+  {
+    chainId: 5042,
+    tokenAddress: "0x3600000000000000000000000000000000000000", // USDC (native gas token, ERC-20 precompile)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
   // Arc Testnet (chainId: 5042002)
   // ==========================================================================
   // USDC is Arc's native gas token; this address is the fixed ERC-20-interface

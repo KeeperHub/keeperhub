@@ -53,6 +53,7 @@ export function isTempoChain(chainId: number): boolean {
 // helper) from here rather than re-declaring it.
 export const NATIVE_MIRROR_TOKEN_ADDRESS: ReadonlyMap<number, string> = new Map(
   [
+    [5042, "0x3600000000000000000000000000000000000000"], // Arc Mainnet USDC precompile
     [5_042_002, "0x3600000000000000000000000000000000000000"], // Arc Testnet USDC precompile
   ]
 );

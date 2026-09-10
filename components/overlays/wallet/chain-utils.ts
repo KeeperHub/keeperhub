@@ -12,7 +12,7 @@ export {
 // them on the mainnet master list, which would otherwise produce misleading
 // "Not available" entries for assets that simply don't exist on the chain.
 const INDEPENDENT_TOKEN_LIST_CHAIN_IDS: ReadonlySet<number> = new Set([
-  42_431, 4217, 9745, 5_042_002,
+  42_431, 4217, 9745, 5042, 5_042_002,
 ]);
 
 export const MAINNET_CHAIN_ID = 1;
