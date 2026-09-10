@@ -1,4 +1,10 @@
 import { ethers } from "ethers";
+import { normalizeAbiEntries } from "@/lib/abi/normalize";
+import {
+  type AbiItem,
+  describeAmbiguousKey,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
 import {
   BATCH_WRITE_CONTRACT_ACTION_TYPE,
@@ -159,11 +165,35 @@ function generateSingleWriteCalldata(
     };
   }
 
-  let parsedAbi: unknown[];
+  let parsedAbi: unknown;
   try {
-    parsedAbi = JSON.parse(abi) as unknown[];
+    parsedAbi = JSON.parse(abi);
   } catch {
     return { success: false, error: "Invalid ABI JSON in workflow node" };
+  }
+  if (!Array.isArray(parsedAbi)) {
+    return { success: false, error: "Invalid ABI JSON in workflow node" };
+  }
+
+  // The stored key may be a legacy raw spelling such as `send(tuple,address)`,
+  // which the workflow engine accepts but ethers cannot encode. Resolve it the
+  // same way the engine does and encode with the canonical signature. The ABI
+  // itself still goes to ethers as stored, human-readable entries included.
+  const resolution = resolveAbiFunction(
+    normalizeAbiEntries(parsedAbi) as AbiItem[],
+    abiFunction
+  );
+  if (resolution.status === "ambiguous") {
+    return {
+      success: false,
+      error: describeAmbiguousKey(abiFunction, resolution.candidates),
+    };
+  }
+  if (resolution.status !== "found") {
+    return {
+      success: false,
+      error: `Function '${abiFunction}' not found in ABI`,
+    };
   }
 
   let resolvedArgs: unknown[] = [];
@@ -191,7 +221,7 @@ function generateSingleWriteCalldata(
   let data: string;
   try {
     const iface = new ethers.Interface(parsedAbi as ethers.InterfaceAbi);
-    data = iface.encodeFunctionData(abiFunction, resolvedArgs);
+    data = iface.encodeFunctionData(resolution.canonicalKey, resolvedArgs);
   } catch (err) {
     return {
       success: false,

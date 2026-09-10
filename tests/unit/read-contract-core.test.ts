@@ -589,3 +589,29 @@ describe("read-contract-core - failOnError", () => {
     expect(result.errorClass).toBe("system");
   });
 });
+
+describe("ABI fragment validation before RPC failover", () => {
+  it("N3 classifies a components-less legacy tuple as USER before provider creation", async () => {
+    vi.clearAllMocks();
+    const result = await readContractCore({
+      contractAddress: VALID_ADDRESS,
+      network: "ethereum",
+      abi: JSON.stringify([
+        {
+          type: "function",
+          name: "broken",
+          inputs: [{ name: "p", type: "tuple" }],
+        },
+        { type: "function", name: "broken", inputs: [] },
+      ]),
+      abiFunction: "broken(tuple)",
+      _context: { organizationId: "org-test" },
+    });
+    expect(result).toMatchObject({ success: false, errorClass: "user" });
+    if (!result.success) {
+      expect(result.error).toContain("Invalid ABI function");
+    }
+    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockContractFunction).not.toHaveBeenCalled();
+  });
+});

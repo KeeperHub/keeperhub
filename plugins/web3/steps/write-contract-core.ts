@@ -25,7 +25,10 @@ import {
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
-import { findAbiFunction } from "@/lib/abi/utils";
+import {
+  describeAmbiguousKey,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import { getErrorMessage, resolveFailOnError } from "@/lib/utils";
 import { getAbiFunctionKey } from "@/lib/abi/function-key";
 import { generateId } from "@/lib/utils/id";
@@ -275,9 +278,17 @@ export async function writeContractCore(
     };
   }
 
-  const functionAbi = findAbiFunction(parsedAbi, abiFunction);
+  const resolution = resolveAbiFunction(parsedAbi, abiFunction);
 
-  if (!functionAbi) {
+  if (resolution.status === "ambiguous") {
+    return {
+      success: false,
+      error: describeAmbiguousKey(abiFunction, resolution.candidates),
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
+
+  if (resolution.status !== "found") {
     return {
       success: false,
       error: `Function '${abiFunction}' not found in ABI`,
@@ -285,6 +296,7 @@ export async function writeContractCore(
     };
   }
 
+  const functionAbi = resolution.entry;
   const abiFunctionKey = getAbiFunctionKey(parsedAbi, abiFunction, functionAbi);
 
   // Parse function arguments

@@ -2,7 +2,11 @@ import "server-only";
 
 import { ethers, isError } from "ethers";
 import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
-import { type AbiItem, findAbiFunction } from "@/lib/abi/utils";
+import {
+  type AbiItem,
+  describeAmbiguousKey,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import {
   describeNativeShortfall,
   getNativeSymbol,
@@ -594,8 +598,19 @@ export async function simulateContractCall(
   }
   const abiArray = abiArrayOrError;
 
-  const abiFn = findAbiFunction(abiArray as AbiItem[], input.functionName);
-  if (!abiFn) {
+  const resolution = resolveAbiFunction(
+    abiArray as AbiItem[],
+    input.functionName
+  );
+  if (resolution.status === "ambiguous") {
+    return failure(
+      from,
+      to,
+      value,
+      describeAmbiguousKey(input.functionName, resolution.candidates)
+    );
+  }
+  if (resolution.status !== "found") {
     return failure(
       from,
       to,
@@ -603,6 +618,7 @@ export async function simulateContractCall(
       `Function ${input.functionName} not found in ABI`
     );
   }
+  const abiFn = resolution.entry;
 
   const argsOrError = parseFunctionArgs(input.functionArgs);
   if (typeof argsOrError === "string") {
@@ -615,7 +631,10 @@ export async function simulateContractCall(
     iface = new ethers.Interface(abiArray as ethers.InterfaceAbi);
     const coerced = coerceArgsForAbi(argsOrError, abiFn);
     const reshaped = reshapeArgsForAbi(coerced, abiFn);
-    encodedData = iface.encodeFunctionData(input.functionName, reshaped);
+    // Encode with the signature derived from the resolved entry, not with the
+    // key as supplied: an API or MCP caller may send the legacy raw spelling
+    // (`f(tuple)`), which resolves here but is not a fragment ethers accepts.
+    encodedData = iface.encodeFunctionData(resolution.canonicalKey, reshaped);
   } catch (err) {
     return failure(
       from,
@@ -681,7 +700,7 @@ export async function simulateContractCall(
   if (returnData && returnData !== "0x") {
     try {
       const decoded = iface.decodeFunctionResult(
-        input.functionName,
+        resolution.canonicalKey,
         returnData
       );
       simulatedReturnValue =

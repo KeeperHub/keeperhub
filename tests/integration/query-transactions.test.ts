@@ -68,7 +68,7 @@ vi.mock("ethers", () => ({
         inputs: Array<{ name: string }>;
       } | null {
         const fn = this.abi.find(
-          (e) => e.type === "function" && e.name === name
+          (e) => e.type === "function" && e.name === name.split("(")[0]
         );
         if (!fn) {
           return null;
