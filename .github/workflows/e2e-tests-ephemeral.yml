@@ -918,7 +918,7 @@ jobs:
           - shard: 3
             suites: spark/ethereum superfluid/ethereum chainlink/ethereum chronicle/ethereum
           - shard: 4
-            suites: ethena/ethereum yearn/ethereum aave-v3/ethereum frax-ether-v2/ethereum wrapped/ethereum
+            suites: ethena/ethereum yearn/ethereum aave-v3/ethereum frax-ether-v2/ethereum wrapped/ethereum layerzero/ethereum
     runs-on: ${{ vars.USE_SELF_HOSTED_RUNNERS == 'true' && inputs.caller_event != 'pull_request' && 'arc-keeperhub-build' || 'ubuntu-latest' }}
     # Always staging: e2e validates against test credentials, never prod.
     environment: staging
@@ -1260,7 +1260,7 @@ jobs:
           # above. When set, protocol-coverage suites for chain 1 (morpho,
           # wrapped, lido, ethena, curve, chainlink, spark, yearn, uniswap,
           # pendle, sky, aave-v3, frax-ether-v2, rocket-pool, safe,
-          # chronicle, superfluid) run for real. When unset those suites
+          # chronicle, superfluid, layerzero) run for real. When unset those suites
           # skip cleanly and the floor above drops accordingly.
           ANVIL_FORK_MAINNET_URL: ${{ secrets.ANVIL_FORK_MAINNET_URL }}
           # Non-empty only when the fork-cache download produced a warmed,
