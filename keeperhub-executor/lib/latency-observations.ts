@@ -55,7 +55,8 @@ function runnerCorrelationId(): string {
 export function collectLatencyObservations(params: {
   executionId: string;
   workflowId: string;
-  triggerType: string;
+  /** Undefined when the run was not trigger-originated (e.g. manual API executes). */
+  triggerType: string | undefined;
   /** Epoch ms the executor received the SQS message (KH_RECEIVED_AT). */
   receivedAt: number | undefined;
   /** Epoch ms the tracker first observed the event (KH_OBSERVED_AT). */
@@ -63,8 +64,10 @@ export function collectLatencyObservations(params: {
   /** Epoch ms the engine reached its terminal state. */
   completedAt: number;
 }): PendingObservation[] {
-  const { executionId, workflowId, triggerType, receivedAt, observedAt, completedAt } =
-    params;
+  const { executionId, workflowId, receivedAt, observedAt, completedAt } = params;
+  // The wire contract (LatencyObservation) carries a plain string; "manual" is
+  // the platform's own label for runs with no trigger origin.
+  const triggerType = params.triggerType ?? "manual";
   const correlationId = runnerCorrelationId();
   if (!correlationId) {
     return [];

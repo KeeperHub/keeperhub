@@ -803,7 +803,9 @@ const executorBroadcastLatency = getOrCreateHistogram(
 // workflow.executions counters on Job pods use the same channel; the delta
 // ingest deliberately avoids re-scaling fleet-wide rates from per-pod totals,
 // so broadcast visibility is additive here rather than approximate.
-const executorBroadcastsTotal = getOrCreateCounter(
+// Exported for the executor's pod-side shipping path (metrics-shipping), which
+// increments it locally before sending deltas over the ingest.
+export const executorBroadcastsTotal = getOrCreateCounter(
   apiRegistry,
   "keeperhub_executor_broadcasts_total",
   "Transactions broadcast to the chain by executor-dispatched runs, merged from pod counter deltas",
