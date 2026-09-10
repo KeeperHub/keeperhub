@@ -58,6 +58,7 @@
     "dep-audit": "tsx scripts/dep-audit.ts",
     "discover": "tsx tests/e2e/playwright/discover.ts",
     "test:health": "tsx tests/e2e/playwright/health.ts",
+    "test:trace-probe": "node --test scripts/trace-method-probe.test.mjs",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:vitest": "vitest run tests/e2e/vitest tests/e2e/postgres-world.test.ts --exclude '**/protocol-coverage/**'",
     "test:e2e:schedule": "vitest run tests/e2e/vitest/schedule-pipeline.test.ts",
