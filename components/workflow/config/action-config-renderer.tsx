@@ -29,11 +29,16 @@ import { ArrayInputField } from "@/components/workflow/config/array-input-field"
 import { MalformedAbiArgsNotice } from "@/components/workflow/config/malformed-abi-notice";
 import { TupleInputField } from "@/components/workflow/config/tuple-input-field";
 import {
+  type AbiFunctionInput,
   isValidAbiInput,
   resolveFunctionInputs,
 } from "@/lib/abi/function-inputs";
 import { parseAbiFunctionArgs } from "@/lib/abi/parse-args";
-import { computeSelector } from "@/lib/abi/utils";
+import {
+  canonicalType,
+  computeSelector,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { parseAddressBookSelection } from "@/lib/address-book-selection";
 import { toChecksumAddress } from "@/lib/address-utils";
@@ -471,18 +476,18 @@ export function AbiFunctionSelectField({
   abiValue,
   functionFilter = "read",
 }: AbiFunctionSelectProps) {
-  // Parse ABI and extract functions
-  const functions = React.useMemo(() => {
-    if (!abiValue || abiValue.trim() === "") {
+  const abi = React.useMemo(() => {
+    try {
+      const parsed = JSON.parse(abiValue);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
       return [];
     }
+  }, [abiValue]);
 
+  // Parse ABI and extract functions
+  const functions = React.useMemo(() => {
     try {
-      const abi = JSON.parse(abiValue);
-      if (!Array.isArray(abi)) {
-        return [];
-      }
-
       // Filter functions based on functionFilter prop
       const filterFn =
         functionFilter === "write"
@@ -497,16 +502,20 @@ export function AbiFunctionSelectField({
 
       const filtered = abi.filter(filterFn);
 
-      // Count how many times each function name appears to detect overloads
+      // Count overloads across the whole ABI, not the filtered list: a read
+      // overload hidden here still shares the name, and a bare key would be
+      // ambiguous to every lookup that resolves against the full ABI.
       const nameCounts = new Map<string, number>();
-      for (const func of filtered) {
-        nameCounts.set(func.name, (nameCounts.get(func.name) ?? 0) + 1);
+      for (const func of abi) {
+        if (func?.type === "function") {
+          nameCounts.set(func.name, (nameCounts.get(func.name) ?? 0) + 1);
+        }
       }
 
       return filtered.map((func) => {
         const inputs = Array.isArray(func.inputs) ? func.inputs : [];
-        // A parameter with no type cannot be encoded, so the function is still
-        // listed (selecting it explains the problem) but gets no selector.
+        // Missing types or tuple components cannot be encoded. Keep the entry
+        // visible, but withhold its selector and show the malformed ABI notice.
         const complete = inputs.every(isValidAbiInput);
         const inputTypes = inputs.map((input: { type?: unknown }) =>
           typeof input?.type === "string" ? input.type : "?"
@@ -518,11 +527,21 @@ export function AbiFunctionSelectField({
           .join(", ");
         const selector = complete ? computeSelector(func.name, inputs) : null;
         const isOverloaded = (nameCounts.get(func.name) ?? 0) > 1;
+        // The stored key must expand tuples the same way the selector above
+        // does: a raw `input.type` renders a struct as the literal "tuple",
+        // which ethers rejects as a fragment and which cannot tell two
+        // overloads apart when they differ only inside the struct. Falls back
+        // to the raw types when the ABI is too malformed to canonicalise --
+        // the same condition that already suppresses the selector.
+        const keyTypes = complete
+          ? inputs.map((input: AbiFunctionInput) => canonicalType(input))
+          : inputTypes;
         const key = isOverloaded
-          ? `${func.name}(${inputTypes.join(",")})`
+          ? `${func.name}(${keyTypes.join(",")})`
           : func.name;
         return {
           key,
+          entry: func,
           label: `${func.name}(${params})`,
           stateMutability: func.stateMutability || "nonpayable",
           selector,
@@ -531,7 +550,17 @@ export function AbiFunctionSelectField({
     } catch {
       return [];
     }
-  }, [abiValue, functionFilter]);
+  }, [abi, functionFilter]);
+
+  // Resolve only for display. Opening a saved workflow must not mutate its
+  // config, and an ambiguous legacy key must not select the first overload.
+  // Resolve against the entire ABI: a hidden read/write overload can also
+  // make the stored key ambiguous.
+  const resolution = resolveAbiFunction(abi, value);
+  const displayValue =
+    resolution.status === "found"
+      ? functions.find((func) => func.entry === resolution.entry)?.key ?? ""
+      : "";
 
   if (functions.length === 0) {
     return (
@@ -544,7 +573,7 @@ export function AbiFunctionSelectField({
   }
 
   return (
-    <Select disabled={disabled} onValueChange={onChange} value={value}>
+    <Select disabled={disabled} onValueChange={onChange} value={displayValue}>
       <SelectTrigger className="w-full" id={field.key}>
         <SelectValue placeholder={field.placeholder || "Select a function"} />
       </SelectTrigger>

@@ -4,7 +4,11 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { resolveAbi } from "@/lib/abi/cache";
-import { type AbiItem, findAbiFunction } from "@/lib/abi/utils";
+import {
+  type AbiItem,
+  describeAmbiguousKey,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { simulateContractCall } from "@/lib/execute/simulate";
@@ -54,13 +58,17 @@ function findFunctionInAbi(
     return { error: "ABI must be a JSON array" };
   }
 
-  const entry = findAbiFunction(parsed, functionName);
+  const resolution = resolveAbiFunction(parsed, functionName);
 
-  if (!entry) {
+  if (resolution.status === "ambiguous") {
+    return { error: describeAmbiguousKey(functionName, resolution.candidates) };
+  }
+
+  if (resolution.status !== "found") {
     return { error: `Function '${functionName}' not found in ABI` };
   }
 
-  return { entry };
+  return { entry: resolution.entry };
 }
 
 async function resolveAbiForRequest(
