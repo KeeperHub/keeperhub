@@ -1,0 +1,30 @@
+[
+  {
+    "type": "function",
+    "name": "deposit",
+    "stateMutability": "payable",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256" }]
+  },
+  {
+    "type": "function",
+    "name": "getTotalPooledEther",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256" }]
+  },
+  {
+    "type": "function",
+    "name": "amountForShare",
+    "stateMutability": "view",
+    "inputs": [{ "name": "_share", "type": "uint256" }],
+    "outputs": [{ "name": "", "type": "uint256" }]
+  },
+  {
+    "type": "function",
+    "name": "sharesForAmount",
+    "stateMutability": "view",
+    "inputs": [{ "name": "_amount", "type": "uint256" }],
+    "outputs": [{ "name": "", "type": "uint256" }]
+  }
+]
