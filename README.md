@@ -252,7 +252,7 @@ See [API Documentation](docs/api/index.md) for full reference.
 
 ## Observability
 
-Prometheus metrics exposed at `/api/metrics`:
+Prometheus metrics exposed at `/api/metrics`, readable from inside the cluster only:
 
 - Workflow execution performance
 - API latency
