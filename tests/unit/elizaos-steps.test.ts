@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -322,14 +322,29 @@ describe("elizaos execute-agent-action step", () => {
 });
 
 describe("elizaos test connection", () => {
+  // The connection test is bundled with the client-side plugin registry, so it
+  // uses global fetch, not safeFetch. Its SSRF pre-flight lives server-side in
+  // handlePluginTest, which validates endpointUrl before this runs.
+  const globalFetch = vi.fn();
+
+  beforeEach(() => {
+    globalFetch.mockReset();
+    vi.stubGlobal("fetch", globalFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("fails when ELIZAOS_ENDPOINT_URL is missing", async () => {
     const res = await testElizaOS({});
     expect(res.success).toBe(false);
     expect(res.error).toContain("ELIZAOS_ENDPOINT_URL is required");
+    expect(globalFetch).not.toHaveBeenCalled();
   });
 
   it("returns success when endpoint responds 200 OK", async () => {
-    safeFetch.mockResolvedValue({ ok: true, status: 200 } as never);
+    globalFetch.mockResolvedValue({ ok: true, status: 200 } as never);
 
     const res = await testElizaOS({
       ELIZAOS_ENDPOINT_URL: "https://agent.example.com/",
@@ -337,22 +352,21 @@ describe("elizaos test connection", () => {
     });
 
     expect(res.success).toBe(true);
-    // safeFetch rather than global fetch: the connection test reaches the same
-    // user-supplied host as the step, so it needs the per-redirect IP check,
-    // not only the entry validation assertUrlIsPublic does.
-    expect(safeFetch).toHaveBeenCalledWith("https://agent.example.com/health", {
-      plugin: "elizaos",
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Authorization: "Bearer secret",
-      },
-      signal: expect.any(AbortSignal),
-    });
+    expect(globalFetch).toHaveBeenCalledWith(
+      "https://agent.example.com/health",
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: "Bearer secret",
+        },
+        signal: expect.any(AbortSignal),
+      }
+    );
   });
 
   it("returns error details when endpoint responds with 401 Unauthorized", async () => {
-    safeFetch.mockResolvedValue({ ok: false, status: 401 } as never);
+    globalFetch.mockResolvedValue({ ok: false, status: 401 } as never);
 
     const res = await testElizaOS({
       ELIZAOS_ENDPOINT_URL: "https://agent.example.com",
