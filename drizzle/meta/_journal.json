@@ -1072,6 +1072,13 @@
       "when": 1788862439420,
       "tag": "0152_keep_1291_pending_tx_stuck_index",
       "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1789062501958,
+      "tag": "0153_keep_1346_exec_log_sponsored_index",
+      "breakpoints": true
     }
   ]
 }
