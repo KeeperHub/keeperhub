@@ -252,7 +252,7 @@ Manually trigger a workflow execution. The singular form `POST /api/workflow/{wo
 }
 ```
 
-The `input` field is optional. It maps to the workflow's trigger input and is passed to the first node of the run.
+The `input` field is optional. It maps to the workflow's trigger input and is passed to the first node of the run. Input fields should be nested under `input`; a body with fields at the top level instead (e.g. `{"amount": "1"}` rather than `{"input": {"amount": "1"}}`) is still accepted and now binds correctly, but the response carries the standard `Deprecation`, `Sunset`, and `Link` headers -- support for the unnested shape will be removed no earlier than the `Sunset` date. Every response decided once the body has been read carries them, idempotent replays included. Responses decided before that point do not, because the shape of the body has not been looked at yet: a 404, an authentication or permission failure, a plan or quota block, the concurrency `429`, and an unexpected `500` all answer without the headers. In the unnested shape every top-level field binds as input, `executionId` included; it is only read as an envelope field alongside a nested `input` -- with one exception. A flat body whose *only* key is `executionId` is indistinguishable from the envelope shape, so it is read as an envelope field and rejected (see [`executionId` is not yours to set](#executionid-is-not-yours-to-set)). Send at least one other field, or nest your data under `input`. A body mixing both shapes, or with `input` set to something other than an object, returns a 400. In either shape a top-level input field named `__proto__` is dropped before the run starts, with no error; fields nested deeper inside your values are left alone. One consequence worth knowing if you send the unnested shape: a flat body cannot carry a field of its own named `input`, because there is no way to tell it from the envelope. If your input data has a field by that name, wrap the whole object -- `{"input": <your object>}`. This differs deliberately from the [webhook trigger](#webhook-trigger) route, which takes the entire request body as the input: a webhook carries an external caller's payload that can't be asked to nest itself under `input`, whereas the execute route uses KeeperHub's own envelope and so can require the nested shape.
 
 ### Example
 
@@ -271,6 +271,23 @@ curl -X POST https://app.keeperhub.com/api/workflows/wm3k8nq7xcz2jv4hpbtd5/execu
   "status": "running"
 }
 ```
+
+### `executionId` is not yours to set
+
+The run's id is assigned by KeeperHub and returned to you as `executionId`.
+Sending one is reserved for internal dispatch -- the scheduler and the queue
+executor, which pre-create the row before routing back through this endpoint.
+A request authenticated with an API key or a session is never internal, so a
+body carrying the field is refused:
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 400 | `execution_id_not_allowed` | The body carried an `executionId`. Omit it and read the id from the response. |
+
+This applies to the nested shape, where `executionId` sits alongside `input`
+and is read as an envelope field. In the unnested shape it is ordinary input
+data and binds like any other key -- except in the one case noted above, where
+it is the body's only key and the two shapes cannot be told apart.
 
 ## Webhook Trigger
 
@@ -400,7 +417,9 @@ Returns the complete registry of available workflow actions, triggers, and templ
       "requiredFields": { "network": "string (chain ID)", "address": "string" },
       "optionalFields": {},
       "outputFields": { "balance": "..." },
-      "requiresCredentials": false
+      "requiresCredentials": false,
+      "requiredPlan": null,
+      "featureEnabled": true
     },
     "Condition": {
       "actionType": "Condition",
@@ -408,7 +427,9 @@ Returns the complete registry of available workflow actions, triggers, and templ
       "category": "System",
       "requiredFields": { "condition": "string (JS expression)" },
       "optionalFields": { "conditionConfig": "object (visual builder state)" },
-      "sourceHandles": ["true", "false"]
+      "sourceHandles": ["true", "false"],
+      "requiredPlan": null,
+      "featureEnabled": true
     }
   },
   "triggers": {
@@ -438,3 +459,44 @@ Returns the complete registry of available workflow actions, triggers, and templ
 > - **System actions** use Pascal-case with spaces between words (e.g., `"Condition"`, `"For Each"`, `"HTTP Request"`). System actions do not have a `requiresCredentials` field.
 > - **Triggers** are listed under the `triggers` key (not `actions`) and their values map to `config.triggerType` on trigger nodes.
 > - The endpoint self-documents the correct node and edge shapes under the `workflowStructure` and `edgeStructure` keys — use these as the source of truth for programmatic workflow generation.
+
+Every action carries a `requiredPlan` field (the plan an organization must be on to run the
+action, or `null` when it is not plan-gated) and a `featureEnabled` field (false only when the
+gating feature has been rolled back for every plan). Both are the static requirement, never
+your organization's plan, so this endpoint stays anonymous and publicly cacheable. Check them
+before building a workflow so a `POST /api/workflows/create` that needs a paid plan does not
+fail after the fact. To see which plan your organization is on and which features that plan
+unlocks, `GET /api/features` returns the org's feature snapshot (plan, enabled feature ids,
+and the full registry); it authenticates with the same `Authorization` header as every other
+agent route.
+
+## Get Organization Features
+
+```http
+GET /api/features
+```
+
+Returns the calling organization's feature snapshot so a client can render per-plan lock states or preflight a workflow build.
+
+### Response
+
+```json
+{
+  "plan": "free",
+  "enabledFeatureIds": [],
+  "features": [
+    {
+      "id": "action.database-query",
+      "name": "Database Query action",
+      "description": "Run SQL queries against connected databases inside workflows.",
+      "category": "workflow-action",
+      "enabled": true,
+      "requiredPlan": "pro",
+      "actionTypes": ["Database Query"]
+    }
+  ],
+  "billingEnabled": true
+}
+```
+
+`billingEnabled` is `false` on self-hosted installs where billing is disabled, in which case `plan` is `"enterprise"` and every feature is enabled.
