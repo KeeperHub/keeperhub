@@ -1,0 +1,327 @@
+{
+  "verifiedAt": "2026-09-10T12:16:51.690550+00:00",
+  "environment": "Actual showcase browser submission and authenticated workflow handlers; live Hermes, local Postgres, SQS emulator and in-process executor. Enabled via kh CLI. Full Next editor is not served or verified.",
+  "configuration": {
+    "configuredAt": "2026-09-10T12:14:47.848Z",
+    "reference": {
+      "id": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+      "price": {
+        "conf": "64695990",
+        "expo": -8,
+        "price": "246006804260",
+        "publish_time": 1789042477
+      }
+    },
+    "workflows": [
+      {
+        "id": "avko5f2bf398tce15vhut",
+        "config": {
+          "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+          "direction": "above",
+          "threshold": "2460.31804260",
+          "triggerType": "Pyth Price",
+          "maxAgeSeconds": 30,
+          "rearmThreshold": "2460.19304260"
+        },
+        "browser": {
+          "status": 200,
+          "createdDisabled": true,
+          "destination": "/workflows/avko5f2bf398tce15vhut",
+          "errors": []
+        },
+        "nodes": [
+          {
+            "id": "pyth",
+            "data": {
+              "type": "trigger",
+              "label": "Pyth",
+              "config": {
+                "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+                "direction": "above",
+                "threshold": "2460.31804260",
+                "triggerType": "Pyth Price",
+                "maxAgeSeconds": 30,
+                "rearmThreshold": "2460.19304260"
+              },
+              "status": "idle"
+            },
+            "type": "trigger",
+            "position": {
+              "x": 0,
+              "y": 0
+            }
+          },
+          {
+            "id": "scale",
+            "data": {
+              "type": "action",
+              "label": "Scale",
+              "config": {
+                "inputMode": "explicit",
+                "operation": "sum",
+                "actionType": "math/aggregate",
+                "postOperand": "{{@pyth:Pyth.exponent}}",
+                "postOperation": "power",
+                "explicitValues": "10"
+              },
+              "status": "idle"
+            },
+            "type": "action",
+            "position": {
+              "x": 320,
+              "y": 0
+            }
+          },
+          {
+            "id": "record-price",
+            "data": {
+              "type": "action",
+              "label": "Record observed USD price",
+              "config": {
+                "inputMode": "explicit",
+                "operation": "sum",
+                "actionType": "math/aggregate",
+                "postOperand": "{{@scale:Scale.result}}",
+                "postOperation": "multiply",
+                "explicitValues": "{{@pyth:Pyth.price}}"
+              },
+              "status": "idle"
+            },
+            "type": "action",
+            "position": {
+              "x": 640,
+              "y": 0
+            }
+          }
+        ],
+        "enabledVia": "kh CLI against unchanged authenticated PATCH handler"
+      },
+      {
+        "id": "htf35bkqx8b8c5ix14j2y",
+        "config": {
+          "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+          "direction": "below",
+          "threshold": "2459.81804260",
+          "triggerType": "Pyth Price",
+          "maxAgeSeconds": 30,
+          "rearmThreshold": "2459.94304260"
+        },
+        "browser": {
+          "status": 200,
+          "createdDisabled": true,
+          "destination": "/workflows/htf35bkqx8b8c5ix14j2y",
+          "errors": []
+        },
+        "nodes": [
+          {
+            "id": "pyth",
+            "data": {
+              "type": "trigger",
+              "label": "Pyth",
+              "config": {
+                "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+                "direction": "below",
+                "threshold": "2459.81804260",
+                "triggerType": "Pyth Price",
+                "maxAgeSeconds": 30,
+                "rearmThreshold": "2459.94304260"
+              },
+              "status": "idle"
+            },
+            "type": "trigger",
+            "position": {
+              "x": 0,
+              "y": 0
+            }
+          },
+          {
+            "id": "scale",
+            "data": {
+              "type": "action",
+              "label": "Scale",
+              "config": {
+                "inputMode": "explicit",
+                "operation": "sum",
+                "actionType": "math/aggregate",
+                "postOperand": "{{@pyth:Pyth.exponent}}",
+                "postOperation": "power",
+                "explicitValues": "10"
+              },
+              "status": "idle"
+            },
+            "type": "action",
+            "position": {
+              "x": 320,
+              "y": 0
+            }
+          },
+          {
+            "id": "record-price",
+            "data": {
+              "type": "action",
+              "label": "Record observed USD price",
+              "config": {
+                "inputMode": "explicit",
+                "operation": "sum",
+                "actionType": "math/aggregate",
+                "postOperand": "{{@scale:Scale.result}}",
+                "postOperation": "multiply",
+                "explicitValues": "{{@pyth:Pyth.price}}"
+              },
+              "status": "idle"
+            },
+            "type": "action",
+            "position": {
+              "x": 640,
+              "y": 0
+            }
+          }
+        ],
+        "enabledVia": "kh CLI against unchanged authenticated PATCH handler"
+      }
+    ]
+  },
+  "execution": {
+    "id": "sncuv0w9ksi00oxqcxku7",
+    "workflow_id": "htf35bkqx8b8c5ix14j2y",
+    "status": "success",
+    "input": {
+      "price": "245964473157",
+      "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+      "source": "pyth-hermes",
+      "exponent": -8,
+      "direction": "below",
+      "expiresAt": 1789042570000,
+      "threshold": "2459.81804260",
+      "confidence": "56026835",
+      "configHash": "920ae3bafc9c5b0e5067263ad37b669a482610e68b8577cc1d85a421d24ef3db",
+      "publishTime": 1789042540,
+      "speculative": true,
+      "triggerType": "upstream",
+      "sourceUpdateId": "pyth:ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace:1789042540"
+    },
+    "output": {
+      "result": "2459.64473157",
+      "success": true,
+      "operation": "sum then multiply",
+      "inputCount": 1,
+      "resultType": "number"
+    },
+    "error": null
+  },
+  "logs": [
+    {
+      "node_id": "pyth",
+      "status": "success",
+      "input": {
+        "network": null,
+        "triggerData": {
+          "price": "245964473157",
+          "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+          "source": "pyth-hermes",
+          "exponent": -8,
+          "direction": "below",
+          "expiresAt": 1789042570000,
+          "threshold": "2459.81804260",
+          "timestamp": 1789042540881,
+          "triggered": true,
+          "confidence": "56026835",
+          "configHash": "920ae3bafc9c5b0e5067263ad37b669a482610e68b8577cc1d85a421d24ef3db",
+          "publishTime": 1789042540,
+          "speculative": true,
+          "triggerType": "upstream",
+          "triggeredAt": "2026-09-10T12:15:40.881Z",
+          "sourceUpdateId": "pyth:ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace:1789042540"
+        },
+        "triggerGasUsed": null
+      },
+      "output": {
+        "data": {
+          "price": "245964473157",
+          "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+          "source": "pyth-hermes",
+          "exponent": -8,
+          "direction": "below",
+          "expiresAt": 1789042570000,
+          "threshold": "2459.81804260",
+          "timestamp": 1789042540881,
+          "triggered": true,
+          "confidence": "56026835",
+          "configHash": "920ae3bafc9c5b0e5067263ad37b669a482610e68b8577cc1d85a421d24ef3db",
+          "publishTime": 1789042540,
+          "speculative": true,
+          "triggerType": "upstream",
+          "triggeredAt": "2026-09-10T12:15:40.881Z",
+          "sourceUpdateId": "pyth:ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace:1789042540"
+        },
+        "success": true
+      },
+      "error": null
+    },
+    {
+      "node_id": "scale",
+      "status": "success",
+      "input": {
+        "condition": null,
+        "inputMode": "explicit",
+        "operation": "sum",
+        "actionType": "math/aggregate",
+        "_actionType": "math/aggregate",
+        "postOperand": "-8",
+        "postOperation": "power",
+        "explicitValues": "10",
+        "conditionConfig": null
+      },
+      "output": {
+        "result": "1e-8",
+        "success": true,
+        "operation": "sum then power",
+        "inputCount": 1,
+        "resultType": "number"
+      },
+      "error": null
+    },
+    {
+      "node_id": "record-price",
+      "status": "success",
+      "input": {
+        "condition": null,
+        "inputMode": "explicit",
+        "operation": "sum",
+        "actionType": "math/aggregate",
+        "_actionType": "math/aggregate",
+        "postOperand": "1e-8",
+        "postOperation": "multiply",
+        "explicitValues": "245964473157",
+        "conditionConfig": null
+      },
+      "output": {
+        "result": "2459.64473157",
+        "success": true,
+        "operation": "sum then multiply",
+        "inputCount": 1,
+        "resultType": "number"
+      },
+      "error": null
+    }
+  ],
+  "verification": {
+    "browserCreatedDisabledWorkflows": true,
+    "enabledThroughAuthenticatedCLI": true,
+    "liveCrossingCompleted": true,
+    "scaleResult": "1e-8",
+    "recordedPrice": "2459.64473157",
+    "mathResultsSerializedAsStrings": true,
+    "fixturesDisabledOnExit": true
+  },
+  "fullEditorVerification": {
+    "status": "blocked",
+    "reason": "Full Next.js Turbopack page compilation was OOM-killed at the 2300 MiB cgroup memory cap after approximately five minutes; no page response.",
+    "memoryPeakBytes": 2411728896,
+    "browserEditorOpened": false,
+    "editorSaveReloadVerified": false,
+    "enableMethod": "kh CLI, not editor button",
+    "executionViewVerified": false,
+    "upstreamCIAwaitingMaintainerApproval": true
+  }
+}
