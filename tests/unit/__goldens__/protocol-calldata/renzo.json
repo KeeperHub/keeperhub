@@ -1,0 +1,24 @@
+{
+  "1": {
+    "stake": {
+      "to": "0x74a09653A083691711cF8215a6ab074BB4e99ef5",
+      "data": "0xf6326fb3",
+      "skipped": false
+    },
+    "paused": {
+      "to": "0x74a09653A083691711cF8215a6ab074BB4e99ef5",
+      "data": "0x5c975abb",
+      "skipped": false
+    },
+    "ez-balance-of": {
+      "to": "0xbf5495Efe5DB9ce00f80364C8B423567e58d2110",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "ez-total-supply": {
+      "to": "0xbf5495Efe5DB9ce00f80364C8B423567e58d2110",
+      "data": "0x18160ddd",
+      "skipped": false
+    }
+  }
+}
