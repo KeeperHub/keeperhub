@@ -1722,6 +1722,50 @@ const web3Plugin: IntegrationPlugin = {
       ],
     },
     {
+      slug: "check-approval-exploit",
+      label: "Check Approval Exploit List",
+      description:
+        "Check whether the spenders in a set of ERC-20 approvals appear in the Revoke.cash approval exploit list, and return the matching incident details. A spender that is absent from the list is not a safety certificate: the list carries only incidents reported and verified upstream.",
+      category: "Web3",
+      stepFunction: "checkApprovalExploitStep",
+      stepImportPath: "check-approval-exploit",
+      outputFields: [
+        {
+          field: "success",
+          description:
+            "Whether the check completed. Also true when failOnError is off and a failed list retrieval was softened; the result fields are null and `error` is set.",
+        },
+        {
+          field: "checked",
+          description: "How many approvals were checked",
+        },
+        {
+          field: "matchCount",
+          description: "How many of the spenders appear in the exploit list",
+        },
+        {
+          field: "matches",
+          description:
+            "One entry per matching approval: tokenAddress, spenderAddress, and the incident (name, description, date, amount in millions of USD - the Bancor record's 0.135 is $135k - and metaArticleUrls)",
+        },
+        checkErrorOutput(),
+      ],
+      configFields: [
+        evmNetworkField(),
+        {
+          key: "approvals",
+          label: "Approvals (JSON)",
+          type: "template-textarea",
+          placeholder:
+            '[{"tokenAddress":"0x...","spenderAddress":"0x..."}]',
+          example:
+            '[{"tokenAddress":"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48","spenderAddress":"0x8dFEB86C7C962577deD19AB2050AC78654feA9F7"}]',
+          required: true,
+        },
+        readFailOnErrorField(),
+      ],
+    },
+    {
       slug: "write-contract",
       label: "Write Contract",
       description: "Write data to a smart contract (state-changing functions)",
