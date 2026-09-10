@@ -287,6 +287,26 @@ describe.each(cases)("%s", (_name, invoke) => {
     expect(mocks.finishMetrics).toHaveBeenCalledWith("failure");
   });
 
+  it("bounds the receipt wait instead of polling for blocks forever", async () => {
+    const { options, waitForTransaction } = makeRpcManager(makeReceipt(1));
+
+    await invoke(options);
+
+    // ethers' waitForTransaction rejects only when a timeout is supplied and
+    // otherwise waits on the block listener indefinitely, so without one a
+    // Safe-routed transaction that never mines pins the step until the reaper
+    // takes it and records no hash.
+    const [hash, confirms, timeoutMs] = waitForTransaction.mock.calls[0] as [
+      string,
+      number,
+      number,
+    ];
+    expect(hash).toBe(TX_HASH);
+    expect(confirms).toBe(1);
+    expect(timeoutMs).toBeGreaterThan(186_000);
+    expect(timeoutMs).toBeLessThan(30 * 60 * 1000);
+  });
+
   it("carries the hash when the wait resolves without a receipt", async () => {
     const { options } = makeRpcManager(null);
 

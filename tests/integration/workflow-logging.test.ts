@@ -1133,6 +1133,121 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
     ]);
   });
 
+  it("records every hash the run broadcast, not only the failed step's", async () => {
+    const executionId = "exec_failed_partial_record";
+    allLogs = [
+      {
+        id: "log_a",
+        nodeId: "approve-1",
+        nodeName: "Approve",
+        status: "success",
+        iterationIndex: null,
+        forEachNodeId: null,
+        outputRaw: { transactionHash: "0xapprove", chainId: 1 },
+      },
+      {
+        id: "log_b",
+        nodeId: "write-contract-1",
+        nodeName: "Write Contract",
+        status: "error",
+        iterationIndex: null,
+        forEachNodeId: null,
+        outputRaw: { transactionHash: "0xinflight", chainId: 1 },
+      },
+    ] as unknown as LogRow[];
+
+    verifyExecutionReceiptsMock.mockResolvedValueOnce({
+      allVerified: false,
+      results: [
+        {
+          hash: "0xinflight",
+          chainId: 1,
+          verified: false,
+          status: "not_found" as const,
+          verifiedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    await logWorkflowCompleteDb({
+      executionId,
+      status: "error",
+      error: "Write failed",
+      startTime: Date.now() - 1000,
+    });
+
+    // Only the in-flight hash is verified - re-reading a hash from a step that
+    // succeeded is not what decides whether this run stays open.
+    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith([
+      { hash: "0xinflight", chainId: 1 },
+    ]);
+    // ...but the approve's transaction is real and belongs on the record.
+    // Storing only the failed step's hash would replace an obviously-empty
+    // list with a plausible-looking partial one.
+    const entries = getExecUpdate()?.set.transactionHashes as Array<{
+      hash: string;
+      receiptStatus?: string;
+    }>;
+    expect(entries.map((e) => e.hash)).toEqual(["0xapprove", "0xinflight"]);
+    expect(entries[0].receiptStatus).toBeUndefined();
+    expect(entries[1].receiptStatus).toBe("not_found");
+  });
+
+  /**
+   * KEEP-431's cross-pod re-fire leaves an orphan `error` row for a node that
+   * then succeeded on another pod under a different hash. That dead hash will
+   * never land, so treating it as in flight would pin the run `unconfirmed`
+   * until the reconciler writes it off 24h later.
+   */
+  it("does not hold a run open on a retried node's abandoned attempt", async () => {
+    const executionId = "exec_retry_orphan";
+    allLogs = [
+      {
+        id: "log_a",
+        nodeId: "write-contract-1",
+        nodeName: "Write Contract",
+        status: "error",
+        iterationIndex: null,
+        forEachNodeId: null,
+        outputRaw: { transactionHash: "0xabandoned", chainId: 1 },
+      },
+      {
+        id: "log_b",
+        nodeId: "write-contract-1",
+        nodeName: "Write Contract",
+        status: "success",
+        iterationIndex: null,
+        forEachNodeId: null,
+        outputRaw: { transactionHash: "0xlanded", chainId: 1 },
+      },
+      {
+        id: "log_c",
+        nodeId: "notify-1",
+        nodeName: "Notify",
+        status: "error",
+        iterationIndex: null,
+        forEachNodeId: null,
+        outputRaw: { error: "webhook rejected" },
+      },
+    ] as unknown as LogRow[];
+
+    await logWorkflowCompleteDb({
+      executionId,
+      status: "error",
+      error: "webhook rejected",
+      startTime: Date.now() - 1000,
+    });
+
+    // The node succeeded on its retry, so its abandoned attempt is not in
+    // flight and nothing needs verifying.
+    expect(verifyExecutionReceiptsMock).not.toHaveBeenCalled();
+    const update = getExecUpdate();
+    expect(update?.set.status).not.toBe("unconfirmed");
+    // Both hashes still belong on the record.
+    const entries = update?.set.transactionHashes as Array<{ hash: string }>;
+    expect(entries.map((e) => e.hash)).toEqual(["0xabandoned", "0xlanded"]);
+  });
+
   it("leaves a failing run terminal when its failed step never broadcast", async () => {
     const executionId = "exec_failed_pre_broadcast";
     allLogs = [

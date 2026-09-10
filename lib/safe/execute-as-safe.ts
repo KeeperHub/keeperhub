@@ -13,6 +13,7 @@ import {
   OnChainPendingError,
   OnChainRevertError,
 } from "@/lib/web3/onchain-revert";
+import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import {
   type BroadcastResult,
   NonceConflictError,
@@ -108,6 +109,13 @@ function throwIfReverted(receipt: ethers.TransactionReceipt): void {
  * READ a receipt says nothing about whether the transaction succeeded. The
  * settled-failure case is status 0, which arrives as a receipt and is
  * classified by throwIfReverted at the call sites.
+ *
+ * The wait is bounded for the same reason the ethers path is: ethers'
+ * `waitForTransaction` rejects only when a timeout is supplied and otherwise
+ * waits on the block listener forever, so without one a Safe-routed
+ * transaction that never mines pins the step until the reaper takes it and
+ * records no hash. Supplying the timeout is also what makes the null return
+ * below reachable -- at confirms = 1 ethers resolves null only on timeout.
  */
 async function waitForSafeReceipt(
   broadcast: BroadcastResult,
@@ -120,7 +128,7 @@ async function waitForSafeReceipt(
   let receipt: ethers.TransactionReceipt | null;
   try {
     receipt = await rpcManager.executeWithFailover(
-      (p) => p.waitForTransaction(broadcast.hash),
+      (p) => p.waitForTransaction(broadcast.hash, 1, RECEIPT_WAIT_TIMEOUT_MS),
       "read"
     );
   } catch (error) {

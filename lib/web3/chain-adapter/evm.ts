@@ -8,6 +8,7 @@ import {
   OnChainPendingError,
   OnChainRevertError,
 } from "@/lib/web3/onchain-revert";
+import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import { submitSignedTransactionWithFailover } from "@/lib/web3/submit-signed";
 import type { AdaptiveGasStrategy, GasConfig } from "../gas-strategy";
 import type { NonceManager, NonceSession } from "../nonce-manager";
@@ -30,20 +31,6 @@ import type {
 const TEMPO_CHAIN_IDS = new Set<number>([4217, 42_431]);
 const TEMPO_RECEIPT_TIMEOUT_MS = 60_000;
 const TEMPO_RECEIPT_POLL_INTERVAL_MS = 1500;
-
-// Upper bound on how long we wait for a receipt before calling the outcome
-// unknown. Unbounded, `tx.wait()` waits for as long as the step is allowed to
-// live: a transaction that never mines pins the step until the pod deadline
-// and is then swept by the 30-minute reaper, which records no hash and so
-// leaves the broadcast outside the reconciler's scan entirely.
-//
-// 120s matches STATUS_POLL_TIMEOUT_MS on the sponsored path
-// (turnkey-sponsored-tx.ts): the two paths should not disagree about how long
-// a broadcast may stay unresolved before it is reported as pending. It also
-// sits inside the 300s wallet lock TTL (nonce-manager.ts), so the wait cannot
-// outlive the lock protecting the nonce it was sent under -- waiting past that
-// point would be waiting without the guarantee that makes the answer useful.
-const RECEIPT_WAIT_TIMEOUT_MS = 120_000;
 
 export class EvmChainAdapter implements ChainAdapter {
   readonly chainFamily = "evm";
@@ -381,13 +368,13 @@ export class EvmChainAdapter implements ChainAdapter {
     tx: ethers.TransactionResponse
   ): Promise<ethers.TransactionReceipt> {
     try {
-      // Bounded: ethers rejects with code TIMEOUT once the deadline passes,
-      // which the unknown-code default at the end of the catch below turns
-      // into an OnChainPendingError carrying the hash. That is the correct
-      // reading -- the deadline tells us we stopped looking, never that the
-      // transaction failed -- so the row settles `unconfirmed` and the
-      // reconciler keeps watching instead of the step hanging to the pod
-      // deadline and losing the hash to the reaper.
+      // Bounded (see RECEIPT_WAIT_TIMEOUT_MS): ethers rejects with code
+      // TIMEOUT once the deadline passes, which the unknown-code default at
+      // the end of the catch below turns into an OnChainPendingError carrying
+      // the hash. That is the correct reading -- the deadline tells us we
+      // stopped looking, never that the transaction failed -- so the row
+      // settles `unconfirmed` and the reconciler keeps watching, instead of
+      // the step hanging until the reaper takes it and loses the hash.
       const receipt = await tx.wait(1, RECEIPT_WAIT_TIMEOUT_MS);
       if (receipt) {
         return receipt;

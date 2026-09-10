@@ -17,12 +17,14 @@ vi.mock("server-only", () => ({}));
 const {
   mockVerify,
   mockRecordFinished,
+  mockRecordError,
   mockLogInfo,
   mockLogWarn,
   mockLogSystemWarn,
 } = vi.hoisted(() => ({
   mockVerify: vi.fn(),
   mockRecordFinished: vi.fn(),
+  mockRecordError: vi.fn(),
   mockLogInfo: vi.fn(),
   mockLogWarn: vi.fn(),
   mockLogSystemWarn: vi.fn(),
@@ -100,6 +102,7 @@ vi.mock("@/lib/web3/verify-receipt", () => ({
 
 vi.mock("@/lib/metrics/collectors/prometheus", () => ({
   recordWorkflowExecutionFinished: mockRecordFinished,
+  recordWorkflowExecutionError: mockRecordError,
 }));
 
 vi.mock("@/lib/metrics/org-slug.server", () => ({
@@ -442,6 +445,7 @@ describe("workflow runs held open by their own failure", () => {
   const failureRow = (overrides: Row = {}) =>
     workflowRow({
       errorType: "system",
+      errorCategory: "workflow_engine",
       error: "Step 3 rejected the payload",
       ...overrides,
     });
@@ -453,15 +457,36 @@ describe("workflow runs held open by their own failure", () => {
 
     expect(report.workflows.completed).toBe(0);
     expect(report.workflows.failed).toBe(1);
+    // system_error, not plain error: the finalizer would have written the
+    // split, and passing through `unconfirmed` must not flatten it.
     expect(workflowUpdates()[0].values).toEqual({
-      status: "error",
+      status: "system_error",
       error: "Step 3 rejected the payload",
       completedAt: expect.any(Date),
     });
     expect(mockRecordFinished).toHaveBeenCalledWith({
-      status: "error",
+      status: "system_error",
       orgSlug: "org-a",
-      errorType: "na",
+      errorType: "system",
+    });
+    // The finalizer skips this counter for every unconfirmed row, so it is
+    // emitted here instead - once, when the row reaches a terminal state.
+    expect(mockRecordError).toHaveBeenCalledWith({
+      orgSlug: "org-a",
+      errorCategory: "workflow_engine",
+      errorType: "system",
+    });
+  });
+
+  it("settles a user-classified failure as plain error, not system_error", () => {
+    verifyResolves("success");
+
+    return run([], [failureRow({ errorType: "user" })]).then(() => {
+      expect(workflowUpdates()[0].values).toEqual({
+        status: "error",
+        error: "Step 3 rejected the payload",
+        completedAt: expect.any(Date),
+      });
     });
   });
 
@@ -484,7 +509,7 @@ describe("workflow runs held open by their own failure", () => {
 
     expect(report.workflows.failed).toBe(1);
     expect(workflowUpdates()[0].values).toEqual({
-      status: "error",
+      status: "system_error",
       error: "Step 3 rejected the payload",
       completedAt: expect.any(Date),
     });
@@ -505,7 +530,7 @@ describe("workflow runs held open by their own failure", () => {
     expect(report.workflows.failed).toBe(1);
     expect(mockVerify).not.toHaveBeenCalled();
     expect(workflowUpdates()[0].values).toEqual({
-      status: "error",
+      status: "system_error",
       error: "Step 3 rejected the payload",
       completedAt: expect.any(Date),
     });

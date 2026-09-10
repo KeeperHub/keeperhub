@@ -137,10 +137,10 @@ async function listTrulyFailedNodes(executionId: string): Promise<string[]> {
  * Returns [] on query failure -- losing the hash list is preferable to
  * failing the UPDATE that flips status to success.
  *
- * `rowStatus` selects which step rows to read. Success rows feed the KEEP-966
- * reconciliation gate. Error rows feed the KEEP-1281 in-flight check: a failed
- * step that broadcast before it failed carries its hash in output_raw exactly
- * the same way, because step logging writes output_raw regardless of status.
+ * Success rows only: this list feeds the KEEP-966 reconciliation gate, which
+ * re-verifies every entry as an expected SUCCESSFUL receipt. A failing run's
+ * broadcasts are harvested separately by loadFailureBroadcasts, which must not
+ * feed that gate.
  *
  * The transactionHash IS NOT NULL filter is pushed into Postgres so a workflow
  * that runs a non-tx step many times (e.g. a For-Each over hundreds of HTTP
@@ -151,15 +151,48 @@ async function listTrulyFailedNodes(executionId: string): Promise<string[]> {
  * in-memory tracker (isRecordableTransactionHash) so the two reconstructions
  * of the same list cannot drift apart.
  */
+type HashLogRow = {
+  nodeId: string;
+  nodeName: string;
+  iterationIndex: number | null;
+  outputRaw: unknown;
+};
+
+/** Shared so both harvests build identically shaped entries. */
+function toHashEntry(row: HashLogRow): TransactionHashEntry | null {
+  const o = row.outputRaw as {
+    transactionHash?: unknown;
+    chainId?: unknown;
+    network?: unknown;
+  } | null;
+  if (
+    o === null ||
+    typeof o !== "object" ||
+    typeof o.transactionHash !== "string" ||
+    !isRecordableTransactionHash(o.transactionHash, o.chainId)
+  ) {
+    return null;
+  }
+  return {
+    hash: o.transactionHash,
+    nodeId: row.nodeId,
+    nodeName: row.nodeName,
+    ...(typeof o.chainId === "number" && { chainId: o.chainId }),
+    ...(typeof o.network === "string" && { network: o.network }),
+    ...(row.iterationIndex !== null && {
+      iterationIndex: row.iterationIndex,
+    }),
+  };
+}
+
 async function loadHashesFromLogs(
-  executionId: string,
-  rowStatus: "success" | "error" = "success"
+  executionId: string
 ): Promise<TransactionHashEntry[]> {
   try {
     const rows = await db.query.workflowExecutionLogs.findMany({
       where: and(
         eq(workflowExecutionLogs.executionId, executionId),
-        eq(workflowExecutionLogs.status, rowStatus),
+        eq(workflowExecutionLogs.status, "success"),
         sql`${workflowExecutionLogs.outputRaw}->>'transactionHash' IS NOT NULL`
       ),
       columns: {
@@ -174,31 +207,12 @@ async function loadHashesFromLogs(
     const seen = new Set<string>();
     const entries: TransactionHashEntry[] = [];
     for (const row of rows) {
-      const o = row.outputRaw as {
-        transactionHash?: unknown;
-        chainId?: unknown;
-        network?: unknown;
-      } | null;
-      if (
-        o === null ||
-        typeof o !== "object" ||
-        typeof o.transactionHash !== "string" ||
-        !isRecordableTransactionHash(o.transactionHash, o.chainId) ||
-        seen.has(o.transactionHash)
-      ) {
+      const entry = toHashEntry(row);
+      if (!entry || seen.has(entry.hash)) {
         continue;
       }
-      seen.add(o.transactionHash);
-      entries.push({
-        hash: o.transactionHash,
-        nodeId: row.nodeId,
-        nodeName: row.nodeName,
-        ...(typeof o.chainId === "number" && { chainId: o.chainId }),
-        ...(typeof o.network === "string" && { network: o.network }),
-        ...(row.iterationIndex !== null && {
-          iterationIndex: row.iterationIndex,
-        }),
-      });
+      seen.add(entry.hash);
+      entries.push(entry);
     }
     return entries;
   } catch (queryError) {
@@ -209,6 +223,102 @@ async function loadHashesFromLogs(
       { execution_id: executionId }
     );
     return [];
+  }
+}
+
+/**
+ * KEEP-1281: the hashes a run that is finalizing as a FAILURE broadcast.
+ *
+ * Returns two lists, because the two questions differ:
+ *
+ *   `record` - every hash the run put on chain, from successful and failed
+ *   steps alike. A run that wrote at steps 1-2 and failed at step 3 has three
+ *   transactions, and persisting only the failed one would replace an
+ *   obviously-empty record with a plausible-looking partial one.
+ *
+ *   `inFlight` - the subset worth waiting on: hashes from step attempts whose
+ *   node did not also succeed. The cross-pod re-fire described above
+ *   (KEEP-431) leaves an orphan `error` row for a node that then succeeded on
+ *   another pod under a DIFFERENT hash; that dead hash never lands, and
+ *   treating it as in flight would pin the run `unconfirmed` until the
+ *   reconciler writes it off a day later.
+ *
+ * The success key matches computeTrulyFailedNodes exactly -- a For-Each
+ * iteration is keyed by (forEachNodeId, iterationIndex, nodeId), everything
+ * else by nodeId -- so "this node succeeded" means the same thing here as it
+ * does when the finalizer decides whether the run failed at all.
+ */
+async function loadFailureBroadcasts(executionId: string): Promise<{
+  record: TransactionHashEntry[];
+  inFlight: TransactionHashEntry[];
+}> {
+  const empty = { record: [], inFlight: [] };
+  try {
+    const rows = await db.query.workflowExecutionLogs.findMany({
+      where: and(
+        eq(workflowExecutionLogs.executionId, executionId),
+        inArray(workflowExecutionLogs.status, ["success", "error"])
+      ),
+      columns: {
+        nodeId: true,
+        nodeName: true,
+        status: true,
+        iterationIndex: true,
+        forEachNodeId: true,
+        outputRaw: true,
+      },
+      orderBy: [asc(workflowExecutionLogs.startedAt)],
+    });
+
+    // A row is a For-Each iteration row only when BOTH loop fields are
+    // present. Drizzle returns null for top-level steps; undefined is guarded
+    // for the same reason computeTrulyFailedNodes guards it, so a row that
+    // simply omits the fields is not misread as an iteration row.
+    const attemptKey = (row: {
+      nodeId: string;
+      iterationIndex: number | null;
+      forEachNodeId: string | null;
+    }): string => {
+      const isIterationRow =
+        row.iterationIndex !== null &&
+        row.iterationIndex !== undefined &&
+        row.forEachNodeId !== null &&
+        row.forEachNodeId !== undefined;
+      return isIterationRow
+        ? `${row.forEachNodeId}:${row.iterationIndex}:${row.nodeId}`
+        : row.nodeId;
+    };
+
+    const succeeded = new Set<string>();
+    for (const row of rows) {
+      if (row.status === "success") {
+        succeeded.add(attemptKey(row));
+      }
+    }
+
+    const seen = new Set<string>();
+    const record: TransactionHashEntry[] = [];
+    const inFlight: TransactionHashEntry[] = [];
+    for (const row of rows) {
+      const entry = toHashEntry(row);
+      if (!entry || seen.has(entry.hash)) {
+        continue;
+      }
+      seen.add(entry.hash);
+      record.push(entry);
+      if (row.status === "error" && !succeeded.has(attemptKey(row))) {
+        inFlight.push(entry);
+      }
+    }
+    return { record, inFlight };
+  } catch (queryError) {
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[Workflow Logging] Failed to load broadcasts from a failing run's logs",
+      queryError,
+      { execution_id: executionId }
+    );
+    return empty;
   }
 }
 
@@ -329,6 +439,19 @@ async function reconcileTransactionHashes(
  * would convert an ordinary failed run into an unfinalized one; a verification
  * outage should cost the in-flight check, not the terminal write.
  */
+/**
+ * Fold the verified subset back onto the full record, preserving the record's
+ * order. Entries that were never verified (hashes from steps that succeeded)
+ * are carried through untouched.
+ */
+function mergeEnrichedEntries(
+  record: TransactionHashEntry[],
+  enriched: TransactionHashEntry[]
+): TransactionHashEntry[] {
+  const byHash = new Map(enriched.map((entry) => [entry.hash, entry]));
+  return record.map((entry) => byHash.get(entry.hash) ?? entry);
+}
+
 async function inspectFailureBroadcasts(
   entries: TransactionHashEntry[]
 ): Promise<{ hashes: TransactionHashEntry[]; unreadable: boolean }> {
@@ -1032,10 +1155,18 @@ export async function logWorkflowCompleteDb(
   // the run open only when one is genuinely unreadable.
   let failureOriginUnconfirmed = false;
   if (finalizingAsFailure) {
-    const broadcasts = await loadHashesFromLogs(params.executionId, "error");
-    if (broadcasts.length > 0) {
-      const inspected = await inspectFailureBroadcasts(broadcasts);
-      verifiedTransactionHashes = inspected.hashes;
+    const { record, inFlight } = await loadFailureBroadcasts(
+      params.executionId
+    );
+    if (record.length > 0) {
+      // Only the in-flight subset is verified: a hash from a step that
+      // succeeded is not what is holding this run open, and re-reading it
+      // would add an RPC round trip to every failed run for nothing.
+      const inspected = await inspectFailureBroadcasts(inFlight);
+      verifiedTransactionHashes = mergeEnrichedEntries(
+        record,
+        inspected.hashes
+      );
       failureOriginUnconfirmed = inspected.unreadable;
     }
   }
