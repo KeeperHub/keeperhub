@@ -75,28 +75,28 @@
       "path": "/api/analytics/networks",
       "route_file": "app/api/analytics/networks/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 80
+      "line": 88
     },
     {
       "method": "GET",
       "path": "/api/analytics/runs",
       "route_file": "app/api/analytics/runs/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 111
+      "line": 119
     },
     {
       "method": "GET",
       "path": "/api/analytics/runs/{executionId}/steps",
       "route_file": "app/api/analytics/runs/[id]/steps/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 162
+      "line": 170
     },
     {
       "method": "GET",
       "path": "/api/analytics/spend-cap",
       "route_file": "app/api/analytics/spend-cap/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 188
+      "line": 196
     },
     {
       "method": "GET",
@@ -104,21 +104,21 @@
       "route_file": "app/api/analytics/stream/route.ts",
       "streaming": true,
       "source": "docs/api/analytics.md",
-      "line": 213
+      "line": 221
     },
     {
       "method": "GET",
       "path": "/api/analytics/summary",
       "route_file": "app/api/analytics/summary/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 13
+      "line": 21
     },
     {
       "method": "GET",
       "path": "/api/analytics/time-series",
       "route_file": "app/api/analytics/time-series/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 53
+      "line": 61
     },
     {
       "method": "GET",
@@ -146,7 +146,14 @@
       "path": "/api/execute/{executionId}/status",
       "route_file": "app/api/execute/[executionId]/status/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 766
+      "line": 796
+    },
+    {
+      "method": "GET",
+      "path": "/api/features",
+      "route_file": "app/api/features/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 459
     },
     {
       "method": "GET",
@@ -384,21 +391,21 @@
       "path": "/api/execute/check-and-execute",
       "route_file": "app/api/execute/check-and-execute/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 505
+      "line": 535
     },
     {
       "method": "POST",
       "path": "/api/execute/contract-call",
       "route_file": "app/api/execute/contract-call/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 356
+      "line": 386
     },
     {
       "method": "POST",
       "path": "/api/execute/transfer",
       "route_file": "app/api/execute/transfer/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 288
+      "line": 318
     },
     {
       "method": "POST",
@@ -538,7 +545,7 @@
       "path": "/api/workflows/{workflowId}/simulate",
       "route_file": "app/api/workflows/[workflowId]/simulate/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 940
+      "line": 970
     },
     {
       "method": "POST",

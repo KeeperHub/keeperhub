@@ -77,7 +77,8 @@ which is exactly the load this policy is meant to move upstream.
 What a plan buys you is a check nothing else provides. A proposal stated out
 loud can be tested against the actual contract before any code exists - and a
 well-evidenced issue can still carry a wrong plan. One report here correctly
-observed that `parseNativeValueWei` parses with `ethers.parseEther`, and
+observed that `parseNativeValueWei`, since renamed to
+`parseNativeValueEther`, parses with `ethers.parseEther`, and
 proposed denominating `value` in wei. The observation was right; the plan would
 have silently changed every existing caller's amount by a factor of 1e18,
 because the API's documented unit is ether and the misleading thing is the
