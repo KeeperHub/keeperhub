@@ -105,6 +105,14 @@ Visit [http://localhost:3000](http://localhost:3000) to get started. The first r
 - **`db:push` vs `db:migrate`:** Use `pnpm db:push` only for fast local schema iteration. Staging and production apply file-based migrations via `pnpm db:migrate` on deploy.
 - **Local Postgres required:** `dev:login` and `dev:bootstrap` refuse to run unless `DATABASE_URL` points at a local host (for example `postgresql://postgres:postgres@localhost:5433/keeperhub` when using Docker Compose).
 
+## Pyth feature page
+
+Open `/pyth` on the running KeeperHub app to explore the native trigger, replay the recorded September 10 demonstration, and configure an ETH/USD starter workflow. The page adapts the dark layout, gradients and motion direction of Vancouver Plus from Modulify using existing KeeperHub components and Motion; it does not import the template bundle.
+
+The starter uses the normal sign-in dialog and workflow API. It creates a **disabled** workflow with a Pyth trigger and Math steps that convert the reported price using the signal's exponent. Review the workflow in the native editor before enabling it. Server-side Pyth credentials stay out of the browser.
+
+Replay values come from the checked-in backend evidence. They are recorded results, not current market prices. Reveal animations, floating panels and replay transitions respect reduced-motion preferences.
+
 ## Live Pyth backend demo
 
 The native **Pyth Price** trigger starts workflows on above/below threshold crossings from the authenticated Hermes stream. A separate rearm price prevents repeated firing while the price stays beyond the threshold. Startup and reconnect establish a baseline; signals expire and remain speculative.
