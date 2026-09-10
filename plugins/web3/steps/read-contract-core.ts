@@ -38,6 +38,12 @@ export type ReadContractCoreInput = {
   abi: string;
   abiFunction: string;
   functionArgs?: string;
+  // The address the call is made from. Some contracts answer differently
+  // depending on who asks, and a read with no caller is a read as address(0),
+  // which is itself a specific address. Empty or whitespace-only means absent,
+  // the same rule functionArgs uses, so a template that renders to nothing
+  // leaves the call unchanged rather than failing it.
+  callerAddress?: string;
   // See applyReadFailOnError in read-fail-on-error-core.ts. When false, no
   // failure of this step fails the run.
   failOnError?: boolean;
@@ -81,8 +87,15 @@ export async function readContractCore(
 async function readContractInner(
   input: ReadContractCoreInput
 ): Promise<ReadContractResult> {
-  const { contractAddress, network, abi, abiFunction, functionArgs, _context } =
-    input;
+  const {
+    contractAddress,
+    network,
+    abi,
+    abiFunction,
+    functionArgs,
+    callerAddress,
+    _context,
+  } = input;
 
   if (!abiFunction || abiFunction.trim() === "") {
     logUserError(
@@ -114,6 +127,25 @@ async function readContractInner(
       success: false,
       destinationError: true,
       error: `Invalid contract address: ${contractAddress}`,
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
+
+  // A blank caller is no caller. Only a value that is present and not an
+  // address is an error, and it is a payload error rather than a destination
+  // one: failOnError softens it the way it softens an unparseable argument
+  // list, not the way it hard-fails an invalid contract address.
+  const caller = callerAddress?.trim();
+  if (caller !== undefined && caller !== "" && !ethers.isAddress(caller)) {
+    logUserError(
+      ErrorCategory.VALIDATION,
+      "[Read Contract] Invalid caller address:",
+      callerAddress,
+      { plugin_name: "web3", action_name: "read-contract" }
+    );
+    return {
+      success: false,
+      error: `Invalid caller address: ${callerAddress}`,
       errorClass: ExecutionErrorType.USER,
     };
   }
@@ -301,6 +333,7 @@ async function readContractInner(
       functionKey: abiFunctionKey,
       args,
       isView,
+      ...(caller ? { callerAddress: caller } : {}),
     });
 
     // Convert BigInt values to strings for JSON serialization. This also

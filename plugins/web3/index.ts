@@ -892,6 +892,15 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           abiFunctionField: "abiFunction",
         },
+        {
+          key: "callerAddress",
+          label: "Caller Address",
+          type: "template-input",
+          placeholder: "Optional - 0x... or {{NodeName.address}}",
+          helpTip:
+            "Optional. The address the call is made from. Some contracts answer differently depending on the caller. Leave empty for the current behaviour.",
+          isAddressField: true,
+        },
         readFailOnErrorField(),
       ],
     },

@@ -258,9 +258,17 @@ export class EvmChainAdapter implements ChainAdapter {
       // fragment instead of the inherited method.
       const fn = contract.getFunction(request.functionKey);
 
+      // ethers reads a trailing object as call overrides, which is how the
+      // write path passes its own `from` above. Build it only when a caller
+      // was given: with the field unset nothing is appended and the call is
+      // identical to the one made before this field existed.
+      const overrides = request.callerAddress
+        ? [{ from: request.callerAddress }]
+        : [];
+
       return request.isView
-        ? await fn(...request.args)
-        : await fn.staticCall(...request.args);
+        ? await fn(...request.args, ...overrides)
+        : await fn.staticCall(...request.args, ...overrides);
     });
   }
 

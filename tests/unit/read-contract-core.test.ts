@@ -615,3 +615,174 @@ describe("ABI fragment validation before RPC failover", () => {
     expect(mockContractFunction).not.toHaveBeenCalled();
   });
 });
+
+// A read with no caller is a read as address(0), which is itself a specific
+// address: OptimismPortal2 reveals a failing withdrawal target only to
+// address(1), and a toll-gated Chronicle feed reads only for an authed caller.
+// These cover the value reaching the chain on both branches of the isView
+// ternary, and every blank shape leaving the call exactly as it was (#2399).
+describe("read-contract-core - caller address (#2399)", () => {
+  const CALLER = "0x2c9F694183A4240B6431771F6c714a8106179dF5";
+  const NO_ARG_ABI = [
+    {
+      name: "totalSupply",
+      type: "function",
+      stateMutability: "view",
+      inputs: [],
+      outputs: [{ name: "supply", type: "uint256" }],
+    },
+  ];
+
+  it("passes the caller to a view call as trailing overrides", async () => {
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValueOnce(BigInt("1000"));
+
+    const result = await readContractCore(makeInput({ callerAddress: CALLER }));
+
+    expect(result.success).toBe(true);
+    const call = mockContractFunction.mock.calls[0];
+    expect(call).toHaveLength(2);
+    expect(call[1]).toEqual({ from: CALLER });
+  });
+
+  it("passes the caller on the staticCall branch too", async () => {
+    setupRpcMocks();
+    mockStaticCall.mockResolvedValueOnce(BigInt("500000"));
+
+    const result = await readContractCore(
+      makeInput({
+        abi: JSON.stringify(NONPAYABLE_ABI),
+        abiFunction: "quoteExactInputSingle",
+        functionArgs: JSON.stringify([
+          VALID_ADDRESS,
+          VALID_ADDRESS,
+          "3000",
+          "1000000",
+          "0",
+        ]),
+        callerAddress: CALLER,
+      })
+    );
+
+    expect(result.success).toBe(true);
+    const call = mockStaticCall.mock.calls[0];
+    expect(call).toHaveLength(6);
+    expect(call[5]).toEqual({ from: CALLER });
+  });
+
+  it("passes the caller as the only argument to a no-argument function", async () => {
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValueOnce(BigInt(7));
+
+    const result = await readContractCore(
+      makeInput({
+        abi: JSON.stringify(NO_ARG_ABI),
+        abiFunction: "totalSupply",
+        functionArgs: "",
+        callerAddress: CALLER,
+      })
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockContractFunction).toHaveBeenCalledWith({ from: CALLER });
+  });
+
+  it("does not fold the caller into the decoded ABI arguments", async () => {
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValueOnce(BigInt("1000"));
+
+    await readContractCore(makeInput({ callerAddress: CALLER }));
+
+    expect(mockContractFunction.mock.calls[0][0]).toBe(VALID_ADDRESS);
+  });
+
+  it("accepts an all-lowercase caller and forwards it unchanged", async () => {
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValueOnce(BigInt("1000"));
+
+    const result = await readContractCore(
+      makeInput({ callerAddress: CALLER.toLowerCase() })
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockContractFunction.mock.calls[0][1]).toEqual({
+      from: CALLER.toLowerCase(),
+    });
+  });
+
+  it("calls the contract exactly as before when no caller is given", async () => {
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValueOnce(BigInt("1000"));
+
+    const result = await readContractCore(makeInput());
+
+    expect(result.success).toBe(true);
+    expect(mockContractFunction.mock.calls[0]).toEqual([VALID_ADDRESS]);
+  });
+
+  it("treats an empty string caller as no caller, as before", async () => {
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValueOnce(BigInt("1000"));
+
+    const result = await readContractCore(makeInput({ callerAddress: "" }));
+
+    expect(result.success).toBe(true);
+    expect(mockContractFunction.mock.calls[0]).toEqual([VALID_ADDRESS]);
+  });
+
+  // A caller fed by {{PreviousNode.address}} that renders to blank must be a
+  // field left empty, not a hard error.
+  it("treats a whitespace-only caller as no caller", async () => {
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValueOnce(BigInt("1000"));
+
+    const result = await readContractCore(makeInput({ callerAddress: "   " }));
+
+    expect(result.success).toBe(true);
+    expect(mockContractFunction.mock.calls[0]).toEqual([VALID_ADDRESS]);
+  });
+
+  it("refuses a malformed caller without calling the chain", async () => {
+    setupRpcMocks();
+
+    const result = await readContractCore(
+      makeInput({ callerAddress: "not-an-address" })
+    );
+
+    expect(result).toMatchObject({ success: false, errorClass: "user" });
+    if (!result.success) {
+      expect(result.error).toContain("Invalid caller address");
+    }
+    expect(mockContractFunction).not.toHaveBeenCalled();
+    expect(mockStaticCall).not.toHaveBeenCalled();
+  });
+
+  it("refuses a mixed-case caller whose checksum does not hold", async () => {
+    setupRpcMocks();
+
+    const result = await readContractCore(
+      makeInput({ callerAddress: "0x2C9f694183A4240B6431771F6c714a8106179dF5" })
+    );
+
+    expect(result).toMatchObject({ success: false, errorClass: "user" });
+    expect(mockContractFunction).not.toHaveBeenCalled();
+  });
+
+  // The caller is payload, like the arguments, not a destination: failOnError
+  // softens it the way it softens an unparseable argument list rather than
+  // hard-failing it the way it hard-fails an invalid contract address.
+  it("softens a malformed caller when failOnError is false", async () => {
+    setupRpcMocks();
+
+    const result = await readContractCore(
+      makeInput({ callerAddress: "not-an-address", failOnError: false })
+    );
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.result).toBeNull();
+      expect(result.error).toContain("Invalid caller address");
+    }
+    expect(mockContractFunction).not.toHaveBeenCalled();
+  });
+});
