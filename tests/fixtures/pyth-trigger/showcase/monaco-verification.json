@@ -1,0 +1,15 @@
+{
+  "editorRequestsBeforeOpen": [],
+  "value": "const price = 2500;\nconst crossed = true;",
+  "workerRequests": [
+    "http://localhost:3103/worker-typescript.js",
+    "http://localhost:3103/worker-editor.js"
+  ],
+  "externalRequests": [],
+  "reopenedValue": "const price = 2500;\nconst crossed = true;",
+  "errors": [],
+  "verifiedAt": "2026-09-10T11:57:15.076317+00:00",
+  "environment": "Actual CodeEditor and Monaco in Chromium using an esbuild harness with bundled local worker assets. No mocked editor or external CDN.",
+  "unitTestsPassed": 3,
+  "fullAppRetry": "No HTTP response within 180 seconds under the 2300 MiB memory limit. The scoped development server was stopped; full editor integration remains unverified."
+}
