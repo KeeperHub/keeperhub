@@ -9,6 +9,7 @@ import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { integrations } from "@/lib/db/schema";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   PROCESSING_TTL_MS as IDEMPOTENCY_PROCESSING_TTL_MS,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
@@ -272,8 +273,15 @@ async function handleResult(
       transactionHash,
       chainId,
     });
-    // The step ran (possibly broadcasting): finalize as failed so a retry
-    // replays the failure instead of re-executing.
+    // Only a hash lets failExecution adjudicate anything: with one, its verdict
+    // decides the key (conclusive failure releases, unreadable holds). Without
+    // one it answers "failed" from the mere absence of a hash, and on this route
+    // that is not evidence -- unlike the chain-write routes, an arbitrary step
+    // here may have had a side effect (a message sent, a webhook delivered)
+    // before it reported failure. Hold the key in that case.
+    const disposition = transactionHash
+      ? dispositionForExecutionOutcome(settled.status)
+      : "failed";
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
@@ -286,7 +294,7 @@ async function handleResult(
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }
       ),
-      "failed"
+      disposition
     );
   }
 
@@ -325,7 +333,7 @@ async function handleResult(
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }
       ),
-      "failed"
+      dispositionForExecutionOutcome(outcome.status)
     );
   }
 
@@ -456,7 +464,10 @@ async function executeNode(
 
     if (!invokeResult.ok) {
       await failExecution(executionId, invokeResult.error);
-      // The step ran (possibly broadcasting): finalize as failed.
+      // Deliberately NOT dispositionForExecutionOutcome: there is no hash to
+      // adjudicate here, so failExecution would answer "failed" from the mere
+      // absence of one and the key would be released. The step ran and may
+      // have broadcast, which is the unknown case -- hold the key.
       return recordIdempotentResponse(
         idem,
         NextResponse.json(
@@ -483,7 +494,8 @@ async function executeNode(
   } catch (err: unknown) {
     const errorMsg = getErrorMessage(err);
     await failExecution(executionId, errorMsg);
-    // A thrown error may have left a tx mid-broadcast: finalize as failed.
+    // Also deliberately held: a throw can land between broadcast and hash
+    // capture, so "no hash" here does not mean "nothing was sent".
     return recordIdempotentResponse(
       idem,
       NextResponse.json(

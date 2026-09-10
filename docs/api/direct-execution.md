@@ -156,9 +156,21 @@ the request was received, so a retry must be able to match the original. Reusing
 key is what makes that retry safe: it returns the in-progress guard while the first
 request is still running, and the real outcome as a replay once it finishes.
 
-**Rotate to a new key** once the previous attempt returned a definite result. A
-stored failure is replayable for 24 hours, so a key that has already failed keeps
-returning that failure rather than retrying.
+**Reuse the same key after a definite failure as well.** A failure the chain was
+conclusive about, such as a revert at inclusion or a rejection caught before the
+transaction was ever submitted, releases the key: nothing landed and nothing is
+still in flight. The same key simply executes again, so you no longer have to
+rotate to recover from a failed attempt.
+
+**An outcome nobody could read keeps its key.** If the receipt was unreadable
+the transaction may still land, so that record is held and replays for 24 hours.
+The reply carries `"status": "unconfirmed"` and `"idempotentReplay": true`. Poll
+`GET /api/execute/{executionId}/status` rather than rotating, because a new key
+has no record to match and would broadcast a second transaction for work the
+first attempt may still be completing.
+
+**Rotate to a new key** when the work itself is different, not to escape a
+failure.
 
 **A conflict does not by itself mean rotate.** `retryable: false` says only that
 this body is not the body the key was bound to, and there are two reasons for

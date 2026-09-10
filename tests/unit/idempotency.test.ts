@@ -536,3 +536,41 @@ describe("beginIdempotentFromRequest", () => {
     expect(rows).toHaveLength(0);
   });
 });
+
+describe("dispositionForExecutionOutcome", () => {
+  it("stores a replayable record for a verified success", async () => {
+    const { dispositionForExecutionOutcome } = await import(
+      "@/lib/idempotency"
+    );
+    expect(dispositionForExecutionOutcome("completed")).toBe("success");
+  });
+
+  it("releases the key on a definite failure", async () => {
+    // failExecution/completeExecution only answer "failed" when the chain was
+    // conclusive or nothing was broadcast at all. Holding the key in that case
+    // is #1840: the caller replays the rejection until the window expires.
+    const { dispositionForExecutionOutcome } = await import(
+      "@/lib/idempotency"
+    );
+    expect(dispositionForExecutionOutcome("failed")).toBe("release");
+  });
+
+  it("holds the key while the outcome is unknown", async () => {
+    // An unreadable receipt may still land. Releasing here would let a retry
+    // broadcast a second transaction for work the first attempt is finishing.
+    const { dispositionForExecutionOutcome } = await import(
+      "@/lib/idempotency"
+    );
+    expect(dispositionForExecutionOutcome("unconfirmed")).toBe("failed");
+  });
+
+  it("never releases and finalizes the same outcome", async () => {
+    const { dispositionForExecutionOutcome } = await import(
+      "@/lib/idempotency"
+    );
+    const seen = (["completed", "failed", "unconfirmed"] as const).map(
+      dispositionForExecutionOutcome
+    );
+    expect(new Set(seen).size).toBe(3);
+  });
+});

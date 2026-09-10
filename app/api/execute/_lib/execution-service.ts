@@ -95,7 +95,12 @@ export async function completeExecution(
 
   if (result.transactionHash) {
     if (result.chainId === undefined) {
-      status = "failed";
+      // A hash with no chain to check it against is unverifiable, not failed --
+      // the same argument the `!allVerified` branch below already makes. It
+      // matters more now that `failed` releases the idempotency key: calling an
+      // unread broadcast "failed" would free the key for a retry that
+      // re-broadcasts a transaction which may already have landed.
+      status = "unconfirmed";
       error = "Unable to verify transaction: missing chainId";
     } else {
       const { allVerified, results } = await verifyExecutionReceipts([

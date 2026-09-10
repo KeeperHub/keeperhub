@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { idempotencyRecords } from "@/lib/db/schema-extensions";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { generateId } from "@/lib/utils/id";
+import type { IdempotencyDisposition } from "./idempotency-disposition";
 
 // A reserved record holds a short "lock" so a crashed request can't block a
 // retry for long; the in-flight request heartbeats the lock so long fund-moving
@@ -220,16 +221,14 @@ function pickString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-// How a reserved record should be settled once the work returns.
-//   "success"      -> store a replayable completed record (2xx happy path).
-//   "failed"       -> reached the broadcast/execution path but the work failed
-//                     (tx revert as 202/200 success:false, /node 422, thrown
-//                     mid-broadcast). Keep the row so a retry replays the
-//                     failure instead of re-broadcasting.
-//   "release"      -> provably pre-broadcast gating failure (reservation denied,
-//                     requireWallet, validation 4xx): drop the row so the same
-//                     key can be retried after the caller fixes the request.
-export type IdempotencyDisposition = "success" | "failed" | "release";
+// The disposition rule lives in ./idempotency-disposition so tests that must
+// mock this module (it reaches the database) can still exercise the real rule
+// rather than a copy of it. Re-exported here because every route imports it
+// from this module.
+export {
+  dispositionForExecutionOutcome,
+  type IdempotencyDisposition,
+} from "./idempotency-disposition";
 
 // Derives the disposition from a response when the caller has no richer signal:
 // 2xx is a success, anything else is a pre-broadcast gating failure. Routes that

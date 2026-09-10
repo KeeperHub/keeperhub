@@ -97,7 +97,13 @@ const recordIdempotentResponseMock = vi.fn(
   (_outcome: unknown, response: Response, _disposition?: string) =>
     Promise.resolve(response)
 );
-vi.mock("@/lib/idempotency", () => ({
+// The real rule, not a copy of it. ./idempotency-disposition has no database
+// import, so it survives mocking @/lib/idempotency and these assertions fail if
+// the rule regresses. Mirroring it here would have left them green.
+vi.mock("@/lib/idempotency", async () => ({
+  ...(await vi.importActual<typeof import("@/lib/idempotency-disposition")>(
+    "@/lib/idempotency-disposition"
+  )),
   beginIdempotentFromRequest: vi.fn().mockResolvedValue({ kind: "proceed" }),
   idempotencyEarlyResponse: vi.fn().mockReturnValue(null),
   recordIdempotentResponse: (
@@ -204,7 +210,7 @@ describe("execute protocol idempotency disposition", () => {
     );
   });
 
-  it("finalizes as failed when the write reverts after broadcast", async () => {
+  it("releases the key when the write reverts conclusively (#1840)", async () => {
     writeContractCoreMock.mockResolvedValue({
       success: false,
       error: "reverted",
@@ -247,7 +253,10 @@ describe("execute protocol idempotency disposition", () => {
         errorClass: "external",
       })
     );
-    expect(lastDisposition()).toBe("failed");
+    // A conclusive revert is a definite outcome, so the key is freed rather
+    // than replaying the revert for 24 hours (#1840). The response still
+    // reports status "failed" -- what changed is only the key's fate.
+    expect(lastDisposition()).toBe("release");
   });
 
   it("omits error on unconfirmed so callers poll instead of retrying", async () => {
@@ -271,6 +280,41 @@ describe("execute protocol idempotency disposition", () => {
     expect(body).not.toHaveProperty("error");
     expect(body).not.toHaveProperty("rejection");
     expect(body).not.toHaveProperty("errorClass");
+    // Held, not released: the broadcast may still land.
+    expect(lastDisposition()).toBe("failed");
+  });
+
+  it("holds the key on unconfirmed even though the caller sees a failure", async () => {
+    // The pair that constrains this issue: releasing here is the
+    // double-broadcast bug, holding on a conclusive revert is the liveness bug.
+    writeContractCoreMock.mockResolvedValue({
+      success: false,
+      error: "receipt unreadable",
+      transactionHash: "0xmaybe",
+    });
+    failExecutionMock.mockResolvedValue({ status: "unconfirmed" });
+
+    await postSwap();
+
+    expect(lastDisposition()).toBe("failed");
+  });
+
+  it("holds the key when write fails without a transaction hash to guard lost sends (#1840)", async () => {
+    // When writeContractCore fails without a transactionHash (e.g. a lost response
+    // on eth_sendRawTransaction where the tx entered the mempool but no tx object
+    // was returned to the client), failExecution cannot adjudicate whether a broadcast
+    // landed. The key must be held ("failed") rather than released to prevent a retry
+    // from seeing the stranded transaction in the mempool, allocating nonce+1, and
+    // double-broadcasting.
+    writeContractCoreMock.mockResolvedValue({
+      success: false,
+      error: "LK: not yet due",
+    });
+    failExecutionMock.mockResolvedValue({ status: "failed" });
+
+    const response = await postSwap();
+
+    expect(response.status).toBe(202);
     expect(lastDisposition()).toBe("failed");
   });
 });
