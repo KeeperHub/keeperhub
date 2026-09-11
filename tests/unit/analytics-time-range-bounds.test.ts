@@ -3,7 +3,8 @@
  * both have to survive a caller sending nonsense. `customStart` was fixed when
  * retention gave the range a floor; `customEnd` kept the original bug, and an
  * unparseable value made every downstream comparison answer false and the
- * endpoint return "Invalid time value" instead of a result.
+ * endpoint return "Invalid time value" instead of a result. The comparison
+ * period is built from the same two ends, so it needs the same guards.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -15,7 +16,11 @@ vi.mock("@/lib/retention/config", () => ({
     new Date(now.getTime() - days * 24 * 60 * 60 * 1000),
 }));
 
-import { getTimeRangeEnd, getTimeRangeStart } from "@/lib/analytics/time-range";
+import {
+  getPreviousPeriodStart,
+  getTimeRangeEnd,
+  getTimeRangeStart,
+} from "@/lib/analytics/time-range";
 
 describe("getTimeRangeEnd", () => {
   it("returns now when no customEnd is given", () => {
@@ -47,5 +52,38 @@ describe("getTimeRangeEnd", () => {
     const start = getTimeRangeStart("custom", "2026-08-01T00:00:00.000Z");
     const end = getTimeRangeEnd("garbage");
     expect(end.getTime()).toBeGreaterThan(start.getTime());
+  });
+});
+
+describe("getPreviousPeriodStart", () => {
+  const isValid = (date: Date): boolean => !Number.isNaN(date.getTime());
+
+  it.each([
+    ["an unparseable customEnd", "2026-08-01T00:00:00.000Z", "garbage"],
+    ["an unparseable customStart", "garbage", "2026-08-10T00:00:00.000Z"],
+  ])("returns real dates for %s", (_label, customStart, customEnd) => {
+    const { start, end } = getPreviousPeriodStart(
+      "custom",
+      customStart,
+      customEnd
+    );
+    expect(isValid(start)).toBe(true);
+    expect(isValid(end)).toBe(true);
+  });
+
+  it("sits one window width before the window it is compared with", () => {
+    const customStart = "2026-08-01T00:00:00.000Z";
+    const customEnd = "2026-08-10T00:00:00.000Z";
+    const windowStart = getTimeRangeStart("custom", customStart).getTime();
+    const windowEnd = getTimeRangeEnd(customEnd).getTime();
+
+    const { start, end } = getPreviousPeriodStart(
+      "custom",
+      customStart,
+      customEnd
+    );
+
+    expect(end.getTime()).toBe(windowStart);
+    expect(start.getTime()).toBe(windowStart - (windowEnd - windowStart));
   });
 });

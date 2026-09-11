@@ -92,8 +92,10 @@ export function getPreviousPeriodStart(
   const clamp = (value: number) => (value < floorMs ? floorMs : value);
 
   if (range === "custom" && customStart && customEnd) {
-    const startMs = new Date(customStart).getTime();
-    const endMs = new Date(customEnd).getTime();
+    // The same two ends the window itself resolves to, so an unparseable value
+    // falls back the same way instead of making the comparison Invalid Dates.
+    const startMs = getTimeRangeStart(range, customStart).getTime();
+    const endMs = getTimeRangeEnd(customEnd).getTime();
     const duration = endMs - startMs;
     return {
       start: new Date(clamp(startMs - duration)),
