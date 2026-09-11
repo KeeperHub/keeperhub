@@ -29,6 +29,7 @@ import type {
 import {
   getDisplayChainName,
   hasIndependentTokenList,
+  hidesNativeRow,
   isTempoChain,
   MAINNET_CHAIN_ID,
 } from "./chain-utils";
@@ -385,6 +386,10 @@ export function ChainBalanceItem({
   );
 
   const isTempo = isTempoChain(balance.chainId);
+  const hidesNativeBalanceRow = hidesNativeRow(
+    balance.chainId,
+    supportedTokenBalances
+  );
   const isMainnet = balance.chainId === MAINNET_CHAIN_ID;
   const isIndependentTokenList = hasIndependentTokenList(balance.chainId);
 
@@ -440,7 +445,7 @@ export function ChainBalanceItem({
 
   const tokenList = (
     <div className="divide-y rounded border bg-background/50 px-2">
-      <NativeTokenRow balance={balance} />
+      {!hidesNativeBalanceRow && <NativeTokenRow balance={balance} />}
       {chainSupportedTokens.map((token) => (
         <TokenItemWithActions
           isAdmin={isAdmin}
@@ -475,7 +480,7 @@ export function ChainBalanceItem({
           <div className="font-medium text-muted-foreground text-xs">
             {tokenSectionLabel}
           </div>
-          {!isTempo && isAdmin && hasNativeBalance && (
+          {!hidesNativeBalanceRow && isAdmin && hasNativeBalance && (
             <Button
               className="h-7 px-2 text-xs"
               onClick={() => onWithdraw(balance.chainId)}
@@ -526,7 +531,7 @@ export function ChainBalanceItem({
               <ExternalLink className="h-3 w-3" />
             </a>
           )}
-          {!isTempo && isAdmin && hasNativeBalance && (
+          {!hidesNativeBalanceRow && isAdmin && hasNativeBalance && (
             <Button
               className="h-7 px-2 text-xs"
               onClick={() => onWithdraw(balance.chainId)}
