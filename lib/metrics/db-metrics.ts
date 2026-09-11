@@ -594,6 +594,90 @@ export async function getWorkflowErrorsByWorkflowFromDb(): Promise<WorkflowError
   }
 }
 
+/**
+ * Runs started in the last hour, per workflow, and how many of them errored.
+ *
+ * Feeds the per-workflow execution rate alert. A block or event trigger can
+ * start a run for every block the chain produces, and nothing bounded it: one
+ * such trigger once wrote over a million runs before anyone noticed the table.
+ * A one-hour window catches that within hours.
+ *
+ * The window is a range scan on idx_workflow_executions_started_at. Only the
+ * busiest workflows are kept (see pickWorkflowExecutionRates), so the gauge
+ * stays small however many workflows run.
+ */
+export type WorkflowExecutionRate = {
+  workflowId: string;
+  orgSlug: string;
+  runs: number;
+  errored: number;
+};
+
+export const WORKFLOW_EXECUTION_RATE_TOP_N = 20;
+
+/**
+ * The top workflows by runs, plus the top workflows by errored runs. A workflow
+ * that errors on every run can sit below the busiest ones by volume, and error
+ * accumulation is half of what the alert is for.
+ */
+export function pickWorkflowExecutionRates(
+  rows: WorkflowExecutionRate[],
+  topN: number = WORKFLOW_EXECUTION_RATE_TOP_N
+): WorkflowExecutionRate[] {
+  const byRuns = [...rows].sort((a, b) => b.runs - a.runs).slice(0, topN);
+  const byErrored = rows
+    .filter((row) => row.errored > 0)
+    .sort((a, b) => b.errored - a.errored)
+    .slice(0, topN);
+  const picked = new Map<string, WorkflowExecutionRate>();
+  for (const row of [...byRuns, ...byErrored]) {
+    picked.set(row.workflowId, row);
+  }
+  return [...picked.values()];
+}
+
+/**
+ * The query behind getWorkflowExecutionRatesFromDb. Exported so a test can
+ * EXPLAIN the SQL the collector really sends, not a hand-written copy of it.
+ */
+export function workflowExecutionRatesQuery() {
+  return db
+    .select({
+      workflowId: workflowExecutions.workflowId,
+      orgSlug: sql<string>`COALESCE(${organization.slug}, 'none')`,
+      runs: count(),
+      errored: sql<string>`COUNT(*) FILTER (WHERE ${inArray(workflowExecutions.status, [...ERROR_STATUSES])})`,
+    })
+    .from(workflowExecutions)
+    .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+    .leftJoin(organization, eq(workflows.organizationId, organization.id))
+    .where(sql`${workflowExecutions.startedAt} >= now() - interval '1 hour'`)
+    .groupBy(workflowExecutions.workflowId, organization.slug);
+}
+
+export async function getWorkflowExecutionRatesFromDb(): Promise<
+  WorkflowExecutionRate[]
+> {
+  try {
+    const rows = await workflowExecutionRatesQuery();
+    return pickWorkflowExecutionRates(
+      rows.map((row) => ({
+        workflowId: row.workflowId,
+        orgSlug: row.orgSlug,
+        runs: Number(row.runs) || 0,
+        errored: Number(row.errored) || 0,
+      }))
+    );
+  } catch (error) {
+    logSystemWarn(
+      ErrorCategory.DATABASE,
+      "[Metrics] Failed to query per-workflow execution rates from DB",
+      error
+    );
+    return [];
+  }
+}
+
 // TECH-6544: per-(error_category, error_type) error counts over a ROLLING
 // 1-HOUR window, PLATFORM-WIDE (all orgs). System errors are platform faults
 // (DB, RPC, infra, workflow engine), not a managed-client concern, so this
