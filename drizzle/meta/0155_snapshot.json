@@ -1,6 +1,6 @@
 {
-  "id": "327f5d4b-475f-47c7-adea-9f25598d6f07",
-  "prevId": "135cb20e-6d81-43c3-9736-d3a9363bc892",
+  "id": "16e1dae9-5f73-4cf5-acb2-69206b96b358",
+  "prevId": "72dcde6c-115e-478e-96c0-deaed0a57f44",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -7723,6 +7723,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_exec_logs_sponsored_execution": {
+          "name": "idx_exec_logs_sponsored_execution",
+          "columns": [
+            {
+              "expression": "execution_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"workflow_execution_logs\".\"output_raw\" ->> 'sponsored' = 'true'",
           "concurrently": false,
           "method": "btree",
           "with": {}

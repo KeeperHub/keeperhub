@@ -909,6 +909,17 @@ export const workflowExecutionLogs = pgTable(
     // so a dev DB bootstrapped with db:push (which only builds what this file
     // declares) would seq-scan the log table instead.
     index("idx_exec_logs_execution_id").on(table.executionId),
+    // KEEP-1346: the execution digest counts sponsored step runs by joining on
+    // execution_id and filtering output_raw->>'sponsored'. output_raw is
+    // TOASTed, so the plain execution_id index above makes the probe de-TOAST
+    // every log row of every execution in the window and then discard nearly
+    // all of them. Keying a partial index to the predicate keeps the heap out
+    // of it. The predicate must stay written exactly as the query emits it,
+    // because the planner only uses a partial index when it can match the
+    // query clause to the index predicate.
+    index("idx_exec_logs_sponsored_execution")
+      .on(table.executionId)
+      .where(sql`${table.outputRaw} ->> 'sponsored' = 'true'`),
   ]
 );
 
