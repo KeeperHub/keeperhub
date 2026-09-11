@@ -50,7 +50,7 @@ A read or write of one resource returns that resource as a bare object.
 
 ```json
 {
-  "id": "wf_123",
+  "id": "wm3k8nq7xcz2jv4hpbtd5",
   "name": "Treasury monitor"
 }
 ```

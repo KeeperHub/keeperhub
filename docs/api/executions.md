@@ -20,8 +20,8 @@ Returns execution history for a workflow.
 ```json
 [
   {
-    "id": "exec_123",
-    "workflowId": "wf_456",
+    "id": "n5lyy066zzplv64gijm0y",
+    "workflowId": "2mp0ybcgj03t0ybqlngyb",
     "status": "success",
     "input": {...},
     "output": {...},
@@ -137,7 +137,7 @@ Blocks until the execution reaches a terminal state (`success`, `error`, or `can
 
 ```json
 {
-  "executionId": "exec_123",
+  "executionId": "n5lyy066zzplv64gijm0y",
   "status": "success",
   "completed": true,
   "transactionHashes": [
@@ -181,8 +181,8 @@ Returns detailed per-node logs for an execution along with the execution row its
 ```json
 {
   "execution": {
-    "id": "exec_123",
-    "workflowId": "wf_456",
+    "id": "n5lyy066zzplv64gijm0y",
+    "workflowId": "2mp0ybcgj03t0ybqlngyb",
     "userId": "user_789",
     "status": "success",
     "input": {...},
@@ -195,7 +195,7 @@ Returns detailed per-node logs for an execution along with the execution row its
   "logs": [
     {
       "id": "log_001",
-      "executionId": "exec_123",
+      "executionId": "n5lyy066zzplv64gijm0y",
       "nodeId": "transfer-1",
       "nodeName": "First transfer",
       "nodeType": "web3/transfer-funds",

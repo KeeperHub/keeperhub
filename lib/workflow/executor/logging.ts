@@ -137,6 +137,11 @@ async function listTrulyFailedNodes(executionId: string): Promise<string[]> {
  * Returns [] on query failure -- losing the hash list is preferable to
  * failing the UPDATE that flips status to success.
  *
+ * Success rows only: this list feeds the KEEP-966 reconciliation gate, which
+ * re-verifies every entry as an expected SUCCESSFUL receipt. A failing run's
+ * broadcasts are harvested separately by loadFailureBroadcasts, which must not
+ * feed that gate.
+ *
  * The transactionHash IS NOT NULL filter is pushed into Postgres so a workflow
  * that runs a non-tx step many times (e.g. a For-Each over hundreds of HTTP
  * calls) does not stream every row back to Node just to discard it in JS.
@@ -146,6 +151,40 @@ async function listTrulyFailedNodes(executionId: string): Promise<string[]> {
  * in-memory tracker (isRecordableTransactionHash) so the two reconstructions
  * of the same list cannot drift apart.
  */
+type HashLogRow = {
+  nodeId: string;
+  nodeName: string;
+  iterationIndex: number | null;
+  outputRaw: unknown;
+};
+
+/** Shared so both harvests build identically shaped entries. */
+function toHashEntry(row: HashLogRow): TransactionHashEntry | null {
+  const o = row.outputRaw as {
+    transactionHash?: unknown;
+    chainId?: unknown;
+    network?: unknown;
+  } | null;
+  if (
+    o === null ||
+    typeof o !== "object" ||
+    typeof o.transactionHash !== "string" ||
+    !isRecordableTransactionHash(o.transactionHash, o.chainId)
+  ) {
+    return null;
+  }
+  return {
+    hash: o.transactionHash,
+    nodeId: row.nodeId,
+    nodeName: row.nodeName,
+    ...(typeof o.chainId === "number" && { chainId: o.chainId }),
+    ...(typeof o.network === "string" && { network: o.network }),
+    ...(row.iterationIndex !== null && {
+      iterationIndex: row.iterationIndex,
+    }),
+  };
+}
+
 async function loadHashesFromLogs(
   executionId: string
 ): Promise<TransactionHashEntry[]> {
@@ -168,31 +207,12 @@ async function loadHashesFromLogs(
     const seen = new Set<string>();
     const entries: TransactionHashEntry[] = [];
     for (const row of rows) {
-      const o = row.outputRaw as {
-        transactionHash?: unknown;
-        chainId?: unknown;
-        network?: unknown;
-      } | null;
-      if (
-        o === null ||
-        typeof o !== "object" ||
-        typeof o.transactionHash !== "string" ||
-        !isRecordableTransactionHash(o.transactionHash, o.chainId) ||
-        seen.has(o.transactionHash)
-      ) {
+      const entry = toHashEntry(row);
+      if (!entry || seen.has(entry.hash)) {
         continue;
       }
-      seen.add(o.transactionHash);
-      entries.push({
-        hash: o.transactionHash,
-        nodeId: row.nodeId,
-        nodeName: row.nodeName,
-        ...(typeof o.chainId === "number" && { chainId: o.chainId }),
-        ...(typeof o.network === "string" && { network: o.network }),
-        ...(row.iterationIndex !== null && {
-          iterationIndex: row.iterationIndex,
-        }),
-      });
+      seen.add(entry.hash);
+      entries.push(entry);
     }
     return entries;
   } catch (queryError) {
@@ -203,6 +223,102 @@ async function loadHashesFromLogs(
       { execution_id: executionId }
     );
     return [];
+  }
+}
+
+/**
+ * KEEP-1281: the hashes a run that is finalizing as a FAILURE broadcast.
+ *
+ * Returns two lists, because the two questions differ:
+ *
+ *   `record` - every hash the run put on chain, from successful and failed
+ *   steps alike. A run that wrote at steps 1-2 and failed at step 3 has three
+ *   transactions, and persisting only the failed one would replace an
+ *   obviously-empty record with a plausible-looking partial one.
+ *
+ *   `inFlight` - the subset worth waiting on: hashes from step attempts whose
+ *   node did not also succeed. The cross-pod re-fire described above
+ *   (KEEP-431) leaves an orphan `error` row for a node that then succeeded on
+ *   another pod under a DIFFERENT hash; that dead hash never lands, and
+ *   treating it as in flight would pin the run `unconfirmed` until the
+ *   reconciler writes it off a day later.
+ *
+ * The success key matches computeTrulyFailedNodes exactly -- a For-Each
+ * iteration is keyed by (forEachNodeId, iterationIndex, nodeId), everything
+ * else by nodeId -- so "this node succeeded" means the same thing here as it
+ * does when the finalizer decides whether the run failed at all.
+ */
+async function loadFailureBroadcasts(executionId: string): Promise<{
+  record: TransactionHashEntry[];
+  inFlight: TransactionHashEntry[];
+}> {
+  const empty = { record: [], inFlight: [] };
+  try {
+    const rows = await db.query.workflowExecutionLogs.findMany({
+      where: and(
+        eq(workflowExecutionLogs.executionId, executionId),
+        inArray(workflowExecutionLogs.status, ["success", "error"])
+      ),
+      columns: {
+        nodeId: true,
+        nodeName: true,
+        status: true,
+        iterationIndex: true,
+        forEachNodeId: true,
+        outputRaw: true,
+      },
+      orderBy: [asc(workflowExecutionLogs.startedAt)],
+    });
+
+    // A row is a For-Each iteration row only when BOTH loop fields are
+    // present. Drizzle returns null for top-level steps; undefined is guarded
+    // for the same reason computeTrulyFailedNodes guards it, so a row that
+    // simply omits the fields is not misread as an iteration row.
+    const attemptKey = (row: {
+      nodeId: string;
+      iterationIndex: number | null;
+      forEachNodeId: string | null;
+    }): string => {
+      const isIterationRow =
+        row.iterationIndex !== null &&
+        row.iterationIndex !== undefined &&
+        row.forEachNodeId !== null &&
+        row.forEachNodeId !== undefined;
+      return isIterationRow
+        ? `${row.forEachNodeId}:${row.iterationIndex}:${row.nodeId}`
+        : row.nodeId;
+    };
+
+    const succeeded = new Set<string>();
+    for (const row of rows) {
+      if (row.status === "success") {
+        succeeded.add(attemptKey(row));
+      }
+    }
+
+    const seen = new Set<string>();
+    const record: TransactionHashEntry[] = [];
+    const inFlight: TransactionHashEntry[] = [];
+    for (const row of rows) {
+      const entry = toHashEntry(row);
+      if (!entry || seen.has(entry.hash)) {
+        continue;
+      }
+      seen.add(entry.hash);
+      record.push(entry);
+      if (row.status === "error" && !succeeded.has(attemptKey(row))) {
+        inFlight.push(entry);
+      }
+    }
+    return { record, inFlight };
+  } catch (queryError) {
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[Workflow Logging] Failed to load broadcasts from a failing run's logs",
+      queryError,
+      { execution_id: executionId }
+    );
+    return empty;
   }
 }
 
@@ -301,6 +417,67 @@ async function reconcileTransactionHashes(
     };
   }
   return { ok: true, hashes: merged };
+}
+
+/**
+ * KEEP-1281: verify hashes harvested from FAILED steps, to decide whether a
+ * run that is finalizing as a failure still has a transaction in flight.
+ *
+ * Deliberately NOT reconcileTransactionHashes. That function answers "may this
+ * run be called a success", so every non-success receipt fails it. Here the run
+ * has already failed for its own reasons and the only open question is whether
+ * the chain has answered at all. A reverted receipt IS an answer: the run stays
+ * a terminal failure and records the revert. Only an unreadable receipt -- the
+ * transaction is out there and no provider can see it yet -- holds the run open.
+ *
+ * A hash carrying no chainId cannot be verified on any chain, so it cannot be
+ * waited on either. It is still recorded, but it never holds the run open:
+ * doing so would park the row in a state the reconciler can only resolve by
+ * timing out hours later.
+ *
+ * Never throws. This runs on the failure finalize path, where an exception
+ * would convert an ordinary failed run into an unfinalized one; a verification
+ * outage should cost the in-flight check, not the terminal write.
+ */
+/**
+ * Fold the verified subset back onto the full record, preserving the record's
+ * order. Entries that were never verified (hashes from steps that succeeded)
+ * are carried through untouched.
+ */
+function mergeEnrichedEntries(
+  record: TransactionHashEntry[],
+  enriched: TransactionHashEntry[]
+): TransactionHashEntry[] {
+  const byHash = new Map(enriched.map((entry) => [entry.hash, entry]));
+  return record.map((entry) => byHash.get(entry.hash) ?? entry);
+}
+
+async function inspectFailureBroadcasts(
+  entries: TransactionHashEntry[]
+): Promise<{ hashes: TransactionHashEntry[]; unreadable: boolean }> {
+  const verifiable = entries.filter(
+    (entry): entry is TransactionHashEntry & { chainId: number } =>
+      entry.chainId !== undefined
+  );
+  if (verifiable.length === 0) {
+    return { hashes: entries, unreadable: false };
+  }
+  try {
+    const { results } = await verifyExecutionReceipts(
+      verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId }))
+    );
+    return {
+      hashes: mergeReceiptResults(entries, results),
+      unreadable: hasUnreadableReceipt(results),
+    };
+  } catch (verifyError) {
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[Workflow Logging] Failed to verify broadcasts from failed steps; finalizing as a terminal failure",
+      verifyError
+    );
+    return { hashes: entries, unreadable: false };
+  }
 }
 
 /**
@@ -951,6 +1128,10 @@ export async function logWorkflowCompleteDb(
   // Demoting it to error instead would tell an operator a broadcast run failed
   // and invite a re-run of transactions that may already have landed.
   let unreadableReceipts = false;
+  // Captured before the gate below, which can itself flip resolvedStatus to
+  // "error": the failure harvest that follows is for runs that arrived here
+  // already failing, not for a success demoted by its own reconciliation.
+  const finalizingAsFailure = resolvedStatus !== "success";
   if (resolvedStatus === "success" && transactionHashes.length > 0) {
     const reconciled = await reconcileTransactionHashes(transactionHashes);
     verifiedTransactionHashes = reconciled.hashes;
@@ -958,6 +1139,35 @@ export async function logWorkflowCompleteDb(
       unreadableReceipts = !reconciled.conclusive;
       resolvedStatus = "error";
       resolvedError = reconciled.error;
+    }
+  }
+
+  // KEEP-1281: a run finalizing as a failure can still have left a transaction
+  // in flight. The write cores already put the hash on the failed step result
+  // (broadcastTransactionHash off OnChainPendingError) and step logging
+  // persists output_raw for error rows too -- but the harvest above reads
+  // success rows only, so that hash was dropped and the run was stamped
+  // terminally failed for a broadcast that may yet land. An operator reading
+  // that row sees a failure with no transaction and re-runs it, moving the
+  // funds twice.
+  //
+  // Harvest those hashes so the row records the broadcast either way, and hold
+  // the run open only when one is genuinely unreadable.
+  let failureOriginUnconfirmed = false;
+  if (finalizingAsFailure) {
+    const { record, inFlight } = await loadFailureBroadcasts(
+      params.executionId
+    );
+    if (record.length > 0) {
+      // Only the in-flight subset is verified: a hash from a step that
+      // succeeded is not what is holding this run open, and re-reading it
+      // would add an RPC round trip to every failed run for nothing.
+      const inspected = await inspectFailureBroadcasts(inFlight);
+      verifiedTransactionHashes = mergeEnrichedEntries(
+        record,
+        inspected.hashes
+      );
+      failureOriginUnconfirmed = inspected.unreadable;
     }
   }
 
@@ -994,7 +1204,14 @@ export async function logWorkflowCompleteDb(
             : null
         )
       : resolvedStatus;
-  if (unreadableReceipts) {
+  // Both routes to `unconfirmed` mean the same thing -- a broadcast whose fate
+  // the chain has not yet revealed -- but they differ in what else is true of
+  // the run, and persistedClassification above encodes that difference:
+  // unreadableReceipts suppresses the classification (the run had no failure
+  // of its own), while failureOriginUnconfirmed keeps it (a step really did
+  // fail). reconcileWorkflow reads error_type back to decide which way the row
+  // may settle, so a run that failed is never resolved into a success.
+  if (unreadableReceipts || failureOriginUnconfirmed) {
     executionStatus = "unconfirmed";
   }
 

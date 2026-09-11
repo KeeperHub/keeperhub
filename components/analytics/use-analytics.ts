@@ -76,10 +76,29 @@ async function processSection<T>(
   if (ctx.aborted) {
     return;
   }
-  if (res.status === 401 || res.status === 403) {
-    const message = res.status === 401 ? "AUTH_REQUIRED" : "ORG_REQUIRED";
-    ctx.onAbort(message);
+  if (res.status === 401) {
+    ctx.onAbort("AUTH_REQUIRED");
     return;
+  }
+  // resolveOrganizationId answers 400 "No active organization" when an
+  // authenticated session has no membership yet, and 404 "Organization not
+  // found" when the active org is deactivated or gone. Both mean the
+  // dashboard should show the join-an-org state, not a raw fetch error. A 403
+  // is not mapped here on purpose: for this session-bound hook it cannot mean
+  // a missing org (session callers carry no scope, so requireScope never
+  // denies them) - it would only reach a key caller, and labelling an
+  // insufficient-scope denial as "no organization" would be wrong.
+  if (res.status === 400 || res.status === 404) {
+    const body = (await res.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+    if (
+      body?.error === "No active organization" ||
+      body?.error === "Organization not found"
+    ) {
+      ctx.onAbort("ORG_REQUIRED");
+      return;
+    }
   }
   if (!res.ok) {
     throw new Error(`${label} fetch failed: ${res.status}`);

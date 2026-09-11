@@ -64,6 +64,18 @@ const DOCS_DIR = join(REPO_ROOT, "docs/api");
 const APP_API_DIR = join(REPO_ROOT, "app/api");
 const COVERAGE_OUT = join(REPO_ROOT, "specs/api-coverage.json");
 
+/**
+ * The single point where an absolute path becomes a repo-relative one, always
+ * with forward slashes. Every repo-relative path in this program is either
+ * compared against a forward-slash literal (DELEGATED_CATCH_ALL_ROUTES) or
+ * written into specs/api-coverage.json, which CI byte-compares against a
+ * regeneration on Linux -- so a raw `relative()` result would make the same
+ * tree produce a different artifact on Windows and fail the drift check.
+ */
+function repoRelative(absPath: string): string {
+  return relative(REPO_ROOT, absPath).replace(/\\/gu, "/");
+}
+
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 const HTTP_METHODS: readonly HttpMethod[] = [
   "GET",
@@ -477,7 +489,7 @@ export function parseMarkdownEndpoints(
 function parseDocsFile(absPath: string): DocumentedEndpoint[] {
   return parseMarkdownEndpoints(
     readFileSync(absPath, "utf8"),
-    relative(REPO_ROOT, absPath)
+    repoRelative(absPath)
   );
 }
 
@@ -524,11 +536,7 @@ function indexRouteFiles(): {
     walkFiles(APP_API_DIR, "route.tsx")
   );
   for (const abs of files) {
-    // Normalised once, at the single point where a repo-relative route
-    // path enters the program: DELEGATED_CATCH_ALL_ROUTES is written with
-    // forward slashes, and comparing it against a raw relative() result
-    // never matches on Windows.
-    const rel = relative(REPO_ROOT, abs).replace(/\\/gu, "/");
+    const rel = repoRelative(abs);
     const routePath =
       "/" +
       rel
@@ -722,7 +730,7 @@ function reportUndocumentedRoutes(
       continue;
     }
     if (!documentedShapes.has(pathShape(routePath))) {
-      const rel = relative(REPO_ROOT, abs);
+      const rel = repoRelative(abs);
       warnings.push(`warn: ${routePath} (${rel}) is not mentioned in docs/api`);
     }
   }
