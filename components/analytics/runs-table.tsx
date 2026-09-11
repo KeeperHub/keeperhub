@@ -576,13 +576,14 @@ function ExpandableRunRow({
         <td className="w-8 py-3 pl-3">
           <ChevronIcon className="size-4 text-muted-foreground" />
         </td>
-        <td className="py-3 pr-3">
-          <div className="flex items-center gap-1.5">
+        <td className="w-full max-w-0 py-3 pr-3">
+          <div className="flex min-w-0 items-center gap-1.5">
             <span
               className={cn(
-                "text-sm font-medium capitalize",
+                "truncate text-sm font-medium capitalize",
                 isDeleted && "italic text-muted-foreground line-through"
               )}
+              title={runName}
             >
               {runName}
             </span>
