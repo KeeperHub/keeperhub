@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 
 const MIGRATION_PATH = join(
   import.meta.dirname,
-  "../../drizzle/0152_keep_2305_condition_group_to_condition_config.sql"
+  "../../drizzle/0153_keep_2305_condition_group_to_condition_config.sql"
 );
 
 const READ_SQL = (): string => readFileSync(MIGRATION_PATH, "utf8");
@@ -25,7 +25,19 @@ const READ_SQL_DDL_ONLY = (): string =>
     .map((line) => line.replace(/--.*$/, ""))
     .join("\n");
 
-describe("migration 0152: Condition group moves to conditionConfig", () => {
+describe("the whitespace guard", () => {
+  it("trims the condition before deciding an expression is present", () => {
+    // A condition of spaces is absent to resolveConditionExpression, which
+    // tests condition.trim(). Without btrim the migration takes the drop-only
+    // arm for such a node and deletes its rule group with nothing promoted in
+    // its place. Nothing here executes the SQL - this is a text assertion like
+    // the rest of this file - so it pins the call, not the behaviour.
+    const sql = READ_SQL();
+    expect(sql).toContain("btrim(node #>> '{data,config,condition}') <> ''");
+  });
+});
+
+describe("migration 0153: Condition group moves to conditionConfig", () => {
   it("touches only Condition nodes", () => {
     const ddl = READ_SQL_DDL_ONLY();
     expect(ddl).toMatch(/node #>> '\{data,config,actionType\}' = 'Condition'/);
@@ -61,7 +73,7 @@ describe("migration 0152: Condition group moves to conditionConfig", () => {
     // seeded condition instead of theirs.
     const ddl = READ_SQL_DDL_ONLY();
     expect(ddl).toMatch(
-      /jsonb_typeof\(node #> '\{data,config,condition\}'\) = 'string'\s*\n?\s*AND node #>> '\{data,config,condition\}' <> ''\s*\n?\s*THEN node #- '\{data,config,group\}'/
+      /jsonb_typeof\(node #> '\{data,config,condition\}'\) = 'string'\s*\n?\s*AND btrim\(node #>> '\{data,config,condition\}'\) <> ''\s*\n?\s*THEN node #- '\{data,config,group\}'/
     );
   });
 

@@ -796,6 +796,11 @@ describe("a rule group under conditionConfig is not scanned", () => {
       data: { healthFactor: "1200000000000000000" },
     },
   };
+  // A replica of processActionConfig's three steps, not a call into it:
+  // that function is a closure in executor.workflow.ts and is not
+  // exported. The assertion below is real, but it is pinned to this copy,
+  // so a change to the real lift order or to where assertResolved is
+  // called from would not be caught here.
   const liftAndScan = (config: Record<string, unknown>): void => {
     const configWithoutSpecial: Record<string, unknown> = { ...config };
     configWithoutSpecial.condition = undefined;
