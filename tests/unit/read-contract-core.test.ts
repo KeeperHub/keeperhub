@@ -730,16 +730,54 @@ describe("read-contract-core - caller address (#2399)", () => {
     expect(mockContractFunction.mock.calls[0]).toEqual([VALID_ADDRESS]);
   });
 
-  // A caller fed by {{PreviousNode.address}} that renders to blank must be a
-  // field left empty, not a hard error.
-  it("treats a whitespace-only caller as no caller", async () => {
+  // A caller fed by {{PreviousNode.address}} that renders to nothing must be a
+  // field left empty, not a hard error. null reaches here the same way: it is
+  // what an MCP-authored config carries, and isMissingRequiredValue treats it
+  // as missing, so such a workflow persists and then has to run.
+  it("treats a null caller as no caller", async () => {
     setupRpcMocks();
     mockContractFunction.mockResolvedValueOnce(BigInt("1000"));
 
-    const result = await readContractCore(makeInput({ callerAddress: "   " }));
+    const result = await readContractCore(
+      makeInput({ callerAddress: null as unknown as string })
+    );
 
     expect(result.success).toBe(true);
     expect(mockContractFunction.mock.calls[0]).toEqual([VALID_ADDRESS]);
+  });
+
+  // validateFieldValue early-returns valid for undefined, null and "", and
+  // rejects a whitespace-only value through its isAddressField branch. Reading
+  // whitespace as absent here would have left run time saying a field is empty
+  // that save time calls invalid, and that half was unreachable anyway.
+  it("refuses a whitespace-only caller, as save time does", async () => {
+    setupRpcMocks();
+
+    const result = await readContractCore(makeInput({ callerAddress: "   " }));
+
+    expect(result).toMatchObject({ success: false, errorClass: "user" });
+    if (!result.success) {
+      expect(result.error).toContain("Invalid caller address");
+    }
+    expect(mockContractFunction).not.toHaveBeenCalled();
+    expect(mockStaticCall).not.toHaveBeenCalled();
+  });
+
+  // What a template actually produces is an address with whitespace around it,
+  // which is read rather than refused.
+  it("trims whitespace around a real caller", async () => {
+    setupRpcMocks();
+    mockContractFunction.mockResolvedValueOnce(BigInt("1000"));
+
+    const result = await readContractCore(
+      makeInput({ callerAddress: `  ${CALLER}  ` })
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockContractFunction.mock.calls[0]).toEqual([
+      VALID_ADDRESS,
+      { from: CALLER },
+    ]);
   });
 
   it("refuses a malformed caller without calling the chain", async () => {

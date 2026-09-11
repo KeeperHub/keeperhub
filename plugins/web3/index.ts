@@ -898,7 +898,7 @@ const web3Plugin: IntegrationPlugin = {
           type: "template-input",
           placeholder: "Optional - 0x... or {{NodeName.address}}",
           helpTip:
-            "Optional. The address the call is made from. Some contracts answer differently depending on the caller. Leave empty for the current behaviour.",
+            "Optional. The address this read is made from - some contracts answer differently depending on who asks. Nothing is signed or sent from it, and a write is never sent from this address, so take care before gating a transfer on an answer obtained as someone else. Leave empty to keep the current behaviour.",
           isAddressField: true,
         },
         readFailOnErrorField(),

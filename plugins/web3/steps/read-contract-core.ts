@@ -40,9 +40,9 @@ export type ReadContractCoreInput = {
   functionArgs?: string;
   // The address the call is made from. Some contracts answer differently
   // depending on who asks, and a read with no caller is a read as address(0),
-  // which is itself a specific address. Empty or whitespace-only means absent,
-  // the same rule functionArgs uses, so a template that renders to nothing
-  // leaves the call unchanged rather than failing it.
+  // which is itself a specific address. Absent means the field carries
+  // nothing - undefined, null or the empty string - so a template that renders
+  // to nothing leaves the call unchanged rather than failing it.
   callerAddress?: string;
   // See applyReadFailOnError in read-fail-on-error-core.ts. When false, no
   // failure of this step fails the run.
@@ -131,12 +131,22 @@ async function readContractInner(
     };
   }
 
-  // A blank caller is no caller. Only a value that is present and not an
-  // address is an error, and it is a payload error rather than a destination
-  // one: failOnError softens it the way it softens an unparseable argument
-  // list, not the way it hard-fails an invalid contract address.
-  const caller = callerAddress?.trim();
-  if (caller !== undefined && caller !== "" && !ethers.isAddress(caller)) {
+  // A blank caller is no caller. Absent is undefined, null or the empty
+  // string, which is exactly the set validateFieldValue early-returns as valid
+  // (lib/workflow/validation/action-config.ts), so save time and run time
+  // agree on what "no caller" is. A whitespace-only value is deliberately not
+  // in that set: the isAddressField branch rejects it at save time, and it
+  // fails isAddress here, rather than one layer treating it as absent while
+  // the other calls it invalid. The value is still trimmed before it is read,
+  // so a template that renders with stray whitespace around an address works.
+  //
+  // Only a value that is present and not an address is an error, and it is a
+  // payload error rather than a destination one: failOnError softens it the
+  // way it softens an unparseable argument list, not the way it hard-fails an
+  // invalid contract address.
+  const givenCaller = callerAddress ?? "";
+  const caller = givenCaller === "" ? undefined : givenCaller.trim();
+  if (caller !== undefined && !ethers.isAddress(caller)) {
     logUserError(
       ErrorCategory.VALIDATION,
       "[Read Contract] Invalid caller address:",
