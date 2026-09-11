@@ -1,0 +1,36 @@
+-- @requires-db-prep
+-- KEEP-1346: supporting index for the execution digest's sponsored-tx count.
+--
+-- buildDigestStats counts sponsored step runs for one organization over the
+-- digest window (lib/notifications/execution-digest.ts). It nested-loops from
+-- workflows to workflow_executions to workflow_execution_logs, and the inner
+-- probe applies `output_raw ->> 'sponsored' = 'true'` as a filter on every log
+-- row belonging to every execution in the window.
+--
+-- output_raw is TOASTed jsonb, so that filter de-TOASTs each candidate row and
+-- then discards nearly all of them. Measured on prod 2026-09-10 with
+-- EXPLAIN (ANALYZE, BUFFERS) over a single-day window: 13,783 loops, ~10 rows
+-- de-TOASTed and rejected per loop, 116,611 blocks read (~911 MB), 25.3 s, to
+-- return 48 rows. 73.6 s of the 73.7 s total I/O time sat in that one node.
+-- The same query was cancelled at 128.9 s under the old 120 s cap on
+-- 2026-09-04 and at ~30 s under the 30 s app-pool bound on 2026-09-06 and
+-- 2026-09-08, so the digest silently did not go out for those organizations.
+--
+-- Sponsored step rows are a small fraction of all log rows, so a partial index
+-- keyed to the join column turns the inner probe into an index lookup that
+-- reaches the heap only for rows that actually match. `jsonb ->> text` is
+-- jsonb_object_field_text, which is IMMUTABLE, so it is legal in an index
+-- predicate (checked against prod pg_proc.provolatile).
+--
+-- The predicate is written exactly as drizzle emits it from the schema
+-- declaration, and the query emits the same shape. Postgres only uses a
+-- partial index when it can match the query clause to the index predicate, so
+-- the two must not drift apart.
+--
+-- DB-PREP: on prod/staging an operator applies this CONCURRENTLY out-of-band
+-- (`CREATE INDEX CONCURRENTLY IF NOT EXISTS ...`) before merge, so the plain
+-- statement below is a no-op there (IF NOT EXISTS). workflow_execution_logs is
+-- ~65 GB on prod, so a plain in-migration build would hold an ACCESS EXCLUSIVE
+-- lock for minutes during deploy. On dev / PR-env DBs the table is small, so
+-- the plain build is fine.
+CREATE INDEX IF NOT EXISTS "idx_exec_logs_sponsored_execution" ON "workflow_execution_logs" USING btree ("execution_id") WHERE "workflow_execution_logs"."output_raw" ->> 'sponsored' = 'true';
