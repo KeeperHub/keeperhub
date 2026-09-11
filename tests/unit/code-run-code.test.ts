@@ -480,7 +480,15 @@ describe("code/run-code - sandbox globals", () => {
   // with a scrubbed env, so even a future escape sees an environ holding only
   // the allowlist rather than pod secrets. Asserted at the spawn boundary
   // because user code can no longer observe the child's process object.
-  it("spawns the sandbox child with a scrubbed env", async () => {
+  //
+  // Local backend only. Under SANDBOX_BACKEND=remote this process spawns
+  // nothing: the code goes to the sandbox service over HTTP, and that service
+  // scrubs the env of the child IT spawns. sandbox/src/run-code.test.ts holds
+  // the matching assertion for that path.
+  const itLocalBackend =
+    process.env.SANDBOX_BACKEND === "remote" ? it.skip : it;
+
+  itLocalBackend("spawns the sandbox child with a scrubbed env", async () => {
     const marker = "KEEPERHUB_SCRUB_TEST_SECRET_SHOULD_NOT_LEAK";
     process.env[marker] = `leaked-${Date.now().toString(36)}`;
     spawnedEnvs.length = 0;
