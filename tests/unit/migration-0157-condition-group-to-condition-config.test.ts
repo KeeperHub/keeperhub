@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 
 const MIGRATION_PATH = join(
   import.meta.dirname,
-  "../../drizzle/0153_keep_2305_condition_group_to_condition_config.sql"
+  "../../drizzle/0157_keep_2305_condition_group_to_condition_config.sql"
 );
 
 const READ_SQL = (): string => readFileSync(MIGRATION_PATH, "utf8");
@@ -37,7 +37,7 @@ describe("the whitespace guard", () => {
   });
 });
 
-describe("migration 0153: Condition group moves to conditionConfig", () => {
+describe("migration 157: Condition group moves to conditionConfig", () => {
   it("touches only Condition nodes", () => {
     const ddl = READ_SQL_DDL_ONLY();
     expect(ddl).toMatch(/node #>> '\{data,config,actionType\}' = 'Condition'/);
