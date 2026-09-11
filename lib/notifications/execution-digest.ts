@@ -1,6 +1,17 @@
 import "server-only";
 
-import { and, count, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gte,
+  inArray,
+  lt,
+  ne,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   workflowExecutionLogs,
@@ -9,6 +20,16 @@ import {
 } from "@/lib/db/schema";
 import { ERROR_STATUSES } from "@/lib/errors/execution-status";
 import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
+
+/**
+ * A sponsored step run. idx_exec_logs_sponsored_execution (lib/db/schema.ts) is
+ * partial on this same expression, and the planner uses a partial index only
+ * when it can match the query clause to the index predicate, so the two change
+ * together or the count goes back to reading every log row in the window.
+ */
+export function sponsoredStepFilter(): SQL {
+  return sql`${workflowExecutionLogs.output}->>'sponsored' = 'true'`;
+}
 
 export type DigestCadence = "daily" | "weekly" | "monthly";
 
@@ -252,12 +273,7 @@ export async function getOrgExecutionDigest(
         eq(workflowExecutionLogs.executionId, workflowExecutions.id)
       )
       .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
-      .where(
-        and(
-          windowFilter,
-          sql`${workflowExecutionLogs.output}->>'sponsored' = 'true'`
-        )
-      );
+      .where(and(windowFilter, sponsoredStepFilter()));
     sponsoredTransactionCount = Number(sponsoredRow?.value) || 0;
   }
 

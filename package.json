@@ -50,7 +50,7 @@
     "test:unit": "vitest run tests/unit",
     "test:executor": "vitest run keeperhub-executor",
     "test:integration": "vitest run tests/integration",
-    "test:db": "vitest run tests/db",
+    "test:db": "vitest run tests/db --no-file-parallelism",
     "test:protocol": "vitest run tests/e2e/vitest/protocol-coverage",
     "coverage:report": "tsx scripts/protocol-coverage-report.ts",
     "test:e2e": "playwright test",
