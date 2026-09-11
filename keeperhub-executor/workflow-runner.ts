@@ -43,9 +43,14 @@ import {
   updateExecutionStatus,
   updateScheduleStatus,
 } from "./lib/db-helpers";
-import { takeBroadcastMarker } from "./lib/broadcast-marker";
+import { peekBroadcastMarker, takeBroadcastMarker } from "./lib/broadcast-marker";
 import { collectLatencyObservations } from "./lib/latency-observations";
 import { shipMetricsToExecutor } from "./lib/ship-metrics";
+// Register the async-local workflow error context: this process has no Next
+// instrumentation.ts (the Dockerfile does not copy it), so without this the
+// engine's enterWorkflowErrorContext() is a no-op and markBroadcast() cannot
+// resolve the execution id to stamp the sidecar marker with.
+import "./lib/workflow-error-context-bootstrap";
 
 // Validate required environment variables
 function validateEnv(): {
@@ -293,13 +298,13 @@ async function main(): Promise<void> {
     );
 
     // Latency instrumentation (issue #2289): the write path marked its
-    // broadcast into the sidecar (same pod). Read and clear it now that the
-    // run has returned and the marker can only belong to this execution, log
-    // it joined on correlation id + execution id, and collect the point
+    // broadcast into the per-execution sidecar (same pod). Peek (not take) so
+    // the observation collector below can still read the same record, log it
+    // joined on correlation id + execution id, and collect the point
     // observations the pod ships back over the metrics ingest (Job pods
     // cannot write the executor's histograms directly; point samples can).
-    const marker = takeBroadcastMarker();
-    if (marker && marker.executionId === executionId) {
+    const marker = peekBroadcastMarker(executionId);
+    if (marker) {
       console.log(
         `[Runner] Broadcast stage: executionId=${executionId}${correlationSuffix} broadcastAt=${new Date(
           marker.broadcastAt

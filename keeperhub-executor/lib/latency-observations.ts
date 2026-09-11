@@ -75,8 +75,8 @@ export function collectLatencyObservations(params: {
 
   const observations: PendingObservation[] = [];
 
-  const marker = takeBroadcastMarker();
-  if (marker && marker.executionId === executionId && observedAt !== undefined) {
+  const marker = takeBroadcastMarker(executionId);
+  if (marker && observedAt !== undefined) {
     const durationMs = marker.broadcastAt - observedAt;
     if (Number.isFinite(durationMs) && durationMs >= 0) {
       observations.push({

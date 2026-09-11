@@ -181,9 +181,10 @@ function recordInProcessLatency(params: {
   totalMs: number;
 }): void {
   const { latency, workflowId, executionId, triggerType, totalMs } = params;
-  // The write path marked its broadcast into the sidecar; pick it up now that
-  // the run has returned and the marker can only belong to this execution.
-  const marker = takeBroadcastMarker();
+  // The write path marked its broadcast into the per-execution sidecar; take
+  // it (read-and-discard for exactly this execution id) now that the run has
+  // returned and the marker can only belong to this execution.
+  const marker = takeBroadcastMarker(executionId);
   if (marker && marker.executionId === executionId) {
     latency.mark("broadcast", marker.broadcastAt);
   }

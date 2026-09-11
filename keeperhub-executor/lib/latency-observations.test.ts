@@ -3,16 +3,19 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Fresh module registry per test so the module-level marker path resolution
-// and env reads behave; the sidecar points at a scratch dir.
+// Fresh module registry per test so the module-level marker dir resolution
+// and env reads behave; the sidecar registry points at a scratch dir.
 const tmp = mkdtempSync(join(tmpdir(), "kh-obs-test-"));
-process.env.KH_BROADCAST_MARKER = join(tmp, "marker.json");
+process.env.KH_BROADCAST_MARKER_DIR = tmp;
+
+const markerFile = (executionId: string) => join(tmp, `${executionId}.json`);
 
 afterEach(() => {
   delete process.env.KH_CORRELATION_ID;
   delete process.env.KH_RECEIVED_AT;
   delete process.env.KH_OBSERVED_AT;
-  rmSync(join(tmp, "marker.json"), { force: true });
+  rmSync(join(tmp, "exec-1.json"), { force: true });
+  rmSync(join(tmp, "exec-OTHER.json"), { force: true });
 });
 
 const BASE = {
@@ -41,7 +44,7 @@ describe("collectLatencyObservations", () => {
     process.env.KH_CORRELATION_ID = "corr-1";
     process.env.KH_OBSERVED_AT = "1000";
     writeFileSync(
-      join(tmp, "marker.json"),
+      markerFile("exec-1"),
       JSON.stringify({ executionId: "exec-1", broadcastAt: 4500 }),
       "utf-8"
     );
@@ -90,7 +93,7 @@ describe("collectLatencyObservations", () => {
     process.env.KH_CORRELATION_ID = "corr-3";
     process.env.KH_OBSERVED_AT = "99999";
     writeFileSync(
-      join(tmp, "marker.json"),
+      markerFile("exec-1"),
       JSON.stringify({ executionId: "exec-1", broadcastAt: 4500 }),
       "utf-8"
     );
@@ -119,11 +122,11 @@ describe("collectLatencyObservations", () => {
     expect(obs[0].stage).toBe("received-completed");
   });
 
-  it("ignores a marker owned by a different execution", async () => {
+  it("ignores a marker owned by a different execution (per-execution registry)", async () => {
     process.env.KH_CORRELATION_ID = "corr-5";
     process.env.KH_OBSERVED_AT = "1000";
     writeFileSync(
-      join(tmp, "marker.json"),
+      markerFile("exec-OTHER"),
       JSON.stringify({ executionId: "exec-OTHER", broadcastAt: 4500 }),
       "utf-8"
     );
@@ -135,5 +138,29 @@ describe("collectLatencyObservations", () => {
       completedAt: 8000,
     });
     expect(obs.find((o) => o.stage === "observed-broadcast")).toBeUndefined();
+  });
+
+  it("consumes the marker on take: a second collect does not double-ship", async () => {
+    process.env.KH_CORRELATION_ID = "corr-6";
+    process.env.KH_OBSERVED_AT = "1000";
+    writeFileSync(
+      markerFile("exec-1"),
+      JSON.stringify({ executionId: "exec-1", broadcastAt: 4500 }),
+      "utf-8"
+    );
+    const { collectLatencyObservations } = await fresh();
+    const params = {
+      ...BASE,
+      receivedAt: 1200,
+      observedAt: 1000,
+      completedAt: 9000,
+    };
+    const first = collectLatencyObservations(params);
+    expect(first.find((o) => o.stage === "observed-broadcast")).toBeDefined();
+    // The take is read-and-discard for this execution: a repeat caller (a
+    // retry after a failed shipment) sees a consumed marker, never a
+    // duplicated observation.
+    const second = collectLatencyObservations(params);
+    expect(second.find((o) => o.stage === "observed-broadcast")).toBeUndefined();
   });
 });

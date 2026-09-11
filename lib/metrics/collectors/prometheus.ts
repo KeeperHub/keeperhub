@@ -785,11 +785,10 @@ const executorExecutionLatency = getOrCreateHistogram(
 // The headline measurement issue #2289 asks for: the distribution of time
 // from the trigger event being observed by the tracker to the transaction
 // actually being broadcast to the chain. Populated where both endpoints are
-// known: in-process runs (sidecar marker read back after the run). k8s-job
-// runs expose the same interval per-run in the pod's structured log lines -
-// ephemeral pods do not ship histogram observations (see
-// keeperhub-executor/lib/metrics-shipping.ts), so a central histogram for
-// Jobs would need point-sample ingestion first.
+// known: in-process runs (sidecar marker read back after the run) and k8s-job
+// runs (the runner ships point observations over the counter-delta ingest,
+// which the executor folds into this histogram - see
+// keeperhub-executor/lib/metrics-shipping.ts and observation-applier.ts).
 const executorBroadcastLatency = getOrCreateHistogram(
   apiRegistry,
   "keeperhub_executor_broadcast_latency_ms",

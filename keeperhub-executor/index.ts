@@ -61,6 +61,7 @@ import { resolveDispatchTarget } from "./execution-mode";
 import { checkWorkflowFeaturesForExecutor } from "./feature-guard";
 import { executeInProcess } from "./in-process";
 import { createWorkflowJob } from "./k8s-job";
+import { trackLatency } from "./lib/correlation-map";
 import {
   claimPendingForExecution,
   claimPhantomForExecution,
@@ -69,20 +70,22 @@ import {
   resolveToSkipped,
 } from "./lib/db-helpers";
 import { InFlightTracker } from "./lib/in-flight";
-import { applyLatencyObservations } from "./lib/metrics-shipping";
-import { registerLatencyObservationApplier } from "./lib/observation-applier";
 import {
   applyCounterDeltas,
+  applyLatencyObservations,
   isIngestPayload,
-  type LatencyObservation,
 } from "./lib/metrics-shipping";
-import {
-  peekLatency,
-  takeLatency,
-  trackLatency,
-} from "./lib/correlation-map";
+import { registerLatencyObservationApplier } from "./lib/observation-applier";
 import { recordSkippedSample } from "./lib/terminal-counters";
 import { toJsonSafe } from "./lib/serialize";
+// Bootstrap the workflow error context (async-local storage) for this
+// non-Next process: the engine enters the execution context through it and
+// markBroadcast() reads the execution id back from it to stamp the broadcast
+// sidecar. The executor Docker stage does not copy instrumentation.ts, so
+// there is no Next register() to register the storage - without this import
+// storage stays null and every in-process broadcast is dropped by the
+// executionId guard when the marker is read back.
+import "./lib/workflow-error-context-bootstrap";
 import { executorMessageSchema } from "./message-schema";
 import {
   assertHmacSecretSet,
