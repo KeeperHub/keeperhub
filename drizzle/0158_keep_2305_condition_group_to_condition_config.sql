@@ -50,7 +50,7 @@
 --
 -- Idempotent. A row whose Condition nodes no longer carry a top-level `group` is not
 -- matched, so a second run reports UPDATE 0. Covered by
--- tests/unit/migration-0152-condition-group-to-condition-config.test.ts.
+-- tests/unit/migration-0153-condition-group-to-condition-config.test.ts.
 --
 -- `updated_at` is deliberately left alone: this is a repair, not a user edit, and
 -- moving it would reorder every affected workflow in the user's list.
@@ -58,8 +58,13 @@
 -- Under READ COMMITTED the subquery computes `fixed.nodes` from the pre-statement snapshot,
 -- so a workflow saved inside the statement's window is re-checked for the join qualifier and
 -- then overwritten with the already-computed value, discarding that save. The window is the
--- statement's own runtime, about a second at 50k rows. Run it against the real row count
--- before shipping, and if it is long enough to matter, batch it by id range.
+-- statement's own runtime, about a second at 50k rows. Whether that matters is the row
+-- count, which I cannot read from a fork:
+--   SELECT count(*) FROM workflows
+--   WHERE nodes @> '[{"data":{"config":{"actionType":"Condition"}}}]';
+-- Nothing here enforces that anyone runs it, and --@requires-db-prep does not apply
+-- (db-prep-check.yml scopes it to CREATE INDEX CONCURRENTLY), so the number decides:
+-- say it and I will batch this by id range, or say it is small and this note can go.
 
 UPDATE workflows AS w
 SET nodes = fixed.nodes
@@ -74,8 +79,15 @@ FROM (
           CASE
             -- An expression is already what this node evaluates, so the stale group is
             -- not a repair candidate. Removing it is the repair.
+            --
+            -- btrim, because resolveConditionExpression (condition/resolver.ts)
+            -- tests condition.trim(): for a condition of spaces Postgres would
+            -- otherwise say an expression is present and take this arm, while
+            -- the resolver treats it as absent. The node would lose its rule
+            -- group with nothing promoted, and workflows.nodes is the only
+            -- copy - the rules would survive solely in workflow_history.
             WHEN jsonb_typeof(node #> '{data,config,condition}') = 'string'
-                 AND node #>> '{data,config,condition}' <> ''
+                 AND btrim(node #>> '{data,config,condition}') <> ''
             THEN node #- '{data,config,group}'
             -- No expression to outrank, so the group becomes the condition. An object
             -- conditionConfig is merged into rather than replaced, and one that already
