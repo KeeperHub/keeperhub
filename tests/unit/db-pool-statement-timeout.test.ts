@@ -38,7 +38,14 @@ async function loadPoolOptions(): Promise<PoolOptions[]> {
   // exhaust connections. vi.resetModules() clears the module registry but not
   // globalThis, so without this the second load reuses the first pool and never
   // calls postgres() again.
-  for (const key of ["queryClient", "db", "metricsClient", "metricsDb"]) {
+  for (const key of [
+    "queryClient",
+    "db",
+    "metricsClient",
+    "metricsDb",
+    "analyticsClient",
+    "analyticsDb",
+  ]) {
     delete (globalThis as unknown as Record<string, unknown>)[key];
   }
   await vi.importActual("@/lib/db");
@@ -54,6 +61,24 @@ function queryPool(options: PoolOptions[]): PoolOptions {
     );
   }
   return pool;
+}
+
+const ANALYTICS_POOL_MAX = 5;
+
+/**
+ * The analytics pool, found by its size.
+ *
+ * Matching on size alone would silently pick the wrong pool if another one of
+ * the same size were added, so this fails when the match is not unique.
+ */
+function analyticsPool(options: PoolOptions[]): PoolOptions {
+  const matches = options.filter((o) => o.max === ANALYTICS_POOL_MAX);
+  if (matches.length !== 1) {
+    throw new Error(
+      `expected exactly one pool with max:${ANALYTICS_POOL_MAX}, found ${matches.length} among ${JSON.stringify(options)} - lib/db changed shape`
+    );
+  }
+  return matches[0];
 }
 
 describe("app pool statement_timeout", () => {
@@ -102,5 +127,72 @@ describe("app pool statement_timeout", () => {
     const pool = queryPool(await loadPoolOptions());
 
     expect(pool.connection?.statement_timeout).toBeLessThan(120_000);
+  });
+});
+
+describe("analytics pool", () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.env = { ...originalEnv };
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it("caps the dashboard at 5 connections per pod", async () => {
+    const options = await loadPoolOptions();
+
+    // The cap is the isolation. Whatever the dashboard does, it cannot reach
+    // the app pool's 10 and starve the writes that keep runs alive.
+    expect(analyticsPool(options).max).toBe(ANALYTICS_POOL_MAX);
+  });
+
+  it("is a separate pool from the main query pool", async () => {
+    const options = await loadPoolOptions();
+
+    expect(analyticsPool(options)).not.toBe(queryPool(options));
+  });
+
+  it("bounds the analytics pool at 15s by default", async () => {
+    delete process.env.ANALYTICS_STATEMENT_TIMEOUT_MS;
+
+    const pool = analyticsPool(await loadPoolOptions());
+
+    expect(pool.connection?.statement_timeout).toBe(15_000);
+  });
+
+  it("takes the override from ANALYTICS_STATEMENT_TIMEOUT_MS", async () => {
+    process.env.ANALYTICS_STATEMENT_TIMEOUT_MS = "20000";
+
+    const pool = analyticsPool(await loadPoolOptions());
+
+    expect(pool.connection?.statement_timeout).toBe(20_000);
+  });
+
+  it.each(["", "not-a-number", "0", "-1"])(
+    "falls back to 15s when the override is %j",
+    async (value) => {
+      process.env.ANALYTICS_STATEMENT_TIMEOUT_MS = value;
+
+      const pool = analyticsPool(await loadPoolOptions());
+
+      expect(pool.connection?.statement_timeout).toBe(15_000);
+    }
+  );
+
+  it("cancels sooner than the app pool", async () => {
+    delete process.env.APP_STATEMENT_TIMEOUT_MS;
+    delete process.env.ANALYTICS_STATEMENT_TIMEOUT_MS;
+    const options = await loadPoolOptions();
+
+    // The client abandons a pass before either bound, and an abandoned request
+    // holds its connection until Postgres cancels the statement.
+    expect(analyticsPool(options).connection?.statement_timeout).toBeLessThan(
+      queryPool(options).connection?.statement_timeout ??
+        Number.MAX_SAFE_INTEGER
+    );
   });
 });
