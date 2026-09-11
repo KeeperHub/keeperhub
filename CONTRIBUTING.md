@@ -178,8 +178,7 @@ The `"use step"` directive marks a file for workflow bundler processing. Critica
 
 1. **Never export functions from step files** other than the step function itself, `_integrationType`, and types
 2. **To share logic between steps**: extract into a `*-core.ts` file (no `"use step"`)
-3. **No Node.js-only SDKs** in step files -- use `fetch()` for HTTP calls
-
+3. **No Node.js-only SDKs** in step files -- use `safeFetch()` from `@/lib/safe-fetch` for HTTP calls, not the raw `fetch` global. Bare `fetch`, `axios`, and `http.request` under `plugins/` are rejected by the `Forbid raw network egress in plugins` check. Connection-test files (`plugins/*/test.ts`) are the exception and use the raw `fetch` global
 See `plugins/CLAUDE.md` for the complete step file specification.
 
 ### Plugin Registration
