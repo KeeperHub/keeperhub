@@ -294,7 +294,7 @@ describe("GET /api/openapi", () => {
 
     // `to`: a checksummed contract address, not a precompile.
     expect(ethers.getAddress(example.to)).toBe(example.to);
-    expect(BigInt(example.to)).toBeGreaterThan(0xff_ffn);
+    expect(BigInt(example.to)).toBeGreaterThan(BigInt(0xff_ff));
 
     // `data`: selector plus two 32-byte ABI words, decoding to real arguments.
     expect(example.data).toHaveLength(2 + 8 + 2 * 64);
@@ -302,7 +302,7 @@ describe("GET /api/openapi", () => {
       "function transfer(address to, uint256 amount)",
     ]).decodeFunctionData("transfer", example.data);
     expect(ethers.isAddress(recipient)).toBe(true);
-    expect(amount).toBeGreaterThan(0n);
+    expect(amount).toBeGreaterThan(BigInt(0));
 
     // `value`: wei as a decimal string, as lib/mcp/calldata.ts emits it.
     expect(example.value).toMatch(/^\d+$/);
