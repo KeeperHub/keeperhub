@@ -10,6 +10,7 @@ import type {
   UnifiedRun,
 } from "../../../lib/analytics/types";
 import {
+  gasCreditUsage,
   organization,
   users,
   workflowExecutionLogs,
@@ -49,7 +50,11 @@ type Seed = {
   errorType?: ExecutionErrorType;
   durationMs?: number;
   network?: string;
-  /** Carries the gas-station marker a web3 step core writes on a sponsored tx. */
+  /**
+   * A gas-station sponsored run. The step core writes a marker on the step, and
+   * the charge lands in the gas-credit ledger; analytics reads the ledger,
+   * because it outlives the step logs that retention removes.
+   */
   sponsored?: boolean;
   /** Chain recorded only in the step's JSONB, with the column left null. */
   legacyNetwork?: string;
@@ -118,6 +123,19 @@ const SEEDS: Seed[] = [
   },
 ];
 
+/** What one seeded success burns on chain, on the run row and on its step. */
+const STEP_GAS_WEI = "21000";
+
+/**
+ * Gas on the run row. A run burns gas when it succeeded and reached a chain,
+ * which is the same condition that gives it a gas-bearing step below.
+ */
+function runGasWei(seed: Seed): string | null {
+  const reachedChain =
+    seed.network !== undefined || seed.legacyNetwork !== undefined;
+  return seed.status === "success" && reachedChain ? STEP_GAS_WEI : null;
+}
+
 describe.skipIf(SKIP)("analytics run filters", () => {
   let queryClient: ReturnType<typeof postgres>;
   let db: ReturnType<typeof drizzle>;
@@ -141,6 +159,7 @@ describe.skipIf(SKIP)("analytics run filters", () => {
   ) => Promise<RunFacets>;
 
   async function cleanup(): Promise<void> {
+    await queryClient`DELETE FROM gas_credit_usage WHERE execution_id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflow_execution_logs WHERE execution_id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflow_executions WHERE id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflows WHERE id LIKE ${`${PREFIX}%`}`;
@@ -219,6 +238,7 @@ describe.skipIf(SKIP)("analytics run filters", () => {
       userId: USER_ID,
       status: "success",
       duration: "1000",
+      gasUsedWei: "99999",
       startedAt: now,
       completedAt: now,
     });
@@ -234,6 +254,9 @@ describe.skipIf(SKIP)("analytics run filters", () => {
       startedAt: now,
     });
 
+    // The run row carries the gas, as finalize writes it. The step rows below
+    // carry the same number, but analytics reads this column: step logs are
+    // removed at the retention window the plan sells, and the run row is not.
     await db.insert(workflowExecutions).values(
       SEEDS.map((seed) => ({
         id: seed.id,
@@ -243,6 +266,7 @@ describe.skipIf(SKIP)("analytics run filters", () => {
         errorType: seed.errorType ?? null,
         duration:
           seed.durationMs === undefined ? null : String(seed.durationMs),
+        gasUsedWei: runGasWei(seed),
         startedAt: now,
         completedAt: seed.durationMs === undefined ? null : now,
       }))
@@ -276,12 +300,32 @@ describe.skipIf(SKIP)("analytics run filters", () => {
         input: seed.legacyNetwork
           ? JSON.stringify({ network: seed.legacyNetwork })
           : null,
-        gasUsedWei: seed.status === "success" ? "21000" : null,
+        gasUsedWei: seed.status === "success" ? STEP_GAS_WEI : null,
         outputRaw: seed.sponsored ? { sponsored: true } : null,
         startedAt: now,
       });
     }
     await db.insert(workflowExecutionLogs).values(logRows);
+
+    // Sponsorship reaches analytics through the gas-credit ledger. The charge
+    // covers the full burn, so the run answers to `sponsored` and drops out of
+    // `wallet`.
+    const ledgerRows = SEEDS.filter((seed) => seed.sponsored).map((seed) => ({
+      id: `${seed.id}_credit`,
+      organizationId: ORG_ID,
+      chainId: Number(seed.network ?? BASE),
+      txHash: `0x${seed.id}`,
+      executionId: seed.id,
+      gasUsed: STEP_GAS_WEI,
+      gasPriceWei: "1",
+      gasCostWei: STEP_GAS_WEI,
+      gasCostMicroUsd: "1",
+      ethPriceUsd: "1",
+      createdAt: now,
+    }));
+    if (ledgerRows.length > 0) {
+      await db.insert(gasCreditUsage).values(ledgerRows);
+    }
 
     ({ getUnifiedRuns, getRunFacets } = await import(
       "@/lib/analytics/queries"
