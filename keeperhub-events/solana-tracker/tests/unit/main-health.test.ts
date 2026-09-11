@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildHealthResponse } from "../../src/health/health-server";
+import { STARTUP_GRACE_MS } from "../../src/startup-grace";
 
 /**
  * Health reporting in the reconciler.
@@ -19,6 +20,8 @@ const hooks = vi.hoisted(() => ({
   startErrors: new Map<number, string>(),
   /** A start for this chain waits on the promise, to hold it mid-start. */
   blockers: new Map<number, Promise<void>>(),
+  /** Chains whose ingestor throws on stop() and so keeps running. */
+  stopFails: new Set<number>(),
 }));
 
 vi.mock("../../src/discovery", () => ({
@@ -49,6 +52,9 @@ vi.mock("../../src/ingest/block-ingestor", () => ({
       this.started = true;
     }
     stop(): Promise<void> {
+      if (hooks.stopFails.has(this.chainId)) {
+        return Promise.reject(new Error(`stop boom ${this.chainId}`));
+      }
       this.started = false;
       return Promise.resolve();
     }
@@ -110,6 +116,7 @@ beforeEach(async () => {
   hooks.connected = new Set();
   hooks.startErrors = new Map();
   hooks.blockers = new Map();
+  hooks.stopFails = new Set();
   vi.resetModules();
   main = await import("../../src/main");
 });
@@ -227,6 +234,71 @@ describe("reconciler health and metrics", () => {
     await main.synchronizeData();
     main.refreshMetrics();
     expect(await silence()).not.toContain('chain="103"');
+  });
+});
+
+describe("startup grace and stop failures", () => {
+  it("reports a chain still not started after the startup grace as failed", async () => {
+    // One start that never finishes. Every chain queued behind it would stay
+    // idle - and emit no silence series - for as long as the start hangs.
+    hooks.blockers.set(
+      101,
+      new Promise<void>(() => {
+        // never settles: the hung RPC call
+      }),
+    );
+    hooks.registrations = [registration(101), registration(103)];
+    void main.synchronizeData();
+    await vi.waitFor(() => expect(main.getAllHealth()).toHaveLength(2));
+    expect(main.getAllHealth().every((h) => h.state === "idle")).toBe(true);
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + STARTUP_GRACE_MS + 1_000);
+
+      for (const entry of main.getAllHealth()) {
+        expect(entry.state).toBe("failed");
+        expect(entry.lastError).toContain("startup grace");
+      }
+      // And the alert now has a series to fire on, for both chains.
+      const metricsModule = await import("../../lib/metrics");
+      main.refreshMetrics();
+      const silence = await metricsModule.registry.getSingleMetricAsString(
+        "keeperhub_solana_tracker_seconds_since_last_slot",
+      );
+      expect(silence).toContain('chain="101"');
+      expect(silence).toContain('chain="103"');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps reconciling other chains when an ingestor fails to stop", async () => {
+    hooks.registrations = [registration(101), registration(103)];
+    hooks.connected.add(101);
+    hooks.connected.add(103);
+    await main.synchronizeData();
+
+    // 101 leaves discovery and its stop() throws; 104 arrives in the same pass.
+    // The throw used to end the pass before 104 was ever started.
+    hooks.stopFails.add(101);
+    hooks.connected.add(104);
+    hooks.registrations = [registration(103), registration(104)];
+    await main.synchronizeData();
+
+    const started = main.getAllHealth().find((h) => h.chainId === 104);
+    expect(started?.connected).toBe(true);
+
+    // The ingestor that failed to stop is still running, so it stays in the
+    // registry and the next pass retries it.
+    hooks.stopFails.delete(101);
+    await main.synchronizeData();
+    const metricsModule = await import("../../lib/metrics");
+    main.refreshMetrics();
+    const running = await metricsModule.registry.getSingleMetricAsString(
+      "keeperhub_solana_tracker_chains_running",
+    );
+    expect(running).toContain("keeperhub_solana_tracker_chains_running 2");
   });
 });
 

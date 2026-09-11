@@ -9,6 +9,7 @@ import { logger } from "../../lib/utils/logger";
 import { formatError } from "../format-error";
 import type { ConnectionHealth } from "../ingest/solana-connection";
 import type { LivenessSnapshot } from "../main";
+import { STARTUP_GRACE_MS } from "../startup-grace";
 
 /**
  * Three endpoints, three different questions, and keeping them separate is the
@@ -25,7 +26,6 @@ import type { LivenessSnapshot } from "../main";
  */
 
 const LIVEZ_MAX_SYNC_AGE_MS = 120_000;
-const LIVEZ_STARTUP_GRACE_MS = 600_000;
 
 export interface HealthResponseBody {
   status: "ok" | "degraded";
@@ -76,7 +76,7 @@ export function buildLivenessResponse(
   const startedAt = snap.lastSyncStartedAt;
   const starting = startedAt === null;
   const since = starting ? now - snap.processStartedAt : now - startedAt;
-  const limit = starting ? LIVEZ_STARTUP_GRACE_MS : LIVEZ_MAX_SYNC_AGE_MS;
+  const limit = starting ? STARTUP_GRACE_MS : LIVEZ_MAX_SYNC_AGE_MS;
   const ok = since <= limit;
   return {
     status: ok ? 200 : 503,

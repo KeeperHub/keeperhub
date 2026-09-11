@@ -11,6 +11,7 @@ import { disconnectedHealth } from "./ingest/block-source";
 import type { ConnectionHealth } from "./ingest/solana-connection";
 import { buildRegistrations } from "./mapper";
 import { type ChainRegistration, registrationEndpoints } from "./registrations";
+import { STARTUP_GRACE_MS } from "./startup-grace";
 
 /**
  * Reconciler: one BlockIngestor per Solana chain, keyed by chainId. Mirrors the
@@ -33,6 +34,13 @@ const desired = new Map<number, ChainRegistration>();
 
 /** Why a desired chain has no running ingestor. Cleared when it recovers. */
 const failures = new Map<number, string>();
+
+/**
+ * When each desired chain was first expected, so a chain still waiting to start
+ * can be timed out. Without a bound, a start that hangs on one chain keeps every
+ * chain behind it waiting - and silent - forever.
+ */
+const expectedSince = new Map<number, number>();
 
 const processStartedAt = Date.now();
 let lastSyncStartedAt: number | null = null;
@@ -85,8 +93,12 @@ async function reconcile(registrations: ChainRegistration[]): Promise<void> {
   // reported health honest about what was supposed to be running.
   const previouslyDesired = [...desired.keys()];
   desired.clear();
+  const now = Date.now();
   for (const registration of registrations) {
     desired.set(registration.chainId, registration);
+    if (!expectedSince.has(registration.chainId)) {
+      expectedSince.set(registration.chainId, now);
+    }
   }
   for (const chainId of [...failures.keys()]) {
     if (!desired.has(chainId)) {
@@ -99,14 +111,28 @@ async function reconcile(registrations: ChainRegistration[]): Promise<void> {
       // runs for it. Without this its last series would keep climbing and hold
       // the alert open on a chain nobody watches any more.
       metrics.forgetChain(chainId);
+      expectedSince.delete(chainId);
     }
   }
 
   for (const [chainId, ingestor] of registry) {
     if (!activeIds.has(chainId)) {
       logger.log(`[Reconciler] removing ingestor for chain ${chainId}`);
-      await ingestor.stop();
-      dropChain(chainId);
+      try {
+        await ingestor.stop();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error(
+          `[Reconciler] chain ${chainId} failed to stop: ${message}`,
+        );
+      }
+      // Same guard as the start loop below. An ingestor that failed to stop is
+      // still running, so it stays in the registry and is retried next pass.
+      // Letting the throw escape instead ended this pass before any other chain
+      // was started.
+      if (!ingestor.isStarted()) {
+        dropChain(chainId);
+      }
     }
   }
 
@@ -189,6 +215,7 @@ export async function shutdownAll(): Promise<void> {
   registry.clear();
   desired.clear();
   failures.clear();
+  expectedSince.clear();
   if (dedup) {
     await dedup.disconnect();
   }
@@ -206,6 +233,13 @@ export function getAllHealth(): ConnectionHealth[] {
   for (const [chainId, registration] of desired) {
     const live = registry.get(chainId)?.getHealth();
     const failure = failures.get(chainId);
+    // Waiting its turn on a cold start is not a failure - but only for as long
+    // as /livez allows a cold start. After that the chain is reported failed,
+    // so its silence clock starts and a start that never finishes still pages.
+    const waiting =
+      failure === undefined &&
+      Date.now() - (expectedSince.get(chainId) ?? Date.now()) <=
+        STARTUP_GRACE_MS;
     health.push(
       live ??
         disconnectedHealth(
@@ -214,10 +248,11 @@ export function getAllHealth(): ConnectionHealth[] {
           // registration labelled the chain with a source it might never run.
           "none",
           registrationEndpoints(registration),
-          failure ?? "not started",
-          // Queued behind other chains on a cold start is not a failure, and
-          // must not start the silence clock the alert reads.
-          failure === undefined ? "idle" : "failed",
+          failure ??
+            (waiting
+              ? "not started"
+              : `not started within the ${STARTUP_GRACE_MS / 1000}s startup grace`),
+          waiting ? "idle" : "failed",
         ),
     );
   }

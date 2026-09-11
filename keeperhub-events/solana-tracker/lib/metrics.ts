@@ -28,7 +28,9 @@ import type { ConnectionHealth } from "../src/ingest/solana-connection";
  *     `null -> 0` rule would never have fired.
  *  2. A chain still queued behind others on a cold start emits no
  *     `seconds_since_last_slot` yet. `/livez` gives a cold start a grace
- *     window, and the alert should not give it less.
+ *     window, and the alert should not give it less - nor more. The exemption
+ *     ends with that same grace: the reconciler reports a chain that still has
+ *     not started by then as failed, which starts its clock here.
  *  3. Series carry the numeric chain id, not the chain name, so the page and
  *     the tracker's own log lines agree.
  */
@@ -80,7 +82,7 @@ function labelsOf(snap: ChainSnapshot): ChainLabels {
  */
 const secondsSinceLastSlot = new Gauge({
   name: `${PREFIX}_seconds_since_last_slot`,
-  help: "Seconds since this chain's slot subscription last delivered a notification, or since its source came up if none ever has; absent while the chain is still queued on a cold start",
+  help: "Seconds since this chain's slot subscription last delivered a notification, or since its source came up if none ever has; absent only while the chain is still queued within the startup grace",
   labelNames: LABEL_NAMES,
   registers: [registry],
   collect() {
