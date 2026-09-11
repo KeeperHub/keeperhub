@@ -1079,6 +1079,27 @@
       "when": 1789062501958,
       "tag": "0153_keep_1346_exec_log_sponsored_index",
       "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
+      "when": 1789062561958,
+      "tag": "0154_keep_1042_execution_retention_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1789062621958,
+      "tag": "0155_keep_1042_execution_retention_progress",
+      "breakpoints": true
+    },
+    {
+      "idx": 156,
+      "version": "7",
+      "when": 1789062681958,
+      "tag": "0156_keep_1042_sponsored_index_on_output",
+      "breakpoints": true
     }
   ]
 }

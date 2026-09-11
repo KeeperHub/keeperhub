@@ -1,4 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// time-range.ts is server-only and reads the retention config for its floor.
+vi.mock("server-only", () => ({}));
+vi.mock("@/lib/retention/config", () => ({
+  getRetentionConfig: () => ({ executionRetentionDays: 400 }),
+  daysBefore: (now: Date, days: number) =>
+    new Date(now.getTime() - days * 24 * 60 * 60 * 1000),
+}));
+
 import {
   getBucketInterval,
   getTimeRangeWindow,
