@@ -397,9 +397,12 @@ describe("safeEvaluateCondition - semantics", () => {
 
       // Inside the bound it is printed and read as a decimal, so a BigInt and
       // the string spelling of the same value are one value.
-      expect(cmp("===", 10n ** 200n, `1${"0".repeat(200)}`)).toBe(true);
-      expect(cmp("===", 10n ** 200n, `1${"0".repeat(200)}.00`)).toBe(true);
-      expect(cmp("===", -(10n ** 200n), `-1${"0".repeat(200)}`)).toBe(true);
+      // BigInt(string) rather than a literal: tsconfig targets ES2017 and a
+      // BigInt literal is TS2737 there, which vitest would not have caught.
+      const tenPow200 = BigInt(`1${"0".repeat(200)}`);
+      expect(cmp("===", tenPow200, `1${"0".repeat(200)}`)).toBe(true);
+      expect(cmp("===", tenPow200, `1${"0".repeat(200)}.00`)).toBe(true);
+      expect(cmp("===", -tenPow200, `-1${"0".repeat(200)}`)).toBe(true);
     });
 
     it("holds the example the operator page gives for == against ===", () => {

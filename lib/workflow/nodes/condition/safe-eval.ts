@@ -598,7 +598,7 @@ function splitDecimal(literal: string): DecimalOperand {
  * side had already converted, and a length cap has no boundary to get wrong
  * once nothing is parsed.
  */
-const MAX_PRINTABLE_MAGNITUDE = 10n ** 256n;
+const MAX_PRINTABLE_MAGNITUDE = BigInt(`1${"0".repeat(256)}`);
 
 /**
  * The operand as a decimal, or undefined when it is not one. Strings, BigInts
