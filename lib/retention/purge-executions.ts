@@ -29,6 +29,7 @@ import {
 import {
   buildRetentionSchedule,
   resolveOrgRetentionWindows,
+  resolveRecentPlanChanges,
 } from "@/lib/retention/org-windows";
 import {
   advanceWatermarksToFloor,
@@ -93,6 +94,11 @@ export type RetentionPassResult = {
   budgetExhausted: boolean;
   /** Present on the passes that resolve a window per organization. */
   windows?: RetentionWindowReport[];
+  /**
+   * Organizations the plan-window pass left for a later run because their
+   * subscription changed inside the grace period.
+   */
+  deferredOrganizations?: number;
   /** Present when a pass did nothing because its switch is off. */
   skipped?: "disabled";
 };
@@ -180,8 +186,20 @@ export async function runRetentionPurge(
     await advanceWatermarksToFloor(daysBefore(now, schedule.floorDays));
   }
 
+  // An organization whose plan just changed is left alone for the grace
+  // period, so a lapse can be undone before the shorter window deletes the
+  // difference. Resolved per run, so the dry run reports the same deferral.
+  const deferred = await resolveRecentPlanChanges(
+    new Date(now.getTime() - config.planChangeGraceMs)
+  );
   passes.push(
-    await purgeLogsPastPlanWindow(config, now, budget, schedule.groups)
+    await purgeLogsPastPlanWindow(
+      config,
+      now,
+      budget,
+      schedule.groups,
+      deferred
+    )
   );
   passes.push(await stripExpiredOutputRaw(config, now, budget));
   passes.push(await purgeSoftDeletedLogs(config, now, budget));
@@ -253,11 +271,13 @@ async function purgeLogsPastPlanWindow(
   config: RetentionConfig,
   now: Date,
   budget: RunBudget,
-  groups: Array<{ retentionDays: number; organizationIds: string[] }>
+  groups: Array<{ retentionDays: number; organizationIds: string[] }>,
+  deferred: Set<string>
 ): Promise<RetentionPassResult> {
   const windows: RetentionWindowReport[] = [];
   let rows = 0;
   let budgetExhausted = false;
+  let deferredOrganizations = 0;
 
   for (const group of groups) {
     const cutoff = daysBefore(now, group.retentionDays);
@@ -268,6 +288,12 @@ async function purgeLogsPastPlanWindow(
       if (budget.exhausted) {
         budgetExhausted = true;
         break;
+      }
+      // Deferred, not drained: no watermark is written, so the next run picks
+      // this organization up from exactly where it stands now.
+      if (deferred.has(organizationId)) {
+        deferredOrganizations += 1;
+        continue;
       }
       const from = watermarks.get(organizationId) ?? RETENTION_EPOCH;
       if (from >= cutoff) {
@@ -357,7 +383,13 @@ async function purgeLogsPastPlanWindow(
     }
   }
 
-  return { pass: "logs_plan_window", rows, budgetExhausted, windows };
+  return {
+    pass: "logs_plan_window",
+    rows,
+    budgetExhausted,
+    windows,
+    deferredOrganizations,
+  };
 }
 
 /**

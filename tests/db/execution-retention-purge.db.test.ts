@@ -88,6 +88,7 @@ function config(overrides: Record<string, unknown> = {}) {
     softDeleteGraceDays: 30,
     batchSize: 1000,
     maxRuntimeMs: 60_000,
+    planChangeGraceMs: 24 * 60 * 60 * 1000,
     ...overrides,
   };
 }
@@ -172,6 +173,13 @@ describe("execution retention purge (real database)", () => {
         planOverrides: { logRetentionDays: 3 },
       },
     ]);
+    // Subscription rows otherwise take now() for updated_at, which is later
+    // than this suite's fixed clock and would put every paid organization
+    // inside the plan-change grace.
+    await queryClient`UPDATE organization_subscriptions
+                         SET updated_at = ${daysAgo(600).toISOString()},
+                             created_at = ${daysAgo(600).toISOString()}
+                       WHERE organization_id LIKE ${`${PREFIX}%`}`;
     await db.insert(workflows).values(
       ALL_ORGS.map((org) => ({
         id: `${org}_wf`,
@@ -369,6 +377,26 @@ describe("execution retention purge (real database)", () => {
     await runRetentionPurge(config(), NOW);
     expect(await logExists(`${PREFIX}softdel_past_grace`)).toBe(false);
     expect(await logExists(`${PREFIX}softdel_in_grace`)).toBe(true);
+  });
+
+  it("leaves an organization alone for a day after its plan changes", async () => {
+    // A lapsed Pro plan: the row was just rewritten, so its 45-day log must
+    // survive this run even though the pro window would take it.
+    await queryClient`UPDATE organization_subscriptions
+                         SET updated_at = ${new Date(NOW.getTime() - 2 * 60 * 60 * 1000).toISOString()}
+                       WHERE organization_id = ${ORG_PRO}`;
+
+    const first = await runRetentionPurge(config(), NOW);
+    expect(await logExists(logId(ORG_PRO, "old"))).toBe(true);
+    expect(
+      first.passes.find((pass) => pass.pass === "logs_plan_window")
+        ?.deferredOrganizations
+    ).toBe(1);
+
+    // Once the grace has passed, the pass catches up from its watermark.
+    const later = new Date(NOW.getTime() + 25 * 60 * 60 * 1000);
+    await runRetentionPurge(config(), later);
+    expect(await logExists(logId(ORG_PRO, "old"))).toBe(false);
   });
 
   it("does nothing at all on a second run", async () => {

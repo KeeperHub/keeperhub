@@ -46,6 +46,14 @@ export type RetentionConfig = {
   batchSize: number;
   /** A run stops itself here so it never overlaps the next one. */
   maxRuntimeMs: number;
+  /**
+   * How long the plan-window pass leaves an organization alone after its
+   * subscription row changes. A downgrade or a lapsed trial moves the org to a
+   * shorter window, and the next run would delete everything in between; the
+   * wait gives someone whose plan ended by accident a full day to come back.
+   * Nothing is lost by waiting: the pass resumes from its watermark.
+   */
+  planChangeGraceMs: number;
 };
 
 /**
@@ -66,6 +74,7 @@ const DEFAULTS = {
   softDeleteGraceDays: 30,
   batchSize: 5000,
   maxRuntimeSeconds: 240,
+  planChangeGraceHours: 24,
 } as const;
 
 function readBool(name: string, fallback: boolean): boolean {
@@ -140,6 +149,14 @@ export function getRetentionConfig(): RetentionConfig {
         "EXECUTION_RETENTION_MAX_RUNTIME_SECONDS",
         DEFAULTS.maxRuntimeSeconds
       ) * 1000,
+    planChangeGraceMs:
+      readPositiveInt(
+        "EXECUTION_RETENTION_PLAN_CHANGE_GRACE_HOURS",
+        DEFAULTS.planChangeGraceHours
+      ) *
+      60 *
+      60 *
+      1000,
   };
 }
 

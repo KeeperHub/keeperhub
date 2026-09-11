@@ -28,6 +28,7 @@ const RETENTION_ENV_KEYS = [
   "EXECUTION_RETENTION_SOFT_DELETE_GRACE_DAYS",
   "EXECUTION_RETENTION_BATCH_SIZE",
   "EXECUTION_RETENTION_MAX_RUNTIME_SECONDS",
+  "EXECUTION_RETENTION_PLAN_CHANGE_GRACE_HOURS",
 ] as const;
 
 afterEach(() => {
@@ -55,7 +56,19 @@ describe("getRetentionConfig", () => {
       softDeleteGraceDays: 30,
       batchSize: 5000,
       maxRuntimeMs: 240_000,
+      planChangeGraceMs: 86_400_000,
     });
+  });
+
+  it("reads the plan-change grace in hours", () => {
+    process.env.EXECUTION_RETENTION_PLAN_CHANGE_GRACE_HOURS = "48";
+    expect(getRetentionConfig().planChangeGraceMs).toBe(172_800_000);
+  });
+
+  it("keeps the day of grace rather than dropping to zero on a bad value", () => {
+    // Zero would mean deleting the difference the hour a plan lapses.
+    process.env.EXECUTION_RETENTION_PLAN_CHANGE_GRACE_HOURS = "0";
+    expect(getRetentionConfig().planChangeGraceMs).toBe(86_400_000);
   });
 
   it("reads every window from the environment", () => {
@@ -70,6 +83,7 @@ describe("getRetentionConfig", () => {
     process.env.EXECUTION_RETENTION_SOFT_DELETE_GRACE_DAYS = "10";
     process.env.EXECUTION_RETENTION_BATCH_SIZE = "250";
     process.env.EXECUTION_RETENTION_MAX_RUNTIME_SECONDS = "30";
+    process.env.EXECUTION_RETENTION_PLAN_CHANGE_GRACE_HOURS = "6";
 
     expect(getRetentionConfig()).toEqual({
       enabled: true,
@@ -83,6 +97,7 @@ describe("getRetentionConfig", () => {
       softDeleteGraceDays: 10,
       batchSize: 250,
       maxRuntimeMs: 30_000,
+      planChangeGraceMs: 21_600_000,
     });
   });
 

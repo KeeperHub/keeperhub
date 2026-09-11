@@ -70,6 +70,8 @@ const { state, dbStub } = vi.hoisted(() => {
     oldestCalls: 0,
     /** Instants handed to setPurgeWatermark, in call order. */
     watermarks: [] as unknown[],
+    /** Organizations whose subscription changed inside the grace. */
+    changed: [] as string[],
     writes: [] as Array<{ op: string; table: unknown }>,
     /** Predicates handed to every select, in call order. */
     wheres: [] as unknown[],
@@ -94,6 +96,9 @@ const { state, dbStub } = vi.hoisted(() => {
         hoistedState.oldestCalls += 1;
         return [{ oldest }];
       };
+    } else if (shape.includes("changedOrganizationId")) {
+      aggregate = () =>
+        hoistedState.changed.map((id) => ({ changedOrganizationId: id }));
     }
     const builder: Record<string, unknown> = {};
     for (const method of [
@@ -197,6 +202,7 @@ beforeEach(() => {
   state.oldest = [];
   state.oldestCalls = 0;
   state.watermarks = [];
+  state.changed = [];
   state.writes = [];
   state.wheres = [];
   state.transactions = 0;
@@ -325,6 +331,23 @@ describe("runRetentionPurge", () => {
     await runRetentionPurge(enabledConfig(), NOW);
 
     expect(state.watermarks).toEqual([skipped]);
+  });
+
+  it("defers an organization whose plan changed inside the grace", async () => {
+    // A lapsed plan: the row was just rewritten, so the shorter window must
+    // not reach this organization until the grace has passed.
+    state.selectPages = [ORG_ROWS];
+    state.changed = ["org-free"];
+
+    const result = await runRetentionPurge(enabledConfig(), NOW);
+    const planPass = result.passes.find(
+      (pass) => pass.pass === "logs_plan_window"
+    );
+
+    expect(planPass?.deferredOrganizations).toBe(1);
+    expect(planPass?.rows).toBe(0);
+    // Deferred, not drained: it must not claim a watermark.
+    expect(state.watermarks).toEqual([]);
   });
 
   it("advances to the cutoff when it skipped nothing", async () => {

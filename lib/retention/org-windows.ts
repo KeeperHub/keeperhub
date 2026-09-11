@@ -1,6 +1,6 @@
 import "server-only";
 
-import { eq } from "drizzle-orm";
+import { eq, gte } from "drizzle-orm";
 import {
   getPlanLimits,
   parsePlanName,
@@ -138,4 +138,26 @@ export function buildRetentionSchedule(
     .sort((a, b) => a.retentionDays - b.retentionDays);
 
   return { floorDays, groups, windows };
+}
+
+/**
+ * Organizations whose subscription row changed at or after `since`.
+ *
+ * A downgrade or a lapsed trial moves an organization to a shorter window, and
+ * the next plan-window pass would delete everything between the old window and
+ * the new one. The pass defers these organizations instead, so a plan that
+ * ended by accident can be restored before anything is removed.
+ *
+ * Keyed on updated_at, which every billing handler writes. On prod only a
+ * handful of rows change in a given week, so this delays an organization's
+ * purge by a day at most and cannot starve one.
+ */
+export async function resolveRecentPlanChanges(
+  since: Date
+): Promise<Set<string>> {
+  const rows = await db
+    .select({ changedOrganizationId: organizationSubscriptions.organizationId })
+    .from(organizationSubscriptions)
+    .where(gte(organizationSubscriptions.updatedAt, since));
+  return new Set(rows.map((row) => row.changedOrganizationId));
 }
