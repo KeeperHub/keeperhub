@@ -67,6 +67,28 @@ function getEnvVar(envVars: V1EnvVar[], name: string): string | undefined {
   return envVars.find((v) => v.name === name)?.value;
 }
 
+function getHeapCapMib(envVars: V1EnvVar[]): number {
+  const nodeOptions = getEnvVar(envVars, "NODE_OPTIONS") ?? "";
+  const match = nodeOptions.match(/--max-old-space-size=(\d+)/);
+  if (!match) {
+    throw new Error(`No heap cap in NODE_OPTIONS: "${nodeOptions}"`);
+  }
+  return Number(match[1]);
+}
+
+function getMemoryLimitMib(job: V1Job): number {
+  const limit =
+    job.spec?.template?.spec?.containers?.[0]?.resources?.limits?.memory;
+  if (typeof limit !== "string") {
+    throw new Error("Runner container declares no memory limit");
+  }
+  const match = limit.match(/^(\d+)(Mi|Gi)$/);
+  if (!match) {
+    throw new Error(`Unsupported memory limit format: "${limit}"`);
+  }
+  return match[2] === "Gi" ? Number(match[1]) * 1024 : Number(match[1]);
+}
+
 function getSecretRef(
   envVars: V1EnvVar[],
   name: string
@@ -445,7 +467,13 @@ describe("createWorkflowJob", () => {
       triggerType: "schedule",
     });
 
-    const envVars = getJobEnvVars(getSubmittedJob());
-    expect(getEnvVar(envVars, "NODE_OPTIONS")).toBe("--max-old-space-size=224");
+    const job = getSubmittedJob();
+    const heapCapMib = getHeapCapMib(getJobEnvVars(job));
+    const limitMib = getMemoryLimitMib(job);
+
+    // The kill lands on total RSS, so the heap cap has to leave room for the
+    // off-heap allocations that sit alongside it, not merely undercut the limit.
+    expect(heapCapMib).toBeLessThan(limitMib);
+    expect(limitMib - heapCapMib).toBeGreaterThanOrEqual(256);
   });
 });
