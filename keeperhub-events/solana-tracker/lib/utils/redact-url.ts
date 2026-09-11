@@ -29,3 +29,17 @@ export function redactRpcUrl(url: string | null): string | null {
     return "[redacted]";
   }
 }
+
+const URL_IN_TEXT = /\b(?:https?|wss?):\/\/[^\s"'`<>)\]]+/gi;
+
+/**
+ * Redact every URL embedded in free text, such as an error message.
+ *
+ * node-fetch 2 builds its failure message as `request to ${url} failed`, and
+ * chain-config carries the provider key in the URL path, so a raw error
+ * message is a credential. Use this on anything served as data, such as the
+ * `lastError` field that `/healthz` returns.
+ */
+export function redactUrlsInText(text: string): string {
+  return text.replace(URL_IN_TEXT, (url) => redactRpcUrl(url) ?? "[redacted]");
+}

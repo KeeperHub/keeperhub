@@ -104,4 +104,24 @@ describe("CompositeSource", () => {
     const composite = new CompositeSource(101, ENDPOINTS, []);
     expect(composite.getHealth().connected).toBe(false);
   });
+
+  it("sums counters across members instead of taking the worst member's", () => {
+    // Which member ranks worst changes over time; its own totals would make the
+    // chain's counters jump between two unrelated histories.
+    const composite = new CompositeSource(101, ENDPOINTS, [
+      member({
+        getHealth: () => ({
+          ...health(true),
+          reconnects: 2,
+          abandonedSubscriptions: 1,
+        }),
+      }),
+      member({ getHealth: () => ({ ...health(false), reconnects: 3 }) }),
+    ]);
+
+    const reported = composite.getHealth();
+    expect(reported.connected).toBe(false);
+    expect(reported.reconnects).toBe(5);
+    expect(reported.abandonedSubscriptions).toBe(1);
+  });
 });

@@ -7,6 +7,12 @@ interface ConnRecord {
   removed: boolean;
   /** When true, removeSlotChangeListener returns a promise that never settles. */
   hangRemoval?: boolean;
+  /** Close code the tracker force-closed this connection's socket with. */
+  closedWith?: number | null;
+  /** Last value the tracker set on the socket's auto-reconnect switch. */
+  autoReconnect?: boolean;
+  /** Entries left in the fake web3.js subscription map. */
+  subscriptionEntries: () => number;
 }
 
 // Records for every web3.js Connection the source constructs, plus the args the
@@ -24,6 +30,8 @@ const hooks = vi.hoisted(() => ({
   subscribeThrows: false,
   /** Makes every removeSlotChangeListener hang forever. */
   hangRemoval: false,
+  /** Message of the error a throwing onSlotChange raises. */
+  subscribeErrorMessage: "subscribe boom",
 }));
 
 vi.mock("@solana/web3.js", async (importActual) => {
@@ -31,18 +39,31 @@ vi.mock("@solana/web3.js", async (importActual) => {
   class FakeConnection {
     private cb: ((info: { slot: number }) => void) | null = null;
     private readonly record: ConnRecord;
+    // The web3.js 1.98 internals the tracker reaches into when it abandons a
+    // subscription.
+    _subscriptionsByHash: Record<string, unknown> = { "slot:1": {} };
+    _rpcWebSocket = {
+      setAutoReconnect: (reconnect: boolean) => {
+        this.record.autoReconnect = reconnect;
+      },
+      close: (code?: number) => {
+        this.record.closedWith = code ?? null;
+      },
+    };
     constructor(rpcUrl: string, config: { wsEndpoint: string }) {
       this.record = {
         rpcUrl,
         wsEndpoint: config.wsEndpoint,
         fireSlot: (slot: number) => this.cb?.({ slot }),
         removed: false,
+        subscriptionEntries: () =>
+          Object.keys(this._subscriptionsByHash).length,
       };
       hooks.instances.push(this.record);
     }
     onSlotChange(cb: (info: { slot: number }) => void): number {
       if (hooks.subscribeThrows) {
-        throw new Error("subscribe boom");
+        throw new Error(hooks.subscribeErrorMessage);
       }
       this.cb = cb;
       return 1;
@@ -89,6 +110,7 @@ beforeEach(() => {
   hooks.lastSigs = null;
   hooks.subscribeThrows = false;
   hooks.hangRemoval = false;
+  hooks.subscribeErrorMessage = "subscribe boom";
 });
 
 describe("SolanaConnection", () => {
@@ -417,5 +439,60 @@ describe("SolanaConnection", () => {
     expect(conn.getHealth().activeEndpoint).toBe(
       "wss://lb.example.com/[redacted]",
     );
+  });
+
+  it("closes the socket of a subscription it had to abandon", async () => {
+    // web3.js keeps an abandoned subscription's socket open, and reopens a
+    // socket closed under it while any subscription entry remains. So the
+    // entries must be gone and auto-reconnect off before the close.
+    vi.useFakeTimers();
+    try {
+      hooks.hangRemoval = true;
+      const conn = new SolanaConnection({
+        chainId: 101,
+        source: "signatures",
+        endpoints: [
+          { rpcUrl: "http://rpc1", wssUrl: "ws://ws1" },
+          { rpcUrl: "http://rpc2", wssUrl: "ws://ws2" },
+        ],
+        commitment: "confirmed",
+        onSlot: vi.fn(),
+      });
+      conn.start();
+      hooks.instances[0].fireSlot(1);
+      await vi.advanceTimersByTimeAsync(76_000);
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      const abandoned = hooks.instances[0];
+      expect(abandoned.subscriptionEntries()).toBe(0);
+      expect(abandoned.autoReconnect).toBe(false);
+      expect(abandoned.closedWith).toBe(1000);
+
+      hooks.hangRemoval = false;
+      await conn.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the provider key and the stack out of the reported error", () => {
+    // node-fetch puts the full request URL in its error messages, and
+    // chain-config carries the provider key in that URL.
+    hooks.subscribeThrows = true;
+    hooks.subscribeErrorMessage =
+      "request to https://lb.example.com/solana-devnet/SECRETKEY failed, reason: socket hang up";
+    const conn = new SolanaConnection({
+      chainId: 101,
+      source: "signatures",
+      endpoints: [{ rpcUrl: "http://rpc1", wssUrl: "ws://ws1" }],
+      commitment: "confirmed",
+      onSlot: vi.fn(),
+    });
+    conn.start();
+
+    const reported = conn.getHealth().lastError ?? "";
+    expect(reported).not.toContain("SECRETKEY");
+    expect(reported).toContain("https://lb.example.com/[redacted]");
+    expect(reported).not.toContain("    at ");
   });
 });

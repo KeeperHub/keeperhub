@@ -10,7 +10,7 @@ import {
   type VersionedTransactionResponse,
 } from "@solana/web3.js";
 import { logger } from "../../lib/utils/logger";
-import { redactRpcUrl } from "../../lib/utils/redact-url";
+import { redactRpcUrl, redactUrlsInText } from "../../lib/utils/redact-url";
 import { formatError } from "../format-error";
 
 /**
@@ -69,12 +69,18 @@ export interface Endpoint {
   wssUrl: string;
 }
 
-/** Which ingestion strategy owns this connection. Used as a metric label. */
+/**
+ * Which ingestion strategy produced a health entry. Shown on /healthz for
+ * diagnosis, and deliberately not a metric label: a composite chain reports
+ * whichever member ranks worst, so the value changes over time. "none" means
+ * no source is running for the chain yet.
+ */
 export type ConnectionSource =
   | "getblock"
   | "signatures"
   | "geyser"
-  | "composite";
+  | "composite"
+  | "none";
 
 /**
  * `stale` is never stored, only derived: the watchdog samples every 15s, so a
@@ -111,6 +117,61 @@ export interface ConnectionHealth {
 
 function toFinality(commitment: Commitment): Finality {
   return commitment === "finalized" ? "finalized" : "confirmed";
+}
+
+/**
+ * The web3.js internals closeAbandonedConnection() reaches into. Private API,
+ * verified against web3.js 1.98.4 and rpc-websockets 9.3.9. If an upgrade
+ * changes this shape the helper logs and does nothing, and the socket leak it
+ * prevents comes back - so re-check it when upgrading either package.
+ */
+interface ConnectionInternals {
+  _subscriptionsByHash?: Record<string, unknown>;
+  _rpcWebSocket?: {
+    setAutoReconnect?: (reconnect: boolean) => void;
+    close?: (code?: number) => void;
+  };
+}
+
+/**
+ * Close the socket of a connection whose unsubscribe we gave up on.
+ *
+ * web3.js awaits the unsubscribe call while the subscription stays in
+ * `_subscriptionsByHash`, and only idle-closes the socket once that map is
+ * empty, so an abandoned removal keeps its socket open for good. Closing the
+ * socket is not enough on its own: on a code-1000 close web3.js re-runs
+ * `_updateSubscriptions()`, which calls `connect()` again while any entry is
+ * left. So the map is replaced first. Auto-reconnect is switched off too,
+ * because a half-open socket can end in a non-1000 close, and rpc-websockets
+ * reconnects those with no limit.
+ */
+function closeAbandonedConnection(
+  connection: Connection,
+  chainId: number,
+): void {
+  const internals = connection as unknown as ConnectionInternals;
+  const socket = internals._rpcWebSocket;
+  if (
+    !(
+      socket?.close &&
+      socket.setAutoReconnect &&
+      internals._subscriptionsByHash
+    )
+  ) {
+    logger.warn(
+      `[solana-conn] chain ${chainId} cannot close an abandoned connection: web3.js internals changed, so its socket will stay open`,
+    );
+    return;
+  }
+  try {
+    socket.setAutoReconnect(false);
+    internals._subscriptionsByHash = {};
+    socket.close(1000);
+  } catch (err) {
+    logger.warn(
+      `[solana-conn] chain ${chainId} closing an abandoned connection failed: ${formatError(err)}`,
+    );
+  }
 }
 
 export class SolanaConnection {
@@ -220,7 +281,13 @@ export class SolanaConnection {
         `[solana-conn] chain ${this.opts.chainId} slot subscription on ${redactRpcUrl(endpoint.wssUrl)} (endpoint ${this.activeIndex + 1}/${this.opts.endpoints.length})`,
       );
     } catch (err) {
-      this.lastError = formatError(err);
+      // Message only, URLs redacted: lastError is served on /healthz, node-fetch
+      // puts the full request URL into its error messages, and chain-config
+      // carries the provider key in that URL. The log line below keeps the full
+      // detail for triage.
+      this.lastError = redactUrlsInText(
+        err instanceof Error ? err.message : String(err),
+      );
       this.slotSubId = null;
       this.subscribedAt = null;
       // Every exit path writes phase. The old catch left `reconnecting` true
@@ -228,7 +295,7 @@ export class SolanaConnection {
       // subscribe that threw was never retried for the life of the pod.
       this.phase = "failed";
       logger.warn(
-        `[solana-conn] chain ${this.opts.chainId} subscribe failed: ${this.lastError}`,
+        `[solana-conn] chain ${this.opts.chainId} subscribe failed: ${formatError(err)}`,
       );
     }
   }
@@ -325,13 +392,16 @@ export class SolanaConnection {
             // Resolve rather than reject: this is best-effort cleanup and the
             // caller has nothing useful to do with a rejection. But count it -
             // this is the single number that turns a repeat of PD #33473 into a
-            // five-minute diagnosis. The abandoned socket keeps its listener
-            // until the server or TCP kills it, which is why the epoch guard in
-            // openAndSubscribe() exists.
+            // five-minute diagnosis.
             this.abandonedSubscriptions += 1;
             logger.warn(
               `[solana-conn] chain ${this.opts.chainId} removeSlotChangeListener did not settle in ${REMOVE_SUB_TIMEOUT_MS}ms; abandoning subscription`,
             );
+            // Without this the abandoned socket stays open for the life of the
+            // process, and nothing restarts the process any more to cap it. The
+            // epoch guard in openAndSubscribe() covers any notification that
+            // lands before the close completes.
+            closeAbandonedConnection(connection, this.opts.chainId);
             resolve();
           }, REMOVE_SUB_TIMEOUT_MS);
         }),

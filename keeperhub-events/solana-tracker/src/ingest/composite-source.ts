@@ -91,8 +91,20 @@ export class CompositeSource implements BlockSource {
     // unhealthy member made the reported endpoint and error depend on which
     // source happened to be constructed first, so a composite with a genuinely
     // failed member could report an unimplemented one instead.
-    return [...healths].sort(
+    const worst = [...healths].sort(
       (a, b) => STATE_SEVERITY[b.state] - STATE_SEVERITY[a.state],
     )[0];
+    // Counters are summed across members instead of taken from the worst one.
+    // Which member ranks worst can change between scrapes, so reading its
+    // totals would jump the chain's counters between two unrelated histories.
+    // A sum of monotonic totals stays monotonic.
+    return {
+      ...worst,
+      reconnects: healths.reduce((total, h) => total + h.reconnects, 0),
+      abandonedSubscriptions: healths.reduce(
+        (total, h) => total + h.abandonedSubscriptions,
+        0,
+      ),
+    };
   }
 }

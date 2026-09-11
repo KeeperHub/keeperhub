@@ -154,3 +154,21 @@ describe("BlockIngestor.canUpdateInPlace", () => {
     ).toBe(false);
   });
 });
+
+describe("BlockIngestor.stop", () => {
+  it("still reports started when the source fails to stop", async () => {
+    // The reconciler only drops an ingestor that is not started. Clearing the
+    // flag before awaiting the source made a still-running source look stopped
+    // whenever that await threw, so it was dropped and orphaned.
+    const ingestor = ingestorFor(registration());
+    const internals = ingestor as unknown as {
+      source: { stop: () => Promise<void> } | null;
+      started: boolean;
+    };
+    internals.source = { stop: () => Promise.reject(new Error("stop boom")) };
+    internals.started = true;
+
+    await expect(ingestor.stop()).rejects.toThrow("stop boom");
+    expect(ingestor.isStarted()).toBe(true);
+  });
+});

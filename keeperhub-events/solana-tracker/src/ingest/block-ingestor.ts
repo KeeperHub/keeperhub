@@ -100,11 +100,15 @@ export class BlockIngestor {
   }
 
   async stop(): Promise<void> {
-    this.started = false;
     if (this.source) {
       await this.source.stop();
       this.source = null;
     }
+    // Cleared only once the source is down. If the await above throws, the
+    // source is still running, and the reconciler's orphan guard relies on
+    // isStarted() saying so. Clearing it first made that guard blind to the
+    // exact failure it was written for.
+    this.started = false;
     logger.log(`[ingestor] chain ${this.registration.chainId} stopped`);
   }
 

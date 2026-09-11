@@ -2,6 +2,7 @@ import { SQS_QUEUE_URL } from "../lib/config/environment";
 import * as metrics from "../lib/metrics";
 import { sqs } from "../lib/sqs-client";
 import { logger } from "../lib/utils/logger";
+import { redactUrlsInText } from "../lib/utils/redact-url";
 import type { DedupStore } from "./dedup";
 import { createRedisDedupStore } from "./dedup-redis";
 import { fetchSolanaTriggers } from "./discovery";
@@ -82,6 +83,7 @@ async function reconcile(registrations: ChainRegistration[]): Promise<void> {
 
   // Rebuilt before the start loop so a throw partway through still leaves the
   // reported health honest about what was supposed to be running.
+  const previouslyDesired = [...desired.keys()];
   desired.clear();
   for (const registration of registrations) {
     desired.set(registration.chainId, registration);
@@ -89,6 +91,14 @@ async function reconcile(registrations: ChainRegistration[]): Promise<void> {
   for (const chainId of [...failures.keys()]) {
     if (!desired.has(chainId)) {
       failures.delete(chainId);
+    }
+  }
+  for (const chainId of previouslyDesired) {
+    if (!desired.has(chainId)) {
+      // A chain that never started is not in `registry`, so dropChain never
+      // runs for it. Without this its last series would keep climbing and hold
+      // the alert open on a chain nobody watches any more.
+      metrics.forgetChain(chainId);
     }
   }
 
@@ -125,7 +135,8 @@ async function reconcile(registrations: ChainRegistration[]): Promise<void> {
       );
       // Recorded, not forgotten. Deleting the chain here used to make it vanish
       // from /healthz entirely, so a chain that could not start read as healthy.
-      failures.set(registration.chainId, message);
+      // Redacted because it is served on /healthz as lastError.
+      failures.set(registration.chainId, redactUrlsInText(message));
       // Only drop an ingestor that is genuinely not running. A throw out of
       // stop() in the restart branch above would otherwise delete a live
       // ingestor and orphan its connection, watchdog and socket for good.
@@ -194,13 +205,19 @@ export function getAllHealth(): ConnectionHealth[] {
   const health: ConnectionHealth[] = [];
   for (const [chainId, registration] of desired) {
     const live = registry.get(chainId)?.getHealth();
+    const failure = failures.get(chainId);
     health.push(
       live ??
         disconnectedHealth(
           chainId,
-          registration.sourceMode ?? "getblock",
+          // No source is running, so none is named. Guessing one from the
+          // registration labelled the chain with a source it might never run.
+          "none",
           registrationEndpoints(registration),
-          failures.get(chainId) ?? "not started",
+          failure ?? "not started",
+          // Queued behind other chains on a cold start is not a failure, and
+          // must not start the silence clock the alert reads.
+          failure === undefined ? "idle" : "failed",
         ),
     );
   }
@@ -208,14 +225,15 @@ export function getAllHealth(): ConnectionHealth[] {
 }
 
 /**
- * Refresh the metric series from the current health snapshot. Called at scrape
+ * Rebuild the metric series from the current health snapshot. Called at scrape
  * time so nothing in the ingest path has to know metrics exist.
  */
 export function refreshMetrics(): void {
-  for (const health of getAllHealth()) {
-    metrics.recordChainHealth(
+  metrics.syncMetrics(
+    getAllHealth().map((health) => ({
       health,
-      desired.get(health.chainId)?.isTestnet ?? false,
-    );
-  }
+      isTestnet: desired.get(health.chainId)?.isTestnet ?? false,
+    })),
+    { running: registry.size, expected: desired.size },
+  );
 }

@@ -1,35 +1,36 @@
 import { Counter, Gauge, Registry } from "prom-client";
-import type {
-  ConnectionHealth,
-  ConnectionSource,
-} from "../src/ingest/solana-connection";
+import type { ConnectionHealth } from "../src/ingest/solana-connection";
 
 /**
  * Prometheus metrics for the Solana tracker.
  *
- * Why this exists at all: `/healthz` used to back the Kubernetes
- * liveness probe and 503'd whenever any single chain was degraded, so a silent
- * chain restarted the pod and the namespace-wide "KeeperHub Pod Restarts" alert
+ * Why this exists at all: `/healthz` used to back the Kubernetes liveness
+ * probe and 503'd whenever any single chain was degraded, so a silent chain
+ * restarted the pod and the namespace-wide "KeeperHub Pod Restarts" alert
  * paged as a side effect. That was the only signal. Moving liveness off chain
  * state removes it, so these metrics are the deliberate replacement - not a
  * nice-to-have.
  *
- * Shape mirrors `keeperhub-scheduler/lib/metrics.ts`: one process-wide registry
- * that deliberately excludes Node's default process metrics, per-chain gauges,
- * and a `forgetChain` so a removed chain stops reporting instead of freezing at
- * its last value and pinning an alert open forever.
+ * The series set is a pure function of current health. Every scrape rebuilds
+ * it through syncMetrics(), and any chain missing from the current health is
+ * dropped. An earlier version removed a series only when the reconciler
+ * dropped a chain from its registry, and three paths slipped past that: a
+ * chain that failed to start and later left discovery, a composite chain whose
+ * worst member changed, and a queued chain labelled with a guessed source.
+ * Each left a series climbing forever with the alert firing on it. Rebuilding
+ * on every scrape closes that whole class instead of each case.
  *
- * Two deliberate divergences from the block dispatcher, both learned from
- * PD #33473:
+ * Deliberate divergences from the block dispatcher's metrics:
  *
- *  1. `seconds_since_last_slot` falls back to "seconds since we started
- *     watching" when no slot has ever arrived, rather than reporting 0. The
- *     devnet route that broke delivered *nothing*, so a `null -> 0` rule would
- *     have read 0 forever and the alert would never have fired.
- *  2. Series are labelled with the numeric chain id, not the chain name. The
- *     block dispatcher uses `config.chain.name`; here every log line and
- *     `ConnectionHealth` field is numeric, so the page and the logs agree, and
- *     a rename in the chains table cannot orphan a firing alert.
+ *  1. `seconds_since_last_slot` falls back to "seconds since the chain's
+ *     source came up" when no slot has ever arrived, rather than reporting 0.
+ *     The devnet route that broke on 2026-09-09 delivered nothing at all, so a
+ *     `null -> 0` rule would never have fired.
+ *  2. A chain still queued behind others on a cold start emits no
+ *     `seconds_since_last_slot` yet. `/livez` gives a cold start a grace
+ *     window, and the alert should not give it less.
+ *  3. Series carry the numeric chain id, not the chain name, so the page and
+ *     the tracker's own log lines agree.
  */
 
 const PREFIX = "keeperhub_solana_tracker";
@@ -40,47 +41,57 @@ const PREFIX = "keeperhub_solana_tracker";
  */
 export const registry = new Registry();
 
+export interface ChainHealthEntry {
+  health: ConnectionHealth;
+  isTestnet: boolean;
+}
+
 interface ChainSnapshot {
   chain: string;
-  source: ConnectionSource;
   testnet: string;
-  /** When this chain/source pair was first registered, in ms. */
-  watchingSince: number;
+  /** When the chain's source first came up; null while it is still queued. */
+  watchingSince: number | null;
   lastSlotAt: number | null;
   subscribedAt: number | null;
 }
 
 /**
- * Keyed `${chain}|${source}` because a composite chain runs a SignaturesSource
- * and a GetBlockSource side by side, each with its own independent subscription
- * (see source-factory.ts). Keying on chain alone would make the two collide and
- * silently report whichever wrote last.
+ * Keyed on chain id alone. A composite chain runs two subscriptions but
+ * reports one health, taken from whichever member ranks worst, so its `source`
+ * changes over time. Keying on it stranded the previous entry. The source is
+ * still on `/healthz` for diagnosis.
  */
 const snapshots = new Map<string, ChainSnapshot>();
 
-const key = (chain: string, source: ConnectionSource): string =>
-  `${chain}|${source}`;
+/** Last in-process counter total seen, per chain and per counter. */
+const counterBaselines = new Map<string, Map<string, number>>();
 
-const CHAIN_LABELS = ["chain", "source", "testnet"] as const;
+const LABEL_NAMES = ["chain", "testnet"] as const;
+type ChainLabels = Record<(typeof LABEL_NAMES)[number], string>;
+
+function labelsOf(snap: ChainSnapshot): ChainLabels {
+  return { chain: snap.chain, testnet: snap.testnet };
+}
 
 /**
  * THE alert signal. Computed at scrape time so it can never go stale between
- * reconcile passes - the same trick the block dispatcher uses for its
+ * syncs - the same trick the block dispatcher uses for its
  * seconds_since_last_block gauge.
  */
 const secondsSinceLastSlot = new Gauge({
   name: `${PREFIX}_seconds_since_last_slot`,
-  help: "Seconds since this chain's slot subscription last delivered a notification, or since the chain was registered if none ever has",
-  labelNames: CHAIN_LABELS,
+  help: "Seconds since this chain's slot subscription last delivered a notification, or since its source came up if none ever has; absent while the chain is still queued on a cold start",
+  labelNames: LABEL_NAMES,
   registers: [registry],
   collect() {
+    this.reset();
     const now = Date.now();
     for (const snap of snapshots.values()) {
+      if (snap.watchingSince === null) {
+        continue;
+      }
       const since = snap.lastSlotAt ?? snap.watchingSince;
-      this.set(
-        { chain: snap.chain, source: snap.source, testnet: snap.testnet },
-        (now - since) / 1000,
-      );
+      this.set(labelsOf(snap), (now - since) / 1000);
     }
   },
 });
@@ -88,152 +99,170 @@ const secondsSinceLastSlot = new Gauge({
 const subscriptionAgeSeconds = new Gauge({
   name: `${PREFIX}_subscription_age_seconds`,
   help: "Seconds since the current slot subscription was established; resets on every resubscribe, so an abnormally low value means churn",
-  labelNames: CHAIN_LABELS,
+  labelNames: LABEL_NAMES,
   registers: [registry],
   collect() {
+    this.reset();
     const now = Date.now();
     for (const snap of snapshots.values()) {
-      this.set(
-        { chain: snap.chain, source: snap.source, testnet: snap.testnet },
-        snap.subscribedAt === null ? 0 : (now - snap.subscribedAt) / 1000,
-      );
+      if (snap.subscribedAt !== null) {
+        this.set(labelsOf(snap), (now - snap.subscribedAt) / 1000);
+      }
     }
   },
 });
 
 const isConnected = new Gauge({
   name: `${PREFIX}_is_connected`,
-  help: "1 when the chain has a live slot stream (a real slot arrived inside the staleness window)",
-  labelNames: CHAIN_LABELS,
+  help: "1 when a real slot arrived inside the staleness window, not merely when a subscription was requested",
+  labelNames: LABEL_NAMES,
   registers: [registry],
 });
 
 const isReconnecting = new Gauge({
   name: `${PREFIX}_is_reconnecting`,
   help: "1 while a reconnect is in flight",
-  labelNames: CHAIN_LABELS,
+  labelNames: LABEL_NAMES,
   registers: [registry],
 });
 
 const currentEndpointIndex = new Gauge({
   name: `${PREFIX}_current_endpoint_index`,
   help: "Index of the endpoint currently in use: 0 = primary, 1 = fallback",
-  labelNames: CHAIN_LABELS,
+  labelNames: LABEL_NAMES,
   registers: [registry],
 });
 
-const chainsTracked = new Gauge({
-  name: `${PREFIX}_chains_tracked`,
-  help: "Chain/source pairs the reconciler currently has a source for; legitimately 0 when no Solana workflows exist",
+const chainsExpected = new Gauge({
+  name: `${PREFIX}_chains_expected`,
+  help: "Chains discovery says should be ingesting; legitimately 0 when no Solana workflows exist",
   registers: [registry],
-  collect() {
-    this.set(snapshots.size);
-  },
+});
+
+const chainsRunning = new Gauge({
+  name: `${PREFIX}_chains_running`,
+  help: "Chains with a running ingestor; expected minus running is the chains that are queued or failed to start",
+  registers: [registry],
 });
 
 const reconnectsTotal = new Counter({
   name: `${PREFIX}_reconnects_total`,
-  help: "Slot-subscription rebuilds triggered by the staleness watchdog. A healthy chain produces none",
-  labelNames: CHAIN_LABELS,
+  help: "Slot-subscription rebuilds triggered by the staleness watchdog; a healthy chain produces none",
+  labelNames: LABEL_NAMES,
   registers: [registry],
 });
 
 const abandonedSubscriptionsTotal = new Counter({
   name: `${PREFIX}_abandoned_subscriptions_total`,
   help: "Unsubscribe calls that did not settle inside the timeout and were abandoned; the direct signature of the PD #33473 wedge",
-  labelNames: CHAIN_LABELS,
+  labelNames: LABEL_NAMES,
   registers: [registry],
 });
 
 /**
- * Endpoint URLs are never a label. Chain-config carries the provider key in the
- * URL path, and a label value would be durable in the TSDB and echoed into
- * PagerDuty and Discord. `current_endpoint_index` answers the only operational
- * question - primary or fallback - without the credential. See
- * lib/utils/redact-url.ts.
+ * Turn an in-process total into a counter increment.
+ *
+ * A total below the last one seen means the source was rebuilt and began
+ * counting from zero again. Counting the new total from scratch keeps the
+ * counter moving. The earlier version swallowed every increment until the new
+ * total overtook the old one, which hid exactly the counter meant to show a
+ * repeat of the 2026-09-09 wedge.
  */
-export function recordChainHealth(
-  health: ConnectionHealth,
-  isTestnet: boolean,
-): void {
-  const chain = String(health.chainId);
-  const source = health.source;
-  const testnet = isTestnet ? "true" : "false";
-  const labels = { chain, source, testnet };
-
-  const existing = snapshots.get(key(chain, source));
-  snapshots.set(key(chain, source), {
-    chain,
-    source,
-    testnet,
-    watchingSince: existing?.watchingSince ?? Date.now(),
-    lastSlotAt: health.lastSlotAt,
-    subscribedAt: health.subscribedAt,
-  });
-
-  isConnected.set(labels, health.connected ? 1 : 0);
-  isReconnecting.set(labels, health.reconnecting ? 1 : 0);
-  currentEndpointIndex.set(labels, health.endpointIndex);
-
-  // The connection keeps monotonic in-process totals; mirror the delta so a
-  // process restart resets to 0, which is exactly what rate()/increase() want.
-  bumpTo("reconnects", reconnectsTotal, labels, health.reconnects);
-  bumpTo(
-    "abandoned",
-    abandonedSubscriptionsTotal,
-    labels,
-    health.abandonedSubscriptions,
-  );
-}
-
-/** Counter deltas, since prom-client has no "set" for a Counter. */
-const counterSeen = new Map<string, number>();
-function bumpTo(
+function advanceCounter(
   name: string,
-  counter: Counter<(typeof CHAIN_LABELS)[number]>,
-  labels: Record<string, string>,
+  counter: Counter<(typeof LABEL_NAMES)[number]>,
+  labels: ChainLabels,
   total: number,
 ): void {
-  const id = `${name}|${labels.chain}|${labels.source}`;
-  const seen = counterSeen.get(id) ?? 0;
-  if (total > seen) {
-    counter.inc(labels, total - seen);
-    counterSeen.set(id, total);
+  let baselines = counterBaselines.get(labels.chain);
+  if (!baselines) {
+    baselines = new Map();
+    counterBaselines.set(labels.chain, baselines);
   }
+  const seen = baselines.get(name);
+  const delta = seen === undefined || total < seen ? total : total - seen;
+  if (delta > 0) {
+    counter.inc(labels, delta);
+  }
+  baselines.set(name, total);
 }
 
 /**
- * Drop every series for a chain. Called wherever the reconciler removes a chain
- * - removal, restart-on-config-change, and a failed start - because a frozen
- * `seconds_since_last_slot` would keep climbing and hold the alert open forever
- * on a chain nobody is watching any more.
+ * Rebuild every series from the current health. Called at scrape time, so
+ * nothing in the ingest path has to know metrics exist.
  *
- * Counters are deliberately kept: their cumulative history is more useful than
- * an empty series, and they cannot pin a threshold alert the way a gauge can.
+ * Endpoint URLs are never a label: chain-config carries the provider key in
+ * the URL path, and a label value is durable in the TSDB and echoed into
+ * PagerDuty and Discord. `current_endpoint_index` answers the only operational
+ * question - primary or fallback - without the credential.
+ */
+export function syncMetrics(
+  entries: ChainHealthEntry[],
+  counts: { running: number; expected: number },
+): void {
+  const now = Date.now();
+  const present = new Set<string>();
+  isConnected.reset();
+  isReconnecting.reset();
+  currentEndpointIndex.reset();
+
+  for (const { health, isTestnet } of entries) {
+    const chain = String(health.chainId);
+    present.add(chain);
+    const existing = snapshots.get(chain);
+    const snap: ChainSnapshot = {
+      chain,
+      testnet: isTestnet ? "true" : "false",
+      watchingSince:
+        existing?.watchingSince ?? (health.state === "idle" ? null : now),
+      lastSlotAt: health.lastSlotAt,
+      subscribedAt: health.subscribedAt,
+    };
+    snapshots.set(chain, snap);
+
+    const labels = labelsOf(snap);
+    isConnected.set(labels, health.connected ? 1 : 0);
+    isReconnecting.set(labels, health.reconnecting ? 1 : 0);
+    currentEndpointIndex.set(labels, health.endpointIndex);
+    advanceCounter("reconnects", reconnectsTotal, labels, health.reconnects);
+    advanceCounter(
+      "abandoned",
+      abandonedSubscriptionsTotal,
+      labels,
+      health.abandonedSubscriptions,
+    );
+  }
+
+  for (const chain of [...snapshots.keys()]) {
+    if (!present.has(chain)) {
+      forget(chain);
+    }
+  }
+
+  chainsExpected.set(counts.expected);
+  chainsRunning.set(counts.running);
+}
+
+function forget(chain: string): void {
+  snapshots.delete(chain);
+  counterBaselines.delete(chain);
+}
+
+/**
+ * Drop a chain's state right away, without waiting for the next scrape to
+ * notice it is gone. Called when the reconciler drops or restarts a chain, so
+ * a rebuilt source starts its silence clock and counter baselines fresh.
+ *
+ * Counter series are kept: their history is more useful than an empty series,
+ * and a counter cannot pin a threshold alert the way a stuck gauge can.
  */
 export function forgetChain(chainId: number): void {
-  const chain = String(chainId);
-  for (const [mapKey, snap] of [...snapshots]) {
-    if (snap.chain !== chain) {
-      continue;
-    }
-    snapshots.delete(mapKey);
-    const labels = {
-      chain: snap.chain,
-      source: snap.source,
-      testnet: snap.testnet,
-    };
-    secondsSinceLastSlot.remove(labels);
-    subscriptionAgeSeconds.remove(labels);
-    isConnected.remove(labels);
-    isReconnecting.remove(labels);
-    currentEndpointIndex.remove(labels);
-  }
+  forget(String(chainId));
 }
 
 /** Test seam. Never called in production. */
 export function resetMetrics(): void {
   snapshots.clear();
-  counterSeen.clear();
+  counterBaselines.clear();
   registry.resetMetrics();
 }

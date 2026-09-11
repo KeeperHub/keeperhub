@@ -155,7 +155,7 @@ describe("HTTP server", () => {
           lastSyncCompletedAt: liveness.lastSyncCompletedAt,
         }),
         refreshMetrics: () => {
-          // no-op: the metric contents are covered by the metrics tests
+          // no-op here; metric contents are covered in metrics.test.ts
         },
         registry,
       },

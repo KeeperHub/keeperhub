@@ -15,6 +15,10 @@ const hooks = vi.hoisted(() => ({
   registrations: [] as unknown[],
   startFails: new Set<number>(),
   connected: new Set<number>(),
+  /** Error message a failing start raises, per chain. */
+  startErrors: new Map<number, string>(),
+  /** A start for this chain waits on the promise, to hold it mid-start. */
+  blockers: new Map<number, Promise<void>>(),
 }));
 
 vi.mock("../../src/discovery", () => ({
@@ -32,12 +36,17 @@ vi.mock("../../src/ingest/block-ingestor", () => ({
     constructor(opts: { registration: { chainId: number } }) {
       this.chainId = opts.registration.chainId;
     }
-    start(): Promise<void> {
+    async start(): Promise<void> {
+      const blocker = hooks.blockers.get(this.chainId);
+      if (blocker) {
+        await blocker;
+      }
       if (hooks.startFails.has(this.chainId)) {
-        return Promise.reject(new Error(`start boom ${this.chainId}`));
+        throw new Error(
+          hooks.startErrors.get(this.chainId) ?? `start boom ${this.chainId}`,
+        );
       }
       this.started = true;
-      return Promise.resolve();
     }
     stop(): Promise<void> {
       this.started = false;
@@ -99,6 +108,8 @@ beforeEach(async () => {
   hooks.registrations = [];
   hooks.startFails = new Set();
   hooks.connected = new Set();
+  hooks.startErrors = new Map();
+  hooks.blockers = new Map();
   vi.resetModules();
   main = await import("../../src/main");
 });
@@ -116,6 +127,9 @@ describe("getAllHealth", () => {
     const failed = health.find((h) => h.chainId === 103);
     expect(failed?.connected).toBe(false);
     expect(failed?.lastError).toContain("start boom");
+    expect(failed?.state).toBe("failed");
+    // Nothing is running, so no source is named rather than a guessed one.
+    expect(failed?.source).toBe("none");
     // And the endpoint says so, instead of answering 200 over an empty list.
     expect(buildHealthResponse(health).status).toBe(503);
   });
@@ -153,6 +167,66 @@ describe("getAllHealth", () => {
 
     expect(main.getAllHealth()[0]?.connected).toBe(true);
     expect(main.getAllHealth()[0]?.lastError).toBeNull();
+  });
+});
+
+describe("reconciler health and metrics", () => {
+  it("reports a chain queued on a cold start as idle, not failed", async () => {
+    let release: () => void = () => undefined;
+    hooks.blockers.set(
+      101,
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    hooks.registrations = [registration(101), registration(103)];
+
+    const pass = main.synchronizeData();
+    await vi.waitFor(() => expect(main.getAllHealth()).toHaveLength(2));
+
+    for (const entry of main.getAllHealth()) {
+      expect(entry.state).toBe("idle");
+      expect(entry.source).toBe("none");
+      expect(entry.connected).toBe(false);
+    }
+
+    release();
+    await pass;
+  });
+
+  it("redacts a provider URL in a start failure before serving it", async () => {
+    hooks.registrations = [registration(103)];
+    hooks.startFails.add(103);
+    hooks.startErrors.set(
+      103,
+      "request to https://lb.example.com/solana-devnet/SECRETKEY failed, reason: timeout",
+    );
+
+    await main.synchronizeData();
+
+    const reported = main.getAllHealth()[0]?.lastError ?? "";
+    expect(reported).not.toContain("SECRETKEY");
+    expect(reported).toContain("https://lb.example.com/[redacted]");
+  });
+
+  it("forgets the series of a failed chain once discovery drops it", async () => {
+    // A chain that never started is not in the registry, so dropping it from
+    // the registry never forgot its metrics, and its series climbed forever.
+    const metricsModule = await import("../../lib/metrics");
+    const silence = () =>
+      metricsModule.registry.getSingleMetricAsString(
+        "keeperhub_solana_tracker_seconds_since_last_slot",
+      );
+    hooks.registrations = [registration(103)];
+    hooks.startFails.add(103);
+    await main.synchronizeData();
+    main.refreshMetrics();
+    expect(await silence()).toContain('chain="103"');
+
+    hooks.registrations = [];
+    await main.synchronizeData();
+    main.refreshMetrics();
+    expect(await silence()).not.toContain('chain="103"');
   });
 });
 
