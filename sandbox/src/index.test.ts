@@ -197,22 +197,22 @@ describe("sandbox HTTP server", () => {
     expect(outcome.errorMessage).toContain("boom");
   });
 
-  it("POST /run with env-escape payload does not leak injected secret", async () => {
+  it("POST /run cannot reach process through the sandbox realm", async () => {
     const FAKE = "SBX_TEST_FAKE_SECRET_AAA";
     process.env[FAKE] = "must-not-leak";
     try {
       const body = makeRunBody({
-        code: `const p = Error.constructor("return process")(); return Object.keys(p.env);`,
+        code: 'return String(Error.constructor("return typeof process")());',
         timeout: 5,
       });
       const res = await request(port, "POST", "/run", body);
       expect(res.status).toBe(200);
       const outcome = parseRunResponse(res.body) as {
         ok: boolean;
-        result?: string[];
+        result?: string;
       };
       expect(outcome.ok).toBe(true);
-      expect(outcome.result).not.toContain(FAKE);
+      expect(outcome.result).toBe("undefined");
     } finally {
       delete process.env[FAKE];
     }
