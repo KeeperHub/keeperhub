@@ -50,7 +50,7 @@
 --
 -- Idempotent. A row whose Condition nodes no longer carry a top-level `group` is not
 -- matched, so a second run reports UPDATE 0. Covered by
--- tests/unit/migration-0153-condition-group-to-condition-config.test.ts.
+-- tests/unit/migration-0157-condition-group-to-condition-config.test.ts.
 --
 -- `updated_at` is deliberately left alone: this is a repair, not a user edit, and
 -- moving it would reorder every affected workflow in the user's list.
