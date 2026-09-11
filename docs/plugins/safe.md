@@ -148,7 +148,9 @@ Fetch pending multisig transactions that have not been executed yet. Optionally 
 
 Each transaction includes: `safeTxHash`, `to`, `value`, `data`, `operation` (0=CALL, 1=DELEGATECALL), `operationLabel`, `nonce`, `confirmations`, `confirmationsRequired`, `confirmationsCollected`, `dataDecoded`, `safeTxGas`, `baseGas`, `gasPrice`, `gasToken`, `refundReceiver`, `submissionDate`, `safe`
 
-**When to use:** Monitor your Safe for new transactions awaiting your signature, verify transaction calldata before signing, detect suspicious proposals (DELEGATECALL, proxy upgrades, unknown targets).
+A non-zero `gasPrice` together with a `gasToken` and a `refundReceiver` makes `execTransaction` pay a refund out of the Safe and call the token contract to do it, so a hostile pair drains the Safe when the transaction is executed. The benign case is a zero `gasPrice` with the zero address for both `gasToken` and `refundReceiver`; check all three before signing.
+
+**When to use:** Monitor your Safe for new transactions awaiting your signature, verify transaction calldata before signing, detect suspicious proposals (DELEGATECALL, proxy upgrades, unknown targets, refund parameters that pay an attacker).
 
 ---
 
