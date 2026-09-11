@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
+import { notFound } from "next/navigation";
 import { PythShowcase } from "@/components/pyth/pyth-showcase";
+import { isPythPriceTriggerEnabled } from "@/lib/pyth/feature-flag";
 
 export const metadata: Metadata = {
   title: "Pyth Price Triggers | KeeperHub",
@@ -16,5 +18,8 @@ export const viewport: Viewport = {
 };
 
 export default function PythPage() {
+  if (!isPythPriceTriggerEnabled()) {
+    notFound();
+  }
   return <PythShowcase />;
 }

@@ -6,6 +6,10 @@ import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { authFailureResponse, getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { db } from "@/lib/db";
+import {
+  hasPythPriceTrigger,
+  isPythPriceTriggerEnabled,
+} from "@/lib/pyth/feature-flag";
 import { findPythConfig } from "@/lib/pyth/trigger-config";
 import { validateWorkflowIntegrations } from "@/lib/db/integrations";
 import { extractActionTypeNodes } from "@/lib/features";
@@ -401,11 +405,36 @@ export async function PATCH(
 
     const updateData = buildUpdateData(body);
 
-    if (body.enabled === true || (existingWorkflow.enabled && body.enabled !== false && Array.isArray(body.nodes))) {
+    if (
+      body.enabled === true ||
+      (existingWorkflow.enabled &&
+        body.enabled !== false &&
+        Array.isArray(body.nodes))
+    ) {
+      const effectiveNodes = updateData.nodes ?? existingWorkflow.nodes;
+      if (
+        !isPythPriceTriggerEnabled() &&
+        hasPythPriceTrigger(effectiveNodes)
+      ) {
+        return NextResponse.json(
+          {
+            error: "PYTH_TRIGGER_DISABLED",
+            message: "Pyth Price triggers are not enabled on this deployment.",
+          },
+          { status: 400 }
+        );
+      }
       try {
-        findPythConfig(updateData.nodes ?? existingWorkflow.nodes);
+        findPythConfig(effectiveNodes);
       } catch (error) {
-        return NextResponse.json({ error: "INVALID_PYTH_TRIGGER", message: error instanceof Error ? error.message : "Invalid Pyth trigger" }, { status: 400 });
+        return NextResponse.json(
+          {
+            error: "INVALID_PYTH_TRIGGER",
+            message:
+              error instanceof Error ? error.message : "Invalid Pyth trigger",
+          },
+          { status: 400 }
+        );
       }
     }
 

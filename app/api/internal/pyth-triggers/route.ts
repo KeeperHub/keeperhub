@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { organization, workflows } from "@/lib/db/schema";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { logWarn } from "@/lib/logging";
+import { isPythPriceTriggerEnabled } from "@/lib/pyth/feature-flag";
 import {
   observePythPrice,
   type PythObservationRequest,
@@ -47,6 +48,9 @@ export async function GET(request: Request): Promise<NextResponse> {
   if (denied) {
     return denied;
   }
+  if (!isPythPriceTriggerEnabled()) {
+    return NextResponse.json({ workflows: [] });
+  }
   const active = await db
     .select({ id: workflows.id, nodes: workflows.nodes })
     .from(workflows)
@@ -84,6 +88,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   const denied = await authenticate(request, rawBody);
   if (denied) {
     return denied;
+  }
+  if (!isPythPriceTriggerEnabled()) {
+    return NextResponse.json(
+      { error: "Pyth Price triggers are disabled" },
+      { status: 503 }
+    );
   }
   let command: PythObservationRequest;
   try {

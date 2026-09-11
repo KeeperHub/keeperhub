@@ -41,11 +41,25 @@ function signed(method: "GET" | "POST", body = "", caller = "events") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  process.env.PYTH_API_KEY = "test-pyth-api-key";
   secrets.mockResolvedValue([{ secret, keyVersion: 1 }]);
   observe.mockResolvedValue({ outcome: "baseline" });
 });
 
 describe("Pyth internal route authorization", () => {
+  it("disables discovery and mutation when the Pyth API key is absent", async () => {
+    delete process.env.PYTH_API_KEY;
+
+    const discovery = await GET(signed("GET"));
+    expect(discovery.status).toBe(200);
+    expect(await discovery.json()).toEqual({ workflows: [] });
+
+    const mutation = await POST(signed("POST", JSON.stringify(command)));
+    expect(mutation.status).toBe(503);
+    expect(select).not.toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
+  });
+
   it("discovers only valid Pyth configurations and returns no credentials", async () => {
     const config = {
       triggerType: "Pyth Price",

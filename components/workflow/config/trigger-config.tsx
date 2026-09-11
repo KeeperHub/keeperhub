@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TimezoneSelect } from "@/components/ui/timezone-select";
+import { useFeatures } from "@/hooks/use-features";
 import { parseIntervalSeconds } from "@/lib/cron-utils";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import type { ActionConfigField } from "@/plugins/registry";
@@ -47,6 +48,9 @@ export function TriggerConfig({
   disabled,
   workflowId,
 }: TriggerConfigProps) {
+  const { snapshot: featureSnapshot } = useFeatures();
+  const pythPriceTriggerEnabled =
+    featureSnapshot?.pythPriceTriggerEnabled === true;
   const webhookUrl = workflowId
     ? `${typeof window !== "undefined" ? window.location.origin : ""}/api/workflows/${workflowId}/webhook`
     : "";
@@ -85,12 +89,14 @@ export function TriggerConfig({
             <SelectValue placeholder="Select trigger type" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="Pyth Price">
-              <div className="flex items-center gap-2">
-                <Radio className="h-4 w-4" />
-                Pyth Price
-              </div>
-            </SelectItem>
+            {pythPriceTriggerEnabled && (
+              <SelectItem value="Pyth Price">
+                <div className="flex items-center gap-2">
+                  <Radio className="h-4 w-4" />
+                  Pyth Price
+                </div>
+              </SelectItem>
+            )}
             <SelectItem value="Manual">
               <div className="flex items-center gap-2">
                 <Play className="h-4 w-4" />
@@ -131,7 +137,7 @@ export function TriggerConfig({
         </Select>
       </div>
 
-      {config?.triggerType === "Pyth Price" && (
+      {pythPriceTriggerEnabled && config?.triggerType === "Pyth Price" && (
         <PythTriggerConfig config={config} disabled={disabled} onUpdateConfig={onUpdateConfig} />
       )}
       {/* Webhook fields */}
