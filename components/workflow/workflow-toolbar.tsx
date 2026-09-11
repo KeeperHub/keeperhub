@@ -27,6 +27,7 @@ import { ButtonGroup } from "@/components/ui/button-group";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
 import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
+import { ManualRunInputOverlay } from "@/components/overlays/manual-run-input-overlay";
 import { Switch } from "@/components/ui/switch";
 import { WalletToolbarButton } from "@/components/workflow/wallet-toolbar-button";
 import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
@@ -42,6 +43,10 @@ import { integrationsAtom } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
 import { cn } from "@/lib/utils";
 import { runWorkflowValidationPreflight } from "@/lib/workflow/editor/run-validation";
+import {
+  buildManualRunRequestBody,
+  shouldCollectManualRunInput,
+} from "@/lib/workflow/editor/manual-run-input";
 import { evaluateShowWhen, type ShowWhen } from "@/lib/workflow/editor/show-when";
 import { getMissingBatchCallFields } from "@/lib/workflow/validation/action-config";
 import { ensureSavedBeforeRun } from "@/lib/workflow/run-preflight";
@@ -469,6 +474,8 @@ function getMissingIntegrations(
 
 type ExecuteTestWorkflowParams = {
   workflowId: string;
+  /** The Manual-trigger input the author supplied, merged into the run's data. */
+  input: Record<string, unknown>;
   nodes: WorkflowNode[];
   updateNodeData: (update: {
     id: string;
@@ -481,8 +488,18 @@ type ExecuteTestWorkflowParams = {
   onExecutionStarted?: () => void;
 };
 
+/**
+ * Start one test execution and begin polling it.
+ *
+ * Returns whether the execution was accepted. The failure path reports itself
+ * through a toast (there is no single caller to receive an error), so the return
+ * value is what lets a caller keep the author's input on screen instead of
+ * throwing it away: a run rejected at the concurrency check is retryable, and
+ * retyping the payload to retry is the cost of not knowing.
+ */
 async function executeTestWorkflow({
   workflowId,
+  input,
   nodes,
   updateNodeData,
   pollingIntervalRef,
@@ -490,7 +507,7 @@ async function executeTestWorkflow({
   setSelectedExecutionId,
   setCurrentExecutionId,
   onExecutionStarted,
-}: ExecuteTestWorkflowParams) {
+}: ExecuteTestWorkflowParams): Promise<boolean> {
   // Set all nodes to idle first
   updateNodesStatus(nodes, updateNodeData, "idle");
 
@@ -508,7 +525,10 @@ async function executeTestWorkflow({
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ input: {} }),
+      // `input` is the collected Manual-trigger payload, or `{}` for a workflow
+      // that declares none: the same body a listed workflow receives from a
+      // caller, which is what makes `{{Manual.data.<field>}}` resolve here.
+      body: JSON.stringify(buildManualRunRequestBody(input)),
     });
 
     if (!response.ok) {
@@ -581,6 +601,7 @@ async function executeTestWorkflow({
     }, 500); // Poll every 500ms
 
     pollingIntervalRef.current = pollInterval;
+    return true;
   } catch (error) {
     console.error("Failed to execute workflow:", error);
     toast.error(
@@ -589,6 +610,7 @@ async function executeTestWorkflow({
     updateNodesStatus(nodes, updateNodeData, "error");
     setIsExecuting(false);
     setCurrentExecutionId(null);
+    return false;
   }
 }
 
@@ -635,12 +657,13 @@ function useWorkflowHandlers({
   setCurrentExecutionId,
   userIntegrations,
 }: WorkflowHandlerParams) {
-  const { open: openOverlay } = useOverlay();
+  const { open: openOverlay, push: pushOverlay } = useOverlay();
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isPreflightingRef = useRef(false);
   const [isPreflighting, setIsPreflighting] = useState(false);
   const setRunsRefreshTrigger = useSetAtom(runsRefreshTriggerAtom);
   const previewVersion = useAtomValue(previewVersionAtom);
+  const inputSchema = useAtomValue(currentWorkflowInputSchemaAtom);
 
   // Cleanup polling interval on unmount
   useEffect(
@@ -679,9 +702,11 @@ function useWorkflowHandlers({
     await saveWorkflow();
   };
 
-  const startWorkflowExecution = async () => {
+  const startWorkflowExecution = async (
+    input: Record<string, unknown> = {}
+  ): Promise<boolean> => {
     if (!currentWorkflowId) {
-      return;
+      return false;
     }
 
     // Switch to Runs tab when starting a test run
@@ -693,8 +718,16 @@ function useWorkflowHandlers({
     setSelectedNodeId(null);
 
     setIsExecuting(true);
-    await executeTestWorkflow({
+    // The run takes the guards over from here: handleExecute checks
+    // `isExecuting`, which stays true for the whole execution, and the preflight
+    // guards are released so a dismissal of the input overlay cannot leave the
+    // Run button disabled while a run is in flight.
+    isPreflightingRef.current = false;
+    setIsPreflighting(false);
+
+    const started = await executeTestWorkflow({
       workflowId: currentWorkflowId,
+      input,
       nodes,
       updateNodeData,
       pollingIntervalRef,
@@ -704,6 +737,7 @@ function useWorkflowHandlers({
       onExecutionStarted: () => setRunsRefreshTrigger((c) => c + 1),
     });
     // Don't set executing to false here - let polling handle it
+    return started;
   };
 
   const executeWorkflow = async () => {
@@ -720,6 +754,44 @@ function useWorkflowHandlers({
 
     isPreflightingRef.current = true;
     setIsPreflighting(true);
+
+    // Set when the input overlay opens, which then holds the guards for as long
+    // as it is on screen: the author needs the Run button and Cmd+Enter to be
+    // inert while they are filling in a payload, or the next start replaces the
+    // overlay - and the typed input - with a fresh prefilled one.
+    let inputOverlayOpened = false;
+
+    // Single entry point for the Run button and both Run Anyway paths. A Manual
+    // workflow that declares an inputSchema gets the input prompt first, so the
+    // values reach the execute request instead of the run starting with `{}`
+    // (which left every `{{Manual.data.<field>}}` reference undefined).
+    const startOrCollectInput = async () => {
+      if (!shouldCollectManualRunInput(nodes, inputSchema)) {
+        await startWorkflowExecution({});
+        return;
+      }
+      inputOverlayOpened = true;
+      pushOverlay(
+        ManualRunInputOverlay,
+        {
+          inputSchema: inputSchema ?? {},
+          onSubmit: startWorkflowExecution,
+        },
+        {
+          // A stray backdrop click or an Escape must not discard a payload the
+          // author is part-way through.
+          closeOnBackdropClick: false,
+          closeOnEscape: false,
+          onClose: () => {
+            // Every dismissal that is not a submission releases the guards: a
+            // dismissed overlay leaves nothing running, and holding them would
+            // strand the Run button.
+            isPreflightingRef.current = false;
+            setIsPreflighting(false);
+          },
+        }
+      );
+    };
 
     try {
       // The server executes the stored definition, not the canvas state, so
@@ -754,12 +826,17 @@ function useWorkflowHandlers({
             onRunAnyway,
           });
         },
-        onStartWorkflowExecution: startWorkflowExecution,
+        onStartWorkflowExecution: startOrCollectInput,
         onError: (message) => toast.error(message),
       });
     } finally {
-      isPreflightingRef.current = false;
-      setIsPreflighting(false);
+      // A run that started took the guards over, and an open overlay owns them
+      // until it is submitted or dismissed. Clearing them here is what released
+      // them for the whole time the modal was up.
+      if (!inputOverlayOpened) {
+        isPreflightingRef.current = false;
+        setIsPreflighting(false);
+      }
     }
   };
 
