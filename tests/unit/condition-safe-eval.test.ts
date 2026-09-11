@@ -311,7 +311,7 @@ describe("safeEvaluateCondition - semantics", () => {
       );
     });
 
-    it("answers exactly one of <, > and === for every numeric pair", () => {
+    it("answers exactly one of <, > and === for pairs it reads as decimals", () => {
       // Ordering numeric with equality still textual left all three false at
       // once for a pair that is equal by magnitude and different as text, so
       // a Condition branching on <, > and === took no branch at all. These
@@ -358,23 +358,98 @@ describe("safeEvaluateCondition - semantics", () => {
       }
     });
 
-    it("stops converting past a length no chain value reaches", () => {
+    it("orders two digit strings by magnitude at any length", () => {
       // A uint256 is 78 digits and the same value formatted with 18 decimals
-      // is 97 characters, so the cap is far above anything a read produces.
+      // is 97 characters, so a read never produces operands this long.
       const uint256Max = "1".repeat(78);
       expect(lt(uint256Max, `9${uint256Max.slice(1)}`)).toBe(true);
       expect(lt("9".repeat(256), `1${"0".repeat(256)}`)).toBe(true);
 
-      // Past it the pair keeps code-unit ordering rather than paying a BigInt
-      // parse that grows with the square of the length: measured on this
-      // file, two 1,000,000-digit operands cost 2,644 ms a comparison without
-      // the cap and 0.01 ms with it. Code-unit ordering is still a total
-      // order, so all three answers stay available to an author.
+      // 258 characters against 259. An earlier revision capped each operand on
+      // its own, so the shorter side converted, the longer one did not, and
+      // the pair fell through to code-unit ordering and answered backwards:
+      // 10^258 - 1 is less than 10^258, and "9" sorts after "1".
+      expect(lt("9".repeat(258), `1${"0".repeat(258)}`)).toBe(true);
+      expect(gt("9".repeat(258), `1${"0".repeat(258)}`)).toBe(false);
+
+      // Far past that boundary, and across two spellings of one value. Nothing
+      // is parsed into a BigInt, so length costs a comparison rather than the
+      // square of one: measured here, a 1,000,000-digit pair is 0.006 ms
+      // ordered as digits against 349 ms parsed first.
       const nines = "9".repeat(300);
       const larger = `1${"0".repeat(300)}`;
-      expect(lt(nines, larger)).toBe(false);
-      expect(gt(nines, larger)).toBe(true);
+      expect(lt(nines, larger)).toBe(true);
+      expect(gt(nines, larger)).toBe(false);
       expect(cmp("===", nines, larger)).toBe(false);
+      expect(cmp("===", nines, `${nines}.0`)).toBe(true);
+      expect(cmp("===", nines, `0000${nines}`)).toBe(true);
+    });
+
+    it("hands back a BigInt too large to print, and nothing reverses", () => {
+      // Printing a BigInt is superlinear - 132 ms at 300,000 digits - so past
+      // 10^256 the operand is handed back unprinted. The pair then falls back
+      // to JavaScript's own BigInt comparison, which converts the string and
+      // is exact, so declining to convert changes no answer here.
+      const beyond = BigInt(`1${"0".repeat(300)}`);
+      expect(lt(beyond, "9".repeat(301))).toBe(true);
+      expect(gt(beyond, "9".repeat(301))).toBe(false);
+      expect(gt(beyond, "1")).toBe(true);
+
+      // Inside the bound it is printed and read as a decimal, so a BigInt and
+      // the string spelling of the same value are one value.
+      expect(cmp("===", 10n ** 200n, `1${"0".repeat(200)}`)).toBe(true);
+      expect(cmp("===", 10n ** 200n, `1${"0".repeat(200)}.00`)).toBe(true);
+      expect(cmp("===", -(10n ** 200n), `-1${"0".repeat(200)}`)).toBe(true);
+    });
+
+    it("holds the example the operator page gives for == against ===", () => {
+      // docs/workflows/creating.md tells an author the two operators part
+      // company only where one side is not a number. The page said the
+      // opposite until this change, so the example it now gives is asserted
+      // here rather than left to drift a second time.
+      expect(cmp("==", "0", false)).toBe(true);
+      expect(cmp("===", "0", false)).toBe(false);
+      expect(cmp("===", "0", 0)).toBe(true);
+      expect(cmp("===", "1.0", 1)).toBe(true);
+      expect(cmp("===", "1.0", "1")).toBe(true);
+    });
+
+    it("leaves a pair outside the decimal grammar where it was", () => {
+      // The invariant above is the decimal grammar's, not every numeric-looking
+      // pair's. Exponent and hex forms are outside it by construction - the
+      // visual builder quotes them rather than emitting a bare number - and so
+      // is anything carrying whitespace. For these the evaluator hands the pair
+      // back, all three answers are false at once, and an author branching on
+      // <, > and === takes no branch. None of it is a regression: each answers
+      // the same way on staging. It is recorded so the next reader does not
+      // take the name of the test above to mean more than it does.
+      const outside: [unknown, unknown][] = [
+        [1e21, "1000000000000000000000"],
+        [1e-7, "0.0000001"],
+        [" 1", 1],
+        ["0x10", 16],
+        ["pending", 5],
+      ];
+      for (const [a, b] of outside) {
+        expect([String(a), lt(a, b), gt(a, b), cmp("===", a, b)]).toEqual([
+          String(a),
+          false,
+          false,
+          false,
+        ]);
+      }
+    });
+
+    it("reads a negative decimal by magnitude and gives zero no sign", () => {
+      expect(cmp("===", "-1.5", "-1.50")).toBe(true);
+      expect(cmp("===", "-0.0", "0")).toBe(true);
+      expect(cmp("===", "-0", "0.000")).toBe(true);
+      expect(lt("-2", "-1")).toBe(true);
+      expect(gt("-2", "-1")).toBe(false);
+      expect(lt("-0.2", "-0.10")).toBe(true);
+      expect(lt("-1", "0")).toBe(true);
+      expect(gt("1", "-1")).toBe(true);
+      expect(lt("-1.5", -1.4)).toBe(true);
     });
 
     it("leaves a missing or absent operand where it was", () => {

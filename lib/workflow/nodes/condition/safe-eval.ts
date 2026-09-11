@@ -578,23 +578,27 @@ function splitDecimal(literal: string): DecimalOperand {
 }
 
 /**
- * Digits past this many on one side are refused rather than converted, and the
- * pair falls back to the comparison it had before this file converted
- * anything. A uint256 is 78 digits, and that same value formatted with 18
- * decimals is 97 characters, so no on-chain read comes near the cap.
+ * A BigInt has to be printed before it can be read as a decimal, and printing
+ * one is superlinear: 132 ms at 300,000 digits on the machine this was
+ * measured on. Past this magnitude the operand is handed back unprinted and
+ * the pair falls back to the comparison it had before this file converted
+ * anything, which for a BigInt against a numeric string is JavaScript's own
+ * BigInt comparison and already exact. Declining reverses nothing. The bound
+ * is compared against rather than counted, so reaching it costs one BigInt
+ * comparison.
  *
- * It exists because parsing a decimal string into a BigInt grows with the
- * square of its length. Measured on this file, a comparison of two
- * 1,000,000-digit operands costs 2,644 ms with the cap lifted and 0.01 ms with
- * it in place. Whether a node output that long can reach a Condition is not
- * something I traced, so the cap is a bound on the cost rather than a fix for
- * a path known to be reachable.
+ * A uint256 is 78 digits, and that same value formatted with 18 decimals is 97
+ * characters, so no on-chain read comes near it.
+ *
+ * Two strings need no bound at all. They are ordered as digits and never
+ * become BigInts, which is what an earlier revision of this file used a
+ * length cap to avoid: measured here, a 1,000,000-digit pair costs 0.006 ms
+ * ordered as digits against 349 ms parsed into BigInts first. A cap applied to
+ * one operand at a time is also what made the pair fall back while the other
+ * side had already converted, and a length cap has no boundary to get wrong
+ * once nothing is parsed.
  */
-const MAX_OPERAND_DIGITS = 256;
-
-/** A sign and a point are the only non-digits the grammar admits. */
-const withinDigitCap = (literal: string): boolean =>
-  literal.length <= MAX_OPERAND_DIGITS + 2;
+const MAX_PRINTABLE_MAGNITUDE = 10n ** 256n;
 
 /**
  * The operand as a decimal, or undefined when it is not one. Strings, BigInts
@@ -618,33 +622,79 @@ const withinDigitCap = (literal: string): boolean =>
  */
 function asDecimalOperand(value: unknown): DecimalOperand | undefined {
   if (typeof value === "string") {
-    return withinDigitCap(value) && NUMERIC_OPERAND_RE.test(value)
-      ? splitDecimal(value)
-      : undefined;
+    return NUMERIC_OPERAND_RE.test(value) ? splitDecimal(value) : undefined;
   }
-  if (typeof value === "bigint" || typeof value === "number") {
+  if (typeof value === "bigint") {
+    if (value >= MAX_PRINTABLE_MAGNITUDE || value <= -MAX_PRINTABLE_MAGNITUDE) {
+      return undefined;
+    }
+    return splitDecimal(value.toString());
+  }
+  if (typeof value === "number") {
     const literal = value.toString();
-    return withinDigitCap(literal) && NUMERIC_OPERAND_RE.test(literal)
-      ? splitDecimal(literal)
-      : undefined;
+    return NUMERIC_OPERAND_RE.test(literal) ? splitDecimal(literal) : undefined;
   }
   return undefined;
 }
 
-/** -1, 0 or 1. Fractions are padded and never rounded, so this stays exact. */
-function compareDecimals(left: DecimalOperand, right: DecimalOperand): number {
-  const width = Math.max(left.fraction.length, right.fraction.length);
-  const scaled = (operand: DecimalOperand): bigint => {
-    const padded = operand.fraction.padEnd(width, "0");
-    const digits = BigInt(operand.integer + padded);
-    return operand.negative ? -digits : digits;
-  };
-  const a = scaled(left);
-  const b = scaled(right);
-  if (a < b) {
-    return -1;
+/** The integer digits with leading zeros dropped, so "007" and "7" agree. */
+function significantDigits(digits: string): string {
+  let first = 0;
+  while (first < digits.length && digits[first] === "0") {
+    first += 1;
   }
-  return a > b ? 1 : 0;
+  return digits.slice(first);
+}
+
+/** True when no digit on either side of the point is non-zero. */
+function isZeroOperand(operand: DecimalOperand): boolean {
+  return (
+    significantDigits(operand.integer) === "" &&
+    significantDigits(operand.fraction) === ""
+  );
+}
+
+/**
+ * -1, 0 or 1 on magnitude alone.
+ *
+ * Two runs of digits of the same length order the same way as the numbers they
+ * spell, so the longer integer wins and equal lengths compare as text. Nothing
+ * is parsed, which is what lets an operand of any length through: the cost is
+ * the length of the shorter operand rather than the square of the longer.
+ */
+function compareMagnitude(left: DecimalOperand, right: DecimalOperand): number {
+  const a = significantDigits(left.integer);
+  const b = significantDigits(right.integer);
+  if (a.length !== b.length) {
+    return a.length < b.length ? -1 : 1;
+  }
+  if (a !== b) {
+    return a < b ? -1 : 1;
+  }
+  const width = Math.max(left.fraction.length, right.fraction.length);
+  const fractionA = left.fraction.padEnd(width, "0");
+  const fractionB = right.fraction.padEnd(width, "0");
+  if (fractionA === fractionB) {
+    return 0;
+  }
+  return fractionA < fractionB ? -1 : 1;
+}
+
+/**
+ * -1, 0 or 1. Fractions are padded and never rounded, so this stays exact.
+ *
+ * Zero carries no sign here: "-0" and "0" are one value, so the sign is read
+ * only once the pair is known not to be zero.
+ */
+function compareDecimals(left: DecimalOperand, right: DecimalOperand): number {
+  if (isZeroOperand(left) && isZeroOperand(right)) {
+    return 0;
+  }
+  if (left.negative !== right.negative) {
+    return left.negative ? -1 : 1;
+  }
+  const magnitude = compareMagnitude(left, right);
+  return left.negative ? -magnitude : magnitude;
 }
 
 /**
