@@ -1,0 +1,149 @@
+{
+  "1": {
+    "vault-deposit": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x6e553f6500000000000000000000000000000000000000000000000000000000000000010000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-mint": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x94bf804d00000000000000000000000000000000000000000000000000000000000000010000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-withdraw": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0xb460af94000000000000000000000000000000000000000000000000000000000000000100000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-redeem": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0xba087652000000000000000000000000000000000000000000000000000000000000000100000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-asset": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x38d52e0f",
+      "skipped": false
+    },
+    "vault-total-assets": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x01e1d114",
+      "skipped": false
+    },
+    "vault-total-supply": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x18160ddd",
+      "skipped": false
+    },
+    "vault-balance": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-convert-to-assets": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x07a2d13a0000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-convert-to-shares": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0xc6e6f5920000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-preview-deposit": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0xef8b30f70000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-preview-mint": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0xb3d7f6b90000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-preview-withdraw": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x0a28a4770000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-preview-redeem": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x4cdad5060000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "vault-max-deposit": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x402d267d0000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-max-mint": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0xc63d75b60000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-max-withdraw": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0xce96cb770000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "vault-max-redeem": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0xd905777e0000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-vault-decimals": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x313ce567",
+      "skipped": false
+    },
+    "get-cash": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x961be391",
+      "skipped": false
+    },
+    "get-total-borrows": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x47bd3718",
+      "skipped": false
+    },
+    "get-interest-rate": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x7c3a00fd",
+      "skipped": false
+    },
+    "get-interest-accumulator": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x087a6007",
+      "skipped": false
+    },
+    "get-accumulated-fees": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x587f5ed7",
+      "skipped": false
+    },
+    "get-debt-of": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0xd283e75f0000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "get-oracle": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x7dc0d1d0",
+      "skipped": false
+    },
+    "get-unit-of-account": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x3e833364",
+      "skipped": false
+    },
+    "get-evc": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0xa70354a1",
+      "skipped": false
+    },
+    "get-creator": {
+      "to": "0x797DD80692c3b2dAdabCe8e30C07fDE5307D48a9",
+      "data": "0x02d05d3f",
+      "skipped": false
+    }
+  }
+}
