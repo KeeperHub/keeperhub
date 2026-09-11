@@ -79,7 +79,8 @@ If any of the above commands fail or show errors:
 - **No Barrel Files**: Do not create barrel/index files that re-export from other files
 
 ## Plugin Guidelines
-- **No SDK Dependencies**: Plugin step files must use `fetch` directly instead of SDK client libraries. Do not add npm package dependencies for API integrations.
-- **No dependencies field**: Do not use the `dependencies` field in plugin `index.ts` files. All API calls should use native `fetch`.
-- **Why**: Using `fetch` instead of SDKs reduces supply chain attack surface. SDKs have transitive dependencies that could be compromised.
+- **No SDK Dependencies**: Plugin step files must not use SDK client libraries. Do not add npm package dependencies for API integrations.
+- **Use safeFetch for egress**: Step files under `plugins/*/steps/` must call `safeFetch(url, { plugin, ... })` from `@/lib/safe-fetch` rather than the raw `fetch` global, so the SSRF guard sees every outbound request. The `Forbid raw network egress in plugins` check in `pr-checks.yml` fails a pull request that uses bare `fetch`, `axios`, or `http.request` under `plugins/`. Connection-test files (`plugins/*/test.ts`) are excluded: they are reachable from the client-bundled plugin registry and cannot import the `server-only` `safe-fetch.ts`, so they use the raw `fetch` global.
+- **No dependencies field**: Do not use the `dependencies` field in plugin `index.ts` files.
+- **Why**: Avoiding SDKs reduces supply chain attack surface, since SDKs carry transitive dependencies that could be compromised. Routing egress through `safeFetch` stops a user-controlled destination from reaching internal metadata endpoints or RFC1918 hosts.
 
