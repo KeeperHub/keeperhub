@@ -986,6 +986,20 @@ export function processTemplates(
  * null) is passed through as it is. Arrays and objects take the same path so
  * that this and scanForLeftoverLiterals agree on what a container is.
  */
+/*
+ * No depth limit here, where scanForLeftoverLiterals stops at 10
+ * (template-resolution.ts). The two walk for different reasons and the
+ * difference is deliberate: this one has to render whatever the config
+ * actually holds, so a limit would leave a token unrendered at the bottom of a
+ * deep config and pass it to the action verbatim. The scan is a backstop for
+ * tokens the resolver returned unchanged, and its limit bounds a diagnostic
+ * rather than the run.
+ *
+ * What makes the asymmetry safe is the tracker: this function records an
+ * unresolved reference as it renders, at any depth, so assertResolved still
+ * fails the step for a token the scan never reaches. Pinned in
+ * tests/unit/template-fail-closed.test.ts.
+ */
 function renderTemplateValue(
   value: unknown,
   outputs: NodeOutputs,

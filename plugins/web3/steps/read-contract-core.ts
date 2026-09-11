@@ -10,7 +10,11 @@ import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { ethers } from "ethers";
-import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
+import {
+  asRawFunctionArgs,
+  coerceArgsForAbi,
+  reshapeArgsForAbi,
+} from "@/lib/abi/struct-args";
 import { validateArgsForAbi } from "@/lib/abi/validate-args";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
@@ -203,13 +207,9 @@ async function readContractInner(
   }
 
   // Parse function arguments. A native array is taken as it is and a string
-  // is parsed as JSON; an empty string means no arguments, as does an absent
-  // value.
+  // is parsed as JSON; an empty, absent or falsy value means no arguments.
   let args: unknown[] = [];
-  const rawArgs: string | unknown[] | undefined =
-    typeof functionArgs === "string" && functionArgs.trim() === ""
-      ? undefined
-      : functionArgs;
+  const rawArgs = asRawFunctionArgs(functionArgs);
   if (rawArgs !== undefined) {
     try {
       const parsedArgs: unknown = Array.isArray(rawArgs)

@@ -77,6 +77,56 @@ describe("processTemplate tracker (lib/utils/template)", () => {
   });
 });
 
+describe("renderTemplateValue depth against the post-scan's limit", () => {
+  // scanForLeftoverLiterals returns at depth > 10; renderTemplateValue has no
+  // limit. Nothing recorded which was intended, so both halves are asserted
+  // here: rendering reaches the leaf, and an unresolved token that deep still
+  // fails the step through the tracker rather than through the post-scan.
+  const nest = (depth: number, leaf: unknown): unknown =>
+    depth === 0 ? leaf : [nest(depth - 1, leaf)];
+
+  const leafOf = (value: unknown): unknown => {
+    let cursor = value;
+    while (Array.isArray(cursor)) {
+      cursor = cursor[0];
+    }
+    return cursor;
+  };
+
+  it("renders a reference nested well past depth 10", () => {
+    const tracker = createTracker();
+    const rendered = processTemplates(
+      { functionArgs: nest(14, "{{@trigger:Trigger.ts}}") } as Record<
+        string,
+        unknown
+      >,
+      baseOutputs,
+      tracker
+    );
+    expect(leafOf(rendered.functionArgs)).toBe("1715000000");
+    expect(tracker.unresolved).toHaveLength(0);
+    expect(() =>
+      assertResolved(tracker, rendered, { actionType: "web3/write-contract" })
+    ).not.toThrow();
+  });
+
+  it("fails the step for an unresolved token that deep", () => {
+    const tracker = createTracker();
+    const rendered = processTemplates(
+      { functionArgs: nest(14, "{{@trigger:Trigger.does.not.exist}}") } as Record<
+        string,
+        unknown
+      >,
+      baseOutputs,
+      tracker
+    );
+    expect(tracker.unresolved.map((u) => u.reason)).toContain("no-path");
+    expect(() =>
+      assertResolved(tracker, rendered, { actionType: "web3/write-contract" })
+    ).toThrow(UNRESOLVED_REF_MESSAGE);
+  });
+});
+
 describe("assertResolved (executor strict gate)", () => {
   it("throws TemplateResolutionError in strict mode (default)", () => {
     const tracker = createTracker();

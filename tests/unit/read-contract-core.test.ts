@@ -672,6 +672,27 @@ describe("read-contract-core - functionArgs as a native array (#2359)", () => {
     expect(mockContractFunction).not.toHaveBeenCalled();
   });
 
+  it("treats null, 0 and false as no arguments, as the base did", async () => {
+    // Only a string that trims empty was absent, so these reached JSON.parse:
+    // JSON.parse(null) coerces to JSON.parse("null"), yields null, fails
+    // Array.isArray and became "Function arguments must be a JSON array". The
+    // same call succeeds on staging, whose truthiness test read them as absent.
+    for (const absent of [null, 0, false]) {
+      vi.clearAllMocks();
+      setupRpcMocks();
+      mockContractFunction.mockResolvedValue(BigInt(7));
+      const result = await readContractCore(
+        makeInput({
+          abi: JSON.stringify(NO_ARG_ABI),
+          abiFunction: "totalSupply",
+          functionArgs: absent as unknown as string,
+        })
+      );
+      expect([String(absent), result.success]).toEqual([String(absent), true]);
+      expect(mockContractFunction).toHaveBeenCalledWith();
+    }
+  });
+
   it("treats an empty string as no arguments, as before", async () => {
     setupRpcMocks();
     mockContractFunction.mockResolvedValue(BigInt(7));
