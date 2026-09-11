@@ -1,136 +1,181 @@
-import type { ethers } from "ethers";
-
-/**
- * Local copy of the canonical Multicall3 address/ABI slice this module
- * needs (aggregate3 only). `@techops/events-tracker` is a standalone
- * package (`rootDir: "."`, `include: ["src/**", "lib/**"]` scoped to this
- * package's own `lib/`) and cannot resolve modules from the monorepo root's
- * `lib/contracts/multicall3.ts` - the same constraint `in-flight.ts` already
- * documents for its copy of the executor's InFlightTracker. Deployment
- * verified across all 11 CHAIN_CONFIG mainnets via direct eth_getCode calls,
- * see the follow-up comment on issue #2240.
- */
-export const MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11";
-const AGGREGATE3_ABI = [
-  {
-    inputs: [
-      {
-        components: [
-          { name: "target", type: "address" },
-          { name: "allowFailure", type: "bool" },
-          { name: "callData", type: "bytes" },
-        ],
-        name: "calls",
-        type: "tuple[]",
-      },
-    ],
-    name: "aggregate3",
-    outputs: [
-      {
-        components: [
-          { name: "success", type: "bool" },
-          { name: "returnData", type: "bytes" },
-        ],
-        name: "returnData",
-        type: "tuple[]",
-      },
-    ],
-    stateMutability: "payable",
-    type: "function",
-  },
-] as const;
+import { ethers } from "ethers";
+import type { Aggregate3Result } from "../chains/multicall3";
 
 /**
  * Core evaluation logic for issue #2240 - "Workflows cannot trigger on a
  * threshold over contract state, only on emitted events".
  *
- * This module is deliberately free of any provider/subscription wiring: it
- * takes decoded `eth_call` results in and produces ARMED/FIRED transitions
- * out, so it can be unit tested without a live chain and plugged into
- * `ChainProviderManager`'s existing per-block hook once the maintainers
- * confirm the design (see the two design-proposal comments on the issue).
+ * This module is free of provider/subscription wiring: it takes decoded
+ * `eth_call` results in and produces ARMED/FIRED transitions out, so it can be
+ * unit tested without a live chain. `ChainProviderManager.subscribeToState`
+ * does the I/O and `StateThresholdListener` owns the state and the dispatch.
  *
- * Design recap (per the issue's own request to settle these before code):
- *  - Dedup identity: (subscriptionId, blockNumber). A per-block eth_call
- *    result is uniquely identified by which subscription asked and which
- *    block it was evaluated against - this reuses the same block-scoped
- *    reasoning the event-tracker already applies for reorgs, rather than
- *    inventing a new key space.
- *  - Edge detection: fire only on the transition from "not armed" to
- *    "condition holds" (false -> true), not on every block the condition
- *    continues to hold. State is a single persisted boolean per subscription
- *    (`armed`), so a restart with no prior state treats the first observed
- *    "true" as an edge (fail-safe: a workflow author expects the first
- *    breach to fire, not to be silently swallowed because the process
- *    doesn't remember a "before" state).
- *  - Hysteresis / re-arm: an optional `clearThreshold`, asymmetric from the
- *    fire `threshold`, so a value oscillating right at the boundary does not
- *    produce a burst of fire/re-arm/fire cycles. Without `clearThreshold`
- *    the re-arm condition is simply "no longer past `threshold`" (no
- *    hysteresis band), which is the correct default for a strictly
- *    monotonic comparator like "balance below Y".
+ * Dedup identity - arm generation
+ * -------------------------------
+ * The Redis dedup store is explicitly not the authority (`event-listener.ts`
+ * says so above its own read). The durable guard is the dispatch key carried
+ * into `createPhantomExecution`, whose unique index turns a second create for
+ * the same key into an `alreadyExisted` no-op. So the question a state trigger
+ * has to answer is what dispatch key a *condition* produces, not what replaces
+ * `txHash` in Redis:
+ *
+ *   event:  event:{workflowId}:{chainId}:{txHash}:{logIndex}
+ *   state:  state:{workflowId}:{chainId}:{subscriptionId}:{armGeneration}
+ *
+ * `armGeneration` identifies one arming episode. It is fixed for as long as
+ * the subscription stays armed and changes when it re-arms, so:
+ *
+ *  - Edge detection falls out of the key. While the condition holds across
+ *    many samples the generation does not move, every evaluation produces the
+ *    same key, the unique index reports `alreadyExisted` and the enqueue is
+ *    skipped. "Fires on every sample while the condition holds" is not
+ *    guarded against, it is unrepresentable.
+ *  - Reorg-safe for the same reason. A crossing re-observed at a different
+ *    height still belongs to the same episode and yields the same key, where a
+ *    `blockNumber` term would fire twice.
+ *
+ * The generation's *value* is the block at which the subscription last became
+ * armed, rather than a counter incremented on each re-arm. Nothing in the
+ * event tracker persists per-subscription rows - subscriptions are rebuilt
+ * from the workflow API on every reconcile pass and held in memory, and the
+ * only durable stores this process reaches are Redis (best-effort, TTL'd) and
+ * the main app's DB behind the internal HTTP API. A counter that lost its
+ * store would restart at 0 and every key it then produced would collide with
+ * one already in the unique index, so every dispatch would be swallowed as a
+ * duplicate and the subscription would be wedged for good. Block heights
+ * advance, so a generation re-seeded after a total loss of state is always a
+ * value the index has not seen. The cost is the opposite failure - a process
+ * that dies while a condition is holding re-arms at a higher generation and
+ * fires once more - which is the direction a threshold alert should fail in.
+ *
+ * Exit predicate
+ * --------------
+ * The exit predicate is deliberately not `!enter`; that is the oscillation bug
+ * relocated. The band is explicit: enter at `x < threshold`, exit at
+ * `x > threshold + delta`, with `delta` supplied per subscription and
+ * defaulting to `DEFAULT_HYSTERESIS_BPS` of the threshold. Between the two the
+ * subscription stays FIRED and dispatches nothing.
+ *
+ * Sampling
+ * --------
+ * State is read once per drain at the head block, not once per block. A chain
+ * accumulating against the high-water mark does not have its intermediate
+ * blocks sampled, so a crossing that both enters and exits inside one
+ * accumulation window is not observed at all. This is a real semantic
+ * difference from the log path, whose ranged `eth_getLogs` is contiguous and
+ * therefore lossless, and a state trigger cannot inherit it.
  */
+
+/**
+ * Default width of the re-arm band, in basis points of the threshold. 200 bps
+ * (2%) is a prior, not a measurement - there is an open offer on issue #2240
+ * to derive it from historical Aave health-factor series, and this constant is
+ * where that number lands when it exists.
+ */
+export const DEFAULT_HYSTERESIS_BPS = 200n;
 
 export type ThresholdComparator = "lt" | "lte" | "gt" | "gte";
 
+export type ArmPhase = "ARMED" | "FIRED";
+
 export interface StateThresholdSubscription {
+  /**
+   * Stable identity of this subscription's *configuration*. Derived from the
+   * threshold config by `hashStateRegistration`, so editing the threshold
+   * yields a new id and therefore a fresh arming episode rather than
+   * inheriting a generation that would suppress the first dispatch.
+   */
   subscriptionId: string;
   workflowId: string;
   chainId: number;
-  /** Contract to eth_call against. */
+  /** Contract the view function is called on. */
   contractAddress: string;
-  /** ABI-encoded calldata for the view function (already encoded by the
-   * builder layer - this module does not know about function signatures). */
+  /** ABI-encoded calldata for the view function. */
   callData: string;
-  /** Decoded numeric value is compared against this threshold. */
+  /**
+   * ABI output types of the called function, in declaration order. Carried
+   * with the call because the decoder cannot recover them from `callData`:
+   * every 32-byte word decodes as a `uint256`, so a decoder that guesses
+   * would read an `int256` of -1 as 2^256 - 1 and turn a breach into a
+   * comfortable value on an `lt` threshold.
+   */
+  outputTypes: string[];
+  /** Which output to compare, as an index into `outputTypes`. */
+  outputIndex: number;
+  /** Scaled integer the decoded value is compared against. */
   threshold: bigint;
   comparator: ThresholdComparator;
   /**
-   * Optional distinct re-arm boundary. When set, once FIRED the
-   * subscription only re-arms after the value crosses back past
-   * `clearThreshold` (which must be on the "safe" side of `threshold`),
-   * not merely past `threshold` itself. Undefined means no hysteresis band:
-   * the re-arm condition is the exact negation of the fire condition.
+   * Width of the re-arm band in the same units as `threshold`. Must be >= 0.
+   * Defaults to `DEFAULT_HYSTERESIS_BPS` of `|threshold|` when undefined.
    */
-  clearThreshold?: bigint;
+  hysteresis?: bigint;
+  /**
+   * Optional floor on the number of blocks between two dispatches. A cooldown
+   * delays a dispatch, it does not cancel one: the subscription stays armed
+   * and fires at the first sample past the floor.
+   */
+  minBlocksBetweenFires?: number;
 }
 
-/** Persisted per-subscription state - the only thing that must survive a
- * restart for edge detection to behave correctly across a process bounce. */
-export interface SubscriptionArmState {
+/**
+ * Per-subscription state that must survive a process bounce for edge
+ * detection to hold across one.
+ */
+export interface ArmState {
+  phase: ArmPhase;
   /**
-   * true: condition observed as met at least once and not yet cleared, i.e.
-   * either currently FIRED-and-not-rearmed or mid-hysteresis-band.
-   *
-   * Naming: "armed" here means "the guard that prevents a duplicate fire is
-   * up", not "will fire on next check" - the issue's own vocabulary ("armed
-   * / fired") is a state name, not a predicate, so this field mirrors that
-   * rather than introducing a second name for the same concept.
+   * Block at which this arming episode began. Fixed while armed, and fixed
+   * across the FIRED stretch that follows so a redelivered dispatch rebuilds
+   * the same key. Moves only on re-arm.
    */
-  armed: boolean;
+  armGeneration: number;
+  /** Block of the last dispatch, for `minBlocksBetweenFires`. */
+  lastFiredBlock: number | null;
+}
+
+export interface ThresholdFire {
+  subscriptionId: string;
+  workflowId: string;
+  chainId: number;
+  /** Block the value was sampled at. Not part of the dispatch key. */
+  blockNumber: number;
+  /** `state:{workflowId}:{chainId}:{subscriptionId}:{armGeneration}`. */
+  dispatchKey: string;
+  observedValue: bigint;
+  threshold: bigint;
+  comparator: ThresholdComparator;
 }
 
 export interface EvaluationResult {
-  /** Present only when this evaluation should dispatch a workflow trigger. */
-  fired: {
-    subscriptionId: string;
-    workflowId: string;
-    chainId: number;
-    blockNumber: number;
-    /** Dedup key per the design above - (subscriptionId, blockNumber). */
-    dedupKey: string;
-    observedValue: bigint;
-  } | null;
-  /** The state to persist for this subscription after this evaluation,
-   * regardless of whether it fired. Callers must persist this before the
-   * next block's evaluation runs for the same subscription, or a crash
-   * between evaluation and persistence re-observes the same edge next block
-   * and fires twice - the same best-effort trade-off the existing Redis
-   * dedup store already makes for event-based triggers (see dedup.ts). */
-  nextState: SubscriptionArmState;
+  /** Present only when this sample should dispatch a workflow trigger. */
+  fired: ThresholdFire | null;
+  /**
+   * State to persist for this subscription after this sample, fired or not.
+   * Applied by the caller after the dispatch attempt regardless of its
+   * outcome: a dispatch that reached `createPhantomExecution` has a row
+   * recording it either way, and retrying under the same generation would be
+   * refused by the unique index anyway.
+   */
+  nextState: ArmState;
 }
 
-function comparatorHolds(
+/** The state a subscription starts in when nothing durable is known about it. */
+export function initialArmState(blockNumber: number): ArmState {
+  return { phase: "ARMED", armGeneration: blockNumber, lastFiredBlock: null };
+}
+
+export function buildStateDispatchKey(
+  sub: Pick<
+    StateThresholdSubscription,
+    "workflowId" | "chainId" | "subscriptionId"
+  >,
+  armGeneration: number,
+): string {
+  return `state:${sub.workflowId}:${sub.chainId}:${sub.subscriptionId}:${armGeneration}`;
+}
+
+function enterHolds(
   value: bigint,
   threshold: bigint,
   comparator: ThresholdComparator,
@@ -147,125 +192,132 @@ function comparatorHolds(
   }
 }
 
-/** The comparator that must hold for a FIRED subscription to re-arm, given
- * the fire comparator. Without a `clearThreshold` this is the exact
- * negation of `comparatorHolds` above; with one, it is evaluated against
- * `clearThreshold` instead of `threshold`. */
-function invertComparator(comparator: ThresholdComparator): ThresholdComparator {
-  switch (comparator) {
+function abs(value: bigint): bigint {
+  return value < 0n ? -value : value;
+}
+
+/** Band width, defaulting to `DEFAULT_HYSTERESIS_BPS` of `|threshold|`. */
+function resolveHysteresis(sub: StateThresholdSubscription): bigint {
+  if (sub.hysteresis !== undefined) {
+    return sub.hysteresis < 0n ? 0n : sub.hysteresis;
+  }
+  return (abs(sub.threshold) * DEFAULT_HYSTERESIS_BPS) / 10_000n;
+}
+
+/**
+ * Whether a FIRED subscription has cleared far enough to re-arm. Strictly
+ * beyond the threshold on the safe side by the band width, never merely the
+ * negation of the enter predicate - `!enter` is what lets a value resting on
+ * the boundary re-arm and fire on alternate samples indefinitely.
+ */
+export function exitHolds(
+  value: bigint,
+  sub: StateThresholdSubscription,
+): boolean {
+  const delta = resolveHysteresis(sub);
+  switch (sub.comparator) {
     case "lt":
-      return "gte";
     case "lte":
-      return "gt";
+      // Enter is below the threshold, so safety is above it.
+      return value > sub.threshold + delta;
     case "gt":
-      return "lte";
     case "gte":
-      return "lt";
+      return value < sub.threshold - delta;
   }
 }
 
 /**
- * Pure evaluation step - no I/O. Called once per block per subscription
- * with the already-decoded `eth_call` result for that block.
+ * Pure evaluation step for one sample of one subscription. No I/O.
  */
 export function evaluateThreshold(
   sub: StateThresholdSubscription,
   observedValue: bigint,
   blockNumber: number,
-  priorState: SubscriptionArmState,
+  priorState: ArmState,
 ): EvaluationResult {
-  const holds = comparatorHolds(observedValue, sub.threshold, sub.comparator);
-
-  if (!priorState.armed) {
-    if (!holds) {
-      // Condition not met, and we were not armed: nothing to do.
-      return { fired: null, nextState: { armed: false } };
+  if (priorState.phase === "ARMED") {
+    if (!enterHolds(observedValue, sub.threshold, sub.comparator)) {
+      return { fired: null, nextState: priorState };
     }
-    // Edge: false -> true. Fire, and become armed so the next block that
-    // still holds does not fire again.
+
+    const cooldown = sub.minBlocksBetweenFires;
+    if (
+      cooldown !== undefined &&
+      cooldown > 0 &&
+      priorState.lastFiredBlock !== null &&
+      blockNumber - priorState.lastFiredBlock < cooldown
+    ) {
+      // Held, not dropped: the subscription stays armed at the same
+      // generation and dispatches at the first sample past the floor.
+      return { fired: null, nextState: priorState };
+    }
+
     return {
       fired: {
         subscriptionId: sub.subscriptionId,
         workflowId: sub.workflowId,
         chainId: sub.chainId,
         blockNumber,
-        dedupKey: `state:${sub.subscriptionId}:${blockNumber}`,
+        dispatchKey: buildStateDispatchKey(sub, priorState.armGeneration),
         observedValue,
+        threshold: sub.threshold,
+        comparator: sub.comparator,
       },
-      nextState: { armed: true },
+      nextState: {
+        phase: "FIRED",
+        // Held at the arming block so a redelivery rebuilds the same key.
+        armGeneration: priorState.armGeneration,
+        lastFiredBlock: blockNumber,
+      },
     };
   }
 
-  // Already armed (fired and not yet re-armed). Check whether the re-arm
-  // boundary has been crossed. With no clearThreshold, re-arm is simply
-  // "condition no longer holds". With one, re-arm requires crossing back
-  // past clearThreshold specifically (hysteresis band).
-  const rearmThreshold = sub.clearThreshold ?? sub.threshold;
-  const rearmComparator = invertComparator(sub.comparator);
-  const rearms = comparatorHolds(observedValue, rearmThreshold, rearmComparator);
-
-  if (rearms) {
-    // Crossed back to safe territory: re-arm, but do not fire (re-arming
-    // is not itself an event a workflow should trigger on).
-    return { fired: null, nextState: { armed: false } };
+  // FIRED: dispatch nothing until the value clears the band, then open a new
+  // generation. Re-arming is not itself something a workflow triggers on.
+  if (exitHolds(observedValue, sub)) {
+    return {
+      fired: null,
+      nextState: {
+        phase: "ARMED",
+        armGeneration: blockNumber,
+        lastFiredBlock: priorState.lastFiredBlock,
+      },
+    };
   }
-
-  // Still in breach (or still inside the hysteresis band): stay armed,
-  // do not re-fire.
-  return { fired: null, nextState: { armed: true } };
+  return { fired: null, nextState: priorState };
 }
 
 /**
- * Batches several subscriptions' eth_call requests into one Multicall3
- * aggregate3 call, so the marginal on-chain cost is one RPC round-trip per
- * block regardless of how many state-threshold subscriptions are active on
- * that chain - matching the issue's stated cost target ("one RPC call per
- * block per subscription" become "one RPC call per block per BATCH", an
- * improvement over the issue's own floor).
+ * Decode one call's return data to the comparable value, using the output
+ * types the subscription carried from its ABI.
  *
- * `allowFailure: true` on every call so one subscription's revert (e.g. a
- * contract that reverts a view function under some conditions) does not
- * poison the batch for every other subscription sharing the block.
+ * Returns null rather than throwing when the call reverted, when the data
+ * does not match the declared outputs, when the selected output is not a
+ * numeric type, or when the index is out of range. The caller skips that
+ * subscription for that sample: a decode failure is an absence of
+ * observation, and treating it as either "condition holds" or "condition does
+ * not hold" would be inventing one.
  */
-export function buildMulticallPayload(
-  calls: Array<{ contractAddress: string; callData: string }>,
-): { target: string; abi: unknown; args: unknown[] } {
-  return {
-    target: MULTICALL3_ADDRESS,
-    abi: AGGREGATE3_ABI,
-    args: [
-      calls.map((c) => ({
-        target: c.contractAddress,
-        allowFailure: true,
-        callData: c.callData,
-      })),
-    ],
-  };
-}
-
-/**
- * Decode a single aggregate3 result slot. Returns null (rather than
- * throwing) when the call reverted (`success === false`) or the
- * `returnData` cannot be decoded as a single uint256/int256 - the caller
- * should skip evaluation for that subscription on that block rather than
- * treat a decode failure as "condition holds" or "condition does not hold".
- */
-export function decodeAggregate3Result(
-  result: { success: boolean; returnData: string },
-  abiCoder: ethers.AbiCoder,
+export function decodeCallResult(
+  result: Aggregate3Result,
+  outputTypes: string[],
+  outputIndex: number,
 ): bigint | null {
   if (!result.success) {
     return null;
   }
-  try {
-    const [decoded] = abiCoder.decode(["uint256"], result.returnData);
-    return decoded as bigint;
-  } catch {
-    try {
-      const [decoded] = abiCoder.decode(["int256"], result.returnData);
-      return decoded as bigint;
-    } catch {
-      return null;
-    }
+  if (outputIndex < 0 || outputIndex >= outputTypes.length) {
+    return null;
   }
+  let decoded: ethers.Result;
+  try {
+    decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+      outputTypes,
+      result.returnData,
+    );
+  } catch {
+    return null;
+  }
+  const value: unknown = decoded[outputIndex];
+  return typeof value === "bigint" ? value : null;
 }

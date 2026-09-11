@@ -1,6 +1,13 @@
 import { ethers } from "ethers";
 import { WebSocket } from "ws";
 import { logger } from "../../lib/utils/logger";
+import {
+  type Aggregate3Result,
+  MULTICALL3_ADDRESS,
+  chunkCalls,
+  decodeAggregate3,
+  encodeAggregate3,
+} from "./multicall3";
 
 /**
  * ChainProviderManager centralises WebSocket provider ownership and
@@ -235,7 +242,34 @@ export const GETLOGS_TIMEOUT_RECONNECT_THRESHOLD = 3;
 /** Marks the timeout branch of the `eth_getLogs` race, for escalation. */
 class GetLogsTimeoutError extends Error {}
 
+/**
+ * Cap on a state read's round-trip, for the same reason `GETLOGS_TIMEOUT_MS`
+ * exists: state sampling runs inside the drain and the drain owns `draining`
+ * for its whole duration, so an `eth_call` ethers never settles would hold the
+ * chain's log delivery shut behind it.
+ */
+export const STATE_CALL_TIMEOUT_MS = 30_000;
+
 export type LogHandler = (log: ethers.Log) => void | Promise<void>;
+
+/**
+ * Delivery of one state subscription's sample. `result` carries the raw call
+ * outcome; decoding it needs the subscription's ABI output types, which the
+ * manager deliberately does not know. `undefined` is not delivered - a
+ * subscription whose chunk failed simply has no sample this drain.
+ */
+export type StateCallHandler = (
+  result: Aggregate3Result,
+  blockNumber: number,
+) => void | Promise<void>;
+
+/**
+ * Whether Multicall3 is deployed on a chain. `unknown` until probed, and back
+ * to `unknown` if the probe itself failed rather than answered - a transient
+ * RPC error must not pin a chain to the per-subscription fallback for the
+ * lifetime of the process.
+ */
+type Multicall3Status = "unknown" | "present" | "absent";
 export type Unsubscribe = () => void;
 
 export type ProviderFactory = (wssUrl: string) => ethers.WebSocketProvider;
@@ -355,6 +389,17 @@ export interface SubscribeOptions {
   handler: LogHandler;
 }
 
+export interface SubscribeStateOptions {
+  chainId: number;
+  wssUrl: string;
+  fallbackWssUrl?: string;
+  /** Contract the view function is called on. */
+  contractAddress: string;
+  /** ABI-encoded calldata for the view function. */
+  callData: string;
+  handler: StateCallHandler;
+}
+
 export interface ChainProviderManagerOptions {
   factory?: ProviderFactory;
   onPermanentFailure?: (chainId: number) => void;
@@ -370,6 +415,12 @@ interface Subscriber {
   address: string; // normalized to lowercase
   topic0: string; // 0x-prefixed, lowercase
   handler: LogHandler;
+}
+
+interface StateSubscriber {
+  contractAddress: string;
+  callData: string;
+  handler: StateCallHandler;
 }
 
 interface ChainEntry {
@@ -403,6 +454,15 @@ interface ChainEntry {
    */
   reconnectPromise: Promise<void> | null;
   subscribers: Set<Subscriber>;
+  /**
+   * State-threshold subscriptions on this chain (issue #2240). Batched into
+   * one `aggregate3` per drain, so their cost is one call per chain per drain
+   * rather than one per subscription - the same decoupling of RPC cost from
+   * workflow count the log path gets from ranged `eth_getLogs`.
+   */
+  stateSubscribers: Set<StateSubscriber>;
+  /** Cached Multicall3 deployment status for this chain. */
+  multicall3: Multicall3Status;
   blockListener: ((blockNumber: number) => Promise<void>) | null;
   errorListener: ((err: Error) => void) | null;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
@@ -521,6 +581,10 @@ interface ChainStats {
   /** Times a re-announced height was too deep to rewind to, so was dropped. */
   reorgRewindsRefused: number;
   getLogsCallsTotal: number;
+  /** `eth_call`s issued for state sampling: one per aggregate3 chunk, or one
+   * per subscription on a chain with no Multicall3. */
+  stateCalls: number;
+  stateCallErrors: number;
 }
 
 function newChainStats(): ChainStats {
@@ -534,6 +598,8 @@ function newChainStats(): ChainStats {
     reorgRewinds: 0,
     reorgRewindsRefused: 0,
     getLogsCallsTotal: 0,
+    stateCalls: 0,
+    stateCallErrors: 0,
   };
 }
 
@@ -713,11 +779,63 @@ export class ChainProviderManager {
 
     return () => {
       entry.subscribers.delete(subscriber);
-      if (entry.subscribers.size === 0) {
-        this.detachBlockListener(entry);
-        this.stopHeartbeat(entry);
-      }
+      this.detachIfIdle(entry);
     };
+  }
+
+  /**
+   * Register a state-threshold subscription (issue #2240). Shares the chain's
+   * provider, block subscription, drain loop, rate limit and heartbeat with
+   * the log path - there is no second connection, no second cadence and no
+   * new process.
+   *
+   * Sampling happens once per drain at the head block, not once per block:
+   * a chain accumulating against the high-water mark serves state at the
+   * drain's cadence, so intermediate blocks are not observed. See the header
+   * of `state-threshold.ts` for what that costs.
+   */
+  async subscribeToState(opts: SubscribeStateOptions): Promise<Unsubscribe> {
+    const entry = this.ensureEntry(
+      opts.chainId,
+      opts.wssUrl,
+      opts.fallbackWssUrl,
+    );
+    await this.getOrCreateProvider(
+      opts.chainId,
+      opts.wssUrl,
+      opts.fallbackWssUrl,
+    );
+
+    const subscriber: StateSubscriber = {
+      contractAddress: opts.contractAddress,
+      callData: opts.callData,
+      handler: opts.handler,
+    };
+    entry.stateSubscribers.add(subscriber);
+
+    // Same lifecycle rule as subscribeToLogs: attach on the first subscriber
+    // of either kind, detach on the last.
+    if (!entry.blockListener) {
+      this.attachBlockListener(entry);
+      this.startHeartbeat(entry);
+    }
+
+    return () => {
+      entry.stateSubscribers.delete(subscriber);
+      this.detachIfIdle(entry);
+    };
+  }
+
+  /**
+   * Tear down the block listener and heartbeat once a chain has no subscriber
+   * of either kind left. Both subscriber sets are checked because either one
+   * alone is reason enough to keep the block subscription alive.
+   */
+  private detachIfIdle(entry: ChainEntry): void {
+    if (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0) {
+      this.detachBlockListener(entry);
+      this.stopHeartbeat(entry);
+    }
   }
 
   /**
@@ -755,6 +873,15 @@ export class ChainProviderManager {
    */
   subscriberCount(chainId: number): number {
     return this.chains.get(chainId)?.subscribers.size ?? 0;
+  }
+
+  /**
+   * Number of active state-threshold subscribers for `chainId`. Returns 0 for
+   * an unknown chain. Used by tests to assert that state subscriptions
+   * multiplex through the same ChainEntry as log ones.
+   */
+  stateSubscriberCount(chainId: number): number {
+    return this.chains.get(chainId)?.stateSubscribers.size ?? 0;
   }
 
   /**
@@ -884,6 +1011,8 @@ export class ChainProviderManager {
       readyPromise: null,
       reconnectPromise: null,
       subscribers: new Set(),
+      stateSubscribers: new Set(),
+      multicall3: "unknown",
       blockListener: null,
       errorListener: null,
       heartbeatTimer: null,
@@ -1217,7 +1346,7 @@ export class ChainProviderManager {
       entry.isReconnecting ||
       this.isDestroyed ||
       !entry.provider ||
-      entry.subscribers.size === 0 ||
+      (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0) ||
       entry.headBlock === null
     ) {
       return;
@@ -1286,8 +1415,25 @@ export class ChainProviderManager {
       entry.lastRequestAt = Date.now();
       // The mark advances only on success. A failed range stays owed, so the
       // next drain re-queries it instead of losing every event in it.
-      if (await this.processBlockRange(entry, from, to)) {
+      //
+      // A chain carrying only state subscriptions has no range to serve, and
+      // must still advance the mark: leaving it behind would arm the catch-up
+      // timer on a gap nothing will ever close and spin the drain at the rate
+      // limit forever.
+      const served =
+        entry.subscribers.size === 0
+          ? true
+          : await this.processBlockRange(entry, from, to);
+      if (served) {
         entry.lastProcessedBlock = to;
+      }
+      // Sampled at the head rather than at `to`: `to` can trail the head on a
+      // chain that is catching up, and a state trigger wants the current
+      // value, not the one at the oldest block still owed. Read inside the
+      // drain so it shares the rate limit, and after the logs so a slow state
+      // read cannot delay them.
+      if (entry.stateSubscribers.size > 0 && entry.headBlock !== null) {
+        await this.sampleState(entry, entry.headBlock);
       }
     } finally {
       entry.draining = false;
@@ -1725,6 +1871,215 @@ export class ChainProviderManager {
    * makes the next drain re-query it. Dispatching the chunks that did return
    * would deliver a partial view of the range and then never fetch the rest.
    */
+  /**
+   * One state sample for a chain: read every state subscription's view
+   * function at `blockNumber` and hand each its own result.
+   *
+   * Batched through Multicall3 where it is deployed, so the marginal cost is
+   * one `eth_call` per chunk per drain rather than one per subscription. On a
+   * chain without it the fallback is one call per subscription, logged once so
+   * the degradation is known rather than silent - a batching design that
+   * quietly becomes an N-call design is worse than one that says it has.
+   *
+   * A failed chunk costs its own subscriptions this sample and nothing else.
+   * There is no retry and no owed-range equivalent: a state read is a sample
+   * of the present, so re-reading a block that has since been superseded
+   * would report a value that is no longer true.
+   */
+  private async sampleState(
+    entry: ChainEntry,
+    blockNumber: number,
+  ): Promise<void> {
+    const subscribers = [...entry.stateSubscribers];
+    // Captured once, for the same reason `processBlockRange` captures it: a
+    // reconnect between chunks would otherwise bill the remaining calls
+    // against a connection this sample does not belong to.
+    const provider = entry.provider;
+    if (subscribers.length === 0 || !provider) {
+      return;
+    }
+
+    const blockTag = `0x${blockNumber.toString(16)}`;
+    const status = await this.probeMulticall3(entry, provider);
+    if (entry.provider !== provider) {
+      return;
+    }
+
+    const results =
+      status === "present"
+        ? await this.sampleViaMulticall3(entry, provider, subscribers, blockTag)
+        : await this.sampleOneByOne(entry, provider, subscribers, blockTag);
+
+    // Concurrently and error-isolated, matching `dispatchLog`: a handler that
+    // parks (the listener's SQS round-trip) must not stall every other
+    // subscription sharing the sample.
+    await Promise.all(
+      subscribers.map(async (sub, index) => {
+        const result = results[index];
+        if (result === undefined) {
+          return;
+        }
+        try {
+          await sub.handler(result, blockNumber);
+        } catch (err) {
+          logger.warn(
+            `[ChainProviderManager] chain=${entry.chainId} state subscriber handler threw: ${String(err)}`,
+          );
+        }
+      }),
+    );
+  }
+
+  /**
+   * Whether Multicall3 is deployed on this chain, probed once and cached.
+   *
+   * A probe that throws leaves the status `unknown` rather than `absent`: an
+   * RPC hiccup must not pin the chain to the per-subscription fallback for
+   * the life of the process. The sample it was probing for still goes out,
+   * one call per subscription, and the next drain probes again.
+   */
+  private async probeMulticall3(
+    entry: ChainEntry,
+    provider: ethers.WebSocketProvider,
+  ): Promise<Multicall3Status> {
+    if (entry.multicall3 !== "unknown") {
+      return entry.multicall3;
+    }
+    try {
+      const code = await this.sendWithTimeout(
+        provider,
+        "eth_getCode",
+        [MULTICALL3_ADDRESS, "latest"],
+        STATE_CALL_TIMEOUT_MS,
+      );
+      const deployed = typeof code === "string" && code.length > 2;
+      entry.multicall3 = deployed ? "present" : "absent";
+      if (!deployed) {
+        logger.warn(
+          `[ChainProviderManager] chain=${entry.chainId} no Multicall3 at ${MULTICALL3_ADDRESS}; state reads on this chain cost one eth_call per subscription`,
+        );
+      }
+      return entry.multicall3;
+    } catch (err) {
+      logger.warn(
+        `[ChainProviderManager] chain=${entry.chainId} Multicall3 probe failed, sampling one call per subscription this drain: ${String(err)}`,
+      );
+      return "unknown";
+    }
+  }
+
+  /** Batched path: one `eth_call` per chunk, `allowFailure` per call. */
+  private async sampleViaMulticall3(
+    entry: ChainEntry,
+    provider: ethers.WebSocketProvider,
+    subscribers: StateSubscriber[],
+    blockTag: string,
+  ): Promise<Array<Aggregate3Result | undefined>> {
+    const results = new Array<Aggregate3Result | undefined>(subscribers.length);
+    let offset = 0;
+    for (const chunk of chunkCalls(subscribers)) {
+      const base = offset;
+      offset += chunk.length;
+      if (entry.provider !== provider) {
+        break;
+      }
+      entry.stats.stateCalls += 1;
+      try {
+        const data = encodeAggregate3(
+          chunk.map((sub) => ({
+            target: sub.contractAddress,
+            callData: sub.callData,
+          })),
+        );
+        const raw = await this.sendWithTimeout(
+          provider,
+          "eth_call",
+          [{ to: MULTICALL3_ADDRESS, data }, blockTag],
+          STATE_CALL_TIMEOUT_MS,
+        );
+        const decoded = decodeAggregate3(raw as string);
+        for (let i = 0; i < chunk.length; i += 1) {
+          results[base + i] = decoded[i];
+        }
+      } catch (err) {
+        entry.stats.stateCallErrors += 1;
+        logger.warn(
+          `[ChainProviderManager] chain=${entry.chainId} block=${blockTag} aggregate3 of ${chunk.length} call(s) failed, no sample this drain: ${String(err)}`,
+        );
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Unbatched fallback for a chain with no Multicall3, and for the drain on
+   * which the probe itself failed.
+   *
+   * A revert and a transport failure are indistinguishable here - both arrive
+   * as a rejected `eth_call` - so both are reported as an unsuccessful slot,
+   * which is what `allowFailure` would have produced for the revert anyway.
+   * Either way the subscription has no observation and is skipped.
+   */
+  private async sampleOneByOne(
+    entry: ChainEntry,
+    provider: ethers.WebSocketProvider,
+    subscribers: StateSubscriber[],
+    blockTag: string,
+  ): Promise<Array<Aggregate3Result | undefined>> {
+    const results = new Array<Aggregate3Result | undefined>(subscribers.length);
+    for (let i = 0; i < subscribers.length; i += 1) {
+      if (entry.provider !== provider) {
+        break;
+      }
+      const sub = subscribers[i];
+      entry.stats.stateCalls += 1;
+      try {
+        const raw = await this.sendWithTimeout(
+          provider,
+          "eth_call",
+          [{ to: sub.contractAddress, data: sub.callData }, blockTag],
+          STATE_CALL_TIMEOUT_MS,
+        );
+        results[i] = { success: true, returnData: raw as string };
+      } catch {
+        entry.stats.stateCallErrors += 1;
+        results[i] = { success: false, returnData: "0x" };
+      }
+    }
+    return results;
+  }
+
+  /**
+   * `provider.send` raced against an explicit timeout, for the reason
+   * `processBlockRange` documents at length: ethers exposes no externally
+   * controllable timeout, and a request written to a socket that is then
+   * destroyed is never settled at all.
+   */
+  private async sendWithTimeout(
+    provider: ethers.WebSocketProvider,
+    method: string,
+    params: unknown[],
+    timeoutMs: number,
+  ): Promise<unknown> {
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error(`${method} timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+    });
+    try {
+      return await Promise.race([
+        provider.send(method, params),
+        timeoutPromise,
+      ]);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
   private async processBlockRange(
     entry: ChainEntry,
     fromBlock: number,
@@ -1880,7 +2235,9 @@ export class ChainProviderManager {
         stats.getLogsCalls === 0 &&
         stats.getLogsErrors === 0 &&
         stats.blocksSkipped === 0 &&
-        stats.reorgRewindsRefused === 0
+        stats.reorgRewindsRefused === 0 &&
+        stats.stateCalls === 0 &&
+        stats.stateCallErrors === 0
       ) {
         continue;
       }
@@ -1893,7 +2250,7 @@ export class ChainProviderManager {
           ? Math.max(0, entry.headBlock - entry.lastProcessedBlock)
           : 0;
       logger.log(
-        `[ChainProviderManager] getlogs-stats chain=${entry.chainId} blockIntervalMs=${interval} minRequestIntervalMs=${GETLOGS_MIN_INTERVAL_MS} statsIntervalMs=${STATS_LOG_INTERVAL_MS} getLogsCalls=${stats.getLogsCalls} getLogsErrors=${stats.getLogsErrors} blocksCovered=${stats.blocksCovered} ranges=${stats.ranges} blocksSkipped=${stats.blocksSkipped} reorgRewinds=${stats.reorgRewinds} reorgRewindsRefused=${stats.reorgRewindsRefused} blocksBehindHead=${behind} logsDispatched=${stats.logsDispatched} getLogsCallsTotal=${stats.getLogsCallsTotal}`,
+        `[ChainProviderManager] getlogs-stats chain=${entry.chainId} blockIntervalMs=${interval} minRequestIntervalMs=${GETLOGS_MIN_INTERVAL_MS} statsIntervalMs=${STATS_LOG_INTERVAL_MS} getLogsCalls=${stats.getLogsCalls} getLogsErrors=${stats.getLogsErrors} blocksCovered=${stats.blocksCovered} ranges=${stats.ranges} blocksSkipped=${stats.blocksSkipped} reorgRewinds=${stats.reorgRewinds} reorgRewindsRefused=${stats.reorgRewindsRefused} blocksBehindHead=${behind} logsDispatched=${stats.logsDispatched} getLogsCallsTotal=${stats.getLogsCallsTotal} stateCalls=${stats.stateCalls} stateCallErrors=${stats.stateCallErrors}`,
       );
       stats.getLogsCalls = 0;
       stats.getLogsErrors = 0;
@@ -1903,6 +2260,8 @@ export class ChainProviderManager {
       stats.blocksSkipped = 0;
       stats.reorgRewinds = 0;
       stats.reorgRewindsRefused = 0;
+      stats.stateCalls = 0;
+      stats.stateCallErrors = 0;
     }
   }
 
