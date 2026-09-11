@@ -57,34 +57,53 @@ export function getPreviousPeriodStart(
   };
 }
 
-/**
- * Compute time-series bucket size based on the range.
- * Returns the bucket interval in milliseconds and a SQL interval string.
- */
-export function getBucketInterval(range: TimeRange): {
+/** Bucket widths the time-series query knows how to truncate to. */
+export type BucketSqlInterval = "5 minutes" | "1 hour" | "6 hours" | "1 day";
+
+export type BucketInterval = {
   intervalMs: number;
-  sqlInterval: string;
-} {
-  switch (range) {
-    case "1h": {
-      return { intervalMs: 5 * 60 * 1000, sqlInterval: "5 minutes" };
-    }
-    case "24h": {
-      return { intervalMs: 60 * 60 * 1000, sqlInterval: "1 hour" };
-    }
-    case "7d": {
-      return { intervalMs: 6 * 60 * 60 * 1000, sqlInterval: "6 hours" };
-    }
-    case "30d": {
-      return { intervalMs: 24 * 60 * 60 * 1000, sqlInterval: "1 day" };
-    }
-    case "custom": {
-      return { intervalMs: 60 * 60 * 1000, sqlInterval: "1 hour" };
-    }
-    default: {
-      return { intervalMs: 60 * 60 * 1000, sqlInterval: "1 hour" };
-    }
+  sqlInterval: BucketSqlInterval;
+};
+
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Bucket width from the width of the window itself, not from the range name.
+ * A custom window is as wide as the caller made it, so keying off the name left
+ * every hand-picked range on hourly buckets - a two-month window came back as
+ * ~1500 points with four identical day labels per day. The rungs are chosen so
+ * the named ranges keep the widths they already had: 1h -> 5m, 24h -> 1h,
+ * 7d -> 6h, 30d -> 1d.
+ */
+export function getBucketInterval(windowMs: number): BucketInterval {
+  if (windowMs <= 2 * HOUR_MS) {
+    return { intervalMs: 5 * MINUTE_MS, sqlInterval: "5 minutes" };
   }
+  if (windowMs <= 2 * DAY_MS) {
+    return { intervalMs: HOUR_MS, sqlInterval: "1 hour" };
+  }
+  if (windowMs <= 14 * DAY_MS) {
+    return { intervalMs: 6 * HOUR_MS, sqlInterval: "6 hours" };
+  }
+  return { intervalMs: DAY_MS, sqlInterval: "1 day" };
+}
+
+/**
+ * The window a request covers. The end is clamped to now so a custom range
+ * reaching into the future does not pad the chart with empty buckets.
+ */
+export function getTimeRangeWindow(
+  range: TimeRange,
+  customStart?: string,
+  customEnd?: string
+): { start: Date; end: Date } {
+  const now = new Date();
+  const start = getTimeRangeStart(range, customStart);
+  const requestedEnd = customEnd ? new Date(customEnd) : now;
+  const end = requestedEnd.getTime() > now.getTime() ? now : requestedEnd;
+  return { start, end };
 }
 
 /**
@@ -96,4 +115,32 @@ export function parseTimeRange(value: string | null): TimeRange {
     return value as TimeRange;
   }
   return "24h";
+}
+
+const IANA_NAME = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)*$/;
+
+/**
+ * Validate an IANA time zone name coming off the query string. Buckets are
+ * truncated in the viewer's zone, so this string reaches SQL (as a bound
+ * parameter) - anything Intl does not recognise falls back to UTC rather than
+ * being passed through.
+ */
+export function parseTimeZone(value: string | null): string {
+  if (!value) {
+    return "UTC";
+  }
+  // Names only. Intl also accepts bare UTC offsets ("+03:00"), which Postgres
+  // reads with the opposite sign convention.
+  if (!IANA_NAME.test(value)) {
+    return "UTC";
+  }
+  try {
+    // Throws RangeError on a zone the runtime does not know.
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+    // The caller's spelling, not Intl's canonical one: Intl maps some zones
+    // onto older aliases, and the name is what reaches Postgres.
+    return value;
+  } catch {
+    return "UTC";
+  }
 }

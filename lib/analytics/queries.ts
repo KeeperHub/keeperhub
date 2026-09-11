@@ -39,10 +39,12 @@ import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
 import { likePattern } from "./like-pattern";
+import type { BucketSqlInterval } from "./time-range";
 import {
   getBucketInterval,
   getPreviousPeriodStart,
   getTimeRangeStart,
+  getTimeRangeWindow,
 } from "./time-range";
 import type {
   AnalyticsSummary,
@@ -57,6 +59,7 @@ import type {
   StepLog,
   TimeRange,
   TimeSeriesBucket,
+  TimeSeriesResponse,
   UnifiedRun,
 } from "./types";
 
@@ -986,37 +989,67 @@ async function getWorkflowGasTotal(
 
 /**
  * Fetch time-series bucketed data for charts. Named ranges cached per
- * (org, range, project); custom ranges bypass the cache (see isCacheableRange).
+ * (org, range, project, zone); custom ranges bypass the cache (see
+ * isCacheableRange).
  */
 export function getTimeSeries(
   organizationId: string,
   range: TimeRange,
   customStart?: string,
   customEnd?: string,
-  projectId?: string
-): Promise<TimeSeriesBucket[]> {
+  projectId?: string,
+  timeZone = "UTC"
+): Promise<TimeSeriesResponse> {
   const compute = () =>
-    computeTimeSeries(organizationId, range, customStart, customEnd, projectId);
+    computeTimeSeries(
+      organizationId,
+      range,
+      customStart,
+      customEnd,
+      projectId,
+      timeZone
+    );
   if (!isCacheableRange(range, customStart, customEnd)) {
     return compute();
   }
   return cachedAnalytics(
-    analyticsCacheKey("time-series", [organizationId, range, projectId]),
+    analyticsCacheKey("time-series", [
+      organizationId,
+      range,
+      projectId,
+      timeZone,
+    ]),
     compute
   );
 }
+
+/**
+ * Above this many buckets the zero-fill is skipped: the chart is already past
+ * the point of being readable, and a hand-picked range of arbitrary width
+ * should not turn into an unbounded generate_series.
+ */
+const MAX_FILLED_BUCKETS = 1000;
+
+/** Ordinal of the bucket expression in both time-series select lists. */
+const BUCKET_COLUMN = sql`1`;
 
 async function computeTimeSeries(
   organizationId: string,
   range: TimeRange,
   customStart?: string,
   customEnd?: string,
-  projectId?: string
-): Promise<TimeSeriesBucket[]> {
-  const rangeStart = getTimeRangeStart(range, customStart);
-  const rangeEnd = customEnd ? new Date(customEnd) : new Date();
-  const { sqlInterval } = getBucketInterval(range);
-  const bucketExpr = bucketSql(sqlInterval);
+  projectId?: string,
+  timeZone = "UTC"
+): Promise<TimeSeriesResponse> {
+  const { start: rangeStart, end: rangeEnd } = getTimeRangeWindow(
+    range,
+    customStart,
+    customEnd
+  );
+  const { intervalMs, sqlInterval } = getBucketInterval(
+    rangeEnd.getTime() - rangeStart.getTime()
+  );
+  const bucketExpr = bucketSql(sqlInterval, timeZone);
 
   const workflowBuckets = await db
     .select({
@@ -1038,61 +1071,152 @@ async function computeTimeSeries(
         lt(workflowExecutions.startedAt, rangeEnd)
       )
     )
-    .groupBy(sql`${bucketExpr(workflowExecutions.startedAt)}`)
-    .orderBy(sql`${bucketExpr(workflowExecutions.startedAt)} ASC`);
+    // By ordinal, not by repeating the expression: the zone is a bound
+    // parameter, and the same expression written twice carries two different
+    // placeholders, which Postgres will not match up as one grouping key.
+    .groupBy(BUCKET_COLUMN)
+    .orderBy(sql`${BUCKET_COLUMN} ASC`);
 
-  if (projectId) {
-    return mergeBuckets(workflowBuckets as BucketRow[], []);
-  }
+  const directBuckets = projectId
+    ? []
+    : await db
+        .select({
+          bucket: sql<string>`${bucketExpr(directExecutions.createdAt)}`,
+          success: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'completed' THEN 1 ELSE 0 END)`,
+          error: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'failed' THEN 1 ELSE 0 END)`,
+          cancelled: sql<string>`0`,
+          skipped: sql<string>`0`,
+          pending: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'pending' THEN 1 ELSE 0 END)`,
+          running: sql<string>`SUM(CASE WHEN ${directExecutions.status} IN ('running', 'unconfirmed') THEN 1 ELSE 0 END)`,
+        })
+        .from(directExecutions)
+        .where(
+          and(
+            eq(directExecutions.organizationId, organizationId),
+            gte(directExecutions.createdAt, rangeStart),
+            lt(directExecutions.createdAt, rangeEnd)
+          )
+        )
+        .groupBy(BUCKET_COLUMN)
+        .orderBy(sql`${BUCKET_COLUMN} ASC`);
 
-  const directBuckets = await db
-    .select({
-      bucket: sql<string>`${bucketExpr(directExecutions.createdAt)}`,
-      success: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'completed' THEN 1 ELSE 0 END)`,
-      error: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'failed' THEN 1 ELSE 0 END)`,
-      cancelled: sql<string>`0`,
-      skipped: sql<string>`0`,
-      pending: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'pending' THEN 1 ELSE 0 END)`,
-      running: sql<string>`SUM(CASE WHEN ${directExecutions.status} IN ('running', 'unconfirmed') THEN 1 ELSE 0 END)`,
-    })
-    .from(directExecutions)
-    .where(
-      and(
-        eq(directExecutions.organizationId, organizationId),
-        gte(directExecutions.createdAt, rangeStart),
-        lt(directExecutions.createdAt, rangeEnd)
-      )
-    )
-    .groupBy(sql`${bucketExpr(directExecutions.createdAt)}`)
-    .orderBy(sql`${bucketExpr(directExecutions.createdAt)} ASC`);
-
-  return mergeBuckets(
+  const populated = mergeBuckets(
     workflowBuckets as BucketRow[],
     directBuckets as BucketRow[]
+  );
+
+  const skeleton = await bucketSkeleton(
+    rangeStart,
+    rangeEnd,
+    intervalMs,
+    sqlInterval,
+    timeZone
+  );
+
+  return { buckets: fillBuckets(skeleton, populated), intervalMs };
+}
+
+/**
+ * Every bucket the window covers, whether or not anything ran in it. Without
+ * this a quiet period is not a flat line, it is a gap - and the current bucket
+ * disappears from the axis entirely until the first run of the day lands.
+ *
+ * Generated in SQL, stepping in the viewer's local wall clock, so a day is
+ * still a day across a DST transition.
+ */
+async function bucketSkeleton(
+  rangeStart: Date,
+  rangeEnd: Date,
+  intervalMs: number,
+  sqlInterval: BucketSqlInterval,
+  timeZone: string
+): Promise<string[]> {
+  if (
+    (rangeEnd.getTime() - rangeStart.getTime()) / intervalMs >
+    MAX_FILLED_BUCKETS
+  ) {
+    return [];
+  }
+
+  const localStart = sql`${rangeStart.toISOString()}::timestamptz AT TIME ZONE ${timeZone}`;
+  const localEnd = sql`${rangeEnd.toISOString()}::timestamptz AT TIME ZONE ${timeZone}`;
+  const rows = await db.execute<{ bucket: string }>(sql`
+    SELECT generate_series(
+      ${truncLocal(sqlInterval, localStart)},
+      ${localEnd},
+      ${sqlInterval}::interval
+    ) AT TIME ZONE ${timeZone} AS bucket
+  `);
+
+  return rows.map((row) => new Date(row.bucket).toISOString());
+}
+
+/**
+ * Overlay the counted buckets onto the skeleton. An empty skeleton (the window
+ * was too wide to fill) leaves the counted buckets exactly as they were.
+ */
+function fillBuckets(
+  skeleton: string[],
+  populated: TimeSeriesBucket[]
+): TimeSeriesBucket[] {
+  if (skeleton.length === 0) {
+    return populated;
+  }
+  const byTimestamp = new Map(populated.map((b) => [b.timestamp, b]));
+  return skeleton.map(
+    (timestamp) =>
+      byTimestamp.get(timestamp) ?? {
+        timestamp,
+        success: 0,
+        error: 0,
+        cancelled: 0,
+        skipped: 0,
+        pending: 0,
+        running: 0,
+      }
   );
 }
 
 /**
- * Build a SQL fragment that truncates a timestamp column to the given bucket interval.
- * Uses date_trunc for standard intervals and integer division for sub-hour buckets.
+ * Truncate a local (naive) timestamp expression to the start of its bucket.
+ * Postgres has no date_trunc unit for 6 hours or 5 minutes, so those two floor
+ * the sub-unit by hand.
+ */
+function truncLocal(
+  sqlInterval: BucketSqlInterval,
+  local: ReturnType<typeof sql>
+): ReturnType<typeof sql> {
+  if (sqlInterval === "1 day") {
+    return sql`date_trunc('day', ${local})`;
+  }
+  if (sqlInterval === "6 hours") {
+    return sql`date_trunc('day', ${local}) + FLOOR(EXTRACT(HOUR FROM ${local}) / 6) * INTERVAL '6 hours'`;
+  }
+  if (sqlInterval === "5 minutes") {
+    return sql`date_trunc('hour', ${local}) + FLOOR(EXTRACT(MINUTE FROM ${local}) / 5) * 5 * INTERVAL '1 minute'`;
+  }
+  return sql`date_trunc('hour', ${local})`;
+}
+
+/**
+ * Build a SQL fragment that truncates a timestamp column to the given bucket.
+ *
+ * The columns are `timestamp without time zone` holding UTC, and truncating
+ * them as-is bucketed by the UTC day. Rendered back in a viewer west of UTC
+ * that reads as the previous day, so the current day never appeared on the
+ * chart. The column is moved into the viewer's zone before truncating and the
+ * bucket start is handed back as a real instant.
  */
 function bucketSql(
-  sqlInterval: string
+  sqlInterval: BucketSqlInterval,
+  timeZone: string
 ): (
   col: typeof workflowExecutions.startedAt | typeof directExecutions.createdAt
 ) => ReturnType<typeof sql> {
-  if (sqlInterval === "1 day") {
-    return (col) => sql`date_trunc('day', ${col})`;
-  }
-  if (sqlInterval === "6 hours") {
-    return (col) =>
-      sql`date_trunc('day', ${col}) + FLOOR(EXTRACT(HOUR FROM ${col}) / 6) * INTERVAL '6 hours'`;
-  }
-  if (sqlInterval === "5 minutes") {
-    return (col) =>
-      sql`date_trunc('hour', ${col}) + FLOOR(EXTRACT(MINUTE FROM ${col}) / 5) * 5 * INTERVAL '1 minute'`;
-  }
-  return (col) => sql`date_trunc('hour', ${col})`;
+  return (col) => {
+    const local = sql`(${col} AT TIME ZONE 'UTC' AT TIME ZONE ${timeZone})`;
+    return sql`((${truncLocal(sqlInterval, local)}) AT TIME ZONE ${timeZone})`;
+  };
 }
 
 type BucketRow = {

@@ -127,6 +127,15 @@ export type TimeSeriesBucket = {
   running: number;
 };
 
+/**
+ * Buckets plus the width each one covers, so the chart can label them at the
+ * granularity they were actually aggregated at.
+ */
+export type TimeSeriesResponse = {
+  buckets: TimeSeriesBucket[];
+  intervalMs: number;
+};
+
 export type NetworkBreakdown = {
   network: string;
   totalGasWei: string;
