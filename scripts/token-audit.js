@@ -384,7 +384,7 @@ function main() {
 
   if (errorCount > 0) {
     process.stdout.write(
-      "\nFix errors before committing. See keeperhub/specs/design-system/tokens.css for available tokens.\n",
+      "\nFix errors before committing. See specs/design-system/tokens.css for available tokens.\n",
     );
     process.exit(1);
   }

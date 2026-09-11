@@ -6,10 +6,10 @@
 # and release note generation without creating tags or releases.
 #
 # Usage:
-#   ./keeperhub/scripts/test-release.sh
-#   ./keeperhub/scripts/test-release.sh --prev-tag v1.2.0
-#   ./keeperhub/scripts/test-release.sh --base-branch main
-#   ./keeperhub/scripts/test-release.sh --help
+#   ./scripts/test-release.sh
+#   ./scripts/test-release.sh --prev-tag v1.2.0
+#   ./scripts/test-release.sh --base-branch main
+#   ./scripts/test-release.sh --help
 
 set -euo pipefail
 
@@ -34,13 +34,13 @@ OPTIONS
 
 EXAMPLES
   # Auto-detect previous tag, discover PRs merged to staging
-  ./keeperhub/scripts/test-release.sh
+  ./scripts/test-release.sh
 
   # Simulate from a specific tag
-  ./keeperhub/scripts/test-release.sh --prev-tag v0.3.0
+  ./scripts/test-release.sh --prev-tag v0.3.0
 
   # Use a different base branch
-  ./keeperhub/scripts/test-release.sh --base-branch main
+  ./scripts/test-release.sh --base-branch main
 
 WHAT THIS DOES
   1. Discovers merged PRs since the previous tag (or all PRs if first release)
