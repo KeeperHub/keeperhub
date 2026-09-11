@@ -76,7 +76,9 @@ export function resolveSponsoredSendError(
         plugin_name: "web3",
         action_name: actionName,
         chain_id: String(chainId),
-        send_transaction_status_id: error.sendTransactionStatusId,
+        ...(error.sendTransactionStatusId
+          ? { send_transaction_status_id: error.sendTransactionStatusId }
+          : {}),
         ...(error.txHash ? { tx_hash: error.txHash } : {}),
       }
     );
