@@ -177,6 +177,32 @@ const COMMON_ERROR_RESPONSES: Record<string, unknown> = {
   500: { $ref: "#/components/responses/InternalError" },
 };
 
+/**
+ * Example 200 body for a write-type workflow call.
+ *
+ * The endpoint's whole contract is "here is calldata for you to sign and
+ * broadcast", so the example is one a client could actually sign and
+ * broadcast, built from the same parts the handler emits (lib/mcp/calldata.ts):
+ *
+ * - `to` is the workflow's contract address. Base USDC, the asset this route's
+ *   x402 payment rail settles in (lib/payments/rails.ts), on the network its
+ *   x-payment-info already names - not a precompile or a zero-ish placeholder.
+ * - `data` is full `encodeFunctionData` output: the `transfer(address,uint256)`
+ *   selector followed by two 32-byte ABI words, the recipient and 1 USDC (6
+ *   decimals). The bare 4-byte selector alone is never what the field carries.
+ * - `value` is wei as a decimal string, the form calldata.ts returns.
+ *
+ * Plural `examples` because this is an OpenAPI 3.1 document: singular `example`
+ * is deprecated inside Schema Objects, and ERROR_SCHEMA above already uses the
+ * plural form.
+ */
+const WRITE_CALL_EXAMPLE = {
+  type: "calldata",
+  to: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  data: "0xa9059cbb000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa9604500000000000000000000000000000000000000000000000000000000000f4240",
+  value: "0",
+};
+
 function buildPathEntry(workflow: DiscoveryWorkflow): Record<string, unknown> {
   const isPaid = Number(workflow.priceUsdcPerCall ?? "0") > 0;
   const isWrite = workflow.workflowType === "write";
@@ -259,6 +285,7 @@ function buildPathEntry(workflow: DiscoveryWorkflow): Record<string, unknown> {
               data: { type: "string" },
               value: { type: "string" },
             },
+            examples: [WRITE_CALL_EXAMPLE],
           },
         },
       },
