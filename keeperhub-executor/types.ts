@@ -41,6 +41,12 @@ export type EventMessage = {
     args?: Record<string, unknown>;
     [key: string]: unknown;
   };
+  // Latency correlation (issue #2289): minted by the event-tracker at
+  // observation time and reused by the executor so the tracker -> queue ->
+  // executor legs share one key. Absent for messages enqueued by older
+  // trackers, in which case the executor mints its own.
+  correlationId?: string;
+  observedAt?: number;
 };
 
 export type ManualMessage = {

@@ -13,6 +13,7 @@ import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
 import type { NonceSession } from "../nonce-manager";
 import { assertMaxSolLamportsOutflow } from "../solana-max-sol-guard";
+import { markBroadcast } from "@/keeperhub-executor/lib/broadcast-marker";
 import {
   type NormalizedTxResult,
   normalizeSolanaTransaction,
@@ -327,6 +328,9 @@ export class SolanaChainAdapter implements ChainAdapter {
             : { delayMs: this.timings.reconcileDelayMs }
         );
         signature = submitResult.signature;
+        // Issue #2289: the transaction is on the wire - record the broadcast
+        // stage (sidecar marker + process-local counter, best-effort).
+        markBroadcast();
         break;
       } catch (error) {
         if (attempt === 0 && isSolanaBlockhashExpiryError(error)) {

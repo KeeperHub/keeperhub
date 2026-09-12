@@ -43,7 +43,14 @@ import {
   updateExecutionStatus,
   updateScheduleStatus,
 } from "./lib/db-helpers";
+import { peekBroadcastMarker, takeBroadcastMarker } from "./lib/broadcast-marker";
+import { collectLatencyObservations } from "./lib/latency-observations";
 import { shipMetricsToExecutor } from "./lib/ship-metrics";
+// Register the async-local workflow error context: this process has no Next
+// instrumentation.ts (the Dockerfile does not copy it), so without this the
+// engine's enterWorkflowErrorContext() is a no-op and markBroadcast() cannot
+// resolve the execution id to stamp the sidecar marker with.
+import "./lib/workflow-error-context-bootstrap";
 
 // Validate required environment variables
 function validateEnv(): {
@@ -117,15 +124,22 @@ let currentScheduleId: string | null = null;
 // shipment rather than each starting their own.
 let metricsShipment: Promise<void> | null = null;
 
+// Latency observations collected after the engine returned (issue #2289);
+// shipped together with the counter deltas in the single shared shipment.
+type PendingObservation = ReturnType<typeof collectLatencyObservations>[number];
+let pendingObservations: PendingObservation[] = [];
+
 // The promise for the shutdown the first signal started. main() waits on it
 // instead of returning, because returning runs the top-level process.exit and
 // would kill the pod out from under a shutdown that has not written its
 // terminal status yet - the write whose counters this all exists to ship.
 let shutdownCompletion: Promise<void> | null = null;
 
-function shipMetricsOnce(): Promise<void> {
+function shipMetricsOnce(
+  observations: PendingObservation[] = []
+): Promise<void> {
   if (!metricsShipment) {
-    metricsShipment = shipMetricsToExecutor();
+    metricsShipment = shipMetricsToExecutor(observations);
   }
   return metricsShipment;
 }
@@ -199,7 +213,15 @@ async function main(): Promise<void> {
   currentExecutionId = executionId;
   currentScheduleId = scheduleId ?? null;
 
-  console.log("[Runner] Starting workflow execution");
+  // Latency correlation (issue #2289): injected by the executor as
+  // KH_CORRELATION_ID on the Job (see k8s-job.ts), joining this pod's logs to
+  // the executor's receive/dispatch stages on one key.
+  const correlationId = process.env.KH_CORRELATION_ID ?? "";
+  const correlationSuffix = correlationId
+    ? ` correlationId=${correlationId}`
+    : "";
+
+  console.log("[Runner] Starting workflow execution" + correlationSuffix);
   console.log(`[Runner] Workflow ID: ${workflowId}`);
   console.log(`[Runner] Execution ID: ${executionId}`);
   console.log(`[Runner] Schedule ID: ${scheduleId || "none"}`);
@@ -275,8 +297,44 @@ async function main(): Promise<void> {
       })
     );
 
+    // Latency instrumentation (issue #2289): the write path marked its
+    // broadcast into the per-execution sidecar (same pod). Peek (not take) so
+    // the observation collector below can still read the same record, log it
+    // joined on correlation id + execution id, and collect the point
+    // observations the pod ships back over the metrics ingest (Job pods
+    // cannot write the executor's histograms directly; point samples can).
+    const marker = peekBroadcastMarker(executionId);
+    if (marker) {
+      console.log(
+        `[Runner] Broadcast stage: executionId=${executionId}${correlationSuffix} broadcastAt=${new Date(
+          marker.broadcastAt
+        ).toISOString()}`
+      );
+    }
+    const receivedAt = process.env.KH_RECEIVED_AT
+      ? Number(process.env.KH_RECEIVED_AT)
+      : undefined;
+    const observedAt = process.env.KH_OBSERVED_AT
+      ? Number(process.env.KH_OBSERVED_AT)
+      : undefined;
+    pendingObservations = collectLatencyObservations({
+      executionId,
+      workflowId,
+      triggerType,
+      receivedAt: Number.isFinite(receivedAt as number) ? receivedAt : undefined,
+      observedAt: Number.isFinite(observedAt as number) ? observedAt : undefined,
+      completedAt: Date.now(),
+    });
+    if (pendingObservations.length > 0) {
+      console.log(
+        `[Runner] Latency observations collected: ${pendingObservations
+          .map((o) => o.stage)
+          .join(",")}${correlationSuffix}`
+      );
+    }
+
     const duration = Date.now() - startTime;
-    console.log(`[Runner] Workflow completed in ${duration}ms`);
+    console.log(`[Runner] Workflow completed in ${duration}ms${correlationSuffix}`);
     console.log(`[Runner] Success: ${result.success}`);
 
     // executeWorkflow is the authoritative writer of the terminal status (with
@@ -298,7 +356,7 @@ async function main(): Promise<void> {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
 
-    console.error(`[Runner] Fatal error after ${duration}ms:`, errorMessage);
+    console.error(`[Runner] Fatal error after ${duration}ms${correlationSuffix}:`, errorMessage);
 
     let dbUpdateSucceeded = false;
     try {
@@ -328,7 +386,7 @@ async function main(): Promise<void> {
       // let main() resolve into process.exit before that write lands.
       await shutdownCompletion;
     } else {
-      await shipMetricsOnce();
+      await shipMetricsOnce(pendingObservations);
       await queryClient.end();
       console.log("[Runner] Database connection closed");
     }

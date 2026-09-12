@@ -7,12 +7,18 @@
  * observability never blocks workflow completion.
  */
 
-import { collectCounterDeltas, type IngestPayload } from "./metrics-shipping";
+import {
+  collectCounterDeltas,
+  type IngestPayload,
+  type LatencyObservation,
+} from "./metrics-shipping";
 
 const SHIP_TIMEOUT_MS = 5000;
 const TRAILING_SLASH = /\/$/;
 
-export async function shipMetricsToExecutor(): Promise<void> {
+export async function shipMetricsToExecutor(
+  observations: LatencyObservation[] = []
+): Promise<void> {
   if (process.env.METRICS_COLLECTOR !== "prometheus") {
     return;
   }
@@ -30,7 +36,7 @@ export async function shipMetricsToExecutor(): Promise<void> {
     return;
   }
 
-  if (deltas.length === 0) {
+  if (deltas.length === 0 && observations.length === 0) {
     return;
   }
 
@@ -44,7 +50,10 @@ export async function shipMetricsToExecutor(): Promise<void> {
         "Content-Type": "application/json",
         "X-Ingest-Token": token,
       },
-      body: JSON.stringify({ deltas } satisfies IngestPayload),
+      body: JSON.stringify({
+        deltas,
+        ...(observations.length > 0 ? { observations } : {}),
+      } satisfies IngestPayload),
       signal: AbortSignal.timeout(SHIP_TIMEOUT_MS),
     });
 

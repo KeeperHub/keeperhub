@@ -108,6 +108,16 @@ export const MetricNames = {
   API_STATUS_LATENCY: "api.status.latency_ms",
   PLUGIN_ACTION_DURATION: "plugin.action.duration_ms",
   AI_GENERATION_DURATION: "ai.generation.duration_ms",
+  // Executor pipeline latency (issue #2289): SQS receive -> dispatch handoff,
+  // and the full receive -> terminal lifetime. Split by trigger + dispatch
+  // target so a slow producer, a slow queue, or a slow runner is visible
+  // independently.
+  EXECUTOR_DISPATCH_LATENCY: "executor.dispatch.latency_ms",
+  EXECUTOR_EXECUTION_LATENCY: "executor.execution.latency_ms",
+  // Tracker-observed -> transaction broadcast, the interval issue #2289 asks
+  // for the distribution of. Recorded where both endpoints are known
+  // (in-process runs read the broadcast sidecar after the run).
+  EXECUTOR_BROADCAST_LATENCY: "executor.broadcast.latency_ms",
 
   // Traffic metrics
   WORKFLOW_EXECUTIONS_TOTAL: "workflow.executions.total",
@@ -145,6 +155,11 @@ export const MetricNames = {
   // line cannot answer "is the shared limiter enforcing right now"; this
   // counter can.
   MCP_RATE_LIMIT_DEGRADED: "ratelimit.mcp.degraded.total",
+  // Broadcast-stage marker (issue #2289): bumped by the pod (or process) that
+  // performed the broadcast and shipped to the executor with the counter
+  // deltas, so the broadcast stage is observable even when the per-run
+  // sidecar timestamp cannot be read back.
+  EXECUTOR_BROADCASTS_TOTAL: "executor.broadcasts.total",
 
   // Sponsorship metrics
   SPONSORSHIP_TRANSACTIONS_TOTAL: "sponsorship.transactions.total",
@@ -249,6 +264,13 @@ export const LabelKeys = {
   AUTH_RESULT: "auth_result",
   MODE: "mode",
   CLAIM_RESULT: "claim_result",
+  // Latency instrumentation (issue #2289). The correlation id is deliberately
+  // NOT a label on any metric: it is fresh per execution, so labeling with it
+  // creates one time series per run (#2289 rules out even per-workflow labels
+  // as a metrics-cost problem). The id lives in the structured log lines,
+  // where it already joins executor, runner and tracker logs on one key.
+  DISPATCH_TARGET: "dispatch_target",
+  STAGE: "stage",
 } as const;
 
 /**

@@ -5,6 +5,7 @@ import {
   createPhantomExecution,
   failPhantomExecution,
 } from "../../lib/phantom";
+import { generateCorrelationId } from "../../lib/correlation";
 import { logger } from "../../lib/utils/logger";
 import { enqueueWorkflowEventTrigger } from "../../lib/workflow-sqs";
 import {
@@ -237,6 +238,15 @@ export class EventListener {
         return;
       }
 
+      // Latency correlation (issue #2289): minted at the earliest point the
+      // event is observed, carried on the SQS message, and reused by the
+      // executor so tracker -> queue -> executor legs share one key.
+      const correlationId = generateCorrelationId();
+      const observedAt = Date.now();
+      logger.log(
+        `[EventListener:${this.opts.workflowId}] observed ${txHash} correlationId=${correlationId}`,
+      );
+
       // Pace the dispatch. With a pacer (the production path, see registry)
       // a lone event forwards immediately and a large batch drains at the
       // per-chain rate. Without one, keep the legacy random jitter so the
@@ -282,7 +292,7 @@ export class EventListener {
       // across a reconnect replay, a reorg re-emit and a crash between the
       // send and the mark below; the Redis dedup is best-effort and per tx.
       const dispatchKey = `event:${this.opts.workflowId}:${this.opts.chainId}:${txHash}:${log.index}`;
-      await this.sendToSqs(payload, dispatchKey);
+      await this.sendToSqs(payload, dispatchKey, correlationId, observedAt);
 
       // Mark after the send, and after a refusal too: a refused event is
       // settled, and leaving it unmarked only buys another admission
@@ -307,6 +317,8 @@ export class EventListener {
   private async sendToSqs(
     payload: unknown,
     dispatchKey: string,
+    correlationId?: string,
+    observedAt?: number,
   ): Promise<void> {
     // KEEP-693: pre-create a phantom row (best-effort) so the run is visible
     // even if it never reaches the executor, and carry its id so the executor
@@ -344,6 +356,8 @@ export class EventListener {
         workflowId: this.opts.workflowId,
         userId: this.opts.userId,
         triggerData: payload,
+        correlationId,
+        observedAt,
       });
     } catch (err) {
       if (executionId) {

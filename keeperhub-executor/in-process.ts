@@ -1,10 +1,14 @@
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { takeBroadcastMarker } from "./lib/broadcast-marker";
 import { validateWorkflowIntegrations } from "../lib/db/integrations";
+import { getMetricsCollector } from "../lib/metrics";
+import { LabelKeys, MetricNames } from "../lib/metrics/types";
 import { buildExecutorInput } from "../lib/workflow/executor/build-executor-input";
 import { executeWorkflow } from "../lib/workflow/executor/executor.workflow";
 import type { WorkflowEdge, WorkflowNode } from "../lib/workflow/store";
 import { loadWorkflowForExecution } from "../lib/workflow/load-for-execution";
 import type { ApiExecuteTriggerType } from "./api-execute";
+import { ExecutionLatency } from "./latency";
 import type { DbSchema } from "./lib/db-helpers";
 import {
   applyExecutionResult,
@@ -25,12 +29,17 @@ export async function executeInProcess(params: {
   triggerType: ApiExecuteTriggerType;
   scheduleId?: string;
   db: PostgresJsDatabase<DbSchema>;
+  /** Latency correlation (issue #2289): the id minted at SQS receive. */
+  correlationId?: string;
 }): Promise<void> {
   const { workflowId, executionId, input, triggerType, scheduleId, db } =
     params;
+  const latency = new ExecutionLatency(params.correlationId);
   const startTime = Date.now();
 
-  console.log("[Executor:InProcess] Starting workflow execution");
+  console.log(
+    `[Executor:InProcess] Starting workflow execution correlationId=${latency.correlationId}`
+  );
   console.log(`[Executor:InProcess] Workflow ID: ${workflowId}`);
   console.log(`[Executor:InProcess] Execution ID: ${executionId}`);
 
@@ -84,6 +93,10 @@ export async function executeInProcess(params: {
     // to "use start()" only applies inside the Next runtime. Tradeoff: there is
     // no checkpoint/resume, so a crash mid-run leaves the row "running" until a
     // sweeper closes it - tracked separately from this dedup work.
+    //
+    // Latency instrumentation (issue #2289): "started" is marked immediately
+    // before the engine runs; "completed" after the terminal status lands.
+    latency.mark("started");
     const result = await executeWorkflow(
       buildExecutorInput(workflow, {
         triggerInput: input,
@@ -92,8 +105,18 @@ export async function executeInProcess(params: {
       })
     );
 
+    latency.mark("completed");
     const duration = Date.now() - startTime;
-    console.log(`[Executor:InProcess] Completed in ${duration}ms`);
+    recordInProcessLatency({
+      latency,
+      workflowId,
+      executionId,
+      triggerType,
+      totalMs: duration,
+    });
+    console.log(
+      `[Executor:InProcess] Completed in ${duration}ms correlationId=${latency.correlationId}`
+    );
 
     // executeWorkflow is the authoritative writer of the terminal status (with
     // reconciliation and richer fields). applyExecutionResult is a guarded
@@ -113,8 +136,26 @@ export async function executeInProcess(params: {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
 
+    // Latency instrumentation (issue #2289): discard this run's broadcast
+    // marker if the write path left one and the run then failed - the success
+    // path's takeBroadcastMarker never fires on this route, so without this a
+    // failed in-process run leaks its per-execution marker file into a
+    // weeks-long pod's emptyDir. Deliberately cleanup only: no latency stage
+    // is recorded on the failure path, so the histograms keep counting only
+    // runs that reached a terminal state. The executor's startup
+    // sweepBroadcastMarkers covers the remaining failure mode, a process
+    // killed before this catch can run.
+    try {
+      takeBroadcastMarker(executionId);
+    } catch {
+      // Never let marker cleanup mask the run's own error.
+    }
+
+    // "completed" is not marked on failure: the histogram must only count runs
+    // that reached a terminal state, so a crash/failure is visible as a
+    // missing series rather than a fast fake latency.
     console.error(
-      `[Executor:InProcess] Fatal error after ${duration}ms:`,
+      `[Executor:InProcess] Fatal error after ${duration}ms correlationId=${latency.correlationId}:`,
       errorMessage
     );
 
@@ -133,4 +174,62 @@ export async function executeInProcess(params: {
       );
     }
   }
+}
+
+/**
+ * Latency instrumentation (issue #2289): emit the receive->completed histogram
+ * for an in-process run that reached a terminal state, split by trigger,
+ * target and stage so slow producers vs slow runners are visible
+ * independently. The structured stage log line is emitted here
+ * (received/started/completed with per-stage durations) for the same run.
+ *
+ * The broadcast stage is read back from the sidecar marker the write path
+ * dropped at the broadcast point (same process, engine already returned): the
+ * observed -> broadcast histogram - the interval issue #2289 exists for - is
+ * recorded here when both endpoints are known.
+ */
+function recordInProcessLatency(params: {
+  latency: ExecutionLatency;
+  workflowId: string;
+  executionId: string;
+  triggerType: string;
+  totalMs: number;
+}): void {
+  const { latency, workflowId, executionId, triggerType, totalMs } = params;
+  // The write path marked its broadcast into the per-execution sidecar; take
+  // it (read-and-discard for exactly this execution id) now that the run has
+  // returned and the marker can only belong to this execution.
+  const marker = takeBroadcastMarker(executionId);
+  if (marker && marker.executionId === executionId) {
+    latency.mark("broadcast", marker.broadcastAt);
+  }
+  const queueToStartMs = latency.stageMs("received", "started");
+  if (queueToStartMs !== undefined) {
+    getMetricsCollector().recordLatency(
+      MetricNames.EXECUTOR_DISPATCH_LATENCY,
+      queueToStartMs,
+      {
+        [LabelKeys.TRIGGER_TYPE]: triggerType,
+        [LabelKeys.DISPATCH_TARGET]: "in-process",
+        [LabelKeys.STAGE]: "started",
+      }
+    );
+  }
+  getMetricsCollector().recordLatency(MetricNames.EXECUTOR_EXECUTION_LATENCY, totalMs, {
+    [LabelKeys.TRIGGER_TYPE]: triggerType,
+    [LabelKeys.DISPATCH_TARGET]: "in-process",
+    [LabelKeys.STAGE]: "completed",
+  });
+  const obsToBroadcast = latency.stageMs("observed", "broadcast");
+  if (obsToBroadcast !== undefined) {
+    getMetricsCollector().recordLatency(
+      MetricNames.EXECUTOR_BROADCAST_LATENCY,
+      obsToBroadcast,
+      {
+        [LabelKeys.TRIGGER_TYPE]: triggerType,
+        [LabelKeys.DISPATCH_TARGET]: "in-process",
+      }
+    );
+  }
+  latency.emitLog({ workflowId, executionId, triggerType, dispatchTarget: "in-process" });
 }
