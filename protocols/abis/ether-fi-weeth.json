@@ -3,49 +3,109 @@
     "type": "function",
     "name": "wrap",
     "stateMutability": "nonpayable",
-    "inputs": [{ "name": "_eETHAmount", "type": "uint256" }],
-    "outputs": [{ "name": "", "type": "uint256" }]
+    "inputs": [
+      {
+        "name": "_eETHAmount",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "weETHReceived",
+        "type": "uint256"
+      }
+    ]
   },
   {
     "type": "function",
     "name": "unwrap",
     "stateMutability": "nonpayable",
-    "inputs": [{ "name": "_weETHAmount", "type": "uint256" }],
-    "outputs": [{ "name": "", "type": "uint256" }]
+    "inputs": [
+      {
+        "name": "_weETHAmount",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "eETHReceived",
+        "type": "uint256"
+      }
+    ]
   },
   {
     "type": "function",
     "name": "getRate",
     "stateMutability": "view",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }]
+    "outputs": [
+      {
+        "name": "rate",
+        "type": "uint256"
+      }
+    ]
   },
   {
     "type": "function",
     "name": "getWeETHByeETH",
     "stateMutability": "view",
-    "inputs": [{ "name": "_eETHAmount", "type": "uint256" }],
-    "outputs": [{ "name": "", "type": "uint256" }]
+    "inputs": [
+      {
+        "name": "_eETHAmount",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "weETHAmount",
+        "type": "uint256"
+      }
+    ]
   },
   {
     "type": "function",
     "name": "getEETHByWeETH",
     "stateMutability": "view",
-    "inputs": [{ "name": "_weETHAmount", "type": "uint256" }],
-    "outputs": [{ "name": "", "type": "uint256" }]
+    "inputs": [
+      {
+        "name": "_weETHAmount",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "eETHAmount",
+        "type": "uint256"
+      }
+    ]
   },
   {
     "type": "function",
     "name": "balanceOf",
     "stateMutability": "view",
-    "inputs": [{ "name": "account", "type": "address" }],
-    "outputs": [{ "name": "", "type": "uint256" }]
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "balance",
+        "type": "uint256"
+      }
+    ]
   },
   {
     "type": "function",
     "name": "totalSupply",
     "stateMutability": "view",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }]
+    "outputs": [
+      {
+        "name": "totalSupply",
+        "type": "uint256"
+      }
+    ]
   }
 ]

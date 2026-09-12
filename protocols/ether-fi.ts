@@ -34,12 +34,19 @@ const TEST_DATA: ProtocolTestData = {
       // Reads: pool accounting and the wrapper's exchange rate. All four are
       // nine-figure or rate-scale values on mainnet; a zero means the read
       // decoded garbage rather than a legitimate empty state.
+      //
+      // Binding keys are the action's input names, which the overrides below
+      // rename from the raw ABI parameters (_share becomes shares, _amount
+      // becomes ethAmount, _eETHAmount and _weETHAmount become amount). A key
+      // that does not match an input name is silently dropped and the encoder
+      // falls back to a type-derived default, so these have to track the
+      // renames.
       "get-total-pooled-ether": {},
-      "amount-for-share": { _share: native("1") },
-      "shares-for-amount": { _amount: native("1") },
+      "amount-for-share": { shares: native("1") },
+      "shares-for-amount": { ethAmount: native("1") },
       "get-rate": {},
-      "get-weeth-by-eeth": { _eETHAmount: native("1") },
-      "get-eeth-by-weeth": { _weETHAmount: native("1") },
+      "get-weeth-by-eeth": { amount: native("1") },
+      "get-eeth-by-weeth": { amount: native("1") },
       "eeth-balance-of": { account: wallet() },
       "eeth-total-shares": {},
       "weeth-balance-of": { account: wallet() },
@@ -117,8 +124,7 @@ export default defineAbiProtocol({
             "Read the total ETH the ether.fi Liquidity Pool accounts for across all stakers. Useful as a health and TVL signal in a workflow.",
           docUrl: ETHER_FI_DOCS,
           outputs: {
-            result: {
-              name: "totalPooledEther",
+            totalPooledEther: {
               label: "Total Pooled ETH (wei)",
               decimals: 18,
             },
@@ -141,8 +147,7 @@ export default defineAbiProtocol({
             },
           },
           outputs: {
-            result: {
-              name: "ethAmount",
+            ethAmount: {
               label: "ETH Value (wei)",
               decimals: 18,
             },
@@ -165,8 +170,7 @@ export default defineAbiProtocol({
             },
           },
           outputs: {
-            result: {
-              name: "shares",
+            shares: {
               label: "eETH Shares (wei)",
               decimals: 18,
             },
@@ -198,8 +202,7 @@ export default defineAbiProtocol({
             },
           },
           outputs: {
-            result: {
-              name: "weETHReceived",
+            weETHReceived: {
               label: "weETH Received (wei)",
               decimals: 18,
             },
@@ -222,8 +225,7 @@ export default defineAbiProtocol({
             },
           },
           outputs: {
-            result: {
-              name: "eETHReceived",
+            eETHReceived: {
               label: "eETH Received (wei)",
               decimals: 18,
             },
@@ -236,8 +238,7 @@ export default defineAbiProtocol({
             "Read the current ETH value of one weETH (the wrapper exchange rate). Only ratchets up as staking and restaking rewards accrue.",
           docUrl: ETHER_FI_DOCS,
           outputs: {
-            result: {
-              name: "rate",
+            rate: {
               label: "Rate (wei of eETH per weETH)",
               decimals: 18,
             },
@@ -259,8 +260,7 @@ export default defineAbiProtocol({
             },
           },
           outputs: {
-            result: {
-              name: "weETHAmount",
+            weETHAmount: {
               label: "weETH Amount (wei)",
               decimals: 18,
             },
@@ -282,8 +282,7 @@ export default defineAbiProtocol({
             },
           },
           outputs: {
-            result: {
-              name: "eETHAmount",
+            eETHAmount: {
               label: "eETH Amount (wei)",
               decimals: 18,
             },
@@ -302,8 +301,7 @@ export default defineAbiProtocol({
             },
           },
           outputs: {
-            result: {
-              name: "balance",
+            balance: {
               label: "weETH Balance (wei)",
               decimals: 18,
             },
@@ -315,8 +313,7 @@ export default defineAbiProtocol({
           description: "Get the total supply of weETH in circulation.",
           docUrl: ETHER_FI_DOCS,
           outputs: {
-            result: {
-              name: "totalSupply",
+            totalSupply: {
               label: "Total weETH Supply (wei)",
               decimals: 18,
             },
@@ -345,8 +342,7 @@ export default defineAbiProtocol({
             },
           },
           outputs: {
-            result: {
-              name: "balance",
+            balance: {
               label: "eETH Balance (wei)",
               decimals: 18,
             },
@@ -359,8 +355,7 @@ export default defineAbiProtocol({
             "Get the total eETH shares outstanding. Shares are the non-rebasing accounting unit behind eETH balances.",
           docUrl: ETHER_FI_DOCS,
           outputs: {
-            result: {
-              name: "totalShares",
+            totalShares: {
               label: "Total eETH Shares (wei)",
               decimals: 18,
             },

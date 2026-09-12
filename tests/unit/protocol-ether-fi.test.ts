@@ -1,3 +1,4 @@
+import { getAddress } from "ethers";
 import { describe, expect, it } from "vitest";
 import { getProtocol, registerProtocol } from "@/lib/protocol-registry";
 import etherFiDef from "@/protocols/ether-fi";
@@ -166,6 +167,96 @@ describe("ether.fi Protocol Definition (ABI-driven)", () => {
   it("every contract is Ethereum mainnet only (chain 1)", () => {
     for (const contract of Object.values(etherFiDef.contracts)) {
       expect(Object.keys(contract.addresses)).toEqual(["1"]);
+    }
+  });
+
+  it("excludes the testnets and the L2 weETH chains", () => {
+    // Minting settles on the beacon chain so there is no testnet deployment,
+    // and the L2 weETH tokens are LayerZero OFT representations rather than
+    // another address on these contracts.
+    const excluded = {
+      "11155111": "Sepolia",
+      "17000": "Holesky",
+      "5": "Goerli",
+      "42161": "Arbitrum",
+      "8453": "Base",
+      "10": "Optimism",
+    };
+    for (const [key, contract] of Object.entries(etherFiDef.contracts)) {
+      for (const [chainId, label] of Object.entries(excluded)) {
+        expect(
+          contract.addresses[chainId],
+          `contract "${key}" must not declare ${label} (${chainId})`
+        ).toBeUndefined();
+      }
+    }
+  });
+
+  it("all contract addresses are EIP-55 checksummed", () => {
+    for (const [key, contract] of Object.entries(etherFiDef.contracts)) {
+      const address = contract.addresses["1"];
+      expect(getAddress(address), `contract "${key}" must be checksummed`).toBe(
+        address
+      );
+    }
+  });
+
+  it("testData binds every action by its declared input names", () => {
+    // The overrides rename the raw ABI parameters, and a binding keyed to the
+    // old name is dropped silently: the encoder then falls back to a
+    // type-derived default, so a 1e18 fixture becomes 1 wei with no error.
+    // This pins the binding keys to the action input names.
+    const chainOne = etherFiDef.testData?.["1"];
+    expect(chainOne).toBeDefined();
+    const bound = chainOne?.actions ?? {};
+    const skipped = chainOne?.skipped ?? {};
+
+    // Every action is either bound or explicitly skipped with a reason.
+    for (const action of etherFiDef.actions) {
+      expect(
+        action.slug in bound || action.slug in skipped,
+        `action "${action.slug}" is neither bound nor skipped`
+      ).toBe(true);
+    }
+
+    // Every binding key that is not a builder directive names a real input.
+    const DIRECTIVES = new Set(["ethValue"]);
+    for (const [slug, bindings] of Object.entries(bound)) {
+      const action = etherFiDef.actions.find((a) => a.slug === slug);
+      expect(
+        action,
+        `testData references unknown action "${slug}"`
+      ).toBeDefined();
+      const inputNames = new Set(action?.inputs.map((i) => i.name));
+      for (const key of Object.keys(bindings as Record<string, unknown>)) {
+        if (DIRECTIVES.has(key)) {
+          continue;
+        }
+        expect(
+          inputNames.has(key),
+          `"${slug}" binds "${key}", which is not one of its inputs (${[...inputNames].join(", ") || "none"})`
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("expectation field names match the declared outputs", () => {
+    // structureAbiOutputs keys the step result off the ABI output name, so an
+    // expectation naming a field the action does not declare cannot resolve.
+    const chainOne = etherFiDef.testData?.["1"];
+    for (const [slug, checks] of Object.entries(chainOne?.expectations ?? {})) {
+      const action = etherFiDef.actions.find((a) => a.slug === slug);
+      expect(action, `expectation for unknown action "${slug}"`).toBeDefined();
+      const outputNames = new Set(action?.outputs?.map((o) => o.name));
+      for (const check of checks as Array<{ field?: string }>) {
+        if (check.field === undefined) {
+          continue;
+        }
+        expect(
+          outputNames.has(check.field),
+          `"${slug}" expects field "${check.field}", not in outputs (${[...outputNames].join(", ")})`
+        ).toBe(true);
+      }
     }
   });
 
