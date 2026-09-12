@@ -19,7 +19,6 @@ Manage integrations for notifications and external services.
 | `safe` | Safe multisig API integration |
 | `webhook` | Custom HTTP webhooks |
 | `web3` | Web3 wallet connections |
-| `ai-gateway` | AI service integrations |
 
 ## List Integrations
 

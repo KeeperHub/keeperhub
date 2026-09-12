@@ -13,7 +13,8 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 |--------|----------|---------|---------------------|
 | [Web3](/plugins/web3) | Blockchain | Balance checks, contract reads/writes, transfers, calldata decoding, risk assessment | Wallet (for writes) |
 | [Code](/plugins/code) | Code | Execute custom JavaScript in a sandboxed VM | None |
-| [Math](/plugins/math) | Math | Aggregation operations (sum, count, average, median, min, max, product) | None |
+| [Math](/plugins/math) | Math | Aggregation operations (sum, count, average, median, min, max, product), tolerance comparison, number formatting | None |
+| [Data](/plugins/data) | Data | Encode/decode strings, extract named fields, flatten findings, static config | None |
 | [Safe](/plugins/safe) | Protocol | Safe multisig owners, threshold, nonce, module status, pending transactions | API key (for pending txs) |
 | [Aave V3](/plugins/aave-v3) | Protocol | Supply, borrow, repay, collateral management, health factor monitoring | Wallet (for writes) |
 | [Aave V4](/plugins/aave-v4) | Protocol | Hub-and-Spoke supply, borrow, repay, collateral management via the Lido Spoke | Wallet (for writes) |

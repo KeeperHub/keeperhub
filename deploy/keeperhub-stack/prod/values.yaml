@@ -33,6 +33,53 @@ app:
     APP_STATEMENT_TIMEOUT_MS:
       type: kv
       value: "30000"
+    # KEEP-1042: execution retention. The per-organization window is NOT set
+    # here - it comes from the org's plan (logRetentionDays in
+    # lib/billing/plans.ts: 7 free, 30 pro, 90 business, 365 enterprise, or a
+    # per-org plan_overrides value). These knobs bound the job around that rule
+    # so an operator can slow or stop it without a deploy.
+    # EXECUTION_RETENTION_MIN_DAYS, _DEFAULT_DAYS and _SOFT_DELETE_GRACE_DAYS
+    # keep their code defaults (7, 7 and 30).
+    EXECUTION_RETENTION_ENABLED:
+      type: kv
+      value: "false"
+    # Second switch, for run rows only. Every billing count reads
+    # workflow_executions by started_at with no floor and the invoices page
+    # recounts it per period on every load, so deleting a run row rewrites what
+    # a customer was billed. Stays "false" until a durable per-period usage
+    # record exists.
+    EXECUTION_RETENTION_EXECUTIONS_ENABLED:
+      type: kv
+      value: "false"
+    # Report what each pass would touch and delete nothing. Prod stays disabled
+    # until staging has run for real: enable with dry-run on first, read the
+    # counts, then flip dry-run off.
+    EXECUTION_RETENTION_DRY_RUN:
+      type: kv
+      value: "true"
+    # Ceiling on the no-join backstop pass. That pass runs at the longest
+    # window any organization is actually on, capped here, so raising this
+    # only bites once some plan sells a longer window than the value below.
+    EXECUTION_LOG_FLOOR_RETENTION_DAYS:
+      type: kv
+      value: "400"
+    # Run rows in workflow_executions. Deliberately flat and long: every billing
+    # count reads this table by started_at with no floor, and the invoices page
+    # pages back over every past invoice, so a shorter window rewrites history.
+    EXECUTION_RETENTION_DAYS:
+      type: kv
+      value: "400"
+    # output_raw is the executor's resume input, so it is only dropped once a run
+    # can no longer be picked up. The redacted `output` the UI shows is untouched.
+    EXECUTION_LOG_OUTPUT_RAW_RETENTION_DAYS:
+      type: kv
+      value: "7"
+    EXECUTION_RETENTION_BATCH_SIZE:
+      type: kv
+      value: "5000"
+    EXECUTION_RETENTION_MAX_RUNTIME_SECONDS:
+      type: kv
+      value: "240"
     CHAIN_RPC_CONFIG:
       type: parameterStore
       name: chain-rpc-config
@@ -917,6 +964,47 @@ app:
         args:
           - "/app/deploy/scripts/reaper.sh"
           - "http://keeperhub-common:3000/api/internal/tempo/broadcast-due"
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-prod/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        restartPolicy: OnFailure
+        backoffLimit: 2
+      # KEEP-1042: age out workflow execution data. Step logs go at the window
+      # the owning org's plan sells, output_raw is nulled once a run can no
+      # longer resume, and run rows retire on a flat billing-safe window.
+      # Daily: every pass works on a bounded slice, so it only has to keep up
+      # with rows crossing their boundary. A missed run is covered by the
+      # per-organization watermark, which only advances on a real drain.
+      # Off until EXECUTION_RETENTION_ENABLED is "true".
+      - name: retention
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-prod
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        # Daily, not hourly, and that is a product decision rather than a cost
+        # one. A plan downgrade drops the org to the free window, so the run
+        # after it deletes everything between the old window and the new one.
+        # Daily gives someone who cancels or lets a trial lapse a full day to
+        # resubscribe before that happens. The deletion itself is intended and
+        # the pricing page states the window; the point is only that an
+        # accidental lapse should not be irreversible within the hour.
+        schedule: "48 3 * * *" # 03:48 UTC, offset to clear every other job in this list
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/internal/retention"
         env:
           INTERNAL_SERVICE_HMAC_SECRET:
             type: parameterStore

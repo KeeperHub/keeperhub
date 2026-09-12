@@ -28,6 +28,11 @@ const DEFAULT_DB_RETURNS: Record<string, unknown> = {
   },
   getLastFinishedExecutionAgeSecondsFromDb: null,
   getUnconfirmedExecutionCountsFromDb: { workflow: 0, direct: 0 },
+  getExecutionRetentionStatsFromDb: {
+    oldestLogAgeSeconds: null,
+    logTableBytes: 0,
+    executionTableBytes: 0,
+  },
   getStuckPendingTransactionCountsFromDb: [],
   getWorkflowErrorsByWorkflowFromDb: [],
   getSystemErrorsByCategoryFromDb: [],

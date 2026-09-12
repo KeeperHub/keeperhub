@@ -11,7 +11,7 @@ import type {
   AnalyticsSummary,
   NetworkBreakdown,
   RunFacets,
-  TimeSeriesBucket,
+  TimeSeriesResponse,
 } from "@/lib/analytics/types";
 import {
   analyticsCustomEndAtom,
@@ -32,6 +32,7 @@ import {
   analyticsStatusFiltersAtom,
   analyticsSummaryAtom,
   analyticsTimeSeriesAtom,
+  analyticsTimeSeriesIntervalAtom,
 } from "@/lib/atoms/analytics";
 import { authClient } from "@/lib/auth-client";
 
@@ -51,6 +52,13 @@ function buildQuery(params: Record<string, string | undefined>): string {
     }
   }
   return new URLSearchParams(entries).toString();
+}
+
+/**
+ * The viewer's IANA zone, or UTC where the runtime will not name one.
+ */
+function viewerTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 }
 
 function toErrorMessage(err: unknown): string {
@@ -128,6 +136,7 @@ export function useAnalytics(): UseAnalyticsReturn {
 
   const setSummary = useSetAtom(analyticsSummaryAtom);
   const setTimeSeries = useSetAtom(analyticsTimeSeriesAtom);
+  const setTimeSeriesInterval = useSetAtom(analyticsTimeSeriesIntervalAtom);
   const setNetworks = useSetAtom(analyticsNetworksAtom);
   const setRuns = useSetAtom(analyticsRunsAtom);
   const setFacets = useSetAtom(analyticsFacetsAtom);
@@ -154,6 +163,9 @@ export function useAnalytics(): UseAnalyticsReturn {
       projectId: projectId ?? undefined,
       customStart: customStart ?? undefined,
       customEnd: customEnd ?? undefined,
+      // The server truncates the chart buckets in this zone, so a day on the
+      // axis is the viewer's day rather than the server's.
+      tz: viewerTimeZone(),
     });
     const filters = {
       range,
@@ -251,12 +263,13 @@ export function useAnalytics(): UseAnalyticsReturn {
         )
       ),
       wrapSection(
-        processSection<{ buckets: TimeSeriesBucket[] }>(
+        processSection<TimeSeriesResponse>(
           timeSeriesPromise,
           "Time series",
           ctx,
           (data) => {
             setTimeSeries(data.buckets);
+            setTimeSeriesInterval(data.intervalMs);
           }
         )
       ),
@@ -304,6 +317,7 @@ export function useAnalytics(): UseAnalyticsReturn {
     setError,
     setSummary,
     setTimeSeries,
+    setTimeSeriesInterval,
     setNetworks,
     setRuns,
     setFacets,
