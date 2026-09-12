@@ -29,10 +29,18 @@ const update = (price: string, time = 1000, expo = 0) =>
   });
 
 describe("Pyth threshold semantics", () => {
-  it("establishes a baseline without firing, even when already above the threshold", () => {
-    expect(evaluatePythPrice(config, empty, update("101"), 1000)).toMatchObject(
-      { outcome: "baseline", checkpoint: { armed: false } }
+  it("arms the first crossing when the baseline starts below the threshold", () => {
+    expect(evaluatePythPrice(config, empty, update("99"), 1000)).toMatchObject(
+      { outcome: "baseline", checkpoint: { armed: true } }
     );
+  });
+
+  it("does not fire again when the baseline is already inside the trigger side", () => {
+    const baseline = evaluatePythPrice(config, empty, update("101"), 1000);
+    expect(
+      evaluatePythPrice(config, baseline.checkpoint, update("102", 1001), 1001)
+        .outcome
+    ).toBe("observed");
   });
 
   it("fires at equality, stays disarmed in the hysteresis band, then rearms", () => {

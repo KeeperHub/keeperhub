@@ -520,4 +520,3 @@ Study these existing plugins for patterns:
 - `resend/` - Email sending with multiple fields
 - `slack/` - Webhook integration
 - `linear/` - Issue tracking with select fields
-- `ai-gateway/` - AI model integration with schema builder

@@ -17,6 +17,8 @@ export const viewport: Viewport = {
   userScalable: true,
 };
 
+export const dynamic = "force-dynamic";
+
 export default function PythPage() {
   if (!isPythPriceTriggerEnabled()) {
     notFound();

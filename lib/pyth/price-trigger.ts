@@ -195,8 +195,11 @@ export function evaluatePythPrice(
     checkpoint.lastPublishTime === null ||
     publishTime - checkpoint.lastPublishTime >= config.maxAgeSeconds;
   if (resetBaseline || gap) {
+    const thresholdOrder = compare(coefficient, expo, config.threshold);
+    const startsArmed =
+      config.direction === "above" ? thresholdOrder < 0 : thresholdOrder > 0;
     return {
-      checkpoint: { lastPublishTime: publishTime, armed: isRearmed },
+      checkpoint: { lastPublishTime: publishTime, armed: startsArmed },
       outcome: "baseline",
     };
   }

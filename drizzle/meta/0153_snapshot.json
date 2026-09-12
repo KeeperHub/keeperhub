@@ -1,5 +1,5 @@
 {
-  "id": "382e0f76-2eda-4fce-8be5-a119ec20a4d6",
+  "id": "72dcde6c-115e-478e-96c0-deaed0a57f44",
   "prevId": "135cb20e-6d81-43c3-9736-d3a9363bc892",
   "version": "7",
   "dialect": "postgresql",
@@ -4731,83 +4731,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.pyth_trigger_checkpoints": {
-      "name": "pyth_trigger_checkpoints",
-      "schema": "",
-      "columns": {
-        "workflow_id": {
-          "name": "workflow_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "config_hash": {
-          "name": "config_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_id": {
-          "name": "session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lease_until": {
-          "name": "lease_until",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_publish_time": {
-          "name": "last_publish_time",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "armed": {
-          "name": "armed",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "pending": {
-          "name": "pending",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "pyth_trigger_checkpoints_workflow_id_workflows_id_fk": {
-          "name": "pyth_trigger_checkpoints_workflow_id_workflows_id_fk",
-          "tableFrom": "pyth_trigger_checkpoints",
-          "tableTo": "workflows",
-          "columnsFrom": [
-            "workflow_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.safe_role_allowances": {
       "name": "safe_role_allowances",
       "schema": "",
@@ -7754,6 +7677,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_exec_logs_sponsored_execution": {
+          "name": "idx_exec_logs_sponsored_execution",
+          "columns": [
+            {
+              "expression": "execution_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"workflow_execution_logs\".\"output_raw\" ->> 'sponsored' = 'true'",
           "concurrently": false,
           "method": "btree",
           "with": {}

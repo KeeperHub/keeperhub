@@ -1076,8 +1076,36 @@
     {
       "idx": 153,
       "version": "7",
-      "when": 1789033994390,
-      "tag": "0153_pyth_trigger_checkpoints",
+      "when": 1789062501958,
+      "tag": "0153_keep_1346_exec_log_sponsored_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
+      "when": 1789062561958,
+      "tag": "0154_keep_1042_execution_retention_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1789062621958,
+      "tag": "0155_keep_1042_execution_retention_progress",
+      "breakpoints": true
+    },
+    {
+      "idx": 156,
+      "version": "7",
+      "when": 1789062681958,
+      "tag": "0156_keep_1042_sponsored_index_on_output",
+      "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "7",
+      "when": 1789194020982,
+      "tag": "0157_overjoyed_baron_strucker",
       "breakpoints": true
     }
   ]
