@@ -54,8 +54,28 @@ vi.mock("@/plugins/web3/steps/write-contract-core", () => ({
   writeContractCore: (input: unknown) => writeContractCoreMock(input),
 }));
 
+const readContractCoreMock = vi.fn();
 vi.mock("@/plugins/web3/steps/read-contract-core", () => ({
-  readContractCore: vi.fn(),
+  readContractCore: (input: unknown) => readContractCoreMock(input),
+}));
+
+// The dry-run and token-transfer paths these routes also import. Never reached
+// by a broadcasting write, and stubbing them keeps the module graph (and so the
+// dynamic import inside each test) small enough not to trip the 10s timeout.
+vi.mock("@/lib/execute/simulate", () => ({
+  simulateContractCall: vi.fn(),
+  simulateNativeTransfer: vi.fn(),
+  simulateTokenTransfer: vi.fn(),
+}));
+
+vi.mock("@/plugins/web3/steps/transfer-token-core", () => ({
+  transferTokenCore: vi.fn(),
+  parseTokenAddress: vi.fn(),
+}));
+
+const transferFundsCoreMock = vi.fn();
+vi.mock("@/plugins/web3/steps/transfer-funds-core", () => ({
+  transferFundsCore: (input: unknown) => transferFundsCoreMock(input),
 }));
 
 vi.mock("@/lib/step-registry", () => ({
@@ -130,6 +150,86 @@ async function postSwap(): Promise<Response> {
   });
 }
 
+const CONTRACT_ADDRESS = "0x1234567890123456789012345678901234567890";
+const RECIPIENT_ADDRESS = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+
+// A nonpayable entry so contract-call and check-and-execute both route to the
+// broadcasting write path rather than a read or a simulate.
+const WRITE_ABI = JSON.stringify([
+  {
+    type: "function",
+    name: "swap",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [],
+  },
+]);
+
+// Single uint256 output, which is what the check-and-execute condition
+// comparison accepts.
+const CHECK_ABI = JSON.stringify([
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+]);
+
+function executeRequest(path: string, body: Record<string, unknown>): Request {
+  return new Request(`http://test/api/execute/${path}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer x",
+      "idempotency-key": `idem_${path}`,
+    },
+  });
+}
+
+async function postTransfer(): Promise<Response> {
+  const { POST } = await import("@/app/api/execute/transfer/route");
+  return POST(
+    executeRequest("transfer", {
+      chainId: 8453,
+      recipientAddress: RECIPIENT_ADDRESS,
+      amount: "0.01",
+    })
+  );
+}
+
+async function postContractCall(): Promise<Response> {
+  const { POST } = await import("@/app/api/execute/contract-call/route");
+  return POST(
+    executeRequest("contract-call", {
+      chainId: 8453,
+      contractAddress: CONTRACT_ADDRESS,
+      functionName: "swap",
+      abi: WRITE_ABI,
+    })
+  );
+}
+
+async function postCheckAndExecute(): Promise<Response> {
+  const { POST } = await import("@/app/api/execute/check-and-execute/route");
+  return POST(
+    executeRequest("check-and-execute", {
+      chainId: 8453,
+      contractAddress: CONTRACT_ADDRESS,
+      functionName: "balanceOf",
+      abi: CHECK_ABI,
+      condition: { operator: "gte", value: "1" },
+      action: {
+        contractAddress: CONTRACT_ADDRESS,
+        functionName: "swap",
+        abi: WRITE_ABI,
+      },
+    })
+  );
+}
+
 function lastDisposition(): string | undefined {
   const calls = recordIdempotentResponseMock.mock.calls;
   return calls.at(-1)?.[2] as string | undefined;
@@ -151,6 +251,16 @@ beforeEach(() => {
     gasUsed: "21000",
     effectiveGasPrice: "1000000000",
   });
+  transferFundsCoreMock.mockResolvedValue({
+    success: true,
+    transactionHash: "0xtx",
+    transactionLink: "https://scan/0xtx",
+    gasUsed: "21000",
+    effectiveGasPrice: "1000000000",
+  });
+  // The check-and-execute condition read. Satisfies `balanceOf >= 1` so the
+  // route reaches its write branch.
+  readContractCoreMock.mockResolvedValue({ success: true, result: "100" });
 });
 
 describe("execute protocol idempotency disposition", () => {
@@ -316,5 +426,122 @@ describe("execute protocol idempotency disposition", () => {
 
     expect(response.status).toBe(202);
     expect(lastDisposition()).toBe("failed");
+  });
+});
+
+// The same rule, at the other three chain-write call sites. `[...slug]` above
+// covered only one of the four copies, so a drift in any of these read as
+// green -- which is the shape of the bug the shared rule exists to prevent.
+describe("execute transfer idempotency disposition", () => {
+  it("holds the key when the transfer fails without a transaction hash to guard lost sends", async () => {
+    // No hash means nothing was adjudicated: the send may have entered the
+    // mempool with the response lost. Releasing would let a retry take the
+    // next pending nonce alongside a transaction still sitting there.
+    transferFundsCoreMock.mockResolvedValue({
+      success: false,
+      error: "LK: not yet due",
+    });
+    failExecutionMock.mockResolvedValue({ status: "failed" });
+
+    const response = await postTransfer();
+
+    expect(response.status).toBe(202);
+    expect(lastDisposition()).toBe("failed");
+  });
+
+  it("releases the key when the transfer reverts conclusively", async () => {
+    transferFundsCoreMock.mockResolvedValue({
+      success: false,
+      error: "reverted",
+      transactionHash: "0xfailed",
+      transactionLink: "https://scan/0xfailed",
+    });
+    failExecutionMock.mockResolvedValue({ status: "failed" });
+
+    const response = await postTransfer();
+
+    expect(response.status).toBe(202);
+    expect(lastDisposition()).toBe("release");
+  });
+
+  it("finalizes as success when the transfer broadcasts and succeeds", async () => {
+    const response = await postTransfer();
+
+    expect(response.status).toBe(202);
+    expect(lastDisposition()).toBe("success");
+  });
+});
+
+describe("execute contract-call idempotency disposition", () => {
+  it("holds the key when the contract call fails without a transaction hash to guard lost sends", async () => {
+    writeContractCoreMock.mockResolvedValue({
+      success: false,
+      error: "LK: not yet due",
+    });
+    failExecutionMock.mockResolvedValue({ status: "failed" });
+
+    const response = await postContractCall();
+
+    expect(response.status).toBe(202);
+    expect(lastDisposition()).toBe("failed");
+  });
+
+  it("releases the key when the contract call reverts conclusively", async () => {
+    writeContractCoreMock.mockResolvedValue({
+      success: false,
+      error: "reverted",
+      transactionHash: "0xfailed",
+      transactionLink: "https://scan/0xfailed",
+    });
+    failExecutionMock.mockResolvedValue({ status: "failed" });
+
+    const response = await postContractCall();
+
+    expect(response.status).toBe(202);
+    expect(lastDisposition()).toBe("release");
+  });
+
+  it("finalizes as success when the contract call broadcasts and succeeds", async () => {
+    const response = await postContractCall();
+
+    expect(response.status).toBe(202);
+    expect(lastDisposition()).toBe("success");
+  });
+});
+
+describe("execute check-and-execute idempotency disposition", () => {
+  it("holds the key when the conditional write fails without a transaction hash to guard lost sends", async () => {
+    writeContractCoreMock.mockResolvedValue({
+      success: false,
+      error: "LK: not yet due",
+    });
+    failExecutionMock.mockResolvedValue({ status: "failed" });
+
+    const response = await postCheckAndExecute();
+
+    expect(response.status).toBe(202);
+    expect(lastDisposition()).toBe("failed");
+  });
+
+  it("releases the key when the conditional write reverts conclusively", async () => {
+    writeContractCoreMock.mockResolvedValue({
+      success: false,
+      error: "reverted",
+      transactionHash: "0xfailed",
+      transactionLink: "https://scan/0xfailed",
+    });
+    failExecutionMock.mockResolvedValue({ status: "failed" });
+
+    const response = await postCheckAndExecute();
+
+    expect(response.status).toBe(202);
+    expect(lastDisposition()).toBe("release");
+  });
+
+  it("finalizes as success when the conditional write broadcasts and succeeds", async () => {
+    const response = await postCheckAndExecute();
+
+    expect(response.status).toBe(202);
+    expect(lastDisposition()).toBe("success");
   });
 });
