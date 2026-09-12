@@ -10,6 +10,7 @@ import {
   TEMPLATE_SYNTAX,
   TRIGGERS,
 } from "@/lib/mcp/workflow-schema-constants";
+import { isPythPriceTriggerEnabled } from "@/lib/pyth/feature-flag";
 import {
   BUILTIN_NODE_ID,
   BUILTIN_NODE_LABEL,
@@ -282,7 +283,13 @@ export async function buildActionSchemasResponse(
   const systemActions =
     !categoryFilter || categoryFilter === "system" ? SYSTEM_ACTIONS : {};
   const triggers =
-    !categoryFilter || categoryFilter === "triggers" ? TRIGGERS : {};
+    !categoryFilter || categoryFilter === "triggers"
+      ? Object.fromEntries(
+          Object.entries(TRIGGERS).filter(
+            ([key]) => key !== "Pyth Price" || isPythPriceTriggerEnabled()
+          )
+        )
+      : {};
 
   const chainList: ChainInfo[] = includeChains
     ? await fetchEnabledChains(opts.endpointLabel)

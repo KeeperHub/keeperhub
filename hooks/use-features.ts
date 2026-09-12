@@ -9,7 +9,10 @@ import type {
 } from "@/lib/features";
 import { resolveActionFeature } from "@/lib/features";
 
-type SnapshotResponse = FeatureSnapshotForClient & { billingEnabled: boolean };
+type SnapshotResponse = FeatureSnapshotForClient & {
+  billingEnabled: boolean;
+  pythPriceTriggerEnabled: boolean;
+};
 
 const RETRY_INTERVAL_MS = 250;
 const MAX_RETRY_ATTEMPTS = 60;

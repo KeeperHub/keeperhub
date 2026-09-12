@@ -49,3 +49,29 @@ export async function enqueueWorkflowEventTrigger(
     }),
   );
 }
+
+export async function enqueueWorkflowUpstreamTrigger(
+  client: SQSClient,
+  queueUrl: string,
+  trigger: {
+    executionId: string;
+    workflowId: string;
+    userId: string;
+    configHash: string;
+    triggerData: Record<string, unknown>;
+  },
+): Promise<void> {
+  const body = JSON.stringify({ ...trigger, triggerType: "upstream" });
+  await client.send(
+    new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: body,
+      MessageAttributes: {
+        TriggerType: { DataType: "String", StringValue: "upstream" },
+        WorkflowId: { DataType: "String", StringValue: trigger.workflowId },
+        ...signSqsMessageAttributes("events", queueUrl, body),
+      },
+    }),
+    { abortSignal: AbortSignal.timeout(8000) },
+  );
+}

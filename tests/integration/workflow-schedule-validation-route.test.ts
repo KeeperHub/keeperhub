@@ -269,6 +269,23 @@ describe("PATCH /api/workflows/[workflowId] schedule registration", () => {
     ]);
   });
 
+  it("rejects enabling an incomplete Pyth trigger before writing", async () => {
+    mockWorkflowsFindFirst.mockResolvedValue({
+      ...existingWorkflow(),
+      enabled: false,
+      nodes: [
+        {
+          id: "trigger-1",
+          data: { type: "trigger", config: { triggerType: "Pyth Price" } },
+        },
+      ],
+    });
+    const response = await PATCH(makeRequest({ enabled: true }), { params });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("INVALID_PYTH_TRIGGER");
+    expect(mockUpdateReturning).not.toHaveBeenCalled();
+  });
+
   it("registers the schedule on an enable-only PATCH", async () => {
     const response = await PATCH(makeRequest({ enabled: true }), { params });
 

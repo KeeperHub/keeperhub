@@ -20,6 +20,7 @@ import {
   chainExists,
   tokenAddressFormat,
 } from "@/lib/mcp/validate-workflow-web3";
+import { parsePythTriggerConfig } from "@/lib/pyth/price-trigger";
 
 export type ValidationIssue = {
   code: ValidationErrorCode | ValidationWarningCode;
@@ -69,6 +70,31 @@ export function validateWorkflow(
   const nodeIds = collectNodeIds(workflow.nodes);
   runEdgeRefCheck(workflow, nodeIds, errors);
   runTriggerConfigCheck(workflow, errors);
+  for (const [index, rawNode] of (Array.isArray(workflow.nodes)
+    ? workflow.nodes
+    : []
+  ).entries()) {
+    const node = rawNode as {
+      data?: { type?: string; config?: Record<string, unknown> };
+    } | null;
+    if (
+      node?.data?.type === "trigger" &&
+      node.data.config?.triggerType === "Pyth Price"
+    ) {
+      try {
+        parsePythTriggerConfig(node.data.config);
+      } catch (error) {
+        errors.push({
+          code: VALIDATION_ERROR_CODES.MISSING_TRIGGER_CONFIG,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Invalid Pyth trigger configuration",
+          parameterPath: `nodes[${index}].data.config`,
+        });
+      }
+    }
+  }
   runBareAtCheck(workflow, errors);
 
   // VALID-03 listing-eligibility (only when isListed)
