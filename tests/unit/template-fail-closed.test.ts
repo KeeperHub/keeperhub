@@ -698,3 +698,153 @@ describe("extractTemplateParameters strict integration", () => {
     expect(tracker.unresolved[0]?.reason).toBe("no-path");
   });
 });
+
+describe("leftover literals name the field that carried them", () => {
+  // Issue #2305: a config key the renderer never reaches keeps its tokens, and the
+  // scan then reports the reference as unresolved. The reference is usually spelled
+  // correctly and the key above it is the fault, so the message has to say where.
+  const conditionConfigWithStaleGroup = {
+    actionType: "Condition",
+    condition: "resolved by its own path",
+    group: {
+      id: "group-1",
+      logic: "AND",
+      rules: [
+        {
+          id: "rule-1",
+          leftOperand: "{{@step-1:Get Aave Health Factor.healthFactor}}",
+          operator: "<",
+          rightOperand: "1500000000000000000",
+        },
+      ],
+    },
+  };
+
+  it("names the path through an array-valued key", () => {
+    const tracker = createTracker();
+    let message = "";
+    try {
+      assertResolved(tracker, conditionConfigWithStaleGroup, {
+        nodeId: "step-2",
+        nodeLabel: "Condition",
+        actionType: "Condition",
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(UNRESOLVED_REF_MESSAGE);
+    expect(message).toContain("group.rules[0].leftOperand");
+    expect(message).toContain(
+      "{{@step-1:Get Aave Health Factor.healthFactor}}"
+    );
+  });
+
+  it("records the path on the ref itself", () => {
+    const tracker = createTracker();
+    let thrown: TemplateResolutionError | undefined;
+    try {
+      assertResolved(tracker, conditionConfigWithStaleGroup, {});
+    } catch (error) {
+      thrown = error as TemplateResolutionError;
+    }
+    // Without this the case passes when nothing throws at all.
+    expect(thrown).toBeInstanceOf(TemplateResolutionError);
+    expect(thrown?.unresolved[0]?.path).toBe("group.rules[0].leftOperand");
+    expect(thrown?.unresolved[0]?.reason).toBe("literal-leftover");
+  });
+
+  it("omits the path clause when the token sits at the root", () => {
+    const tracker = createTracker();
+    let thrown: TemplateResolutionError | undefined;
+    try {
+      assertResolved(tracker, "{{@step-1:Node.field}}", {});
+    } catch (error) {
+      thrown = error as TemplateResolutionError;
+    }
+    expect(thrown).toBeInstanceOf(TemplateResolutionError);
+    // The path clause, when there is one, follows the token directly. Pinning
+    // that spot rather than the absence of " at " anywhere in the message keeps
+    // the assertion off the trailing prose, which can be reworded freely.
+    expect(thrown?.message).toContain("{{@step-1:Node.field}}");
+    expect(thrown?.message).not.toContain("{{@step-1:Node.field}} at ");
+    expect(thrown?.unresolved[0]?.path).toBeUndefined();
+  });
+});
+
+describe("a rule group under conditionConfig is not scanned", () => {
+  // processActionConfig (executor.workflow.ts) is a closure, so this walks its
+  // three steps with the same exported pieces it uses: lift `condition` and
+  // `conditionConfig` out of the copy, render the rest with processTemplates,
+  // then assertResolved on the result. The fixture's group carries the same
+  // unrendered token as the stale-group case above; the only difference
+  // between the two cases is which key holds it.
+  const group = {
+    id: "group-1",
+    logic: "AND",
+    rules: [
+      {
+        id: "rule-1",
+        leftOperand: "{{@step-1:Get Aave Health Factor.healthFactor}}",
+        operator: "<",
+        rightOperand: "1500000000000000000",
+      },
+    ],
+  };
+  const outputs = {
+    "step-1": {
+      label: "Get Aave Health Factor",
+      data: { healthFactor: "1200000000000000000" },
+    },
+  };
+  // A replica of processActionConfig's three steps, not a call into it:
+  // that function is a closure in executor.workflow.ts and is not
+  // exported. The assertion below is real, but it is pinned to this copy,
+  // so a change to the real lift order or to where assertResolved is
+  // called from would not be caught here.
+  const liftAndScan = (config: Record<string, unknown>): void => {
+    const configWithoutSpecial: Record<string, unknown> = { ...config };
+    configWithoutSpecial.condition = undefined;
+    configWithoutSpecial.conditionConfig = undefined;
+    const tracker = createTracker();
+    const processed = processTemplates(configWithoutSpecial, outputs, tracker);
+    assertResolved(tracker, processed, {
+      nodeId: "step-2",
+      nodeLabel: "Condition",
+      actionType: "Condition",
+    });
+  };
+
+  it("passes the repaired shape through to the node", () => {
+    expect(() =>
+      liftAndScan({
+        actionType: "Condition",
+        condition:
+          "{{@step-1:Get Aave Health Factor.healthFactor}} < 1500000000000000000",
+        conditionConfig: { group },
+      })
+    ).not.toThrow();
+  });
+
+  it("still aborts on the shape the builder used to emit", () => {
+    expect(() =>
+      liftAndScan({
+        actionType: "Condition",
+        condition:
+          "{{@step-1:Get Aave Health Factor.healthFactor}} < 1500000000000000000",
+        group,
+      })
+    ).toThrow(UNRESOLVED_REF_MESSAGE);
+  });
+
+  it("aborts on the old shape even when only the group carries a token", () => {
+    // The expression is a plain string here, so the group is the sole source
+    // of the leftover, and the path names it.
+    let thrown: TemplateResolutionError | undefined;
+    try {
+      liftAndScan({ actionType: "Condition", condition: "true", group });
+    } catch (error) {
+      thrown = error as TemplateResolutionError;
+    }
+    expect(thrown?.unresolved[0]?.path).toBe("group.rules[0].leftOperand");
+  });
+});

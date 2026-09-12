@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { expressionToConditionGroup } from "@/lib/workflow/nodes/condition/builder-utils";
 import {
   ONBOARDING_WORKFLOW_FIXTURES,
   type OnboardingWorkflowFixture,
@@ -62,6 +63,61 @@ describe("ONBOARDING_WORKFLOW_FIXTURES", () => {
         const first = (fixture.nodes as NodeLike[])[0];
         expect(first.id).toBe("trigger-1");
         expect(first.data?.config?.triggerType).toBeTruthy();
+      });
+
+      it("keeps a Condition rule group under conditionConfig", () => {
+        type NodeLike = {
+          id: string;
+          data?: {
+            config?: {
+              actionType?: string;
+              group?: unknown;
+              conditionConfig?: { group?: unknown };
+            };
+          };
+        };
+        const conditions = (fixture.nodes as NodeLike[]).filter(
+          (n) => n.data?.config?.actionType === "Condition"
+        );
+        for (const node of conditions) {
+          // processActionConfig lifts only `condition` and `conditionConfig`
+          // out of the config before rendering templates, so a group left at
+          // the top level keeps its {{...}} tokens, the leftover-literal scan
+          // finds them, and the run aborts before the node executes.
+          expect(
+            node.data?.config?.group,
+            `${node.id} carries a top-level group`
+          ).toBeUndefined();
+          expect(
+            node.data?.config?.conditionConfig?.group,
+            `${node.id} has no group under conditionConfig`
+          ).toBeDefined();
+        }
+      });
+
+      it("has a Condition expression the editor can parse back", () => {
+        // Migration 0152 removes a stale top-level group and, where an
+        // expression is already what the node runs, does not promote it. The
+        // editor then rebuilds conditionConfig from `condition` on open, so
+        // every seeded expression has to be one the parser accepts, or a
+        // repaired seeded workflow opens in expression mode instead.
+        type NodeLike = {
+          id: string;
+          data?: { config?: { actionType?: string; condition?: unknown } };
+        };
+        const conditions = (fixture.nodes as NodeLike[]).filter(
+          (n) => n.data?.config?.actionType === "Condition"
+        );
+        for (const node of conditions) {
+          const condition = node.data?.config?.condition;
+          expect(typeof condition, `${node.id} has no expression`).toBe(
+            "string"
+          );
+          expect(
+            expressionToConditionGroup(condition as string),
+            `${node.id}: the editor cannot parse ${String(condition)}`
+          ).not.toBeNull();
+        }
       });
     });
   }
