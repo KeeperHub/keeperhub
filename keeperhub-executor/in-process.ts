@@ -136,6 +136,21 @@ export async function executeInProcess(params: {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
 
+    // Latency instrumentation (issue #2289): discard this run's broadcast
+    // marker if the write path left one and the run then failed - the success
+    // path's takeBroadcastMarker never fires on this route, so without this a
+    // failed in-process run leaks its per-execution marker file into a
+    // weeks-long pod's emptyDir. Deliberately cleanup only: no latency stage
+    // is recorded on the failure path, so the histograms keep counting only
+    // runs that reached a terminal state. The executor's startup
+    // sweepBroadcastMarkers covers the remaining failure mode, a process
+    // killed before this catch can run.
+    try {
+      takeBroadcastMarker(executionId);
+    } catch {
+      // Never let marker cleanup mask the run's own error.
+    }
+
     // "completed" is not marked on failure: the histogram must only count runs
     // that reached a terminal state, so a crash/failure is visible as a
     // missing series rather than a fast fake latency.

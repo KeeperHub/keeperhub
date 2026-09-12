@@ -22,6 +22,8 @@ const {
   getBroadcastCount,
   getBroadcastMarkerPath,
   currentExecutionId,
+  sweepBroadcastMarkers,
+  waitForBroadcastCounterForTests,
 } = await import("./broadcast-marker");
 
 afterEach(() => {
@@ -87,18 +89,72 @@ describe("broadcast marker (issue #2289 broadcast stage)", () => {
     expect(existsSync(getBroadcastMarkerPath("exec-1"))).toBe(false);
   });
 
-  it("increments the registered keeperhub_executor_broadcasts_total counter", async () => {
+  it("rejects a marker whose content id does not match its filename", () => {
+    // A misfiled marker (exec-1.json carrying exec-2's record) must never
+    // reach a consumer: the reader-level check returns undefined, and take
+    // still consumes the garbage file so the cleanup paths stay bounded.
+    writeFileSync(
+      getBroadcastMarkerPath("exec-1"),
+      JSON.stringify({ executionId: "exec-2", broadcastAt: Date.now() }),
+      "utf-8"
+    );
+    expect(peekBroadcastMarker("exec-1")).toBeUndefined();
+    expect(takeBroadcastMarker("exec-1")).toBeUndefined();
+    expect(existsSync(getBroadcastMarkerPath("exec-1"))).toBe(false);
+  });
+
+  it("writes no marker file for an unsafe execution id, but still counts", () => {
+    // Path hardening: an id carrying a separator or traversal must never
+    // reach join() or rmSync. The broadcast itself still happened, so the
+    // process-local counter moves; the sidecar silently does not.
+    for (const bad of ["../escape", "a/b", "a\\\\b", "..", "a b", ""]) {
+      const before = getBroadcastCount();
+      markBroadcast(bad);
+      expect(getBroadcastCount()).toBe(before + 1);
+    }
+    // Nothing new landed in the registry dir (the afterEach cleanup would
+    // fail on an unexpected file name otherwise).
+    expect(existsSync(getBroadcastMarkerPath("../escape"))).toBe(false);
+  });
+
+  it("sweepBroadcastMarkers removes every marker and returns the count", () => {
+    markBroadcast("exec-1");
+    markBroadcast("exec-2");
+    writeFileSync(
+      getBroadcastMarkerPath("exec-stale"),
+      JSON.stringify({ executionId: "exec-stale", broadcastAt: Date.now() }),
+      "utf-8"
+    );
+    expect(sweepBroadcastMarkers()).toBe(3);
+    expect(existsSync(getBroadcastMarkerPath("exec-1"))).toBe(false);
+    expect(existsSync(getBroadcastMarkerPath("exec-2"))).toBe(false);
+    expect(existsSync(getBroadcastMarkerPath("exec-stale"))).toBe(false);
+    // A second sweep over the empty registry is a no-op returning 0.
+    expect(sweepBroadcastMarkers()).toBe(0);
+  });
+
+  it("sweepBroadcastMarkers returns 0 when the registry dir does not exist", () => {
+    // Fresh pod: no MARKER_DIR yet. Best-effort, never throws.
+    rmSync(TMP, { recursive: true, force: true });
+    expect(sweepBroadcastMarkers()).toBe(0);
+  });
+
+  it("increments the registered keeperhub_executor_broadcasts_total counter deterministically", async () => {
     const { executorBroadcastsTotal } = await import(
       "@/lib/metrics/collectors/prometheus"
     );
+    // A mark here guarantees the lazy import has been requested in this test
+    // file's registry state, so the await below has a real promise to settle.
+    markBroadcast(undefined);
+    await waitForBroadcastCounterForTests();
+
     const before = (await executorBroadcastsTotal.get()).values[0]?.value ?? 0;
-    // Resolution is asynchronous (lazy import); allow the module's import
-    // promise to settle before asserting the flush.
-    await new Promise((resolve) => setImmediate(resolve));
     markBroadcast("exec-1");
     markBroadcast(undefined);
-    await new Promise((resolve) => setImmediate(resolve));
+    await waitForBroadcastCounterForTests();
     const after = (await executorBroadcastsTotal.get()).values[0]?.value ?? 0;
-    expect(after).toBeGreaterThanOrEqual(before + 2);
+    // Deterministic resolution lets the test assert exactly, not a range:
+    // no other mark can land between the two reads within this test.
+    expect(after).toBe(before + 2);
   });
 });

@@ -2147,6 +2147,15 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   // Enter async-local context so any logUserError/logSystemError called from
   // this point on (including inside plugin steps) automatically includes
   // org/owner/workflow identifiers without manual threading.
+  //
+  // Mechanism note: enterWorkflowErrorContext uses ALS enterWith, which
+  // mutates the current async resource's store rather than scoping a callback
+  // like run() does. That is the weaker of the two mechanisms, and it holds
+  // here because by the time executeWorkflow runs, concurrent in-process
+  // executions are on distinct async resources, so each mutation lands on its
+  // own store. The step-level runWithWorkflowErrorContext in step-handler.ts
+  // is a proper run() and is the path web3 writes actually take, so plugin
+  // execution is scoped by the stronger mechanism regardless.
   enterWorkflowErrorContext({
     workflow_id: workflowId,
     execution_id: executionId,

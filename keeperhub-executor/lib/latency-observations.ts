@@ -76,7 +76,10 @@ export function collectLatencyObservations(params: {
   const observations: PendingObservation[] = [];
 
   const marker = takeBroadcastMarker(executionId);
-  if (marker && observedAt !== undefined) {
+  // Redundant with the reader-level check in takeBroadcastMarker, which now
+  // guarantees any returned marker carries this execution's id; kept
+  // symmetric with in-process.ts so both consumers read the same way.
+  if (marker && marker.executionId === executionId && observedAt !== undefined) {
     const durationMs = marker.broadcastAt - observedAt;
     if (Number.isFinite(durationMs) && durationMs >= 0) {
       observations.push({

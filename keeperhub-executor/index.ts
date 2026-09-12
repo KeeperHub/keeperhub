@@ -63,6 +63,9 @@ import { executeInProcess } from "./in-process";
 import { createWorkflowJob } from "./k8s-job";
 import { trackLatency } from "./lib/correlation-map";
 import {
+  sweepBroadcastMarkers,
+} from "./lib/broadcast-marker";
+import {
   claimPendingForExecution,
   claimPhantomForExecution,
   discardPhantomRow,
@@ -1025,6 +1028,19 @@ async function listen(): Promise<void> {
 
   assertHmacSecretSet();
   await assertTurnkeyEnvForActiveWallets(db);
+
+  // Latency instrumentation (issue #2289): clear broadcast markers left by a
+  // previous process before any run can start. Every file present at this
+  // point is a leftover from a process that died between broadcast and take -
+  // the in-process catch cannot have run for those, so a startup sweep is the
+  // only path that bounds the registry in a weeks-long pod. Runner pods mount
+  // their own emptyDir and are untouched.
+  const sweptMarkers = sweepBroadcastMarkers();
+  if (sweptMarkers > 0) {
+    console.log(
+      `[Executor] Swept ${sweptMarkers} stale broadcast marker(s) at startup`
+    );
+  }
 
   // Health check + metrics server
   const healthServer = createServer((req, res) => {
