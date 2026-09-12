@@ -19,7 +19,7 @@
       "path": "/api/integrations/{integrationId}",
       "route_file": "app/api/integrations/[integrationId]/route.ts",
       "source": "docs/api/integrations.md",
-      "line": 112
+      "line": 111
     },
     {
       "method": "DELETE",
@@ -75,28 +75,28 @@
       "path": "/api/analytics/networks",
       "route_file": "app/api/analytics/networks/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 88
+      "line": 103
     },
     {
       "method": "GET",
       "path": "/api/analytics/runs",
       "route_file": "app/api/analytics/runs/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 119
+      "line": 134
     },
     {
       "method": "GET",
       "path": "/api/analytics/runs/{executionId}/steps",
       "route_file": "app/api/analytics/runs/[id]/steps/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 170
+      "line": 185
     },
     {
       "method": "GET",
       "path": "/api/analytics/spend-cap",
       "route_file": "app/api/analytics/spend-cap/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 196
+      "line": 211
     },
     {
       "method": "GET",
@@ -104,7 +104,7 @@
       "route_file": "app/api/analytics/stream/route.ts",
       "streaming": true,
       "source": "docs/api/analytics.md",
-      "line": 221
+      "line": 236
     },
     {
       "method": "GET",
@@ -160,14 +160,14 @@
       "path": "/api/integrations",
       "route_file": "app/api/integrations/route.ts",
       "source": "docs/api/integrations.md",
-      "line": 27
+      "line": 26
     },
     {
       "method": "GET",
       "path": "/api/integrations/{integrationId}",
       "route_file": "app/api/integrations/[integrationId]/route.ts",
       "source": "docs/api/integrations.md",
-      "line": 63
+      "line": 62
     },
     {
       "method": "GET",
@@ -426,14 +426,14 @@
       "path": "/api/integrations",
       "route_file": "app/api/integrations/route.ts",
       "source": "docs/api/integrations.md",
-      "line": 74
+      "line": 73
     },
     {
       "method": "POST",
       "path": "/api/integrations/{integrationId}/test",
       "route_file": "app/api/integrations/[integrationId]/test/route.ts",
       "source": "docs/api/integrations.md",
-      "line": 118
+      "line": 117
     },
     {
       "method": "POST",
@@ -559,7 +559,7 @@
       "path": "/api/integrations/{integrationId}",
       "route_file": "app/api/integrations/[integrationId]/route.ts",
       "source": "docs/api/integrations.md",
-      "line": 92
+      "line": 91
     },
     {
       "method": "PUT",

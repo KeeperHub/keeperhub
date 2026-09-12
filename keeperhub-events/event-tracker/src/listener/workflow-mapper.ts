@@ -1,10 +1,22 @@
 import { createHash } from "node:crypto";
-import type { NetworksMap, RawWorkflow } from "../../lib/types";
+import { ethers } from "ethers";
+import type {
+  NetworksMap,
+  RawWorkflow,
+  RawWorkflowNodeConfig,
+} from "../../lib/types";
 import { logger } from "../../lib/utils/logger";
 import { buildEventAbi } from "../chains/event-serializer";
 import { redactRpcUrl } from "../chains/provider-manager";
 import type { AbiEvent } from "../chains/validation";
-import type { WorkflowRegistration } from "./registry";
+import type {
+  StateThresholdRegistration,
+  WorkflowRegistration,
+} from "./registry";
+import type {
+  StateThresholdSubscription,
+  ThresholdComparator,
+} from "./state-threshold";
 
 /**
  * Maps the KeeperHub API workflow response shape into a WorkflowRegistration
@@ -22,7 +34,7 @@ import type { WorkflowRegistration } from "./registry";
 export function buildRegistration(
   workflow: RawWorkflow,
   networks: NetworksMap,
-): WorkflowRegistration | null {
+): WorkflowRegistration | StateThresholdRegistration | null {
   const workflowId = typeof workflow.id === "string" ? workflow.id : null;
   if (!workflowId) {
     logger.warn("[workflow-mapper] workflow missing id; skipping");
@@ -107,6 +119,17 @@ export function buildRegistration(
       `[workflow-mapper] workflow ${workflowId} missing contractAddress; skipping`,
     );
     return null;
+  }
+
+  // State-threshold trigger (issue #2240). Branches after the connection
+  // fields because it shares every one of them and nothing below.
+  if (config.triggerType === "stateThreshold") {
+    return buildStateThresholdRegistration(workflow, workflowId, config, {
+      chainId,
+      wssUrl,
+      fallbackWssUrl,
+      contractAddress,
+    });
   }
 
   const eventName =
@@ -211,4 +234,268 @@ export function hashRegistration(
     memoFilter: reg.memoFilter ?? null,
   });
   return createHash("sha256").update(canonical).digest("hex");
+}
+
+const COMPARATORS: readonly ThresholdComparator[] = ["lt", "lte", "gt", "gte"];
+
+/** `uint8` .. `uint256`, `int8` .. `int256`, and the bare aliases. */
+const NUMERIC_BASE_TYPE = /^u?int\d*$/;
+
+function isComparator(value: unknown): value is ThresholdComparator {
+  return (
+    typeof value === "string" &&
+    (COMPARATORS as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Map a `stateThreshold` trigger node into a registration.
+ *
+ * The view call is resolved here, once, rather than in the listener: the
+ * calldata, the output types and the comparable output index are all fixed
+ * properties of the config, and resolving them at map time means a
+ * misconfigured workflow is refused with one log line instead of failing to
+ * decode on every drain forever.
+ *
+ * The output types in particular have to travel with the call. The decoder
+ * gets raw return data and cannot recover the signature from it, and every
+ * 32-byte word decodes cleanly as a `uint256` - so a decoder left to guess
+ * would read an `int256` of -1 as 2^256 - 1 and silently turn a breach into a
+ * comfortable value under an `lt` threshold.
+ */
+function buildStateThresholdRegistration(
+  workflow: RawWorkflow,
+  workflowId: string,
+  config: RawWorkflowNodeConfig,
+  connection: {
+    chainId: number;
+    wssUrl: string;
+    fallbackWssUrl?: string;
+    contractAddress: string;
+  },
+): StateThresholdRegistration | null {
+  const abiRaw =
+    typeof config.contractABI === "string" ? config.contractABI : null;
+  if (!abiRaw) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} stateThreshold trigger missing contractABI; skipping`,
+    );
+    return null;
+  }
+  const abiFunction =
+    typeof config.abiFunction === "string" ? config.abiFunction : null;
+  if (!abiFunction) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} stateThreshold trigger missing abiFunction; skipping`,
+    );
+    return null;
+  }
+  if (!isComparator(config.comparator)) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} stateThreshold comparator "${String(config.comparator)}" is not one of ${COMPARATORS.join(", ")}; skipping`,
+    );
+    return null;
+  }
+  const comparator = config.comparator;
+
+  let iface: ethers.Interface;
+  let fragment: ethers.FunctionFragment | null;
+  let callData: string;
+  try {
+    iface = new ethers.Interface(JSON.parse(abiRaw));
+    fragment = iface.getFunction(abiFunction);
+    if (!fragment) {
+      logger.warn(
+        `[workflow-mapper] workflow ${workflowId} contractABI has no function "${abiFunction}"; skipping`,
+      );
+      return null;
+    }
+    callData = iface.encodeFunctionData(
+      fragment,
+      Array.isArray(config.functionArgs) ? config.functionArgs : [],
+    );
+  } catch (err) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} could not encode "${abiFunction}": ${String(err)}; skipping`,
+    );
+    return null;
+  }
+
+  const outputs = fragment.outputs;
+  if (outputs.length === 0) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} function "${abiFunction}" returns nothing to compare; skipping`,
+    );
+    return null;
+  }
+  // "full" rather than the bare `type`: a tuple output formats as `tuple`
+  // alone, which carries none of its components and cannot be decoded.
+  const outputTypes = outputs.map((output) => output.format("full"));
+
+  const outputIndex = resolveOutputIndex(outputs, config.outputPath);
+  if (outputIndex === null) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} outputPath "${String(config.outputPath)}" does not name an output of "${abiFunction}"; skipping`,
+    );
+    return null;
+  }
+  const selected = outputs[outputIndex];
+  // `baseType` is the type name itself for a simple type ("uint256"), and
+  // "array"/"tuple" otherwise, so the integer widths are matched rather than
+  // compared to a bare "uint"/"int".
+  if (!NUMERIC_BASE_TYPE.test(selected.baseType)) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} output "${selected.format("full")}" of "${abiFunction}" is not a numeric type; skipping`,
+    );
+    return null;
+  }
+
+  const decimals =
+    typeof config.decimals === "number" && Number.isFinite(config.decimals)
+      ? config.decimals
+      : 0;
+  const threshold = parseScaled(config.threshold, decimals);
+  if (threshold === null) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} stateThreshold threshold "${String(config.threshold)}" is not a decimal number; skipping`,
+    );
+    return null;
+  }
+  // Undefined leaves the band at the module default. An unparseable value is
+  // refused rather than defaulted: silently substituting a band the user did
+  // not ask for is how an oscillating value becomes a burst of executions.
+  let hysteresis: bigint | undefined;
+  if (config.hysteresis !== undefined) {
+    const parsed = parseScaled(config.hysteresis, decimals);
+    if (parsed === null || parsed < 0n) {
+      logger.warn(
+        `[workflow-mapper] workflow ${workflowId} stateThreshold hysteresis "${String(config.hysteresis)}" is not a non-negative decimal number; skipping`,
+      );
+      return null;
+    }
+    hysteresis = parsed;
+  }
+
+  const minBlocksBetweenFires =
+    typeof config.minBlocksBetweenFires === "number" &&
+    Number.isFinite(config.minBlocksBetweenFires) &&
+    config.minBlocksBetweenFires > 0
+      ? Math.floor(config.minBlocksBetweenFires)
+      : undefined;
+
+  const subscription: StateThresholdSubscription = {
+    // Placeholder until the semantic fields below are hashed into it.
+    subscriptionId: "",
+    workflowId,
+    chainId: connection.chainId,
+    contractAddress: connection.contractAddress,
+    callData,
+    outputTypes,
+    outputIndex,
+    threshold,
+    comparator,
+    hysteresis,
+    minBlocksBetweenFires,
+  };
+  subscription.subscriptionId = hashStateSubscription(subscription);
+
+  const userId = typeof workflow.userId === "string" ? workflow.userId : "";
+  const workflowName = typeof workflow.name === "string" ? workflow.name : "";
+
+  return {
+    kind: "state",
+    workflowId,
+    userId,
+    workflowName,
+    chainId: connection.chainId,
+    wssUrl: connection.wssUrl,
+    fallbackWssUrl: connection.fallbackWssUrl,
+    subscription,
+    configHash: hashStateRegistration({
+      subscriptionId: subscription.subscriptionId,
+      wssUrl: connection.wssUrl,
+      fallbackWssUrl: connection.fallbackWssUrl ?? null,
+      userId,
+    }),
+  };
+}
+
+/** `outputPath` as an index, an output name, or absent (the first output). */
+function resolveOutputIndex(
+  outputs: readonly ethers.ParamType[],
+  outputPath: string | number | undefined,
+): number | null {
+  if (outputPath === undefined || outputPath === "") {
+    return 0;
+  }
+  if (typeof outputPath === "number") {
+    return Number.isInteger(outputPath) &&
+      outputPath >= 0 &&
+      outputPath < outputs.length
+      ? outputPath
+      : null;
+  }
+  const byName = outputs.findIndex((output) => output.name === outputPath);
+  if (byName >= 0) {
+    return byName;
+  }
+  // A numeric string is an index, so the builder can send either shape.
+  const asIndex = Number(outputPath);
+  return Number.isInteger(asIndex) && asIndex >= 0 && asIndex < outputs.length
+    ? asIndex
+    : null;
+}
+
+/** Decimal string (or number) scaled by `decimals` into an integer. */
+function parseScaled(
+  value: string | number | undefined,
+  decimals: number,
+): bigint | null {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  try {
+    return ethers.parseUnits(String(value), decimals);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Identity of a state subscription's *trigger semantics*, and therefore of
+ * its arming episodes. Deliberately excludes connection fields: rotating an
+ * RPC URL must not open a new generation and re-dispatch a condition that is
+ * already holding. Changing what is watched or where the line sits must, which
+ * is why every one of those fields is in here.
+ */
+export function hashStateSubscription(
+  sub: Omit<StateThresholdSubscription, "subscriptionId">,
+): string {
+  const canonical = JSON.stringify({
+    workflowId: sub.workflowId,
+    chainId: sub.chainId,
+    contractAddress: sub.contractAddress.toLowerCase(),
+    callData: sub.callData.toLowerCase(),
+    outputTypes: sub.outputTypes,
+    outputIndex: sub.outputIndex,
+    threshold: sub.threshold.toString(),
+    comparator: sub.comparator,
+    hysteresis: sub.hysteresis?.toString() ?? null,
+    minBlocksBetweenFires: sub.minBlocksBetweenFires ?? null,
+  });
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+/**
+ * Content hash over everything that should restart a state listener, which is
+ * the subscription identity plus the connection fields it is served over.
+ * Counterpart to `hashRegistration` for the event path.
+ */
+export function hashStateRegistration(parts: {
+  subscriptionId: string;
+  wssUrl: string;
+  fallbackWssUrl: string | null;
+  userId: string;
+}): string {
+  return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }

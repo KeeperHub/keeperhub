@@ -1,6 +1,7 @@
 import { SQS_QUEUE_URL } from "../../lib/config/environment";
 import { sqs } from "../../lib/sqs-client";
 import { chainProviderManager } from "../chains/provider-manager";
+import { createRedisArmStateStore } from "./arm-state-redis";
 import { createRedisDedupStore } from "./dedup-redis";
 import { ListenerRegistry } from "./registry";
 
@@ -16,6 +17,7 @@ export function createRegistry(): ListenerRegistry {
   return new ListenerRegistry({
     providerManager: chainProviderManager,
     dedup: createRedisDedupStore(),
+    armStore: createRedisArmStateStore(),
     sqs,
     sqsQueueUrl: SQS_QUEUE_URL,
   });
