@@ -62,7 +62,8 @@ import blocklist from "../ssrf-blocklist.json" with { type: "json" };
  * Residual: a sandbox escape is still arbitrary code running AS the user, so
  * it can return any DATA it likes (exactly as legitimate user code can). What
  * it can no longer do is hand the parent untrusted bytes to deserialize. The
- * vector is gated behind a vm escape; the child is env-scrubbed and
+ * vector is gated behind a vm escape, the sandbox context shares no object
+ * with this realm (see sandboxBootstrap), and the child is env-scrubbed and
  * NetworkPolicy-isolated.
  */
 export const SANDBOX_RESULT_FD = 3;
@@ -498,8 +499,9 @@ export function encodeSandboxResult(value: unknown): string {
  *
  * Responsibilities:
  *   - Read a JSON payload from stdin: `{ code: string, timeoutMs: number }`
- *   - Execute `code` inside a vm.createContext sandbox with a scrubbed set
- *     of globals
+ *   - Execute `code` inside a fresh vm.createContext realm, then rebuild the
+ *     non-ECMAScript globals (console, fetch, URL, TextEncoder, ...) inside
+ *     that realm rather than copying this process's objects in
  *   - Apply an SSRF guard to `fetch` (DNS-resolved denylist mirroring
  *     lib/safe-fetch.ts from KEEP-314)
  *   - Apply a wall-clock timeout (beyond the vm's sync CPU timeout) that
@@ -511,6 +513,10 @@ export const SANDBOX_CHILD_SOURCE = `
 "use strict";
 const { createContext, runInContext } = require("node:vm");
 const fs = require("node:fs");
+// Cross-realm type predicates. User values now come from the sandbox's own
+// realm, so \`value instanceof Date\` (host Date) is false for a sandbox Date;
+// these read internal slots instead and work across realms.
+const types = require("node:util").types;
 const dnsPromises = require("node:dns").promises;
 const { BlockList, isIP } = require("node:net");
 const http = require("node:http");
@@ -811,6 +817,12 @@ const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 // across chunks would otherwise slip past it.
 const GZIP_MAX_OUTPUT_BYTES = ${SANDBOX_RESULT_MAX_BYTES};
 
+// Upper bound on a response body the sandbox will buffer before handing it to
+// user code. The body is marshalled into the sandbox realm as base64 text (a
+// host Response object would hand user code the host realm), so it has to be
+// read fully; this bounds that read at the same budget as the gzip path.
+const MAX_RESPONSE_BODY_BYTES = ${SANDBOX_RESULT_MAX_BYTES};
+
 // Transform that errors the stream once cumulative bytes exceed maxBytes. zlib's
 // maxOutputLength is per-output-buffer, so this is the load-bearing cumulative
 // cap on a decompressed body; it tears the pipe down with an error rather than
@@ -884,9 +896,10 @@ function buildResponseHeaders(rawHeaders) {
 // Drop-in replacement for global fetch used by the wrapped sandbox fetch. Dials
 // only the pre-validated pinnedAddresses (resolved + validated once by the
 // caller) instead of letting the network layer re-resolve, and returns a
-// genuine WHATWG Response so user code keeps the full fetch contract (.ok /
-// .status / .headers / .json() / .text() / .body). Redirects are NOT
-// auto-followed here; the caller's loop re-validates and follows each hop.
+// genuine WHATWG Response so status, headers and body decoding all behave as
+// the network layer would; marshalResponse then flattens it for the sandbox
+// realm. Redirects are NOT auto-followed here; the caller's loop re-validates
+// and follows each hop.
 async function pinnedFetch(request, pinnedAddresses, signal) {
   // request is the WHATWG Request the caller already built and validated.
   // pinnedFetch reads the dial URL from THIS object and never re-derives it from
@@ -1035,6 +1048,1184 @@ async function cancelResponseBody(response) {
   }
 }
 
+// Bootstrap evaluated INSIDE the vm context (via Function.prototype.toString,
+// see installSandboxGlobals), so every object it builds belongs to the sandbox
+// realm.
+//
+// The sandbox used to be populated by copying ~55 host intrinsics into
+// createContext(): Array, JSON, Math, Object, the typed arrays, URL, Response
+// and so on. Each of them was an object from THIS process's realm, so
+// X.constructor.constructor resolved to the host Function and user code could
+// compile a function that runs outside the sandbox and reach process /
+// process.binding from there. A fresh createContext({}) already owns a
+// complete set of ECMAScript intrinsics that lead nowhere, so the fix is to
+// inject none of them and rebuild the non-ECMAScript surface here, in-realm.
+//
+// Two rules keep it closed, and both are load-bearing:
+//   - This function must stay self-contained. It runs in the other realm, so
+//     it can reference only its own locals, its parameter, and the realm's own
+//     globals -- never an identifier from the surrounding (host) scope.
+//   - The host \`bridge\` functions it closes over are the only host values that
+//     cross, they are never exposed to user code, and they exchange PRIMITIVES
+//     only. Handing back a host object (a Response, a plain {} built in the
+//     host realm, a rejected host Error) would reopen the hole, so fetch
+//     results arrive as JSON text and are rebuilt here.
+function sandboxBootstrap(bridge) {
+  "use strict";
+
+  const HEX = "0123456789ABCDEF";
+  const B64_CHARS =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const B64_INDEX = new Map();
+  for (let i = 0; i < B64_CHARS.length; i++) {
+    B64_INDEX.set(B64_CHARS.charAt(i), i);
+  }
+
+  // Every bridge call that can fail answers with this envelope, so a host
+  // exception never crosses into user code as a catchable host Error.
+  function unwrap(json) {
+    const envelope = JSON.parse(json);
+    if (envelope.ok !== true) {
+      throw new TypeError(envelope.e);
+    }
+    return envelope.v;
+  }
+
+  function isAsciiWhitespace(charCode) {
+    return (
+      charCode === 32 ||
+      charCode === 9 ||
+      charCode === 10 ||
+      charCode === 13 ||
+      charCode === 12
+    );
+  }
+
+  function bytesToBase64(bytes) {
+    let out = "";
+    for (let i = 0; i < bytes.length; i += 3) {
+      const hasSecond = i + 1 < bytes.length;
+      const hasThird = i + 2 < bytes.length;
+      const b0 = bytes[i];
+      const b1 = hasSecond ? bytes[i + 1] : 0;
+      const b2 = hasThird ? bytes[i + 2] : 0;
+      out += B64_CHARS.charAt(b0 >> 2);
+      out += B64_CHARS.charAt(((b0 & 3) << 4) | (b1 >> 4));
+      out += hasSecond ? B64_CHARS.charAt(((b1 & 15) << 2) | (b2 >> 6)) : "=";
+      out += hasThird ? B64_CHARS.charAt(b2 & 63) : "=";
+    }
+    return out;
+  }
+
+  function base64ToBytes(input) {
+    let clean = "";
+    for (let i = 0; i < input.length; i++) {
+      if (!isAsciiWhitespace(input.charCodeAt(i))) {
+        clean += input.charAt(i);
+      }
+    }
+    while (clean.length > 0 && clean.charAt(clean.length - 1) === "=") {
+      clean = clean.slice(0, -1);
+    }
+    if (clean.length % 4 === 1) {
+      throw new TypeError("atob: invalid base64 length");
+    }
+    const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
+    let bits = 0;
+    let bitCount = 0;
+    let outIndex = 0;
+    for (let i = 0; i < clean.length; i++) {
+      const value = B64_INDEX.get(clean.charAt(i));
+      if (value === undefined) {
+        throw new TypeError("atob: invalid base64 character");
+      }
+      bits = (bits << 6) | value;
+      bitCount += 6;
+      if (bitCount >= 8) {
+        bitCount -= 8;
+        out[outIndex] = (bits >> bitCount) & 255;
+        outIndex += 1;
+      }
+    }
+    return out;
+  }
+
+  function utf8Encode(text) {
+    const bytes = [];
+    for (let i = 0; i < text.length; i++) {
+      let point = text.charCodeAt(i);
+      if (point >= 0xd800 && point <= 0xdbff && i + 1 < text.length) {
+        const next = text.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          point = (point - 0xd800) * 0x400 + (next - 0xdc00) + 0x10000;
+          i += 1;
+        }
+      }
+      if (point >= 0xd800 && point <= 0xdfff) {
+        point = 0xfffd;
+      }
+      if (point < 0x80) {
+        bytes.push(point);
+      } else if (point < 0x800) {
+        bytes.push(0xc0 | (point >> 6), 0x80 | (point & 63));
+      } else if (point < 0x10000) {
+        bytes.push(
+          0xe0 | (point >> 12),
+          0x80 | ((point >> 6) & 63),
+          0x80 | (point & 63)
+        );
+      } else {
+        bytes.push(
+          0xf0 | (point >> 18),
+          0x80 | ((point >> 12) & 63),
+          0x80 | ((point >> 6) & 63),
+          0x80 | (point & 63)
+        );
+      }
+    }
+    return new Uint8Array(bytes);
+  }
+
+  function utf8Decode(bytes) {
+    let out = "";
+    let i = 0;
+    while (i < bytes.length) {
+      const first = bytes[i];
+      i += 1;
+      let point;
+      let continuation;
+      if (first < 0x80) {
+        point = first;
+        continuation = 0;
+      } else if ((first & 0xe0) === 0xc0) {
+        point = first & 31;
+        continuation = 1;
+      } else if ((first & 0xf0) === 0xe0) {
+        point = first & 15;
+        continuation = 2;
+      } else if ((first & 0xf8) === 0xf0) {
+        point = first & 7;
+        continuation = 3;
+      } else {
+        out += String.fromCharCode(0xfffd);
+        continue;
+      }
+      let valid = true;
+      for (let k = 0; k < continuation; k++) {
+        const next = bytes[i];
+        if (next === undefined || (next & 0xc0) !== 0x80) {
+          valid = false;
+          break;
+        }
+        point = (point << 6) | (next & 63);
+        i += 1;
+      }
+      if (!valid || point > 0x10ffff) {
+        out += String.fromCharCode(0xfffd);
+        continue;
+      }
+      if (point > 0xffff) {
+        const rest = point - 0x10000;
+        out += String.fromCharCode(0xd800 + (rest >> 10), 0xdc00 + (rest & 1023));
+      } else {
+        out += String.fromCharCode(point);
+      }
+    }
+    return out;
+  }
+
+  function toByteView(input) {
+    if (input instanceof Uint8Array) {
+      return input;
+    }
+    if (ArrayBuffer.isView(input)) {
+      return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    }
+    if (input instanceof ArrayBuffer) {
+      return new Uint8Array(input);
+    }
+    throw new TypeError("expected an ArrayBuffer or a typed array");
+  }
+
+  function btoa(data) {
+    const text = String(data);
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) {
+      const charCode = text.charCodeAt(i);
+      if (charCode > 255) {
+        throw new TypeError(
+          "btoa: the string contains characters outside of the Latin1 range"
+        );
+      }
+      bytes[i] = charCode;
+    }
+    return bytesToBase64(bytes);
+  }
+
+  function atob(data) {
+    const bytes = base64ToBytes(String(data));
+    let out = "";
+    for (let i = 0; i < bytes.length; i++) {
+      out += String.fromCharCode(bytes[i]);
+    }
+    return out;
+  }
+
+  class TextEncoder {
+    get encoding() {
+      return "utf-8";
+    }
+    encode(input) {
+      return utf8Encode(input === undefined ? "" : String(input));
+    }
+    encodeInto(source, destination) {
+      const text = String(source);
+      let read = 0;
+      let written = 0;
+      let i = 0;
+      while (i < text.length) {
+        const high = text.charCodeAt(i);
+        const isPair =
+          high >= 0xd800 &&
+          high <= 0xdbff &&
+          i + 1 < text.length &&
+          text.charCodeAt(i + 1) >= 0xdc00 &&
+          text.charCodeAt(i + 1) <= 0xdfff;
+        const unit = text.slice(i, i + (isPair ? 2 : 1));
+        const encoded = utf8Encode(unit);
+        if (written + encoded.length > destination.length) {
+          break;
+        }
+        destination.set(encoded, written);
+        written += encoded.length;
+        read += unit.length;
+        i += unit.length;
+      }
+      return { read: read, written: written };
+    }
+  }
+
+  class TextDecoder {
+    constructor(label) {
+      const name = label === undefined ? "utf-8" : String(label).toLowerCase();
+      if (name !== "utf-8" && name !== "utf8" && name !== "unicode-1-1-utf-8") {
+        throw new RangeError(
+          "TextDecoder: the sandbox only supports the utf-8 encoding"
+        );
+      }
+    }
+    get encoding() {
+      return "utf-8";
+    }
+    decode(input) {
+      if (input === undefined) {
+        return "";
+      }
+      return utf8Decode(toByteView(input));
+    }
+  }
+
+  function cloneValue(value, seen) {
+    if (value === null || typeof value !== "object") {
+      if (typeof value === "function" || typeof value === "symbol") {
+        throw new TypeError(
+          "structuredClone: a " + typeof value + " could not be cloned"
+        );
+      }
+      return value;
+    }
+    if (seen.has(value)) {
+      return seen.get(value);
+    }
+    if (value instanceof Date) {
+      const clone = new Date(value.getTime());
+      seen.set(value, clone);
+      return clone;
+    }
+    if (value instanceof RegExp) {
+      const clone = new RegExp(value.source, value.flags);
+      seen.set(value, clone);
+      return clone;
+    }
+    if (value instanceof ArrayBuffer) {
+      const clone = value.slice(0);
+      seen.set(value, clone);
+      return clone;
+    }
+    if (ArrayBuffer.isView(value)) {
+      const buffer = cloneValue(value.buffer, seen);
+      const clone =
+        value instanceof DataView
+          ? new DataView(buffer, value.byteOffset, value.byteLength)
+          : new value.constructor(buffer, value.byteOffset, value.length);
+      seen.set(value, clone);
+      return clone;
+    }
+    if (Array.isArray(value)) {
+      const clone = new Array(value.length);
+      seen.set(value, clone);
+      for (let i = 0; i < value.length; i++) {
+        clone[i] = cloneValue(value[i], seen);
+      }
+      return clone;
+    }
+    if (value instanceof Map) {
+      const clone = new Map();
+      seen.set(value, clone);
+      for (const pair of value) {
+        clone.set(cloneValue(pair[0], seen), cloneValue(pair[1], seen));
+      }
+      return clone;
+    }
+    if (value instanceof Set) {
+      const clone = new Set();
+      seen.set(value, clone);
+      for (const item of value) {
+        clone.add(cloneValue(item, seen));
+      }
+      return clone;
+    }
+    if (value instanceof Error) {
+      const clone = new value.constructor(value.message);
+      clone.name = value.name;
+      clone.stack = value.stack;
+      seen.set(value, clone);
+      return clone;
+    }
+    const clone = {};
+    seen.set(value, clone);
+    for (const key of Object.keys(value)) {
+      clone[key] = cloneValue(value[key], seen);
+    }
+    return clone;
+  }
+
+  function structuredClone(value) {
+    return cloneValue(value, new Map());
+  }
+
+  // ---- Headers -------------------------------------------------------------
+
+  const headerEntries = new WeakMap();
+
+  function normalizeHeaderName(name) {
+    const normalized = String(name).toLowerCase();
+    if (normalized.length === 0) {
+      throw new TypeError("Headers: the header name must not be empty");
+    }
+    return normalized;
+  }
+
+  function combinedHeaderNames(list) {
+    const names = [];
+    for (const entry of list) {
+      if (!names.includes(entry[0])) {
+        names.push(entry[0]);
+      }
+    }
+    names.sort();
+    return names;
+  }
+
+  class Headers {
+    constructor(init) {
+      headerEntries.set(this, []);
+      if (init === undefined || init === null) {
+        return;
+      }
+      if (init instanceof Headers) {
+        for (const entry of headerEntries.get(init)) {
+          this.append(entry[0], entry[1]);
+        }
+        return;
+      }
+      if (Array.isArray(init)) {
+        for (const entry of init) {
+          this.append(entry[0], entry[1]);
+        }
+        return;
+      }
+      if (typeof init === "object") {
+        for (const key of Object.keys(init)) {
+          this.append(key, init[key]);
+        }
+        return;
+      }
+      throw new TypeError("Headers: unsupported initializer");
+    }
+    append(name, value) {
+      headerEntries.get(this).push([normalizeHeaderName(name), String(value).trim()]);
+    }
+    set(name, value) {
+      const key = normalizeHeaderName(name);
+      const kept = [];
+      for (const entry of headerEntries.get(this)) {
+        if (entry[0] !== key) {
+          kept.push(entry);
+        }
+      }
+      kept.push([key, String(value).trim()]);
+      headerEntries.set(this, kept);
+    }
+    get(name) {
+      const key = normalizeHeaderName(name);
+      const values = [];
+      for (const entry of headerEntries.get(this)) {
+        if (entry[0] === key) {
+          values.push(entry[1]);
+        }
+      }
+      return values.length === 0 ? null : values.join(", ");
+    }
+    getSetCookie() {
+      const values = [];
+      for (const entry of headerEntries.get(this)) {
+        if (entry[0] === "set-cookie") {
+          values.push(entry[1]);
+        }
+      }
+      return values;
+    }
+    has(name) {
+      return this.get(name) !== null;
+    }
+    delete(name) {
+      const key = normalizeHeaderName(name);
+      const kept = [];
+      for (const entry of headerEntries.get(this)) {
+        if (entry[0] !== key) {
+          kept.push(entry);
+        }
+      }
+      headerEntries.set(this, kept);
+    }
+    get size() {
+      return combinedHeaderNames(headerEntries.get(this)).length;
+    }
+    entries() {
+      const out = [];
+      for (const name of combinedHeaderNames(headerEntries.get(this))) {
+        out.push([name, this.get(name)]);
+      }
+      return out[Symbol.iterator]();
+    }
+    keys() {
+      return combinedHeaderNames(headerEntries.get(this))[Symbol.iterator]();
+    }
+    values() {
+      const out = [];
+      for (const name of combinedHeaderNames(headerEntries.get(this))) {
+        out.push(this.get(name));
+      }
+      return out[Symbol.iterator]();
+    }
+    forEach(callback, thisArg) {
+      for (const entry of this.entries()) {
+        callback.call(thisArg, entry[1], entry[0], this);
+      }
+    }
+    [Symbol.iterator]() {
+      return this.entries();
+    }
+  }
+
+  // ---- URLSearchParams -----------------------------------------------------
+
+  const searchParamsState = new WeakMap();
+
+  function encodeFormComponent(text) {
+    const bytes = utf8Encode(String(text));
+    let out = "";
+    for (let i = 0; i < bytes.length; i++) {
+      const byte = bytes[i];
+      const char = String.fromCharCode(byte);
+      const isUnreserved =
+        (byte >= 0x30 && byte <= 0x39) ||
+        (byte >= 0x41 && byte <= 0x5a) ||
+        (byte >= 0x61 && byte <= 0x7a) ||
+        char === "*" ||
+        char === "-" ||
+        char === "." ||
+        char === "_";
+      if (isUnreserved) {
+        out += char;
+      } else if (byte === 0x20) {
+        out += "+";
+      } else {
+        out += "%" + HEX.charAt(byte >> 4) + HEX.charAt(byte & 15);
+      }
+    }
+    return out;
+  }
+
+  function decodeFormComponent(text) {
+    const bytes = [];
+    for (let i = 0; i < text.length; i++) {
+      const char = text.charAt(i);
+      if (char === "+") {
+        bytes.push(0x20);
+        continue;
+      }
+      if (char === "%" && i + 2 < text.length) {
+        const hex = text.slice(i + 1, i + 3);
+        const parsed = Number.parseInt(hex, 16);
+        if (!Number.isNaN(parsed)) {
+          bytes.push(parsed);
+          i += 2;
+          continue;
+        }
+      }
+      const encoded = utf8Encode(char);
+      for (let k = 0; k < encoded.length; k++) {
+        bytes.push(encoded[k]);
+      }
+    }
+    return utf8Decode(new Uint8Array(bytes));
+  }
+
+  function parseQueryString(query) {
+    const list = [];
+    let text = String(query);
+    if (text.charAt(0) === "?") {
+      text = text.slice(1);
+    }
+    if (text.length === 0) {
+      return list;
+    }
+    for (const chunk of text.split("&")) {
+      if (chunk.length === 0) {
+        continue;
+      }
+      const separator = chunk.indexOf("=");
+      const rawName = separator === -1 ? chunk : chunk.slice(0, separator);
+      const rawValue = separator === -1 ? "" : chunk.slice(separator + 1);
+      list.push([decodeFormComponent(rawName), decodeFormComponent(rawValue)]);
+    }
+    return list;
+  }
+
+  function notifyParamsOwner(params) {
+    const state = searchParamsState.get(params);
+    if (state.onChange) {
+      state.onChange(params.toString());
+    }
+  }
+
+  class URLSearchParams {
+    constructor(init) {
+      searchParamsState.set(this, { list: [], onChange: null });
+      if (init === undefined || init === null) {
+        return;
+      }
+      if (init instanceof URLSearchParams) {
+        for (const entry of searchParamsState.get(init).list) {
+          this.append(entry[0], entry[1]);
+        }
+        return;
+      }
+      if (typeof init === "string") {
+        searchParamsState.get(this).list = parseQueryString(init);
+        return;
+      }
+      if (Array.isArray(init)) {
+        for (const entry of init) {
+          this.append(entry[0], entry[1]);
+        }
+        return;
+      }
+      if (typeof init === "object") {
+        for (const key of Object.keys(init)) {
+          this.append(key, init[key]);
+        }
+        return;
+      }
+      throw new TypeError("URLSearchParams: unsupported initializer");
+    }
+    append(name, value) {
+      searchParamsState.get(this).list.push([String(name), String(value)]);
+      notifyParamsOwner(this);
+    }
+    set(name, value) {
+      const key = String(name);
+      const state = searchParamsState.get(this);
+      const kept = [];
+      let replaced = false;
+      for (const entry of state.list) {
+        if (entry[0] !== key) {
+          kept.push(entry);
+          continue;
+        }
+        if (!replaced) {
+          kept.push([key, String(value)]);
+          replaced = true;
+        }
+      }
+      if (!replaced) {
+        kept.push([key, String(value)]);
+      }
+      state.list = kept;
+      notifyParamsOwner(this);
+    }
+    get(name) {
+      const key = String(name);
+      for (const entry of searchParamsState.get(this).list) {
+        if (entry[0] === key) {
+          return entry[1];
+        }
+      }
+      return null;
+    }
+    getAll(name) {
+      const key = String(name);
+      const out = [];
+      for (const entry of searchParamsState.get(this).list) {
+        if (entry[0] === key) {
+          out.push(entry[1]);
+        }
+      }
+      return out;
+    }
+    has(name) {
+      return this.get(name) !== null;
+    }
+    delete(name) {
+      const key = String(name);
+      const state = searchParamsState.get(this);
+      const kept = [];
+      for (const entry of state.list) {
+        if (entry[0] !== key) {
+          kept.push(entry);
+        }
+      }
+      state.list = kept;
+      notifyParamsOwner(this);
+    }
+    sort() {
+      const state = searchParamsState.get(this);
+      state.list.sort(function byName(left, right) {
+        if (left[0] < right[0]) {
+          return -1;
+        }
+        return left[0] > right[0] ? 1 : 0;
+      });
+      notifyParamsOwner(this);
+    }
+    get size() {
+      return searchParamsState.get(this).list.length;
+    }
+    entries() {
+      const out = [];
+      for (const entry of searchParamsState.get(this).list) {
+        out.push([entry[0], entry[1]]);
+      }
+      return out[Symbol.iterator]();
+    }
+    keys() {
+      const out = [];
+      for (const entry of searchParamsState.get(this).list) {
+        out.push(entry[0]);
+      }
+      return out[Symbol.iterator]();
+    }
+    values() {
+      const out = [];
+      for (const entry of searchParamsState.get(this).list) {
+        out.push(entry[1]);
+      }
+      return out[Symbol.iterator]();
+    }
+    forEach(callback, thisArg) {
+      for (const entry of this.entries()) {
+        callback.call(thisArg, entry[1], entry[0], this);
+      }
+    }
+    toString() {
+      const parts = [];
+      for (const entry of searchParamsState.get(this).list) {
+        parts.push(
+          encodeFormComponent(entry[0]) + "=" + encodeFormComponent(entry[1])
+        );
+      }
+      return parts.join("&");
+    }
+    [Symbol.iterator]() {
+      return this.entries();
+    }
+  }
+
+  // ---- URL -----------------------------------------------------------------
+  //
+  // Parsing stays with the host's WHATWG implementation through the bridge, so
+  // normalisation matches what the fetch guard will later re-parse; only
+  // strings cross, and the component bag is rebuilt in this realm.
+
+  const urlState = new WeakMap();
+
+  function applyUrlComponents(url, components) {
+    const state = urlState.get(url);
+    state.components = components;
+    if (state.params) {
+      const paramsState = searchParamsState.get(state.params);
+      paramsState.onChange = null;
+      paramsState.list = parseQueryString(components.search);
+      paramsState.onChange = state.onParamsChange;
+    }
+  }
+
+  function hrefOf(value) {
+    return value instanceof URL ? value.href : String(value);
+  }
+
+  class URL {
+    constructor(input, base) {
+      const state = { components: null, params: null, onParamsChange: null };
+      urlState.set(this, state);
+      const baseHref =
+        base === undefined || base === null ? null : hrefOf(base);
+      state.components = unwrap(bridge.parseUrl(hrefOf(input), baseHref));
+      const self = this;
+      state.onParamsChange = function onParamsChange(query) {
+        const next = unwrap(
+          bridge.setUrl(urlState.get(self).components.href, "search", query)
+        );
+        urlState.get(self).components = next;
+      };
+    }
+    get searchParams() {
+      const state = urlState.get(this);
+      if (!state.params) {
+        state.params = new URLSearchParams(state.components.search);
+        searchParamsState.get(state.params).onChange = state.onParamsChange;
+      }
+      return state.params;
+    }
+    get origin() {
+      return urlState.get(this).components.origin;
+    }
+    toString() {
+      return this.href;
+    }
+    toJSON() {
+      return this.href;
+    }
+  }
+
+  for (const name of [
+    "href",
+    "protocol",
+    "username",
+    "password",
+    "host",
+    "hostname",
+    "port",
+    "pathname",
+    "search",
+    "hash",
+  ]) {
+    Object.defineProperty(URL.prototype, name, {
+      enumerable: true,
+      configurable: true,
+      get: function readComponent() {
+        return urlState.get(this).components[name];
+      },
+      set: function writeComponent(value) {
+        applyUrlComponents(
+          this,
+          unwrap(
+            bridge.setUrl(
+              urlState.get(this).components.href,
+              name,
+              String(value)
+            )
+          )
+        );
+      },
+    });
+  }
+
+  // ---- AbortController -----------------------------------------------------
+
+  const signalState = new WeakMap();
+
+  function makeAbortError(reason) {
+    if (reason !== undefined) {
+      return reason;
+    }
+    const error = new Error("This operation was aborted");
+    error.name = "AbortError";
+    return error;
+  }
+
+  class AbortSignal {
+    constructor() {
+      signalState.set(this, { aborted: false, reason: undefined, listeners: [], onabort: null });
+    }
+    get aborted() {
+      return signalState.get(this).aborted;
+    }
+    get reason() {
+      return signalState.get(this).reason;
+    }
+    get onabort() {
+      return signalState.get(this).onabort;
+    }
+    set onabort(listener) {
+      signalState.get(this).onabort = listener;
+    }
+    throwIfAborted() {
+      const state = signalState.get(this);
+      if (state.aborted) {
+        throw state.reason;
+      }
+    }
+    addEventListener(type, listener, options) {
+      if (type !== "abort" || typeof listener !== "function") {
+        return;
+      }
+      signalState.get(this).listeners.push({
+        listener: listener,
+        once: Boolean(options && options.once),
+      });
+    }
+    removeEventListener(type, listener) {
+      if (type !== "abort") {
+        return;
+      }
+      const state = signalState.get(this);
+      const kept = [];
+      for (const entry of state.listeners) {
+        if (entry.listener !== listener) {
+          kept.push(entry);
+        }
+      }
+      state.listeners = kept;
+    }
+    static abort(reason) {
+      const signal = new AbortSignal();
+      abortSignal(signal, reason);
+      return signal;
+    }
+  }
+
+  function abortSignal(signal, reason) {
+    const state = signalState.get(signal);
+    if (state.aborted) {
+      return;
+    }
+    state.aborted = true;
+    state.reason = makeAbortError(reason);
+    const event = { type: "abort", target: signal };
+    const pending = state.listeners;
+    state.listeners = [];
+    for (const entry of pending) {
+      if (!entry.once) {
+        state.listeners.push(entry);
+      }
+      entry.listener.call(signal, event);
+    }
+    if (typeof state.onabort === "function") {
+      state.onabort.call(signal, event);
+    }
+  }
+
+  const controllerSignals = new WeakMap();
+
+  class AbortController {
+    constructor() {
+      controllerSignals.set(this, new AbortSignal());
+    }
+    get signal() {
+      return controllerSignals.get(this);
+    }
+    abort(reason) {
+      abortSignal(controllerSignals.get(this), reason);
+    }
+  }
+
+  // ---- fetch ---------------------------------------------------------------
+
+  const responseState = new WeakMap();
+
+  class SandboxResponse {
+    constructor(payload) {
+      responseState.set(this, { payload: payload, bytes: null });
+      this.status = payload.status;
+      this.statusText = payload.statusText;
+      this.url = payload.url;
+      this.redirected = payload.redirected;
+      this.ok = payload.status >= 200 && payload.status <= 299;
+      this.headers = new Headers(payload.headers);
+      this.bodyUsed = false;
+    }
+    bytes() {
+      const state = responseState.get(this);
+      if (!state.bytes) {
+        state.bytes = base64ToBytes(state.payload.bodyBase64);
+      }
+      this.bodyUsed = true;
+      return Promise.resolve(state.bytes);
+    }
+    arrayBuffer() {
+      return this.bytes().then(function toBuffer(bytes) {
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      });
+    }
+    text() {
+      return this.bytes().then(function toText(bytes) {
+        return utf8Decode(bytes);
+      });
+    }
+    json() {
+      return this.text().then(function toJson(text) {
+        return JSON.parse(text);
+      });
+    }
+    clone() {
+      return new SandboxResponse(responseState.get(this).payload);
+    }
+  }
+
+  function headerPairsFrom(init) {
+    const headers = new Headers(init === undefined ? undefined : init);
+    const pairs = [];
+    for (const entry of headers.entries()) {
+      pairs.push([entry[0], entry[1]]);
+    }
+    return pairs;
+  }
+
+  function encodeRequestBody(body, pairs) {
+    if (body === undefined || body === null) {
+      return null;
+    }
+    let hasContentType = false;
+    for (const pair of pairs) {
+      if (pair[0] === "content-type") {
+        hasContentType = true;
+      }
+    }
+    if (body instanceof URLSearchParams) {
+      if (!hasContentType) {
+        pairs.push([
+          "content-type",
+          "application/x-www-form-urlencoded;charset=UTF-8",
+        ]);
+      }
+      return bytesToBase64(utf8Encode(body.toString()));
+    }
+    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+      return bytesToBase64(toByteView(body));
+    }
+    if (!hasContentType) {
+      pairs.push(["content-type", "text/plain;charset=UTF-8"]);
+    }
+    return bytesToBase64(utf8Encode(String(body)));
+  }
+
+  function buildRequestSpec(resource, init) {
+    // The resource is coerced to a string EXACTLY ONCE here, and that single
+    // string is what the host validates and dials. A resource whose toString()
+    // and .url disagree therefore cannot show one URL to the SSRF guard and
+    // another to the socket.
+    const url = hrefOf(resource);
+    const options = init === undefined || init === null ? {} : init;
+    const method = options.method === undefined ? "GET" : String(options.method).toUpperCase();
+    const pairs = headerPairsFrom(options.headers);
+    const bodyBase64 =
+      method === "GET" || method === "HEAD"
+        ? null
+        : encodeRequestBody(options.body, pairs);
+    return { url: url, method: method, headers: pairs, bodyBase64: bodyBase64 };
+  }
+
+  function fetch(resource, init) {
+    return new Promise(function startRequest(resolve, reject) {
+      if (resource === undefined) {
+        throw new TypeError("fetch: the resource argument is required");
+      }
+      const spec = buildRequestSpec(resource, init);
+      const signal = init === undefined || init === null ? undefined : init.signal;
+      if (signal && signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      const id = bridge.startFetch(
+        JSON.stringify(spec),
+        function onFulfilled(payloadJson) {
+          resolve(new SandboxResponse(JSON.parse(payloadJson)));
+        },
+        function onRejected(message, kind) {
+          if (kind === "TypeError") {
+            reject(new TypeError(message));
+            return;
+          }
+          if (kind === "AbortError") {
+            const error = new Error(message);
+            error.name = "AbortError";
+            reject(error);
+            return;
+          }
+          reject(new Error(message));
+        }
+      );
+      if (signal && typeof signal.addEventListener === "function") {
+        signal.addEventListener(
+          "abort",
+          function onAbort() {
+            bridge.abortFetch(id);
+          },
+          { once: true }
+        );
+      }
+    });
+  }
+
+  // ---- install -------------------------------------------------------------
+
+  const provided = {
+    console: {
+      log: function log() {
+        bridge.log("log", Array.prototype.slice.call(arguments));
+      },
+      warn: function warn() {
+        bridge.log("warn", Array.prototype.slice.call(arguments));
+      },
+      error: function error() {
+        bridge.log("error", Array.prototype.slice.call(arguments));
+      },
+    },
+    crypto: {
+      randomUUID: function randomUUID() {
+        return bridge.randomUUID();
+      },
+    },
+    fetch: fetch,
+    atob: atob,
+    btoa: btoa,
+    TextEncoder: TextEncoder,
+    TextDecoder: TextDecoder,
+    structuredClone: structuredClone,
+    Headers: Headers,
+    URL: URL,
+    URLSearchParams: URLSearchParams,
+    AbortController: AbortController,
+    AbortSignal: AbortSignal,
+  };
+
+  for (const key of Object.keys(provided)) {
+    Object.defineProperty(globalThis, key, {
+      value: provided[key],
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+  }
+}
+
+// Defense in depth on the bridge: with a null prototype, a bridge function
+// that somehow leaked into the sandbox would still have no .constructor, and
+// so no path to the host Function. The bridge is never published to user code
+// in the first place; this makes a future mistake non-fatal.
+function severPrototypes(target) {
+  for (const key of Object.keys(target)) {
+    if (typeof target[key] === "function") {
+      Object.setPrototypeOf(target[key], null);
+    }
+  }
+  Object.setPrototypeOf(target, null);
+  return target;
+}
+
+const URL_SETTABLE_COMPONENTS = new Set([
+  "protocol",
+  "username",
+  "password",
+  "host",
+  "hostname",
+  "port",
+  "pathname",
+  "search",
+  "hash",
+  "href",
+]);
+
+// Flatten a host URL into the plain string bag the sandbox realm's own URL
+// class is backed by. Parsing stays on the host's WHATWG implementation so
+// normalisation matches what the fetch guard re-parses later.
+function urlComponents(url) {
+  return {
+    href: url.href,
+    protocol: url.protocol,
+    username: url.username,
+    password: url.password,
+    host: url.host,
+    hostname: url.hostname,
+    port: url.port,
+    pathname: url.pathname,
+    search: url.search,
+    hash: url.hash,
+    origin: url.origin,
+  };
+}
+
+// Read a response body into a single buffer, bounded by MAX_RESPONSE_BODY_BYTES.
+// The sandbox realm cannot be handed the host Response itself, so the bytes are
+// buffered here and cross as base64 text.
+async function readResponseBody(response) {
+  if (!response.body) {
+    return Buffer.alloc(0);
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const step = await reader.read();
+    if (step.done) {
+      break;
+    }
+    total += step.value.byteLength;
+    if (total > MAX_RESPONSE_BODY_BYTES) {
+      await reader.cancel();
+      throw new Error(
+        "sandbox fetch: response body exceeds " +
+          String(MAX_RESPONSE_BODY_BYTES) +
+          " bytes"
+      );
+    }
+    chunks.push(
+      Buffer.from(step.value.buffer, step.value.byteOffset, step.value.byteLength)
+    );
+  }
+  return Buffer.concat(chunks);
+}
+
+// Flatten a host Response into the plain, primitive-only payload the sandbox
+// realm rebuilds its own Response-shaped object from. Returning the host
+// Response itself would hand user code a host object, and with it the host
+// realm through Response.constructor.constructor.
+async function marshalResponse(response, finalUrl, redirected) {
+  const body = await readResponseBody(response);
+  const headerPairs = [];
+  response.headers.forEach(function collectHeader(value, key) {
+    // forEach joins repeated headers with ", "; set-cookie is carried
+    // separately below so each cookie survives as its own entry.
+    if (key !== "set-cookie") {
+      headerPairs.push([key, value]);
+    }
+  });
+  for (const cookie of response.headers.getSetCookie()) {
+    headerPairs.push(["set-cookie", cookie]);
+  }
+  return {
+    url: finalUrl,
+    status: response.status,
+    statusText: response.statusText,
+    redirected: redirected,
+    headers: headerPairs,
+    bodyBase64: body.toString("base64"),
+  };
+}
+
 function safeCloneArg(value) {
   try {
     return JSON.parse(JSON.stringify(value));
@@ -1051,45 +2242,55 @@ function run(input) {
   const { code, timeoutMs } = input;
   const logs = [];
 
-  function capture(level) {
-    return function capturedLogger() {
-      if (logs.length >= MAX_LOG_ENTRIES) {
-        return;
-      }
-      const args = new Array(arguments.length);
-      for (let i = 0; i < arguments.length; i++) {
-        args[i] = safeCloneArg(arguments[i]);
-      }
-      logs.push({ level: level, args: args });
-    };
+  function captureLog(level, args) {
+    if (logs.length >= MAX_LOG_ENTRIES) {
+      return;
+    }
+    const cloned = new Array(args.length);
+    for (let i = 0; i < args.length; i++) {
+      cloned[i] = safeCloneArg(args[i]);
+    }
+    logs.push({ level: level, args: cloned });
   }
 
-  const capturedConsole = {
-    log: capture("log"),
-    warn: capture("warn"),
-    error: capture("error"),
-  };
-
-  async function sandboxedFetch(resource, init) {
-    // Build the WHATWG Request EXACTLY ONCE. Both the SSRF validation below and
-    // the actual dial (pinnedFetch) read the URL from this single object, so the
-    // address validated is provably the address dialed. The earlier code
-    // validated extractUrl(resource) (=resource.url) while pinnedFetch dialed
-    // new Request(resource).url (=String(resource)); a crafted resource
-    // ({ url: <allowed>, toString: () => <IMDS> }) made those diverge, and when
-    // the dialed value was an IP literal it skipped the pinned lookup entirely
-    // and reached the blocked target (F-024 follow-up). Building once also means
-    // a hostile toString / Symbol.toPrimitive is invoked a single time, so it
-    // cannot hand one value to the guard and another to the socket.
+  // Turn the request spec the sandbox realm handed over (strings only) back
+  // into a WHATWG Request. spec.url was coerced from the user's resource
+  // EXACTLY ONCE, in-realm, and both the SSRF validation below and the actual
+  // dial (pinnedFetch) read the URL from the single Request built from it, so
+  // the address validated is provably the address dialed. An earlier version
+  // validated resource.url while pinnedFetch dialed String(resource); a
+  // crafted resource ({ url: <allowed>, toString: () => <IMDS> }) made those
+  // diverge, and when the dialed value was an IP literal it skipped the pinned
+  // lookup entirely and reached the blocked target (F-024 follow-up). Coercing
+  // once also means a hostile toString / Symbol.toPrimitive runs a single
+  // time, so it cannot hand one value to the guard and another to the socket.
+  async function performFetch(spec, externalSignal) {
     let request;
     try {
-      request = new Request(resource, init);
+      const headers = new Headers();
+      for (const pair of spec.headers) {
+        headers.append(pair[0], pair[1]);
+      }
+      const requestInit = {
+        method: spec.method,
+        headers: headers,
+        redirect: "manual",
+      };
+      if (spec.bodyBase64 !== null) {
+        requestInit.body = Buffer.from(spec.bodyBase64, "base64");
+      }
+      request = new Request(spec.url, requestInit);
     } catch (err) {
       throw new TypeError(
         "sandbox fetch: invalid request: " +
           (err && err.message ? err.message : String(err))
       );
     }
+    const init = {
+      method: request.method,
+      headers: request.headers,
+      body: spec.bodyBase64 === null ? undefined : Buffer.from(spec.bodyBase64, "base64"),
+    };
     let parsed;
     try {
       parsed = new URL(request.url);
@@ -1118,11 +2319,10 @@ function run(input) {
       controller.abort();
     }, timeoutMs);
 
-    const callerSignal = init && init.signal ? init.signal : undefined;
-    if (callerSignal && callerSignal.aborted) {
+    if (externalSignal && externalSignal.aborted) {
       controller.abort();
-    } else if (callerSignal) {
-      callerSignal.addEventListener(
+    } else if (externalSignal) {
+      externalSignal.addEventListener(
         "abort",
         function onCallerAbort() {
           controller.abort();
@@ -1165,7 +2365,13 @@ function run(input) {
           ? response.headers.get("location")
           : null;
         if (location === null) {
-          return response;
+          // Marshal inside the try so the wall-clock timer above still covers
+          // the body read.
+          return await marshalResponse(
+            response,
+            currentRequest.url,
+            redirectsLeft !== MAX_SANDBOX_REDIRECTS
+          );
         }
         if (redirectsLeft <= 0) {
           await cancelResponseBody(response);
@@ -1216,41 +2422,128 @@ function run(input) {
     }
   }
 
-  const sandbox = createContext({
-    console: capturedConsole,
-    fetch: sandboxedFetch,
+  let nextFetchId = 1;
+  const inflightFetches = new Map();
 
-    BigInt: BigInt, JSON: JSON, Math: Math, Date: Date, Array: Array,
-    Object: Object, String: String, Number: Number, Boolean: Boolean,
-    RegExp: RegExp, Symbol: Symbol,
-    Map: Map, Set: Set, WeakMap: WeakMap, WeakSet: WeakSet, Promise: Promise,
+  function errorMessageOf(err) {
+    return err && err.message ? String(err.message) : String(err);
+  }
 
-    Error: Error, TypeError: TypeError, RangeError: RangeError,
-    SyntaxError: SyntaxError, ReferenceError: ReferenceError, URIError: URIError,
+  function errorKindOf(err) {
+    if (err && err.name === "AbortError") {
+      return "AbortError";
+    }
+    return err instanceof TypeError ? "TypeError" : "Error";
+  }
 
-    parseInt: parseInt, parseFloat: parseFloat,
-    isNaN: isNaN, isFinite: isFinite, Infinity: Infinity, NaN: NaN,
+  // The bridge is the ONLY host value the sandbox realm can reach, and it is
+  // held in the bootstrap's closure rather than published as a global. Every
+  // entry takes and returns primitives, and none of them may throw: a host
+  // exception crossing into user code would be a catchable host Error, and
+  // err.constructor.constructor is the host Function again. Failures therefore
+  // come back as a JSON envelope or through the reject callback.
+  const bridge = {
+    log: function bridgeLog(level, args) {
+      try {
+        captureLog(level, args);
+      } catch (_e) {
+        // a hostile toString on a logged value must not break the run
+      }
+    },
+    randomUUID: function bridgeRandomUUID() {
+      return crypto.randomUUID();
+    },
+    parseUrl: function bridgeParseUrl(input, base) {
+      try {
+        const url = base === null ? new URL(input) : new URL(input, base);
+        return JSON.stringify({ ok: true, v: urlComponents(url) });
+      } catch (_e) {
+        return JSON.stringify({ ok: false, e: "Invalid URL: " + input });
+      }
+    },
+    setUrl: function bridgeSetUrl(href, name, value) {
+      try {
+        if (!URL_SETTABLE_COMPONENTS.has(name)) {
+          return JSON.stringify({ ok: false, e: "Invalid URL component: " + name });
+        }
+        const url = new URL(href);
+        url[name] = value;
+        return JSON.stringify({ ok: true, v: urlComponents(url) });
+      } catch (err) {
+        return JSON.stringify({ ok: false, e: errorMessageOf(err) });
+      }
+    },
+    startFetch: function bridgeStartFetch(specJson, onFulfilled, onRejected) {
+      const id = nextFetchId;
+      nextFetchId += 1;
+      try {
+        const abort = new AbortController();
+        inflightFetches.set(id, abort);
+        performFetch(JSON.parse(specJson), abort.signal).then(
+          function onSettled(payload) {
+            inflightFetches.delete(id);
+            try {
+              onFulfilled(JSON.stringify(payload));
+            } catch (_e) {
+              // the sandbox realm rejected its own promise; nothing to do here
+            }
+          },
+          function onFailed(err) {
+            inflightFetches.delete(id);
+            try {
+              onRejected(errorMessageOf(err), errorKindOf(err));
+            } catch (_e) {
+              // as above
+            }
+          }
+        );
+      } catch (err) {
+        inflightFetches.delete(id);
+        try {
+          onRejected(errorMessageOf(err), "Error");
+        } catch (_e) {
+          // as above
+        }
+      }
+      return id;
+    },
+    abortFetch: function bridgeAbortFetch(id) {
+      const abort = inflightFetches.get(id);
+      if (!abort) {
+        return;
+      }
+      inflightFetches.delete(id);
+      try {
+        abort.abort();
+      } catch (_e) {
+        // already settled
+      }
+    },
+  };
+  severPrototypes(bridge);
 
-    encodeURIComponent: encodeURIComponent, decodeURIComponent: decodeURIComponent,
-    encodeURI: encodeURI, decodeURI: decodeURI,
-    atob: atob, btoa: btoa,
-    TextEncoder: TextEncoder, TextDecoder: TextDecoder,
-
-    ArrayBuffer: ArrayBuffer, DataView: DataView,
-    Uint8Array: Uint8Array, Uint16Array: Uint16Array, Uint32Array: Uint32Array,
-    Int8Array: Int8Array, Int16Array: Int16Array, Int32Array: Int32Array,
-    Float32Array: Float32Array, Float64Array: Float64Array,
-    BigInt64Array: BigInt64Array, BigUint64Array: BigUint64Array,
-
-    URL: URL, URLSearchParams: URLSearchParams, Headers: Headers,
-    Request: Request, Response: Response,
-    AbortController: AbortController, AbortSignal: AbortSignal,
-
-    structuredClone: structuredClone, Intl: Intl,
-    crypto: { randomUUID: crypto.randomUUID.bind(crypto) },
-
-    SharedArrayBuffer: undefined,
-  });
+  // A fresh context owns a complete set of realm-local intrinsics (Array,
+  // JSON, Math, Object, the typed arrays, the Error hierarchy, Intl) whose
+  // constructor chain terminates inside the sandbox. Nothing from this realm
+  // is copied in; SharedArrayBuffer is the one deliberate override, blanking
+  // the realm's own.
+  //
+  // The carrier object is null-prototype on purpose. createContext keeps it as
+  // the context's contextified object and the global proxy forwards property
+  // lookups to it, INCLUDING inherited ones -- so a plain {} carrier publishes
+  // this realm's Object.prototype as globalThis.constructor, and
+  // globalThis.constructor.constructor is the host Function. With no prototype
+  // there is nothing to inherit and the lookup falls through to the context's
+  // own global.
+  const carrier = Object.create(null);
+  carrier.SharedArrayBuffer = undefined;
+  const sandbox = createContext(carrier);
+  const installSandboxGlobals = runInContext(
+    "(" + sandboxBootstrap.toString() + ")",
+    sandbox,
+    { filename: "sandbox-bootstrap.js" }
+  );
+  installSandboxGlobals(bridge);
 
   const wrappedCode = "(async () => {\\n" + code + "\\n})()";
 
@@ -1346,27 +2639,29 @@ function encodeResult(value, seen) {
       }
       return arr;
     }
-    if (value instanceof Date) {
+    // node:util type predicates, not instanceof: the value was built by the
+    // sandbox realm's own Date / Map / Set, which are not this realm's.
+    if (types.isDate(value)) {
       return { "$": "date", "v": value.getTime() };
     }
-    if (value instanceof RegExp) {
+    if (types.isRegExp(value)) {
       return { "$": "regexp", "src": value.source, "flags": value.flags };
     }
-    if (value instanceof Map) {
+    if (types.isMap(value)) {
       const entries = [];
       for (const pair of value) {
         entries.push([encodeResult(pair[0], seen), encodeResult(pair[1], seen)]);
       }
       return { "$": "map", "v": entries };
     }
-    if (value instanceof Set) {
+    if (types.isSet(value)) {
       const items = [];
       for (const item of value) {
         items.push(encodeResult(item, seen));
       }
       return { "$": "set", "v": items };
     }
-    if (value instanceof ArrayBuffer) {
+    if (types.isArrayBuffer(value)) {
       return {
         "$": "bytes",
         "k": "ArrayBuffer",
