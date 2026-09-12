@@ -228,6 +228,7 @@ export function buildRegistrations(data: DiscoveryData): ChainRegistration[] {
 
     registrations.push({
       chainId,
+      isTestnet: network.isTestnet === true,
       ...endpoints,
       sourceMode,
       eventTriggers,
