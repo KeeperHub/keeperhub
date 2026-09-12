@@ -125,8 +125,7 @@ export default defineAbiProtocol({
             },
           },
           outputs: {
-            result: {
-              name: "balance",
+            balance: {
               label: "ezETH Balance (wei)",
               decimals: 18,
             },
@@ -138,8 +137,7 @@ export default defineAbiProtocol({
           description: "Get the total supply of ezETH in circulation.",
           docUrl: RENZO_DOCS,
           outputs: {
-            result: {
-              name: "totalSupply",
+            totalSupply: {
               label: "Total ezETH Supply (wei)",
               decimals: 18,
             },
