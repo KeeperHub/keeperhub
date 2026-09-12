@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildManualRunRequestBody,
   buildManualRunSample,
   getRequiredInputNames,
   hasManualRunInputs,
@@ -113,14 +114,52 @@ describe("shouldCollectManualRunInput", () => {
 });
 
 describe("buildManualRunSample", () => {
-  it("builds a schema-shaped starting payload", () => {
+  it("leaves required properties out of the starting payload", () => {
+    // The prefill must not satisfy the validation it is checked against. Every
+    // required key being present by construction is what let an untouched prompt
+    // submit `{"recipient": ""}` for a field nobody filled in.
     expect(buildManualRunSample(SCHEMA)).toEqual({
-      sender: "",
-      value: "0",
       retries: 0,
       dryRun: false,
       tags: [],
       nested: { inner: "" },
+    });
+  });
+
+  it("cannot pass its own validation until the author supplies the required keys", () => {
+    const sample = buildManualRunSample(SCHEMA);
+    expect(validateManualRunInput(SCHEMA, sample)).toEqual([
+      'Required input "sender" is missing.',
+      'Required input "value" is missing.',
+    ]);
+    // Supplying one key is not enough, and the message names the one still out.
+    expect(
+      validateManualRunInput(SCHEMA, { ...sample, sender: "0xabc" })
+    ).toEqual(['Required input "value" is missing.']);
+    // Supplying both, including an empty string the author chose, passes.
+    expect(
+      validateManualRunInput(SCHEMA, { ...sample, sender: "0xabc", value: "" })
+    ).toEqual([]);
+  });
+
+  it("leaves a required property inside a nested object out too", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        outer: {
+          type: "object",
+          properties: { kept: { type: "string" } },
+        },
+        nestedRequired: {
+          type: "object",
+          properties: { inner: { type: "string" }, other: { type: "string" } },
+          required: ["inner"],
+        },
+      },
+    };
+    expect(buildManualRunSample(schema)).toEqual({
+      outer: { kept: "" },
+      nestedRequired: { other: "" },
     });
   });
 
@@ -142,6 +181,33 @@ describe("buildManualRunSample", () => {
 
   it("returns an empty object for a schema without properties", () => {
     expect(buildManualRunSample({ type: "object" })).toEqual({});
+  });
+});
+
+describe("buildManualRunRequestBody", () => {
+  it("nests the author's input under `input`", () => {
+    // The shape the server parses
+    // (`app/api/workflow/[workflowId]/execute/route.ts` reads `body.input`) and
+    // the executor merges into the trigger output's data.
+    expect(buildManualRunRequestBody({ sender: "0xabc" })).toEqual({
+      input: { sender: "0xabc" },
+    });
+  });
+
+  it("sends an empty object rather than dropping the field", () => {
+    // The listing contract is presence-only, so `input` has to exist even when
+    // the author supplied nothing.
+    expect(buildManualRunRequestBody({})).toEqual({ input: {} });
+  });
+
+  it("passes the author's values through without reshaping them", () => {
+    const input = {
+      sender: "",
+      retries: 0,
+      dryRun: false,
+      tags: [] as string[],
+    };
+    expect(buildManualRunRequestBody(input).input).toEqual(input);
   });
 });
 

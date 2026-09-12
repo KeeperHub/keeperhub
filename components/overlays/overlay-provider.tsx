@@ -60,7 +60,22 @@ export function OverlayProvider({ children }: OverlayProviderProps) {
         props: (props ?? {}) as Record<string, unknown>,
         options: options ?? {},
       };
-      setStack([item]);
+      // `open` replaces the whole stack, so anything already on it is closing
+      // and has to be told. Every other operation that removes an overlay fires
+      // `onClose` (pop, replace, close, closeAll); this one not doing so is the
+      // shape that leaks: the workflow Run button holds its preflight guards in
+      // `onClose`, so a caller who replaced the stack with `open` while the input
+      // prompt was up would strand the Run button for the rest of the session.
+      let discardedItems: OverlayStackItem[] = [];
+      setStack((prev) => {
+        discardedItems = prev;
+        return [item];
+      });
+      queueMicrotask(() => {
+        for (const discarded of discardedItems) {
+          discarded.options.onClose?.();
+        }
+      });
       return id;
     },
     []

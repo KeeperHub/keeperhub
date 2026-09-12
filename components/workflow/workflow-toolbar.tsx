@@ -15,6 +15,7 @@ import {
   Settings2,
   Square,
   Store,
+  TextCursorInput,
   Trash2,
 } from "lucide-react";
 import { nanoid } from "nanoid";
@@ -661,6 +662,11 @@ function useWorkflowHandlers({
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isPreflightingRef = useRef(false);
   const [isPreflighting, setIsPreflighting] = useState(false);
+  // True only while the input prompt is on screen. isPreflighting covers the
+  // whole window from the first click to the release and the prompt occupies
+  // most of it, so the Run button needs to be able to tell the two apart rather
+  // than reporting a check that is not running.
+  const [isAwaitingManualInput, setIsAwaitingManualInput] = useState(false);
   const setRunsRefreshTrigger = useSetAtom(runsRefreshTriggerAtom);
   const previewVersion = useAtomValue(previewVersionAtom);
   const inputSchema = useAtomValue(currentWorkflowInputSchemaAtom);
@@ -718,12 +724,15 @@ function useWorkflowHandlers({
     setSelectedNodeId(null);
 
     setIsExecuting(true);
-    // The run takes the guards over from here: handleExecute checks
-    // `isExecuting`, which stays true for the whole execution, and the preflight
-    // guards are released so a dismissal of the input overlay cannot leave the
-    // Run button disabled while a run is in flight.
-    isPreflightingRef.current = false;
-    setIsPreflighting(false);
+    // The preflight guards are deliberately not cleared here. handleExecute
+    // checks `isExecuting`, which this line has already set and which stays true
+    // for the whole execution, so the button is protected from a second run
+    // immediately; the guards belong to whatever opened them. executeWorkflow's
+    // finally clears them when no prompt was opened, and the prompt's onClose
+    // clears them when it is submitted or dismissed. Clearing them here is what
+    // let a start that failed with the prompt still open leave Cmd+Enter live
+    // behind it, where the next press stacked a second prompt over the payload
+    // the author was still looking at.
 
     const started = await executeTestWorkflow({
       workflowId: currentWorkflowId,
@@ -771,6 +780,7 @@ function useWorkflowHandlers({
         return;
       }
       inputOverlayOpened = true;
+      setIsAwaitingManualInput(true);
       pushOverlay(
         ManualRunInputOverlay,
         {
@@ -788,6 +798,7 @@ function useWorkflowHandlers({
             // strand the Run button.
             isPreflightingRef.current = false;
             setIsPreflighting(false);
+            setIsAwaitingManualInput(false);
           },
         }
       );
@@ -944,6 +955,7 @@ function useWorkflowHandlers({
     validateAndProceed,
     handleGoToStep,
     isPreflighting,
+    isAwaitingManualInput,
   };
 }
 
@@ -1168,6 +1180,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
     handleCancel,
     validateAndProceed,
     isPreflighting,
+    isAwaitingManualInput,
   } = useWorkflowHandlers({
     currentWorkflowId,
     nodes,
@@ -1472,6 +1485,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
     handleExecute,
     handleCancel,
     isPreflighting,
+    isAwaitingManualInput,
     handleClearWorkflow,
     handleDeleteWorkflow,
     handleDownload,
@@ -1923,10 +1937,24 @@ function RunButtonGroup({
       data-tour="workflow-run"
       disabled={disabled}
       onClick={() => actions.handleExecute()}
-      title={actions.isPreflighting ? "Checking Workflow" : "Run Workflow"}
+      title={
+        actions.isAwaitingManualInput
+          ? "Waiting for Input"
+          : actions.isPreflighting
+            ? "Checking Workflow"
+            : "Run Workflow"
+      }
     >
       <div className="flex items-center gap-2">
-        {actions.isPreflighting ? (
+        {actions.isAwaitingManualInput ? (
+          <>
+            {/* The prompt owns the guards, so this state sits inside
+                isPreflighting and outlasts the check itself. Nothing is being
+                checked while the author is typing, so it does not spin. */}
+            <TextCursorInput className="size-4" />
+            Waiting...
+          </>
+        ) : actions.isPreflighting ? (
           <>
             <Loader2 className="size-4 animate-spin" />
             Checking...

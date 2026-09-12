@@ -115,14 +115,30 @@ function sampleValue(property: ManualRunInputSchema): unknown {
 
 /**
  * A starting payload shaped by the schema, so the author edits values instead
- * of hand-writing JSON and remembering field names. Strings start empty, which
- * is why required fields are validated for emptiness below.
+ * of hand-writing JSON and remembering field names.
+ *
+ * Required properties are deliberately left out. Seeding them made the prefill
+ * satisfy its own validation: every required key was present by construction, so
+ * a presence check could never fire, and clicking Run on an untouched prompt
+ * submitted `{"recipient": ""}` for a field the author had not filled in. That
+ * moved the failure downstream, where `{{Manual.data.recipient}}` resolved to an
+ * empty string instead of the unresolved-reference error it used to raise.
+ *
+ * Leaving them out keeps both halves honest at once. The server contract is
+ * presence-only, so the key the author's typing produces is what supplies the
+ * field, and until they type one the prompt names the field that is still
+ * missing. A required property nested inside an optional object is left out the
+ * same way, since the nested sample comes from this function too.
  */
 export function buildManualRunSample(
   schema: ManualRunInputSchema
 ): Record<string, unknown> {
+  const required = new Set(getRequiredInputNames(schema));
   const result: Record<string, unknown> = {};
   for (const [name, property] of Object.entries(asRecord(schema.properties))) {
+    if (required.has(name)) {
+      continue;
+    }
     result[name] = sampleValue(asRecord(property));
   }
   return result;
@@ -154,11 +170,12 @@ export function buildManualRunRequestBody(input: Record<string, unknown>): {
  * Validate the author's input against the schema's `required` list.
  *
  * A required field is missing when the key is absent entirely. An empty string
- * is a value: the prefill only seeds a key the schema declares, so a required
- * string arrives as `""` and stays that way until the author clears the whole
- * entry or sets it. Rejecting `""` was the wrong lever - it made a required
- * `memo` impossible to run empty, and it read as "missing" when the author had
- * deliberately typed nothing, which is the second message the review flagged.
+ * is a value the author chose: the prefill leaves required fields out, so a
+ * required key exists only once they supply one, and `""` is what it holds if
+ * they deliberately type nothing. Rejecting `""` was the wrong lever - it made a
+ * required `memo` impossible to run empty, and it read as "missing" when the
+ * author had deliberately typed nothing, which is the second message the review
+ * flagged.
  *
  * Reachability on the server side is unchanged either way: the listing contract
  * in `app/api/mcp/workflows/[slug]/call/route.ts` is presence-only (it tests
