@@ -161,6 +161,19 @@ const workflowErrorsByWorkflow = getOrCreateGauge(
   ["workflow_id", "org_slug", "error_type"]
 );
 
+// Runs started in the last hour for the busiest workflows (see
+// getWorkflowExecutionRatesFromDb), as outcome="all" and outcome="errored".
+// The per-workflow execution rate alert reads it directly: a runaway block or
+// event trigger shows up as one workflow_id far above the rest. Cardinality is
+// bounded by the one-hour window and the top-N pick, at most 2 x N workflows
+// with two series each. No `_total` suffix: it is a poll-driven gauge.
+const workflowExecutionsLastHour = getOrCreateGauge(
+  dbRegistry,
+  "keeperhub_workflow_executions_last_hour",
+  "Runs started in the last hour for the busiest workflows, by workflow_id, org_slug and outcome (all or errored)",
+  ["workflow_id", "org_slug", "outcome"]
+);
+
 // TECH-6544: errored executions in the last hour, PLATFORM-WIDE, grouped by
 // (error_category, error_type). Keyed on error_category so the infra P3 alert
 // dedups system errors by *cause* — one series per failure mode — rather than
@@ -1909,6 +1922,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       getExecutionRetentionStatsFromDb,
       getStuckPendingTransactionCountsFromDb,
       getWorkflowErrorsByWorkflowFromDb,
+      getWorkflowExecutionRatesFromDb,
       getSystemErrorsByCategoryFromDb,
       getStepStatsFromDb,
       getDailyActiveUsersFromDb,
@@ -1930,6 +1944,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       retentionStats,
       stuckPendingTxCounts,
       errorsByWorkflow,
+      executionRates,
       systemErrorsByCategoryRows,
       stepStats,
       dailyActiveUsers,
@@ -1950,6 +1965,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       getExecutionRetentionStatsFromDb(),
       getStuckPendingTransactionCountsFromDb(),
       getWorkflowErrorsByWorkflowFromDb(),
+      getWorkflowExecutionRatesFromDb(),
       getSystemErrorsByCategoryFromDb(),
       getStepStatsFromDb(),
       getDailyActiveUsersFromDb(),
@@ -2043,6 +2059,18 @@ async function refreshDbMetricsNow(): Promise<void> {
           error_type: row.errorType,
         },
         row.count
+      );
+    }
+
+    // Reset before populating so a workflow that drops out of the top list, or
+    // stops running, clears out instead of pinning its last value.
+    workflowExecutionsLastHour.reset();
+    for (const row of executionRates) {
+      const labels = { workflow_id: row.workflowId, org_slug: row.orgSlug };
+      workflowExecutionsLastHour.set({ ...labels, outcome: "all" }, row.runs);
+      workflowExecutionsLastHour.set(
+        { ...labels, outcome: "errored" },
+        row.errored
       );
     }
 

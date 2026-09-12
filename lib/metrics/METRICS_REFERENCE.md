@@ -72,6 +72,7 @@ Counter/Gauge metrics tracking request/event counts.
 |-------------|-------------|--------|------|--------|
 | `workflow.executions.total` | Total workflow executions by status (all-time) | `status`, `org_slug`, `error_type` (`user`/`system`/`unknown`/`na`) | gauge | DB |
 | `workflow.execution.errors.total` | Total failed workflow executions (all-time) | - | gauge | DB |
+| `workflow.executions.last_hour` | Runs started in the **last hour** for the busiest workflows (top 20 by runs, plus top 20 by errored runs), as `outcome="all"` and `outcome="errored"`. Powers the per-workflow execution rate alerts, which read it directly. Not cumulative. | `workflow_id`, `org_slug`, `outcome` | gauge | DB |
 | `plugin.invocations.total` | Plugin action invocations | `plugin_name`, `action_name` | count | API |
 | `user.active.daily` | Daily active users (24h) | - | gauge | DB |
 

@@ -35,6 +35,7 @@ const DEFAULT_DB_RETURNS: Record<string, unknown> = {
   },
   getStuckPendingTransactionCountsFromDb: [],
   getWorkflowErrorsByWorkflowFromDb: [],
+  getWorkflowExecutionRatesFromDb: [],
   getSystemErrorsByCategoryFromDb: [],
   getStepStatsFromDb: {
     countsByType: {},
@@ -153,6 +154,10 @@ const ERRORS_BY_WORKFLOW_SKY_RE =
   /keeperhub_workflow_errors_by_workflow\{[^}]*workflow_id="wf_sky_1"[^}]*org_slug="techops-services"[^}]*error_type="user"[^}]*\}\s+7/;
 const ERRORS_BY_WORKFLOW_AJNA_RE =
   /keeperhub_workflow_errors_by_workflow\{[^}]*workflow_id="wf_ajna_1"[^}]*org_slug="ajna"[^}]*error_type="system"[^}]*\}\s+2/;
+const EXECUTIONS_LAST_HOUR_ALL_RE =
+  /keeperhub_workflow_executions_last_hour\{[^}]*workflow_id="wf_runaway"[^}]*org_slug="acme"[^}]*outcome="all"[^}]*\}\s+4200/;
+const EXECUTIONS_LAST_HOUR_ERRORED_RE =
+  /keeperhub_workflow_executions_last_hour\{[^}]*workflow_id="wf_runaway"[^}]*org_slug="acme"[^}]*outcome="errored"[^}]*\}\s+3900/;
 const ERRORS_BY_CATEGORY_SYSTEM_RE =
   /keeperhub_system_errors_by_category\{[^}]*error_category="network_rpc"[^}]*error_type="system"[^}]*\}\s+5/;
 const ERRORS_BY_CATEGORY_UNKNOWN_RE =
@@ -461,6 +466,51 @@ describe("keeperhub_workflow_errors_by_workflow gauge", () => {
 
     // Next scrape no longer returns that workflow; reset() must drop the series.
     dbMocks.getWorkflowErrorsByWorkflowFromDb.mockResolvedValue([]);
+    await updateDbMetrics();
+    expect(await getDbMetrics()).not.toContain('workflow_id="wf_gone"');
+  });
+});
+
+describe("keeperhub_workflow_executions_last_hour gauge", () => {
+  const originalTtl = process.env.DB_METRICS_CACHE_TTL_MS;
+
+  beforeEach(() => {
+    __resetDbMetricsCacheForTest();
+    for (const fn of Object.values(dbMocks)) {
+      fn.mockReset();
+    }
+    rebindDefaultDbMockImplementations();
+    process.env.DB_METRICS_CACHE_TTL_MS = "0";
+  });
+
+  afterEach(() => {
+    if (originalTtl === undefined) {
+      delete process.env.DB_METRICS_CACHE_TTL_MS;
+    } else {
+      process.env.DB_METRICS_CACHE_TTL_MS = originalTtl;
+    }
+  });
+
+  it("emits an all series and an errored series per workflow", async () => {
+    dbMocks.getWorkflowExecutionRatesFromDb.mockResolvedValue([
+      { workflowId: "wf_runaway", orgSlug: "acme", runs: 4200, errored: 3900 },
+    ]);
+
+    await updateDbMetrics();
+    const out = await getDbMetrics();
+
+    expect(out).toMatch(EXECUTIONS_LAST_HOUR_ALL_RE);
+    expect(out).toMatch(EXECUTIONS_LAST_HOUR_ERRORED_RE);
+  });
+
+  it("clears a workflow that drops out of the query", async () => {
+    dbMocks.getWorkflowExecutionRatesFromDb.mockResolvedValueOnce([
+      { workflowId: "wf_gone", orgSlug: "acme", runs: 10, errored: 0 },
+    ]);
+    await updateDbMetrics();
+    expect(await getDbMetrics()).toContain('workflow_id="wf_gone"');
+
+    dbMocks.getWorkflowExecutionRatesFromDb.mockResolvedValue([]);
     await updateDbMetrics();
     expect(await getDbMetrics()).not.toContain('workflow_id="wf_gone"');
   });
