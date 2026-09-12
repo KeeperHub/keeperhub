@@ -239,11 +239,20 @@ function defaultDisposition(status: number): IdempotencyDisposition {
 
 // Records the work's response against a reserved idempotency record. The
 // finalize-vs-release decision is driven by the explicit disposition (the
-// actual execution outcome), NOT the HTTP status envelope, so a fund-moving
-// call that reached the broadcast path is never released and a retry can never
-// re-broadcast it. Reads the response via clone() so the original is returned
-// untouched. No-op when there is no reserved record (no key, or a
-// replay/conflict outcome).
+// actual execution outcome), NOT the HTTP status envelope.
+//
+// A fund-moving call that reached the broadcast path is released only when the
+// chain was conclusive about that specific transaction: a hash that verified to
+// an on-chain failure. It landed, it reverted, and a retry re-broadcasting is
+// the intended behaviour rather than a hazard. Everything else on that path is
+// held for the full 24 hours -- an unreadable receipt, a send whose reply was
+// lost, a failure with no hash to adjudicate at all -- because none of those
+// can distinguish "never sent" from "sent, outcome unknown", and a retry that
+// guesses wrong takes the next pending nonce alongside a transaction already in
+// the mempool.
+//
+// Reads the response via clone() so the original is returned untouched. No-op
+// when there is no reserved record (no key, or a replay/conflict outcome).
 export async function recordIdempotentResponse<T extends Response>(
   outcome: IdempotencyOutcome | null,
   response: T,
