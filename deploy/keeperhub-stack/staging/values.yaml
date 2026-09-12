@@ -51,12 +51,13 @@ app:
     EXECUTION_RETENTION_EXECUTIONS_ENABLED:
       type: kv
       value: "false"
-    # Report what each pass would touch and delete nothing. Staging ships
-    # enabled-but-dry so the CronJob and the queries are exercised; flip to
-    # "false" once the reported counts look right.
+    # Real deletes on staging. The dry run on 2026-09-11 resolved every
+    # organization to its plan window and reported 2,260 step logs past it and
+    # 1,482,131 output_raw payloads to null, in 41s of the 240s budget. Set
+    # back to "true" to stop deleting without a code change.
     EXECUTION_RETENTION_DRY_RUN:
       type: kv
-      value: "true"
+      value: "false"
     # Ceiling on the no-join backstop pass. That pass runs at the longest
     # window any organization is actually on, capped here, so raising this
     # only bites once some plan sells a longer window than the value below.
