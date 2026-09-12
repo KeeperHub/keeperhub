@@ -335,7 +335,7 @@ export type IntegrationPlugin = {
     >;
   };
 
-  // Avoid using this field. Plugins should use fetch instead of SDK dependencies
+  // Avoid using this field. Plugins should use safeFetch() instead of SDK deps
   // to reduce supply chain attack surface. Only use for codegen if absolutely necessary.
   dependencies?: Record<string, string>;
 
