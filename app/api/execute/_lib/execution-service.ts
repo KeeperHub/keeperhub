@@ -95,7 +95,12 @@ export async function completeExecution(
 
   if (result.transactionHash) {
     if (result.chainId === undefined) {
-      status = "failed";
+      // A hash with no chain to check it against is unverifiable, not failed --
+      // the same argument the `!allVerified` branch below already makes. It
+      // matters more now that `failed` releases the idempotency key: calling an
+      // unread broadcast "failed" would free the key for a retry that
+      // re-broadcasts a transaction which may already have landed.
+      status = "unconfirmed";
       error = "Unable to verify transaction: missing chainId";
     } else {
       const { allVerified, results } = await verifyExecutionReceipts([
@@ -181,6 +186,15 @@ export async function failExecution(
 ): Promise<{ status: "failed" | "unconfirmed" }> {
   let receipts: DirectExecutionReceiptEntry[] = [];
 
+  // A hash without a `chainId` cannot be verified, so it would fall through and
+  // be adjudicated as a definite failure on the strength of the missing field
+  // alone -- the same shape that makes the `unconfirmed` return in
+  // `completeExecution` load-bearing. It is not guarded symmetrically here
+  // because no producer of that shape reaches this function: every hash-bearing
+  // failure return across the four chain-write routes and `plugins/*/steps/*.ts`
+  // pairs the hash with a numeric `chainId` in the same ternary. That is a
+  // convention, not a type -- `FailParams` permits the pair to come apart, and
+  // the first caller that separates them would be adjudicated on absence.
   if (params.transactionHash && params.chainId !== undefined) {
     const { results } = await verifyExecutionReceipts([
       { hash: params.transactionHash, chainId: params.chainId },
@@ -205,8 +219,28 @@ export async function failExecution(
   // the row as `completed`, which is what actually happened.
   const landedSuccessfully = receipts.some((receipt) => receipt.verified);
 
+  // `safe_inner_failure` is conclusive about the INNER call and not about the
+  // transaction. verify-receipt only reaches that branch below its
+  // `receipt.status === 0` early return, so the outer `execTransaction` mined:
+  // the Safe's nonce was consumed and the owner signatures for that nonce were
+  // spent. `failed` maps to `release` in idempotency-disposition, and releasing
+  // here lets a retry spend a second nonce and a second signature set. The
+  // release contract is "nothing landed", and something landed -- not the work
+  // the caller wanted, but a transaction the chain has accounted for.
+  //
+  // Latent at the time of writing: transactions this codebase builds pass
+  // safeTxGas=0, baseGas=0, gasPrice=0, so Safe's own require reverts the outer
+  // transaction to status 0 and the plain status check above catches it first
+  // (see the reachability note in lib/web3/verify-receipt.ts). A path that
+  // submits a Safe transaction it did not construct -- executing one queued in
+  // the Safe UI, where the proposer sets safeTxGas -- reaches this immediately.
+  const spentASafeNonce = receipts.some(
+    (receipt) => receipt.receiptStatus === "safe_inner_failure"
+  );
+
   const status =
-    receipts.length > 0 && (isInconclusive(receipts) || landedSuccessfully)
+    receipts.length > 0 &&
+    (isInconclusive(receipts) || landedSuccessfully || spentASafeNonce)
       ? "unconfirmed"
       : "failed";
 

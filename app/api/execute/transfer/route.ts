@@ -11,6 +11,7 @@ import {
 } from "@/lib/execute/simulate";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   idempotencyEarlyResponse,
   recordIdempotentResponse,
   withIdempotencyHeartbeat,
@@ -340,11 +341,14 @@ export async function POST(request: Request): Promise<NextResponse> {
       : {}),
     ...(outcome.error ? { error: outcome.error } : {}),
   };
+  const disposition = result.transactionHash
+    ? dispositionForExecutionOutcome(outcome.status)
+    : "failed";
   return applyRateLimitHeaders(
     await recordIdempotentResponse(
       idem,
       NextResponse.json(responseBody, { status: HttpStatus.ACCEPTED }),
-      outcome.status === "completed" ? "success" : "failed"
+      disposition
     ),
     rateLimit
   );

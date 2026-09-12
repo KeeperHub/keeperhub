@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { idempotencyRecords } from "@/lib/db/schema-extensions";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { generateId } from "@/lib/utils/id";
+import type { IdempotencyDisposition } from "./idempotency-disposition";
 
 // A reserved record holds a short "lock" so a crashed request can't block a
 // retry for long; the in-flight request heartbeats the lock so long fund-moving
@@ -220,16 +221,14 @@ function pickString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-// How a reserved record should be settled once the work returns.
-//   "success"      -> store a replayable completed record (2xx happy path).
-//   "failed"       -> reached the broadcast/execution path but the work failed
-//                     (tx revert as 202/200 success:false, /node 422, thrown
-//                     mid-broadcast). Keep the row so a retry replays the
-//                     failure instead of re-broadcasting.
-//   "release"      -> provably pre-broadcast gating failure (reservation denied,
-//                     requireWallet, validation 4xx): drop the row so the same
-//                     key can be retried after the caller fixes the request.
-export type IdempotencyDisposition = "success" | "failed" | "release";
+// The disposition rule lives in ./idempotency-disposition so tests that must
+// mock this module (it reaches the database) can still exercise the real rule
+// rather than a copy of it. Re-exported here because every route imports it
+// from this module.
+export {
+  dispositionForExecutionOutcome,
+  type IdempotencyDisposition,
+} from "./idempotency-disposition";
 
 // Derives the disposition from a response when the caller has no richer signal:
 // 2xx is a success, anything else is a pre-broadcast gating failure. Routes that
@@ -240,11 +239,20 @@ function defaultDisposition(status: number): IdempotencyDisposition {
 
 // Records the work's response against a reserved idempotency record. The
 // finalize-vs-release decision is driven by the explicit disposition (the
-// actual execution outcome), NOT the HTTP status envelope, so a fund-moving
-// call that reached the broadcast path is never released and a retry can never
-// re-broadcast it. Reads the response via clone() so the original is returned
-// untouched. No-op when there is no reserved record (no key, or a
-// replay/conflict outcome).
+// actual execution outcome), NOT the HTTP status envelope.
+//
+// A fund-moving call that reached the broadcast path is released only when the
+// chain was conclusive about that specific transaction: a hash that verified to
+// an on-chain failure. It landed, it reverted, and a retry re-broadcasting is
+// the intended behaviour rather than a hazard. Everything else on that path is
+// held for the full 24 hours -- an unreadable receipt, a send whose reply was
+// lost, a failure with no hash to adjudicate at all -- because none of those
+// can distinguish "never sent" from "sent, outcome unknown", and a retry that
+// guesses wrong takes the next pending nonce alongside a transaction already in
+// the mempool.
+//
+// Reads the response via clone() so the original is returned untouched. No-op
+// when there is no reserved record (no key, or a replay/conflict outcome).
 export async function recordIdempotentResponse<T extends Response>(
   outcome: IdempotencyOutcome | null,
   response: T,

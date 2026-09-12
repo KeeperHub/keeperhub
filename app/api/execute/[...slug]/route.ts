@@ -8,6 +8,7 @@ import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
   recordIdempotentResponse,
@@ -338,12 +339,14 @@ async function executeProtocolAction(
       : {}),
   };
 
-  // The tx reached the broadcast path, so finalize as success or failed and
-  // never release: a retry on the same key must not re-broadcast.
+  const disposition = result.transactionHash
+    ? dispositionForExecutionOutcome(outcome.status)
+    : "failed";
+
   return recordIdempotentResponse(
     idem,
     NextResponse.json(responseBody, { status: HttpStatus.ACCEPTED }),
-    outcome.status === "completed" ? "success" : "failed"
+    disposition
   );
 }
 

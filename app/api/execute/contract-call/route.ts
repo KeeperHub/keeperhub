@@ -14,6 +14,7 @@ import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { simulateContractCall } from "@/lib/execute/simulate";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
   recordIdempotentResponse,
@@ -260,10 +261,14 @@ async function handleWriteCall(
     ...(outcome.error ? { error: outcome.error } : {}),
   };
 
+  const disposition = result.transactionHash
+    ? dispositionForExecutionOutcome(outcome.status)
+    : "failed";
+
   return recordIdempotentResponse(
     idem,
     NextResponse.json(responseBody, { status: HttpStatus.ACCEPTED }),
-    outcome.status === "completed" ? "success" : "failed"
+    disposition
   );
 }
 
