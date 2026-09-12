@@ -33,13 +33,13 @@ export const OPERATOR_METADATA: Record<ConditionOperator, OperatorMeta> = {
     label: "equals",
     unary: false,
     category: "general",
-    description: "Strict equality, no type coercion (a === b)",
+    description: 'Same value; numbers by magnitude ("1.0" equals 1)',
   },
   "!==": {
     label: "not equals",
     unary: false,
     category: "general",
-    description: "Strict inequality, no type coercion (a !== b)",
+    description: 'Different value; numbers by magnitude ("1.0" equals 1)',
   },
   "==": {
     label: "soft equals",

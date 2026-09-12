@@ -110,9 +110,9 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | Operator | Label | Type | Description |
 | -------- | ----- | ---- | ----------- |
 | `==` | soft equals | Comparison | Loose equality (type coercion) |
-| `===` | equals | Comparison | Strict equality (no type coercion) |
+| `===` | equals | Comparison | Same value; numbers by magnitude ("1.0" equals 1) |
 | `!=` | soft not equals | Comparison | Loose inequality |
-| `!==` | not equals | Comparison | Strict inequality |
+| `!==` | not equals | Comparison | Different value; numbers by magnitude ("1.0" equals 1) |
 | `>` | greater than | Comparison | Numeric greater than |
 | `>=` | greater than or equal | Comparison | Numeric greater than or equal |
 | `<` | less than | Comparison | Numeric less than |
@@ -134,7 +134,7 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 
 **Referencing a field that may be absent:** the existence operators are also the only ones that accept a field path that is not present on the upstream output at all. Every other operator fails the run when the path is missing, so that a mistyped reference is caught rather than quietly satisfying a comparison. Put an existence operator in the first clause of an AND group to guard the clauses after it. See [Runtime resolution](/workflows/templating#runtime-resolution) in the templating reference for the full rules.
 
-**When to use soft vs strict equality:** Use `==` (soft equals) when comparing values that may differ in type, such as a string `"0"` against a number `0`. Use `===` (equals) when you need exact type matching. Most blockchain data arrives as strings, so soft equality is the default for new conditions.
+**When to use soft vs strict equality:** `===` does not mean type-strict. Numeric operands compare by magnitude under both operators, so `"1.0"`, `"1"` and `1` are one value either way, and a string `"0"` against a number `0` matches under both. They part company only where one side is not a number: `"0"` against `false` matches under `==` and does not under `===`. Most blockchain data arrives as strings, so soft equality is the default for new conditions.
 
 #### Expression Mode
 
