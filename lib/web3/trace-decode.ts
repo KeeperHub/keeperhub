@@ -323,11 +323,26 @@ export type TraceCallFilter = {
   caller?: string;
   /** Restrict to frames whose `to` is this address (case-insensitive). */
   callee?: string;
-  /** Restrict to a 4-byte selector, e.g. "0x8456cb59" for `pause()`. */
+  /**
+   * Restrict to a 4-byte selector, e.g. "0x8456cb59" for `pause()`. Only
+   * calldata-bearing frame types can match; see `callSelector`.
+   */
   selector?: string;
-  /** Restrict to specific opcode call types, e.g. ["DELEGATECALL"]. */
+  /**
+   * Restrict to specific opcode call types, e.g. ["DELEGATECALL"]. An empty
+   * array is a wildcard, matching the other unset-shaped values here, so a
+   * trigger form that serialises an untouched multi-select as `[]` behaves the
+   * same as one that omits the field.
+   */
   callTypes?: readonly string[];
-  /** Minimum wei value moved by the frame. */
+  /**
+   * Minimum wei value moved by the frame.
+   *
+   * This counts every value-bearing frame `flattenCallTree` emits, including
+   * CREATE with an endowment and SELFDESTRUCT sweeping a balance. Those are
+   * real ETH movement and a security trigger that hid them would miss a drain,
+   * so narrowing to plain calls is done with `callTypes` rather than assumed.
+   */
   minValue?: bigint;
   /**
    * Which revert states to include:
@@ -338,16 +353,34 @@ export type TraceCallFilter = {
   status?: "success" | "reverted" | "any";
 };
 
-/** The 4-byte selector of a call frame, or "0x" when it carries no calldata. */
+/**
+ * The 4-byte selector of a call frame, or "0x" when it carries none.
+ *
+ * Frame types outside `DECODABLE_CALL_TYPES` never yield a selector. A CREATE
+ * or CREATE2 frame carries init code in `input`, whose first four bytes are
+ * constructor bytecode rather than a function selector, so reading one as a
+ * selector would let a `selector` filter match a contract deployment. This
+ * mirrors the `DECODABLE_CALL_TYPES` guard in `decodeFlatCall`.
+ */
 export function callSelector(call: FlatCall): string {
+  if (!DECODABLE_CALL_TYPES.has(call.type)) {
+    return "0x";
+  }
   return call.input.length >= 10 ? call.input.slice(0, 10).toLowerCase() : "0x";
 }
 
-function frameValueWei(call: FlatCall): bigint {
+/**
+ * The wei value a frame moves, or `null` when `value` cannot be parsed.
+ *
+ * `null` is distinct from `0n`: a frame that genuinely moves nothing must fail
+ * a threshold, while one whose value is malformed is unknown and is surfaced
+ * instead of silently dropped.
+ */
+function frameValueWei(call: FlatCall): bigint | null {
   try {
     return BigInt(call.value || "0x0");
   } catch {
-    return BigInt(0);
+    return null;
   }
 }
 
@@ -369,13 +402,20 @@ function frameMatches(call: FlatCall, filter: TraceCallFilter): boolean {
     return false;
   }
   if (
-    filter.callTypes &&
+    filter.callTypes?.length &&
     !filter.callTypes.some((t) => t.toUpperCase() === call.type)
   ) {
     return false;
   }
-  if (filter.minValue !== undefined && frameValueWei(call) < filter.minValue) {
-    return false;
+  if (filter.minValue !== undefined) {
+    const value = frameValueWei(call);
+    // An unparseable value is surfaced rather than dropped. Returning 0n here
+    // would make a malformed frame silently fail every threshold, and for a
+    // value trigger the quiet direction is the unsafe one: the frame a filter
+    // cannot price is exactly the one worth looking at.
+    if (value !== null && value < filter.minValue) {
+      return false;
+    }
   }
   return true;
 }
