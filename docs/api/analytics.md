@@ -63,24 +63,39 @@ GET /api/analytics/time-series
 
 Returns time-bucketed run counts for charting execution volume over time.
 
+Bucket width is chosen from the width of the window: 5 minutes up to 2 hours,
+1 hour up to 2 days, 6 hours up to 14 days, and 1 day beyond that. Every bucket
+in the window is returned, including the ones with no runs.
+
 ### Query Parameters
 
-Same as summary endpoint.
+Same as the summary endpoint, plus:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tz` | string | IANA time zone the buckets are truncated in, for example `Europe/Berlin` (default: `UTC`). An unrecognised value falls back to `UTC`. |
 
 ### Response
 
 ```json
 {
+  "intervalMs": 86400000,
   "buckets": [
     {
       "timestamp": "2024-01-01T00:00:00Z",
-      "runCount": 42,
-      "successCount": 40,
-      "failedCount": 2
+      "success": 40,
+      "error": 2,
+      "cancelled": 0,
+      "skipped": 0,
+      "pending": 0,
+      "running": 0
     }
   ]
 }
 ```
+
+`timestamp` is the instant the bucket starts, so with `tz=Europe/Berlin` a daily
+bucket starts at midnight Berlin time rather than midnight UTC.
 
 ## Get Network Breakdown
 

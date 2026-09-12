@@ -20,7 +20,7 @@ const getPendingTransactionsAction = {
     {
       field: "transactions",
       description:
-        "Array of pending transactions with safeTxHash, to, value, data, operation, nonce, confirmations, confirmationsRequired, dataDecoded, and submissionDate",
+        "Array of pending transactions with safeTxHash, to, value, data, operation, operationLabel, nonce, confirmations, confirmationsRequired, confirmationsCollected, dataDecoded, safeTxGas, baseGas, gasPrice, gasToken, refundReceiver, submissionDate, and safe",
     },
     {
       field: "count",

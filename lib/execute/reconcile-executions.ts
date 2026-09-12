@@ -9,8 +9,16 @@ import {
   type TransactionHashEntry,
   workflowExecutions,
 } from "@/lib/db/schema";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import {
+  type ErrorStatus,
+  statusForErrorType,
+} from "@/lib/errors/execution-status";
 import { ErrorCategory, logInfo, logSystemWarn, logWarn } from "@/lib/logging";
-import { recordWorkflowExecutionFinished } from "@/lib/metrics/collectors/prometheus";
+import {
+  recordWorkflowExecutionError,
+  recordWorkflowExecutionFinished,
+} from "@/lib/metrics/collectors/prometheus";
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
 import {
@@ -81,6 +89,20 @@ type UnconfirmedWorkflowExecution = {
   workflowId: string;
   transactionHashes: TransactionHashEntry[] | null;
   startedAt: Date;
+  // KEEP-1281: which way this row entered `unconfirmed`.
+  //
+  // The finalizer writes a classification only when the run had a failure of
+  // its own (a step errored) and is being held open solely because one of its
+  // broadcasts is unreadable. A run held open by the KEEP-966 success gate --
+  // no step failure, just a receipt it could not read -- carries null here, by
+  // the same rule that says an unread receipt is not an error outcome.
+  //
+  // So a non-null errorType means "this run has already failed"; the chain can
+  // only tell us what happened to its transaction, never that the run
+  // succeeded. `error` is the failure to restore when it settles.
+  errorType: string | null;
+  errorCategory: string | null;
+  error: string | null;
 };
 
 function emptySummary(): ReconcileSummary {
@@ -233,14 +255,30 @@ async function reconcileOne(
  */
 async function recordSettled(
   workflowId: string,
-  status: "success" | "error"
+  status: "success" | ErrorStatus,
+  classification?: { errorType: string | null; errorCategory: string | null }
 ): Promise<void> {
   try {
+    const orgSlug = await resolveOrgSlugForCounter(workflowId);
+    const errorType = classification?.errorType as ExecutionErrorType | null;
     recordWorkflowExecutionFinished({
       status,
-      orgSlug: await resolveOrgSlugForCounter(workflowId),
-      errorType: NA_ERROR_TYPE,
+      orgSlug,
+      errorType: errorType ?? NA_ERROR_TYPE,
     });
+    // KEEP-1281: the finalizer skips this counter for every `unconfirmed` row,
+    // so for a run held open by its own failure it is emitted here instead --
+    // once, when the row actually reaches a terminal state. Without it a run
+    // that passed through `unconfirmed` never appears in
+    // workflow_execution_errors_total and any alert keyed on error_type misses
+    // the whole class.
+    if (errorType && classification?.errorCategory) {
+      recordWorkflowExecutionError({
+        orgSlug,
+        errorCategory: classification.errorCategory,
+        errorType,
+      });
+    }
   } catch {
     // Counter emission must never break reconciliation.
   }
@@ -254,7 +292,7 @@ async function recordSettled(
  */
 async function settleWorkflow(
   execution: UnconfirmedWorkflowExecution,
-  status: "success" | "error",
+  status: "success" | ErrorStatus,
   error: string | null
 ): Promise<void> {
   const updated = await db
@@ -268,7 +306,10 @@ async function settleWorkflow(
     )
     .returning({ id: workflowExecutions.id });
   if (updated.length > 0) {
-    await recordSettled(execution.workflowId, status);
+    await recordSettled(execution.workflowId, status, {
+      errorType: execution.errorType,
+      errorCategory: execution.errorCategory,
+    });
   }
 }
 
@@ -283,6 +324,24 @@ async function reconcileWorkflow(
   execution: UnconfirmedWorkflowExecution,
   now: Date
 ): Promise<SettleOutcome> {
+  // KEEP-1281: a run held open because one of its own failed steps left a
+  // transaction in flight has ALREADY failed. Re-reading the chain can tell us
+  // what became of that transaction; it can never tell us the run succeeded,
+  // because the steps after the failure never ran. So this row may only ever
+  // settle to error -- settling it "success" on the strength of its hashes
+  // verifying would erase a real failure and clear its message.
+  const failureOrigin = Boolean(execution.errorType);
+  const originalError = execution.error ?? "Workflow execution failed";
+  // Restore the split the finalizer would have written. A confidently
+  // system-classified failure persists as `system_error` so it stays
+  // filterable apart from user and workflow errors; settling every one of
+  // these rows as plain `error` would drop that distinction for exactly the
+  // runs that passed through `unconfirmed`. Null error_type (the
+  // success-origin rows) maps to "error", which is what they had before.
+  const settledStatus = statusForErrorType(
+    execution.errorType as ExecutionErrorType | null
+  );
+
   const entries = execution.transactionHashes ?? [];
   const verifiable = entries.filter(
     (entry): entry is TransactionHashEntry & { chainId: number } =>
@@ -292,8 +351,10 @@ async function reconcileWorkflow(
   if (verifiable.length === 0) {
     await settleWorkflow(
       execution,
-      "error",
-      "On-chain verification failed: no verifiable transaction hashes"
+      settledStatus,
+      failureOrigin
+        ? originalError
+        : "On-chain verification failed: no verifiable transaction hashes"
     );
     return "failed";
   }
@@ -302,7 +363,7 @@ async function reconcileWorkflow(
     verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId }))
   );
 
-  if (allVerified) {
+  if (allVerified && !failureOrigin) {
     await settleWorkflow(execution, "success", null);
     return "completed";
   }
@@ -313,9 +374,18 @@ async function reconcileWorkflow(
     return "unconfirmed";
   }
 
+  // The run's own failure is what finalized it, so that message is what the
+  // row settles with. What became of the broadcast is recorded on the
+  // enriched transaction_hashes entries rather than overwriting the reason
+  // the run actually failed.
+  if (failureOrigin) {
+    await settleWorkflow(execution, settledStatus, originalError);
+    return "failed";
+  }
+
   await settleWorkflow(
     execution,
-    "error",
+    settledStatus,
     stillUnreadable
       ? `Transactions were broadcast but never appeared on chain; treating them as dropped after ${Math.round(
           DROPPED_AFTER_MS / 3_600_000
@@ -430,6 +500,9 @@ export async function reconcileUnconfirmedExecutions(
     workflowId: workflowExecutions.workflowId,
     transactionHashes: workflowExecutions.transactionHashes,
     startedAt: workflowExecutions.startedAt,
+    errorType: workflowExecutions.errorType,
+    errorCategory: workflowExecutions.errorCategory,
+    error: workflowExecutions.error,
   };
   const workflowEligible = and(
     eq(workflowExecutions.status, "unconfirmed"),

@@ -64,6 +64,11 @@ type PendingTransaction = {
   confirmationsRequired: number;
   confirmationsCollected: number;
   dataDecoded: unknown;
+  safeTxGas: number;
+  baseGas: number;
+  gasPrice: string;
+  gasToken: string;
+  refundReceiver: string;
   submissionDate: string;
   safe: string;
 };
@@ -270,6 +275,11 @@ async function stepHandler(
       confirmationsRequired: tx.confirmationsRequired,
       confirmationsCollected: tx.confirmations.length,
       dataDecoded: tx.dataDecoded,
+      safeTxGas: tx.safeTxGas,
+      baseGas: tx.baseGas,
+      gasPrice: tx.gasPrice,
+      gasToken: tx.gasToken,
+      refundReceiver: tx.refundReceiver,
       submissionDate: tx.submissionDate,
       safe: tx.safe,
     }));

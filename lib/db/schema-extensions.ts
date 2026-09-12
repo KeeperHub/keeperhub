@@ -1502,3 +1502,35 @@ export type ExecutionQuotaNotification =
   typeof executionQuotaNotifications.$inferSelect;
 export type NewExecutionQuotaNotification =
   typeof executionQuotaNotifications.$inferInsert;
+
+/**
+ * KEEP-1042: per-organization watermark for the step-log retention purge.
+ *
+ * Every execution of this organization that started before
+ * `executionsPurgedThrough` has had its step logs removed. Without it the purge
+ * has no way to tell a drained organization from one it has never looked at,
+ * and each run would re-walk the whole already-purged history: the plan windows
+ * differ by three orders of magnitude, so a scan from the oldest row walks
+ * millions of long-window rows to reach a handful of short-window ones.
+ *
+ * The row is advanced only when an organization's range is fully drained, so an
+ * interrupted run resumes rather than skipping rows. Deliberately keyed by
+ * organization and not by window: an organization that moves to a shorter plan
+ * must have the newly-expired range reprocessed, which a window-keyed cursor
+ * would skip.
+ */
+export const executionRetentionProgress = pgTable(
+  "execution_retention_progress",
+  {
+    organizationId: text("organization_id")
+      .primaryKey()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    executionsPurgedThrough: timestamp("executions_purged_through").notNull(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  }
+);
+
+export type ExecutionRetentionProgress =
+  typeof executionRetentionProgress.$inferSelect;
+export type NewExecutionRetentionProgress =
+  typeof executionRetentionProgress.$inferInsert;

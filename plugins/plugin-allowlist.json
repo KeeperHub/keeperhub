@@ -4,7 +4,9 @@
   "plugins": [
     "blockscout",
     "code",
+    "data",
     "discord",
+    "elizaos",
     "evm-chain",
     "hyperliquid",
     "math",
