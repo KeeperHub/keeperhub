@@ -576,11 +576,11 @@ function ExpandableRunRow({
         <td className="w-8 py-3 pl-3">
           <ChevronIcon className="size-4 text-muted-foreground" />
         </td>
-        <td className="w-full max-w-0 py-3 pr-3">
-          <div className="flex min-w-0 items-center gap-1.5">
+        <td className="py-3 pr-3 max-md:w-full max-md:max-w-0">
+          <div className="flex items-center gap-1.5">
             <span
               className={cn(
-                "truncate text-sm font-medium capitalize",
+                "text-sm font-medium capitalize max-md:truncate",
                 isDeleted && "italic text-muted-foreground line-through"
               )}
               title={runName}
@@ -637,12 +637,27 @@ function ExpandableRunRow({
         </td>
       </tr>
       {expanded ? (
-        <ExpandedStepRows
-          loadingSteps={loadingSteps}
-          retentionCutoff={retentionCutoff}
-          run={run}
-          steps={steps}
-        />
+        <>
+          {/* Below md this is the only place the workflow name appears, and the
+              column ellipsizes it, so the row has to be able to disclose it
+              without hover: a `title` produces no tooltip on touch and the
+              external-link icon beside it is hover-gated too. Expanding the row
+              is a click, so putting the name here makes it reachable. */}
+          <tr className="md:hidden">
+            <td
+              className="border-t border-dashed border-muted py-2 pl-10 pr-3 text-sm text-muted-foreground"
+              colSpan={8}
+            >
+              <span className="break-all">{runName}</span>
+            </td>
+          </tr>
+          <ExpandedStepRows
+            loadingSteps={loadingSteps}
+            retentionCutoff={retentionCutoff}
+            run={run}
+            steps={steps}
+          />
+        </>
       ) : null}
     </>
   );
