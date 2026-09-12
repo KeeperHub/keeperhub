@@ -123,6 +123,10 @@ const TEST_DATA: ProtocolTestData = {
     writeExpectations: {
       "vault-deposit": [{ read: "vault-balance", expect: { nonZero: true } }],
       "vault-mint": [{ read: "vault-balance", expect: { nonZero: true } }],
+      "vault-withdraw": [
+        { read: "vault-max-withdraw", expect: { nonZero: true } },
+      ],
+      "vault-redeem": [{ read: "vault-balance", expect: { nonZero: true } }],
     },
     // Live-vault invariants on the eUSDC-2 market. asset, oracle, unitOfAccount,
     // EVC and creator are permanent addresses; totals and the interest
@@ -161,8 +165,11 @@ const TEST_DATA: ProtocolTestData = {
 // callThroughEVC modifier (Dispatch.sol). When the caller is not the Ethereum
 // Vault Connector, the vault routes the call through the EVC itself and
 // re-enters, so a direct call from an ordinary wallet works with no EVC
-// awareness on the caller side. deposit additionally passes CHECKACCOUNT_NONE,
-// so no account status check runs on the supply path.
+// awareness on the caller side. deposit and mint additionally pass
+// CHECKACCOUNT_NONE, so no account status check runs on the supply path.
+// withdraw and redeem are not symmetric with them: both check the share owner,
+// so withdrawing on behalf of a third party needs EVC authorisation, and even a
+// self-withdrawal can revert while that account has an open Euler borrow.
 const EULER_V2_VAULT_ABI = JSON.stringify([
   // ERC-4626 write functions
   {
@@ -170,7 +177,7 @@ const EULER_V2_VAULT_ABI = JSON.stringify([
     type: "function",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "amount", type: "uint256" },
+      { name: "assets", type: "uint256" },
       { name: "receiver", type: "address" },
     ],
     outputs: [{ name: "shares", type: "uint256" }],
@@ -180,7 +187,7 @@ const EULER_V2_VAULT_ABI = JSON.stringify([
     type: "function",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "amount", type: "uint256" },
+      { name: "shares", type: "uint256" },
       { name: "receiver", type: "address" },
     ],
     outputs: [{ name: "assets", type: "uint256" }],
@@ -190,7 +197,7 @@ const EULER_V2_VAULT_ABI = JSON.stringify([
     type: "function",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "amount", type: "uint256" },
+      { name: "assets", type: "uint256" },
       { name: "receiver", type: "address" },
       { name: "owner", type: "address" },
     ],
@@ -201,7 +208,7 @@ const EULER_V2_VAULT_ABI = JSON.stringify([
     type: "function",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "amount", type: "uint256" },
+      { name: "shares", type: "uint256" },
       { name: "receiver", type: "address" },
       { name: "owner", type: "address" },
     ],
@@ -498,7 +505,7 @@ export default defineAbiProtocol({
           slug: "get-unit-of-account",
           label: "Unit Of Account",
           description:
-            "Get the address of the asset the vault denominates risk calculations in",
+            "Get the unit of account the vault denominates risk calculations in. Often a token address, but USD-denominated EVK markets return the ISO-4217 code as an address (0x348 is 840, USD), which is not a contract",
           outputs: {
             result: { name: "unitOfAccount", label: "Unit Of Account" },
           },

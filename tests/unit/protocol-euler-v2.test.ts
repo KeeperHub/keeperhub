@@ -211,6 +211,37 @@ describe("Euler V2 Protocol Definition", () => {
     }
   });
 
+  it("write actions name their amount input assets or shares", () => {
+    // erc4626AbiOverrides keys its input overrides by `assets` and `shares`, and
+    // deriveAction looks overrides up by the ABI parameter's own name. An ABI
+    // that names the first write parameter anything else (Euler's own source
+    // calls it `amount`) drops the binding silently: the action renders a
+    // generic Amount field, the docs name a key that does not exist, and test
+    // data binds nothing, so the encoded amount falls through to the uint
+    // default of 1.
+    const expected: Record<string, string> = {
+      "vault-deposit": "assets",
+      "vault-mint": "shares",
+      "vault-withdraw": "assets",
+      "vault-redeem": "shares",
+    };
+    const parsed = JSON.parse(eulerV2Def.contracts.vault.abi ?? "[]") as {
+      name: string;
+      inputs?: { name: string }[];
+    }[];
+    const abiFn = (n: string) => parsed.find((f) => f.name === n);
+    for (const [slug, inputName] of Object.entries(expected)) {
+      const action = eulerV2Def.actions.find((a) => a.slug === slug);
+      expect(action, `missing action ${slug}`).toBeDefined();
+      const fn = abiFn(slug.replace("vault-", ""));
+      expect(fn, `missing ABI entry for ${slug}`).toBeDefined();
+      expect(
+        fn?.inputs?.[0]?.name,
+        `${slug} first ABI input must be named "${inputName}" or the override binding is dropped`
+      ).toBe(inputName);
+    }
+  });
+
   it("has website and icon metadata", () => {
     expect(eulerV2Def.website).toBe("https://euler.finance");
     expect(eulerV2Def.icon).toBe("/protocols/euler-v2.png");

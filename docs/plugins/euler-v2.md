@@ -7,7 +7,7 @@ description: "Modular ERC-4626 lending vaults built on the Euler Vault Kit, on E
 
 Euler V2 is a modular lending protocol. Rather than one pooled market, it deploys an independent vault per market, each with its own oracle, risk configuration and governor. Every vault is an ERC-4626 vault over a single underlying asset, so supplying to Euler is a vault deposit and the position is held as vault shares. This plugin provides the standard vault operations (deposit, mint, withdraw, redeem) plus Euler-specific reads for liquidity, borrow demand, interest accrual and vault configuration.
 
-Supported chains: Ethereum, Base. Each vault is a separate contract -- you must provide the vault address when configuring actions. Read-only actions work without credentials. Write actions require a connected wallet.
+Supported chains: Ethereum, Base. Each vault is a separate contract - you must provide the vault address when configuring actions. Read-only actions work without credentials. Write actions require a connected wallet.
 
 ## Actions
 
