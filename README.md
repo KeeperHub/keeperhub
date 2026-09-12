@@ -248,7 +248,7 @@ Base URL: `https://app.keeperhub.com/api`
 | `/api/integrations`              | Manage connections |
 | `/api/chains`                    | Supported networks |
 
-See [API Documentation](docs/api/index.md) for full reference.
+See [API Overview](docs/api/index.md) for full reference.
 
 ## Observability
 
