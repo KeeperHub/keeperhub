@@ -1,0 +1,69 @@
+{
+  "1": {
+    "stake": {
+      "to": "0x308861A430be4cce5502d0A12724771Fc6DaF216",
+      "data": "0xd0e30db0",
+      "skipped": false
+    },
+    "get-total-pooled-ether": {
+      "to": "0x308861A430be4cce5502d0A12724771Fc6DaF216",
+      "data": "0x37cfdaca",
+      "skipped": false
+    },
+    "amount-for-share": {
+      "to": "0x308861A430be4cce5502d0A12724771Fc6DaF216",
+      "data": "0x561bddf80000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "shares-for-amount": {
+      "to": "0x308861A430be4cce5502d0A12724771Fc6DaF216",
+      "data": "0x3a53acb00000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "wrap": {
+      "to": "0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee",
+      "data": "0xea598cb00000000000000000000000000000000000000000000000000000000000000001",
+      "skipped": true
+    },
+    "unwrap": {
+      "to": "0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee",
+      "data": "0xde0e9a3e0000000000000000000000000000000000000000000000000000000000000001",
+      "skipped": true
+    },
+    "get-rate": {
+      "to": "0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee",
+      "data": "0x679aefce",
+      "skipped": false
+    },
+    "get-weeth-by-eeth": {
+      "to": "0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee",
+      "data": "0xd044fe9b0000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "get-eeth-by-weeth": {
+      "to": "0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee",
+      "data": "0x946260440000000000000000000000000000000000000000000000000de0b6b3a7640000",
+      "skipped": false
+    },
+    "weeth-balance-of": {
+      "to": "0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "weeth-total-supply": {
+      "to": "0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee",
+      "data": "0x18160ddd",
+      "skipped": false
+    },
+    "eeth-balance-of": {
+      "to": "0x35fA164735182de50811E8e2E824cFb9B6118ac2",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "eeth-total-shares": {
+      "to": "0x35fA164735182de50811E8e2E824cFb9B6118ac2",
+      "data": "0x3a98ef39",
+      "skipped": false
+    }
+  }
+}
