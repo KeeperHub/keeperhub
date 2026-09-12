@@ -135,7 +135,11 @@ vi.mock("@/lib/explorer", () => ({
     mockExplorerGetTransactionUrl(...args),
 }));
 
-vi.mock("@/lib/abi/struct-args", () => ({
+// asRawFunctionArgs stays real: it is what decides whether functionArgs is
+// absent, an array or a string to parse, and stubbing it would leave that
+// decision untested. The two shaping helpers remain identity stubs.
+vi.mock("@/lib/abi/struct-args", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/abi/struct-args")>()),
   reshapeArgsForAbi: vi.fn().mockImplementation((args: unknown[]) => args),
   coerceArgsForAbi: vi.fn().mockImplementation((args: unknown[]) => args),
 }));
@@ -712,6 +716,106 @@ describe("writeContractCore sponsored-relay failure link", () => {
       { chainId: 1 },
       "0xsponsored"
     );
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+});
+
+describe("writeContractCore functionArgs shape (#2359)", () => {
+  const SHAPE_ABI = JSON.stringify([
+    {
+      type: "function",
+      name: "transfer",
+      stateMutability: "nonpayable",
+      inputs: [
+        { name: "to", type: "address" },
+        { name: "amount", type: "uint256" },
+      ],
+      outputs: [{ name: "", type: "bool" }],
+    },
+    {
+      type: "function",
+      name: "pause",
+      stateMutability: "nonpayable",
+      inputs: [],
+      outputs: [],
+    },
+  ]);
+
+  const sendSucceeds = () => {
+    mockExecuteContractCall.mockResolvedValue({
+      hash: "0xhash",
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sendSucceeds();
+  });
+
+  it("takes a native array instead of throwing past the softener", async () => {
+    // The executor renders templates inside arrays, so a config authored over
+    // MCP reaches this step as an array rather than the JSON string the visual
+    // builder sends. The shape test used to sit in the condition guarding the
+    // try - `functionArgs && functionArgs.trim() !== ""` - so an array threw a
+    // TypeError from the condition itself. writeContractCore is awaited inside
+    // applyWriteFailOnError, so that rejection escaped the softener and
+    // failOnError: false could not turn it into a step result. On a path that
+    // broadcasts a transaction.
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "16602",
+      abi: SHAPE_ABI,
+      abiFunction: "transfer",
+      functionArgs: [
+        "0x1111111111111111111111111111111111111111",
+        "1000",
+      ] as unknown as string,
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockExecuteContractCall).toHaveBeenCalled();
+    const sent = mockExecuteContractCall.mock.calls[0]?.[1] as {
+      args: unknown[];
+    };
+    expect(sent.args).toEqual([
+      "0x1111111111111111111111111111111111111111",
+      "1000",
+    ]);
+  });
+
+  it("reads null, 0 and false as no arguments rather than a parse error", async () => {
+    for (const absent of [null, 0, false, "", "   "]) {
+      vi.clearAllMocks();
+      sendSucceeds();
+      const result = await writeContractCore({
+        contractAddress: "0x1234567890123456789012345678901234567890",
+        network: "16602",
+        abi: SHAPE_ABI,
+        abiFunction: "pause",
+        functionArgs: absent as unknown as string,
+        _context: { organizationId: "org-1" },
+      });
+      expect([String(absent), result.success]).toEqual([String(absent), true]);
+      const sent = mockExecuteContractCall.mock.calls[0]?.[1] as {
+        args: unknown[];
+      };
+      expect(sent.args).toEqual([]);
+    }
+  });
+
+  it("still rejects a JSON object as a user error", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "16602",
+      abi: SHAPE_ABI,
+      abiFunction: "pause",
+      functionArgs: '{"to":"0x1"}',
+      _context: { organizationId: "org-1" },
+    });
+    expect(result).toMatchObject({ success: false, errorClass: "user" });
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
   });
 });

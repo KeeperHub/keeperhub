@@ -10,7 +10,11 @@ import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { ethers } from "ethers";
-import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
+import {
+  asRawFunctionArgs,
+  coerceArgsForAbi,
+  reshapeArgsForAbi,
+} from "@/lib/abi/struct-args";
 import { validateArgsForAbi } from "@/lib/abi/validate-args";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
@@ -37,7 +41,11 @@ export type ReadContractCoreInput = {
   network: string;
   abi: string;
   abiFunction: string;
-  functionArgs?: string;
+  // A JSON string from the abi-function-args UI field, or a native array from
+  // a direct/MCP caller and, since #2359, from the executor rendering a
+  // template inside one. query-transactions has taken both shapes for the
+  // same widget all along; this step declared the string only.
+  functionArgs?: string | unknown[];
   // See applyReadFailOnError in read-fail-on-error-core.ts. When false, no
   // failure of this step fails the run.
   failOnError?: boolean;
@@ -198,11 +206,15 @@ async function readContractInner(
     };
   }
 
-  // Parse function arguments
+  // Parse function arguments. A native array is taken as it is and a string
+  // is parsed as JSON; an empty, absent or falsy value means no arguments.
   let args: unknown[] = [];
-  if (functionArgs && functionArgs.trim() !== "") {
+  const rawArgs = asRawFunctionArgs(functionArgs);
+  if (rawArgs !== undefined) {
     try {
-      const parsedArgs = JSON.parse(functionArgs);
+      const parsedArgs: unknown = Array.isArray(rawArgs)
+        ? rawArgs
+        : JSON.parse(rawArgs);
       if (!Array.isArray(parsedArgs)) {
         logUserError(
           ErrorCategory.VALIDATION,

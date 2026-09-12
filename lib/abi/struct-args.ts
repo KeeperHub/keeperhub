@@ -71,6 +71,36 @@ function buildTupleArg(
  *
  * If args is empty or the ABI has no tuple inputs, the array passes through unchanged.
  */
+/**
+ * The function arguments as given, or undefined when the field carries none.
+ *
+ * An array is taken as it is. The executor renders templates inside arrays, so
+ * a config authored over MCP reaches a step as an array rather than the JSON
+ * string the visual builder sends. A string is passed on unless it trims empty.
+ *
+ * Anything else follows the truthiness test these steps applied before arrays
+ * were admitted, so null, 0 and false stay absent rather than becoming a parse
+ * error. That matters because `isMissingRequiredValue` in
+ * lib/workflow/validation/action-config.ts treats null as missing and skips
+ * field validation, so a workflow carrying one persists and then has to run.
+ *
+ * A truthy value that is neither an array nor a string is printed and handed to
+ * the caller's parse, which rejects it as a user error. Testing the shape here
+ * rather than at the call site is what keeps that off the throwing path: both
+ * steps used to call `.trim()` on it in the condition guarding their `try`.
+ */
+export function asRawFunctionArgs(
+  functionArgs: unknown
+): string | unknown[] | undefined {
+  if (Array.isArray(functionArgs)) {
+    return functionArgs;
+  }
+  if (typeof functionArgs === "string") {
+    return functionArgs.trim() === "" ? undefined : functionArgs;
+  }
+  return functionArgs ? String(functionArgs) : undefined;
+}
+
 export function reshapeArgsForAbi(
   args: unknown[],
   functionAbi: FunctionAbiEntry
