@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/protocols", () => ({}));
@@ -262,6 +262,21 @@ beforeEach(() => {
   // route reaches its write branch.
   readContractCoreMock.mockResolvedValue({ success: true, result: "100" });
 });
+
+// Each route is imported lazily inside its helper above, so that the vi.mock factories are
+// registered before the module graph is pulled in. The side effect is that whichever test runs
+// first pays the transpile cost of a Next.js route and everything it imports, which on a cold or
+// loaded machine is far more than vitest's 5s per-test budget: the first test was observed taking
+// 18.8s and failing on time while asserting nothing slow. Warming the four modules here keeps
+// that cost but moves it out of a test's budget and into a hook with its own.
+beforeAll(async () => {
+  await Promise.all([
+    import("@/app/api/execute/[...slug]/route"),
+    import("@/app/api/execute/transfer/route"),
+    import("@/app/api/execute/contract-call/route"),
+    import("@/app/api/execute/check-and-execute/route"),
+  ]);
+}, 120_000);
 
 describe("execute protocol idempotency disposition", () => {
   it("releases the lock when the plan limit blocks (pre-broadcast)", async () => {
