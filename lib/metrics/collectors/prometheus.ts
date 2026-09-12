@@ -204,6 +204,26 @@ const executionsUnconfirmed = getOrCreateGauge(
   ["kind"]
 );
 
+// KEEP-1042: how far back the step-log table reaches, and how much disk the
+// execution tables hold. Both prod failures this job exists to prevent were
+// size-driven -- the volume alarm on 2026-09-01 and the CPU saturation on
+// 2026-09-02, where analytics de-TOASTed jsonb out of a table nothing pruned.
+// DB-sourced (see getExecutionRetentionStatsFromDb) so one collector reports
+// them rather than every pod.
+const executionLogOldestAgeSeconds = getOrCreateGauge(
+  dbRegistry,
+  "keeperhub_execution_log_oldest_age_seconds",
+  "Age in seconds of the oldest row in workflow_execution_logs",
+  []
+);
+
+const executionTableBytes = getOrCreateGauge(
+  dbRegistry,
+  "keeperhub_execution_table_bytes",
+  "Total on-disk size (heap, indexes and TOAST) of an execution table, by table",
+  ["table"]
+);
+
 // pending_transactions rows still in `pending` between 15 minutes and 24 hours
 // after submission, by chain. An unreferenced same-nonce fee-escalation path
 // was deleted from lib/web3/gas-strategy.ts; nothing bumps a stuck transaction
@@ -1233,6 +1253,82 @@ export function recordWorkflowExecutionErrorByWorkflow(labels: {
   });
 }
 
+// ─── KEEP-1042 execution retention ───────────────────────────────────────────
+// Emitted by the `retention` CronJob's route. The job runs in whichever app pod
+// the service picks, so these live in apiRegistry: the counter is summed across
+// pods, and the freshness gauge must be read with max() -- pods that never
+// served a run export the initial 0.
+
+const retentionRowsPurged = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_execution_retention_rows_purged_total",
+  "Execution rows deleted (or output_raw nulled) by the retention job, by pass",
+  ["pass"]
+);
+
+const retentionRuns = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_execution_retention_runs_total",
+  "Retention job runs by result",
+  ["result"]
+);
+
+// Seconds since the retention job last completed a run. This is the health
+// signal for the job, NOT the oldest-row age: enterprise orgs keep a year of
+// logs, so min(started_at) is pinned by them and would not move at all if the
+// short-window passes silently stopped working.
+const retentionLastSuccess = getOrCreateGauge(
+  apiRegistry,
+  "keeperhub_execution_retention_last_success_timestamp_seconds",
+  "Unix timestamp of the last successful retention run (read with max() across pods)",
+  []
+);
+
+export function recordRetentionRowsPurged(pass: string, rows: number): void {
+  if (rows > 0) {
+    retentionRowsPurged.inc({ pass }, rows);
+  }
+}
+
+export function recordRetentionRun(result: "success" | "failure"): void {
+  retentionRuns.inc({ result });
+  if (result === "success") {
+    retentionLastSuccess.set(Date.now() / 1000);
+  }
+}
+
+// How many organizations the job resolved onto each retention window. This is
+// the check that the window an organization gets is the window it pays for:
+// most organizations have no subscription row and fall back to the default, and
+// until this job nothing ever read `logRetentionDays`, so a wrong or missing
+// plan value cost nothing and could be sitting there unnoticed. Bounded
+// cardinality -- one series per distinct window, four today.
+const retentionWindowOrganizations = getOrCreateGauge(
+  apiRegistry,
+  "keeperhub_execution_retention_window_organizations",
+  "Organizations resolved onto each step-log retention window, by window length in days",
+  ["retention_days"]
+);
+
+const retentionWindowRows = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_execution_retention_window_rows_total",
+  "Step-log rows purged by the plan-window pass, by window length in days",
+  ["retention_days"]
+);
+
+export function recordRetentionWindow(
+  retentionDays: number,
+  organizationCount: number,
+  rows: number
+): void {
+  const label = { retention_days: String(retentionDays) };
+  retentionWindowOrganizations.set(label, organizationCount);
+  if (rows > 0) {
+    retentionWindowRows.inc(label, rows);
+  }
+}
+
 const slowQueries = getOrCreateCounter(
   apiRegistry,
   "keeperhub_db_query_slow_total",
@@ -1810,6 +1906,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       getWorkflowStatsFromDb,
       getLastFinishedExecutionAgeSecondsFromDb,
       getUnconfirmedExecutionCountsFromDb,
+      getExecutionRetentionStatsFromDb,
       getStuckPendingTransactionCountsFromDb,
       getWorkflowErrorsByWorkflowFromDb,
       getSystemErrorsByCategoryFromDb,
@@ -1830,6 +1927,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       workflowStats,
       lastFinishedAgeSeconds,
       unconfirmedCounts,
+      retentionStats,
       stuckPendingTxCounts,
       errorsByWorkflow,
       systemErrorsByCategoryRows,
@@ -1849,6 +1947,7 @@ async function refreshDbMetricsNow(): Promise<void> {
       getWorkflowStatsFromDb(),
       getLastFinishedExecutionAgeSecondsFromDb(),
       getUnconfirmedExecutionCountsFromDb(),
+      getExecutionRetentionStatsFromDb(),
       getStuckPendingTransactionCountsFromDb(),
       getWorkflowErrorsByWorkflowFromDb(),
       getSystemErrorsByCategoryFromDb(),
@@ -1896,6 +1995,22 @@ async function refreshDbMetricsNow(): Promise<void> {
         unconfirmedCounts.workflow
       );
       executionsUnconfirmed.set({ kind: "direct" }, unconfirmedCounts.direct);
+    }
+
+    // Same null handling again: on a query error keep the last real reading
+    // rather than reporting a table that suddenly holds nothing.
+    if (retentionStats !== null) {
+      if (retentionStats.oldestLogAgeSeconds !== null) {
+        executionLogOldestAgeSeconds.set(retentionStats.oldestLogAgeSeconds);
+      }
+      executionTableBytes.set(
+        { table: "workflow_execution_logs" },
+        retentionStats.logTableBytes
+      );
+      executionTableBytes.set(
+        { table: "workflow_executions" },
+        retentionStats.executionTableBytes
+      );
     }
 
     // Reset before populating so a chain that has drained its

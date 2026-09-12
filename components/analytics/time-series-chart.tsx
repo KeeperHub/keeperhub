@@ -14,11 +14,10 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
-import type { TimeRange } from "@/lib/analytics/types";
 import {
   analyticsLoadingAtom,
-  analyticsRangeAtom,
   analyticsTimeSeriesAtom,
+  analyticsTimeSeriesIntervalAtom,
 } from "@/lib/atoms/analytics";
 
 // Colours come from the shared status palette, so a band on this chart is the
@@ -32,24 +31,49 @@ const CHART_COLORS = {
   pending: STATUS_DISPLAY.pending.chartColor,
 } as const;
 
-function formatTimestamp(value: string, range: TimeRange): string {
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Labelled at the granularity the bucket actually covers. Keyed off the range
+ * name instead, a two-month custom window printed the same day four times over
+ * because its buckets were still an hour wide.
+ */
+function formatTimestamp(value: string, intervalMs: number): string {
   const date = new Date(value);
 
-  if (range === "1h" || range === "24h") {
-    return date.toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
+  if (intervalMs >= DAY_MS) {
+    return date.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
     });
   }
 
-  return date.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
+  // Buckets this wide only ever cover a window of several days, so the day
+  // has to be on the label; an hourly one never does, and the date there is
+  // repeated noise.
+  if (intervalMs >= 6 * 60 * 60 * 1000) {
+    return date.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+    });
+  }
+
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
-function formatTooltipTimestamp(value: string): string {
+function formatTooltipTimestamp(value: string, intervalMs: number): string {
   const date = new Date(value);
+  if (intervalMs >= DAY_MS) {
+    return date.toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
+  }
   return date.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
@@ -68,12 +92,14 @@ type CustomTooltipProps = {
   active?: boolean;
   payload?: TooltipPayloadEntry[];
   label?: string;
+  intervalMs: number;
 };
 
 function ChartTooltip({
   active,
   payload,
   label,
+  intervalMs,
 }: CustomTooltipProps): ReactNode {
   if (!(active && payload?.length && label)) {
     return null;
@@ -82,7 +108,7 @@ function ChartTooltip({
   return (
     <div className="rounded-lg border bg-background px-3 py-2 shadow-md">
       <p className="mb-1 text-xs text-muted-foreground">
-        {formatTooltipTimestamp(label)}
+        {formatTooltipTimestamp(label, intervalMs)}
       </p>
       {payload
         .filter((entry) => entry.value > 0)
@@ -115,7 +141,7 @@ function ChartSkeleton(): ReactNode {
 
 function TimeSeriesContent({
   chartData,
-  range,
+  intervalMs,
   loading,
 }: {
   chartData: {
@@ -127,7 +153,7 @@ function TimeSeriesContent({
     pending: number;
     running: number;
   }[];
-  range: TimeRange;
+  intervalMs: number;
   loading: boolean;
 }): ReactNode {
   const isEmpty = chartData.length === 0;
@@ -164,8 +190,9 @@ function TimeSeriesContent({
           axisLine={false}
           className="text-xs"
           dataKey="timestamp"
+          minTickGap={24}
           tick={{ fill: "var(--color-muted-foreground)", fontSize: 12 }}
-          tickFormatter={(value: string) => formatTimestamp(value, range)}
+          tickFormatter={(value: string) => formatTimestamp(value, intervalMs)}
           tickLine={false}
         />
         <YAxis
@@ -177,7 +204,7 @@ function TimeSeriesContent({
           width={40}
         />
         <RechartsTooltip
-          content={<ChartTooltip />}
+          content={<ChartTooltip intervalMs={intervalMs} />}
           cursor={{ stroke: "hsl(var(--muted-foreground) / 0.3)" }}
         />
         {activeKeys.map((key) => (
@@ -197,7 +224,7 @@ function TimeSeriesContent({
 
 export function TimeSeriesChart(): ReactNode {
   const timeSeries = useAtomValue(analyticsTimeSeriesAtom);
-  const range = useAtomValue(analyticsRangeAtom);
+  const intervalMs = useAtomValue(analyticsTimeSeriesIntervalAtom);
   const loading = useAtomValue(analyticsLoadingAtom);
 
   const chartData = useMemo(
@@ -219,8 +246,8 @@ export function TimeSeriesChart(): ReactNode {
       <CardContent>
         <TimeSeriesContent
           chartData={chartData}
+          intervalMs={intervalMs}
           loading={loading}
-          range={range}
         />
       </CardContent>
     </Card>
