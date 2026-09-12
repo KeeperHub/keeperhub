@@ -1,3 +1,4 @@
+import { getAddress } from "ethers";
 import { describe, expect, it } from "vitest";
 import { getProtocol, registerProtocol } from "@/lib/protocol-registry";
 import cbethDef from "@/protocols/coinbase-cbeth";
@@ -90,8 +91,54 @@ describe("Coinbase cbETH Protocol Definition (ABI-driven)", () => {
     expect(bal?.outputs?.[0].decimals).toBe(18);
   });
 
+  it("total-supply returns an 18-decimal supply", () => {
+    const supply = cbethDef.actions.find((a) => a.slug === "total-supply");
+    expect(supply).toBeDefined();
+    expect(supply?.type).toBe("read");
+    expect(supply?.inputs).toHaveLength(0);
+    expect(supply?.function).toBe("totalSupply");
+    expect(supply?.outputs?.[0].name).toBe("totalSupply");
+    expect(supply?.outputs?.[0].decimals).toBe(18);
+  });
+
   it("is Ethereum mainnet only (chain 1)", () => {
     expect(Object.keys(cbethDef.contracts.cbeth.addresses)).toEqual(["1"]);
+  });
+
+  it("excludes Base and the testnets", () => {
+    // Base is deliberately out: its cbETH is an OP-stack bridged
+    // representation whose exchangeRate() reverts, so it belongs in a second
+    // contract key rather than as another address here. Sepolia, Holesky and
+    // Goerli carry no cbETH at all.
+    const excluded = {
+      "8453": "Base",
+      "11155111": "Sepolia",
+      "17000": "Holesky",
+      "5": "Goerli",
+      "42161": "Arbitrum",
+      "10": "Optimism",
+    };
+    for (const [chainId, label] of Object.entries(excluded)) {
+      expect(
+        cbethDef.contracts.cbeth.addresses[chainId],
+        `${label} (${chainId}) must not be declared`
+      ).toBeUndefined();
+    }
+  });
+
+  it("cbETH address is EIP-55 checksummed", () => {
+    const address = cbethDef.contracts.cbeth.addresses["1"];
+    expect(getAddress(address)).toBe(address);
+  });
+
+  it("declares testData for chain 1 covering every action", () => {
+    // The calldata golden at tests/unit/__goldens__/protocol-calldata/
+    // coinbase-cbeth.json is keyed off this block, so a slug added to the
+    // definition without a binding here silently loses its golden coverage.
+    const chainOne = cbethDef.testData?.["1"];
+    expect(chainOne).toBeDefined();
+    const bound = Object.keys(chainOne?.actions ?? {}).sort();
+    expect(bound).toEqual(cbethDef.actions.map((a) => a.slug).sort());
   });
 
   it("cbETH address matches the verified mainnet deployment", () => {
