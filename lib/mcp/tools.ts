@@ -296,6 +296,8 @@ function is400Error(message: string): boolean {
 // decoded custom errors are routinely longer than addresses. The original
 // callApi message remains verbatim as the first line for compatibility.
 const MAX_SIMULATION_REASON_CHARS = 200;
+// Remediation advice contains spender addresses and parameter amounts so it needs a wider cap
+const MAX_SIMULATION_REMEDIATION_CHARS = 500;
 
 type SimulateFailureShape = {
   success?: unknown;
@@ -400,6 +402,15 @@ function buildSimulationFailureHint(originalMessage: string): string | null {
   if (typeof parsed.to === "string") {
     lines.push(
       `Simulated call target: ${sanitiseUpstreamField(parsed.to, MAX_ACCEPT_FIELD_CHARS, "unknown")}`
+    );
+  }
+
+  if (
+    typeof parsed.remediation === "string" &&
+    parsed.remediation.trim().length > 0
+  ) {
+    lines.push(
+      `Remediation: ${sanitiseUpstreamField(parsed.remediation, MAX_SIMULATION_REMEDIATION_CHARS, "")}`
     );
   }
 
