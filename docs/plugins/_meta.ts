@@ -18,6 +18,7 @@ export default {
   cowswap: "CoW Swap",
   curve: "Curve",
   ethena: "Ethena",
+  "euler-v2": "Euler V2",
   "frax-ether-v2": "Frax Ether V2",
   layerzero: "LayerZero",
   lido: "Lido",
