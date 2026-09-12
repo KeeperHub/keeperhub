@@ -23,6 +23,7 @@ export default {
   lido: "Lido",
   morpho: "Morpho",
   pendle: "Pendle",
+  renzo: "Renzo",
   "rocket-pool": "Rocket Pool",
   sky: "Sky",
   spark: "Spark",

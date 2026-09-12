@@ -1,0 +1,16 @@
+[
+  {
+    "type": "function",
+    "name": "depositETH",
+    "stateMutability": "payable",
+    "inputs": [],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "paused",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "bool" }]
+  }
+]

@@ -31,6 +31,7 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [Lido](/plugins/lido) | Protocol | Wrap/unwrap stETH to wstETH, exchange rates, balances across Ethereum, Base, Sepolia | Wallet (for writes) |
 | [Morpho](/plugins/morpho) | Protocol | Supply, borrow, repay, liquidate, collateral management, position tracking, market monitoring | Wallet (for writes) |
 | [Pendle](/plugins/pendle) | Protocol | Yield tokenization, market data, PT/YT/SY balances, mint/redeem | Wallet (for writes) |
+| [Renzo](/plugins/renzo) | Protocol | Liquid restaking on Ethereum. Deposit ETH to mint ezETH, pause gate, ezETH balances and total supply | Wallet (for writes) |
 | [Rocket Pool](/plugins/rocket-pool) | Protocol | rETH exchange rate, balances, total supply, ETH deposits and withdrawals | Wallet (for writes) |
 | [Sky](/plugins/sky) | Protocol | USDS savings and staking vaults, token balances, approvals, DAI/MKR converters | Wallet (for writes) |
 | [Spark](/plugins/spark) | Protocol | Lending, borrowing, sDAI savings, health factor monitoring | Wallet (for writes) |
