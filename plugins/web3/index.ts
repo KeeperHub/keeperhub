@@ -1722,6 +1722,68 @@ const web3Plugin: IntegrationPlugin = {
       ],
     },
     {
+      slug: "check-approval-exploits",
+      label: "Check Known Approval Exploits",
+      description:
+        "Match supplied token and spender pairs against Revoke.cash's public known approval exploit list on the selected chain. This does not discover approvals, read allowances or Permit2 state, or certify safety; not_listed means only that no match exists in the retrieved list revision.",
+      category: "Web3",
+      stepFunction: "checkApprovalExploitsStep",
+      stepImportPath: "check-approval-exploits",
+      outputFields: [
+        {
+          field: "success",
+          description:
+            "Whether the lookup completed. Also true when failOnError is off and a failed lookup was softened; lookupStatus remains error and result fields remain null.",
+        },
+        {
+          field: "lookupStatus",
+          description:
+            "complete when the full source snapshot was checked, otherwise error",
+        },
+        {
+          field: "results",
+          description:
+            "One result per supplied pair with its input index, token, spender, matched or not_listed status, and every matching incident. Incident amount is historical source data, not the wallet's value at risk.",
+        },
+        {
+          field: "matchedPairCount",
+          description:
+            "Number of supplied pairs whose spender matched at least one incident on the selected chain",
+        },
+        {
+          field: "source",
+          description:
+            "Revoke.cash exploit-list repository, exact commit revision, and retrieval time",
+        },
+        {
+          field: "coverage",
+          description:
+            "Explicit limits of the lookup, including that not_listed is not a safety verdict",
+        },
+        {
+          field: "error",
+          description:
+            "Error message when lookupStatus is error, including softened failures",
+        },
+      ],
+      configFields: [
+        evmNetworkField(),
+        {
+          key: "approvalPairs",
+          label: "Token and Spender Pairs",
+          type: "json-editor",
+          placeholder:
+            '[{"tokenAddress":"0x...","spenderAddress":"0x..."}]',
+          example:
+            '[{"tokenAddress":"0x6B175474E89094C44Da98b954EedeAC495271d0F","spenderAddress":"0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"}]',
+          helpTip:
+            "JSON array with 1 to 100 tokenAddress and spenderAddress pairs. Template references may be used inside the JSON string. Token addresses keep results tied to the approval being checked; exploit matching uses spender address plus the selected chain.",
+          required: true,
+        },
+        readFailOnErrorField(),
+      ],
+    },
+    {
       slug: "write-contract",
       label: "Write Contract",
       description: "Write data to a smart contract (state-changing functions)",
