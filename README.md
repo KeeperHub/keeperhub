@@ -194,7 +194,7 @@ pnpm test:e2e         # E2E tests
 
 | Service | Description | Source |
 |---------|-------------|--------|
-| **App** | Next.js application with workflow builder UI and API | `app/`, `keeperhub/` |
+| **App** | Next.js application with workflow builder UI and API | `app/` |
 | **Schedule Dispatcher** | Evaluates cron schedules every minute, dispatches matching workflows to SQS | `keeperhub-scheduler/schedule-dispatcher/` |
 | **Block Dispatcher** | Monitors blockchain blocks via WebSocket, dispatches matching workflows to SQS | `keeperhub-scheduler/block-dispatcher/` |
 | **Event Tracker** | Monitors blockchain events via Redis streams and routes to SQS | `keeperhub-events/event-tracker/` |
@@ -225,7 +225,7 @@ All trigger services (schedule dispatcher, block dispatcher, event tracker) send
 
 ### Plugin System
 
-Plugins extend workflow capabilities. Located in `keeperhub/plugins/`:
+Plugins extend workflow capabilities. Located in `plugins/`:
 
 - `web3` - Blockchain operations (balance, transfers, contract calls)
 - `evm-chain` - Read-only EVM chain diagnostics via any public JSON-RPC endpoint (no credentials)
@@ -248,7 +248,7 @@ Base URL: `https://app.keeperhub.com/api`
 | `/api/integrations`              | Manage connections |
 | `/api/chains`                    | Supported networks |
 
-See [API Documentation](docs/api/index.md) for full reference.
+See [API Overview](docs/api/index.md) for full reference.
 
 ## Observability
 
@@ -259,16 +259,16 @@ Prometheus metrics exposed at `/api/metrics`, readable from inside the cluster o
 - Plugin action metrics
 - User and organization stats
 
-See [Metrics Reference](keeperhub/lib/metrics/METRICS_REFERENCE.md) for details.
+See [Metrics Reference](lib/metrics/METRICS_REFERENCE.md) for details.
 
 ## Documentation
 
 Full documentation available at [docs.keeperhub.com](https://docs.keeperhub.com) or in the `docs/` directory:
 
-- [Quick Start Guide](docs/getting-started/quickstart.md)
-- [Core Concepts](docs/intro/concepts.md)
-- [Workflow Examples](docs/workflows/examples.md)
-- [API Reference](docs/api/index.md)
+- [Getting Started](docs/getting-started/index.md)
+- [Core Concepts](docs/concepts.md)
+- [Workflows](docs/workflows/index.md)
+- [API Overview](docs/api/index.md)
 - [Security Best Practices](docs/practices/security.md)
 
 ## License
