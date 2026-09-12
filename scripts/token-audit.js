@@ -29,9 +29,6 @@ const quietMode = process.argv.includes("--quiet");
 const SCAN_DIRS = [
   "app",
   "components",
-  "keeperhub/components",
-  "keeperhub/app",
-  "keeperhub/api",
 ];
 
 // Files/directories to skip
@@ -45,13 +42,13 @@ const SKIP_PATTERNS = [
   // Monaco theme uses editor-specific theming API
   "monaco-theme.ts",
   // Palette constants are DB-stored hex values, not UI styling
-  "keeperhub/lib/palette.ts",
+  "lib/palette.ts",
   // Logo uses brand color directly in SVG paths
-  "keeperhub/components/icons/keeperhub-logo.tsx",
+  "components/icons/keeperhub-logo.tsx",
   // Third-party agent marks use each vendor's official brand color in SVG paths
-  "keeperhub/components/icons/agent-icons.tsx",
+  "components/icons/agent-icons.tsx",
   // MCP schemas route has hex examples in documentation strings
-  "keeperhub/api/mcp/schemas/route.ts",
+  "app/api/mcp/schemas/route.ts",
 ];
 
 // File extensions to scan
