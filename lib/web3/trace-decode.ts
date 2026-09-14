@@ -59,10 +59,7 @@ export type DecodedCall = FlatCall & {
 export type ExecutedCall = {
   /** The contract the decoded call actually hit. */
   contractAddress: string;
-  /**
-   * `msg.sender` at that contract, from the matched frame rather than the
-   * transaction: the org EOA directly or sponsored, the Safe when Safe-routed.
-   */
+  /** The matched frame's `from`: msg.sender, except on a DELEGATECALL frame where it is the delegator. */
   from: string;
   functionName: string;
   functionSignature: string;

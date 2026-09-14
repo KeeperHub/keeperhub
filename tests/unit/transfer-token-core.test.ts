@@ -214,6 +214,7 @@ const VALID_RECIPIENT = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
 const MOCK_EXECUTED_CALL = {
   contractAddress: VALID_TOKEN.toLowerCase(),
+  from: "0x00000000000000000000000000000000000000d1",
   functionName: "transfer",
   functionSignature: "transfer(address,uint256)",
   args: { to: VALID_RECIPIENT.toLowerCase(), amount: "10000000" },

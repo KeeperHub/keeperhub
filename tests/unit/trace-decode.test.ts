@@ -291,6 +291,35 @@ describe("trace-decode", () => {
       expect(result?.from).toBe(SAFE);
     });
 
+    it("is the delegating contract on a DELEGATECALL frame, not the outer sender", async () => {
+      const PROXY = "0x00000000000000000000000000000000000000e1";
+      const IMPL = "0x00000000000000000000000000000000000000e2";
+      const tree: RawCallFrame = {
+        type: "CALL",
+        from: ORG_EOA,
+        to: PROXY,
+        input: transferData,
+        calls: [
+          { type: "DELEGATECALL", from: PROXY, to: IMPL, input: transferData },
+        ],
+      };
+      const provider = { send: vi.fn<SendFn>().mockResolvedValue(tree) };
+
+      const viaProxy = await resolveExecutedCall(provider, "0xhash", {
+        target: PROXY,
+        iface: IFACE,
+        functionName: "transfer",
+      });
+      const viaImpl = await resolveExecutedCall(provider, "0xhash", {
+        target: IMPL,
+        iface: IFACE,
+        functionName: "transfer",
+      });
+
+      expect(viaProxy?.from).toBe(ORG_EOA);
+      expect(viaImpl?.from).toBe(PROXY);
+    });
+
     it("lowercases from, as it does every other address", async () => {
       const provider = {
         send: vi.fn<SendFn>().mockResolvedValue({
