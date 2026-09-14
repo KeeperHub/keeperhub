@@ -82,6 +82,7 @@ export class SignaturesSource implements BlockSource {
   async start(): Promise<void> {
     this.connection = new SolanaConnection({
       chainId: this.opts.chainId,
+      source: "signatures",
       endpoints: this.opts.endpoints,
       commitment: this.opts.commitment,
       onSlot: () => this.onTick(),
@@ -123,7 +124,13 @@ export class SignaturesSource implements BlockSource {
   getHealth(): ConnectionHealth {
     return (
       this.connection?.getHealth() ??
-      disconnectedHealth(this.opts.chainId, this.opts.endpoints, "not started")
+      disconnectedHealth(
+        this.opts.chainId,
+        "signatures",
+        this.opts.endpoints,
+        "not started",
+        "idle",
+      )
     );
   }
 

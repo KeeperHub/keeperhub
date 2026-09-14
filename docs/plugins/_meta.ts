@@ -14,6 +14,7 @@ export default {
   ajna: "Ajna",
   chainlink: "Chainlink",
   chronicle: "Chronicle",
+  "coinbase-cbeth": "Coinbase cbETH",
   compound: "Compound V3",
   cowswap: "CoW Swap",
   curve: "Curve",

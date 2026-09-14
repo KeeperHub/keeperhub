@@ -348,6 +348,43 @@ The alert rules for these metrics are defined in `techops-infrastructure/grafana
 
 ---
 
+## 8. SOLANA TRACKER
+
+Per-chain slot-subscription liveness for the solana-tracker pod (`keeperhub-events/solana-tracker`). All metrics live in the tracker's own in-process Prometheus registry exposed at `:3001/metrics` on the health server, alongside `/livez` and `/healthz`, scraped via the `serviceMonitors` block in `deploy/solana-tracker/<env>/values.yaml`. Source code: `keeperhub-events/solana-tracker/lib/metrics.ts`. Like the block dispatcher, the registry deliberately excludes Node default process metrics.
+
+The alert rules for these metrics are defined in `techops-infrastructure/grafana/keeperhub-dashboards/` (see its `ALERTS_REFERENCE.md`, Solana Tracker section).
+
+These metrics are the deliberate replacement for a signal that was removed, not an addition. Before this change `/healthz` backed the Kubernetes liveness probe and returned 503 whenever any single chain was degraded, so a silent Solana endpoint restarted the pod and the namespace-wide **KeeperHub Pod Restarts** alert paged as a side effect. That was the only thing that paged. Moving liveness off chain state removes it, so a silent chain is invisible without these series.
+
+**One series per chain, rebuilt on every scrape.** Every scrape rebuilds the series set from current health and drops any chain that is no longer in it. An earlier design removed a series only when the reconciler dropped a chain, and three paths slipped past it: a chain that failed to start and later left discovery, a composite chain whose worst member changed, and a queued chain labelled with a guessed source. Each left a series climbing forever with the alert firing on it. Series are keyed on the chain alone. A composite chain runs two subscriptions but reports one health, taken from whichever member currently ranks worst, so it emits one series. The member's source is shown on `/healthz`, not as a label.
+
+**Why `seconds_since_last_slot` is not read off `/healthz`.** It is computed from a timestamp written only inside the slot callback. A chain whose source came up but never delivered a slot counts from the moment its source came up, so "never connected" climbs and alerts rather than reading 0 forever. The endpoint that failed on 2026-09-09 delivered nothing at all, so a `null -> 0` rule would never have fired. A chain still queued behind others on a cold start emits no value yet, because `/livez` gives a cold start a grace window and the alert should not give it less. The exemption ends with that same 10-minute grace: a chain that still has not started by then is reported as failed and its clock starts. Otherwise a start that hangs on one chain would leave every chain behind it silent, with nothing to page on.
+
+**Endpoint URLs are never a label.** Chain-config carries the provider credential in the URL path, and label values are durable in the TSDB and echoed into PagerDuty and Discord. `current_endpoint_index` (0 = primary, 1 = fallback) carries the operational meaning without the secret.
+
+### Gauges
+
+| Metric Name | Description | Labels | Alert-worthy? |
+|-------------|-------------|--------|---------------|
+| `keeperhub_solana_tracker_seconds_since_last_slot` | Wall-clock seconds since this chain's slot subscription last delivered a notification, or since its source came up if none ever has. Absent only while the chain is still queued within the 10-minute startup grace. THE primary alert signal. Computed at scrape time. | `chain`, `testnet` | YES - page if > 90s on mainnet |
+| `keeperhub_solana_tracker_subscription_age_seconds` | Seconds since the current slot subscription was established. Resets on every resubscribe, so an abnormally low value means churn. Computed at scrape time. | `chain`, `testnet` | no (debug) |
+| `keeperhub_solana_tracker_is_connected` | 0/1: a real slot arrived inside the staleness window. Not merely "we called subscribe". | `chain`, `testnet` | warn if 0 for >2 min |
+| `keeperhub_solana_tracker_is_reconnecting` | 1 while a reconnect is in flight. | `chain`, `testnet` | no (debug) |
+| `keeperhub_solana_tracker_current_endpoint_index` | 0 = primary, 1 = fallback. Replaces exposing the endpoint URL. | `chain`, `testnet` | no (debug) |
+| `keeperhub_solana_tracker_chains_expected` | Chains discovery says should be ingesting. Legitimately 0 when no Solana workflows exist. | - | no |
+| `keeperhub_solana_tracker_chains_running` | Chains with a running ingestor. Expected minus running is the number of chains that are queued or failed to start. | - | no |
+
+### Counters
+
+| Metric Name | Description | Labels |
+|-------------|-------------|--------|
+| `keeperhub_solana_tracker_reconnects_total` | Slot-subscription rebuilds triggered by the staleness watchdog. A healthy chain produces none, so any sustained rate is an upstream problem. For a composite chain, the sum across its members. | `chain`, `testnet` |
+| `keeperhub_solana_tracker_abandoned_subscriptions_total` | Unsubscribe calls that did not settle inside the timeout and were abandoned; the tracker then closes that connection's socket. The direct signature of the 2026-09-09 wedge, where the same call hung for 88 seconds and the resubscribe never happened. For a composite chain, the sum across its members. | `chain`, `testnet` |
+
+Counter series are kept when a chain leaves: their history is more useful than an empty series, and a counter cannot pin a threshold alert the way a stuck gauge can. When a chain's source is rebuilt its in-process totals start again from zero, and the counter treats that as a reset instead of waiting for the new total to overtake the old one.
+
+`max by (chain)` in the alert rules is not about composite chains. The deployment rolls with `maxSurge: 25%` on a single replica, so for a short window both the old and the new pod are scraped and each emits a series for the same chain. Aggregating keeps that overlap from opening two incidents.
+
 ## Label Keys Reference
 
 | Label Key | Description | Example Values |
@@ -378,6 +415,8 @@ The alert rules for these metrics are defined in `techops-infrastructure/grafana
 | `billing_status` | Subscription status | `active`, `trialing`, `past_due`, `canceled`, `unpaid`, `paused`, `none` |
 | `from_plan` / `to_plan` | Plan change source/target | `pro`, `business` |
 | `direction` | Plan change direction | `upgrade`, `downgrade`, `tier_change` |
+| `chain` | Chain identity on dispatcher/tracker metrics. The block dispatcher uses the human-readable name; solana-tracker uses the numeric chain id, so the page and the tracker's own log lines agree. | `Ethereum Mainnet`, `101`, `103` |
+| `testnet` | Whether the chain is a testnet, from the chain-config `isTestnet` flag. Drives the mainnet/testnet alert severity split. | `true`, `false` |
 
 ---
 
@@ -389,6 +428,7 @@ The alert rules for these metrics are defined in `techops-infrastructure/grafana
 | DB Metrics | `keeperhub/lib/metrics/db-metrics.ts` | `getWorkflowStatsFromDb()`, `getStepStatsFromDb()`, `getDailyActiveUsersFromDb()`, `getUserStatsFromDb()`, `getOrgStatsFromDb()`, `getWorkflowDefinitionStatsFromDb()`, `getScheduleStatsFromDb()`, `getIntegrationStatsFromDb()`, `getInfraStatsFromDb()`, `getUserListFromDb()`, `getOrgListFromDb()` |
 | API | `keeperhub/lib/metrics/instrumentation/api.ts` | `recordWebhookMetrics()`, `recordStatusPollMetrics()` |
 | Plugin | `keeperhub/lib/metrics/instrumentation/plugin.ts` | `withPluginMetrics()` |
+| Solana Tracker | `keeperhub-events/solana-tracker/lib/metrics.ts` | `syncMetrics()`, `forgetChain()` |
 
 ---
 

@@ -1,10 +1,17 @@
 import os from "node:os";
+import { registry } from "../lib/metrics";
 import { logger } from "../lib/utils/logger";
 import {
   type HealthServerHandle,
   startHealthServer,
 } from "./health/health-server";
-import { getAllHealth, shutdownAll, synchronizeData } from "./main";
+import {
+  getAllHealth,
+  getLiveness,
+  refreshMetrics,
+  shutdownAll,
+  synchronizeData,
+} from "./main";
 
 // Fatal-error handlers: an uncaught exception or unhandled rejection is almost
 // always a bug that leaves the process indeterminate. Log and exit so K8s
@@ -27,10 +34,12 @@ const initialize = async (): Promise<(signal: string) => Promise<void>> => {
   const HEALTH_PORT = Number(process.env.HEALTH_PORT ?? 3001);
 
   const healthServer: HealthServerHandle = await startHealthServer(
-    getAllHealth,
+    { getHealth: getAllHealth, getLiveness, refreshMetrics, registry },
     HEALTH_PORT,
   );
-  logger.log(`[Health] /healthz listening on :${healthServer.port}`);
+  logger.log(
+    `[Health] /livez /healthz /metrics listening on :${healthServer.port}`,
+  );
 
   await synchronizeData();
   const interval = setInterval(synchronizeData, 30_000);

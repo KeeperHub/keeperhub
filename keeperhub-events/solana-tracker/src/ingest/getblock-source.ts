@@ -31,6 +31,7 @@ export class GetBlockSource implements BlockSource {
   async start(): Promise<void> {
     this.connection = new SolanaConnection({
       chainId: this.opts.chainId,
+      source: "getblock",
       endpoints: this.opts.endpoints,
       commitment: this.opts.commitment,
       // The slot tick is only a wake-up; the confirmed tip is the real target.
@@ -59,7 +60,13 @@ export class GetBlockSource implements BlockSource {
   getHealth(): ConnectionHealth {
     return (
       this.connection?.getHealth() ??
-      disconnectedHealth(this.opts.chainId, this.opts.endpoints, "not started")
+      disconnectedHealth(
+        this.opts.chainId,
+        "getblock",
+        this.opts.endpoints,
+        "not started",
+        "idle",
+      )
     );
   }
 

@@ -177,6 +177,38 @@ const COMMON_ERROR_RESPONSES: Record<string, unknown> = {
   500: { $ref: "#/components/responses/InternalError" },
 };
 
+/**
+ * Example 200 body for a write-type workflow call.
+ *
+ * Structurally exact, deliberately not broadcastable. The shape and encoding
+ * match what the handler emits (lib/mcp/calldata.ts): `data` is full
+ * `encodeFunctionData` output - the `transfer(address,uint256)` selector plus
+ * two 32-byte ABI words - and `value` is wei as a decimal string.
+ *
+ * The addresses are placeholders on purpose. A live token address would be
+ * wrong twice over: this response carries no chain identifier, so an address
+ * that only has code on one chain silently no-ops when broadcast anywhere
+ * else, and calldata a reader could sign turns the obvious smoke test - paste
+ * the documented body into a signer - into an irreversible transfer. `to` is a
+ * plainly fictitious contract and the recipient is the burn address, so the
+ * bytes decode correctly and mean nothing.
+ *
+ * `to` is the target the caller broadcasts to on the workflow's own chain: the
+ * workflow's contract for a single write, MULTICALL3 for a batch write
+ * (lib/mcp/calldata.ts:352). It is unrelated to x-payment-info, which says
+ * where the caller pays KeeperHub.
+ *
+ * Plural `examples` because this is an OpenAPI 3.1 document: singular
+ * `example` is deprecated inside Schema Objects, and ERROR_SCHEMA already uses
+ * the plural form.
+ */
+const WRITE_CALL_EXAMPLE = {
+  type: "calldata",
+  to: "0x1111111111111111111111111111111111111111",
+  data: "0xa9059cbb000000000000000000000000000000000000000000000000000000000000dead00000000000000000000000000000000000000000000000000000000000f4240",
+  value: "0",
+};
+
 function buildPathEntry(workflow: DiscoveryWorkflow): Record<string, unknown> {
   const isPaid = Number(workflow.priceUsdcPerCall ?? "0") > 0;
   const isWrite = workflow.workflowType === "write";
@@ -247,7 +279,8 @@ function buildPathEntry(workflow: DiscoveryWorkflow): Record<string, unknown> {
 
   if (isWrite) {
     responses["200"] = {
-      description: "Unsigned transaction calldata",
+      description:
+        "Unsigned transaction calldata, to be signed and broadcast on the workflow's own chain. The example is illustrative: its addresses are placeholders, and its `value` of 0 refers to native currency only - an ERC-20 transfer in `data` still moves tokens.",
       headers: RATE_LIMIT_HEADERS,
       content: {
         "application/json": {
@@ -259,6 +292,7 @@ function buildPathEntry(workflow: DiscoveryWorkflow): Record<string, unknown> {
               data: { type: "string" },
               value: { type: "string" },
             },
+            examples: [WRITE_CALL_EXAMPLE],
           },
         },
       },
