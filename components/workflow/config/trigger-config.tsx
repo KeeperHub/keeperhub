@@ -397,15 +397,22 @@ function TraceTriggerFields({
       label: "Function (Optional)",
       type: "abi-function-select",
       abiField: "contractABI",
+      // State-changing functions are what a trace trigger watches for: a
+      // withdrawal, a pause, an ownership change. A view function can still be
+      // matched by its raw selector below.
+      functionFilter: "write",
       placeholder: "Any function",
     },
+  ];
+
+  const selectorFields: ActionConfigField[] = [
     {
       key: "traceSelector",
       label: "Function Selector (Optional)",
       type: "text",
       placeholder: "0x8456cb59",
       helpTip:
-        "A raw 4-byte selector, for contracts without a published ABI. Takes precedence over the function above.",
+        "A raw 4-byte selector, for a contract without a published ABI or a view function. Takes precedence over the function above.",
     },
     {
       key: "traceCaller",
@@ -447,6 +454,23 @@ function TraceTriggerFields({
         config={config}
         disabled={disabled}
         fields={functionFields}
+        onUpdateConfig={onUpdateConfig}
+      />
+      {typeof config.abiFunction === "string" && config.abiFunction !== "" && (
+        <Button
+          className="-mt-2 h-auto px-1 py-0 text-xs"
+          disabled={disabled}
+          onClick={() => onUpdateConfig("abiFunction", "")}
+          type="button"
+          variant="link"
+        >
+          Match any function
+        </Button>
+      )}
+      <ActionConfigRenderer
+        config={config}
+        disabled={disabled}
+        fields={selectorFields}
         onUpdateConfig={onUpdateConfig}
       />
       <div className="space-y-2">
