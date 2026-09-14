@@ -955,7 +955,14 @@ function replaceConfigTemplate(
 
 /**
  * Process template variables in config.
- * Recurses into nested objects; supports array paths like data.recipes[0].
+ *
+ * Recurses into nested objects and arrays, rendering every string it reaches.
+ * A reference may itself carry an index, `data.recipes[0]`; that is a path
+ * inside the reference and the resolver's business. Array-valued config is a
+ * different thing: each element is rendered here the way an object's values
+ * are. Until #2359 arrays were copied verbatim, so a token in one was never
+ * rendered and was then found by scanForLeftoverLiterals, which does walk
+ * arrays, and the run aborted naming a reference that was correct.
  *
  * KEEP-468: optional `tracker` records every reference that fell through to
  * the empty-string or literal-pass-through path so the caller can fail
@@ -967,45 +974,75 @@ export function processTemplates(
   tracker?: TemplateResolutionTracker
 ): Record<string, unknown> {
   const processed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    processed[key] = renderTemplateValue(value, outputs, tracker);
+  }
+  return processed;
+}
+
+/**
+ * One config value. A string is rendered, an array element by element, an
+ * object through processTemplates, and anything else (numbers, booleans,
+ * null) is passed through as it is. Arrays and objects take the same path so
+ * that this and scanForLeftoverLiterals agree on what a container is.
+ */
+/*
+ * No depth limit here, where scanForLeftoverLiterals stops at 10
+ * (template-resolution.ts). The two walk for different reasons and the
+ * difference is deliberate: this one has to render whatever the config
+ * actually holds, so a limit would leave a token unrendered at the bottom of a
+ * deep config and pass it to the action verbatim. The scan is a backstop for
+ * tokens the resolver returned unchanged, and its limit bounds a diagnostic
+ * rather than the run.
+ *
+ * What makes the asymmetry safe is the tracker: this function records an
+ * unresolved reference as it renders, at any depth, so assertResolved still
+ * fails the step for a token the scan never reaches. Pinned in
+ * tests/unit/template-fail-closed.test.ts.
+ */
+function renderTemplateValue(
+  value: unknown,
+  outputs: NodeOutputs,
+  tracker?: TemplateResolutionTracker
+): unknown {
+  if (typeof value === "string") {
+    return renderTemplateString(value, outputs, tracker);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => renderTemplateValue(item, outputs, tracker));
+  }
+  if (typeof value === "object" && value !== null) {
+    return processTemplates(value as Record<string, unknown>, outputs, tracker);
+  }
+  return value;
+}
+
+function renderTemplateString(
+  value: string,
+  outputs: NodeOutputs,
+  tracker?: TemplateResolutionTracker
+): string {
   const storedPattern = /\{\{@([^:]+):([^}]+)\}\}/g;
   // Fallback: resolve display-format templates {{Label.field}} that were not
   // converted to stored format by the editor (mirrors extractTemplateParameters).
   const displayPattern = /\{\{([^@}][^}]*)\}\}/g;
 
-  for (const [key, value] of Object.entries(config)) {
-    if (typeof value === "string") {
-      let result = value.replace(storedPattern, (m, nodeId, rest) =>
-        replaceConfigTemplate(m, nodeId, rest, outputs, tracker)
-      );
-      result = result.replace(displayPattern, (full, displayRef) => {
-        const resolved = resolveDisplayTemplate(displayRef, outputs);
-        if (resolved === null || resolved === undefined) {
-          recordUnresolved(tracker, {
-            token: full,
-            reason: "no-path",
-            detail: `Display reference "${displayRef}" did not resolve.`,
-          });
-          return full;
-        }
-        return formatConfigValue(resolved);
+  let result = value.replace(storedPattern, (m, nodeId, rest) =>
+    replaceConfigTemplate(m, nodeId, rest, outputs, tracker)
+  );
+  result = result.replace(displayPattern, (full, displayRef) => {
+    const resolved = resolveDisplayTemplate(displayRef, outputs);
+    if (resolved === null || resolved === undefined) {
+      recordUnresolved(tracker, {
+        token: full,
+        reason: "no-path",
+        detail: `Display reference "${displayRef}" did not resolve.`,
       });
-      processed[key] = result;
-    } else if (
-      typeof value === "object" &&
-      value !== null &&
-      !Array.isArray(value)
-    ) {
-      processed[key] = processTemplates(
-        value as Record<string, unknown>,
-        outputs,
-        tracker
-      );
-    } else {
-      processed[key] = value;
+      return full;
     }
-  }
-
-  return processed;
+    return formatConfigValue(resolved);
+  });
+  return result;
 }
 
 /**

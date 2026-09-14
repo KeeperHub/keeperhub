@@ -305,3 +305,129 @@ export async function resolveExecutedCall(
     reverted: decoded.reverted,
   };
 }
+
+/**
+ * A block-trace trigger filter (issue #2241). Every field is optional and
+ * unset fields are wildcards, so an empty filter matches every executed call
+ * frame. Addresses are compared case-insensitively; the selector is the first
+ * four calldata bytes; `minValue` is a wei threshold as a bigint.
+ *
+ * Unlike `findDecodedCalls`, this does not need an ABI: it matches on the raw
+ * frame surface (`caller`, `callee`, `selector`, `value`, revert status), which
+ * is exactly what `eth_getLogs` cannot see. A reverted drain attempt, an
+ * internal ETH transfer, a `delegatecall` into an unlogged implementation, or
+ * an unlogged privileged call all appear here even though they emit no event.
+ */
+export type TraceCallFilter = {
+  /** Restrict to frames sent from this address (case-insensitive). */
+  caller?: string;
+  /** Restrict to frames whose `to` is this address (case-insensitive). */
+  callee?: string;
+  /**
+   * Restrict to a 4-byte selector, e.g. "0x8456cb59" for `pause()`. Only
+   * calldata-bearing frame types can match; see `callSelector`.
+   */
+  selector?: string;
+  /**
+   * Restrict to specific opcode call types, e.g. ["DELEGATECALL"]. An empty
+   * array is a wildcard, matching the other unset-shaped values here, so a
+   * trigger form that serialises an untouched multi-select as `[]` behaves the
+   * same as one that omits the field.
+   */
+  callTypes?: readonly string[];
+  /**
+   * Minimum wei value moved by the frame.
+   *
+   * This counts every value-bearing frame `flattenCallTree` emits, including
+   * CREATE with an endowment and SELFDESTRUCT sweeping a balance. Those are
+   * real ETH movement and a security trigger that hid them would miss a drain,
+   * so narrowing to plain calls is done with `callTypes` rather than assumed.
+   */
+  minValue?: bigint;
+  /**
+   * Which revert states to include:
+   *   "success" - only frames that did not revert (default)
+   *   "reverted" - only reverted frames (the highest-value security signal)
+   *   "any" - both
+   */
+  status?: "success" | "reverted" | "any";
+};
+
+/**
+ * The 4-byte selector of a call frame, or "0x" when it carries none.
+ *
+ * Frame types outside `DECODABLE_CALL_TYPES` never yield a selector. A CREATE
+ * or CREATE2 frame carries init code in `input`, whose first four bytes are
+ * constructor bytecode rather than a function selector, so reading one as a
+ * selector would let a `selector` filter match a contract deployment. This
+ * mirrors the `DECODABLE_CALL_TYPES` guard in `decodeFlatCall`.
+ */
+export function callSelector(call: FlatCall): string {
+  if (!DECODABLE_CALL_TYPES.has(call.type)) {
+    return "0x";
+  }
+  return call.input.length >= 10 ? call.input.slice(0, 10).toLowerCase() : "0x";
+}
+
+/**
+ * The wei value a frame moves, or `null` when `value` cannot be parsed.
+ *
+ * `null` is distinct from `0n`: a frame that genuinely moves nothing must fail
+ * a threshold, while one whose value is malformed is unknown and is surfaced
+ * instead of silently dropped.
+ */
+function frameValueWei(call: FlatCall): bigint | null {
+  try {
+    return BigInt(call.value || "0x0");
+  } catch {
+    return null;
+  }
+}
+
+function frameMatches(call: FlatCall, filter: TraceCallFilter): boolean {
+  const status = filter.status ?? "success";
+  if (status === "success" && call.reverted) {
+    return false;
+  }
+  if (status === "reverted" && !call.reverted) {
+    return false;
+  }
+  if (filter.caller && call.from !== filter.caller.toLowerCase()) {
+    return false;
+  }
+  if (filter.callee && call.to !== filter.callee.toLowerCase()) {
+    return false;
+  }
+  if (filter.selector && callSelector(call) !== filter.selector.toLowerCase()) {
+    return false;
+  }
+  if (
+    filter.callTypes?.length &&
+    !filter.callTypes.some((t) => t.toUpperCase() === call.type)
+  ) {
+    return false;
+  }
+  if (filter.minValue !== undefined) {
+    const value = frameValueWei(call);
+    // An unparseable value is surfaced rather than dropped. Returning 0n here
+    // would make a malformed frame silently fail every threshold, and for a
+    // value trigger the quiet direction is the unsafe one: the frame a filter
+    // cannot price is exactly the one worth looking at.
+    if (value !== null && value < filter.minValue) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Select every executed call frame in a trace tree that matches `filter`,
+ * in execution order. This is the pure matching seam a Trace trigger consumes:
+ * it flattens the tree once and keeps the frames a workflow should fire on.
+ */
+export function matchTraceCalls(
+  root: RawCallFrame | null,
+  filter: TraceCallFilter = {}
+): FlatCall[] {
+  return flattenCallTree(root).filter((call) => frameMatches(call, filter));
+}

@@ -10,7 +10,11 @@ import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
-import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
+import {
+  asRawFunctionArgs,
+  coerceArgsForAbi,
+  reshapeArgsForAbi,
+} from "@/lib/abi/struct-args";
 import { validateArgsForAbi } from "@/lib/abi/validate-args";
 import { db } from "@/lib/db";
 import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
@@ -71,7 +75,7 @@ export type WriteContractCoreInput = {
   network: string;
   abi: string;
   abiFunction: string;
-  functionArgs?: string;
+  functionArgs?: string | unknown[];
   ethValue?: string;
   gasLimitMultiplier?: string;
   // Explicit caller override for maxPriorityFeePerGas (in gwei). Bypasses the
@@ -299,11 +303,22 @@ export async function writeContractCore(
   const functionAbi = resolution.entry;
   const abiFunctionKey = getAbiFunctionKey(parsedAbi, abiFunction, functionAbi);
 
-  // Parse function arguments
+  // Parse function arguments. A native array is taken as it is and a string
+  // is parsed as JSON; an empty, absent or falsy value means no arguments.
+  //
+  // The shape test used to sit in the condition guarding this try, so an array
+  // - what the executor hands over once a template inside one renders - threw
+  // a TypeError from the condition itself. Nothing catches that: this function
+  // is awaited inside applyWriteFailOnError, so the rejection escapes the
+  // softener and failOnError: false cannot turn it into a step result. On a
+  // path that broadcasts a transaction.
   let args: unknown[] = [];
-  if (functionArgs && functionArgs.trim() !== "") {
+  const rawArgs = asRawFunctionArgs(functionArgs);
+  if (rawArgs !== undefined) {
     try {
-      const parsedArgs = JSON.parse(functionArgs);
+      const parsedArgs: unknown = Array.isArray(rawArgs)
+        ? rawArgs
+        : JSON.parse(rawArgs);
       if (!Array.isArray(parsedArgs)) {
         return {
           success: false,

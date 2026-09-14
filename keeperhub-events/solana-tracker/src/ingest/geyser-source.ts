@@ -51,10 +51,15 @@ export class GeyserSource implements BlockSource {
   }
 
   getHealth(): ConnectionHealth {
+    // "unimplemented", not "failed": this is a seam nobody has wired yet, so
+    // the alert must be able to exclude it rather than page forever on a chain
+    // that was never going to ingest.
     return disconnectedHealth(
       this.opts.chainId,
+      "geyser",
       this.opts.endpoints,
       "geyser not implemented",
+      "unimplemented",
     );
   }
 }

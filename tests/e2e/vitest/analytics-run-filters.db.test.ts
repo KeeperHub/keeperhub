@@ -118,6 +118,17 @@ const SEEDS: Seed[] = [
   },
 ];
 
+/**
+ * The gas a seed's run burned: a transfer step that succeeded spent 21000. It
+ * goes on the step and on the run row alike, the way the finalizer writes both,
+ * and the analytics gas filter reads the run's, which retention never purges.
+ */
+function seedGasWei(seed: Seed): string | null {
+  const hasStep =
+    seed.network !== undefined || seed.legacyNetwork !== undefined;
+  return hasStep && seed.status === "success" ? "21000" : null;
+}
+
 describe.skipIf(SKIP)("analytics run filters", () => {
   let queryClient: ReturnType<typeof postgres>;
   let db: ReturnType<typeof drizzle>;
@@ -141,6 +152,7 @@ describe.skipIf(SKIP)("analytics run filters", () => {
   ) => Promise<RunFacets>;
 
   async function cleanup(): Promise<void> {
+    await queryClient`DELETE FROM gas_credit_usage WHERE id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflow_execution_logs WHERE execution_id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflow_executions WHERE id LIKE ${`${PREFIX}%`}`;
     await queryClient`DELETE FROM workflows WHERE id LIKE ${`${PREFIX}%`}`;
@@ -219,6 +231,7 @@ describe.skipIf(SKIP)("analytics run filters", () => {
       userId: USER_ID,
       status: "success",
       duration: "1000",
+      gasUsedWei: "99999",
       startedAt: now,
       completedAt: now,
     });
@@ -243,6 +256,7 @@ describe.skipIf(SKIP)("analytics run filters", () => {
         errorType: seed.errorType ?? null,
         duration:
           seed.durationMs === undefined ? null : String(seed.durationMs),
+        gasUsedWei: seedGasWei(seed),
         startedAt: now,
         completedAt: seed.durationMs === undefined ? null : now,
       }))
@@ -276,12 +290,25 @@ describe.skipIf(SKIP)("analytics run filters", () => {
         input: seed.legacyNetwork
           ? JSON.stringify({ network: seed.legacyNetwork })
           : null,
-        gasUsedWei: seed.status === "success" ? "21000" : null,
+        gasUsedWei: seedGasWei(seed),
         outputRaw: seed.sponsored ? { sponsored: true } : null,
         startedAt: now,
       });
     }
     await db.insert(workflowExecutionLogs).values(logRows);
+
+    // Sponsorship is read off the gas-credit ledger, which records what the gas
+    // station paid and outlives the step logs. The marker on output_raw stays
+    // on the step, for the tests that check a marker alone decides nothing.
+    for (const seed of SEEDS.filter((candidate) => candidate.sponsored)) {
+      await queryClient`
+        INSERT INTO gas_credit_usage
+          (id, organization_id, chain_id, tx_hash, execution_id, gas_used,
+           gas_price_wei, gas_cost_wei, gas_cost_micro_usd, eth_price_usd, created_at)
+        VALUES (${`${seed.id}_credit`}, ${ORG_ID}, 8453, ${`0x${seed.id}`},
+                ${seed.id}, '21000', '1', ${seedGasWei(seed)}, '1', '1',
+                ${now.toISOString()})`;
+    }
 
     ({ getUnifiedRuns, getRunFacets } = await import(
       "@/lib/analytics/queries"
