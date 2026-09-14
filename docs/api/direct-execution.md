@@ -312,6 +312,42 @@ conclude nothing happened even though the transaction succeeded. Check the
 `sponsored` field on the status response and treat `transactionHash` /
 `transactionLink` as the authoritative proof, not EOA-level state.
 
+### Who acted
+
+The transaction's `from` is the relayer on a sponsored execution, so it does
+not name the wallet whose call ran. `result.executedCall.from` does: it is
+`msg.sender` at the target contract, read from the traced call frame that
+actually hit it.
+
+```json
+{
+  "executionId": "exec_123",
+  "sponsored": true,
+  "result": {
+    "executedCall": {
+      "contractAddress": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+      "from": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+      "functionName": "approve",
+      "functionSignature": "approve(address,uint256)",
+      "args": { "spender": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "value": "5000000" },
+      "sponsored": true,
+      "topLevelTo": "0x6331eb4571de9284f7e9ead98ac7b0661a091e99",
+      "reverted": false
+    }
+  }
+}
+```
+
+Because it comes from the frame rather than the transaction, it is the acting
+address under every routing mode with no second definition: your organization's
+EOA on a direct send, that same EOA when a relayer paid the gas, and the Safe
+on a Safe-routed organization, where the EOA signs the outer transaction but
+`msg.sender` at the target is the Safe.
+
+`executedCall` is best-effort. It is omitted entirely when the transaction
+cannot be traced (an RPC without `debug_traceTransaction`, or no call frame
+matching the target), so read it defensively rather than assuming it is there.
+
 ## Transfer Funds
 
 ```http

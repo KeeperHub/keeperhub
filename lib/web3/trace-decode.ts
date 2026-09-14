@@ -59,6 +59,11 @@ export type DecodedCall = FlatCall & {
 export type ExecutedCall = {
   /** The contract the decoded call actually hit. */
   contractAddress: string;
+  /**
+   * `msg.sender` at that contract, from the matched frame rather than the
+   * transaction: the org EOA directly or sponsored, the Safe when Safe-routed.
+   */
+  from: string;
   functionName: string;
   functionSignature: string;
   args: Record<string, string>;
@@ -297,6 +302,7 @@ export async function resolveExecutedCall(
   const topLevelTo = (root.to ?? "").toLowerCase();
   return {
     contractAddress: decoded.to,
+    from: decoded.from,
     functionName: decoded.functionName,
     functionSignature: decoded.functionSignature,
     args: decoded.args,

@@ -20,6 +20,8 @@ const WRAPPER = "0x00000000000000000000000000000000000000aa";
 const TARGET = "0x00000000000000000000000000000000000000bb";
 const RECIPIENT = "0x00000000000000000000000000000000000000cc";
 const RELAYER = "0x00000000000000000000000000000000000000ee";
+const ORG_EOA = "0x00000000000000000000000000000000000000d1";
+const SAFE = "0x00000000000000000000000000000000000000d2";
 
 const IFACE = new ethers.Interface([
   "function transfer(address to, uint256 amount)",
@@ -234,6 +236,76 @@ describe("trace-decode", () => {
       });
       expect(result?.sponsored).toBe(false);
       expect(result?.topLevelTo).toBe(TARGET);
+    });
+
+    it("keeps the address that called the target, not the relayer", async () => {
+      const provider = {
+        send: vi.fn<SendFn>().mockResolvedValue(sponsoredTree()),
+      };
+      const result = await resolveExecutedCall(provider, "0xhash", {
+        target: TARGET,
+        iface: IFACE,
+        functionName: "transfer",
+      });
+      expect(result?.from).toBe(WRAPPER);
+      expect(result?.from).not.toBe(RELAYER);
+    });
+
+    it("names the org EOA when the relayer only paid for the send", async () => {
+      const provider = {
+        send: vi.fn<SendFn>().mockResolvedValue({
+          type: "CALL",
+          from: RELAYER,
+          to: WRAPPER,
+          input: "0x9aefaff800",
+          calls: [
+            { type: "CALL", from: ORG_EOA, to: TARGET, input: transferData },
+          ],
+        } satisfies RawCallFrame),
+      };
+      const result = await resolveExecutedCall(provider, "0xhash", {
+        target: TARGET,
+        iface: IFACE,
+        functionName: "transfer",
+      });
+      expect(result).toMatchObject({ from: ORG_EOA, sponsored: true });
+    });
+
+    it("names the Safe, not the signing EOA, on a Safe-routed org", async () => {
+      const provider = {
+        send: vi.fn<SendFn>().mockResolvedValue({
+          type: "CALL",
+          from: ORG_EOA,
+          to: SAFE,
+          input: "0x6a761202",
+          calls: [
+            { type: "CALL", from: SAFE, to: TARGET, input: transferData },
+          ],
+        } satisfies RawCallFrame),
+      };
+      const result = await resolveExecutedCall(provider, "0xhash", {
+        target: TARGET,
+        iface: IFACE,
+        functionName: "transfer",
+      });
+      expect(result?.from).toBe(SAFE);
+    });
+
+    it("lowercases from, as it does every other address", async () => {
+      const provider = {
+        send: vi.fn<SendFn>().mockResolvedValue({
+          type: "CALL",
+          from: ORG_EOA.toUpperCase().replace("0X", "0x"),
+          to: TARGET,
+          input: scheduleData,
+        } satisfies RawCallFrame),
+      };
+      const result = await resolveExecutedCall(provider, "0xhash", {
+        target: TARGET,
+        iface: IFACE,
+        functionName: "schedule",
+      });
+      expect(result?.from).toBe(ORG_EOA);
     });
 
     it("returns null when tracing is unavailable", async () => {
