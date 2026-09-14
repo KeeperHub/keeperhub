@@ -59,23 +59,26 @@ const TEST_DATA: ProtocolTestData = {
       // wrap and unwrap need an eETH (resp. weETH) balance and an ERC20
       // approval to the weETH contract. On a fresh fork the wallet holds
       // neither until the stake fixture runs, and wrap additionally needs an
-      // approve step the setup block does not model, so these are exercised
-      // by the write-expectation oracle on stake rather than as standalone
-      // fixtures.
-      wrap: "needs an eETH balance and an approval to weETH; covered indirectly by the stake write-expectation",
+      // approve step the setup block does not model.
+      wrap: "needs an eETH balance and an approval to weETH",
       unwrap:
         "needs a weETH balance from a prior wrap; not reachable from a clean fork without it",
     },
     // Chain invariants. getTotalPooledEther and eeth-total-shares are the whole
     // protocol's TVL and share count, seven-to-nine figures. getRate only ever
-    // ratchets up from 1e18. No expectation on the wallet balances: the stake
-    // fixture mints eETH mid-run, so those depend on run history on a
-    // long-lived fork.
+    // ratchets up from 1e18. The conversion reads and weETH supply are
+    // wallet-independent and non-zero for the same reason. No expectation on
+    // the wallet balances: the stake fixture mints eETH mid-run, so those
+    // depend on run history on a long-lived fork.
     expectations: {
       "get-total-pooled-ether": [{ field: "totalPooledEther", nonZero: true }],
       "get-rate": [{ field: "rate", nonZero: true }],
       "amount-for-share": [{ field: "ethAmount", nonZero: true }],
       "eeth-total-shares": [{ field: "totalShares", nonZero: true }],
+      "shares-for-amount": [{ field: "shares", nonZero: true }],
+      "get-weeth-by-eeth": [{ field: "weETHAmount", nonZero: true }],
+      "get-eeth-by-weeth": [{ field: "eETHAmount", nonZero: true }],
+      "weeth-total-supply": [{ field: "totalSupply", nonZero: true }],
     },
     // Simulation-tier post-write oracle: staking must actually credit eETH. A
     // mined receipt alone misses the stale-pool failure class where the deposit
@@ -189,7 +192,7 @@ export default defineAbiProtocol({
           slug: "wrap",
           label: "Wrap eETH into weETH",
           description:
-            "Wrap rebasing eETH into non-rebasing weETH. Approve the weETH contract to spend eETH first. Returns the amount of weETH received.",
+            "Wrap rebasing eETH into non-rebasing weETH. Approve the weETH contract to spend eETH first.",
           docUrl: ETHER_FI_DOCS,
           inputs: {
             _eETHAmount: {
@@ -212,7 +215,7 @@ export default defineAbiProtocol({
           slug: "unwrap",
           label: "Unwrap weETH into eETH",
           description:
-            "Unwrap non-rebasing weETH back into rebasing eETH at the current rate. Returns the amount of eETH received.",
+            "Unwrap non-rebasing weETH back into rebasing eETH at the current rate.",
           docUrl: ETHER_FI_DOCS,
           inputs: {
             _weETHAmount: {

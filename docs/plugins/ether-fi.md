@@ -37,11 +37,7 @@ Deposit native ETH into the ether.fi Liquidity Pool and mint eETH to the sending
 
 **Inputs:** None (the native ETH value sent with the transaction is the input)
 
-**Outputs:**
-
-| Output | Type | Description |
-|--------|------|-------------|
-| shares | uint256 | eETH shares minted, 18 decimals |
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `error`
 
 **When to use:** the entry point for putting ETH to work in restaking from a workflow. Pair it with the balance read to confirm the mint landed.
 
@@ -57,11 +53,7 @@ Wrap rebasing eETH into non-rebasing weETH. The weETH contract must be approved 
 |-------|------|-------------|
 | amount | uint256 | eETH to wrap (wei), 18 decimals |
 
-**Outputs:**
-
-| Output | Type | Description |
-|--------|------|-------------|
-| weETHReceived | uint256 | weETH received (wei), 18 decimals |
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `error`
 
 **When to use:** before sending restaked ETH into a protocol that cannot handle a rebasing balance. Also for holding a position whose token count stays constant.
 
@@ -77,11 +69,7 @@ Unwrap non-rebasing weETH back into rebasing eETH at the current rate.
 |-------|------|-------------|
 | amount | uint256 | weETH to unwrap (wei), 18 decimals |
 
-**Outputs:**
-
-| Output | Type | Description |
-|--------|------|-------------|
-| eETHReceived | uint256 | eETH received (wei), 18 decimals |
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `error`
 
 **When to use:** returning to the rebasing form, usually as a step before entering the withdrawal queue.
 
