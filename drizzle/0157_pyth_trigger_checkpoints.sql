@@ -1,3 +1,5 @@
+SET lock_timeout = '3s';
+
 CREATE TABLE "pyth_trigger_checkpoints" (
 	"workflow_id" text PRIMARY KEY NOT NULL,
 	"config_hash" text NOT NULL,

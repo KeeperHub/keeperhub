@@ -13,4 +13,4 @@ export const pythDemoEvidence = {
 export const PYTH_FEATURE_PR =
   "https://github.com/KeeperHub/keeperhub/pull/2363";
 export const PYTH_EVIDENCE_URL =
-  "https://github.com/Webghost01-NG/keeperhub-pyth-trigger/blob/feat/issue-2242-pyth-trigger/tests/fixtures/pyth-trigger/reproducible-demo-evidence.json";
+  "https://github.com/KeeperHub/keeperhub/blob/staging/tests/fixtures/pyth-trigger/reproducible-demo-evidence.json";

@@ -43,6 +43,35 @@ describe("Pyth threshold semantics", () => {
     ).toBe("observed");
   });
 
+  it("preserves a fired state across reconnect re-baselines", () => {
+    const fired = evaluatePythPrice(
+      config,
+      { lastPublishTime: 1000, armed: true },
+      update("101", 1001),
+      1001
+    );
+    expect(fired.outcome).toBe("crossed");
+    const rebaseline = evaluatePythPrice(
+      config,
+      fired.checkpoint,
+      update("99", 1032),
+      1032,
+      true
+    );
+    expect(rebaseline).toMatchObject({
+      outcome: "baseline",
+      checkpoint: { armed: false },
+    });
+    expect(
+      evaluatePythPrice(
+        config,
+        rebaseline.checkpoint,
+        update("101", 1033),
+        1033
+      ).outcome
+    ).toBe("observed");
+  });
+
   it("fires at equality, stays disarmed in the hysteresis band, then rearms", () => {
     let checkpoint = empty;
     const outcomes = ["94", "100", "101", "98", "100", "95", "100"].map(

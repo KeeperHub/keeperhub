@@ -198,8 +198,12 @@ export function evaluatePythPrice(
     const thresholdOrder = compare(coefficient, expo, config.threshold);
     const startsArmed =
       config.direction === "above" ? thresholdOrder < 0 : thresholdOrder > 0;
+    const armed =
+      checkpoint.lastPublishTime === null
+        ? startsArmed
+        : checkpoint.armed || isRearmed;
     return {
-      checkpoint: { lastPublishTime: publishTime, armed: startsArmed },
+      checkpoint: { lastPublishTime: publishTime, armed },
       outcome: "baseline",
     };
   }
