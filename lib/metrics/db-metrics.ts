@@ -602,9 +602,10 @@ export async function getWorkflowErrorsByWorkflowFromDb(): Promise<WorkflowError
  * such trigger once wrote over a million runs before anyone noticed the table.
  * A one-hour window catches that within hours.
  *
- * The window is a range scan on idx_workflow_executions_started_at. Only the
- * busiest workflows are kept (see pickWorkflowExecutionRates), so the gauge
- * stays small however many workflows run.
+ * The window is a range scan on idx_workflow_executions_started_at. Only
+ * workflows already at an abnormal rate are exported (see
+ * pickWorkflowExecutionRates), so in normal operation the gauge has no series
+ * at all and a workflow_id label exists only while something runs away.
  */
 export type WorkflowExecutionRate = {
   workflowId: string;
@@ -613,27 +614,42 @@ export type WorkflowExecutionRate = {
   errored: number;
 };
 
-export const WORKFLOW_EXECUTION_RATE_TOP_N = 20;
+export type WorkflowExecutionRateLimits = {
+  /** Export a workflow once it starts this many runs in the hour. */
+  runs: number;
+  /** Export a workflow once this many of its runs in the hour errored. */
+  errored: number;
+  /** Hard ceiling on exported workflows, however many cross a threshold. */
+  maxWorkflows: number;
+};
 
 /**
- * The top workflows by runs, plus the top workflows by errored runs. A workflow
- * that errors on every run can sit below the busiest ones by volume, and error
- * accumulation is half of what the alert is for.
+ * The export thresholds must stay below the alert thresholds, so a workflow
+ * already has a series before it can page and the alert can hold its `for`
+ * window. Change them together with the alert, never above it.
+ */
+export const WORKFLOW_EXECUTION_RATE_LIMITS: WorkflowExecutionRateLimits = {
+  runs: 1000,
+  errored: 50,
+  maxWorkflows: 20,
+};
+
+/**
+ * The workflows at or above either threshold, furthest over first, capped. A
+ * workflow that errors on every run can sit far below the runs threshold, so
+ * errored runs are checked on their own: error accumulation is half of what the
+ * alert is for.
  */
 export function pickWorkflowExecutionRates(
   rows: WorkflowExecutionRate[],
-  topN: number = WORKFLOW_EXECUTION_RATE_TOP_N
+  limits: WorkflowExecutionRateLimits = WORKFLOW_EXECUTION_RATE_LIMITS
 ): WorkflowExecutionRate[] {
-  const byRuns = [...rows].sort((a, b) => b.runs - a.runs).slice(0, topN);
-  const byErrored = rows
-    .filter((row) => row.errored > 0)
-    .sort((a, b) => b.errored - a.errored)
-    .slice(0, topN);
-  const picked = new Map<string, WorkflowExecutionRate>();
-  for (const row of [...byRuns, ...byErrored]) {
-    picked.set(row.workflowId, row);
-  }
-  return [...picked.values()];
+  const overBy = (row: WorkflowExecutionRate): number =>
+    Math.max(row.runs / limits.runs, row.errored / limits.errored);
+  return rows
+    .filter((row) => row.runs >= limits.runs || row.errored >= limits.errored)
+    .sort((a, b) => overBy(b) - overBy(a))
+    .slice(0, limits.maxWorkflows);
 }
 
 /**

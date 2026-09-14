@@ -32,6 +32,7 @@ const ORG = `${PREFIX}org`;
 const WF_BUSY = `${PREFIX}wf_busy`;
 const WF_BAD = `${PREFIX}wf_bad`;
 const WF_OLD = `${PREFIX}wf_old`;
+const WF_FAILING = `${PREFIX}wf_failing`;
 const MINUTE_MS = 60 * 1000;
 
 type Metrics = typeof import("@/lib/metrics/db-metrics");
@@ -78,7 +79,7 @@ describe("per-workflow execution rates (real database)", () => {
       .insert(organization)
       .values({ id: ORG, name: ORG, slug: ORG, createdAt: new Date(now) });
     await db.insert(workflows).values(
-      [WF_BUSY, WF_BAD, WF_OLD].map((id) => ({
+      [WF_BUSY, WF_BAD, WF_OLD, WF_FAILING].map((id) => ({
         id,
         name: id,
         userId: USER,
@@ -105,6 +106,10 @@ describe("per-workflow execution rates (real database)", () => {
       run(WF_BAD, 1, "error", minutesAgo(20)),
       run(WF_BAD, 2, "system_error", minutesAgo(30)),
       run(WF_BAD, 3, "success", minutesAgo(40)),
+      // Reaches the errored export threshold inside the window.
+      ...Array.from({ length: 50 }, (_, i) =>
+        run(WF_FAILING, i + 1, "error", minutesAgo(5))
+      ),
       // Outside the window: two hours old, however many there are.
       ...[1, 2, 3, 4, 5, 6, 7].map((n) =>
         run(WF_OLD, n, "error", minutesAgo(120))
@@ -118,14 +123,30 @@ describe("per-workflow execution rates (real database)", () => {
   });
 
   it("counts runs and errored runs per workflow inside the last hour only", async () => {
-    const rates = await metrics.getWorkflowExecutionRatesFromDb();
-    const mine = rates
-      .filter((rate) => rate.workflowId.startsWith(PREFIX))
+    const rows = await metrics.workflowExecutionRatesQuery();
+    const mine = rows
+      .filter((row) => row.workflowId.startsWith(PREFIX))
+      .map((row) => ({
+        workflowId: row.workflowId,
+        orgSlug: row.orgSlug,
+        runs: Number(row.runs),
+        errored: Number(row.errored),
+      }))
       .sort((a, b) => a.workflowId.localeCompare(b.workflowId));
 
     expect(mine).toEqual([
       { workflowId: WF_BAD, orgSlug: ORG, runs: 3, errored: 2 },
       { workflowId: WF_BUSY, orgSlug: ORG, runs: 5, errored: 0 },
+      { workflowId: WF_FAILING, orgSlug: ORG, runs: 50, errored: 50 },
+    ]);
+  });
+
+  it("exports only the workflow at an export threshold", async () => {
+    const rates = await metrics.getWorkflowExecutionRatesFromDb();
+    const mine = rates.filter((rate) => rate.workflowId.startsWith(PREFIX));
+
+    expect(mine).toEqual([
+      { workflowId: WF_FAILING, orgSlug: ORG, runs: 50, errored: 50 },
     ]);
   });
 

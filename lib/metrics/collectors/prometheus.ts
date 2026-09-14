@@ -161,16 +161,17 @@ const workflowErrorsByWorkflow = getOrCreateGauge(
   ["workflow_id", "org_slug", "error_type"]
 );
 
-// Runs started in the last hour for the busiest workflows (see
-// getWorkflowExecutionRatesFromDb), as outcome="all" and outcome="errored".
-// The per-workflow execution rate alert reads it directly: a runaway block or
-// event trigger shows up as one workflow_id far above the rest. Cardinality is
-// bounded by the one-hour window and the top-N pick, at most 2 x N workflows
-// with two series each. No `_total` suffix: it is a poll-driven gauge.
+// Runs started in the last hour, as outcome="all" and outcome="errored", only
+// for workflows at or above an export threshold (see
+// pickWorkflowExecutionRates). The per-workflow execution rate alert reads it
+// directly. In normal operation it has no series at all: a workflow_id label
+// exists only while that workflow runs away, capped at
+// WORKFLOW_EXECUTION_RATE_LIMITS.maxWorkflows workflows with two series each.
+// No `_total` suffix: it is a poll-driven gauge.
 const workflowExecutionsLastHour = getOrCreateGauge(
   dbRegistry,
   "keeperhub_workflow_executions_last_hour",
-  "Runs started in the last hour for the busiest workflows, by workflow_id, org_slug and outcome (all or errored)",
+  "Runs started in the last hour for workflows at or above the export threshold, by workflow_id, org_slug and outcome (all or errored)",
   ["workflow_id", "org_slug", "outcome"]
 );
 

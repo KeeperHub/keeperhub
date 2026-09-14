@@ -1,7 +1,8 @@
 /**
- * Which workflows the per-workflow execution rate gauge keeps. The gauge feeds
- * an alert meant to catch one runaway workflow, so the pick has to keep both
- * the busiest workflows and the ones piling up errors, and stay bounded.
+ * Which workflows the per-workflow execution rate gauge exports. The gauge feeds
+ * an alert meant to catch one runaway workflow, so it must stay empty in normal
+ * operation, export a workflow that reaches either threshold, and stay bounded
+ * when many reach one at once.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -10,8 +11,11 @@ vi.mock("server-only", () => ({}));
 
 import {
   pickWorkflowExecutionRates,
+  WORKFLOW_EXECUTION_RATE_LIMITS,
   type WorkflowExecutionRate,
 } from "@/lib/metrics/db-metrics";
+
+const LIMITS = { runs: 100, errored: 10, maxWorkflows: 2 };
 
 const rate = (
   workflowId: string,
@@ -23,33 +27,38 @@ const ids = (rows: WorkflowExecutionRate[]): string[] =>
   rows.map((row) => row.workflowId).sort();
 
 describe("pickWorkflowExecutionRates", () => {
-  it("keeps the busiest workflows by runs", () => {
-    const rows = [rate("a", 10, 0), rate("b", 500, 0), rate("c", 90, 0)];
-    expect(ids(pickWorkflowExecutionRates(rows, 2))).toEqual(["b", "c"]);
+  it("exports nothing while every workflow is below both thresholds", () => {
+    const rows = [rate("a", 99, 9), rate("b", 50, 0), rate("c", 1, 1)];
+    expect(pickWorkflowExecutionRates(rows, LIMITS)).toEqual([]);
   });
 
-  it("also keeps a workflow that errors a lot but runs less than the busiest", () => {
+  it("exports a workflow that reaches the runs threshold", () => {
+    const rows = [rate("busy", 100, 0), rate("quiet", 99, 0)];
+    expect(ids(pickWorkflowExecutionRates(rows, LIMITS))).toEqual(["busy"]);
+  });
+
+  it("exports a workflow that reaches the errored threshold on few runs", () => {
+    const rows = [rate("bad", 12, 10), rate("fine", 12, 9)];
+    expect(ids(pickWorkflowExecutionRates(rows, LIMITS))).toEqual(["bad"]);
+  });
+
+  it("keeps the workflows furthest over a threshold when more reach one than the cap", () => {
+    // runaway is 9x the runs threshold, failing 6x the errored one, barely 1.01x.
     const rows = [
-      rate("busy", 900, 0),
-      rate("busier", 950, 1),
-      rate("bad", 60, 60),
+      rate("barely", 101, 0),
+      rate("runaway", 900, 0),
+      rate("failing", 20, 60),
     ];
-    expect(ids(pickWorkflowExecutionRates(rows, 2))).toEqual([
-      "bad",
-      "busier",
-      "busy",
+    expect(ids(pickWorkflowExecutionRates(rows, LIMITS))).toEqual([
+      "failing",
+      "runaway",
     ]);
   });
 
-  it("lists a workflow once when it leads both lists", () => {
-    const rows = [rate("runaway", 4200, 3900), rate("quiet", 3, 0)];
-    const picked = pickWorkflowExecutionRates(rows, 1);
-    expect(ids(picked)).toEqual(["runaway"]);
-  });
-
-  it("does not pick a workflow for errors it does not have", () => {
-    const rows = [rate("a", 5, 0), rate("b", 4, 0), rate("c", 3, 0)];
-    expect(ids(pickWorkflowExecutionRates(rows, 1))).toEqual(["a"]);
+  it("exports nothing at the default thresholds for ordinary traffic", () => {
+    const rows = [rate("steady", 600, 0), rate("flaky", 200, 30)];
+    expect(pickWorkflowExecutionRates(rows)).toEqual([]);
+    expect(WORKFLOW_EXECUTION_RATE_LIMITS.maxWorkflows).toBeGreaterThan(0);
   });
 
   it("returns nothing when nothing ran", () => {
