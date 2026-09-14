@@ -92,6 +92,34 @@ For trigger nodes, you'll also configure specific settings based on the trigger 
 | Webhook  | `"Webhook"`  | (none) | `webhookSchema`, `webhookMockRequest` |
 | Event    | `"Event"`    | `network`, `contractAddress`, `contractABI`, `eventName` | (none) |
 | Block    | `"Block"`    | `network`, `blockInterval` | (none) |
+| Trace    | `"Trace"`    | `network`, `contractAddress` | `traceStatus`, `abiFunction` + `contractABI`, `traceSelector`, `traceCaller`, `traceCallTypes`, `traceMinValueWei` |
+
+#### Trace trigger
+
+An Event trigger only sees what a contract chooses to emit. A Trace trigger reads the call traces of every block instead, so it can fire on things that leave no log:
+
+- a **reverted** call to your contract, such as a failed withdrawal or a rejected admin call
+- an **internal** transfer of the native token between contracts
+- a `DELEGATECALL` into an implementation contract
+- a function call on a third-party contract that emits nothing
+
+The workflow runs once for each call to the watched contract that matches every filter you set:
+
+| Setting | Config key | Matches |
+|---------|------------|---------|
+| Call Outcome | `traceStatus` | `"success"` (default), `"reverted"`, or `"any"` |
+| Function | `abiFunction` + `contractABI`, or `traceSelector` | Calls to one function. A raw 4-byte selector takes precedence |
+| Caller | `traceCaller` | Calls made from one address |
+| Call Types | `traceCallTypes` | Any of `CALL`, `STATICCALL`, `DELEGATECALL`, `CALLCODE`, `CREATE`, `CREATE2`, `SELFDESTRUCT`. Empty matches all |
+| Minimum Value | `traceMinValueWei` | Calls moving at least this much native token, in wei |
+
+A filter value that cannot be read (for example a malformed address or selector) stops the trigger from registering, rather than being ignored and matching more calls than you asked for.
+
+Each run receives `transactionHash`, `blockNumber`, `from`, `to`, `value` (wei, as a decimal string), `selector`, `input`, `callType`, `reverted`, `depth`, `frameIndex` and `transactionIndex`. For example, `{{@trigger:Trigger.from}}` is the address that made the call.
+
+To avoid a burst of runs from one busy block, a Trace trigger fires at most 25 times per block. Narrow the filter if you expect more matches than that.
+
+> **Network support:** Trace triggers need an RPC endpoint that serves `debug_traceBlockByNumber`. Plasma and Tempo serve it today. On a network whose endpoint does not, the trigger registers but never fires.
 
 > **Note for API users:** The `triggerType` must match the Pascal-case string exactly (e.g., `"Schedule"`, not `"cron"`). The canonical list, including any future additions, is returned under the `triggers` map of [`GET /api/mcp/schemas`](/api/workflows#list-action-schemas).
 

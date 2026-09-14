@@ -8,6 +8,7 @@ import { getProtocol } from "@/lib/protocol-registry";
 import type { WorkflowNode } from "@/lib/workflow/store";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
+import { normalizeTraceTriggerConfig } from "@/lib/workflow/trace-trigger-config";
 
 // The Transfer trigger always watches the fixed TIP-20
 // TransferWithMemo event. The event-tracker's mapper needs an ABI + event name
@@ -99,8 +100,9 @@ export async function GET(request: Request) {
             return null;
           }
 
-          // Admit Event triggers and the Transfer trigger; both
-          // register through the event-tracker as on-chain log subscriptions.
+          // Admit Event and Transfer triggers, which register through the
+          // event-tracker as on-chain log subscriptions, and Trace triggers,
+          // which it serves from block call traces on the same drain loop.
           const triggerType = triggerNode.data?.config?.triggerType as
             | string
             | undefined;
@@ -108,11 +110,16 @@ export async function GET(request: Request) {
           const isEventTrigger = triggerType === WorkflowTriggerEnum.EVENT;
           const isTempoPaymentTrigger =
             triggerType === WorkflowTriggerEnum.TEMPO_PAYMENT;
-          if (!(isEventTrigger || isTempoPaymentTrigger)) {
+          const isTraceTrigger = triggerType === WorkflowTriggerEnum.TRACE;
+          if (!(isEventTrigger || isTempoPaymentTrigger || isTraceTrigger)) {
             return null;
           }
 
           const config = triggerNode.data?.config;
+
+          if (isTraceTrigger && config) {
+            normalizeTraceTriggerConfig(config);
+          }
 
           // Inject the fixed TransferWithMemo ABI + event name for the Tempo
           // trigger so the mapper can build the subscription. contractAddress

@@ -67,6 +67,7 @@ export function detectListingTriggerType(nodes: unknown): TriggerKind {
     case WorkflowTriggerEnum.EVENT:
     case WorkflowTriggerEnum.BLOCK:
     case WorkflowTriggerEnum.TEMPO_PAYMENT:
+    case WorkflowTriggerEnum.TRACE:
       return "on-chain-event";
     default:
       return "manual";

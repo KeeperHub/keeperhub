@@ -304,6 +304,49 @@ export const TRIGGERS = {
         "string - ISO timestamp when the payment was detected (available on all trigger types)",
     },
   },
+  Trace: {
+    triggerType: "Trace",
+    label: "Trace",
+    description:
+      "Fires once per call frame that matches a filter on a watched contract, read from block call traces. Sees what events cannot: reverted calls, internal ETH transfers, delegatecalls and unlogged function calls. Only fires on networks whose RPC serves debug_traceBlockByNumber",
+    requiredFields: {
+      network:
+        'string - EVM chain ID (e.g., "9745" for Plasma, "4217" for Tempo)',
+      contractAddress:
+        "string - Contract whose incoming calls are watched (the call's `to`)",
+    },
+    optionalFields: {
+      traceCaller: "string - Only match calls made from this address",
+      traceSelector:
+        'string - Only match this 4-byte function selector (e.g., "0x8456cb59"). Takes precedence over abiFunction',
+      abiFunction:
+        "string - Only match this function, resolved against contractABI to its selector",
+      contractABI: "string - Contract ABI JSON, needed only for abiFunction",
+      traceCallTypes:
+        "string[] - Only match these frame types: CALL, STATICCALL, DELEGATECALL, CALLCODE, CREATE, CREATE2, SELFDESTRUCT. Empty matches all",
+      traceMinValueWei:
+        "string - Only match calls moving at least this much native value, in wei (decimal integer)",
+      traceStatus:
+        '"success" (default) | "reverted" | "any" - Which call outcomes match',
+    },
+    outputFields: {
+      transactionHash: "string - Hash of the transaction the call ran in",
+      blockNumber: "number - Block height the transaction landed in",
+      from: "string - Address that made the call",
+      to: "string - Address that was called (the watched contract)",
+      value: "string - Native value moved by the call, in wei (decimal)",
+      selector: "string - 4-byte selector of the call, or 0x when none",
+      input: "string - Full calldata of the call",
+      callType: "string - CALL, DELEGATECALL, STATICCALL, CREATE, ...",
+      reverted: "boolean - Whether the call reverted",
+      depth: "number - Call depth inside the transaction (0 = top level)",
+      frameIndex:
+        "number - Position of the call in the transaction's execution order",
+      transactionIndex: "number - Index of the transaction in the block",
+      triggeredAt:
+        "string - ISO timestamp when the call was detected (available on all trigger types)",
+    },
+  },
 } as const;
 
 // =============================================================================

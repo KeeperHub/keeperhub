@@ -2551,7 +2551,9 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     if (tt === "Scheduled" || tt === "Schedule") {
       return "scheduled";
     }
-    if (tt === "Event") {
+    // A Trace trigger fires on an on-chain call frame, so its follow-up
+    // transactions carry the same urgency as an Event trigger's.
+    if (tt === "Event" || tt === "Trace") {
       return "event";
     }
     return "manual";

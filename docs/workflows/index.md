@@ -38,6 +38,7 @@ Every workflow starts with a trigger that determines when it runs:
 | Event | Run when a blockchain event is detected |
 | Block | Run every N blocks on a chosen network |
 | Transfer | Run when a payment arrives at a watched address |
+| Trace | Run when a call to a watched contract matches a filter, including reverted and internal calls |
 
 ### Action Nodes
 

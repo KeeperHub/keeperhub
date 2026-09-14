@@ -8,6 +8,7 @@ import {
   Check,
   Clock,
   Play,
+  ScanSearch,
   Webhook,
   XCircle,
 } from "lucide-react";
@@ -44,6 +45,7 @@ export const TriggerNode = memo(({ data, selected, id }: TriggerNodeProps) => {
     [WorkflowTriggerEnum.EVENT]: Boxes, // keeperhub custom field //
     [WorkflowTriggerEnum.BLOCK]: Box, // keeperhub custom field //
     [WorkflowTriggerEnum.TEMPO_PAYMENT]: ArrowDownToLine, // keeperhub custom field //
+    [WorkflowTriggerEnum.TRACE]: ScanSearch, // keeperhub custom field //
   };
 
   const TriggerIcon = triggerIcons[triggerType as WorkflowTriggerType] || Play;

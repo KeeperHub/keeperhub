@@ -101,13 +101,14 @@ function buildLargeWorkflowFixture(nodeCount: number): ValidatorWorkflow {
 // ---------------------------------------------------------------------------
 
 describe("TRIGGERS exports", () => {
-  it("has exactly the 6 expected trigger keys", () => {
+  it("has exactly the 7 expected trigger keys", () => {
     const keys = Object.keys(TRIGGERS).sort();
     expect(keys).toEqual([
       "Block",
       "Event",
       "Manual",
       "Schedule",
+      "Trace",
       "Transfer",
       "Webhook",
     ]);
