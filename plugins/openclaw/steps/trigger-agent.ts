@@ -2,11 +2,16 @@ import "server-only";
 
 import { fetchCredentials } from "@/lib/credential-fetcher";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import { assertUrlIsPublic, safeFetch } from "@/lib/safe-fetch";
+import { ErrorCategory, logUserError } from "@/lib/logging";
+import {
+  assertUrlIsPublic,
+  SsrfBlockedError,
+  safeFetch,
+} from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
 import {
   type StepInput,
-  withStepLogging,
+  runPluginStep,
 } from "@/lib/workflow/executor/step-handler";
 import type { OpenClawCredentials } from "../credentials";
 
@@ -44,6 +49,18 @@ const TRAILING_SLASHES = /\/+$/;
  */
 const MAX_ERROR_CHARS = 400;
 
+/** Placeholder written in place of anything that could carry the hook token. */
+const REDACTED = "[redacted]";
+
+/**
+ * Bound the request itself, not only the response text.
+ *
+ * OpenClaw answers 503 when it cannot admit a turn within its own 15-second
+ * window, so a shorter client timeout would abort before the instance's answer
+ * arrives and report a bare abort instead of that status.
+ */
+const FETCH_TIMEOUT_MS = 20_000;
+
 type TriggerAgentResult =
   | { success: true; admitted: true; runId: string }
   | { success: false; error: string; errorClass?: ExecutionErrorType };
@@ -58,9 +75,9 @@ export type TriggerAgentCoreInput = {
   /** Positive turn-timeout override, in seconds. */
   timeoutSeconds?: number | string;
   /**
-   * Replay key. Derived from the execution id, never a config field: a
-   * workflow retry reuses the execution id, and a user-authored key would
-   * reintroduce the duplicate-turn problem this exists to narrow.
+   * Replay key. Derived from execution and node identity, never a config
+   * field: a workflow retry reuses the execution id, and a user-authored key
+   * would reintroduce the duplicate-turn problem this exists to narrow.
    */
   idempotencyKey?: string;
 };
@@ -78,23 +95,48 @@ function bound(text: string): string {
   return `${trimmed.slice(0, MAX_ERROR_CHARS)}...`;
 }
 
-/** Read whatever the instance returned, without assuming it is JSON. */
-async function readFailureText(response: Response): Promise<string> {
+/**
+ * Remove anything from `text` that could carry the hook token into a run log.
+ *
+ * Two passes: the configured token by value, then a generic `Bearer <value>`
+ * pair by shape, which catches a token that reached the log without being the
+ * configured one.
+ */
+function redactSecrets(text: string, hookToken: string): string {
+  let out = text;
+  if (hookToken) {
+    out = out.split(hookToken).join(REDACTED);
+  }
+  return out.replace(/Bearer\s+\S+/gi, `Bearer ${REDACTED}`);
+}
+
+/**
+ * Read whatever the instance returned, without assuming it is JSON.
+ *
+ * The result is redacted before it is bounded: an instance, or a reverse proxy
+ * in front of one, can echo request headers back inside an error body, and
+ * this text ends up in the run log.
+ */
+async function readFailureText(
+  response: Response,
+  hookToken: string
+): Promise<string> {
   try {
     const raw = await response.text();
     if (!raw) {
       return "";
     }
+    let text = raw;
     try {
       const parsed = JSON.parse(raw) as { error?: unknown };
       const error = parsed?.error;
       if (typeof error === "string" && error.trim()) {
-        return bound(error);
+        text = error;
       }
     } catch {
       // Not JSON - fall through to the raw text.
     }
-    return bound(raw);
+    return redactSecrets(bound(text), hookToken);
   } catch {
     return "";
   }
@@ -151,7 +193,7 @@ function describeFailure(
       };
     case 429:
       return {
-        error: `OpenClaw is throttling failed authentication on this instance (429).${suffix}`,
+        error: `OpenClaw rejected the request with 429 (too many requests). The turn was not admitted; back off before sending the same turn again.${suffix}`,
         errorClass: ExecutionErrorType.EXTERNAL,
       };
     case 503:
@@ -211,7 +253,33 @@ async function stepHandler(
     // `safeFetch`. Declaring the field `type: "url"` also gets the
     // Test Connection path its own check (lib/db/test-connection.ts), which
     // covers the dialog, not this call site.
-    await assertUrlIsPublic(url);
+    //
+    // Classified here rather than by the catch below, for the reason the two
+    // sibling plugins classify it: a blocked internal target and a URL that
+    // does not parse are both the author's configuration mistake, and
+    // recording them as `external` attributes it to a third-party outage.
+    // See plugins/webhook/steps/send-webhook.ts and
+    // plugins/blockscout/steps/blockscout-core.ts.
+    try {
+      await assertUrlIsPublic(url);
+    } catch (error) {
+      const blocked = error instanceof SsrfBlockedError;
+      logUserError(
+        ErrorCategory.VALIDATION,
+        blocked
+          ? "[OpenClaw] Blocked SSRF target"
+          : "[OpenClaw] Could not validate instance URL",
+        error,
+        { plugin_name: "openclaw", action_name: "trigger-agent" }
+      );
+      return {
+        success: false,
+        error: blocked
+          ? `OpenClaw instance URL is not allowed: ${error.message}`
+          : `OpenClaw instance URL could not be validated: ${bound(getErrorMessage(error))}`,
+        errorClass: ExecutionErrorType.USER,
+      };
+    }
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${hookToken}`,
@@ -245,12 +313,13 @@ async function stepHandler(
     const response = await safeFetch(url, {
       plugin: "openclaw",
       method: "POST",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers,
       body: JSON.stringify(body),
     });
 
     if (!response.ok) {
-      const detail = await readFailureText(response);
+      const detail = await readFailureText(response, hookToken);
       const failure = describeFailure(response.status, detail);
       return { success: false, ...failure };
     }
@@ -288,6 +357,37 @@ async function stepHandler(
   }
 }
 
+/**
+ * Replay key for one node's request.
+ *
+ * `executionId` alone is not enough. OpenClaw replays on this key, so two
+ * Trigger Agent nodes in the same run would send the same key and the second
+ * node would receive the first node's admission receipt instead of admitting
+ * its own turn. The node id is what makes the key identify this request, and a
+ * loop iteration appends its own identity for the same reason: each iteration
+ * is meant to admit a separate turn.
+ */
+function buildIdempotencyKey(
+  context: TriggerAgentInput["_context"]
+): string | undefined {
+  if (!context?.executionId) {
+    return undefined;
+  }
+  const parts: Array<string | undefined> = [
+    context.executionId,
+    context.nodeId,
+  ];
+  if (context.forEachNodeId) {
+    parts.push(context.forEachNodeId);
+  }
+  if (typeof context.iterationIndex === "number") {
+    parts.push(String(context.iterationIndex));
+  }
+  // A context without a node id degrades to the execution id alone, which is
+  // what this action sent before node identity was part of the key.
+  return parts.filter((part) => part).join(":");
+}
+
 export async function triggerAgentStep(
   input: TriggerAgentInput
 ): Promise<TriggerAgentResult> {
@@ -301,10 +401,14 @@ export async function triggerAgentStep(
 
   const coreInput: TriggerAgentCoreInput = {
     ...input,
-    idempotencyKey: input._context?.executionId,
+    idempotencyKey: buildIdempotencyKey(input._context),
   };
 
-  return withStepLogging(input, () => stepHandler(coreInput, credentials));
+  return runPluginStep(
+    { pluginName: "openclaw", actionName: "trigger-agent" },
+    input,
+    () => stepHandler(coreInput, credentials)
+  );
 }
 // Convention (plugins/AGENTS.md), and it keeps the executor from retrying a
 // side-effecting POST on its own. It is not a duplicate-suppression guarantee:

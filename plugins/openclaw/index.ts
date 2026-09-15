@@ -1,5 +1,5 @@
 import type { IntegrationPlugin } from "../registry";
-import { registerIntegration } from "../registry";
+import { registerIntegration } from "@/plugins/registry-core";
 import OpenClawIcon from "./icon";
 
 /**
@@ -53,7 +53,7 @@ const openClawPlugin: IntegrationPlugin = {
       configKey: "apiKey",
       envVar: "OPENCLAW_HOOK_TOKEN",
       helpText:
-        "The instance's dedicated hook token. Keep it distinct from the Gateway shared secret - `openclaw security audit` flags a shared value as critical.",
+        "The instance's dedicated hook token. Keep it distinct from the Gateway shared secret - openclaw security audit flags a shared value as critical.",
       helpLink: {
         text: "docs.openclaw.ai/gateway/config-hooks",
         url: "https://docs.openclaw.ai/gateway/config-hooks",
@@ -86,6 +86,18 @@ const openClawPlugin: IntegrationPlugin = {
       category: "OpenClaw",
       stepFunction: "triggerAgentStep",
       stepImportPath: "trigger-agent",
+      outputFields: [
+        {
+          field: "admitted",
+          description:
+            "True when OpenClaw accepted the turn. Proves admission, not completion",
+        },
+        {
+          field: "runId",
+          description: "OpenClaw's identifier for the admitted turn",
+        },
+        { field: "error", description: "Why the turn was not admitted" },
+      ],
       configFields: [
         {
           key: "message",
