@@ -62,10 +62,15 @@ describe("Protocol output field advertisements", () => {
           if (abiName) {
             // Named single output: result is { [name]: value }
             reachablePaths.add(`result.${abiName}`);
-          } else if (abiOutput.type === "tuple" && Array.isArray(abiOutput.components)) {
+          } else if (
+            abiOutput.type === "tuple" &&
+            Array.isArray(abiOutput.components)
+          ) {
             // Unnamed single tuple: structureAbiOutputs returns the tuple
             // directly (not wrapped), so components are at result.componentName.
-            for (const comp of abiOutput.components as Array<{ name?: string }>) {
+            for (const comp of abiOutput.components as Array<{
+              name?: string;
+            }>) {
               if (comp.name) {
                 reachablePaths.add(`result.${comp.name}`);
               }

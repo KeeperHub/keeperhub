@@ -523,7 +523,9 @@ function buildOutputFieldsFromAction(
               // Authoring-time key: "result" for single output, matching
               // protocol-derive.ts:104-105 defaultOutputName.
               const authoringKey = "result";
-              const override = actionOutputs.find((o) => o.name === authoringKey);
+              const override = actionOutputs.find(
+                (o) => o.name === authoringKey
+              );
 
               if (abiName) {
                 // Named single output: runtime is { [name]: value }, so the
@@ -532,11 +534,15 @@ function buildOutputFieldsFromAction(
                   field: `result.${abiName}`,
                   description: override?.label || abiName,
                 });
-              } else if (abiOutput.type === "tuple" && Array.isArray((abiOutput as any).components)) {
+              } else if (
+                abiOutput.type === "tuple" &&
+                "components" in abiOutput &&
+                Array.isArray(abiOutput.components)
+              ) {
                 // Unnamed single tuple: structureAbiValue unwraps components
                 // directly onto result, so each component becomes result.componentName.
                 // This is the getUserAccountData case (aave-v4.ts:277-295).
-                const components = (abiOutput as any).components as Array<{
+                const components = abiOutput.components as Array<{
                   name?: string;
                   type?: string;
                 }>;
@@ -559,7 +565,9 @@ function buildOutputFieldsFromAction(
                   abiOutput.name?.trim() || `unnamedOutput${index}`;
                 // Authoring-time key: result0, result1, etc. for multiple outputs
                 const authoringKey = `result${index}`;
-                const override = actionOutputs.find((o) => o.name === authoringKey);
+                const override = actionOutputs.find(
+                  (o) => o.name === authoringKey
+                );
                 outputs.push({
                   field: `result.${abiName}`,
                   description: override?.label || abiName,
