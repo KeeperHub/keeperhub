@@ -400,6 +400,25 @@ export interface SubscribeStateOptions {
   handler: StateCallHandler;
 }
 
+export interface SubscribeTraceOptions {
+  chainId: number;
+  wssUrl: string;
+  fallbackWssUrl?: string;
+  /** Contract address to watch (callee). */
+  contractAddress: string;
+  /** Optional caller filter. */
+  caller?: string;
+  /** Optional 4-byte function selector. */
+  selector?: string;
+  /** Optional call types to match (e.g. ["DELEGATECALL"]). */
+  callTypes?: string[];
+  /** Minimum wei value as decimal string. */
+  minValueWei?: string;
+  /** Which revert states to include. */
+  status?: "success" | "reverted" | "any";
+  handler: TraceCallHandler;
+}
+
 export interface ChainProviderManagerOptions {
   factory?: ProviderFactory;
   onPermanentFailure?: (chainId: number) => void;
@@ -422,6 +441,31 @@ interface StateSubscriber {
   callData: string;
   handler: StateCallHandler;
 }
+
+interface TraceSubscriber {
+  contractAddress: string;
+  caller?: string;
+  selector?: string;
+  callTypes?: string[];
+  minValueWei?: bigint;
+  status?: "success" | "reverted" | "any";
+  handler: TraceCallHandler;
+}
+
+type TraceCallHandler = (matches: Array<{
+  blockNumber: number;
+  transactionHash: string;
+  transactionIndex: number;
+  frameIndex: number;
+  callType: string;
+  from: string;
+  to: string;
+  value: string;
+  selector: string;
+  input: string;
+  depth: number;
+  reverted: boolean;
+}>) => Promise<void>;
 
 interface ChainEntry {
   chainId: number;
@@ -461,6 +505,13 @@ interface ChainEntry {
    * workflow count the log path gets from ranged `eth_getLogs`.
    */
   stateSubscribers: Set<StateSubscriber>;
+  /**
+   * Trace subscriptions on this chain (issue #2464). Batched into one
+   * debug_traceBlockByNumber per block, so their cost is one call per chain
+   * per block rather than one per subscription. Follows the same shared-fetch
+   * pattern as state subscriptions and eth_getLogs.
+   */
+  traceSubscribers: Set<TraceSubscriber>;
   /** Cached Multicall3 deployment status for this chain. */
   multicall3: Multicall3Status;
   blockListener: ((blockNumber: number) => Promise<void>) | null;
@@ -826,13 +877,48 @@ export class ChainProviderManager {
     };
   }
 
+  async subscribeToTrace(opts: SubscribeTraceOptions): Promise<Unsubscribe> {
+    const entry = this.ensureEntry(
+      opts.chainId,
+      opts.wssUrl,
+      opts.fallbackWssUrl,
+    );
+    await this.getOrCreateProvider(
+      opts.chainId,
+      opts.wssUrl,
+      opts.fallbackWssUrl,
+    );
+
+    const subscriber: TraceSubscriber = {
+      contractAddress: opts.contractAddress,
+      caller: opts.caller,
+      selector: opts.selector,
+      callTypes: opts.callTypes,
+      minValueWei: opts.minValueWei ? BigInt(opts.minValueWei) : undefined,
+      status: opts.status,
+      handler: opts.handler,
+    };
+    entry.traceSubscribers.add(subscriber);
+
+    // Same lifecycle rule as subscribeToLogs and subscribeToState
+    if (!entry.blockListener) {
+      this.attachBlockListener(entry);
+      this.startHeartbeat(entry);
+    }
+
+    return () => {
+      entry.traceSubscribers.delete(subscriber);
+      this.detachIfIdle(entry);
+    };
+  }
+
   /**
    * Tear down the block listener and heartbeat once a chain has no subscriber
    * of either kind left. Both subscriber sets are checked because either one
    * alone is reason enough to keep the block subscription alive.
    */
   private detachIfIdle(entry: ChainEntry): void {
-    if (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0) {
+    if (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0 && entry.traceSubscribers.size === 0) {
       this.detachBlockListener(entry);
       this.stopHeartbeat(entry);
     }
@@ -1012,6 +1098,7 @@ export class ChainProviderManager {
       reconnectPromise: null,
       subscribers: new Set(),
       stateSubscribers: new Set(),
+      traceSubscribers: new Set(),
       multicall3: "unknown",
       blockListener: null,
       errorListener: null,
@@ -1346,7 +1433,7 @@ export class ChainProviderManager {
       entry.isReconnecting ||
       this.isDestroyed ||
       !entry.provider ||
-      (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0) ||
+      (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0 && entry.traceSubscribers.size === 0) ||
       entry.headBlock === null
     ) {
       return;
@@ -1434,6 +1521,13 @@ export class ChainProviderManager {
       // read cannot delay them.
       if (entry.stateSubscribers.size > 0 && entry.headBlock !== null) {
         await this.sampleState(entry, entry.headBlock);
+      }
+      // Trace processing: fetch and dispatch matched frames for blocks with
+      // trace subscribers. Unlike state sampling (reads at head only), traces
+      // are fetched per block in the range [from, to] so no matched frame is
+      // missed during catchup.
+      if (entry.traceSubscribers.size > 0) {
+        await this.processTraces(entry, from, to);
       }
     } finally {
       entry.draining = false;
@@ -1928,6 +2022,225 @@ export class ChainProviderManager {
         }
       }),
     );
+  }
+
+  /**
+   * Fetch and dispatch trace matches for the block range [from, to].
+   * Each block with transactions is traced via debug_traceBlockByNumber,
+   * and matched frames are dispatched to their subscribers.
+   */
+  private async processTraces(
+    entry: ChainEntry,
+    from: number,
+    to: number,
+  ): Promise<void> {
+    const subscribers = [...entry.traceSubscribers];
+    const provider = entry.provider;
+    if (subscribers.length === 0 || !provider) {
+      return;
+    }
+
+    // Process each block in the range sequentially
+    for (let blockNumber = from; blockNumber <= to; blockNumber++) {
+      // Check if provider is still valid after each block
+      if (entry.provider !== provider) {
+        return;
+      }
+
+      try {
+        const blockHex = `0x${blockNumber.toString(16)}`;
+        // Fetch block with transaction hashes to check if it's empty
+        const block = await this.sendWithTimeout(
+          provider,
+          "eth_getBlockByNumber",
+          [blockHex, false],
+          10000,
+        ) as { transactions?: string[] } | null;
+
+        if (!block || !block.transactions || block.transactions.length === 0) {
+          continue;
+        }
+
+        // Fetch traces for this block
+        const traces = await this.sendWithTimeout(
+          provider,
+          "debug_traceBlockByNumber",
+          [blockHex, { tracer: "callTracer" }],
+          30000,
+        ) as Array<{ result?: any }> | null;
+
+        if (!traces || !Array.isArray(traces)) {
+          continue;
+        }
+
+        // Process each transaction's trace
+        for (let txIndex = 0; txIndex < traces.length; txIndex++) {
+          const trace = traces[txIndex];
+          if (!trace || !trace.result) {
+            continue;
+          }
+
+          const txHash = block.transactions[txIndex];
+          const matches = this.extractTraceMatches(
+            trace.result,
+            blockNumber,
+            txHash,
+            txIndex,
+            subscribers,
+          );
+
+          // Dispatch matches to handlers
+          await Promise.all(
+            matches.map(async ({ subscriber, frames }) => {
+              try {
+                await subscriber.handler(frames);
+              } catch (err) {
+                logger.warn(
+                  `[ChainProviderManager] chain=${entry.chainId} trace subscriber handler threw: ${String(err)}`,
+                );
+              }
+            }),
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          `[ChainProviderManager] chain=${entry.chainId} trace fetch failed for block ${blockNumber}: ${String(err)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Extract matched frames from a call trace tree, flattening and filtering
+   * against each subscriber's criteria.
+   */
+  private extractTraceMatches(
+    call: any,
+    blockNumber: number,
+    txHash: string,
+    txIndex: number,
+    subscribers: TraceSubscriber[],
+  ): Array<{ subscriber: TraceSubscriber; frames: any[] }> {
+    const flatFrames = this.flattenCallTrace(call, blockNumber, txHash, txIndex);
+
+    return subscribers.map((sub) => {
+      const matched = flatFrames.filter((frame) =>
+        this.frameMatchesSubscriber(frame, sub),
+      );
+      return { subscriber: sub, frames: matched };
+    }).filter((m) => m.frames.length > 0);
+  }
+
+  /**
+   * Flatten a nested call trace into a list of frames with metadata.
+   */
+  private flattenCallTrace(
+    call: any,
+    blockNumber: number,
+    txHash: string,
+    txIndex: number,
+    depth = 0,
+    frameIndex = { value: 0 },
+  ): any[] {
+    const frames: any[] = [];
+    const currentIndex = frameIndex.value++;
+
+    const frame = {
+      blockNumber,
+      transactionHash: txHash,
+      transactionIndex: txIndex,
+      frameIndex: currentIndex,
+      callType: call.type || "CALL",
+      from: (call.from || "").toLowerCase(),
+      to: (call.to || "").toLowerCase(),
+      value: call.value || "0x0",
+      selector: this.extractSelector(call.input),
+      input: call.input || "0x",
+      depth,
+      reverted: !!(call.error || call.revertReason),
+    };
+
+    frames.push(frame);
+
+    // Recurse into subcalls
+    if (call.calls && Array.isArray(call.calls)) {
+      for (const subcall of call.calls) {
+        frames.push(
+          ...this.flattenCallTrace(
+            subcall,
+            blockNumber,
+            txHash,
+            txIndex,
+            depth + 1,
+            frameIndex,
+          ),
+        );
+      }
+    }
+
+    return frames;
+  }
+
+  /**
+   * Extract 4-byte selector from calldata, or "0x" if not present.
+   */
+  private extractSelector(input: string | undefined): string {
+    if (!input || input.length < 10) {
+      return "0x";
+    }
+    return input.slice(0, 10).toLowerCase();
+  }
+
+  /**
+   * Check if a frame matches a subscriber's filters.
+   */
+  private frameMatchesSubscriber(frame: any, sub: TraceSubscriber): boolean {
+    // Contract address (callee) is required
+    if (frame.to !== sub.contractAddress.toLowerCase()) {
+      return false;
+    }
+
+    // Caller filter
+    if (sub.caller && frame.from !== sub.caller.toLowerCase()) {
+      return false;
+    }
+
+    // Selector filter
+    if (sub.selector && frame.selector !== sub.selector.toLowerCase()) {
+      return false;
+    }
+
+    // Call type filter
+    if (
+      sub.callTypes &&
+      sub.callTypes.length > 0 &&
+      !sub.callTypes.some((t) => t.toUpperCase() === frame.callType)
+    ) {
+      return false;
+    }
+
+    // Value filter
+    if (sub.minValueWei !== undefined) {
+      try {
+        const frameValue = BigInt(frame.value);
+        if (frameValue < sub.minValueWei) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+    }
+
+    // Status filter
+    const status = sub.status ?? "success";
+    if (status === "success" && frame.reverted) {
+      return false;
+    }
+    if (status === "reverted" && !frame.reverted) {
+      return false;
+    }
+
+    return true;
   }
 
   /**
