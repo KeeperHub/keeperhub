@@ -287,4 +287,22 @@ describe("fetchPaidResourceStep", () => {
       expect(result.paymentQuote).toMatchObject({ priceUsdc: "0.01" });
     }
   });
+
+  it("passes an abort signal on both the probe and the paid retry", async () => {
+    safeFetch
+      .mockResolvedValueOnce(jsonResponse(402, QUOTE_402))
+      .mockResolvedValueOnce(jsonResponse(200, { count: 20 }));
+
+    const result = await fetchPaidResourceStep({
+      resourceUrl: PUBLIC_URL,
+      paymentSignature: "c2lnbmF0dXJl",
+    });
+
+    expect(result.success).toBe(true);
+    expect(safeFetch).toHaveBeenCalledTimes(2);
+    for (const call of safeFetch.mock.calls) {
+      const options = call[1] as Record<string, unknown> | undefined;
+      expect(options?.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
 });

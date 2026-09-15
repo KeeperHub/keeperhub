@@ -32,6 +32,11 @@ const NETWORK_ALIASES: Record<string, string> = {
 
 const PAYMENT_REQUIRED_HEADER = "payment-required";
 
+// A hung resource server must not hold the workflow step open: both the
+// initial probe and the paid retry carry an explicit timeout, mirroring
+// plugins/evm-chain/steps/evm-rpc-core.ts (safeFetch applies no default).
+const FETCH_TIMEOUT_MS = 10_000;
+
 // A single entry of an x402 v1/v2 402 body's `accepts[]` array. All fields
 // are unknown at the boundary; toPaymentQuote validates the load-bearing ones.
 type X402AcceptRequirement = {
@@ -340,6 +345,7 @@ async function stepHandler(
         ? { body: JSON.stringify(payload) }
         : {}),
       plugin: "x402",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (error) {
     logUserError(ErrorCategory.EXTERNAL_SERVICE, "[x402] Error fetching resource:", error, logFields("fetch-paid-resource"));
@@ -459,6 +465,7 @@ async function stepHandler(
         ? { body: JSON.stringify(payload) }
         : {}),
       plugin: "x402",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (error) {
     logUserError(ErrorCategory.EXTERNAL_SERVICE, "[x402] Error fetching paid resource:", error, logFields("fetch-paid-resource"));
