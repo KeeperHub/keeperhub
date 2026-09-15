@@ -23,6 +23,9 @@ export const dynamic = "force-dynamic";
  * organization count and rows per window. A dry run is therefore usable as the
  * pre-flight check that every organization resolved to the window it pays for.
  *
+ * A pass that fails stops the run. The response is then a 500 carrying the
+ * partial result, and the rows the run already removed are still counted.
+ *
  * Called by the `retention` K8s CronJob through deploy/scripts/reaper.sh, which
  * signs the request and fails the job on any non-2xx. Authorized by the same
  * internal-service HMAC scheme every other scheduled route uses.
@@ -42,6 +45,8 @@ export async function GET(request: Request): Promise<NextResponse> {
   try {
     const result = await runRetentionPurge();
 
+    // Recorded before the outcome is known: a pass that failed partway has
+    // still removed what its earlier pages committed, and that has to show.
     if (result.enabled && !result.dryRun) {
       for (const pass of result.passes) {
         recordRetentionRowsPurged(pass.pass, pass.rows);
@@ -53,6 +58,27 @@ export async function GET(request: Request): Promise<NextResponse> {
           );
         }
       }
+    }
+
+    if (result.failedPass) {
+      const failed = result.passes.find(
+        (pass) => pass.pass === result.failedPass
+      );
+      recordRetentionRun("failure");
+      logSystemError(
+        ErrorCategory.DATABASE,
+        "Failed to purge expired execution data",
+        new Error(failed?.error ?? "retention pass failed"),
+        {
+          endpoint: "/api/internal/retention",
+          operation: "get",
+          pass: result.failedPass,
+        }
+      );
+      return NextResponse.json(result, { status: 500 });
+    }
+
+    if (result.enabled && !result.dryRun) {
       recordRetentionRun("success");
     }
 

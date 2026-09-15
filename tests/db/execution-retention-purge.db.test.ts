@@ -408,26 +408,280 @@ describe("execution retention purge (real database)", () => {
     }
   });
 
-  it("counts every eligible row in a dry run and writes nothing", async () => {
-    // batchSize deliberately below the candidate set: the reported figure used
-    // to be one page, so it was capped per pass and per organization.
-    const result = await runRetentionPurge(
+  it("walks every eligible row in a dry run and writes nothing", async () => {
+    // A 7-day run older than the floor. The floor pass owns it; a dry run moves
+    // no watermark, so without the floor clamp the plan-window pass would count
+    // it a second time and the dry figure would not match the real one.
+    await db.insert(workflowExecutions).values({
+      id: runId(ORG_NONE, "past_floor"),
+      workflowId: `${ORG_NONE}_wf`,
+      organizationId: ORG_NONE,
+      userId: USER,
+      status: "success",
+      startedAt: daysAgo(400),
+    });
+    await db.insert(workflowExecutionLogs).values({
+      id: logId(ORG_NONE, "past_floor"),
+      executionId: runId(ORG_NONE, "past_floor"),
+      nodeId: "action-1",
+      nodeName: "HTTP Request",
+      nodeType: "action",
+      status: "success" as const,
+      startedAt: daysAgo(400),
+      timestamp: daysAgo(400),
+    });
+
+    // One row per page, so the walk has to follow the cursor across many pages
+    // without a single write moving anything out of its way.
+    const dry = await runRetentionPurge(
       config({ dryRun: true, batchSize: 1 }),
       NOW
     );
-    const planWindow = result.passes.find(
-      (pass) => pass.pass === "logs_plan_window"
-    );
 
-    expect(planWindow?.rows).toBeGreaterThan(1);
     expect(await logExists(logId(ORG_NONE, "old"))).toBe(true);
     expect(await watermarkOf(ORG_NONE)).toBeNull();
+
+    // The same pages, written this time. The floor and plan-window figures
+    // must match; output_raw can only be lower for real, because the passes
+    // before it delete some of the rows the dry run still saw.
+    const real = await runRetentionPurge(config({ batchSize: 1 }), NOW);
+    const rowsOf = (result: typeof real, name: string): number | undefined =>
+      result.passes.find((p) => p.pass === name)?.rows;
+    expect(rowsOf(dry, "logs_floor")).toBe(rowsOf(real, "logs_floor"));
+    expect(rowsOf(dry, "logs_plan_window")).toBe(
+      rowsOf(real, "logs_plan_window")
+    );
+    expect(rowsOf(dry, "output_raw")).toBeGreaterThanOrEqual(
+      rowsOf(real, "output_raw") ?? 0
+    );
+  });
+
+  it("moves past a row whose timestamp carries microseconds", async () => {
+    // Postgres keeps microseconds and a JS Date keeps milliseconds. A cursor
+    // rounded to the millisecond sits before its own row, so with one row per
+    // page the same row comes back forever. The seed writes whole
+    // milliseconds, so give every row a sub-millisecond part the way now() does.
+    const like = `${PREFIX}%`;
+    await queryClient`
+      UPDATE workflow_execution_logs
+      SET started_at = started_at + interval '123456 microseconds',
+          deleted_at = deleted_at + interval '123456 microseconds'
+      WHERE id LIKE ${like}`;
+    await queryClient`
+      UPDATE workflow_executions
+      SET started_at = started_at + interval '123456 microseconds'
+      WHERE id LIKE ${like}`;
+
+    const unfinished = (
+      result: Awaited<ReturnType<typeof runRetentionPurge>>
+    ) =>
+      result.passes.filter((pass) => pass.budgetExhausted).map((p) => p.pass);
+
+    const dry = await runRetentionPurge(
+      config({ dryRun: true, batchSize: 1, maxRuntimeMs: 2000 }),
+      NOW
+    );
+    expect(unfinished(dry)).toEqual([]);
+
+    const real = await runRetentionPurge(
+      config({ batchSize: 1, maxRuntimeMs: 2000 }),
+      NOW
+    );
+    expect(unfinished(real)).toEqual([]);
+    expect(real.passes.find((p) => p.pass === "logs_plan_window")?.rows).toBe(
+      dry.passes.find((p) => p.pass === "logs_plan_window")?.rows
+    );
+    expect(await logExists(logId(ORG_NONE, "old"))).toBe(false);
+  });
+
+  it("flags a dry run the budget stopped as unfinished, and writes nothing", async () => {
+    // What replaced the full-table count: the figure covers only the pages the
+    // walk reached, and the report says so instead of scanning to make it exact.
+    const result = await runRetentionPurge(
+      config({ dryRun: true, maxRuntimeMs: 0 }),
+      NOW
+    );
+
+    expect(result.passes[0]).toMatchObject({
+      pass: "logs_floor",
+      rows: 0,
+      budgetExhausted: true,
+    });
+    expect(await logExists(logId(ORG_ENT, "past_floor"))).toBe(true);
   });
 
   it("drains across iterations when the batch is smaller than the work", async () => {
+    // batchSize 1 is one step log per page and one run per plan-window page.
     await runRetentionPurge(config({ batchSize: 1 }), NOW);
     expect(await logExists(logId(ORG_NONE, "old"))).toBe(false);
     expect(await logExists(logId(ORG_PRO, "old"))).toBe(false);
+    expect(await logExists(logId(ORG_OVERRIDE, "old"))).toBe(false);
+    // The cursor walks past the run it has to skip, and the watermark still
+    // stops at it.
+    expect(await logExists(logId(ORG_NONE, "phantom"))).toBe(true);
+    expect(await watermarkOf(ORG_NONE)).toEqual(daysAgo(40));
+  });
+
+  it("reports what a pass removed before a page failed, and stops the run", async () => {
+    // A database error partway through a pass, the way the statement timeout
+    // hit staging. The trigger fails the update of one row; with one row per
+    // page, the two pages before it have committed.
+    const target = logId(ORG_PRO, "inside");
+    await queryClient.unsafe(`
+      CREATE OR REPLACE FUNCTION test_retention_fail_update() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.id = '${target}' THEN
+          RAISE EXCEPTION 'simulated statement timeout';
+        END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql`);
+    await queryClient.unsafe(`
+      CREATE TRIGGER test_retention_fail_update
+      BEFORE UPDATE OF output_raw ON workflow_execution_logs
+      FOR EACH ROW EXECUTE FUNCTION test_retention_fail_update()`);
+
+    try {
+      const result = await runRetentionPurge(config({ batchSize: 1 }), NOW);
+      const outputRaw = result.passes.find(
+        (pass) => pass.pass === "output_raw"
+      );
+
+      expect(result.failedPass).toBe("output_raw");
+      expect(outputRaw?.error).toContain("simulated statement timeout");
+      // Oldest first: the enterprise log (100 days) and the override log (60
+      // days) were nulled before the pro log (20 days) failed.
+      expect(outputRaw?.rows).toBe(2);
+      expect(await outputRawOf(logId(ORG_ENT, "inside"))).toBeNull();
+      expect(await outputRawOf(logId(ORG_OVERRIDE, "inside"))).toBeNull();
+      expect(await outputRawOf(target)).not.toBeNull();
+      // The run stopped at the failed pass.
+      expect(result.passes.at(-1)?.pass).toBe("output_raw");
+      expect(await logExists(`${PREFIX}softdel_past_grace`)).toBe(true);
+    } finally {
+      await queryClient.unsafe(
+        "DROP TRIGGER IF EXISTS test_retention_fail_update ON workflow_execution_logs"
+      );
+      await queryClient.unsafe(
+        "DROP FUNCTION IF EXISTS test_retention_fail_update()"
+      );
+    }
+  });
+
+  it("records how far the plan-window walk got when a page fails, then continues", async () => {
+    // The 7-day window walks every run from the floor cutoff up, one run per
+    // page. A 10-day run of ORG_SECOND fails its delete. The last run handled
+    // before it is at 20 days, and ORG_NONE's phantom run sits below that at 40.
+    // Every run timestamp carries microseconds, so the recorded instants have
+    // to round down to the millisecond.
+    await db.insert(workflowExecutions).values({
+      id: runId(ORG_SECOND, "late"),
+      workflowId: `${ORG_SECOND}_wf`,
+      organizationId: ORG_SECOND,
+      userId: USER,
+      status: "success",
+      startedAt: daysAgo(10),
+    });
+    await db.insert(workflowExecutionLogs).values({
+      id: logId(ORG_SECOND, "late"),
+      executionId: runId(ORG_SECOND, "late"),
+      nodeId: "action-1",
+      nodeName: "HTTP Request",
+      nodeType: "action",
+      status: "success" as const,
+      startedAt: daysAgo(10),
+      timestamp: daysAgo(10),
+    });
+    const like = `${PREFIX}%`;
+    await queryClient`
+      UPDATE workflow_executions
+      SET started_at = started_at + interval '123456 microseconds'
+      WHERE id LIKE ${like}`;
+    const shifted = (days: number): Date =>
+      new Date(daysAgo(days).getTime() + 123);
+
+    const target = logId(ORG_SECOND, "late");
+    await queryClient.unsafe(`
+      CREATE OR REPLACE FUNCTION test_retention_fail_delete() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.id = '${target}' THEN
+          RAISE EXCEPTION 'simulated statement timeout';
+        END IF;
+        RETURN OLD;
+      END $$ LANGUAGE plpgsql`);
+    await queryClient.unsafe(`
+      CREATE TRIGGER test_retention_fail_delete
+      BEFORE DELETE ON workflow_execution_logs
+      FOR EACH ROW EXECUTE FUNCTION test_retention_fail_delete()`);
+
+    try {
+      const result = await runRetentionPurge(config({ batchSize: 10 }), NOW);
+      const planPass = result.passes.find(
+        (pass) => pass.pass === "logs_plan_window"
+      );
+
+      expect(result.failedPass).toBe("logs_plan_window");
+      expect(planPass?.error).toContain("simulated statement timeout");
+      expect(planPass?.rows).toBe(3);
+      expect(await logExists(logId(ORG_NONE, "old"))).toBe(false);
+      expect(await logExists(logId(ORG_SECOND, "old"))).toBe(false);
+      expect(await logExists(logId(ORG_CLAMPED, "old"))).toBe(false);
+      expect(await logExists(target)).toBe(true);
+      // Progress stops at the last run handled, for every organization in the
+      // window, and ORG_NONE stays at its phantom run below that.
+      expect(await watermarkOf(ORG_CLAMPED)).toEqual(shifted(20));
+      expect(await watermarkOf(ORG_SECOND)).toEqual(shifted(20));
+      expect(await watermarkOf(ORG_NONE)).toEqual(shifted(40));
+    } finally {
+      await queryClient.unsafe(
+        "DROP TRIGGER IF EXISTS test_retention_fail_delete ON workflow_execution_logs"
+      );
+      await queryClient.unsafe(
+        "DROP FUNCTION IF EXISTS test_retention_fail_delete()"
+      );
+    }
+
+    // The next run continues from there and finishes the window. ORG_NONE is
+    // now behind the front with nothing to delete, and keeps its pin.
+    await runRetentionPurge(config({ batchSize: 10 }), NOW);
+    expect(await logExists(target)).toBe(false);
+    expect(await watermarkOf(ORG_SECOND)).toEqual(daysAgo(7));
+    expect(await watermarkOf(ORG_NONE)).toEqual(shifted(40));
+    expect(await logExists(logId(ORG_NONE, "phantom"))).toBe(true);
+  });
+
+  it("catches up an organization left behind, starting where its own work is", async () => {
+    // ORG_SECOND is deferred on the first run, so it keeps the floor cutoff
+    // while the rest of the 7-day window moves up. On the next run it is behind
+    // the window's front and gets probed: its 40-day run still has step logs.
+    // ORG_NONE is behind too, held by its phantom run, with nothing to delete.
+    const twoHoursBefore = new Date(NOW.getTime() - 2 * 60 * 60 * 1000);
+    await db.insert(organizationSubscriptions).values({
+      id: `${ORG_SECOND}_sub`,
+      organizationId: ORG_SECOND,
+      plan: "free",
+    });
+    await queryClient`UPDATE organization_subscriptions
+                         SET updated_at = ${twoHoursBefore.toISOString()},
+                             created_at = ${daysAgo(600).toISOString()}
+                       WHERE organization_id = ${ORG_SECOND}`;
+
+    const first = await runRetentionPurge(config(), NOW);
+    expect(
+      first.passes.find((pass) => pass.pass === "logs_plan_window")
+        ?.deferredOrganizations
+    ).toBe(1);
+    expect(await logExists(logId(ORG_SECOND, "old"))).toBe(true);
+    expect(await watermarkOf(ORG_CLAMPED)).toEqual(daysAgo(7));
+
+    const later = new Date(NOW.getTime() + 25 * 60 * 60 * 1000);
+    await runRetentionPurge(config(), later);
+
+    expect(await logExists(logId(ORG_SECOND, "old"))).toBe(false);
+    expect(await watermarkOf(ORG_SECOND)).toEqual(
+      new Date(later.getTime() - 7 * DAY_MS)
+    );
+    expect(await watermarkOf(ORG_NONE)).toEqual(daysAgo(40));
+    expect(await logExists(logId(ORG_NONE, "phantom"))).toBe(true);
   });
 
   it("writes no watermark when the budget stops the run", async () => {

@@ -166,6 +166,44 @@ describe("/api/internal/retention", () => {
     expect(mockRecordRun).not.toHaveBeenCalled();
   });
 
+  it("counts what a failed pass removed, then returns 500 with the partial result", async () => {
+    // The run stopped partway: the pages before the failure committed, so the
+    // rows they removed have to reach the counters even though the run failed.
+    const partial = purgeResult({
+      passes: [
+        { pass: "logs_floor", rows: 0, budgetExhausted: false },
+        {
+          pass: "output_raw",
+          rows: 600_000,
+          budgetExhausted: false,
+          error:
+            "Failed query: select ...: canceling statement due to statement timeout",
+        },
+      ],
+      totalRows: 600_000,
+      failedPass: "output_raw",
+    });
+    mockRunRetentionPurge.mockResolvedValue(partial);
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual(partial);
+    expect(mockRecordRows).toHaveBeenCalledWith("output_raw", 600_000);
+    expect(mockRecordRun).toHaveBeenCalledWith("failure");
+    expect(mockRecordRun).not.toHaveBeenCalledWith("success");
+    expect(mockLogSystemError).toHaveBeenCalledWith(
+      "database",
+      "Failed to purge expired execution data",
+      expect.any(Error),
+      {
+        endpoint: "/api/internal/retention",
+        operation: "get",
+        pass: "output_raw",
+      }
+    );
+  });
+
   it("returns 500, counts the failure and logs when the purge throws", async () => {
     mockRunRetentionPurge.mockRejectedValue(new Error("deadlock detected"));
 

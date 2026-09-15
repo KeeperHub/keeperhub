@@ -8,15 +8,15 @@ import type { RetentionConfig } from "@/lib/retention/config";
 /**
  * KEEP-1042: the per-organization watermark the step-log purge resumes from.
  *
- * Read once per run for every organization the run will touch, then written
- * back only when that organization's range has fully drained. Advancing only on
- * a full drain is what makes an interrupted run resume instead of skipping: the
- * runtime budget can cut a run off mid-organization, and the next run has to
- * start from the same place rather than from wherever it happened to stop.
+ * Read once per window for every organization in it, then written back when
+ * the window's walk ends: to the cutoff when it drained, or to the last run it
+ * handled when the budget or an error stopped it. Either way the value only
+ * claims runs the walk has actually been past, so an interrupted run resumes
+ * from there instead of skipping ahead or starting the window over.
  */
 
-/** Everything before this is treated as unpurged on the first ever run. */
-export const RETENTION_EPOCH = new Date(0);
+/** Organizations per upsert statement when watermarks are written back. */
+const WATERMARK_WRITE_CHUNK = 1000;
 
 export async function getPurgeWatermarks(
   organizationIds: string[]
@@ -39,31 +39,38 @@ export async function getPurgeWatermarks(
 }
 
 /**
- * Record that every execution of this organization started before `through`
- * has had its step logs removed. Upsert rather than insert: an organization is
- * written once per run for as long as it keeps producing work.
+ * Record, per organization, that every execution started before the given
+ * instant has had its step logs removed. Upsert rather than insert: an
+ * organization is written once per run for as long as it keeps producing work.
+ * Chunked statements rather than one per organization, because the 7-day
+ * window holds most organizations and all of them are written together.
  *
  * GREATEST, so the watermark can only ever move forward. The plan-window pass
- * clamps the value it writes to the oldest run it had to skip, which means two
+ * holds the value it writes to the oldest run it had to skip, which means two
  * consecutive runs can legitimately try to write different instants for the
  * same organization; taking the larger keeps the claim monotonic. The claim is
  * read by the analytics layer as "this is what has actually been removed", so
  * it must never overstate, and lowering it later would strand rows below it.
  */
-export async function setPurgeWatermark(
-  organizationId: string,
-  through: Date
+export async function setPurgeWatermarks(
+  marks: Map<string, Date>
 ): Promise<void> {
-  await db
-    .insert(executionRetentionProgress)
-    .values({ organizationId, executionsPurgedThrough: through })
-    .onConflictDoUpdate({
-      target: executionRetentionProgress.organizationId,
-      set: {
-        executionsPurgedThrough: sql`GREATEST(${executionRetentionProgress.executionsPurgedThrough}, excluded.executions_purged_through)`,
-        updatedAt: sql`now()`,
-      },
-    });
+  const rows = [...marks].map(([organizationId, through]) => ({
+    organizationId,
+    executionsPurgedThrough: through,
+  }));
+  for (let i = 0; i < rows.length; i += WATERMARK_WRITE_CHUNK) {
+    await db
+      .insert(executionRetentionProgress)
+      .values(rows.slice(i, i + WATERMARK_WRITE_CHUNK))
+      .onConflictDoUpdate({
+        target: executionRetentionProgress.organizationId,
+        set: {
+          executionsPurgedThrough: sql`GREATEST(${executionRetentionProgress.executionsPurgedThrough}, excluded.executions_purged_through)`,
+          updatedAt: sql`now()`,
+        },
+      });
+  }
 }
 
 /**

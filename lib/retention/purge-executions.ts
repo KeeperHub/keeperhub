@@ -8,9 +8,11 @@ import {
   inArray,
   isNotNull,
   lt,
-  min,
   notInArray,
+  type SQL,
+  sql,
 } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import { db } from "@/lib/db";
 import {
   workflowExecutionLogs,
@@ -34,8 +36,7 @@ import {
 import {
   advanceWatermarksToFloor,
   getPurgeWatermarks,
-  RETENTION_EPOCH,
-  setPurgeWatermark,
+  setPurgeWatermarks,
 } from "@/lib/retention/progress";
 
 /**
@@ -60,17 +61,34 @@ const RESUMABLE_EXECUTION_STATUSES: readonly WorkflowExecutionStatus[] = [
   "phantom",
   "unconfirmed",
 ];
+const RESUMABLE = new Set<string>(RESUMABLE_EXECUTION_STATUSES);
 
 /**
- * Executions scanned per statement in the run-row pass. One execution carries
+ * Runs per page in the plan-window and run-row passes. One execution carries
  * several step logs, so the row count a batch touches is a multiple of this;
  * keeping it well under `batchSize` holds a single statement inside the pool's
  * statement_timeout. The CronJob calls into the app pods, so the bound is
  * APP_STATEMENT_TIMEOUT_MS (30s), not the 120s role-level backstop.
  */
 function executionBatchSize(config: RetentionConfig): number {
-  return Math.max(50, Math.floor(config.batchSize / 10));
+  return Math.max(1, Math.floor(config.batchSize / 10));
 }
+
+/**
+ * Organizations behind a window's front that are probed one by one before the
+ * walk. Past this many, the walk starts at each organization's watermark.
+ */
+const MAX_LAGGARD_PROBES = 200;
+
+/**
+ * Statement timeout for one laggard probe. A dense organization held down by a
+ * run stuck long ago has many runs to look through; past this the probe gives
+ * up and that organization is walked from its own watermark instead.
+ */
+const PROBE_TIMEOUT_MS = 5000;
+
+/** SQLSTATE query_canceled, what a statement timeout raises. */
+const QUERY_CANCELED = "57014";
 
 export type RetentionPassName =
   | "logs_floor"
@@ -88,7 +106,12 @@ export type RetentionWindowReport = {
 
 export type RetentionPassResult = {
   pass: RetentionPassName;
-  /** Rows deleted, or nulled for the output_raw pass. Candidates in a dry run. */
+  /**
+   * Rows deleted, or nulled for the output_raw pass. In a dry run, what the same
+   * pages would have touched, pass by pass: nothing is removed, so a later pass
+   * also counts rows an earlier pass would have taken first. With
+   * budgetExhausted set, the figure covers only the pages the pass reached.
+   */
   rows: number;
   /** True when the runtime budget stopped this pass before it drained. */
   budgetExhausted: boolean;
@@ -101,6 +124,11 @@ export type RetentionPassResult = {
   deferredOrganizations?: number;
   /** Present when a pass did nothing because its switch is off. */
   skipped?: "disabled";
+  /**
+   * Why the pass stopped early. `rows` still counts what the pages before the
+   * failure committed.
+   */
+  error?: string;
 };
 
 export type RetentionRunResult = {
@@ -112,6 +140,8 @@ export type RetentionRunResult = {
   floorDays: number;
   passes: RetentionPassResult[];
   totalRows: number;
+  /** Set when a pass failed. The passes after it did not run. */
+  failedPass?: RetentionPassName;
 };
 
 /** Wall-clock budget shared by every pass in one run. */
@@ -169,14 +199,26 @@ export async function runRetentionPurge(
     config
   );
   const passes: RetentionPassResult[] = [];
+  // A failed pass comes back as a result, not a throw, carrying the rows its
+  // earlier pages committed. The run stops there and the route reports the
+  // partial result as a failure, so the work already done still shows.
+  const finish = (failedPass?: RetentionPassName): RetentionRunResult => ({
+    enabled: true,
+    executionsEnabled: config.executionsEnabled,
+    dryRun: config.dryRun,
+    durationMs: Date.now() - startedAt,
+    floorDays: schedule.floorDays,
+    passes,
+    totalRows: passes.reduce((sum, pass) => sum + pass.rows, 0),
+    ...(failedPass && { failedPass }),
+  });
 
-  const floor = await purgeLogsPastFloor(
-    config,
-    now,
-    budget,
-    schedule.floorDays
-  );
+  const floorCutoff = daysBefore(now, schedule.floorDays);
+  const floor = await purgeLogsPastFloor(config, budget, floorCutoff);
   passes.push(floor);
+  if (floor.error) {
+    return finish(floor.pass);
+  }
 
   // Record what the floor pass proved, before the per-organization pass reads
   // the watermarks. It deletes every step log past its cutoff with no
@@ -185,37 +227,40 @@ export async function runRetentionPurge(
   // above the floor, which never enter the pass below and would otherwise never
   // have a watermark at all.
   if (!(floor.budgetExhausted || config.dryRun)) {
-    await advanceWatermarksToFloor(daysBefore(now, schedule.floorDays));
+    const error = await attempt(() => advanceWatermarksToFloor(floorCutoff));
+    if (error !== undefined) {
+      passes[passes.length - 1] = { ...floor, error };
+      return finish(floor.pass);
+    }
   }
 
-  // An organization whose plan just changed is left alone for the grace
-  // period, so a lapse can be undone before the shorter window deletes the
-  // difference. Resolved per run, so the dry run reports the same deferral.
-  const deferred = await resolveRecentPlanChanges(
-    new Date(now.getTime() - config.planChangeGraceMs)
+  const planWindow = await purgeLogsPastPlanWindow(
+    config,
+    now,
+    budget,
+    schedule.groups,
+    floorCutoff
   );
-  passes.push(
-    await purgeLogsPastPlanWindow(
-      config,
-      now,
-      budget,
-      schedule.groups,
-      deferred
-    )
-  );
-  passes.push(await stripExpiredOutputRaw(config, now, budget));
-  passes.push(await purgeSoftDeletedLogs(config, now, budget));
-  passes.push(await purgeExecutionsPastFlatWindow(config, now, budget));
+  passes.push(planWindow);
+  if (planWindow.error) {
+    return finish(planWindow.pass);
+  }
 
-  return {
-    enabled: true,
-    executionsEnabled: config.executionsEnabled,
-    dryRun: config.dryRun,
-    durationMs: Date.now() - startedAt,
-    floorDays: schedule.floorDays,
-    passes,
-    totalRows: passes.reduce((sum, pass) => sum + pass.rows, 0),
-  };
+  const outputRaw = await stripExpiredOutputRaw(config, now, budget);
+  passes.push(outputRaw);
+  if (outputRaw.error) {
+    return finish(outputRaw.pass);
+  }
+
+  const softDeleted = await purgeSoftDeletedLogs(config, now, budget);
+  passes.push(softDeleted);
+  if (softDeleted.error) {
+    return finish(softDeleted.pass);
+  }
+
+  const executions = await purgeExecutionsPastFlatWindow(config, now, budget);
+  passes.push(executions);
+  return finish(executions.error ? executions.pass : undefined);
 }
 
 /**
@@ -226,201 +271,450 @@ export async function runRetentionPurge(
  */
 function purgeLogsPastFloor(
   config: RetentionConfig,
-  now: Date,
   budget: RunBudget,
-  floorDays: number
+  cutoff: Date
 ): Promise<RetentionPassResult> {
-  const cutoff = daysBefore(now, floorDays);
-  const eligible = lt(workflowExecutionLogs.startedAt, cutoff);
   return runBatched({
     pass: "logs_floor",
     config,
     budget,
-    selectIds: (limit) =>
+    selectPage: (limit, cursor) =>
       db
-        .select({ id: workflowExecutionLogs.id })
+        .select({
+          id: workflowExecutionLogs.id,
+          at: sortKey(workflowExecutionLogs.startedAt),
+        })
         .from(workflowExecutionLogs)
-        .where(eligible)
-        .orderBy(workflowExecutionLogs.startedAt)
+        .where(
+          and(
+            lt(workflowExecutionLogs.startedAt, cutoff),
+            afterCursor(
+              workflowExecutionLogs.startedAt,
+              workflowExecutionLogs.id,
+              cursor
+            )
+          )
+        )
+        .orderBy(workflowExecutionLogs.startedAt, workflowExecutionLogs.id)
         .limit(limit),
-    countEligible: async () =>
-      (
-        await db
-          .select({ n: count() })
-          .from(workflowExecutionLogs)
-          .where(eligible)
-      )[0].n,
-    apply: (ids) =>
-      db
-        .delete(workflowExecutionLogs)
-        .where(inArray(workflowExecutionLogs.id, ids)),
+    apply: async (keys) => {
+      await db.delete(workflowExecutionLogs).where(
+        inArray(
+          workflowExecutionLogs.id,
+          keys.map((key) => key.id)
+        )
+      );
+      return keys.length;
+    },
   });
 }
+
+/** One run of a plan-window page, with what the walk checks in code. */
+type RunKey = BatchKey & {
+  startedAt: Date;
+  organizationId: string | null;
+  status: WorkflowExecutionStatus;
+};
 
 /**
  * Pass 2. The product promise: step logs age out at the window the org's plan
  * sells (7 free, 30 pro, 90 business, or a per-org override). Organizations on
  * the longest window are not here -- pass 1 owns them.
  *
- * Each organization is walked from its watermark up to its cutoff and the
- * watermark advances only when that range is empty, so an interrupted run
- * resumes rather than skipping. Rows are matched by their execution's
- * `started_at`, not their own, so a whole run's step logs retire together, and
- * a run that can still resume is skipped for the same reason the output_raw
- * pass skips it.
+ * One walk per window over every run in the window's range, ordered by
+ * `(started_at, id)`, with each run's organization checked here rather than in
+ * SQL. A walk per organization put that filter in the query, and for an
+ * organization with few runs the planner still walked the whole started_at
+ * index looking for a page it could never fill. Without the filter a page is
+ * simply the next runs by started_at, and a run of an organization on another
+ * window is passed over. Rows are matched by their execution's `started_at`,
+ * not their own, so a whole run's step logs retire together.
+ *
+ * The range starts where the window's organizations still have work (see
+ * resolveWalkFrom) and never below the floor cutoff. Everything older belongs
+ * to pass 1, and a dry run, which moves no watermark, would otherwise count
+ * those rows twice.
  */
 async function purgeLogsPastPlanWindow(
   config: RetentionConfig,
   now: Date,
   budget: RunBudget,
   groups: Array<{ retentionDays: number; organizationIds: string[] }>,
-  deferred: Set<string>
+  floorCutoff: Date
 ): Promise<RetentionPassResult> {
   const windows: RetentionWindowReport[] = [];
   let rows = 0;
-  let budgetExhausted = false;
   let deferredOrganizations = 0;
+  const result = (
+    outcome: { budgetExhausted?: boolean; error?: string } = {}
+  ): RetentionPassResult => ({
+    pass: "logs_plan_window",
+    rows,
+    budgetExhausted: outcome.budgetExhausted ?? false,
+    windows,
+    deferredOrganizations,
+    ...(outcome.error !== undefined && { error: outcome.error }),
+  });
 
-  for (const group of groups) {
-    const cutoff = daysBefore(now, group.retentionDays);
-    const watermarks = await getPurgeWatermarks(group.organizationIds);
-    let groupRows = 0;
+  // Pages may already have committed when a lookup or a watermark write
+  // throws, so a throw becomes this pass's error instead of losing its rows.
+  try {
+    // An organization whose plan just changed is left alone for the grace
+    // period, so a lapse can be undone before the shorter window deletes the
+    // difference. Resolved per run, so the dry run reports the same deferral.
+    const deferred = await resolveRecentPlanChanges(
+      new Date(now.getTime() - config.planChangeGraceMs)
+    );
 
-    for (const organizationId of group.organizationIds) {
-      if (budget.exhausted) {
-        budgetExhausted = true;
-        break;
-      }
-      // Deferred, not drained: no watermark is written, so the next run picks
-      // this organization up from exactly where it stands now.
-      if (deferred.has(organizationId)) {
-        deferredOrganizations += 1;
-        continue;
-      }
-      const from = watermarks.get(organizationId) ?? RETENTION_EPOCH;
-      if (from >= cutoff) {
-        continue;
-      }
+    for (const group of groups) {
+      const cutoff = daysBefore(now, group.retentionDays);
+      const report: RetentionWindowReport = {
+        retentionDays: group.retentionDays,
+        organizationCount: group.organizationIds.length,
+        rows: 0,
+      };
+      windows.push(report);
 
-      const eligible = and(
-        eq(workflows.organizationId, organizationId),
-        gte(workflowExecutions.startedAt, from),
-        lt(workflowExecutions.startedAt, cutoff),
-        notInArray(workflowExecutions.status, [...RESUMABLE_EXECUTION_STATUSES])
+      const starts = await resolveWalkStarts(
+        group.organizationIds,
+        deferred,
+        floorCutoff,
+        cutoff
       );
+      deferredOrganizations += starts.deferred;
+      if (starts.from.size === 0) {
+        continue;
+      }
 
-      const result = await runBatched({
-        pass: "logs_plan_window",
+      // The oldest run per organization the walk had to skip because it can
+      // still resume, read off the probes and the pages themselves. The
+      // watermark stops there, so a run that finishes after the walk passed it
+      // is picked up by a later run instead of being left below the watermark
+      // for good.
+      const skipped = new Map<string, Date>();
+      const walkFrom = await resolveWalkFrom(starts.from, skipped, budget);
+      if (walkFrom === null) {
+        return result({ budgetExhausted: true });
+      }
+      const lowest = earliest(walkFrom);
+      const deletable = (page: RunKey[]): string[] => {
+        const ids: string[] = [];
+        for (const run of page) {
+          const start =
+            run.organizationId === null
+              ? undefined
+              : walkFrom.get(run.organizationId);
+          if (
+            run.organizationId === null ||
+            start === undefined ||
+            run.startedAt < start
+          ) {
+            continue;
+          }
+          if (!RESUMABLE.has(run.status)) {
+            ids.push(run.id);
+            continue;
+          }
+          const pin = skipped.get(run.organizationId);
+          if (pin === undefined || run.startedAt < pin) {
+            skipped.set(run.organizationId, run.startedAt);
+          }
+        }
+        return ids;
+      };
+
+      const walk = await walkPages<RunKey>({
         config,
         budget,
-        selectIds: (limit) =>
+        pageSize: executionBatchSize(config),
+        selectPage: (limit, cursor) =>
           db
-            .select({ id: workflowExecutionLogs.id })
-            .from(workflowExecutionLogs)
-            .innerJoin(
-              workflowExecutions,
-              eq(workflowExecutions.id, workflowExecutionLogs.executionId)
-            )
+            .select({
+              id: workflowExecutions.id,
+              at: sortKey(workflowExecutions.startedAt),
+              startedAt: workflowExecutions.startedAt,
+              organizationId: workflows.organizationId,
+              status: workflowExecutions.status,
+            })
+            .from(workflowExecutions)
             .innerJoin(
               workflows,
               eq(workflows.id, workflowExecutions.workflowId)
             )
-            .where(eligible)
+            .where(
+              and(
+                gte(workflowExecutions.startedAt, lowest),
+                lt(workflowExecutions.startedAt, cutoff),
+                afterCursor(
+                  workflowExecutions.startedAt,
+                  workflowExecutions.id,
+                  cursor
+                )
+              )
+            )
+            .orderBy(workflowExecutions.startedAt, workflowExecutions.id)
             .limit(limit),
-        countEligible: async () =>
-          (
-            await db
-              .select({ n: count() })
-              .from(workflowExecutionLogs)
-              .innerJoin(
-                workflowExecutions,
-                eq(workflowExecutions.id, workflowExecutionLogs.executionId)
-              )
-              .innerJoin(
-                workflows,
-                eq(workflows.id, workflowExecutions.workflowId)
-              )
-              .where(eligible)
-          )[0].n,
-        apply: (ids) =>
-          db
+        apply: async (page) => {
+          const ids = deletable(page);
+          if (ids.length === 0) {
+            return 0;
+          }
+          const deleted = await db
             .delete(workflowExecutionLogs)
-            .where(inArray(workflowExecutionLogs.id, ids)),
+            .where(inArray(workflowExecutionLogs.executionId, ids));
+          return deleted.count;
+        },
+        measure: async (page) => {
+          const ids = deletable(page);
+          if (ids.length === 0) {
+            return 0;
+          }
+          const [{ n }] = await db
+            .select({ n: count() })
+            .from(workflowExecutionLogs)
+            .where(inArray(workflowExecutionLogs.executionId, ids));
+          return n;
+        },
       });
 
-      groupRows += result.rows;
-      if (result.budgetExhausted) {
-        budgetExhausted = true;
-        break;
-      }
-      // Drained -- but "drained" means the SELECT came back empty, and that
-      // SELECT excludes runs that can still resume. Advancing to the cutoff
-      // would move the lower bound past those rows, and since the bound is
-      // inclusive-below they would never be selected again: a run that is
-      // phantom today and succeeds tomorrow would keep its step logs until the
-      // floor pass, hundreds of days past the window its plan sells. So the
-      // watermark stops at the oldest run this pass had to skip. A dry run must
-      // not claim anything at all, since it deleted nothing.
-      if (!config.dryRun) {
-        const skipped = await earliestResumableStartedAt(
-          organizationId,
-          from,
-          cutoff
-        );
-        await setPurgeWatermark(
-          organizationId,
-          skipped && skipped < cutoff ? skipped : cutoff
-        );
-      }
-    }
+      report.rows = walk.rows;
+      rows += walk.rows;
 
-    windows.push({
-      retentionDays: group.retentionDays,
-      organizationCount: group.organizationIds.length,
-      rows: groupRows,
-    });
-    rows += groupRows;
-    if (budgetExhausted) {
-      break;
+      // Drained: every run in the range was handled, up to the cutoff. Stopped
+      // by the budget or an error: every run before the last one handled was,
+      // so progress is recorded there and the next run continues instead of
+      // starting the window over. That instant is the millisecond floor of the
+      // run's started_at and the lower bound is inclusive, so a run sharing it
+      // is walked again rather than skipped. A dry run claims nothing, since it
+      // deleted nothing.
+      const stopped = walk.budgetExhausted || walk.error !== undefined;
+      const reached = stopped ? walk.last?.startedAt : cutoff;
+      if (reached && !config.dryRun) {
+        const writeError = await attempt(() =>
+          setPurgeWatermarks(watermarksReached(starts.from, skipped, reached))
+        );
+        if (writeError !== undefined) {
+          return result({
+            error:
+              walk.error === undefined
+                ? writeError
+                : `${walk.error}; recording progress also failed: ${writeError}`,
+          });
+        }
+      }
+
+      if (walk.error !== undefined) {
+        return result({ error: walk.error });
+      }
+      if (walk.budgetExhausted) {
+        return result({ budgetExhausted: true });
+      }
     }
+  } catch (error) {
+    return result({ error: describeError(error) });
   }
 
-  return {
-    pass: "logs_plan_window",
-    rows,
-    budgetExhausted,
-    windows,
-    deferredOrganizations,
-  };
+  return result();
 }
 
 /**
- * The oldest run in `[from, cutoff)` that the plan-window pass had to skip
- * because it can still resume, or null when it skipped nothing.
- *
- * Same join and the same range as the drain query, minus the step-log side: the
- * question is which run held the pass up, not how many logs it carries. The
- * range bound is inclusive below, so writing this instant as the watermark
- * re-selects that run on the next pass with no epsilon needed.
+ * Where each organization's walk starts: its watermark, raised to the floor
+ * cutoff. Organizations already at their cutoff are left out, and so are the
+ * deferred ones -- no watermark is written for those, so the next run picks
+ * them up from exactly where they stand.
  */
-async function earliestResumableStartedAt(
+async function resolveWalkStarts(
+  organizationIds: string[],
+  deferred: Set<string>,
+  floorCutoff: Date,
+  cutoff: Date
+): Promise<{ from: Map<string, Date>; deferred: number }> {
+  const watermarks = await getPurgeWatermarks(organizationIds);
+  const from = new Map<string, Date>();
+  let deferredCount = 0;
+  for (const organizationId of organizationIds) {
+    if (deferred.has(organizationId)) {
+      deferredCount += 1;
+      continue;
+    }
+    const watermark = watermarks.get(organizationId);
+    const start =
+      watermark && watermark > floorCutoff ? watermark : floorCutoff;
+    if (start < cutoff) {
+      from.set(organizationId, start);
+    }
+  }
+  return { from, deferred: deferredCount };
+}
+
+/**
+ * Where the SQL walk has to start for each organization. The walk is shared by
+ * the whole window, so its lower bound is the lowest of these, and a single
+ * organization far behind the rest would send every run back over the runs of
+ * all the others. That happens for ordinary reasons: a new organization gets
+ * the floor cutoff as its first watermark, a deferred one keeps an old one,
+ * and a run stuck in a resumable status holds one down.
+ *
+ * So each organization behind the window's front is probed on its own,
+ * through its workflows, for the two things that can matter below the front:
+ * the earliest finished run that still has step logs, and the earliest run
+ * that can still resume. The walk starts that organization at the first, or at
+ * the front when there is none, and the second becomes its pin up front. A
+ * probe that times out leaves the organization at its own watermark, which is
+ * slower for the walk but still correct.
+ *
+ * Resolves to null when the budget runs out while probing.
+ */
+async function resolveWalkFrom(
+  from: Map<string, Date>,
+  skipped: Map<string, Date>,
+  budget: RunBudget
+): Promise<Map<string, Date> | null> {
+  const front = latest(from);
+  const laggards = [...from].filter(([, start]) => start < front);
+  if (laggards.length > MAX_LAGGARD_PROBES) {
+    return from;
+  }
+
+  const walkFrom = new Map(from);
+  for (const [organizationId, start] of laggards) {
+    if (budget.exhausted) {
+      return null;
+    }
+    const probe = await probeLaggard(organizationId, start, front);
+    if (probe === null) {
+      continue;
+    }
+    walkFrom.set(organizationId, probe.work ?? front);
+    if (probe.pinned) {
+      skipped.set(organizationId, probe.pinned);
+    }
+  }
+  return walkFrom;
+}
+
+/**
+ * For one organization, within `[from, front)`: the earliest finished run that
+ * still has step logs, and the earliest run that can still resume. A lateral
+ * lookup per workflow, so each is an index seek on (workflow_id, started_at)
+ * rather than a walk of the run table for a match. Null when it timed out.
+ */
+async function probeLaggard(
   organizationId: string,
   from: Date,
-  cutoff: Date
-): Promise<Date | null> {
-  const rows = await db
-    .select({ oldest: min(workflowExecutions.startedAt) })
-    .from(workflowExecutions)
-    .innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
-    .where(
-      and(
-        eq(workflows.organizationId, organizationId),
-        gte(workflowExecutions.startedAt, from),
-        lt(workflowExecutions.startedAt, cutoff),
-        inArray(workflowExecutions.status, [...RESUMABLE_EXECUTION_STATUSES])
-      )
-    );
-  return rows[0]?.oldest ?? null;
+  front: Date
+): Promise<{ work: Date | null; pinned: Date | null } | null> {
+  const lower = sql.param(from, workflowExecutions.startedAt);
+  const upper = sql.param(front, workflowExecutions.startedAt);
+  const resumable = sql.join(
+    RESUMABLE_EXECUTION_STATUSES.map((status) => sql`${status}`),
+    sql`, `
+  );
+  const probe = sql`
+    SELECT
+      (SELECT min(r.started_at)
+         FROM workflows w
+         CROSS JOIN LATERAL (
+           SELECT e.started_at
+             FROM workflow_executions e
+            WHERE e.workflow_id = w.id
+              AND e.started_at >= ${lower} AND e.started_at < ${upper}
+              AND e.status NOT IN (${resumable})
+              AND EXISTS (
+                SELECT 1 FROM workflow_execution_logs l WHERE l.execution_id = e.id
+              )
+            ORDER BY e.started_at
+            LIMIT 1
+         ) r
+        WHERE w.organization_id = ${organizationId})::text AS work,
+      (SELECT min(r.started_at)
+         FROM workflows w
+         CROSS JOIN LATERAL (
+           SELECT e.started_at
+             FROM workflow_executions e
+            WHERE e.workflow_id = w.id
+              AND e.started_at >= ${lower} AND e.started_at < ${upper}
+              AND e.status IN (${resumable})
+            ORDER BY e.started_at
+            LIMIT 1
+         ) r
+        WHERE w.organization_id = ${organizationId})::text AS pinned
+  `;
+
+  try {
+    const rows = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql.raw(`SET LOCAL statement_timeout = ${PROBE_TIMEOUT_MS}`)
+      );
+      return await tx.execute<{ work: string | null; pinned: string | null }>(
+        probe
+      );
+    });
+    const row = rows[0];
+    return {
+      work: parseTimestampText(row?.work),
+      pinned: parseTimestampText(row?.pinned),
+    };
+  } catch (error) {
+    if (isStatementTimeout(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** True for a statement timeout, whether or not the driver error is wrapped. */
+function isStatementTimeout(error: unknown): boolean {
+  const code = (value: unknown): unknown =>
+    value && typeof value === "object" && "code" in value
+      ? (value as { code: unknown }).code
+      : undefined;
+  return (
+    code(error) === QUERY_CANCELED ||
+    (error instanceof Error && code(error.cause) === QUERY_CANCELED)
+  );
+}
+
+/**
+ * A `timestamp` Postgres printed as text, as a Date. The fraction is cut to
+ * milliseconds, never rounded up, so the instant can only be at or before the
+ * real one -- the safe side for a lower bound and for a watermark.
+ */
+function parseTimestampText(text: string | null | undefined): Date | null {
+  return text ? new Date(`${text.replace(" ", "T")}Z`) : null;
+}
+
+function earliest(instants: Map<string, Date>): Date {
+  return new Date(
+    Math.min(...[...instants.values()].map((instant) => instant.getTime()))
+  );
+}
+
+function latest(instants: Map<string, Date>): Date {
+  return new Date(
+    Math.max(...[...instants.values()].map((instant) => instant.getTime()))
+  );
+}
+
+/**
+ * The watermark each walked organization has earned: the instant the walk
+ * reached, held back to the oldest run it had to skip. Only organizations it
+ * moves forward are returned.
+ */
+function watermarksReached(
+  from: Map<string, Date>,
+  skipped: Map<string, Date>,
+  reached: Date
+): Map<string, Date> {
+  const through = new Map<string, Date>();
+  for (const [organizationId, start] of from) {
+    const pin = skipped.get(organizationId);
+    const mark = pin && pin < reached ? pin : reached;
+    if (mark > start) {
+      through.set(organizationId, mark);
+    }
+  }
+  return through;
 }
 
 /**
@@ -450,32 +744,41 @@ function stripExpiredOutputRaw(
     pass: "output_raw",
     config,
     budget,
-    selectIds: (limit) =>
+    selectPage: (limit, cursor) =>
       db
-        .select({ id: workflowExecutionLogs.id })
+        .select({
+          id: workflowExecutionLogs.id,
+          at: sortKey(workflowExecutionLogs.startedAt),
+        })
         .from(workflowExecutionLogs)
         .innerJoin(
           workflowExecutions,
           eq(workflowExecutions.id, workflowExecutionLogs.executionId)
         )
-        .where(eligible)
-        .limit(limit),
-    countEligible: async () =>
-      (
-        await db
-          .select({ n: count() })
-          .from(workflowExecutionLogs)
-          .innerJoin(
-            workflowExecutions,
-            eq(workflowExecutions.id, workflowExecutionLogs.executionId)
+        .where(
+          and(
+            eligible,
+            afterCursor(
+              workflowExecutionLogs.startedAt,
+              workflowExecutionLogs.id,
+              cursor
+            )
           )
-          .where(eligible)
-      )[0].n,
-    apply: (ids) =>
-      db
+        )
+        .orderBy(workflowExecutionLogs.startedAt, workflowExecutionLogs.id)
+        .limit(limit),
+    apply: async (keys) => {
+      await db
         .update(workflowExecutionLogs)
         .set({ outputRaw: null })
-        .where(inArray(workflowExecutionLogs.id, ids)),
+        .where(
+          inArray(
+            workflowExecutionLogs.id,
+            keys.map((key) => key.id)
+          )
+        );
+      return keys.length;
+    },
   });
 }
 
@@ -490,28 +793,38 @@ function purgeSoftDeletedLogs(
   budget: RunBudget
 ): Promise<RetentionPassResult> {
   const cutoff = daysBefore(now, config.softDeleteGraceDays);
-  const eligible = lt(workflowExecutionLogs.deletedAt, cutoff);
   return runBatched({
     pass: "logs_soft_deleted",
     config,
     budget,
-    selectIds: (limit) =>
+    selectPage: (limit, cursor) =>
       db
-        .select({ id: workflowExecutionLogs.id })
+        .select({
+          id: workflowExecutionLogs.id,
+          at: sortKey(workflowExecutionLogs.deletedAt),
+        })
         .from(workflowExecutionLogs)
-        .where(eligible)
+        .where(
+          and(
+            lt(workflowExecutionLogs.deletedAt, cutoff),
+            afterCursor(
+              workflowExecutionLogs.deletedAt,
+              workflowExecutionLogs.id,
+              cursor
+            )
+          )
+        )
+        .orderBy(workflowExecutionLogs.deletedAt, workflowExecutionLogs.id)
         .limit(limit),
-    countEligible: async () =>
-      (
-        await db
-          .select({ n: count() })
-          .from(workflowExecutionLogs)
-          .where(eligible)
-      )[0].n,
-    apply: (ids) =>
-      db
-        .delete(workflowExecutionLogs)
-        .where(inArray(workflowExecutionLogs.id, ids)),
+    apply: async (keys) => {
+      await db.delete(workflowExecutionLogs).where(
+        inArray(
+          workflowExecutionLogs.id,
+          keys.map((key) => key.id)
+        )
+      );
+      return keys.length;
+    },
   });
 }
 
@@ -532,23 +845,21 @@ function purgeSoftDeletedLogs(
  * payg_payments nor workflow_payments has a foreign key, so nothing in the
  * database would stop the delete.
  */
-async function purgeExecutionsPastFlatWindow(
+function purgeExecutionsPastFlatWindow(
   config: RetentionConfig,
   now: Date,
   budget: RunBudget
 ): Promise<RetentionPassResult> {
   if (!config.executionsEnabled) {
-    return {
+    return Promise.resolve({
       pass: "executions_flat_window",
       rows: 0,
       budgetExhausted: false,
       skipped: "disabled",
-    };
+    });
   }
 
   const cutoff = daysBefore(now, config.executionRetentionDays);
-  const limit = executionBatchSize(config);
-  let rows = 0;
 
   // Retired only when nothing has been paid for the run. `payg_payments`
   // declares execution_id NOT NULL, but `workflow_payments` does not -- a
@@ -570,113 +881,198 @@ async function purgeExecutionsPastFlatWindow(
     )
   );
 
-  if (config.dryRun) {
-    if (budget.exhausted) {
-      return { pass: "executions_flat_window", rows: 0, budgetExhausted: true };
-    }
-    const [{ n }] = await db
-      .select({ n: count() })
-      .from(workflowExecutions)
-      .where(eligible);
-    return {
-      pass: "executions_flat_window",
-      rows: n,
-      budgetExhausted: false,
-    };
-  }
-
-  for (;;) {
-    if (budget.exhausted) {
-      return { pass: "executions_flat_window", rows, budgetExhausted: true };
-    }
-
-    const victims = await db
-      .select({ id: workflowExecutions.id })
-      .from(workflowExecutions)
-      .where(eligible)
-      .orderBy(workflowExecutions.startedAt)
-      .limit(limit);
-
-    if (victims.length === 0) {
-      return { pass: "executions_flat_window", rows, budgetExhausted: false };
-    }
-
-    const ids = victims.map((victim) => victim.id);
-
-    // One transaction so a run row can never survive the deletion of its own
-    // logs. Children first: workflow_execution_logs and feedback both reference
-    // workflow_executions ON DELETE NO ACTION.
-    await db.transaction(async (tx) => {
-      await tx
-        .delete(workflowExecutionLogs)
-        .where(inArray(workflowExecutionLogs.executionId, ids));
-      await tx.delete(feedback).where(inArray(feedback.executionId, ids));
-      await tx
-        .delete(workflowExecutions)
-        .where(inArray(workflowExecutions.id, ids));
-    });
-
-    rows += ids.length;
-  }
+  return runBatched({
+    pass: "executions_flat_window",
+    config,
+    budget,
+    pageSize: executionBatchSize(config),
+    selectPage: (limit, cursor) =>
+      db
+        .select({
+          id: workflowExecutions.id,
+          at: sortKey(workflowExecutions.startedAt),
+        })
+        .from(workflowExecutions)
+        .where(
+          and(
+            eligible,
+            afterCursor(
+              workflowExecutions.startedAt,
+              workflowExecutions.id,
+              cursor
+            )
+          )
+        )
+        .orderBy(workflowExecutions.startedAt, workflowExecutions.id)
+        .limit(limit),
+    apply: async (keys) => {
+      const ids = keys.map((key) => key.id);
+      // One transaction so a run row can never survive the deletion of its own
+      // logs. Children first: workflow_execution_logs and feedback both
+      // reference workflow_executions ON DELETE NO ACTION.
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(workflowExecutionLogs)
+          .where(inArray(workflowExecutionLogs.executionId, ids));
+        await tx.delete(feedback).where(inArray(feedback.executionId, ids));
+        await tx
+          .delete(workflowExecutions)
+          .where(inArray(workflowExecutions.id, ids));
+      });
+      return ids.length;
+    },
+  });
 }
 
-type BatchedPass = {
-  pass: RetentionPassName;
+/**
+ * The sort key of the last row a page returned; the next page starts after it.
+ * `at` is the timestamp as Postgres prints it, see sortKey.
+ */
+type BatchCursor = { at: string; id: string };
+
+/** One row of a page: its id and the timestamp the pass orders by. */
+type BatchKey = { id: string; at: string };
+
+type PageWalkSpec<K extends BatchKey> = {
   config: RetentionConfig;
   budget: RunBudget;
-  selectIds: (limit: number) => Promise<Array<{ id: string }>>;
-  apply: (ids: string[]) => Promise<unknown>;
+  /** Rows per page. Defaults to `config.batchSize`. */
+  pageSize?: number;
+  /** The next page after `cursor`, ordered by `(at, id)`. */
+  selectPage: (limit: number, cursor: BatchCursor | null) => Promise<K[]>;
+  /** Act on one page; resolves to the rows it touched. */
+  apply: (page: K[]) => Promise<number>;
   /**
-   * How many rows this pass would touch, over the same predicate `selectIds`
-   * uses and with no limit. Only ever called on a dry run, which is the one
-   * mode whose whole purpose is to report a number an operator will act on.
+   * The rows `apply` would touch, for a dry run. Omitted where a page is the
+   * rows themselves; the plan-window pass pages by run and counts their logs.
    */
-  countEligible: () => Promise<number>;
+  measure?: (page: K[]) => Promise<number>;
+};
+
+type PageWalk<K extends BatchKey> = {
+  rows: number;
+  budgetExhausted: boolean;
+  /** The last row of the last page acted on, or null before the first. */
+  last: K | null;
+  error?: string;
 };
 
 /**
- * Select a bounded page of ids, then act on exactly those ids. The two-step
- * shape is what keeps memory flat: at most `batchSize` ids exist at once,
- * unlike purgeExpiredAuditEvents, which materialises every deleted id in one go
- * and would not survive this table.
- *
- * Every batch is its own statement, so no transaction is held open long enough
- * to block autovacuum -- the exact failure mode that pinned the database on
- * 2026-09-02.
+ * `(at, id) > (cursor.at, cursor.id)`: start a page right after the previous
+ * one. Without it every page re-read the rows earlier pages had already
+ * cleared -- on prod a sequential scan of the step-log table per page -- until
+ * one page ran past the statement timeout and failed the run.
  */
-async function runBatched({
-  pass,
+function afterCursor(
+  at: PgColumn,
+  id: PgColumn,
+  cursor: BatchCursor | null
+): SQL | undefined {
+  if (!cursor) {
+    return;
+  }
+  // Every column a pass orders by is `timestamp without time zone`.
+  return sql`(${at}, ${id}) > (${cursor.at}::timestamp, ${cursor.id})`;
+}
+
+/**
+ * A page's sort timestamp as text. The columns keep microseconds and a JS Date
+ * keeps milliseconds, so a cursor read back as a Date sits just before its own
+ * row: the next page returns that row again, and a page of one never moves.
+ */
+function sortKey(column: PgColumn): SQL<string> {
+  return sql<string>`${column}::text`;
+}
+
+/** The query error plus its database cause, which carries the actual reason. */
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  return error.cause instanceof Error
+    ? `${error.message}: ${error.cause.message}`
+    : error.message;
+}
+
+/**
+ * Walk a pass in pages, each starting after the last row the previous page
+ * returned, and act on exactly the rows of each page. At most one page of ids
+ * exists at a time, unlike purgeExpiredAuditEvents, which materialises every
+ * deleted id in one go and would not survive this table. Every page is its own
+ * statement, so no transaction is held open long enough to block autovacuum --
+ * the failure mode that pinned the database on 2026-09-02.
+ *
+ * The cursor keeps every page the same cost however much the pass has already
+ * cleared, because a page never goes back over rows behind it.
+ *
+ * A dry run walks the same pages and writes nothing. The cursor still moves,
+ * so the walk ends -- never a count over the whole table, which on prod is a
+ * full scan of the step-log table and cannot finish inside the timeout.
+ *
+ * A failure is returned rather than thrown, with the rows the earlier pages
+ * already committed, so a run that dies partway still reports what it did.
+ */
+async function walkPages<K extends BatchKey>({
   config,
   budget,
-  selectIds,
+  pageSize,
+  selectPage,
   apply,
-  countEligible,
-}: BatchedPass): Promise<RetentionPassResult> {
-  // A dry run counts instead of deleting. It cannot loop -- with nothing
-  // changed the same page would come back forever -- so counting one page and
-  // reporting that was capping every figure at `batchSize`, per pass and per
-  // organization. The number the operator reads before turning dry-run off is
-  // the whole point of the mode, so it has to be the real one.
-  if (config.dryRun) {
-    if (budget.exhausted) {
-      return { pass, rows: 0, budgetExhausted: true };
-    }
-    return { pass, rows: await countEligible(), budgetExhausted: false };
-  }
-
+  measure,
+}: PageWalkSpec<K>): Promise<PageWalk<K>> {
+  const limit = pageSize ?? config.batchSize;
   let rows = 0;
+  let last: K | null = null;
 
-  for (;;) {
-    if (budget.exhausted) {
-      return { pass, rows, budgetExhausted: true };
+  try {
+    for (;;) {
+      if (budget.exhausted) {
+        return { rows, budgetExhausted: true, last };
+      }
+
+      const cursor = last ? { at: last.at, id: last.id } : null;
+      const page = await selectPage(limit, cursor);
+      const end = page.at(-1);
+      if (!end) {
+        return { rows, budgetExhausted: false, last };
+      }
+
+      if (config.dryRun) {
+        rows += measure ? await measure(page) : page.length;
+      } else {
+        rows += await apply(page);
+      }
+      last = end;
     }
+  } catch (error) {
+    return { rows, budgetExhausted: false, last, error: describeError(error) };
+  }
+}
 
-    const victims = await selectIds(config.batchSize);
-    if (victims.length === 0) {
-      return { pass, rows, budgetExhausted: false };
-    }
+/** A pass that is one page walk from start to finish. */
+async function runBatched<K extends BatchKey>({
+  pass,
+  ...spec
+}: PageWalkSpec<K> & {
+  pass: RetentionPassName;
+}): Promise<RetentionPassResult> {
+  const { rows, budgetExhausted, error } = await walkPages(spec);
+  return {
+    pass,
+    rows,
+    budgetExhausted,
+    ...(error !== undefined && { error }),
+  };
+}
 
-    await apply(victims.map((victim) => victim.id));
-    rows += victims.length;
+/** Run one step outside a page walk; resolves to its error, if it threw. */
+async function attempt(
+  step: () => Promise<unknown>
+): Promise<string | undefined> {
+  try {
+    await step();
+    return;
+  } catch (error) {
+    return describeError(error);
   }
 }
