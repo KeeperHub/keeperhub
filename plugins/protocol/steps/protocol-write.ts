@@ -10,6 +10,7 @@ import {
 import { resolveAbi } from "@/lib/abi/cache";
 import { type AbiItem, findAbiFunction } from "@/lib/abi/utils";
 import { withStepValueCap } from "@/lib/execute/value-ledger";
+import { checkProtocolInputGuards } from "@/lib/protocol-input-guards";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import {
   getProtocol,
@@ -330,6 +331,18 @@ export async function protocolWriteStep(
     const preflight = checkUniswapNativeEthPreflight(input, meta);
     if (!preflight.ok) {
       return { success: false, error: preflight.error };
+    }
+
+    // Value-level guards the ABI cannot express (a shape-valid address that
+    // redirects funds). Shared with the direct-execute route so both paths
+    // refuse the same values.
+    const guard = checkProtocolInputGuards(
+      meta.protocolSlug,
+      meta.functionName,
+      input as Record<string, unknown>
+    );
+    if (!guard.ok) {
+      return { success: false, error: guard.error };
     }
 
     // 4. Resolve ABI (from definition or auto-fetch from explorer)

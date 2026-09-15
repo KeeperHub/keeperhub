@@ -21,6 +21,19 @@ const EMPTY_POS_APPROVE = "50000";
 const EMPTY_POS_APPROVE_OWNER = "0x0ac48977074E7355E09809C80e4f411D446d063c";
 const EMPTY_POS_BURN = "100000";
 const EMPTY_POS_BURN_OWNER = "0xa8eBe1eeD676d5BfEB7F7B5933625281489aF8A3";
+// A live, in-range USDC/WETH 0.05% position for the liquidity writes, kept
+// separate from #1 so the get-position read expectation never moves. Verified
+// at mainnet block 25981008: ticks [190140, 205200] around a pool tick of
+// 198094, an EOA owner, fees accrued on both tokens, and a 1e13 liquidity
+// decrease returning both tokens. Setup transfers it to the test wallet like
+// the empty positions above; it rots only if its owner withdraws the liquidity
+// upstream (refresh with another in-range position then).
+const LIQUID_POS = "180205";
+const LIQUID_POS_OWNER = "0x6d64492e2b90f25F8Db3033942560377E166AB99";
+// Far enough ahead (2100-01-01) that a fork's clock never passes it.
+const FAR_DEADLINE = "4102444800";
+// uint128 max: the value Uniswap's own interface passes to collect everything.
+const UINT128_MAX = "340282366920938463463374607431768211455";
 const ERC721_TRANSFER_FROM_ABI = JSON.stringify([
   {
     type: "function",
@@ -40,8 +53,12 @@ const TEST_DATA: ProtocolTestData = {
     setup: {
       minNativeHuman: "0.01",
       // USDC from the mainnet whale + a fabricated SwapRouter02 approval fund
-      // both swaps (USDC -> WETH).
-      requiredTokens: [{ symbol: "USDC", human: "2000" }],
+      // both swaps (USDC -> WETH). USDC and WETH approvals to the position
+      // manager fund increase-liquidity on LIQUID_POS.
+      requiredTokens: [
+        { symbol: "USDC", human: "2000" },
+        { symbol: "WETH", human: "0.1" },
+      ],
       approvals: [],
       fabricatedApprovals: [
         {
@@ -49,8 +66,10 @@ const TEST_DATA: ProtocolTestData = {
           spender: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
           human: "2000",
         },
+        { token: "USDC", spender: POSITION_MANAGER, human: "100" },
+        { token: "WETH", spender: POSITION_MANAGER, human: "0.05" },
       ],
-      // Provision two owned position NFTs for the position writes by
+      // Provision the owned position NFTs the position writes need by
       // impersonating their current holders and transferring them in.
       forkImpersonatedCalls: [
         {
@@ -66,6 +85,13 @@ const TEST_DATA: ProtocolTestData = {
           abi: ERC721_TRANSFER_FROM_ABI,
           functionName: "transferFrom",
           args: [EMPTY_POS_BURN_OWNER, wallet(), EMPTY_POS_BURN],
+        },
+        {
+          impersonate: LIQUID_POS_OWNER,
+          contract: POSITION_MANAGER,
+          abi: ERC721_TRANSFER_FROM_ABI,
+          functionName: "transferFrom",
+          args: [LIQUID_POS_OWNER, wallet(), LIQUID_POS],
         },
       ],
     },
@@ -95,6 +121,27 @@ const TEST_DATA: ProtocolTestData = {
         tokenId: EMPTY_POS_APPROVE,
       },
       "burn-position": { tokenId: EMPTY_POS_BURN },
+      "decrease-liquidity": {
+        tokenId: LIQUID_POS,
+        liquidity: "10000000000000",
+        amount0Min: "0",
+        amount1Min: "0",
+        deadline: FAR_DEADLINE,
+      },
+      "collect-fees": {
+        tokenId: LIQUID_POS,
+        recipient: wallet(),
+        amount0Max: UINT128_MAX,
+        amount1Max: UINT128_MAX,
+      },
+      "increase-liquidity": {
+        tokenId: LIQUID_POS,
+        amount0Desired: amount("USDC", "100"),
+        amount1Desired: amount("WETH", "0.05"),
+        amount0Min: "0",
+        amount1Min: "0",
+        deadline: FAR_DEADLINE,
+      },
       "swap-exact-input": {
         tokenIn: "USDC",
         tokenOut: "WETH",
@@ -119,8 +166,10 @@ const TEST_DATA: ProtocolTestData = {
     // NonfungiblePositionManager mint (UNI/WETH 0.3%, live since 2021),
     // verified on the mainnet fork 2026-07-13. get-position returns the
     // position struct (named outputs) with nonzero liquidity; owner-of returns
-    // its owner. The approve/transfer/burn writes need the test wallet to own a
-    // position, which the harness cannot mint (no mint action) - left skipped.
+    // its owner. The position writes need the test wallet to own a position,
+    // which the harness cannot mint (no mint action), so setup transfers the
+    // positions in: the empty ones for approve/transfer/burn, LIQUID_POS for
+    // decrease-liquidity, collect-fees and increase-liquidity.
     expectations: {
       "get-position": [{ field: "liquidity", nonZero: true }],
       "owner-of": [{ notEmpty: true }],
@@ -143,14 +192,43 @@ const TOKEN_IN_TIP =
 const POSITION_TOKEN_ID_TIP =
   "The NFT token ID representing a Uniswap V3 liquidity position. Each position minted via the NonfungiblePositionManager receives a unique uint256 ID. Find it from the Mint event or via the balanceOf + tokenOfOwnerByIndex pattern.";
 
-// QuoterV2 is the one deliberate divergence from upstream mutability in this
-// file. Upstream the quote functions are `nonpayable` (they use a revert-as-
-// return idiom: pool.swap is invoked inside try/catch and the simulated
+const COLLECT_MAX_TIP =
+  "Upper bound on how much of this token to withdraw, in its smallest unit. The default (2^128 - 1) collects everything the position is owed. Get Position Details' Tokens Owed fields only update when a position is touched, so they leave out fees earned since - do not use them to decide whether there is anything to collect.";
+
+const DECREASE_LIQUIDITY_TIP =
+  "How much of the position's liquidity to remove, in liquidity units - read the current total from Get Position Details' Liquidity output. The removed tokens are credited to the position, not sent anywhere: follow this step with Collect Fees to withdraw them. Removing all liquidity and collecting is what makes a position burnable.";
+
+const MIN_AMOUNT_TIP =
+  "Slippage guard: the transaction reverts if less than this amount of the token would be removed or added. Set to 0 only for testing - in production, derive it from a recent price so the step cannot be filled at a manipulated rate.";
+
+const COLLECT_RECIPIENT_TIP =
+  "Where the collected tokens go - normally the wallet that owns the position. It must not be the zero address: Uniswap reads that as the position manager itself, and anyone can then sweep the tokens out of it. The action refuses the zero address for that reason.";
+
+const DEADLINE_TIP =
+  "Absolute unix timestamp (seconds) after which the transaction reverts. It is not a duration, and there is no relative-time helper yet, so a literal timestamp in a scheduled workflow will eventually pass and make every later run revert. Until one exists, set a timestamp far enough ahead to cover the life of the schedule.";
+
+const INCREASE_AMOUNT_TIP =
+  "The most of this token to add, in its smallest unit. The pool takes both tokens in the position's current price ratio, so usually only one of the two amounts is used in full. The position manager needs an allowance for both tokens before this step runs - use Approve Token. Use WETH, not native ETH.";
+
+// Two deliberate divergences from upstream mutability in this file.
+//
+// QuoterV2: upstream the quote functions are `nonpayable` (they use a revert-
+// as-return idiom: pool.swap is invoked inside try/catch and the simulated
 // amounts are decoded from the revert data), but every client invokes them
 // via eth_call. Marking them `view` here classifies the action as a read
 // step (no credentials, no gas, no transaction). Solidity's mutability model
 // cannot express "off-chain simulation"; this is the cleanest place to bridge
 // that gap until AbiFunctionOverride supports a stateMutability override.
+//
+// NonfungiblePositionManager burn / collect / decreaseLiquidity /
+// increaseLiquidity: upstream they are `payable` only so they can be batched
+// inside `multicall` alongside a WETH wrap or `refundETH`. Called directly, as
+// these actions do, any ETH sent stays in the position manager, and its public
+// `refundETH()` pays the whole balance to whoever calls it next. A `payable`
+// ABI would show an ETH Value field whose every non-zero use hands that ETH to
+// a stranger, so all four are declared `nonpayable` here. Mutability does not
+// enter the selector or the encoding; the calldata is identical. `burn` was
+// payable before this change and carried the same hazard.
 
 export default defineAbiProtocol({
   name: "Uniswap V3",
@@ -297,6 +375,120 @@ export default defineAbiProtocol({
               helpTip: POSITION_TOKEN_ID_TIP,
               docUrl: UNISWAP_DOCS,
             },
+          },
+        },
+        collect: {
+          slug: "collect-fees",
+          label: "Collect Fees",
+          description:
+            "Withdraw a position's earned fees, plus any tokens a Decrease Liquidity step credited to it, to a recipient",
+          inputs: {
+            tokenId: {
+              label: "Position Token ID",
+              helpTip: POSITION_TOKEN_ID_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            recipient: {
+              label: "Recipient Address",
+              helpTip: COLLECT_RECIPIENT_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            amount0Max: {
+              label: "Max Token 0 Amount (wei)",
+              default: UINT128_MAX,
+              helpTip: COLLECT_MAX_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            amount1Max: {
+              label: "Max Token 1 Amount (wei)",
+              default: UINT128_MAX,
+              helpTip: COLLECT_MAX_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+          },
+          outputs: {
+            amount0: { label: "Token 0 Collected (wei)" },
+            amount1: { label: "Token 1 Collected (wei)" },
+          },
+        },
+        decreaseLiquidity: {
+          slug: "decrease-liquidity",
+          label: "Decrease Liquidity",
+          description:
+            "Remove liquidity from a position. The tokens stay credited to the position until a Collect Fees step withdraws them",
+          inputs: {
+            tokenId: {
+              label: "Position Token ID",
+              helpTip: POSITION_TOKEN_ID_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            liquidity: {
+              label: "Liquidity to Remove",
+              helpTip: DECREASE_LIQUIDITY_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            amount0Min: {
+              label: "Minimum Token 0 Out (wei)",
+              helpTip: MIN_AMOUNT_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            amount1Min: {
+              label: "Minimum Token 1 Out (wei)",
+              helpTip: MIN_AMOUNT_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            deadline: {
+              label: "Deadline (unix timestamp)",
+              helpTip: DEADLINE_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+          },
+          outputs: {
+            amount0: { label: "Token 0 Credited (wei)" },
+            amount1: { label: "Token 1 Credited (wei)" },
+          },
+        },
+        increaseLiquidity: {
+          slug: "increase-liquidity",
+          label: "Increase Liquidity",
+          description:
+            "Add liquidity to an existing position, for example to compound collected fees back in",
+          inputs: {
+            tokenId: {
+              label: "Position Token ID",
+              helpTip: POSITION_TOKEN_ID_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            amount0Desired: {
+              label: "Token 0 Amount to Add (wei)",
+              helpTip: INCREASE_AMOUNT_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            amount1Desired: {
+              label: "Token 1 Amount to Add (wei)",
+              helpTip: INCREASE_AMOUNT_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            amount0Min: {
+              label: "Minimum Token 0 Added (wei)",
+              helpTip: MIN_AMOUNT_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            amount1Min: {
+              label: "Minimum Token 1 Added (wei)",
+              helpTip: MIN_AMOUNT_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+            deadline: {
+              label: "Deadline (unix timestamp)",
+              helpTip: DEADLINE_TIP,
+              docUrl: UNISWAP_DOCS,
+            },
+          },
+          outputs: {
+            liquidity: { label: "Liquidity Added" },
+            amount0: { label: "Token 0 Added (wei)" },
+            amount1: { label: "Token 1 Added (wei)" },
           },
         },
       },

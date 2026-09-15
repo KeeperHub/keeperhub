@@ -1,5 +1,6 @@
 import "server-only";
 
+import { checkProtocolInputGuards } from "@/lib/protocol-input-guards";
 import { getProtocol, type ProtocolActionInput } from "@/lib/protocol-registry";
 
 export type BuildProtocolFunctionArgsResult =
@@ -61,6 +62,14 @@ export function buildProtocolFunctionArgs(
 
   if (!protocolAction || protocolAction.inputs.length === 0) {
     return { ok: true, functionArgs: undefined };
+  }
+
+  // Value-level guards the ABI cannot express (a shape-valid address that
+  // redirects funds). Shared with the workflow write step so both paths
+  // refuse the same values.
+  const guard = checkProtocolInputGuards(protocolSlug, functionName, input);
+  if (!guard.ok) {
+    return { ok: false, error: guard.error, field: guard.field };
   }
 
   const args: string[] = [];
