@@ -446,6 +446,21 @@ describe("status mapping", () => {
     }
   });
 
+  it("redacts a token that straddles the length bound", async () => {
+    // The bound used to run first. It cuts at 400 characters, so a token
+    // crossing that cut was truncated before the redaction pass could match
+    // it and its prefix survived into the run log.
+    safeFetchMock.mockResolvedValue(
+      jsonResponse({ error: `${"a".repeat(395)}hook-token` }, 500)
+    );
+    const result = await callStep();
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).not.toContain("hook");
+    }
+  });
+
   it("redacts a bearer token it was not configured with", async () => {
     safeFetchMock.mockResolvedValue(
       jsonResponse(
