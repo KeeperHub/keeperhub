@@ -25,6 +25,9 @@
  */
 
 // Dangerous patterns that should never appear in conditions
+import { regexPatternProblem } from "./regex-pattern";
+import { decodeLiteralBody } from "./safe-eval";
+
 const DANGEROUS_PATTERNS = [
   // Assignment operators
   /(?<![=!<>])=(?!=)/g, // = but not ==, ===, !=, !==, <=, >=
@@ -94,6 +97,144 @@ const BRACKET_EXPRESSION_PATTERN = /(\w+)\s*\[([^\]]+)\]/g;
 const VALID_BRACKET_ACCESS_PATTERN = /^__v\d+$/;
 const VALID_BRACKET_CONTENT_PATTERN = /^(\d+|'[^']*'|"[^"]*")$/;
 
+// A string literal whose contents contain a bracket character. Such a literal
+// cannot be a bracket index key (those are digits or plain quoted names), but it
+// can be a regex pattern, and the scans below cannot tell the two apart from the
+// raw text: `"^0x[0-9a-fA-F]{40}$"` reads as `f[0-9a-fA-F]` indexing and fails
+// with "Cannot index". Blank the interior before scanning, keeping the quotes
+// and the length so offsets in the error messages stay accurate.
+const BRACKET_BEARING_LITERAL_PATTERN =
+  /"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'/g;
+
+const BRACKET_CHAR_PATTERN = /[[\]]/;
+
+function maskBracketBearingStrings(expression: string): string {
+  return expression.replace(BRACKET_BEARING_LITERAL_PATTERN, (literal) =>
+    BRACKET_CHAR_PATTERN.test(literal)
+      ? `"${" ".repeat(Math.max(literal.length - 2, 0))}"`
+      : literal
+  );
+}
+
+// Unanchored string-literal matcher (the module's STRING_LITERAL_PATTERN is
+// anchored with ^, so it only ever matches at an offset).
+const ANY_STRING_LITERAL_PATTERN = /(['"])(?:\\.|(?!\1).)*\1/g;
+
+/**
+ * Blank the interior of every string literal, keeping the quotes and the length
+ * so offsets reported in error messages stay accurate. The dangerous-syntax scan
+ * runs on this copy: a regex pattern such as `"^new.*$"` is a config value, and
+ * reading the `new` inside it as the operator rejects a condition that is one
+ * plain string.
+ */
+function maskStringLiterals(expression: string): string {
+  return expression.replace(
+    new RegExp(ANY_STRING_LITERAL_PATTERN.source, "g"),
+    (literal) =>
+      `${literal[0]}${" ".repeat(Math.max(literal.length - 2, 0))}${literal[0]}`
+  );
+}
+
+const MATCHES_REGEX_CALL_PATTERN = /matchesRegex\s*\(/g;
+
+/**
+ * The second argument of every top-level `matchesRegex(...)` call. Bracketed by
+ * that call's own parentheses so a nested call cannot hand back the wrong
+ * operand.
+ */
+function regexPatternOperands(expression: string): string[] {
+  const operands: string[] = [];
+  const callPattern = new RegExp(MATCHES_REGEX_CALL_PATTERN.source, "g");
+  let call: RegExpExecArray | null = null;
+  // biome-ignore lint/suspicious/noAssignInExpressions: Standard pattern for regex.exec in loop
+  while ((call = callPattern.exec(expression)) !== null) {
+    const openIndex = call.index + call[0].length - 1;
+    let depth = 0;
+    let literal: string | null = null;
+    let escaped = false;
+    let commaIndex = -1;
+    let endIndex = -1;
+    for (let i = openIndex; i < expression.length; i += 1) {
+      const char = expression[i];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (literal !== null) {
+        if (char === literal) {
+          literal = null;
+        }
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        literal = char;
+        continue;
+      }
+      if (char === "(") {
+        depth += 1;
+        continue;
+      }
+      if (char === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          endIndex = i;
+          break;
+        }
+        continue;
+      }
+      if (char === "," && depth === 1 && commaIndex === -1) {
+        commaIndex = i;
+      }
+    }
+    if (commaIndex === -1 || endIndex === -1) {
+      continue;
+    }
+    operands.push(expression.slice(commaIndex + 1, endIndex).trim());
+  }
+  return operands;
+}
+
+const QUOTED_PATTERN = /^(['"])((?:\\.|(?!\1).)*)\1$/;
+
+/**
+ * The pattern must be a quoted string literal, and it must be one the executor
+ * can afford to run. A pattern built from an operand cannot be checked before it
+ * arrives, and it is the shape that carries a nested quantifier in from a
+ * webhook, so it is refused rather than audited.
+ *
+ * The guard runs on the DECODED body, not on the text between the quotes. The
+ * evaluator decodes `\xNN` and `\uNNNN` before it compiles the pattern, so
+ * scanning the raw body inspected one string while the engine ran another:
+ * `"(a\x2b)\x2b$"` carries no `+` to find and compiles to `(a+)+$`.
+ */
+function checkRegexPatterns(expression: string): ValidationResult {
+  for (const operand of regexPatternOperands(expression)) {
+    const literal = operand.match(QUOTED_PATTERN);
+    if (literal === null) {
+      return {
+        valid: false,
+        error: `matchesRegex needs a quoted pattern, not an expression: ${operand.slice(0, 80)}`,
+      };
+    }
+    const decoded = decodeLiteralBody(literal[2], literal[1]);
+    if (decoded === null) {
+      return {
+        valid: false,
+        error: `matchesRegex pattern carries an escape sequence the evaluator cannot decode: ${operand.slice(0, 80)}`,
+      };
+    }
+    const problem = regexPatternProblem(decoded);
+    if (problem !== null) {
+      return { valid: false, error: problem };
+    }
+  }
+  return { valid: true };
+}
+
 // Top-level regex patterns for token validation
 const WHITESPACE_SPLIT_PATTERN = /\s+/;
 const VARIABLE_TOKEN_PATTERN = /^__v\d+/;
@@ -124,13 +265,20 @@ export type ValidationResult =
   | { valid: false; error: string };
 
 /**
- * Check for dangerous patterns in the expression
+ * Check for dangerous patterns in the expression.
+ *
+ * `scanned` is the caller's masked copy: syntax inside a quoted value is a
+ * config string, not code. `expression` is still passed so the message can name
+ * what was found in the text the author wrote.
  */
-function checkDangerousPatterns(expression: string): ValidationResult {
+function checkDangerousPatterns(
+  expression: string,
+  scanned: string
+): ValidationResult {
   for (const pattern of DANGEROUS_PATTERNS) {
     // Reset regex state
     pattern.lastIndex = 0;
-    if (pattern.test(expression)) {
+    if (pattern.test(scanned)) {
       pattern.lastIndex = 0;
       const match = expression.match(pattern);
       return {
@@ -148,12 +296,15 @@ function checkDangerousPatterns(expression: string): ValidationResult {
  * - Blocked: Array literals like [1,2,3], or dangerous expressions like __v0[eval('x')]
  */
 function checkBracketExpressions(expression: string): ValidationResult {
+  // Scan the masked copy: brackets inside a string literal are pattern text, not
+  // indexing (see maskBracketBearingStrings).
+  const scanned = maskBracketBearingStrings(expression);
   BRACKET_EXPRESSION_PATTERN.lastIndex = 0;
 
   // Use exec loop for compatibility
   let match: RegExpExecArray | null = null;
   while (true) {
-    match = BRACKET_EXPRESSION_PATTERN.exec(expression);
+    match = BRACKET_EXPRESSION_PATTERN.exec(scanned);
     if (match === null) {
       break;
     }
@@ -184,7 +335,7 @@ function checkBracketExpressions(expression: string): ValidationResult {
   // This catches cases like "[1, 2, 3]" at the start of expression or after operators
   const standaloneArrayPattern = /(?:^|[=!<>&|(\s])\s*\[/g;
   standaloneArrayPattern.lastIndex = 0;
-  if (standaloneArrayPattern.test(expression)) {
+  if (standaloneArrayPattern.test(scanned)) {
     return {
       valid: false,
       error:
@@ -306,32 +457,51 @@ export function validateConditionExpression(
     return { valid: false, error: "Condition expression cannot be empty" };
   }
 
+  // Literal content is a config value, not syntax, so every scanner that reads
+  // the expression as code reads this copy instead: a pattern such as
+  // `"Error\("` is not an unbalanced parenthesis, `"^process-\d+$"` is not a
+  // reference to `process`, and `"x.toFixed()"` is not a method call. Masking
+  // once here is what keeps the five scanners agreeing; each masking its own
+  // input is how four of them came to read the raw text and reject a condition
+  // whose only sin was a pattern with a parenthesis in it.
+  //
+  // checkRegexPatterns is the exception: it needs the literal, because the
+  // pattern is the thing it inspects.
+  const scanned = maskStringLiterals(expression);
+
   // Check for dangerous patterns
-  const dangerousCheck = checkDangerousPatterns(expression);
+  const dangerousCheck = checkDangerousPatterns(expression, scanned);
   if (!dangerousCheck.valid) {
     return dangerousCheck;
   }
 
+  // A regex pattern is bounded before anything runs it: the executor evaluates
+  // conditions with no timeout, so an unbounded match stalls the run.
+  const regexCheck = checkRegexPatterns(expression);
+  if (!regexCheck.valid) {
+    return regexCheck;
+  }
+
   // Check bracket expressions (array access vs array literals)
-  const bracketCheck = checkBracketExpressions(expression);
+  const bracketCheck = checkBracketExpressions(scanned);
   if (!bracketCheck.valid) {
     return bracketCheck;
   }
 
   // Check method calls are allowed
-  const methodCheck = checkMethodCalls(expression);
+  const methodCheck = checkMethodCalls(scanned);
   if (!methodCheck.valid) {
     return methodCheck;
   }
 
   // Validate balanced parentheses
-  const parenCheck = checkParentheses(expression);
+  const parenCheck = checkParentheses(scanned);
   if (!parenCheck.valid) {
     return parenCheck;
   }
 
   // Check for unauthorized identifiers
-  const identifierCheck = checkUnauthorizedIdentifiers(expression);
+  const identifierCheck = checkUnauthorizedIdentifiers(scanned);
   if (!identifierCheck.valid) {
     return identifierCheck;
   }
@@ -365,11 +535,15 @@ export function preValidateConditionExpression(
     "prototype",
   ];
 
-  // Strip template variables before keyword check — node IDs like @process
-  // are safe and should not trigger false positives
+  // Strip template variables before keyword check - node IDs like @process
+  // are safe and should not trigger false positives. Then mask quoted values
+  // for the same reason the full validator does: this runs BEFORE template
+  // substitution, so the expression still carries `{{@...}}` tokens, and the
+  // mask leaves those alone because it only rewrites what sits between quotes.
   const expressionWithoutTemplates = expression.replace(/\{\{@[^}]+\}\}/g, "");
+  const scanned = maskStringLiterals(expressionWithoutTemplates);
 
-  const lowerExpression = expressionWithoutTemplates.toLowerCase();
+  const lowerExpression = scanned.toLowerCase();
   for (const keyword of dangerousKeywords) {
     if (lowerExpression.includes(keyword.toLowerCase())) {
       return {
@@ -502,6 +676,19 @@ function tokenizeExpression(
       }
     }
     if (matched) {
+      continue;
+    }
+
+    // Argument separator. Typed as a separator rather than an operator so the
+    // operator rules below do not read it as one: `matchesRegex(a, b)` is a call,
+    // not a comma-expression.
+    if (expression[i] === ",") {
+      tokens.push({
+        type: "separator",
+        value: ",",
+        start: i,
+      });
+      i++;
       continue;
     }
 

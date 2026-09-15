@@ -120,7 +120,7 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `contains` | contains | String | Left operand contains right operand |
 | `startsWith` | starts with | String | Left operand starts with right operand |
 | `endsWith` | ends with | String | Left operand ends with right operand |
-| `matchesRegex` | matches regex | Pattern | Left operand matches regex pattern in right operand |
+| `matchesRegex` | matches regex | Pattern | Left operand matches the regex pattern in the right operand. The pattern must be a quoted string, not a reference. Both operands are coerced with `String()`, as they are for `contains` and `startsWith`, so a null operand matches the pattern `^null$` rather than failing |
 | `isEmpty` | is empty | Existence | Value is null, undefined, or empty string |
 | `isNotEmpty` | is not empty | Existence | Value is not null, undefined, or empty string |
 | `exists` | exists | Existence | Value is not null and not undefined |
@@ -129,6 +129,8 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `isNotNull` | is not null | Existence | Value is anything except null (undefined still matches) |
 | `isUndefined` | is undefined | Existence | Value is strictly undefined (null does not match) |
 | `isNotUndefined` | is not undefined | Existence | Value is anything except undefined (null still matches) |
+
+**`matchesRegex` patterns:** the pattern is a quoted string literal rather than a field reference, so it can be checked before the run instead of when it arrives. Two shapes are refused, because conditions are evaluated with no timeout and either can backtrack without bound: a quantifier applied to a group that contains a quantifier or an alternation (`(a+)+$`), and two quantifiers in a row over the same characters (`a+a+`, `\w+\d+`). `^0x[0-9a-fA-F]{40}$` is accepted, and so is `[a-z]+[0-9]+`, whose two atoms cannot match the same character. Patterns are capped at 512 characters and the matched value at 4096, and both caps throw rather than returning false: a value over the cap fails the step, so a long revert payload or stack trace hard-fails the workflow instead of matching nothing. The operator takes exactly two arguments, so a third (`matchesRegex(value, "a", "i")`) is refused rather than having its flag silently ignored.
 
 **When to use `doesNotExist` vs `isNull` / `isUndefined`:** `exists` and `doesNotExist` treat null and undefined the same, which is the right choice for most checks (for example, a node output field that may or may not be present). Reach for `isNull`, `isNotNull`, `isUndefined`, or `isNotUndefined` only when you need to tell null and undefined apart, since these match one but not the other.
 
