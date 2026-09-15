@@ -1110,6 +1110,33 @@ describe("ethValue encode transforms", () => {
     });
   });
 
+  it("drops a numeric ethValue on an unresolvable action exactly as before, without refusing", async () => {
+    arrange();
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+    mockResolveProtocolMeta.mockReturnValue({
+      ...COMPOUND_SUPPLY_META,
+      functionName: "supplyRenamedUpstream",
+    });
+
+    // Prior behaviour: resolveEthValue only forwards a string, so a number
+    // was dropped and the write went out with no value. The fail-closed
+    // refusal is scoped to a non-empty string value (the #2322 rule) and
+    // must not widen to this case.
+    const result = await protocolWriteStep(makeInput({ ethValue: 1.5 }));
+
+    expect(result.success).toBe(true);
+    expect(mockWriteContractCore).toHaveBeenCalled();
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBeUndefined();
+    expect(mockLogUserError).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["an empty ethValue", ""],
     ["no ethValue at all", undefined],

@@ -9,7 +9,8 @@
  * route (app/api/execute/[...slug]/route.ts), the generic node route's cap
  * reservation (app/api/execute/node/route.ts) and the calldata harness
  * (lib/test-data/encode-action.ts). #2322 added the conversion to the step;
- * #2470 moved it here so the routes reuse it rather than re-implement it.
+ * #2470 moved it here so the routes and the harness call it rather than
+ * re-implement it.
  */
 
 import { ErrorCategory, logUserError } from "@/lib/logging";
@@ -84,39 +85,49 @@ function refuseUnresolvable(meta: ProtocolActionRef): EthValueTransformResult {
  * safe default, so refuse rather than guess.
  *
  * Non-string values. A workflow's template substitution stringifies, but a
- * direct API caller can send a JSON number. When the action registers a
- * transform, a safe-integer number or a bigint is taken as that integer's
- * digits and converted; a number that cannot hold its digits exactly (above
- * 2^53, or fractional) is refused rather than rounded into a fee the
- * contract will reject or, worse, accept at the wrong amount. When no
- * transform is registered the value is returned untouched, so every
- * existing action behaves exactly as before.
+ * direct API caller can send a JSON number. Only where a transform actually
+ * applies - the action resolves and registers one - is a number touched: a
+ * safe-integer number or a bigint is taken as that integer's digits and
+ * converted, and a number that cannot hold its digits exactly (above 2^53,
+ * or fractional) is refused rather than rounded into a fee the contract
+ * will reject or, worse, accept at the wrong amount. Everywhere else a
+ * non-string is returned untouched, so an action with no transform, and an
+ * unresolvable action given a number, behave exactly as before this helper
+ * existed (the step drops the value, the route stringifies it). The
+ * fail-closed refusal is for the case #2322 defined it for: a non-empty
+ * string value on an action that cannot be resolved.
  */
 export function applyEthValueTransform(
   rawEthValue: unknown,
   meta: ProtocolActionRef
 ): EthValueTransformResult {
-  const present =
-    (typeof rawEthValue === "string" && rawEthValue.trim() !== "") ||
-    typeof rawEthValue === "number" ||
-    typeof rawEthValue === "bigint";
-  if (!present) {
+  if (typeof rawEthValue === "string") {
+    if (rawEthValue.trim() === "") {
+      return { ok: true, value: rawEthValue };
+    }
+    const protocolAction = findProtocolAction(meta);
+    if (!protocolAction) {
+      return refuseUnresolvable(meta);
+    }
+    const transform = getEncodeTransform(
+      meta.protocolSlug,
+      protocolAction.slug,
+      "ethValue"
+    );
+    return {
+      ok: true,
+      value: transform ? transform(rawEthValue.trim()) : rawEthValue,
+    };
+  }
+  if (typeof rawEthValue !== "number" && typeof rawEthValue !== "bigint") {
     return { ok: true, value: rawEthValue };
   }
   const protocolAction = findProtocolAction(meta);
-  if (!protocolAction) {
-    return refuseUnresolvable(meta);
-  }
-  const transform = getEncodeTransform(
-    meta.protocolSlug,
-    protocolAction.slug,
-    "ethValue"
-  );
+  const transform = protocolAction
+    ? getEncodeTransform(meta.protocolSlug, protocolAction.slug, "ethValue")
+    : undefined;
   if (!transform) {
     return { ok: true, value: rawEthValue };
-  }
-  if (typeof rawEthValue === "string") {
-    return { ok: true, value: transform(rawEthValue.trim()) };
   }
   if (typeof rawEthValue === "number" && !Number.isSafeInteger(rawEthValue)) {
     return {

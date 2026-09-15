@@ -230,7 +230,11 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
     ).toBe(true);
   });
 
-  it("resolves the action from the route's action type when the config carries no metadata", async () => {
+  it("refuses a value when the config carries no metadata, instead of reserving for a step that will fail", async () => {
+    // executeNode hands the step only the config, so a config without
+    // _actionType/_protocolMeta fails inside the step ("Invalid
+    // _protocolMeta"). Resolving from the route's actionType here would
+    // reserve the cap and create an execution for exactly that failure.
     protocolWrite();
     const { _actionType: _omitted, ...config } = sendConfig(FEE_WEI);
 
@@ -238,12 +242,33 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
       postRequest({ actionType: "layerzero/oft-send", config })
     );
 
-    expect(response.status).toBe(200);
-    expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reserved: { kind: "evm", valueWei: FEE_WEI },
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/no resolvable _actionType/);
+    expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(mocks.stepFn).not.toHaveBeenCalled();
+  });
+
+  it("reserves zero for a numeric value on an unresolvable action, exactly as before", async () => {
+    // Prior behaviour for a non-string value: parseNodeNativeValueWei only
+    // reads a string ethValue, so a number reserved 0 and the step dropped
+    // it. A stale action must not turn that into a refusal.
+    protocolWrite();
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "layerzero/no-such-action",
+        config: {
+          ...sendConfig(218_756_042_576_226),
+          _actionType: "layerzero/no-such-action",
+        },
       })
     );
+
+    expect(response.status).toBe(200);
+    expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ reserved: { kind: "evm", valueWei: "0" } })
+    );
+    expect(mocks.capturedInput?.ethValue).toBe(218_756_042_576_226);
   });
 
   it("refuses to reserve a value for a protocol write it cannot resolve", async () => {

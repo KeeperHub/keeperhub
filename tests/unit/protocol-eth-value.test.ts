@@ -7,7 +7,7 @@
  */
 
 import { parseEther } from "ethers";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@/protocols";
 
 vi.mock("server-only", () => ({}));
@@ -53,6 +53,10 @@ describe("findProtocolAction", () => {
 });
 
 describe("applyEthValueTransform", () => {
+  beforeEach(() => {
+    logUserError.mockClear();
+  });
+
   it("converts a wei string to ether on an action that registers weiToEther", () => {
     const out = applyEthValueTransform(OFT_SEND_FIXTURE_FEE_WEI, OFT_SEND);
     expect(out).toEqual({ ok: true, value: "0.01" });
@@ -158,8 +162,28 @@ describe("applyEthValueTransform", () => {
     }
   });
 
-  it("refuses a number on an unresolvable action too", () => {
+  it("passes a number through untouched on an unresolvable action, as before", () => {
+    // The #2322 refusal is for a non-empty STRING on an unresolvable
+    // action. A number never reached the conversion before this helper
+    // existed (the step dropped it, the route stringified it), and it
+    // still does not: no transform can apply without an action, so the
+    // value goes back unchanged and the caller keeps its old behaviour.
     const drifted = { ...OFT_SEND, functionName: "sendRenamed" };
-    expect(applyEthValueTransform(1, drifted).ok).toBe(false);
+    expect(applyEthValueTransform(1, drifted)).toEqual({ ok: true, value: 1 });
+    expect(applyEthValueTransform(0, drifted)).toEqual({ ok: true, value: 0 });
+    expect(applyEthValueTransform(BigInt(5), drifted)).toEqual({
+      ok: true,
+      value: BigInt(5),
+    });
+    expect(logUserError).not.toHaveBeenCalled();
+  });
+
+  it("keeps a zero or false value on a no-transform action untouched", () => {
+    expect(applyEthValueTransform(0, WRAP)).toEqual({ ok: true, value: 0 });
+    expect(applyEthValueTransform(false, WRAP)).toEqual({
+      ok: true,
+      value: false,
+    });
+    expect(applyEthValueTransform("0", WRAP)).toEqual({ ok: true, value: "0" });
   });
 });
