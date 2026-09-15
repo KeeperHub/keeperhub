@@ -9,6 +9,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+// The purge logs an organization it has to skip. The real module pulls in
+// Sentry and the metrics collector, neither of which this suite is about.
+vi.mock("@/lib/logging", () => ({ logWarn: vi.fn() }));
 
 // Operators become inert markers: the builder stub ignores them, and mocking
 // them keeps a sub-select stub from being fed into real drizzle internals.
@@ -59,8 +62,11 @@ vi.mock("@/lib/billing/plans", () => ({
 // load time, which happens before any top-level statement in this file runs.
 const { state, dbStub } = vi.hoisted(() => {
   const hoistedState = {
-    /** Rows returned by successive awaited id selects, in call order. */
-    selectPages: [] as unknown[][],
+    /**
+     * Rows returned by successive awaited id selects, in call order. An Error
+     * in the queue stands for a statement the database refused.
+     */
+    selectPages: [] as Array<unknown[] | Error>,
     selectCalls: 0,
     /** Counts returned to a dry run's countEligible, in call order. */
     counts: [] as number[],
@@ -127,6 +133,9 @@ const { state, dbStub } = vi.hoisted(() => {
         }
         const page = hoistedState.selectPages[hoistedState.selectCalls] ?? [];
         hoistedState.selectCalls += 1;
+        if (page instanceof Error) {
+          throw page;
+        }
         return Promise.resolve(resolve(page));
       } catch (error) {
         return reject ? Promise.resolve(reject(error)) : Promise.reject(error);
@@ -175,7 +184,11 @@ const { state, dbStub } = vi.hoisted(() => {
 vi.mock("@/lib/db", () => ({ db: dbStub }));
 
 import { getRetentionConfig } from "@/lib/retention/config";
-import { runRetentionPurge } from "@/lib/retention/purge-executions";
+import {
+  PLAN_WINDOW_WORKFLOW_CHUNK,
+  RetentionPurgeIncompleteError,
+  runRetentionPurge,
+} from "@/lib/retention/purge-executions";
 
 const NOW = new Date("2026-09-07T12:00:00.000Z");
 
@@ -292,8 +305,16 @@ describe("runRetentionPurge", () => {
   });
 
   it("reports the organization count and rows for each window", async () => {
-    // orgs, floor pass, watermarks, then the free group's first page.
-    state.selectPages = [ORG_ROWS, [], [], [{ id: "log-1" }]];
+    // orgs, floor pass, watermarks, then the free organization's workflows,
+    // their runs, and a page of those runs' step logs.
+    state.selectPages = [
+      ORG_ROWS,
+      [],
+      [],
+      [{ id: "wf-1" }],
+      [{ id: "exec-1" }],
+      [{ id: "log-1" }],
+    ];
 
     const result = await runRetentionPurge(enabledConfig(), NOW);
     const planPass = result.passes.find(
@@ -308,7 +329,14 @@ describe("runRetentionPurge", () => {
   });
 
   it("advances the watermark once an organization has drained", async () => {
-    state.selectPages = [ORG_ROWS, [], [], [{ id: "log-1" }]];
+    state.selectPages = [
+      ORG_ROWS,
+      [],
+      [],
+      [{ id: "wf-1" }],
+      [{ id: "exec-1" }],
+      [{ id: "log-1" }],
+    ];
 
     await runRetentionPurge(enabledConfig(), NOW);
 
@@ -445,8 +473,9 @@ describe("runRetentionPurge", () => {
   it("skips a run that can still resume in both short-window passes", async () => {
     // The plan window can be as short as 7 days, and a resumable run's step
     // logs carry the output_raw the executor reads to pick it back up. The
-    // floor and run-row passes deliberately carry no such guard.
-    state.selectPages = [ORG_ROWS];
+    // floor and run-row passes deliberately carry no such guard. One workflow,
+    // so the plan-window pass reads its runs and applies the guard there.
+    state.selectPages = [ORG_ROWS, [], [], [{ id: "wf-1" }]];
 
     await runRetentionPurge(enabledConfig(), NOW);
 
@@ -465,5 +494,97 @@ describe("runRetentionPurge", () => {
       "phantom",
       "unconfirmed",
     ]);
+  });
+
+  it("reads an organization's runs a small chunk of its workflows at a time", async () => {
+    // One join with a LIMIT is what the planner turned into a scan of the whole
+    // step-log table for an organization with a very large number of workflows.
+    const workflowRows = Array.from(
+      { length: PLAN_WINDOW_WORKFLOW_CHUNK + 1 },
+      (_, index) => ({ id: `wf-${index}` })
+    );
+    state.selectPages = [ORG_ROWS, [], [], workflowRows];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    const workflowChunks = state.wheres
+      .flatMap((where) => findMarkers(where, "inArray"))
+      .map((marker) => marker.args[1])
+      .filter(
+        (ids): ids is string[] =>
+          Array.isArray(ids) && String(ids[0]).startsWith("wf-")
+      )
+      .map((ids) => ids.length);
+
+    expect(workflowChunks).toEqual([PLAN_WINDOW_WORKFLOW_CHUNK, 1]);
+  });
+
+  it("prices sequential scans out of every chunk read", async () => {
+    state.selectPages = [
+      ORG_ROWS,
+      [],
+      [],
+      [{ id: "wf-1" }],
+      [{ id: "exec-1" }],
+      [{ id: "log-1" }],
+    ];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    const settings = state.writes
+      .filter((write) => write.op === "execute")
+      .map((write) => JSON.stringify(write.table))
+      .filter((statement) => statement.includes("enable_seqscan = off"));
+
+    // The runs of the one workflow chunk, the page of step logs, and the empty
+    // page that ends the drain, each in a short transaction of its own.
+    expect(settings).toHaveLength(3);
+    expect(state.transactions).toBe(3);
+  });
+
+  it("carries on past an organization that fails, then fails the run", async () => {
+    // The first organization's read is refused. The second still drains and
+    // every later pass still runs before the run reports the failure.
+    state.selectPages = [
+      [
+        {
+          organizationId: "org-a",
+          plan: "free",
+          tier: null,
+          planOverrides: null,
+        },
+        {
+          organizationId: "org-b",
+          plan: "free",
+          tier: null,
+          planOverrides: null,
+        },
+        {
+          organizationId: "org-ent",
+          plan: "enterprise",
+          tier: null,
+          planOverrides: null,
+        },
+      ],
+      [], // floor pass
+      [], // watermarks
+      new Error("canceling statement due to statement timeout"), // org-a workflows
+      [], // org-b workflows
+      [{ id: "log-9" }], // output_raw pass
+    ];
+
+    const error = await runRetentionPurge(enabledConfig(), NOW).catch(
+      (caught: unknown) => caught
+    );
+
+    expect(error).toBeInstanceOf(RetentionPurgeIncompleteError);
+    const incomplete = error as RetentionPurgeIncompleteError;
+    expect(incomplete.failedOrganizationIds).toEqual(["org-a"]);
+    expect(incomplete.message).toContain("org-a");
+    // org-b drained and claimed its cutoff; org-a claimed nothing at all.
+    expect(state.watermarks).toEqual([new Date("2026-08-31T12:00:00.000Z")]);
+    expect(
+      incomplete.result.passes.find((pass) => pass.pass === "output_raw")?.rows
+    ).toBe(1);
   });
 });
