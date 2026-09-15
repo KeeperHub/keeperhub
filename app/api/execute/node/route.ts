@@ -34,6 +34,12 @@ import {
   withRejectedSignerOverride,
 } from "../_lib/execution-service";
 import { checkRateLimit } from "../_lib/rate-limit";
+// The cap reservation below resolves protocol actions through the registry,
+// which is populated by this side-effect import (the catch-all protocol
+// route does the same).
+import "@/protocols";
+import { applyEthValueTransform } from "@/lib/execute/protocol-eth-value";
+import { resolveProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
 import { parseNodeNativeValueWei } from "../_lib/reserved-value";
 import {
   DEFAULT_TIMEOUT_MS as DEFAULT_RETRY_TIMEOUT_MS,
@@ -359,6 +365,63 @@ async function handleResult(
 // active Role. The sibling execute routes never forward web3Connection either,
 // so this keeps /api/execute/node no weaker. Stripping all four in one place
 // keeps the step input and the persisted audit input in lockstep.
+/**
+ * The config the cap reservation should read for a step, with a protocol
+ * write's payable value already converted the way protocolWriteStep will
+ * convert it. Every other step gets its config back untouched.
+ */
+function protocolReservationConfig(
+  stepFunction: string,
+  actionType: string,
+  config: Record<string, unknown>
+): Promise<
+  { ok: true; config: Record<string, unknown> } | { ok: false; error: string }
+> {
+  if (stepFunction !== "protocolWriteStep") {
+    return Promise.resolve({ ok: true, config });
+  }
+  const meta =
+    resolveProtocolMeta({
+      _protocolMeta:
+        typeof config._protocolMeta === "string"
+          ? config._protocolMeta
+          : undefined,
+      _actionType:
+        typeof config._actionType === "string" ? config._actionType : undefined,
+    }) ?? resolveProtocolMeta({ _actionType: actionType });
+  if (!meta) {
+    const hasValue =
+      typeof config.ethValue === "string"
+        ? config.ethValue.trim() !== ""
+        : config.ethValue !== undefined && config.ethValue !== null;
+    return Promise.resolve(
+      hasValue
+        ? {
+            ok: false,
+            error: `Refusing to reserve a payable value: could not resolve protocol metadata for "${actionType}", so whether ethValue needs a unit conversion cannot be determined.`,
+          }
+        : { ok: true, config }
+    );
+  }
+  let transformed: ReturnType<typeof applyEthValueTransform>;
+  try {
+    transformed = applyEthValueTransform(config.ethValue, meta);
+  } catch (err) {
+    // Wrong unit (ether typed into a wei field): the caller's mistake.
+    transformed = {
+      ok: false,
+      error: `Invalid ethValue: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!transformed.ok) {
+    return Promise.resolve({ ok: false, error: transformed.error });
+  }
+  return Promise.resolve({
+    ok: true,
+    config: { ...config, ethValue: transformed.value },
+  });
+}
+
 function stripReservedConfig(
   config: Record<string, unknown>
 ): Record<string, unknown> {
@@ -632,9 +695,34 @@ export async function POST(request: Request): Promise<NextResponse> {
     // Charge native value moved against the daily cap: transfer-funds forwards
     // `amount`, a contract write forwards `ethValue`. Other actions (token
     // transfer/approve, off-chain steps) move no native value.
+    //
+    // A protocol write may register a transform on its value field (the
+    // LayerZero OFT send takes wei), and the step applies it before it
+    // broadcasts. This route reserves BEFORE the step runs and then tells
+    // the step not to reserve again (valueCapReserved below), so the
+    // reservation has to run the same transform or it charges the raw wei
+    // figure as ether - 10^18 times what is broadcast - while the step's
+    // correct charge is skipped. Resolved the way the step resolves it
+    // (config first, then the route's action type), and fails closed when
+    // the action cannot be found and a value is present.
+    const reservationConfig = await protocolReservationConfig(
+      resolved.importer.stepFunction,
+      actionType,
+      validation.data.config
+    );
+    if (!reservationConfig.ok) {
+      return recordIdempotentResponse(
+        idem,
+        NextResponse.json(
+          { error: reservationConfig.error },
+          { status: HttpStatus.BAD_REQUEST }
+        ),
+        "release"
+      );
+    }
     const parsedValue = parseNodeNativeValueWei(
       resolved.importer.stepFunction,
-      validation.data.config
+      reservationConfig.config
     );
     if (!parsedValue.ok) {
       return recordIdempotentResponse(

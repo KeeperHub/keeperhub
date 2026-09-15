@@ -165,6 +165,158 @@ beforeEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
+// The node route reserves a step's native value BEFORE the step runs and
+// then tells the step not to reserve again (valueCapReserved). For a
+// protocol write whose value field registers a transform - the LayerZero OFT
+// send takes wei - the reservation has to run that transform, or the cap is
+// charged the raw wei figure read as ether (10^18 times the broadcast) while
+// the step's correct charge is skipped.
+describe("POST /api/execute/node value reservation for a protocol write", () => {
+  const WALLET = "0x1111111111111111111111111111111111111111";
+  const FEE_WEI = "218756042576226";
+
+  function protocolWrite() {
+    mocks.resolveAction.mockImplementation((actionType: string) => ({
+      actionType,
+      label: "Protocol Write",
+      importer: {
+        importer: () => Promise.resolve({ protocolWriteStep: mocks.stepFn }),
+        stepFunction: "protocolWriteStep",
+      },
+      isPluginAction: true,
+    }));
+  }
+
+  function sendConfig(ethValue: unknown): Record<string, unknown> {
+    return {
+      network: "1",
+      _actionType: "layerzero/oft-send",
+      contractAddress: "0x6C96dE32CEa08842dcc4058c14d3aaAD7Fa41dee",
+      dstEid: "30110",
+      to: WALLET,
+      amountLD: "1000000",
+      minAmountLD: "990000",
+      nativeFee: FEE_WEI,
+      lzTokenFee: "0",
+      refundAddress: WALLET,
+      ethValue,
+    };
+  }
+
+  it("reserves exactly the wei an OFT Send's value field holds", async () => {
+    protocolWrite();
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "layerzero/oft-send",
+        config: sendConfig(FEE_WEI),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.checkAndReserveExecution).toHaveBeenCalledTimes(1);
+    expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reserved: { kind: "evm", valueWei: FEE_WEI },
+      })
+    );
+    // The step receives the raw wei string and converts it itself, exactly
+    // as it does on the workflow path; what changed is only what the route
+    // reserved. And it is still told not to reserve a second time.
+    expect(mocks.capturedInput?.ethValue).toBe(FEE_WEI);
+    expect(
+      (mocks.capturedInput as { _context: { valueCapReserved: boolean } })
+        ._context.valueCapReserved
+    ).toBe(true);
+  });
+
+  it("resolves the action from the route's action type when the config carries no metadata", async () => {
+    protocolWrite();
+    const { _actionType: _omitted, ...config } = sendConfig(FEE_WEI);
+
+    const response = await nodePOST(
+      postRequest({ actionType: "layerzero/oft-send", config })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reserved: { kind: "evm", valueWei: FEE_WEI },
+      })
+    );
+  });
+
+  it("refuses to reserve a value for a protocol write it cannot resolve", async () => {
+    protocolWrite();
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "layerzero/no-such-action",
+        config: {
+          ...sendConfig(FEE_WEI),
+          _actionType: "layerzero/no-such-action",
+        },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/Refusing to reserve/);
+    expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(mocks.stepFn).not.toHaveBeenCalled();
+  });
+
+  it("refuses ether typed into the wei field as the caller's error", async () => {
+    protocolWrite();
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "layerzero/oft-send",
+        config: sendConfig("0.01"),
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/integer wei/);
+    expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(mocks.stepFn).not.toHaveBeenCalled();
+  });
+
+  it("still reserves an ether value field as ether on a protocol write with no transform", async () => {
+    protocolWrite();
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "wrapped/wrap",
+        config: { network: "1", _actionType: "wrapped/wrap", ethValue: "0.01" },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reserved: { kind: "evm", valueWei: "10000000000000000" },
+      })
+    );
+    expect(mocks.capturedInput?.ethValue).toBe("0.01");
+  });
+
+  it("leaves a generic contract write's ether value exactly as before", async () => {
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc", ethValue: "0.1" },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reserved: { kind: "evm", valueWei: "100000000000000000" },
+      })
+    );
+  });
+});
+
 describe("POST /api/execute/node reserved-field gating", () => {
   it("rejects a foreign integrationId smuggled inside config with 403", async () => {
     mocks.ownershipResult = [];
