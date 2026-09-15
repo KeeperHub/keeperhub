@@ -1,4 +1,8 @@
 import type { IntegrationType } from "@/lib/types/integration";
+import {
+  evaluateShowWhen,
+  type ShowWhen,
+} from "@/lib/workflow/editor/show-when";
 import { LEGACY_ACTION_MAPPINGS } from "./legacy-mappings";
 import { integrationRegistry, registerIntegration } from "./registry-core";
 
@@ -101,15 +105,10 @@ export type ActionConfigFieldBase = {
   // render time (no persistence). Currently supported computations:
   //   - "abiFunctionMutability": parses `abiField` (ABI JSON) and looks up
   //     the stateMutability of the function named by `functionField`.
-  showWhen?:
-    | { field: string; equals: string }
-    | { field: string; oneOf: string[] }
-    | {
-        computed: "abiFunctionMutability";
-        abiField: string;
-        functionField: string;
-        equals: string;
-      };
+  // Use `all` to require several predicates at once. A hidden field keeps
+  // its stored value, so a field gated on a sibling that is itself hidden
+  // needs to gate on the sibling's own condition too.
+  showWhen?: ShowWhen;
 
   // For abi-function-select and abi-event-select: which field contains the ABI JSON
   abiField?: string;
@@ -602,8 +601,10 @@ export function generateAIActionPrompts(): string {
       const flatFields = flattenConfigFields(action.configFields);
 
       for (const field of flatFields) {
-        // Skip conditional fields in the example
-        if (field.showWhen) continue;
+        // Include a conditional field when its condition holds for the
+        // example assembled so far. Fields are visited in declaration order,
+        // so a field's dependencies are already in the example.
+        if (!evaluateShowWhen(field.showWhen, exampleConfig)) continue;
 
         // Use example, defaultValue, or a sensible default based on type
         if (field.example !== undefined) {

@@ -1731,49 +1731,67 @@ const web3Plugin: IntegrationPlugin = {
       ],
     },
     {
-      slug: "check-approval-exploit",
-      label: "Check Approval Exploit List",
+      slug: "check-approval-exploits",
+      label: "Check Known Approval Exploits",
       description:
-        "Check whether the spenders in a set of ERC-20 approvals appear in the Revoke.cash approval exploit list, and return the matching incident details. A spender that is absent from the list is not a safety certificate: the list carries only incidents reported and verified upstream.",
+        "Match supplied token and spender pairs against Revoke.cash's public known approval exploit list on the selected chain. This does not discover approvals, read allowances or Permit2 state, or certify safety; not_listed means only that no match exists in the retrieved list revision.",
       category: "Web3",
-      stepFunction: "checkApprovalExploitStep",
-      stepImportPath: "check-approval-exploit",
+      stepFunction: "checkApprovalExploitsStep",
+      stepImportPath: "check-approval-exploits",
       outputFields: [
         {
           field: "success",
           description:
-            "Whether the check completed. Also true when failOnError is off and a failed list retrieval was softened; the result fields are null and `error` is set.",
+            "Whether the lookup completed. Also true when failOnError is off and a failed lookup was softened; lookupStatus remains error and result fields remain null.",
         },
         {
-          field: "checked",
-          description: "How many approvals were checked",
-        },
-        {
-          field: "matchCount",
-          description: "How many of the spenders appear in the exploit list",
-        },
-        {
-          field: "matches",
+          field: "lookupStatus",
           description:
-            "One entry per matching approval: tokenAddress, spenderAddress, and the incident (name, description, date, amount in millions of USD - the Bancor record's 0.135 is $135k - and metaArticleUrls)",
+            "complete when the full source snapshot was checked, otherwise error",
+        },
+        {
+          field: "results",
+          description:
+            "One result per supplied pair with its input index, token, spender, matched or not_listed status, and every matching incident. Incident amount is historical source data, not the wallet's value at risk.",
+        },
+        {
+          field: "matchedPairCount",
+          description:
+            "Number of supplied pairs whose spender matched at least one incident on the selected chain",
         },
         {
           field: "chainCoverage",
           description:
-            "One entry per chain the upstream list covers: chainId, incidentCount (incidents listing an address on that chain) and listedAddressCount (distinct addresses listed). Read it to tell a chain with nothing listed from a lookup that matched nothing. Null when failOnError is off and a failed list retrieval was softened.",
+            "Coverage of the selected chain in the retrieved source revision: chainId, incidentCount, and unique listedAddressCount. Zero counts mean the source has no entries for that chain, so not_listed provides no chain-specific evidence.",
         },
-        checkErrorOutput(),
+        {
+          field: "source",
+          description:
+            "Revoke.cash exploit-list repository, exact commit revision, and retrieval time",
+        },
+        {
+          field: "coverage",
+          description:
+            "Explicit limits of the lookup, including that not_listed is not a safety verdict",
+        },
+        {
+          field: "error",
+          description:
+            "Error message when lookupStatus is error, including softened failures",
+        },
       ],
       configFields: [
         evmNetworkField(),
         {
-          key: "approvals",
-          label: "Approvals (JSON)",
-          type: "template-textarea",
+          key: "approvalPairs",
+          label: "Token and Spender Pairs",
+          type: "json-editor",
           placeholder:
             '[{"tokenAddress":"0x...","spenderAddress":"0x..."}]',
           example:
-            '[{"tokenAddress":"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48","spenderAddress":"0x8dFEB86C7C962577deD19AB2050AC78654feA9F7"}]',
+            '[{"tokenAddress":"0x6B175474E89094C44Da98b954EedeAC495271d0F","spenderAddress":"0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"}]',
+          helpTip:
+            "JSON array with 1 to 100 tokenAddress and spenderAddress pairs. Template references may be used inside the JSON string. Token addresses keep results tied to the approval being checked; exploit matching uses spender address plus the selected chain.",
           required: true,
         },
         readFailOnErrorField(),

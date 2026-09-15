@@ -1,10 +1,15 @@
 /**
  * Evaluates a `showWhen` field predicate against the current config.
  *
- * Supports three variants:
+ * Supports four variants:
  *   1. { field, equals }       - simple equality against a stored field
  *   2. { field, oneOf }        - membership against a stored field
  *   3. { computed, ... }       - live-derived value (no persistence)
+ *   4. { all: [...] }          - every listed predicate holds
+ *
+ * `all` exists because a hidden field keeps its stored value: a field that
+ * depends on `format` alone would still render after the operation that owns
+ * `format` is switched away. Gating on the operation as well closes that.
  *
  * The computed variant is how we express "render this field only when
  * another field's derived property matches" without persisting the
@@ -22,7 +27,8 @@ export type ShowWhen =
       abiField: string;
       functionField: string;
       equals: string;
-    };
+    }
+  | { all: ShowWhen[] };
 
 function evaluateComputed(
   showWhen: Extract<ShowWhen, { computed: string }>,
@@ -46,6 +52,11 @@ export function evaluateShowWhen(
 ): boolean {
   if (!showWhen) {
     return true;
+  }
+  if ("all" in showWhen) {
+    return showWhen.all.every((predicate) =>
+      evaluateShowWhen(predicate, config)
+    );
   }
   if ("computed" in showWhen) {
     return evaluateComputed(showWhen, config);

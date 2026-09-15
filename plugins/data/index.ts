@@ -7,7 +7,7 @@ const dataPlugin: IntegrationPlugin = {
   egress: "none",
   label: "Data",
   description:
-    "Reshape workflow data without writing a script: encode and decode strings, pull named fields out of upstream node output, flatten monitoring results into a findings list, and hold static configuration on the canvas.",
+    "Reshape workflow data without writing a script: encode and decode strings, convert numbers between decimal and hex, pull named fields out of upstream node output, flatten monitoring results into a findings list, and hold static configuration on the canvas.",
   icon: DataIcon,
   requiresCredentials: false,
   formFields: [],
@@ -24,7 +24,7 @@ const dataPlugin: IntegrationPlugin = {
       slug: "encode",
       label: "Encode / Decode",
       description:
-        "Convert a string (or a JSON array of strings) to padded hex (bytes8/bytes16/bytes32), raw hex or base64, and back again. Replaces hand-written string-to-bytes32 loops.",
+        "Convert a string (or a JSON array of strings) to padded hex (bytes8/bytes16/bytes32), raw hex or base64, and back again; or convert a decimal number to hex (minimal or a padded uint word) and back. Replaces hand-written string-to-bytes32 and number-to-hex loops.",
       category: "Data",
       stepFunction: "encodeStep",
       stepImportPath: "encode",
@@ -42,8 +42,15 @@ const dataPlugin: IntegrationPlugin = {
             "Object keyed by each original value, holding its converted value",
         },
         { field: "count", description: "Number of values converted" },
-        { field: "operation", description: "encode or decode" },
-        { field: "format", description: "The format used" },
+        {
+          field: "operation",
+          description: "encode, decode, decimal-to-hex or hex-to-decimal",
+        },
+        {
+          field: "format",
+          description:
+            "The format used: the text format for encode and decode, the number format (hex, uint256, uint128 or uint64) for decimal-to-hex. Absent for hex-to-decimal, which has no format",
+        },
         { field: "error", description: "Error message if the conversion failed" },
       ],
       configFields: [
@@ -55,6 +62,8 @@ const dataPlugin: IntegrationPlugin = {
           options: [
             { value: "encode", label: "Encode (text to hex/base64)" },
             { value: "decode", label: "Decode (hex/base64 to text)" },
+            { value: "decimal-to-hex", label: "Decimal to hex (number to hex)" },
+            { value: "hex-to-decimal", label: "Hex to decimal (hex to number)" },
           ],
           defaultValue: "encode",
           example: "encode",
@@ -65,9 +74,10 @@ const dataPlugin: IntegrationPlugin = {
           type: "template-textarea",
           required: true,
           rows: 3,
-          placeholder: 'SKY\nor ["SKY", "MKR"]\nor {{@node1:Label.name}}',
+          placeholder:
+            'SKY or 255\nor ["SKY", "MKR"] or ["255", "4096"]\nor {{@node1:Label.name}}',
           helpTip:
-            'A single value, or a JSON array of values to convert in one step.\n\nSKY -> 0x534b590000...\n["SKY", "MKR"] -> result is an array, map is keyed by SKY and MKR',
+            'A single value, or a JSON array of values to convert in one step.\n\nEncode / Decode work on text:\nSKY -> 0x534b590000...\n["SKY", "MKR"] -> result is an array, map is keyed by SKY and MKR\n\nDecimal to hex takes a non-negative integer of any size:\n255 -> 0xff\n\nHex to decimal takes hex with or without 0x, padded or not:\n0x00...00ff -> 255',
           example: "SKY",
         },
         {
@@ -84,6 +94,22 @@ const dataPlugin: IntegrationPlugin = {
           ],
           defaultValue: "bytes32",
           example: "bytes32",
+          showWhen: { field: "operation", oneOf: ["encode", "decode"] },
+        },
+        {
+          key: "numberFormat",
+          label: "Number format",
+          type: "select",
+          options: [
+            { value: "hex", label: "hex (minimal, 0xff)" },
+            { value: "uint256", label: "uint256 (32-byte left-padded word)" },
+            { value: "uint128", label: "uint128 (16-byte left-padded word)" },
+            { value: "uint64", label: "uint64 (8-byte left-padded word)" },
+          ],
+          defaultValue: "hex",
+          helpTip:
+            "How wide the hex output is. A number is always padded on the left, so its value is unchanged.\n\nhex -> 0xff\nuint256 -> 0x00...00ff, the ABI word a contract argument expects\n\nA number too large for the chosen width fails the step rather than truncating.",
+          showWhen: { field: "operation", equals: "decimal-to-hex" },
         },
         {
           key: "padding",
@@ -95,8 +121,13 @@ const dataPlugin: IntegrationPlugin = {
           ],
           defaultValue: "right",
           helpTip:
-            "Where the zero bytes go in a fixed-size format. Solidity pads short strings on the right.",
-          showWhen: { field: "format", oneOf: ["bytes32", "bytes16", "bytes8"] },
+            "Where the zero bytes go when text is encoded to, or decoded from, a fixed-size format. Solidity pads short strings on the right.\n\nOnly applies to Encode and Decode. Decimal to hex always pads on the left, because zero bytes on the right would multiply the number.",
+          showWhen: {
+            all: [
+              { field: "operation", oneOf: ["encode", "decode"] },
+              { field: "format", oneOf: ["bytes32", "bytes16", "bytes8"] },
+            ],
+          },
         },
       ],
     },

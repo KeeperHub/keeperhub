@@ -295,6 +295,79 @@ export async function checkStablecoinContractCall(params: {
   });
 }
 
+export type StablecoinCapSequenceDecision =
+  | { kind: "allowed" }
+  | { kind: "denied"; index: number; error: string };
+
+/**
+ * `checkStablecoinContractCall` over a sequence sharing one chain and one
+ * organization: each call decided on its own, the token list and org payers
+ * read once. No total, because a sequence is N transactions, not one batch.
+ */
+export async function checkStablecoinContractCallBatch(params: {
+  organizationId: string;
+  chainId: number;
+  context: string;
+  calls: readonly {
+    contractAddress: string;
+    functionName: string;
+    inputTypes: readonly string[];
+    args: readonly unknown[];
+  }[];
+}): Promise<StablecoinCapSequenceDecision> {
+  const chainTokens = await loadChainTokens(params.chainId);
+  let orgPayers: Set<string> | undefined;
+
+  for (const [index, call] of params.calls.entries()) {
+    const fn = matchOutflowFunction(call.functionName, call.inputTypes);
+    if (!fn) {
+      continue;
+    }
+    const token = isHexAddress(call.contractAddress)
+      ? matchStablecoin(chainTokens, call.contractAddress)
+      : null;
+    if (!token) {
+      continue;
+    }
+
+    const amountBase = toBaseUnits(call.args[OUTFLOW_SHAPES[fn].amountIndex]);
+    if (amountBase === null) {
+      return {
+        kind: "denied",
+        index,
+        error: `Could not read the ${token.symbol} amount from the ${fn} arguments`,
+      };
+    }
+
+    const firstArg =
+      typeof call.args[0] === "string" ? call.args[0] : undefined;
+    if (PAYER_IS_FIRST_ARG.has(fn)) {
+      orgPayers ??= await resolveOrgPayers(
+        params.organizationId,
+        params.chainId
+      );
+      if (!movesOrgFunds(fn, firstArg, orgPayers)) {
+        continue;
+      }
+    }
+
+    const decision = decide({
+      organizationId: params.organizationId,
+      chainId: params.chainId,
+      context: params.context,
+      spender: firstArg,
+      tokenAddress: call.contractAddress,
+      token,
+      amountBase,
+      fn,
+    });
+    if (decision.kind !== "allowed") {
+      return { ...decision, index };
+    }
+  }
+  return ALLOWED;
+}
+
 /**
  * Raw calldata, as the Tempo path has it: Tempo transactions carry a list of
  * `{ to, data }` calls with no ABI alongside, and TIP-20 stablecoins are the
