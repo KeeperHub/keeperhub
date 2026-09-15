@@ -4,6 +4,7 @@ vi.mock("server-only", () => ({}));
 
 const spies = vi.hoisted(() => ({
   simulateContractCall: vi.fn(),
+  simulateCallSequence: vi.fn(),
   simulateNativeTransfer: vi.fn(),
   simulateTokenTransfer: vi.fn(),
   getChainIdFromNetwork: vi.fn(),
@@ -15,6 +16,10 @@ vi.mock("@/lib/execute/simulate", () => ({
   simulateContractCall: spies.simulateContractCall,
   simulateNativeTransfer: spies.simulateNativeTransfer,
   simulateTokenTransfer: spies.simulateTokenTransfer,
+}));
+
+vi.mock("@/lib/execute/simulate-sequence", () => ({
+  simulateCallSequence: spies.simulateCallSequence,
 }));
 
 vi.mock("@/lib/rpc/network-utils", () => ({
@@ -109,7 +114,60 @@ beforeEach(() => {
   spies.simulateContractCall.mockResolvedValue(SUCCESS_RESULT);
   spies.simulateNativeTransfer.mockResolvedValue(SUCCESS_RESULT);
   spies.simulateTokenTransfer.mockResolvedValue(SUCCESS_RESULT);
+  spies.simulateCallSequence.mockResolvedValue({
+    success: true,
+    status: "simulated",
+    from: "0xaa0000000000000000000000000000000000aa00",
+    atomic: false,
+    mechanism: "eth_simulateV1",
+    wouldRevert: false,
+    results: [SUCCESS_RESULT, SUCCESS_RESULT],
+  });
 });
+
+const ERC20_APPROVE_ABI = JSON.stringify([
+  {
+    type: "function",
+    name: "approve",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ type: "bool" }],
+    stateMutability: "nonpayable",
+  },
+]);
+
+function writeNode(
+  id: string,
+  abiFunction: string,
+  config: Record<string, unknown> = {}
+): WorkflowSimulationNode {
+  return actionNode(
+    id,
+    "web3/write-contract",
+    {
+      contractAddress: "0xbb0000000000000000000000000000000000bb00",
+      abi: ERC20_APPROVE_ABI,
+      abiFunction,
+      functionArgs: "[]",
+      ...config,
+    },
+    { label: abiFunction }
+  );
+}
+
+const REVERT_RESULT = {
+  success: false as const,
+  status: "simulated" as const,
+  from: "0xaa0000000000000000000000000000000000aa00",
+  to: "0xbb0000000000000000000000000000000000bb00",
+  value: "0",
+  failureKind: "revert" as const,
+  wouldRevert: true as const,
+  revertReason: "ERC4626: deposit more than max",
+  error: "ERC4626: deposit more than max",
+};
 
 describe("runWorkflowSimulation", () => {
   it("simulates a static EOA native transfer", async () => {
@@ -818,5 +876,236 @@ describe("runWorkflowSimulation", () => {
     ).rejects.toBeInstanceOf(WorkflowSimulationDeadlineError);
 
     expect(spies.simulateNativeTransfer).not.toHaveBeenCalled();
+  });
+
+  describe("consecutive writes simulate as one sequence", () => {
+    const linear = [
+      { source: "trigger-1", target: "approve" },
+      { source: "approve", target: "deposit" },
+    ];
+
+    it("sends an approve-then-deposit pair to the sequence simulator once", async () => {
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: linear,
+      });
+
+      expect(spies.simulateCallSequence).toHaveBeenCalledTimes(1);
+      expect(spies.simulateContractCall).not.toHaveBeenCalled();
+      const input = spies.simulateCallSequence.mock.calls[0][0] as {
+        network: string;
+        calls: { functionName: string }[];
+      };
+      expect(input.network).toBe("1");
+      expect(input.calls.map((c) => c.functionName)).toEqual([
+        "approve",
+        "deposit",
+      ]);
+      expect(result).toEqual({
+        warnings: [],
+        simulatedNodeCount: 2,
+        skippedNodeCount: 0,
+      });
+    });
+
+    it("reports a revert in the second call plainly, without the earlier-step hedge", async () => {
+      spies.simulateCallSequence.mockResolvedValueOnce({
+        success: false,
+        status: "simulated",
+        from: "0xaa0000000000000000000000000000000000aa00",
+        atomic: false,
+        mechanism: "eth_simulateV1",
+        wouldRevert: true,
+        results: [SUCCESS_RESULT, REVERT_RESULT],
+      });
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: linear,
+      });
+
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toMatchObject({
+        code: "SIMULATION_WOULD_REVERT",
+        nodeId: "deposit",
+        parameterPath: "nodes[2].data.config.abiFunction",
+      });
+      expect(result.warnings[0]?.message).toBe(
+        "deposit would revert: ERC4626: deposit more than max"
+      );
+      expect(result.warnings[0]?.message).not.toContain("earlier step");
+    });
+
+    it("follows the edges, not the array order", async () => {
+      // Stored deposit-first; the edges say approve runs first.
+      await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          writeNode("deposit", "deposit"),
+          triggerNode(),
+          writeNode("approve", "approve"),
+        ],
+        edges: linear,
+      });
+
+      const input = spies.simulateCallSequence.mock.calls[0][0] as {
+        calls: { functionName: string }[];
+      };
+      expect(input.calls.map((c) => c.functionName)).toEqual([
+        "approve",
+        "deposit",
+      ]);
+    });
+
+    it("ends a run at a fork and simulates the branches on their own", async () => {
+      await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve"),
+          writeNode("deposit-a", "deposit"),
+          writeNode("deposit-b", "deposit"),
+        ],
+        edges: [
+          { source: "trigger-1", target: "approve" },
+          { source: "approve", target: "deposit-a" },
+          { source: "approve", target: "deposit-b" },
+        ],
+      });
+
+      expect(spies.simulateCallSequence).not.toHaveBeenCalled();
+      expect(spies.simulateContractCall).toHaveBeenCalledTimes(3);
+    });
+
+    it("ends a run when the chain changes", async () => {
+      spies.getChainIdFromNetwork.mockImplementation((network: string) =>
+        Number(network)
+      );
+
+      await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve", { network: "1" }),
+          writeNode("deposit", "deposit", { network: "8453" }),
+        ],
+        edges: linear,
+      });
+
+      expect(spies.simulateCallSequence).not.toHaveBeenCalled();
+      expect(spies.simulateContractCall).toHaveBeenCalledTimes(2);
+    });
+
+    it("ends a run at a template-bound node and resumes after it", async () => {
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve"),
+          writeNode("middle", "deposit", {
+            functionArgs: '["{{@trigger-1:Trigger.amount}}"]',
+          }),
+          writeNode("last", "withdraw"),
+        ],
+        edges: [
+          { source: "trigger-1", target: "approve" },
+          { source: "approve", target: "middle" },
+          { source: "middle", target: "last" },
+        ],
+      });
+
+      expect(spies.simulateCallSequence).not.toHaveBeenCalled();
+      expect(spies.simulateContractCall).toHaveBeenCalledTimes(2);
+      expect(result.warnings.map((w) => [w.code, w.nodeId])).toEqual([
+        ["SIMULATION_DYNAMIC_INPUT", "middle"],
+      ]);
+    });
+
+    it("does not chain a transfer into a write", async () => {
+      await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          actionNode("send", "web3/transfer-funds", {
+            amount: "1",
+            recipientAddress: "0xbb0000000000000000000000000000000000bb00",
+          }),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: [
+          { source: "trigger-1", target: "send" },
+          { source: "send", target: "deposit" },
+        ],
+      });
+
+      expect(spies.simulateCallSequence).not.toHaveBeenCalled();
+      expect(spies.simulateNativeTransfer).toHaveBeenCalledTimes(1);
+      expect(spies.simulateContractCall).toHaveBeenCalledTimes(1);
+    });
+
+    it("marks every node of a run unavailable when the sequence cannot answer", async () => {
+      spies.simulateCallSequence.mockResolvedValueOnce({
+        success: false,
+        status: "simulated",
+        from: "",
+        atomic: false,
+        mechanism: null,
+        wouldRevert: false,
+        error: "Simulation unavailable: node down",
+        results: [
+          {
+            ...SUCCESS_RESULT,
+            success: false,
+            failureKind: "unavailable",
+            wouldRevert: false,
+            error: "down",
+          },
+          {
+            ...SUCCESS_RESULT,
+            success: false,
+            failureKind: "unavailable",
+            wouldRevert: false,
+            error: "down",
+          },
+        ],
+      });
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: linear,
+      });
+
+      expect(result.skippedNodeCount).toBe(2);
+      expect(result.warnings.map((w) => w.code)).toEqual([
+        "SIMULATION_UNAVAILABLE",
+        "SIMULATION_UNAVAILABLE",
+      ]);
+    });
+
+    it("keeps a single write on the single-call path", async () => {
+      await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [triggerNode(), writeNode("approve", "approve")],
+        edges: [{ source: "trigger-1", target: "approve" }],
+      });
+
+      expect(spies.simulateCallSequence).not.toHaveBeenCalled();
+      expect(spies.simulateContractCall).toHaveBeenCalledTimes(1);
+    });
   });
 });

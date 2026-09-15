@@ -6,6 +6,7 @@ import {
   simulateNativeTransfer,
   simulateTokenTransfer,
 } from "@/lib/execute/simulate";
+import { simulateCallSequence } from "@/lib/execute/simulate-sequence";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { isSolanaChain } from "@/lib/rpc/provider-factory";
 import {
@@ -85,6 +86,12 @@ type NodeSimulationContext = {
   actionType: SupportedActionType;
   config: Record<string, unknown>;
   hasEarlierReachableWrite: boolean;
+  /**
+   * True when the node was simulated against the state its earlier steps
+   * produced, so a revert is what the workflow would actually do and the
+   * "may depend on an earlier step" hedge no longer applies.
+   */
+  chained?: boolean;
 };
 
 type NodeSimulationOutcome =
@@ -280,7 +287,7 @@ function simulationRevertMessage(
   label: string,
   reason: string | null
 ): string {
-  if (context.hasEarlierReachableWrite) {
+  if (context.hasEarlierReachableWrite && !context.chained) {
     if (reason) {
       return `${label} may revert: ${reason}. This may depend on an earlier step in this workflow.`;
     }
@@ -314,7 +321,7 @@ function simulationPreflightMessage(
 ): string {
   const sentence = reason.endsWith(".") ? reason : `${reason}.`;
 
-  if (!context.hasEarlierReachableWrite) {
+  if (!context.hasEarlierReachableWrite || context.chained) {
     return `${label} cannot run: ${sentence}`;
   }
 
@@ -553,89 +560,84 @@ function runSimulator(context: NodeSimulationContext): Promise<SimulateResult> {
   });
 }
 
-async function simulateNode(
+type PreparedNode =
+  | { kind: "ready"; chainId: number }
+  | { kind: "outcome"; outcome: NodeSimulationOutcome };
+
+/** Everything that decides whether a node can be simulated at all, before any chain call. */
+async function prepareNode(
   context: NodeSimulationContext,
   deadlineAt?: number
-): Promise<NodeSimulationOutcome> {
+): Promise<PreparedNode> {
   const dynamicField = findDynamicField(context.actionType, context.config);
-
   if (dynamicField) {
     return {
-      status: "skipped",
-      warning: makeIssue(context, {
-        code: "SIMULATION_DYNAMIC_INPUT",
-        fieldKey: dynamicField,
-        message: `${nodeLabel(
-          context.node,
-          context.actionType
-        )} uses a runtime template in ${dynamicField}, so it cannot be simulated before upstream steps run.`,
-      }),
+      kind: "outcome",
+      outcome: {
+        status: "skipped",
+        warning: makeIssue(context, {
+          code: "SIMULATION_DYNAMIC_INPUT",
+          fieldKey: dynamicField,
+          message: `${nodeLabel(
+            context.node,
+            context.actionType
+          )} uses a runtime template in ${dynamicField}, so it cannot be simulated before upstream steps run.`,
+        }),
+      },
     };
   }
 
   const network = stringValue(context.config.network);
-
   let chainId: number;
-
   try {
     chainId = getChainIdFromNetwork(network);
   } catch (error) {
     return {
-      status: "failed",
-      issue: makeIssue(context, {
-        code: "SIMULATION_INVALID_NETWORK",
-        fieldKey: "network",
-        message:
-          error instanceof Error
-            ? error.message
-            : "The selected network is invalid.",
-      }),
+      kind: "outcome",
+      outcome: {
+        status: "failed",
+        issue: makeIssue(context, {
+          code: "SIMULATION_INVALID_NETWORK",
+          fieldKey: "network",
+          message:
+            error instanceof Error
+              ? error.message
+              : "The selected network is invalid.",
+        }),
+      },
     };
   }
 
   if (isSolanaChain(chainId)) {
     // Preflight is EVM-only by design; Solana writes are skipped without a
     // warning so valid Solana workflows do not surface issues in the editor.
-    return { status: "skipped" };
+    return { kind: "outcome", outcome: { status: "skipped" } };
   }
 
   const signerEligibility = await withSimulationDeadline(
     resolveEoaEligibility(context, chainId),
     deadlineAt
   );
-
   if (!signerEligibility.eligible) {
     if ("error" in signerEligibility) {
-      return { status: "failed", issue: signerEligibility.error };
-    }
-
-    return {
-      status: "skipped",
-      warning: signerEligibility.warning,
-    };
-  }
-
-  let result: SimulateResult;
-
-  try {
-    result = await withSimulationDeadline(runSimulator(context), deadlineAt);
-  } catch (error) {
-    if (error instanceof WorkflowSimulationDeadlineError) {
-      throw error;
+      return {
+        kind: "outcome",
+        outcome: { status: "failed", issue: signerEligibility.error },
+      };
     }
     return {
-      status: "skipped",
-      warning: makeIssue(context, {
-        code: "SIMULATION_UNAVAILABLE",
-        fieldKey: "network",
-        message: `${nodeLabel(
-          context.node,
-          context.actionType
-        )} could not be simulated because the simulation service was unavailable. You can still run the workflow.`,
-      }),
+      kind: "outcome",
+      outcome: { status: "skipped", warning: signerEligibility.warning },
     };
   }
+  return { kind: "ready", chainId };
+}
 
+/** The per-node outcome for one simulator answer, chained or not. */
+function outcomeFromResult(
+  context: NodeSimulationContext,
+  result: SimulateResult
+): NodeSimulationOutcome {
   if (result.success) {
     return { status: "simulated" };
   }
@@ -701,7 +703,195 @@ async function simulateNode(
 }
 
 /**
+ * The order the engine would run the nodes in, following edges from the
+ * trigger, rather than the order they were stored in. Nodes the edges do not
+ * reach keep their array position at the end so nothing is dropped; with no
+ * edges at all the array order is the only order there is.
+ */
+function executionOrder(
+  nodes: WorkflowSimulationNode[],
+  edges: WorkflowSimulationEdge[] | undefined
+): WorkflowSimulationNode[] {
+  if (!edges?.length) {
+    return nodes;
+  }
+  const byId = new Map(nodes.map((node) => [node.id, node] as const));
+  const out = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+  for (const edge of edges) {
+    if (typeof edge.source !== "string" || typeof edge.target !== "string") {
+      continue;
+    }
+    if (!(byId.has(edge.source) && byId.has(edge.target))) {
+      continue;
+    }
+    out.set(edge.source, [...(out.get(edge.source) ?? []), edge.target]);
+    inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1);
+  }
+  const ordered: WorkflowSimulationNode[] = [];
+  const seen = new Set<string>();
+  const queue = nodes
+    .filter((node) => (inDegree.get(node.id) ?? 0) === 0)
+    .map((node) => node.id);
+  const remaining = new Map(inDegree);
+  while (queue.length > 0) {
+    const id = queue.shift() as string;
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    ordered.push(byId.get(id) as WorkflowSimulationNode);
+    for (const next of out.get(id) ?? []) {
+      const left = (remaining.get(next) ?? 1) - 1;
+      remaining.set(next, left);
+      if (left <= 0) {
+        queue.push(next);
+      }
+    }
+  }
+  for (const node of nodes) {
+    if (!seen.has(node.id)) {
+      ordered.push(node);
+    }
+  }
+  return ordered;
+}
+
+type EdgeCounts = {
+  inDegree: Map<string, number>;
+  outDegree: Map<string, number>;
+};
+
+function edgeCounts(edges: WorkflowSimulationEdge[] | undefined): EdgeCounts {
+  const inDegree = new Map<string, number>();
+  const outDegree = new Map<string, number>();
+  for (const edge of edges ?? []) {
+    if (typeof edge.source !== "string" || typeof edge.target !== "string") {
+      continue;
+    }
+    outDegree.set(edge.source, (outDegree.get(edge.source) ?? 0) + 1);
+    inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1);
+  }
+  return { inDegree, outDegree };
+}
+
+/** A node prepared and ready to simulate, waiting to see whether it joins a run. */
+type ReadyNode = { context: NodeSimulationContext; chainId: number };
+
+/**
+ * A run is a maximal stretch of consecutive `web3/write-contract` nodes on
+ * one chain along one linear path: each hands the next its state, so they
+ * are simulated as one sequence. Anything that breaks that shape - a fork, a
+ * chain change, a transfer node, a node the edges do not connect - ends the
+ * run, and that node starts over.
+ */
+function extendsRun(
+  run: ReadyNode[],
+  candidate: ReadyNode,
+  counts: EdgeCounts,
+  edgeFrom: (source: string, target: string) => boolean
+): boolean {
+  if (run.length === 0) {
+    return true;
+  }
+  const previous = run.at(-1) as ReadyNode;
+  return (
+    previous.context.actionType === "web3/write-contract" &&
+    candidate.context.actionType === "web3/write-contract" &&
+    previous.chainId === candidate.chainId &&
+    (counts.outDegree.get(previous.context.node.id) ?? 0) === 1 &&
+    (counts.inDegree.get(candidate.context.node.id) ?? 0) === 1 &&
+    edgeFrom(previous.context.node.id, candidate.context.node.id)
+  );
+}
+
+async function simulateRun(
+  run: ReadyNode[],
+  deadlineAt?: number
+): Promise<NodeSimulationOutcome[]> {
+  if (run.length === 1) {
+    const only = run[0];
+    return [await simulateSingle(only.context, deadlineAt)];
+  }
+  const { organizationId } = run[0].context;
+  let sequence: Awaited<ReturnType<typeof simulateCallSequence>>;
+  try {
+    sequence = await withSimulationDeadline(
+      simulateCallSequence({
+        organizationId,
+        network: stringValue(run[0].context.config.network),
+        calls: run.map(({ context }) => ({
+          contractAddress: stringValue(context.config.contractAddress),
+          abi: jsonStringValue(context.config.abi),
+          functionName:
+            optionalStringValue(context.config.abiFunction) ??
+            stringValue(context.config.functionName),
+          functionArgs: optionalJsonStringValue(context.config.functionArgs),
+          value: optionalStringValue(context.config.ethValue),
+        })),
+      }),
+      deadlineAt
+    );
+  } catch (error) {
+    if (error instanceof WorkflowSimulationDeadlineError) {
+      throw error;
+    }
+    return run.map(({ context }) => unavailableOutcome(context));
+  }
+  return run.map(({ context }, index) => {
+    const result = sequence.results[index];
+    if (!result) {
+      return unavailableOutcome(context);
+    }
+    // Only a node whose earlier steps were actually applied loses the hedge.
+    // The first of a run has none applied; a result the sequence could not
+    // chain (unavailable) is already reported as such by outcomeFromResult.
+    return outcomeFromResult({ ...context, chained: index > 0 }, result);
+  });
+}
+
+function unavailableOutcome(
+  context: NodeSimulationContext
+): NodeSimulationOutcome {
+  return {
+    status: "skipped",
+    warning: makeIssue(context, {
+      code: "SIMULATION_UNAVAILABLE",
+      fieldKey: "network",
+      message: `${nodeLabel(
+        context.node,
+        context.actionType
+      )} could not be simulated because the simulation service was unavailable. You can still run the workflow.`,
+    }),
+  };
+}
+
+/** One node on its own, after prepareNode said it is ready. */
+async function simulateSingle(
+  context: NodeSimulationContext,
+  deadlineAt?: number
+): Promise<NodeSimulationOutcome> {
+  let result: SimulateResult;
+  try {
+    result = await withSimulationDeadline(runSimulator(context), deadlineAt);
+  } catch (error) {
+    if (error instanceof WorkflowSimulationDeadlineError) {
+      throw error;
+    }
+    return unavailableOutcome(context);
+  }
+  return outcomeFromResult(context, result);
+}
+
+/**
  * Simulate eligible static EVM write nodes before an interactive workflow run.
+ *
+ * Consecutive write-contract nodes on one chain along one path are simulated
+ * as a sequence, each against the state the one before it produced, so the
+ * second call of an approve-then-deposit pair no longer warns on allowance
+ * every time. Nodes that cannot be placed in such a run - after a fork, on
+ * another chain, behind a template - are simulated on their own against
+ * latest state, exactly as before.
  *
  * This function never signs, broadcasts, creates execution records, reserves
  * spending limits or performs billing operations.
@@ -717,8 +907,50 @@ export async function runWorkflowSimulation({
   let skippedNodeCount = 0;
   let reachableWriteCount = 0;
   const reachable = reachableNodeIds(nodes, edges);
+  const counts = edgeCounts(edges);
+  const edgeSet = new Set(
+    (edges ?? [])
+      .filter(
+        (e) => typeof e.source === "string" && typeof e.target === "string"
+      )
+      .map((e) => `${e.source as string}->${e.target as string}`)
+  );
+  const edgeFrom = (source: string, target: string): boolean =>
+    edgeSet.has(`${source}->${target}`);
+  const indexById = new Map(
+    nodes.map((node, index) => [node.id, index] as const)
+  );
 
-  for (const [nodeIndex, node] of nodes.entries()) {
+  const record = (outcome: NodeSimulationOutcome): void => {
+    if (outcome.status === "simulated") {
+      simulatedNodeCount += 1;
+      return;
+    }
+    // A determined failure still only warns: the editor keeps Run Anyway
+    // available for every simulation outcome.
+    if (outcome.status === "failed") {
+      warnings.push(outcome.issue);
+      return;
+    }
+    skippedNodeCount += 1;
+    if (outcome.warning) {
+      warnings.push(outcome.warning);
+    }
+  };
+
+  let run: ReadyNode[] = [];
+  const flush = async (): Promise<void> => {
+    if (run.length === 0) {
+      return;
+    }
+    const outcomes = await simulateRun(run, deadlineAt);
+    for (const outcome of outcomes) {
+      record(outcome);
+    }
+    run = [];
+  };
+
+  for (const node of executionOrder(nodes, edges)) {
     const remaining = remainingDeadlineMs(deadlineAt);
     if (remaining !== null && remaining <= 0) {
       throw new WorkflowSimulationDeadlineError();
@@ -730,48 +962,40 @@ export async function runWorkflowSimulation({
     if (node.data?.enabled === false) {
       continue;
     }
-
     if (node.type !== "action" && node.data?.type !== "action") {
       continue;
     }
 
     const config = node.data?.config;
     const actionType = config?.actionType ?? node.data?.actionType;
-
     if (!(config && isSupportedActionType(actionType))) {
       continue;
     }
 
-    const outcome = await simulateNode(
-      {
-        node,
-        nodeIndex,
-        organizationId,
-        actionType,
-        config,
-        hasEarlierReachableWrite: reachableWriteCount > 0,
-      },
-      deadlineAt
-    );
+    const context: NodeSimulationContext = {
+      node,
+      nodeIndex: indexById.get(node.id) ?? 0,
+      organizationId,
+      actionType,
+      config,
+      hasEarlierReachableWrite: reachableWriteCount > 0,
+    };
     reachableWriteCount += 1;
 
-    if (outcome.status === "simulated") {
-      simulatedNodeCount += 1;
+    const prepared = await prepareNode(context, deadlineAt);
+    if (prepared.kind === "outcome") {
+      await flush();
+      record(prepared.outcome);
       continue;
     }
 
-    // A determined failure still only warns: the editor keeps Run Anyway
-    // available for every simulation outcome.
-    if (outcome.status === "failed") {
-      warnings.push(outcome.issue);
-      continue;
+    const ready: ReadyNode = { context, chainId: prepared.chainId };
+    if (!extendsRun(run, ready, counts, edgeFrom)) {
+      await flush();
     }
-
-    skippedNodeCount += 1;
-    if (outcome.warning) {
-      warnings.push(outcome.warning);
-    }
+    run.push(ready);
   }
+  await flush();
 
   return {
     warnings,
