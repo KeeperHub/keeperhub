@@ -199,9 +199,16 @@ export function encodeFromConfig(
 ): EncodedAction {
   const named = action.inputs.map((inp) => {
     const raw = config[inp.name];
-    let value: string;
+    let value: unknown;
     if (raw === undefined || raw === "") {
       value = inp.default ?? "";
+    } else if (inp.type.endsWith("]") && typeof raw === "string") {
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        value = Array.isArray(parsed) ? parsed : raw;
+      } catch {
+        value = raw;
+      }
     } else if (typeof raw === "object") {
       value = JSON.stringify(raw);
     } else {

@@ -225,8 +225,8 @@ export function getEncodeTransformKind(
 export function applyEncodeTransformsNamed(
   protocolSlug: string,
   actionSlug: string,
-  inputs: Array<{ name: string; value: string }>
-): Array<{ name: string; value: string }> {
+  inputs: Array<{ name: string; value: unknown }>
+): Array<{ name: string; value: unknown }> {
   if (transforms.size === 0) {
     return inputs;
   }
@@ -234,6 +234,11 @@ export function applyEncodeTransformsNamed(
   return inputs.map((input) => {
     const entry = transforms.get(makeKey(protocolSlug, actionSlug, input.name));
     if (entry) {
+      if (typeof input.value !== "string") {
+        throw new Error(
+          `Encode transform for ${protocolSlug}/${actionSlug}/${input.name} requires a scalar string value`
+        );
+      }
       return { name: input.name, value: entry.transform(input.value) };
     }
     return input;

@@ -394,8 +394,14 @@ export default defineAbiProtocol({
           description: "Cast votes for pool gauges using veAERO voting power",
           inputs: {
             _tokenId: { label: "veNFT Token ID" },
-            _poolVote: { label: "Pool Addresses (comma-separated)" },
-            _weights: { label: "Vote Weights (comma-separated)" },
+            _poolVote: {
+              label: "Pool Addresses",
+              helpTip: "Add one pool address per array item.",
+            },
+            _weights: {
+              label: "Vote Weights",
+              helpTip: "Add one vote weight per array item.",
+            },
           },
         },
         reset: {
@@ -411,7 +417,10 @@ export default defineAbiProtocol({
           label: "Claim Gauge Rewards",
           description: "Claim accumulated AERO rewards from gauges",
           inputs: {
-            _gauges: { label: "Gauge Addresses (comma-separated)" },
+            _gauges: {
+              label: "Gauge Addresses",
+              helpTip: "Add one gauge address per array item.",
+            },
           },
         },
       },

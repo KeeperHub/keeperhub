@@ -21,7 +21,7 @@ type ArrayInputFieldProps = {
   components?: AbiComponent[];
 };
 
-function parseArrayValue(
+export function parseArrayValue(
   value: unknown,
   nextId: () => number
 ): ArrayItem[] {
@@ -42,7 +42,14 @@ function parseArrayValue(
         }));
       }
     } catch {
-      return [{ id: nextId(), value }];
+      // Before scalar arrays had a structured editor, protocol inputs such as
+      // Aerodrome gauge lists were entered as comma-separated text. Preserve
+      // those saved values when the workflow is opened in the new editor.
+      return value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .map((item) => ({ id: nextId(), value: item }));
     }
   }
 
