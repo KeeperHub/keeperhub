@@ -73,6 +73,7 @@ const telegramPlugin: IntegrationPlugin = {
           type: "select",
           options: [
             { value: "none", label: "None (Plain Text)" },
+            { value: "HTML", label: "HTML" },
             {
               value: "MarkdownV2",
               label: "MarkdownV2 (requires escaping special chars)",
@@ -81,6 +82,18 @@ const telegramPlugin: IntegrationPlugin = {
           defaultValue: "none",
           placeholder: "Select parse mode",
           example: "none",
+        },
+        {
+          key: "disablePreview",
+          label: "Disable Link Preview",
+          type: "select",
+          options: [
+            { value: "false", label: "No" },
+            { value: "true", label: "Yes" },
+          ],
+          defaultValue: "false",
+          placeholder: "Disable link previews",
+          example: "false",
         },
       ],
     },

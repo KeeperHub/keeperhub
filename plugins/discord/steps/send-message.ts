@@ -22,6 +22,10 @@ type SendDiscordMessageResult =
 
 export type SendDiscordMessageCoreInput = {
   discordMessage: string;
+  username?: string;
+  avatarUrl?: string;
+  embedTitle?: string;
+  embedColor?: string;
 };
 
 export type SendDiscordMessageInput = StepInput &
@@ -30,6 +34,27 @@ export type SendDiscordMessageInput = StepInput &
   };
 
 const DISCORD_WEBHOOK_HOSTS = new Set(["discord.com", "discordapp.com"]);
+
+const EMBED_COLORS: Record<string, number> = {
+  red: 15158332,
+  green: 3066993,
+  yellow: 15844367,
+  blue: 3447003,
+  gray: 9807270,
+};
+
+type DiscordEmbed = {
+  title?: string;
+  description: string;
+  color?: number;
+};
+
+type DiscordWebhookPayload = {
+  content: string;
+  username?: string;
+  avatar_url?: string;
+  embeds?: DiscordEmbed[];
+};
 
 /**
  * Validates a Discord webhook URL by hostname over https, not by substring.
@@ -110,15 +135,44 @@ async function stepHandler(
   try {
     console.log("[Discord] Sending message to webhook");
 
+    const payload: DiscordWebhookPayload = {
+      content: input.discordMessage,
+    };
+
+    const username = input.username?.trim();
+    if (username) {
+      payload.username = username.slice(0, 80);
+    }
+
+    const avatarUrl = input.avatarUrl?.trim();
+    if (avatarUrl) {
+      payload.avatar_url = avatarUrl;
+    }
+
+    const embedTitle = input.embedTitle?.trim();
+    const embedColorKey = input.embedColor?.trim().toLowerCase();
+    const embedColor =
+      embedColorKey && embedColorKey !== "none"
+        ? EMBED_COLORS[embedColorKey]
+        : undefined;
+
+    if (embedTitle || embedColor !== undefined) {
+      payload.embeds = [
+        {
+          ...(embedTitle ? { title: embedTitle.slice(0, 256) } : {}),
+          description: input.discordMessage.slice(0, 4096),
+          ...(embedColor !== undefined ? { color: embedColor } : {}),
+        },
+      ];
+    }
+
     const response = await safeFetch(webhookUrl, {
       plugin: "discord",
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        content: input.discordMessage,
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {

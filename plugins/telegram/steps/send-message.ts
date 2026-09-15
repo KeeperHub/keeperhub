@@ -30,6 +30,7 @@ export type SendTelegramMessageCoreInput = {
   chatId: string;
   message: string;
   parseMode?: string;
+  disablePreview?: string | boolean;
 };
 
 export type SendTelegramMessageInput = StepInput &
@@ -220,6 +221,15 @@ async function stepHandler(
     input.parseMode.trim() !== ""
   ) {
     params.append("parse_mode", input.parseMode);
+  }
+
+  // Optional: disable link previews for long URLs
+  const disablePreview =
+    input.disablePreview === true ||
+    (typeof input.disablePreview === "string" &&
+      input.disablePreview.toLowerCase() === "true");
+  if (disablePreview) {
+    params.append("disable_web_page_preview", "true");
   }
 
   try {
