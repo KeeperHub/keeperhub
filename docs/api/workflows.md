@@ -297,6 +297,140 @@ POST /api/workflows/{workflowId}/webhook
 
 Trigger a workflow via webhook. Requires API key authentication.
 
+## Preview Event Trigger
+
+```http
+POST /api/workflows/{workflowId}/trigger-preview
+```
+
+Answer two questions about a workflow's Event trigger before you enable it:
+can it fire at all, and how often would it have fired recently.
+
+An Event trigger that is wired wrong does not report an error. The event
+tracker declines to register it and the workflow simply stays quiet, which is
+indistinguishable from a trigger that is correct but waiting. This endpoint
+runs the same checks the tracker makes, then scans recent chain history for
+matches, and returns both as one advisory answer. It reads the saved workflow
+definition, signs nothing, records no execution and never changes the
+workflow, so it is safe to call as often as the rate limit allows.
+
+Authentication is the same as the rest of this reference: a session or an
+organization API key. The caller must have full access to the workflow.
+
+### Request Body
+
+```json
+{
+  "lookbackBlocks": 5000
+}
+```
+
+The body is optional. `lookbackBlocks` sets how far back to scan and defaults
+to `5000`. It must be a positive integer no greater than `50000`; any other
+value returns `400 INVALID_LOOKBACK_BLOCKS` rather than falling back to the
+default, so a request meant to widen the window is never silently narrowed.
+
+### Example
+
+```bash
+curl -X POST https://app.keeperhub.com/api/workflows/wm3k8nq7xcz2jv4hpbtd5/trigger-preview \
+  -H "Authorization: Bearer $KEEPERHUB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"lookbackBlocks": 5000}'
+```
+
+### Response
+
+```json
+{
+  "ok": true,
+  "result": {
+    "verdict": "ok",
+    "summary": "12 Transfer events matched, about 207.4 per day.",
+    "findings": [],
+    "scan": {
+      "fromBlock": 21000000,
+      "toBlock": 21005000,
+      "blocksScanned": 5001,
+      "spanSeconds": 60012
+    },
+    "matchCount": 12,
+    "filteredOutCount": 0,
+    "estimatedFiresPerDay": 207.4,
+    "samples": [
+      {
+        "blockNumber": 21004987,
+        "transactionHash": "0x8f2c...",
+        "logIndex": 41,
+        "args": {
+          "from": "0xaa00...",
+          "to": "0xcc00...",
+          "value": "1500000000000000000"
+        }
+      }
+    ]
+  }
+}
+```
+
+`verdict` is the one field to branch on:
+
+| Verdict | Meaning |
+| --- | --- |
+| `ok` | Matches were found at an unremarkable rate. |
+| `high-volume` | Matches were found often enough that the execution cost is worth checking. |
+| `no-recent-matches` | Nothing blocked the trigger, but nothing matched in the window. The event may simply be rarer than the window is wide. |
+| `will-never-fire` | A fact about the configuration or the chain guarantees the trigger cannot dispatch as written. |
+| `unknown` | The configuration passed every check, but chain history could not be read, so nothing is claimed about firing behaviour. |
+
+`findings` carries the detail, each with a stable `code`, a `severity` of
+`blocking`, `warning` or `info`, a human-readable `message`, and a `fieldKey`
+naming the trigger config field at fault where there is one. Codes include
+`CHAIN_HAS_NO_WEBSOCKET` (the chain has no WebSocket endpoint, so no event
+trigger on it can fire), `EVENT_NOT_IN_ABI` (the message lists the events the
+ABI does contain), `CONTRACT_HAS_NO_CODE` (the address holds no contract on
+this network, usually the right address on the wrong chain),
+`FILTERS_EXCLUDED_EVERY_MATCH` (the event was emitted, but a recipient or memo
+filter dropped every one) and `NO_MATCHES_CONTRACT_ACTIVE` (the contract
+emitted other events in the window, so the wiring reaches a live contract and
+this event is merely rare).
+
+Two codes describe the scan rather than the trigger. `HIGH_VOLUME` means the
+event fires often enough that the execution cost is worth checking, and
+`SCAN_TRUNCATED` means the scan reached its time limit before covering the
+whole window. They are deliberately separate: a slow upstream is not a busy
+trigger. When `SCAN_TRUNCATED` is present, `scan.toBlock` is the last block
+actually covered rather than the chain head, and every count is over that
+narrower range. Ask for a smaller `lookbackBlocks` for a complete answer.
+
+`matchCount`, `filteredOutCount` and `estimatedFiresPerDay` are `null` when no
+scan ran, which is the case for every `will-never-fire` and `unknown` result.
+`estimatedFiresPerDay` is also `null` when block timestamps could not be read,
+since the rate is measured from them rather than assumed from a block time.
+`samples` holds at most five matches, newest first, with every integer
+argument rendered as a string.
+
+The preview never blocks anything. A `will-never-fire` verdict is a strong
+signal, not a gate: the workflow can still be enabled and run.
+
+### Failure Behaviour
+
+| Status | `error` | Meaning |
+| --- | --- | --- |
+| 400 | `INVALID_LOOKBACK_BLOCKS` | `lookbackBlocks` was present but not a positive integer within the ceiling. |
+| 401 | `UNAUTHORIZED` | Authentication failed. |
+| 403 | `FORBIDDEN` | The caller does not have full access to this workflow. |
+| 404 | `NOT_FOUND` | No workflow with this id. |
+| 410 | `GONE` | The workflow is soft-deleted. |
+| 429 | `RATE_LIMIT_EXCEEDED` | Rate limited. Standard rate-limit headers are returned. |
+
+An RPC failure is not an error status. The request answers `200` with verdict
+`unknown` and a `SCAN_UNAVAILABLE` finding, because the configuration checks
+still succeeded and their result is worth returning on its own.
+
+A workflow whose trigger is not an Event trigger answers `200` with verdict
+`unknown` and a `TRIGGER_TYPE_NOT_EVENT` finding rather than an error.
+
 ## Duplicate Workflow
 
 ```http

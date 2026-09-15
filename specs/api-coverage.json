@@ -153,7 +153,7 @@
       "path": "/api/features",
       "route_file": "app/api/features/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 476
+      "line": 610
     },
     {
       "method": "GET",
@@ -181,7 +181,7 @@
       "path": "/api/mcp/schemas",
       "route_file": "app/api/mcp/schemas/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 401
+      "line": 535
     },
     {
       "method": "GET",
@@ -279,7 +279,7 @@
       "path": "/api/workflows/public",
       "route_file": "app/api/workflows/public/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 354
+      "line": 488
     },
     {
       "method": "GET",
@@ -293,14 +293,14 @@
       "path": "/api/workflows/{workflowId}/code",
       "route_file": "app/api/workflows/[workflowId]/code/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 319
+      "line": 453
     },
     {
       "method": "GET",
       "path": "/api/workflows/{workflowId}/download",
       "route_file": "app/api/workflows/[workflowId]/download/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 311
+      "line": 445
     },
     {
       "method": "GET",
@@ -419,7 +419,7 @@
       "path": "/api/hub/featured",
       "route_file": "app/api/hub/featured/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 393
+      "line": 527
     },
     {
       "method": "POST",
@@ -524,14 +524,14 @@
       "path": "/api/workflows/{workflowId}/claim",
       "route_file": "app/api/workflows/[workflowId]/claim/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 327
+      "line": 461
     },
     {
       "method": "POST",
       "path": "/api/workflows/{workflowId}/duplicate",
       "route_file": "app/api/workflows/[workflowId]/duplicate/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 303
+      "line": 437
     },
     {
       "method": "POST",
@@ -546,6 +546,13 @@
       "route_file": "app/api/workflows/[workflowId]/simulate/route.ts",
       "source": "docs/api/direct-execution.md",
       "line": 1101
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/{workflowId}/trigger-preview",
+      "route_file": "app/api/workflows/[workflowId]/trigger-preview/route.ts",
+      "source": "docs/api/workflows.md",
+      "line": 303
     },
     {
       "method": "POST",
@@ -573,7 +580,7 @@
       "path": "/api/workflows/{workflowId}/go-live",
       "route_file": "app/api/workflows/[workflowId]/go-live/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 335
+      "line": 469
     }
   ]
 }
