@@ -1814,6 +1814,7 @@ function RunButtonGroup({
     ?.data.config?.triggerType;
 
   const isNonManualTrigger =
+    triggerType === WorkflowTriggerEnum.PYTH_PRICE ||
     triggerType === WorkflowTriggerEnum.EVENT ||
     triggerType === WorkflowTriggerEnum.BLOCK ||
     triggerType === WorkflowTriggerEnum.TEMPO_PAYMENT;

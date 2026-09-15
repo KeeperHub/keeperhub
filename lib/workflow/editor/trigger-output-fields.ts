@@ -194,6 +194,45 @@ export function getTriggerOutputFields(
   triggerType: string | undefined,
   config: Record<string, unknown>
 ): OutputField[] {
+  if (triggerType === "Pyth Price") {
+    return [
+      { field: "feedId", description: "Pyth price feed ID" },
+      {
+        field: "price",
+        description:
+          "Integer price string; multiply by 10^exponent for the quote-currency price",
+      },
+      {
+        field: "confidence",
+        description: "Integer confidence interval, scaled by the same exponent",
+      },
+      { field: "exponent", description: "Base-ten price exponent" },
+      {
+        field: "publishTime",
+        description: "Source publication time in Unix seconds",
+      },
+      {
+        field: "sourceUpdateId",
+        description:
+          "Stable source update identity for this feed and publication time",
+      },
+      {
+        field: "expiresAt",
+        description: "Signal expiration time in Unix milliseconds",
+      },
+      {
+        field: "speculative",
+        description:
+          "True: this upstream signal is not confirmed onchain state",
+      },
+      {
+        field: "direction",
+        description: "Configured crossing direction: above or below",
+      },
+      { field: "threshold", description: "Configured decimal price threshold" },
+      TRIGGERED_AT_FIELD,
+    ];
+  }
   if (triggerType === "Block") {
     return getBlockTriggerOutputFields();
   }

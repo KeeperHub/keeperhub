@@ -4,7 +4,7 @@ import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 /**
  * Per-workflow MCP tool input schema, discriminated by trigger type.
  *
- * Four discriminants are emitted:
+ * Five discriminants are emitted:
  *   - "manual"          empty payload, manual-fire workflow
  *   - "schedule"        empty payload, cron is workflow-level config
  *   - "webhook"         { method?, query?, body?, headers? } — matches the
@@ -18,13 +18,20 @@ import { WorkflowTriggerEnum } from "@/lib/workflow/store";
  *                       names breaks {{@trigger:Trigger.eventName}} template
  *                       references downstream.
  *
+ *   - "upstream"        Pyth price observation; speculative, not an onchain receipt.
+ *
  * Backward compatibility: the discriminant `type` field is OPTIONAL on the
  * wire. A payload without `type` is normalized to {type: "manual", ...rest}
  * via z.preprocess BEFORE the discriminated union matches. This preserves
  * every existing flat-bag caller of call_workflow_<slug> tools.
  */
 
-export type TriggerKind = "manual" | "schedule" | "webhook" | "on-chain-event";
+export type TriggerKind =
+  | "manual"
+  | "schedule"
+  | "webhook"
+  | "on-chain-event"
+  | "upstream";
 
 type TriggerNodeShape = {
   data?: {
@@ -64,6 +71,8 @@ export function detectListingTriggerType(nodes: unknown): TriggerKind {
       return "schedule";
     case WorkflowTriggerEnum.WEBHOOK:
       return "webhook";
+    case WorkflowTriggerEnum.PYTH_PRICE:
+      return "upstream";
     case WorkflowTriggerEnum.EVENT:
     case WorkflowTriggerEnum.BLOCK:
     case WorkflowTriggerEnum.TEMPO_PAYMENT:
@@ -174,6 +183,35 @@ const onChainEventBranch = z
     "On-chain event trigger payload — field NAMES are eventName and address (NOT event and contract) to match the runtime event-tracker payload exactly."
   );
 
+const upstreamBranch = z
+  .object({
+    type: z.literal("upstream"),
+    source: z.literal("pyth-hermes"),
+    speculative: z.literal(true),
+    sourceUpdateId: z.string(),
+    feedId: z.string().regex(/^[a-f0-9]{64}$/),
+    price: z.string().describe("Raw integer price; multiply by 10^exponent."),
+    confidence: z
+      .string()
+      .describe("Raw confidence interval in the same scale as price."),
+    exponent: z.number().int(),
+    publishTime: z
+      .number()
+      .int()
+      .positive()
+      .describe("Publication time in Unix seconds."),
+    expiresAt: z
+      .number()
+      .int()
+      .positive()
+      .describe("Expiry time in Unix milliseconds."),
+    direction: z.enum(["above", "below"]),
+    threshold: z.string(),
+  })
+  .describe(
+    "Pyth price trigger payload. Caller-supplied input does not attest to a live oracle observation; native dispatch is performed by the events service."
+  );
+
 /**
  * Build the per-slug MCP tool inputSchema for a workflow with the given
  * trigger kind.
@@ -199,6 +237,8 @@ export function buildTriggerInputSchema(kind: TriggerKind): z.ZodTypeAny {
         return webhookBranch;
       case "on-chain-event":
         return onChainEventBranch;
+      case "upstream":
+        return upstreamBranch;
       default: {
         const exhaustive: never = kind;
         throw new Error(`Unknown trigger kind: ${String(exhaustive)}`);

@@ -51,6 +51,27 @@ const eventMessageSchema = z.object({
   triggerData: z.unknown(),
 });
 
+const upstreamMessageSchema = z.object({
+  triggerType: z.literal("upstream"),
+  workflowId,
+  userId: z.string().min(1),
+  executionId: z.string().min(1),
+  configHash: z.string().regex(/^[a-f0-9]{64}$/),
+  triggerData: z.object({
+    source: z.literal("pyth-hermes"),
+    speculative: z.literal(true),
+    sourceUpdateId: z.string().min(1),
+    feedId: z.string().regex(/^[a-f0-9]{64}$/),
+    price: z.string(),
+    confidence: z.string(),
+    exponent: z.number().int(),
+    publishTime: z.number().int().positive(),
+    expiresAt: z.number().int().positive(),
+    direction: z.enum(["above", "below"]),
+    threshold: z.string(),
+  }),
+});
+
 // manual and webhook share a shape but are separate literal branches so the
 // discriminated union stays on a single literal discriminator per branch.
 const manualFields = {
@@ -73,6 +94,7 @@ export const executorMessageSchema = z.discriminatedUnion("triggerType", [
   scheduleMessageSchema,
   blockMessageSchema,
   eventMessageSchema,
+  upstreamMessageSchema,
   manualMessageSchema,
   webhookMessageSchema,
 ]);

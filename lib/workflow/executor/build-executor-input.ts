@@ -1,3 +1,4 @@
+import { pythDispatchRefusal } from "@/lib/pyth/validate-dispatch";
 import type { WorkflowExecutionInput } from "@/lib/workflow/executor/executor.workflow";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 
@@ -30,6 +31,12 @@ export function buildExecutorInput(
     organizationPlan?: string;
   }
 ): WorkflowExecutionInput {
+  if (params.triggerInput?.triggerType === "upstream") {
+    const refusal = pythDispatchRefusal(workflow.nodes, params.triggerInput);
+    if (refusal) {
+      throw new Error(refusal);
+    }
+  }
   return {
     nodes: workflow.nodes as WorkflowNode[],
     edges: workflow.edges as WorkflowEdge[],

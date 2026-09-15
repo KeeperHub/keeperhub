@@ -6,6 +6,10 @@ import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { recordWorkflowCreatedFromSource } from "@/lib/metrics/collectors/prometheus";
 import { authFailureResponse, getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
+import {
+  hasPythPriceTrigger,
+  isPythPriceTriggerEnabled,
+} from "@/lib/pyth/feature-flag";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 import { recordWorkflowSnapshot } from "@/lib/workflow/history";
 import { db } from "@/lib/db";
@@ -156,6 +160,16 @@ export async function POST(request: Request) {
     const sanitized = sanitizeWorkflowData(nodes, edges);
     nodes = sanitized.nodes;
     edges = sanitized.edges;
+
+    if (!isPythPriceTriggerEnabled() && hasPythPriceTrigger(nodes)) {
+      return NextResponse.json(
+        {
+          error: "PYTH_TRIGGER_DISABLED",
+          message: "Pyth Price triggers are not enabled on this deployment.",
+        },
+        { status: 400 }
+      );
+    }
 
     // A 201 from this endpoint does not mean the workflow will run. The gate
     // below is an AUTHORIZATION check on integrationId, not an existence

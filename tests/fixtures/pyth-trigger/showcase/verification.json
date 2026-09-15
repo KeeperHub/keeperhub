@@ -1,0 +1,72 @@
+{
+  "verifiedAt": "2026-09-10T11:14:05.509806+00:00",
+  "environment": "Actual React components in an esbuild browser harness with the unmodified Better Auth and workflow creation route handlers, Next.js request storage and local Postgres. The full Next.js root shell and editor are not rendered in this harness.",
+  "browser": {
+    "status": 200,
+    "stageClick": true,
+    "replay": "true",
+    "authDialog": true,
+    "thresholdPreserved": "2500",
+    "mobileOverflow": [],
+    "reducedMotionAnimations": 0,
+    "errors": []
+  },
+  "motion": {
+    "animations": ["showcase_float", "showcase_float"],
+    "pageWidth": 1440
+  },
+  "workflowCreation": {
+    "invalidRearmRejected": true,
+    "status": 200,
+    "id": "w10xkae3fchotm0dg298o",
+    "enabled": false,
+    "nodes": [
+      {
+        "id": "pyth",
+        "label": "Pyth",
+        "config": {
+          "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+          "direction": "above",
+          "threshold": "2500",
+          "triggerType": "Pyth Price",
+          "maxAgeSeconds": 30,
+          "rearmThreshold": "2490"
+        }
+      },
+      {
+        "id": "scale",
+        "label": "Scale",
+        "config": {
+          "inputMode": "explicit",
+          "operation": "sum",
+          "actionType": "math/aggregate",
+          "postOperand": "{{@pyth:Pyth.exponent}}",
+          "postOperation": "power",
+          "explicitValues": "10"
+        }
+      },
+      {
+        "id": "record-price",
+        "label": "Record observed USD price",
+        "config": {
+          "inputMode": "explicit",
+          "operation": "sum",
+          "actionType": "math/aggregate",
+          "postOperand": "{{@scale:Scale.result}}",
+          "postOperation": "multiply",
+          "explicitValues": "{{@pyth:Pyth.price}}"
+        }
+      }
+    ],
+    "editorDestination": "/workflows/w10xkae3fchotm0dg298o"
+  },
+  "fullEditorVerified": false,
+  "unitTests": {
+    "file": "tests/unit/pyth-starter-workflow.test.ts",
+    "passed": 5
+  },
+  "fullAppCompilation": {
+    "webpack": "No HTTP response within the 180-second request timeout.",
+    "turbopack": "Memory-limited local scope was OOM-killed at its 2300 MiB limit before serving the page."
+  }
+}

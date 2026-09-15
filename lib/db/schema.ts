@@ -1,5 +1,6 @@
 import { isNotNull, relations, sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   index,
   integer,
@@ -18,6 +19,7 @@ import type {
   WorkflowExecutionStatus,
 } from "../errors/execution-status";
 import type { ErrorCategory } from "../logging";
+import type { PythSignal } from "../pyth/price-trigger";
 import type { IntegrationType } from "../types/integration";
 import { generateId } from "../utils/id";
 
@@ -846,6 +848,27 @@ export const workflowExecutions = pgTable(
     uniqueIndex("idx_workflow_executions_dispatch_key").on(table.dispatchKey),
   ]
 );
+
+// One durable threshold checkpoint and pending dispatch per Pyth workflow.
+// The workflow row lock serializes observation, ownership and outbox changes.
+export const pythTriggerCheckpoints = pgTable("pyth_trigger_checkpoints", {
+  workflowId: text("workflow_id")
+    .primaryKey()
+    .references(() => workflows.id, { onDelete: "cascade" }),
+  configHash: text("config_hash").notNull(),
+  sessionId: text("session_id"),
+  leaseUntil: timestamp("lease_until", { withTimezone: true }),
+  lastPublishTime: bigint("last_publish_time", { mode: "number" }),
+  armed: boolean("armed").notNull().default(false),
+  pending: jsonb("pending").$type<{
+    executionId: string;
+    configHash: string;
+    triggerData: PythSignal;
+  }>(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
 
 // Workflow execution logs to track individual node executions
 export const workflowExecutionLogs = pgTable(

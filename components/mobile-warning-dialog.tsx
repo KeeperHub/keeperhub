@@ -1,6 +1,7 @@
 "use client";
 
 import { Monitor } from "lucide-react";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 
@@ -9,6 +10,7 @@ const MOBILE_BREAKPOINT = 768;
 
 export function MobileWarningDialog() {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
 
   useEffect(() => {
     let dismissed: string | null = null;
@@ -23,7 +25,7 @@ export function MobileWarningDialog() {
     }
   }, []);
 
-  if (!open) {
+  if (!open || pathname === "/pyth") {
     return null;
   }
 

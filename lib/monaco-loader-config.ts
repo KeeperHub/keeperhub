@@ -12,7 +12,7 @@ declare global {
 // the `esm/vs/` prefix implicit, so the old deep specifiers now resolve to
 // `esm/vs/esm/vs/...` and fail to bundle. These paths target the same worker
 // files as before, spelled for the exports map.
-if (typeof window !== "undefined") {
+async function initializeMonaco(): Promise<void> {
   window.MonacoEnvironment = {
     getWorker(_workerId: string, label: string): Worker {
       if (label === "json") {
@@ -55,7 +55,21 @@ if (typeof window !== "undefined") {
     },
   };
 
-  import("monaco-editor").then((monaco) => {
-    loader.config({ monaco });
-  });
+  const monaco = await import("monaco-editor");
+  loader.config({ monaco });
+}
+
+let initialization: Promise<void> | undefined;
+
+export function configureMonaco(): Promise<void> {
+  if (typeof window === "undefined") {
+    return Promise.resolve();
+  }
+  if (!initialization) {
+    initialization = initializeMonaco().catch((error: unknown) => {
+      initialization = undefined;
+      throw error;
+    });
+  }
+  return initialization;
 }

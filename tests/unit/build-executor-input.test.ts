@@ -52,3 +52,14 @@ describe("buildExecutorInput", () => {
     expect(input.organizationPlan).toBe("pro");
   });
 });
+
+describe("Pyth runner startup", () => {
+  it("refuses an upstream signal that expired while waiting for its runner", () => {
+    expect(() =>
+      buildExecutorInput(WORKFLOW, {
+        executionId: "expired-pyth",
+        triggerInput: { triggerType: "upstream", expiresAt: Date.now() - 1 },
+      })
+    ).toThrow("expired");
+  });
+});

@@ -181,6 +181,9 @@ export function detectTriggerType(
     | string
     | undefined;
 
+  if (triggerType === "Pyth Price") {
+    return "upstream";
+  }
   if (triggerType === "Webhook") {
     return "webhook";
   }

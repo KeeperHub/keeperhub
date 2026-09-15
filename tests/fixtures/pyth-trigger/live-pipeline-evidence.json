@@ -1,0 +1,305 @@
+{
+  "description": "Captured local integration evidence, not a synthetic test fixture or hosted production result.",
+  "verifiedAt": "2026-09-08T18:59:49.554Z",
+  "environment": {
+    "feed": "Authenticated live Pyth Hermes ETH/USD stream",
+    "routes": "Unmodified production GET/POST handlers in a local Node HTTP harness, without the Next.js frontend",
+    "database": "Local PostgreSQL 16",
+    "queue": "Local ElasticMQ using real AWS SDK SQS calls and enforced HMAC verification",
+    "worker": "Actual keeperhub-events event-tracker process",
+    "executor": "Actual keeperhub-executor process with EXECUTION_MODE=in-process",
+    "workflowSetup": "Seeded directly in isolated local database; no full editor verification",
+    "timeNote": "Database timestamp-without-time-zone values were parsed with the local timezone; use publishTime and structured UTC log timestamps for timing."
+  },
+  "configuration": {
+    "configuredAt": "2026-09-08T18:56:11.420Z",
+    "referenceUpdate": {
+      "id": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+      "price": {
+        "conf": "20092621",
+        "expo": -8,
+        "price": "248434606982",
+        "publish_time": 1788893771
+      }
+    },
+    "workflows": [
+      {
+        "id": "f5569c1f-9ceb-4734-842f-04fa57f1a490",
+        "config": {
+          "triggerType": "Pyth Price",
+          "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+          "direction": "below",
+          "threshold": "2484.24606982",
+          "rearmThreshold": "2484.29606982",
+          "maxAgeSeconds": 120
+        }
+      },
+      {
+        "id": "7dc7e766-126c-4881-b9f8-9b7f207ca035",
+        "config": {
+          "triggerType": "Pyth Price",
+          "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+          "direction": "above",
+          "threshold": "2484.44606982",
+          "rearmThreshold": "2484.39606982",
+          "maxAgeSeconds": 120
+        }
+      }
+    ]
+  },
+  "liveExecution": {
+    "verifiedAt": "2026-09-08T18:57:46.061Z",
+    "environment": "local integration: actual route handlers, event worker and executor; Postgres; ElasticMQ queue; authenticated live Hermes feed",
+    "workflowIds": [
+      "f5569c1f-9ceb-4734-842f-04fa57f1a490",
+      "7dc7e766-126c-4881-b9f8-9b7f207ca035"
+    ],
+    "execution": {
+      "id": "09ix560tnx0gpwzfznhzr",
+      "workflow_id": "7dc7e766-126c-4881-b9f8-9b7f207ca035",
+      "status": "success",
+      "trigger_source": "upstream",
+      "input": {
+        "price": "248446963780",
+        "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+        "source": "pyth-hermes",
+        "exponent": -8,
+        "direction": "above",
+        "expiresAt": 1788893984000,
+        "threshold": "2484.44606982",
+        "confidence": "27848032",
+        "configHash": "d5e361ebd176380013a443d0faa04a04e91d30fd8d475eb12a2262e7ba03b4dd",
+        "publishTime": 1788893864,
+        "speculative": true,
+        "triggerType": "upstream",
+        "sourceUpdateId": "pyth:ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace:1788893864"
+      },
+      "output": {
+        "result": "2484.4696378",
+        "success": true,
+        "operation": "sum then divide",
+        "inputCount": 1,
+        "resultType": "number"
+      },
+      "error": null,
+      "started_at": "2026-09-08T17:57:44.423Z",
+      "completed_at": "2026-09-08T17:57:45.988Z"
+    },
+    "logs": [
+      {
+        "node_id": "pyth",
+        "node_name": "Pyth",
+        "node_type": "trigger",
+        "status": "success",
+        "input": {
+          "network": null,
+          "triggerData": {
+            "price": "248446963780",
+            "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+            "source": "pyth-hermes",
+            "exponent": -8,
+            "direction": "above",
+            "expiresAt": 1788893984000,
+            "threshold": "2484.44606982",
+            "timestamp": 1788893865665,
+            "triggered": true,
+            "confidence": "27848032",
+            "configHash": "d5e361ebd176380013a443d0faa04a04e91d30fd8d475eb12a2262e7ba03b4dd",
+            "publishTime": 1788893864,
+            "speculative": true,
+            "triggerType": "upstream",
+            "triggeredAt": "2026-09-08T18:57:45.665Z",
+            "sourceUpdateId": "pyth:ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace:1788893864"
+          },
+          "triggerGasUsed": null
+        },
+        "output": {
+          "data": {
+            "price": "248446963780",
+            "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+            "source": "pyth-hermes",
+            "exponent": -8,
+            "direction": "above",
+            "expiresAt": 1788893984000,
+            "threshold": "2484.44606982",
+            "timestamp": 1788893865665,
+            "triggered": true,
+            "confidence": "27848032",
+            "configHash": "d5e361ebd176380013a443d0faa04a04e91d30fd8d475eb12a2262e7ba03b4dd",
+            "publishTime": 1788893864,
+            "speculative": true,
+            "triggerType": "upstream",
+            "triggeredAt": "2026-09-08T18:57:45.665Z",
+            "sourceUpdateId": "pyth:ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace:1788893864"
+          },
+          "success": true
+        },
+        "error": null
+      },
+      {
+        "node_id": "record-price",
+        "node_name": "Record observed USD price",
+        "node_type": "math/aggregate",
+        "status": "success",
+        "input": {
+          "condition": null,
+          "inputMode": "explicit",
+          "operation": "sum",
+          "actionType": "math/aggregate",
+          "_actionType": "math/aggregate",
+          "postOperand": "100000000",
+          "postOperation": "divide",
+          "explicitValues": "248446963780",
+          "conditionConfig": null
+        },
+        "output": {
+          "result": "2484.4696378",
+          "success": true,
+          "operation": "sum then divide",
+          "inputCount": 1,
+          "resultType": "number"
+        },
+        "error": null
+      }
+    ]
+  },
+  "queueRedelivery": {
+    "verifiedAt": "2026-09-08T18:57:59.058Z",
+    "sentAt": "2026-09-08T18:57:46.669Z",
+    "expiresAt": 1788893984000,
+    "executionId": "09ix560tnx0gpwzfznhzr",
+    "sourceUpdateId": "pyth:ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace:1788893864",
+    "copiesSent": 2,
+    "before": [
+      {
+        "node_id": "pyth",
+        "status": "success",
+        "output": {
+          "data": {
+            "price": "248446963780",
+            "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+            "source": "pyth-hermes",
+            "exponent": -8,
+            "direction": "above",
+            "expiresAt": 1788893984000,
+            "threshold": "2484.44606982",
+            "timestamp": 1788893865665,
+            "triggered": true,
+            "confidence": "27848032",
+            "configHash": "d5e361ebd176380013a443d0faa04a04e91d30fd8d475eb12a2262e7ba03b4dd",
+            "publishTime": 1788893864,
+            "speculative": true,
+            "triggerType": "upstream",
+            "triggeredAt": "2026-09-08T18:57:45.665Z",
+            "sourceUpdateId": "pyth:ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace:1788893864"
+          },
+          "success": true
+        }
+      },
+      {
+        "node_id": "record-price",
+        "status": "success",
+        "output": {
+          "result": "2484.4696378",
+          "success": true,
+          "operation": "sum then divide",
+          "inputCount": 1,
+          "resultType": "number"
+        }
+      }
+    ],
+    "after": [
+      {
+        "node_id": "pyth",
+        "status": "success",
+        "output": {
+          "data": {
+            "price": "248446963780",
+            "feedId": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+            "source": "pyth-hermes",
+            "exponent": -8,
+            "direction": "above",
+            "expiresAt": 1788893984000,
+            "threshold": "2484.44606982",
+            "timestamp": 1788893865665,
+            "triggered": true,
+            "confidence": "27848032",
+            "configHash": "d5e361ebd176380013a443d0faa04a04e91d30fd8d475eb12a2262e7ba03b4dd",
+            "publishTime": 1788893864,
+            "speculative": true,
+            "triggerType": "upstream",
+            "triggeredAt": "2026-09-08T18:57:45.665Z",
+            "sourceUpdateId": "pyth:ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace:1788893864"
+          },
+          "success": true
+        }
+      },
+      {
+        "node_id": "record-price",
+        "status": "success",
+        "output": {
+          "result": "2484.4696378",
+          "success": true,
+          "operation": "sum then divide",
+          "inputCount": 1,
+          "resultType": "number"
+        }
+      }
+    ],
+    "matching": [
+      {
+        "id": "09ix560tnx0gpwzfznhzr",
+        "status": "success"
+      }
+    ],
+    "consumerLog": [
+      {
+        "at": "2026-09-08T18:57:46.989Z",
+        "message": "[Executor] Duplicate upstream delivery (already_advanced) for execution 09ix560tnx0gpwzfznhzr; dropping without re-running"
+      },
+      {
+        "at": "2026-09-08T18:57:47.067Z",
+        "message": "[Executor] Duplicate upstream delivery (already_advanced) for execution 09ix560tnx0gpwzfznhzr; dropping without re-running"
+      }
+    ]
+  },
+  "restart": {
+    "verifiedAt": "2026-09-08T18:59:49.554Z",
+    "kind": "actual worker process restart; unchanged live workflow configurations",
+    "checks": [
+      {
+        "event": "pyth-observation-evidence",
+        "at": "2026-09-08T18:59:39.295Z",
+        "workflowId": "f5569c1f-9ceb-4734-842f-04fa57f1a490",
+        "sessionId": "401af9ae-dfd4-43cc-8f3e-de3567df63ce",
+        "publishTime": 1788893979,
+        "outcome": "baseline",
+        "matchingExecutions": 0,
+        "checkpoint": {
+          "session_id": "401af9ae-dfd4-43cc-8f3e-de3567df63ce",
+          "last_publish_time": "1788893989",
+          "armed": true
+        }
+      },
+      {
+        "event": "pyth-observation-evidence",
+        "at": "2026-09-08T18:59:39.416Z",
+        "workflowId": "7dc7e766-126c-4881-b9f8-9b7f207ca035",
+        "sessionId": "401af9ae-dfd4-43cc-8f3e-de3567df63ce",
+        "publishTime": 1788893979,
+        "outcome": "baseline",
+        "matchingExecutions": 0,
+        "checkpoint": {
+          "session_id": "401af9ae-dfd4-43cc-8f3e-de3567df63ce",
+          "last_publish_time": "1788893989",
+          "armed": false
+        }
+      }
+    ]
+  },
+  "limits": [
+    "No hosted deployment, Kubernetes runner or onchain transaction tested.",
+    "Restart proof covers a new baseline on the unchanged configuration; it does not replay missed prices.",
+    "This is one observed live run and two redeliveries, not a guarantee of exactly-once external side effects."
+  ]
+}

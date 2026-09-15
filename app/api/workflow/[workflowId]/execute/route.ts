@@ -20,6 +20,7 @@ import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { checkConcurrencyLimit } from "@/app/api/execute/_lib/concurrency-limit";
 import { db } from "@/lib/db";
+import { pythDispatchRefusal } from "@/lib/pyth/validate-dispatch";
 import {
   beginIdempotentFromRequest,
   idempotencyEarlyResponse,
@@ -346,6 +347,18 @@ export async function POST(
     // again, which is the opposite of what a migration window needs.
     const withDeprecation = (response: NextResponse): NextResponse =>
       resolved.deprecated ? applyDeprecationHeaders(response) : response;
+
+    if (
+      isInternalExecution &&
+      request.headers.get("x-trigger-type") === "upstream"
+    ) {
+      const refusal = pythDispatchRefusal(workflow.nodes, input);
+      if (refusal) {
+        return withDeprecation(
+          NextResponse.json({ error: refusal }, { status: 409 })
+        );
+      }
+    }
 
     // Idempotency: a retry with the same key + body replays the original
     // executionId instead of starting the workflow again. Scoped per workflow.

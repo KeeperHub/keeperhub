@@ -105,6 +105,38 @@ Visit [http://localhost:3000](http://localhost:3000) to get started. The first r
 - **`db:push` vs `db:migrate`:** Use `pnpm db:push` only for fast local schema iteration. Staging and production apply file-based migrations via `pnpm db:migrate` on deploy.
 - **Local Postgres required:** `dev:login` and `dev:bootstrap` refuse to run unless `DATABASE_URL` points at a local host (for example `postgresql://postgres:postgres@localhost:5433/keeperhub` when using Docker Compose).
 
+## Pyth feature page
+
+Open `/pyth` on the running KeeperHub app to explore the native trigger, replay the recorded September 10 demonstration, and configure an ETH/USD starter workflow. The page adapts the dark layout, gradients and motion direction of Vancouver Plus from Modulify using existing KeeperHub components and Motion; it does not import the template bundle.
+
+The starter uses the normal sign-in dialog and workflow API. It creates a **disabled** workflow with a Pyth trigger and Math steps that convert the reported price using the signal's exponent. Review the workflow in the native editor before enabling it. Server-side Pyth credentials stay out of the browser.
+
+Replay values come from the checked-in backend evidence. They are recorded results, not current market prices. Reveal animations, floating panels and replay transitions respect reduced-motion preferences.
+
+## Live Pyth backend demo
+
+The native **Pyth Price** trigger starts workflows on above/below threshold crossings from the authenticated Hermes stream. A separate rearm price prevents repeated firing while the price stays beyond the threshold. Startup and reconnect establish a baseline; signals expire and remain speculative.
+
+The backend demo uses the actual event worker, authenticated route handlers, Postgres checkpoints, SQS transport and in-process executor. It creates two isolated demo workflows, waits for a real ETH/USD crossing, verifies the Math action's output, and sends two signed redeliveries to check that the action does not run again. It does not launch the frontend or send an onchain transaction.
+
+Prerequisites:
+
+- Node.js 24; root dependencies installed with `pnpm install --frozen-lockfile`, and event dependencies with `pnpm --dir keeperhub-events install --frozen-lockfile`.
+- An isolated **local** PostgreSQL database whose name ends in `_pyth`, initialized with this branch's schema, including migration `0153_pyth_trigger_checkpoints`. For a fresh disposable database, the existing local `pnpm db:push` setup is sufficient.
+- Running local Redis and an SQS-compatible emulator. The runner creates or verifies the configured queue on every start, including after emulator restarts.
+- A private environment file, such as `.env.pyth-demo`, containing the normal local backend authentication/encryption settings plus `DATABASE_URL`, `AWS_ENDPOINT_URL`, `SQS_QUEUE_URL`, `REDIS_HOST`, `REDIS_PORT`, `PYTH_API_KEY`, `INTERNAL_SERVICE_HMAC_SECRET`, and `AGENTIC_WALLET_HMAC_KMS_KEY` (32 random bytes encoded as base64). Existing encrypted internal-auth records must match those keys. Do not commit the file.
+- Ports 3110, 3180 and 3181 available. Stop another demo before starting this one.
+
+```bash
+pnpm exec node --env-file=.env.pyth-demo --import tsx scripts/pyth-demo/run.cjs
+```
+
+The demo sets in-process execution and enforced queue HMAC verification for its own processes. It disables billing in the isolated database environment. It creates dedicated user, organization and workflow fixtures; an existing shared HMAC record is verified, never overwritten. A missing shared record is provisioned using the supplied local encryption key.
+
+The starting thresholds are $1 above and below the sampled ETH/USD price, with a $0.50 rearm distance from that reference. A successful run prints `NEW LIVE RUN PASSED` and then `REDELIVERY CHECK PASSED`. Market movement is required; a ten-minute timeout is not a successful result. Each invocation saves fresh configuration, execution evidence and logs under its own `tmp/pyth-demo/<run-id>` directory, so an earlier success cannot stand in for the current attempt. Press Ctrl+C to stop. The runner stops its child processes and disables its own workflows while preserving their execution records for inspection.
+
+This proves the local backend path. Full editor integration and hosted deployment require separate verification.
+
 ## Running Modes
 
 ### Local Development (Simplest)
