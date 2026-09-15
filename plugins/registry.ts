@@ -136,6 +136,11 @@ export type ActionConfigFieldBase = {
   // Tooltip text shown next to the label via an info icon
   helpTip?: string;
 
+  // Short explanation rendered in muted text below the input, the way the
+  // HTTP Request node explains its timeout and retry fields. Prefer this over
+  // helpTip when the user should read it without hovering.
+  helpText?: string;
+
   // Whether this field represents an Ethereum address (enables address book support)
   isAddressField?: boolean;
 
