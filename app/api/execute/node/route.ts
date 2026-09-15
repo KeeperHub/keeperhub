@@ -380,25 +380,29 @@ function protocolReservationConfig(
   if (stepFunction !== "protocolWriteStep") {
     return Promise.resolve({ ok: true, config });
   }
-  const meta =
-    resolveProtocolMeta({
-      _protocolMeta:
-        typeof config._protocolMeta === "string"
-          ? config._protocolMeta
-          : undefined,
-      _actionType:
-        typeof config._actionType === "string" ? config._actionType : undefined,
-    }) ?? resolveProtocolMeta({ _actionType: actionType });
+  // Resolved from the config alone, exactly as the step will resolve it:
+  // executeNode passes the step only the config, never the route's
+  // actionType, so a fallback to the latter here would reserve the cap and
+  // create an execution for a step that then fails on missing metadata.
+  const meta = resolveProtocolMeta({
+    _protocolMeta:
+      typeof config._protocolMeta === "string"
+        ? config._protocolMeta
+        : undefined,
+    _actionType:
+      typeof config._actionType === "string" ? config._actionType : undefined,
+  });
   if (!meta) {
+    // The same rule as the step's own refusal (#2322): a non-empty string
+    // value with no resolvable action is refused; anything else is left
+    // for the step to handle as it always has.
     const hasValue =
-      typeof config.ethValue === "string"
-        ? config.ethValue.trim() !== ""
-        : config.ethValue !== undefined && config.ethValue !== null;
+      typeof config.ethValue === "string" && config.ethValue.trim() !== "";
     return Promise.resolve(
       hasValue
         ? {
             ok: false,
-            error: `Refusing to reserve a payable value: could not resolve protocol metadata for "${actionType}", so whether ethValue needs a unit conversion cannot be determined.`,
+            error: `Refusing to reserve a payable value: the config for "${actionType}" carries no resolvable _actionType or _protocolMeta, so whether ethValue needs a unit conversion cannot be determined. Include _actionType (e.g. "${actionType}") in the config.`,
           }
         : { ok: true, config }
     );
@@ -702,9 +706,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     // the step not to reserve again (valueCapReserved below), so the
     // reservation has to run the same transform or it charges the raw wei
     // figure as ether - 10^18 times what is broadcast - while the step's
-    // correct charge is skipped. Resolved the way the step resolves it
-    // (config first, then the route's action type), and fails closed when
-    // the action cannot be found and a value is present.
+    // correct charge is skipped. Resolved from the config the way the step
+    // resolves it, and fails closed when the action cannot be found and a
+    // string value is present.
     const reservationConfig = await protocolReservationConfig(
       resolved.importer.stepFunction,
       actionType,
