@@ -11,16 +11,13 @@ import { resolveAbi } from "@/lib/abi/cache";
 import { type AbiItem, findAbiFunction } from "@/lib/abi/utils";
 import { withStepValueCap } from "@/lib/execute/value-ledger";
 import { ErrorCategory, logUserError } from "@/lib/logging";
-import {
-  getProtocol,
-  type ProtocolAction,
-  resolveContractAddress,
-} from "@/lib/protocol-registry";
+import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
+import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
 import {
-  applyEncodeTransformsNamed,
-  getEncodeTransform,
-} from "@/lib/protocol-encode-transforms";
+  applyEthValueTransform,
+  findProtocolAction,
+} from "@/lib/execute/protocol-eth-value";
 import {
   type ProtocolMeta,
   resolveProtocolMeta,
@@ -175,15 +172,9 @@ function checkUniswapNativeEthPreflight(
   return { ok: true };
 }
 
-// Both the args builder and the ethValue transform pass need the action the
-// step is executing. Resolved here once so the two paths cannot drift into
-// different lookup rules.
-function findProtocolAction(meta: ProtocolMeta): ProtocolAction | undefined {
-  return getProtocol(meta.protocolSlug)?.actions.find(
-    (a) => a.function === meta.functionName && a.contract === meta.contractKey
-  );
-}
-
+// Both the args builder and the ethValue transform pass resolve the action
+// through findProtocolAction in lib/execute/protocol-eth-value.ts, the one
+// lookup rule every entrance shares, so the two paths cannot drift.
 function buildFunctionArgs(
   input: ProtocolWriteInput,
   meta: ProtocolMeta
@@ -213,69 +204,13 @@ function buildFunctionArgs(
   return JSON.stringify(args);
 }
 
-type EthValueTransformResult =
-  | { ok: true; value: unknown }
-  | { ok: false; error: string };
-
 // The ETH Value field is a virtual input resolved on its own path, so the
-// per-input transform pass inside buildFunctionArgs never sees it. A
-// transform registered under the input name "ethValue" is applied here,
-// before resolveEthValue, so the converted value reaches both consumers:
-// the core write and the org daily-value cap. The documented unit of the
-// field stays ether; a registered transform converts into it.
-//
-// This fails closed on an unresolvable action, and that is the point. The
-// lookup runs against `meta`, which resolve-protocol-meta.ts casts out of
-// an unvalidated JSON.parse of the node's stored `_protocolMeta`, so a
-// contractKey or functionName that no longer matches a registered action
-// resolves to nothing. Passing the value through in that case would hand
-// resolveEthValue a raw wei integer that parseEther reads as ether -
-// 10^18 times the intended amount. The daily-value cap normally refuses
-// such a number, but value-ledger.ts returns run() uncapped when a
-// reservation is already held or the organizationId is absent, so on
-// those paths it would reach the wallet and fail only on balance. There
-// is no safe default here: without the action we cannot know whether the
-// field needs converting, so we refuse rather than guess.
-function applyEthValueTransform(
-  rawEthValue: unknown,
-  meta: ProtocolMeta
-): EthValueTransformResult {
-  if (typeof rawEthValue !== "string" || rawEthValue.trim() === "") {
-    return { ok: true, value: rawEthValue };
-  }
-  const protocolAction = findProtocolAction(meta);
-  if (!protocolAction) {
-    // Logged as well as returned: this turns a previously-succeeding
-    // execution into a hard failure for a zero-argument payable action
-    // whose _protocolMeta has drifted, and without a log the affected
-    // nodes are only findable when a user reports one.
-    logUserError(
-      ErrorCategory.CONFIGURATION,
-      `[Protocol Write] Refused a payable value: no action matches function '${meta.functionName}' on contract '${meta.contractKey}' in protocol '${meta.protocolSlug}'`,
-      undefined,
-      {
-        plugin_name: "protocol",
-        action_name: "protocol-write",
-        protocol_slug: meta.protocolSlug,
-        function_name: meta.functionName,
-        contract_key: meta.contractKey,
-      }
-    );
-    return {
-      ok: false,
-      error: `Refusing to send a payable value: no action matches function "${meta.functionName}" on contract "${meta.contractKey}" in protocol "${meta.protocolSlug}", so whether the ETH Value field needs a unit conversion cannot be determined. This usually means the step's stored protocol metadata is stale - re-select the action on this node.`,
-    };
-  }
-  const transform = getEncodeTransform(
-    meta.protocolSlug,
-    protocolAction.slug,
-    "ethValue"
-  );
-  return {
-    ok: true,
-    value: transform ? transform(rawEthValue.trim()) : rawEthValue,
-  };
-}
+// per-input transform pass inside buildFunctionArgs never sees it. The
+// transform registered under "ethValue" is applied by applyEthValueTransform
+// (lib/execute/protocol-eth-value.ts, shared with the direct-execute routes)
+// before resolveEthValue, so the converted value reaches both consumers: the
+// core write and the org daily-value cap. It fails closed on an unresolvable
+// action; the reasoning is documented on the helper.
 
 export async function protocolWriteStep(
   input: ProtocolWriteInput

@@ -1,5 +1,6 @@
 import "server-only";
 
+import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
 import { getProtocol, type ProtocolActionInput } from "@/lib/protocol-registry";
 
 export type BuildProtocolFunctionArgsResult =
@@ -43,6 +44,13 @@ function resolveInputValue(
  * Resolve protocol action ABI args for the direct-execute catch-all route.
  * Applies registry defaults for blank fields and rejects required fields that
  * are missing or empty instead of coercing them to "".
+ *
+ * Then applies the same per-input encode transforms the workflow step runs
+ * (plugins/protocol/steps/protocol-write.ts, buildFunctionArgs), so a field
+ * the form collects in one shape and the ABI takes in another - a LayerZero
+ * recipient typed as an address but sent as bytes32 - encodes identically
+ * whichever entrance the call came through. An action with no registered
+ * transform is untouched.
  */
 export function buildProtocolFunctionArgs(
   input: Record<string, unknown>,
@@ -63,14 +71,23 @@ export function buildProtocolFunctionArgs(
     return { ok: true, functionArgs: undefined };
   }
 
-  const args: string[] = [];
+  const named: Array<{ name: string; value: string }> = [];
   for (const inp of protocolAction.inputs) {
     const resolved = resolveInputValue(inp, input[inp.name]);
     if (!resolved.ok) {
       return resolved;
     }
-    args.push(resolved.value);
+    named.push({ name: inp.name, value: resolved.value });
   }
 
-  return { ok: true, functionArgs: JSON.stringify(args) };
+  const transformed = applyEncodeTransformsNamed(
+    protocolSlug,
+    protocolAction.slug,
+    named
+  );
+
+  return {
+    ok: true,
+    functionArgs: JSON.stringify(transformed.map((t) => t.value)),
+  };
 }
