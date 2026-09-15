@@ -1,7 +1,17 @@
 import "server-only";
 
-import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
+import {
+  applyEncodeTransformsNamed,
+  getEncodeTransformKind,
+} from "@/lib/protocol-encode-transforms";
 import { getProtocol, type ProtocolActionInput } from "@/lib/protocol-registry";
+
+// A 20-byte hex address, checksum-insensitive. Checked BEFORE the encode
+// transforms run: padAddressToBytes left-pads whatever it is given to 32
+// bytes, so a 39-character typo or a bare "0x" would come out as a
+// well-formed bytes32 (a wrong address, or the zero address) and broadcast,
+// where the untransformed value would have been rejected by the ABI encoder.
+const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 export type BuildProtocolFunctionArgsResult =
   | { ok: true; functionArgs: string | undefined }
@@ -76,6 +86,24 @@ export function buildProtocolFunctionArgs(
     const resolved = resolveInputValue(inp, input[inp.name]);
     if (!resolved.ok) {
       return resolved;
+    }
+    // Every input the form collects as an address, and every input a pad
+    // transform is registered on whatever its declared type, must be a real
+    // address before the pad can make it look like one.
+    const mustBeAddress =
+      inp.type === "address" ||
+      getEncodeTransformKind(protocolSlug, protocolAction.slug, inp.name) ===
+        "padAddressToBytes";
+    if (
+      mustBeAddress &&
+      resolved.value !== "" &&
+      !HEX_ADDRESS.test(resolved.value)
+    ) {
+      return {
+        ok: false,
+        field: inp.name,
+        error: `Invalid address for field ${inp.name}: expected a 0x-prefixed 20-byte hex address, got "${resolved.value}"`,
+      };
     }
     named.push({ name: inp.name, value: resolved.value });
   }

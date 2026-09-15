@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/protocols", () => ({}));
 
+import chainlinkDef from "@/protocols/chainlink";
 import layerzeroDef from "@/protocols/layerzero";
 
 const getProtocolMock = vi.fn();
@@ -324,6 +325,91 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
     expect(response.status).toBe(202);
     const core = writeContractCoreMock.mock.calls[0][0] as { ethValue: string };
     expect(core.ethValue).toBe("0.25");
+  });
+
+  // padAddressToBytes left-pads whatever it is given, so an address that
+  // is not an address must be refused BEFORE the pad turns it into a
+  // well-formed bytes32. Each case: 400, no reservation, no broadcast.
+  it.each([
+    ["a 39-character address", `0x${"1".repeat(39)}`],
+    ["a bare 0x", "0x"],
+    ["non-hex characters", `0x${"g".repeat(40)}`],
+    ["a 41-character address", `0x${"1".repeat(41)}`],
+    ["a missing 0x prefix", "1".repeat(40)],
+  ])(
+    "refuses %s as the OFT recipient before padding it",
+    async (_label, to) => {
+      getProtocolMock.mockReturnValue(layerzeroDef);
+      resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
+
+      const response = await post(["layerzero", "oft-send"], {
+        ...sendBody(FEE_WEI),
+        to,
+      });
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.field).toBe("to");
+      expect(data.error).toMatch(/Invalid address for field to/);
+      expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
+      expect(writeContractCoreMock).not.toHaveBeenCalled();
+      expect(recordIdempotentResponseMock.mock.calls[0][2]).toBe("release");
+    }
+  );
+
+  it("covers the Chainlink CCIP receiver, the other padded address, in the args builder", async () => {
+    getProtocolMock.mockReturnValue(chainlinkDef);
+    const { buildProtocolFunctionArgs } = await import(
+      "@/app/api/execute/_lib/protocol-function-args"
+    );
+    const send = chainlinkDef.actions.find((a) => a.slug === "ccip-send");
+    if (!send) {
+      throw new Error("chainlink/ccip-send not in definition");
+    }
+    const inputs = Object.fromEntries(
+      send.inputs.map((inp) => [
+        inp.name,
+        inp.type === "address" ? WALLET : (inp.default ?? "1"),
+      ])
+    );
+
+    const bad = buildProtocolFunctionArgs(
+      { ...inputs, receiver: `0x${"1".repeat(39)}` },
+      "chainlink",
+      send.contract,
+      send.function
+    );
+    expect(bad).toEqual({
+      ok: false,
+      field: "receiver",
+      error: expect.stringMatching(/Invalid address for field receiver/),
+    });
+
+    const good = buildProtocolFunctionArgs(
+      inputs,
+      "chainlink",
+      send.contract,
+      send.function
+    );
+    expect(good.ok).toBe(true);
+    if (good.ok) {
+      const args = JSON.parse(good.functionArgs ?? "[]") as string[];
+      expect(args).toContain(PADDED_WALLET);
+    }
+  });
+
+  it("refuses a malformed refundAddress too (an address input with no transform)", async () => {
+    getProtocolMock.mockReturnValue(layerzeroDef);
+    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
+
+    const response = await post(["layerzero", "oft-send"], {
+      ...sendBody(FEE_WEI),
+      refundAddress: "0x1234",
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).field).toBe("refundAddress");
+    expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
   });
 
   it("sends no value and reserves zero when the value is absent, on either kind of action", async () => {
