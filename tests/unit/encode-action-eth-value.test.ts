@@ -137,6 +137,23 @@ describe("encodeFromConfig: ethValue transforms", () => {
     expect(encoded.value).toBe(BigInt(ONE_ETH_WEI) * BigInt(ONE_ETH_WEI));
   });
 
+  it("fails loudly on a value for a definition the registry does not know", () => {
+    // The harness now runs the shared helper, which resolves the action
+    // through the registry. A synthetic definition handed in without being
+    // registered used to have its conversion silently skipped and its raw
+    // value parsed as ether; now it throws, so a fixture cannot be checked
+    // against a number production would never send.
+    const { protocol, action } = wrappedWrap();
+    const unregistered = { ...protocol, slug: "zz-not-registered" };
+    expect(() =>
+      encodeFromConfig(unregistered, action, "1", { ethValue: "0.01" })
+    ).toThrow(/Refusing to send a payable value/);
+    // Without a value there is nothing to convert, so it still encodes.
+    expect(encodeFromConfig(unregistered, action, "1", {}).value).toBe(
+      BigInt(0)
+    );
+  });
+
   it("leaves an unresolved template for the executor", () => {
     const { protocol, action } = wrappedWrap();
     registerEncodeTransform(

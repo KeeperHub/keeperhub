@@ -18,10 +18,8 @@ import {
   type FunctionAbiEntry,
   reshapeArgsForAbi,
 } from "@/lib/abi/struct-args";
-import {
-  applyEncodeTransformsNamed,
-  getEncodeTransform,
-} from "@/lib/protocol-encode-transforms";
+import { applyEthValueTransform } from "@/lib/execute/protocol-eth-value";
+import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
 import {
   getProtocol,
   type ProtocolAction,
@@ -230,22 +228,27 @@ export function encodeFromConfig(
       (config.contractAddress as string | undefined) ?? undefined
     ) ?? "";
   // ethValue is a virtual field, so applyEncodeTransformsNamed above never
-  // sees it - it only walks declared ABI inputs. Look the transform up
-  // separately, exactly as protocol-write.ts does before resolveEthValue.
-  // Without this the harness would parseEther a raw wei integer and every
-  // golden and on-chain check would silently carry 10^18 times the value
-  // the runtime sends, which is the one mistake this harness exists to
-  // catch.
-  const rawEthValue = config.ethValue as string | undefined;
-  const ethValueTransform = getEncodeTransform(
-    protocol.slug,
-    action.slug,
-    "ethValue"
-  );
+  // sees it - it only walks declared ABI inputs. Run the same helper the
+  // write step and the direct-execute routes run, so the harness cannot
+  // convert differently from production: without it the harness would
+  // parseEther a raw wei integer and every golden and on-chain check would
+  // silently carry 10^18 times the value the runtime sends, which is the
+  // one mistake this harness exists to catch. The helper resolves the
+  // action through the registry, so a definition passed in here that is
+  // not registered fails loudly on a value rather than skipping the
+  // conversion.
+  const valueResult = applyEthValueTransform(config.ethValue, {
+    protocolSlug: protocol.slug,
+    contractKey: action.contract,
+    functionName: action.function,
+  });
+  if (!valueResult.ok) {
+    throw new Error(`${protocol.slug}/${action.slug}: ${valueResult.error}`);
+  }
   const ethValue =
-    rawEthValue && ethValueTransform
-      ? String(ethValueTransform(rawEthValue.trim()))
-      : rawEthValue;
+    typeof valueResult.value === "string" && valueResult.value.trim() !== ""
+      ? valueResult.value.trim()
+      : undefined;
   return {
     to,
     data,
