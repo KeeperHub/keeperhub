@@ -80,6 +80,10 @@ export function validateWorkflow(
   // VALID-04 write-action consistency
   runWriteActionCheck(workflow, errors, warnings);
 
+  // `integrationId` is a reserved config key but has no effect on Web3 steps.
+  // Keep this additive: the org-policy routing default remains valid.
+  runIgnoredIntegrationIdCheck(workflow, warnings);
+
   // Allowance preflight hint: a write-contract node calling an
   // allowance-consuming method with no check-allowance node in the workflow.
   runAllowancePreflightCheck(workflow, warnings);
@@ -336,6 +340,33 @@ function runWriteActionCheck(
   }
 }
 
+function runIgnoredIntegrationIdCheck(
+  workflow: ValidatorWorkflow,
+  warnings: ValidationIssue[]
+): void {
+  if (!Array.isArray(workflow.nodes)) {
+    return;
+  }
+
+  for (const [idx, node] of workflow.nodes.entries()) {
+    const cfg = readNodeActionConfig(node);
+    if (
+      cfg === null ||
+      typeof cfg.actionType !== "string" ||
+      !cfg.actionType.replace(":", "/").startsWith("web3/") ||
+      !cfg.hasIntegrationId
+    ) {
+      continue;
+    }
+
+    warnings.push({
+      code: VALIDATION_WARNING_CODES.IGNORED_INTEGRATION_ID_ON_WEB3_ACTION,
+      message: `nodes[${idx}].config.integrationId is ignored by ${cfg.actionType}. Use web3Connection for sender routing: "default" (organization policy), "eoa" (Turnkey EOA), or "safe:<safeWalletId>".`,
+      parameterPath: `nodes[${idx}].config.integrationId`,
+    });
+  }
+}
+
 // ERC-20 transferFrom and ERC-4626 redeem / withdrawFrom move tokens the
 // contract must already be approved to spend. Configuring one on a
 // write-contract node without a prior allowance check is the common cause of
@@ -355,6 +386,7 @@ type NodeActionConfig = {
   actionType: unknown;
   abiFunction: unknown;
   calls: unknown;
+  hasIntegrationId: boolean;
 };
 
 function readNodeActionConfig(node: unknown): NodeActionConfig | null {
@@ -372,7 +404,12 @@ function readNodeActionConfig(node: unknown): NodeActionConfig | null {
   const cfg = config as Record<string, unknown>;
   const actionType =
     cfg.actionType ?? (data as Record<string, unknown>).actionType;
-  return { actionType, abiFunction: cfg.abiFunction, calls: cfg.calls };
+  return {
+    actionType,
+    abiFunction: cfg.abiFunction,
+    calls: cfg.calls,
+    hasIntegrationId: Object.hasOwn(cfg, "integrationId"),
+  };
 }
 
 function bareMethodName(abiFunction: unknown): string | null {

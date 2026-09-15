@@ -17,6 +17,137 @@ import {
   triggerNode,
 } from "./fixtures/validate-workflow";
 
+describe("validateWorkflow — ignored-integration-id-on-web3-action", () => {
+  it("warns when a Web3 action carries the inert integrationId key", () => {
+    const result = validateWorkflow(
+      makeWorkflow({
+        nodes: [
+          triggerNode(),
+          actionNode("web3-1", {
+            actionType: "web3/write-contract",
+            integrationId: "integration-1",
+          }),
+        ],
+        edges: [edge("e1", "trigger-1", "web3-1")],
+        workflowType: "write",
+      })
+    );
+
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        code: "ignored-integration-id-on-web3-action",
+        parameterPath: "nodes[1].config.integrationId",
+      }),
+    ]);
+    expect(result.warnings[0]?.message).toContain("web3Connection");
+  });
+
+  it.each(["web3/read-contract", "web3:read-contract"])(
+    "warns for %s when integrationId is present but empty",
+    (actionType) => {
+      const result = validateWorkflow(
+        makeWorkflow({
+          nodes: [
+            triggerNode(),
+            actionNode("web3-1", { actionType, integrationId: "" }),
+          ],
+          edges: [edge("e1", "trigger-1", "web3-1")],
+        })
+      );
+
+      expect(result.warnings).toEqual([
+        expect.objectContaining({
+          code: "ignored-integration-id-on-web3-action",
+          parameterPath: "nodes[1].config.integrationId",
+        }),
+      ]);
+    }
+  );
+
+  it("does not warn when a Web3 action relies on default sender routing", () => {
+    const result = validateWorkflow(
+      makeWorkflow({
+        nodes: [
+          triggerNode(),
+          actionNode("web3-1", { actionType: "web3/write-contract" }),
+        ],
+        edges: [edge("e1", "trigger-1", "web3-1")],
+      })
+    );
+
+    expect(
+      result.warnings.some(
+        (warning) => warning.code === "ignored-integration-id-on-web3-action"
+      )
+    ).toBe(false);
+  });
+
+  it("does not warn when Web3 sender routing is explicit", () => {
+    const result = validateWorkflow(
+      makeWorkflow({
+        nodes: [
+          triggerNode(),
+          actionNode("web3-1", {
+            actionType: "web3/write-contract",
+            web3Connection: "default",
+          }),
+        ],
+        edges: [edge("e1", "trigger-1", "web3-1")],
+      })
+    );
+
+    expect(
+      result.warnings.some(
+        (warning) => warning.code === "ignored-integration-id-on-web3-action"
+      )
+    ).toBe(false);
+  });
+
+  it("does not warn for integrationId on non-Web3 actions", () => {
+    const result = validateWorkflow(
+      makeWorkflow({
+        nodes: [
+          triggerNode(),
+          actionNode("discord-1", {
+            actionType: "discord/send-message",
+            integrationId: "integration-1",
+          }),
+        ],
+        edges: [edge("e1", "trigger-1", "discord-1")],
+      })
+    );
+
+    expect(
+      result.warnings.some(
+        (warning) => warning.code === "ignored-integration-id-on-web3-action"
+      )
+    ).toBe(false);
+  });
+
+  it("does not warn for protocol-write actions", () => {
+    const result = validateWorkflow(
+      makeWorkflow({
+        nodes: [
+          triggerNode(),
+          actionNode("protocol-1", {
+            actionType: "aave/protocol-write",
+            integrationId: "integration-1",
+          }),
+        ],
+        edges: [edge("e1", "trigger-1", "protocol-1")],
+      })
+    );
+
+    expect(
+      result.warnings.some(
+        (warning) => warning.code === "ignored-integration-id-on-web3-action"
+      )
+    ).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // VALID-05: Chain ID existence (opts.chainIds)
 // ---------------------------------------------------------------------------

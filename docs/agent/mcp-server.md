@@ -412,6 +412,8 @@ Conditions reference previous node outputs using template syntax: `{{@nodeId:Lab
 
 `tokenConfig` is a token-select value (which token on which network), not a bare address. Write actions require the organization's wallet integration to be configured; there is no per-action `walletId` field. Use `get_wallet_integration` to confirm the wallet is set up.
 
+For `web3/*` workflow nodes, `integrationId` is not sender routing and is ignored. Set the optional `web3Connection` config field only when choosing a routing mode: `"default"` uses organization policy, `"eoa"` forces the Turnkey EOA, and `"safe:<safeWalletId>"` selects a Safe. Omitting `web3Connection` also uses organization policy.
+
 The `network` field accepts chain IDs as strings: `"1"` (Ethereum mainnet), `"11155111"` (Sepolia), `"8453"` (Base), `"42161"` (Arbitrum), `"137"` (Polygon).
 
 ### `abiFunction` field
