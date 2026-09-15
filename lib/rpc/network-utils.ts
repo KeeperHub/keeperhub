@@ -41,6 +41,10 @@ export function getChainIdFromNetwork(network: string | number): number {
     sepolia: SUPPORTED_CHAIN_IDS.SEPOLIA,
     "eth-sepolia": SUPPORTED_CHAIN_IDS.SEPOLIA,
     "sepolia-testnet": SUPPORTED_CHAIN_IDS.SEPOLIA,
+    // Ethereum Hoodi
+    hoodi: SUPPORTED_CHAIN_IDS.HOODI,
+    "eth-hoodi": SUPPORTED_CHAIN_IDS.HOODI,
+    "hoodi-testnet": SUPPORTED_CHAIN_IDS.HOODI,
     // Base Mainnet
     base: SUPPORTED_CHAIN_IDS.BASE,
     "base-mainnet": SUPPORTED_CHAIN_IDS.BASE,
@@ -76,6 +80,7 @@ export function getNetworkName(chainId: number): string {
   const chainNames: Record<number, string> = {
     [SUPPORTED_CHAIN_IDS.MAINNET]: "Ethereum Mainnet",
     [SUPPORTED_CHAIN_IDS.SEPOLIA]: "Ethereum Sepolia",
+    [SUPPORTED_CHAIN_IDS.HOODI]: "Ethereum Hoodi",
     [SUPPORTED_CHAIN_IDS.BASE]: "Base",
     [SUPPORTED_CHAIN_IDS.BASE_SEPOLIA]: "Base Sepolia",
     [SUPPORTED_CHAIN_IDS.TEMPO_TESTNET]: "Tempo Testnet",
