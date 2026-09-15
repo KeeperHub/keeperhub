@@ -258,7 +258,11 @@ describe("request shape", () => {
 describe("URL validation", () => {
   it("classifies a blocked internal target as the author's mistake", async () => {
     assertUrlIsPublicMock.mockRejectedValue(
-      new SsrfBlockedError('safe-fetch: hostname "10.0.0.5" is not public')
+      new SsrfBlockedError({
+        hostname: "10.0.0.5",
+        reason: "private-ip",
+        message: 'safe-fetch: hostname "10.0.0.5" is not public',
+      })
     );
     const result = await callStep();
 
