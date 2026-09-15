@@ -136,7 +136,7 @@ async function readFailureText(
     } catch {
       // Not JSON - fall through to the raw text.
     }
-    return redactSecrets(bound(text), hookToken);
+    return bound(redactSecrets(text, hookToken));
   } catch {
     return "";
   }
