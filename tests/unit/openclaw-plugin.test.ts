@@ -2,33 +2,45 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const { safeFetchMock, assertUrlIsPublicMock, fetchCredentialsMock } =
-  vi.hoisted(() => ({
-    safeFetchMock: vi.fn(),
-    assertUrlIsPublicMock: vi.fn(),
-    fetchCredentialsMock: vi.fn(),
-  }));
+const {
+  safeFetchMock,
+  assertUrlIsPublicMock,
+  fetchCredentialsMock,
+  ssrfBlockedErrorMock,
+} = vi.hoisted(() => ({
+  safeFetchMock: vi.fn(),
+  assertUrlIsPublicMock: vi.fn(),
+  fetchCredentialsMock: vi.fn(),
+  ssrfBlockedErrorMock: class SsrfBlockedError extends Error {},
+}));
 
 vi.mock("@/lib/safe-fetch", () => ({
   safeFetch: safeFetchMock,
   assertUrlIsPublic: assertUrlIsPublicMock,
-  SsrfBlockedError: class SsrfBlockedError extends Error {},
+  SsrfBlockedError: ssrfBlockedErrorMock,
 }));
 
 vi.mock("@/lib/credential-fetcher", () => ({
   fetchCredentials: fetchCredentialsMock,
 }));
 
-// The step wraps its handler in logging; the tests assert on the handler's
-// result, so the wrapper is reduced to a pass-through.
+// The step wraps its handler in metrics and logging; the tests assert on the
+// handler's result, so both wrappers are reduced to pass-throughs.
 vi.mock("@/lib/workflow/executor/step-handler", () => ({
+  runPluginStep: (
+    _options: unknown,
+    _input: unknown,
+    run: () => Promise<unknown>
+  ): Promise<unknown> => run(),
   withStepLogging: (
     _input: unknown,
     run: () => Promise<unknown>
   ): Promise<unknown> => run(),
 }));
 
+import { SsrfBlockedError } from "@/lib/safe-fetch";
 import { triggerAgentStep } from "@/plugins/openclaw/steps/trigger-agent";
+import { testOpenClawConnection } from "@/plugins/openclaw/test";
 
 const CREDS = {
   OPENCLAW_BASE_URL: "https://claw.example.com",
@@ -46,9 +58,17 @@ function callStep(overrides: Record<string, unknown> = {}) {
   return triggerAgentStep({
     message: "Summarise this run",
     integrationId: "integration-1",
-    _context: { executionId: "exec-42", organizationId: "org-1" },
+    _context: {
+      executionId: "exec-42",
+      nodeId: "node-7",
+      organizationId: "org-1",
+    },
     ...overrides,
   } as never);
+}
+
+function lastInit() {
+  return safeFetchMock.mock.calls[0][1];
 }
 
 beforeEach(() => {
@@ -91,6 +111,18 @@ describe("configuration guards", () => {
     expect(result.success).toBe(false);
     expect(safeFetchMock).not.toHaveBeenCalled();
   });
+
+  it("sends nothing when the node has no integration attached", async () => {
+    const result = await callStep({ integrationId: undefined });
+
+    // No integration means no credentials to read, and nothing to send with.
+    expect(fetchCredentialsMock).not.toHaveBeenCalled();
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBe("user");
+    }
+  });
 });
 
 describe("request shape", () => {
@@ -119,13 +151,72 @@ describe("request shape", () => {
     expect(body.sessionKey).toBeUndefined();
   });
 
+  it("bounds the request itself, not only the response text", async () => {
+    safeFetchMock.mockResolvedValue(jsonResponse({ ok: true, runId: "run-t" }));
+    await callStep();
+
+    // A hung instance must not hold the step open indefinitely. OpenClaw
+    // answers 503 for its own 15-second admission window, so the client
+    // timeout has to sit above that, hence an AbortSignal rather than a race.
+    expect(lastInit().signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("derives the idempotency key from the execution id, as a header only", async () => {
     safeFetchMock.mockResolvedValue(jsonResponse({ ok: true, runId: "run-2" }));
     await callStep();
 
-    const [, init] = safeFetchMock.mock.calls[0];
-    expect(init.headers["Idempotency-Key"]).toBe("exec-42");
-    expect(JSON.parse(init.body).idempotencyKey).toBeUndefined();
+    expect(lastInit().headers["Idempotency-Key"]).toBe("exec-42:node-7");
+    expect(JSON.parse(lastInit().body).idempotencyKey).toBeUndefined();
+  });
+
+  it("gives each node in one run its own replay key", async () => {
+    safeFetchMock.mockResolvedValue(jsonResponse({ ok: true, runId: "run-n" }));
+
+    await callStep();
+    const first = lastInit().headers["Idempotency-Key"];
+
+    safeFetchMock.mockClear();
+    await callStep({ _context: { executionId: "exec-42", nodeId: "node-8" } });
+    const second = lastInit().headers["Idempotency-Key"];
+
+    // Same run, two Trigger Agent nodes: identical keys would make OpenClaw
+    // replay the second node's turn as the first node's admission.
+    expect(first).not.toBe(second);
+    expect(second).toContain("node-8");
+  });
+
+  it("gives each loop iteration its own replay key", async () => {
+    safeFetchMock.mockResolvedValue(jsonResponse({ ok: true, runId: "run-i" }));
+
+    await callStep({
+      _context: {
+        executionId: "exec-42",
+        nodeId: "node-7",
+        forEachNodeId: "loop-1",
+        iterationIndex: 0,
+      },
+    });
+    const first = lastInit().headers["Idempotency-Key"];
+
+    safeFetchMock.mockClear();
+    await callStep({
+      _context: {
+        executionId: "exec-42",
+        nodeId: "node-7",
+        forEachNodeId: "loop-1",
+        iterationIndex: 1,
+      },
+    });
+    const second = lastInit().headers["Idempotency-Key"];
+
+    expect(first).not.toBe(second);
+  });
+
+  it("omits the replay key when the run has no execution id", async () => {
+    safeFetchMock.mockResolvedValue(jsonResponse({ ok: true, runId: "run-0" }));
+    await callStep({ _context: { nodeId: "node-7" } });
+
+    expect(lastInit().headers["Idempotency-Key"]).toBeUndefined();
   });
 
   it("normalizes a base URL with a trailing slash", async () => {
@@ -149,7 +240,7 @@ describe("request shape", () => {
       timeoutSeconds: "90.7",
     });
 
-    const body = JSON.parse(safeFetchMock.mock.calls[0][1].body);
+    const body = JSON.parse(lastInit().body);
     expect(body.agentId).toBe("main");
     expect(body.name).toBe("treasury");
     // Direct payload values are floored to whole seconds upstream.
@@ -160,9 +251,37 @@ describe("request shape", () => {
     safeFetchMock.mockResolvedValue(jsonResponse({ ok: true, runId: "run-5" }));
     await callStep({ timeoutSeconds: "-5" });
 
-    expect(
-      JSON.parse(safeFetchMock.mock.calls[0][1].body).timeoutSeconds
-    ).toBeUndefined();
+    expect(JSON.parse(lastInit().body).timeoutSeconds).toBeUndefined();
+  });
+});
+
+describe("URL validation", () => {
+  it("classifies a blocked internal target as the author's mistake", async () => {
+    assertUrlIsPublicMock.mockRejectedValue(
+      new SsrfBlockedError('safe-fetch: hostname "10.0.0.5" is not public')
+    );
+    const result = await callStep();
+
+    // The author chose that URL, so the run must not blame a third party for
+    // it: the house pattern classifies this as a user error and logs it as one.
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBe("user");
+      expect(result.error).toContain("not allowed");
+    }
+  });
+
+  it("classifies an unparseable instance URL as the author's mistake", async () => {
+    assertUrlIsPublicMock.mockRejectedValue(new TypeError("Invalid URL"));
+    const result = await callStep();
+
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBe("user");
+      expect(result.error).toContain("could not be validated");
+    }
   });
 });
 
@@ -223,6 +342,38 @@ describe("status mapping", () => {
     }
   });
 
+  it.each([
+    [400, "user"],
+    [404, "user"],
+    [405, "user"],
+    [413, "user"],
+    [429, "external"],
+  ])("maps %i to %s", async (status, errorClass) => {
+    safeFetchMock.mockResolvedValue(
+      jsonResponse({ ok: false, error: "refused" }, status as number)
+    );
+    const result = await callStep();
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBe(errorClass);
+      expect(result.error).toContain(String(status));
+    }
+  });
+
+  it("does not describe a 429 as an authentication failure", async () => {
+    safeFetchMock.mockResolvedValue(
+      jsonResponse({ ok: false, error: "slow down" }, 429)
+    );
+    const result = await callStep();
+
+    // The instance rate-limits requests; nothing here proves the token was
+    // throttled, and the token is never what the action reports on.
+    if (!result.success) {
+      expect(result.error.toLowerCase()).not.toContain("authentication");
+    }
+  });
+
   it("treats a session refusal as a user error and says retrying will not help", async () => {
     safeFetchMock.mockResolvedValue(
       jsonResponse({ ok: false, error: "session busy" }, 409)
@@ -273,16 +424,35 @@ describe("status mapping", () => {
     }
   });
 
-  it("never echoes the hook token", async () => {
+  it("never echoes the hook token when the instance sends it back", async () => {
     safeFetchMock.mockResolvedValue(
-      jsonResponse({ ok: false, error: "bad token hook-token rejected" }, 401)
+      jsonResponse(
+        { ok: false, error: "rejected Authorization: Bearer hook-token" },
+        401
+      )
     );
     const result = await callStep();
 
-    // The instance's own text is passed through bounded; our token is only
-    // ever placed in the header, never in an error string we build.
+    // An instance or a proxy in front of one can echo request headers into its
+    // error body, and that body is written into the run log.
+    expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error).not.toContain("Bearer hook-token");
+      expect(result.error).not.toContain("hook-token");
+      expect(result.error).toContain("[redacted]");
+    }
+  });
+
+  it("redacts a bearer token it was not configured with", async () => {
+    safeFetchMock.mockResolvedValue(
+      jsonResponse(
+        { ok: false, error: "upstream key Bearer sk-live-9 was used" },
+        401
+      )
+    );
+    const result = await callStep();
+
+    if (!result.success) {
+      expect(result.error).not.toContain("sk-live-9");
     }
   });
 
@@ -295,5 +465,71 @@ describe("status mapping", () => {
       expect(result.error).toContain("ECONNREFUSED");
       expect(result.errorClass).toBe("external");
     }
+  });
+});
+
+describe("step conventions", () => {
+  it("keeps the step non-retrying", () => {
+    // A side-effecting POST must not be retried by the executor: a retry can
+    // admit a second turn.
+    expect(triggerAgentStep.maxRetries).toBe(0);
+  });
+});
+
+describe("test connection", () => {
+  it("reports a missing base URL", async () => {
+    const result = await testOpenClawConnection({
+      OPENCLAW_HOOK_TOKEN: "hook-token",
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.message).toContain("OPENCLAW_BASE_URL");
+    }
+  });
+
+  it("reports a missing hook token", async () => {
+    const result = await testOpenClawConnection({
+      OPENCLAW_BASE_URL: "https://claw.example.com",
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.message).toContain("OPENCLAW_HOOK_TOKEN");
+    }
+  });
+
+  it("rejects a non-http scheme", async () => {
+    const result = await testOpenClawConnection({
+      OPENCLAW_BASE_URL: "ftp://claw.example.com",
+      OPENCLAW_HOOK_TOKEN: "hook-token",
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.message).toContain("http");
+    }
+  });
+
+  it("rejects a URL that does not parse", async () => {
+    const result = await testOpenClawConnection({
+      OPENCLAW_BASE_URL: "claw.example.com",
+      OPENCLAW_HOOK_TOKEN: "hook-token",
+    });
+
+    expect(result.status).toBe("error");
+  });
+
+  it("accepts a complete instance configuration without calling it", async () => {
+    const result = await testOpenClawConnection({
+      OPENCLAW_BASE_URL: "https://claw.example.com",
+      OPENCLAW_HOOK_TOKEN: "hook-token",
+    });
+
+    // This check validates configuration only: probing /hooks/agent with a
+    // real call would admit an agent turn and spend a model run.
+    expect(result).toEqual({ status: "success" });
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(assertUrlIsPublicMock).not.toHaveBeenCalled();
   });
 });
