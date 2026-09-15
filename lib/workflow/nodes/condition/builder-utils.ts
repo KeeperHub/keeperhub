@@ -112,7 +112,7 @@ export const OPERATOR_METADATA: Record<ConditionOperator, OperatorMeta> = {
     label: "matches regex",
     unary: false,
     category: "text",
-    description: "Matches the regular expression (new RegExp(b).test(a))",
+    description: "Matches the regular expression (matchesRegex(a, b))",
   },
   isEmpty: {
     label: "is empty",
@@ -254,6 +254,10 @@ export { visualConditionToExpression } from "./expression";
 
 // Top-level regex patterns for parseAtomicExpression (biome: useTopLevelRegex)
 const REGEX_MATCH_PATTERN = /^new RegExp\((.+?)\)\.test\(String\((.+?)\)\)$/;
+// The form the builder emits since #2407. `new RegExp(...).test(...)` is kept
+// above because it is what every condition saved before that change holds, so a
+// stored workflow still round-trips into the visual editor.
+const REGEX_MATCH_CALL_PATTERN = /^matchesRegex\(String\((.+?)\), (.+)\)$/;
 const STRING_METHOD_PATTERN =
   /^String\((.+?)\)\.(includes|startsWith|endsWith)\((.+)\)$/;
 const IS_EMPTY_PATTERN =
@@ -390,6 +394,16 @@ function parseAtomicExpression(expr: string): ConditionRule | null {
       unwrapOperand(regexMatch[2]),
       "matchesRegex",
       unwrapOperand(regexMatch[1])
+    );
+  }
+
+  // matchesRegex: matchesRegex(String(left), right) - the form the builder emits
+  const regexCallMatch = s.match(REGEX_MATCH_CALL_PATTERN);
+  if (regexCallMatch) {
+    return makeRule(
+      unwrapOperand(regexCallMatch[1]),
+      "matchesRegex",
+      unwrapOperand(regexCallMatch[2])
     );
   }
 

@@ -861,7 +861,7 @@ const web3Plugin: IntegrationPlugin = {
         {
           field: "error",
           description:
-            "Error message if the call failed. Also set when failOnError is off and a failed read was softened into success=true. Match this string in a downstream Condition node (contains/matchesRegex) to filter known errors from ones that should alert.",
+            "Error message if the call failed. Also set when failOnError is off and a failed read was softened into success=true. Match this string in a downstream Condition node (contains/matchesRegex) to filter known errors from ones that should alert. A matchesRegex pattern must be a quoted string literal.",
         },
       ],
       configFields: [
@@ -1833,7 +1833,7 @@ const web3Plugin: IntegrationPlugin = {
         {
           field: "error",
           description:
-            "Error message if the call failed. Also set when failOnError is off and an execution failure was softened into success=true, e.g. 'Contract call failed: Error(Splitter/kicked-too-soon)'. Match this string in a downstream Condition node (contains/matchesRegex) to filter known errors from ones that should alert.",
+            "Error message if the call failed. Also set when failOnError is off and an execution failure was softened into success=true, e.g. 'Contract call failed: Error(Splitter/kicked-too-soon)'. Match this string in a downstream Condition node (contains/matchesRegex) to filter known errors from ones that should alert. A matchesRegex pattern must be a quoted string literal.",
         },
       ],
       configFields: [
