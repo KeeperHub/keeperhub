@@ -97,6 +97,22 @@ export const PUBLIC_RPCS = {
   // block triggers depend on the WSS URLs in CHAIN_RPC_CONFIG.
   SOLANA_MAINNET: "https://api.mainnet-beta.solana.com",
   SOLANA_DEVNET: "https://api.devnet.solana.com",
+  // Arc Testnet (Circle). USDC is the native gas token here, not ETH.
+  ARC_TESTNET: "https://rpc.testnet.arc.io",
+  ARC_TESTNET_FALLBACK: "https://rpc.drpc.testnet.arc.io",
+  ARC_TESTNET_WSS: "wss://rpc.testnet.arc.io",
+  // Arc Mainnet (Circle). Same USDC-as-gas model as the testnet.
+  //
+  // One endpoint only, and no WSS, both deliberate. Every other mainnet
+  // hostname Circle documents is unreachable from a server: rpc.arc.network
+  // and rpc.arc.io have no DNS record at all, and rpc.mainnet.arc.io resolves
+  // but sits behind Cloudflare Access (403 without an SSO session). dRPC has
+  // no mainnet route - both arc.drpc.org and arc-mainnet.drpc.org answer
+  // "Unknown network" - so there is no second public endpoint to name as a
+  // publicFallback. rpc.arc-scan.org is the only host that serves JSON-RPC,
+  // and it refuses a WebSocket upgrade (405 on /, 404 on /ws), so there is no
+  // publicWssDefault either: see the CHAIN_CONFIG entry for what that costs.
+  ARC_MAINNET: "https://rpc.arc-scan.org",
 } as const;
 
 /**
@@ -302,6 +318,34 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     envKey: "CHAIN_SOLANA_DEVNET_PRIMARY_RPC",
     fallbackEnvKey: "CHAIN_SOLANA_DEVNET_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.SOLANA_DEVNET,
+  },
+  // Arc Testnet (Circle)
+  5042002: {
+    jsonKey: "arc-testnet",
+    envKey: "CHAIN_ARC_TESTNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_ARC_TESTNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.ARC_TESTNET,
+    publicFallback: PUBLIC_RPCS.ARC_TESTNET_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.ARC_TESTNET_WSS,
+  },
+  // Arc Mainnet (Circle)
+  //
+  // No publicWssDefault, and none is coming: Arc mainnet publishes no public
+  // WebSocket endpoint at all (see PUBLIC_RPCS.ARC_MAINNET). getWssUrl
+  // therefore returns undefined unless CHAIN_RPC_CONFIG carries a
+  // primaryWssUrl, and seed-chains writes NULL into chains.defaultPrimaryWss.
+  // That is the sanctioned path for a WSS-less chain, but it is not free:
+  // event triggers are skipped per workflow by the event-tracker's
+  // workflow-mapper, and the block dispatcher's chain monitor throws and is
+  // dropped from the liveness map. Both are logged and neither crashes, but
+  // neither falls back to HTTP polling - so event and block triggers do not
+  // fire on Arc mainnet until an operator supplies a WSS URL through
+  // chain-config. Scheduled and manual triggers are unaffected.
+  5042: {
+    jsonKey: "arc-mainnet",
+    envKey: "CHAIN_ARC_MAINNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_ARC_MAINNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.ARC_MAINNET,
   },
 };
 
