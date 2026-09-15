@@ -182,4 +182,4 @@ If a node's action type is not in the plugin registry, the tool returns a fallba
 
 ## Roadmap
 
-Workflow dry-run execution support is on the roadmap. When available, it will accept the pin schemas returned by this tool to simulate step execution without triggering live on-chain transactions or external API calls.
+The editor's preflight (`POST /api/workflows/{workflowId}/simulate`) already dry-runs reachable EVM write nodes with literal inputs, and simulates consecutive Write Contract nodes on one path as a sequence, each against the state the node before it produced. What remains on the roadmap is dry-running the nodes whose inputs are runtime templates: that needs the pin schemas returned by this tool, so step execution can be simulated without triggering live on-chain transactions or external API calls.
