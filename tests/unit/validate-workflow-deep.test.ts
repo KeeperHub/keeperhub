@@ -351,6 +351,37 @@ describe("validateWorkflowDeep — fast tier composition", () => {
     expect(result.errors).toHaveLength(0);
     expect(result.warnings).toHaveLength(0);
   });
+
+  it("preserves fast-tier integrationId warnings", async () => {
+    const workflow = makeWorkflow({
+      nodes: [
+        makeTriggerNode(),
+        {
+          id: "web3-read-1",
+          data: {
+            type: "action",
+            config: {
+              actionType: "web3/read-contract",
+              integrationId: "integration-1",
+            },
+          },
+        },
+      ],
+      edges: [],
+    });
+    const result = await validateWorkflowDeep(workflow, {
+      resolveAbiOverride: vi.fn(),
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        code: "ignored-integration-id-on-web3-action",
+        parameterPath: "nodes[1].config.integrationId",
+      }),
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

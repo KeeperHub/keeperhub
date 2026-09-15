@@ -299,6 +299,49 @@ describe("/api/workflows/[workflowId]/validate", () => {
       expect("errors" in body.result).toBe(false);
       expect("warnings" in body.result).toBe(false);
     });
+
+    it("returns an additive warning for an ignored Web3 integrationId", async () => {
+      mockWorkflowRows = [
+        {
+          ...validWorkflowRow,
+          nodes: [
+            triggerNode,
+            {
+              id: "write-1",
+              type: "action",
+              data: {
+                label: "Write",
+                type: "action",
+                config: {
+                  actionType: "web3/write-contract",
+                  integrationId: "integration-1",
+                },
+              },
+            },
+          ],
+          edges: [{ id: "e1", source: "trigger-1", target: "write-1" }],
+          workflowType: "write",
+        },
+      ];
+      mockChainRows = [chainRow];
+
+      const response = await GET(
+        makeRequest(WORKFLOW_ID),
+        makeParams(WORKFLOW_ID)
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.ok).toBe(true);
+      expect(body.result.valid).toBe(true);
+      expect("errors" in body.result).toBe(false);
+      expect(body.result.warnings).toEqual([
+        expect.objectContaining({
+          code: "ignored-integration-id-on-web3-action",
+          parameterPath: "nodes[1].config.integrationId",
+        }),
+      ]);
+    });
   });
 
   // -------------------------------------------------------------------------
