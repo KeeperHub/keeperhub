@@ -1,5 +1,6 @@
 import {
   assertEncodeTransformsLegalFor,
+  getEncodeTransformKind,
   setActionInputsLookup,
 } from "@/lib/protocol-encode-transforms";
 import { solidityTypeToFieldType } from "@/lib/solidity-type-fields";
@@ -410,23 +411,50 @@ function buildInputField(input: ProtocolActionInput): ActionConfigFieldBase {
 
 // The payable value field every payable action gets. Kept as one small
 // function so the label hook can be swapped for a dedicated field type
-// (a `protocol-wei-value` input, say) without touching the field list
-// around it. An action that declares no payableValue gets the field
-// exactly as it was before the hook existed: "ETH Value", placeholder
-// "0.0", no help text.
+// without touching the field list around it. An action that declares no
+// payableValue and registers no value transform gets the field exactly as
+// it was before the hook existed: "ETH Value", protocol-eth-value,
+// placeholder "0.0", optional unless it is the action's only input, no help
+// text.
+//
+// An action that registers weiToEther on its value field takes an integer
+// wei string, not a decimal ether amount, so its field is validated as a
+// uint256 (integer digits or a template; "0.001" is refused where the
+// decimal field would accept it) and is required: a blank value on such an
+// action is not "send nothing", it is a fee of zero, which the contract
+// rejects after the transaction has been paid for. Keyed off the transform
+// registry rather than a separate flag so the validation cannot disagree
+// with the conversion that actually runs.
 function buildPayableValueField(
+  def: ProtocolDefinition,
   action: ProtocolAction,
-  required: boolean
+  requiredByDefault: boolean
 ): ActionConfigFieldBase {
   const declared = action.payableValue;
+  const takesWei =
+    getEncodeTransformKind(def.slug, action.slug, "ethValue") === "weiToEther";
+  const tipFields = {
+    ...(declared?.helpTip ? { helpTip: declared.helpTip } : {}),
+    ...(declared?.docUrl ? { docUrl: declared.docUrl } : {}),
+  };
+  if (takesWei) {
+    return {
+      key: "ethValue",
+      label: declared?.label ?? "Value (wei)",
+      type: "protocol-uint",
+      solidityType: "uint256",
+      placeholder: declared?.placeholder ?? "0",
+      required: true,
+      ...tipFields,
+    };
+  }
   return {
     key: "ethValue",
     label: declared?.label ?? "ETH Value",
     type: "protocol-eth-value",
     placeholder: declared?.placeholder ?? "0.0",
-    required,
-    ...(declared?.helpTip ? { helpTip: declared.helpTip } : {}),
-    ...(declared?.docUrl ? { docUrl: declared.docUrl } : {}),
+    required: requiredByDefault,
+    ...tipFields,
   };
 }
 
@@ -468,7 +496,7 @@ function buildConfigFieldsFromAction(
     // swaps default to ERC20-to-ERC20 with no msg.value, NFT position
     // mint/burn/collect rarely send ETH, etc.).
     const isOnlyInput = action.inputs.length === 0;
-    fields.push(buildPayableValueField(action, isOnlyInput));
+    fields.push(buildPayableValueField(def, action, isOnlyInput));
   }
 
   const advancedFields: ActionConfigFieldBase[] = [];

@@ -249,17 +249,21 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     if (!(field && "key" in field)) {
       throw new Error("ethValue field missing");
     }
-    expect(field.type).toBe("protocol-eth-value");
+    // Validated as an integer (uint256), not as a decimal ether amount: the
+    // field takes wei because the action registers weiToEther on it, and
+    // "0.001" typed here must be refused at validation rather than sent.
+    expect(field.type).toBe("protocol-uint");
+    expect(field.solidityType).toBe("uint256");
     expect(field.label).toBe("Messaging Fee (wei)");
     expect(field.label).not.toMatch(/ETH Value/);
     expect(field.placeholder).toBe("0");
     expect(field.helpTip).toContain("fee.nativeFee");
     expect(field.helpTip).toContain("Native Fee (wei)");
     expect(field.docUrl).toBe(LAYERZERO_OFT_DOCS);
-    // Ten ABI inputs, so the value is opt-in at the form level the way it
-    // is for every payable action with arguments. Whether it is present at
-    // runtime is the OFT's business (it reverts on a mismatch).
-    expect(field.required).toBe(false);
+    // Required, unlike the value field of other payable actions with
+    // arguments: a blank here is not "send nothing", it is a zero fee the
+    // OFT rejects with NotEnoughNative after the gas has been spent.
+    expect(field.required).toBe(true);
   });
 
   it("quote-oft has seven inputs and three named tuple outputs", () => {

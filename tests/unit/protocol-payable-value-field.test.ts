@@ -12,6 +12,7 @@
 import { describe, expect, it } from "vitest";
 import "@/protocols";
 import { deriveActionsFromAbi } from "@/lib/abi/protocol-derive";
+import { getEncodeTransformKind } from "@/lib/protocol-encode-transforms";
 import {
   defineProtocol,
   getProtocol,
@@ -20,6 +21,7 @@ import {
   type ProtocolDefinition,
   protocolActionToPluginAction,
 } from "@/lib/protocol-registry";
+import { validateWorkflowActionConfigs } from "@/lib/workflow/validation/action-config";
 import type { ActionConfigField } from "@/plugins/registry";
 
 const PAYABLE_ABI = JSON.stringify([
@@ -121,9 +123,89 @@ describe("payable value field label hook", () => {
     expect(field.placeholder).toBe(send.payableValue?.placeholder);
     expect(field.helpTip).toBe(send.payableValue?.helpTip);
     expect(field.docUrl).toBe(send.payableValue?.docUrl);
-    // The type is unchanged: the hook relabels the field, it does not
-    // swap the input component or its validation.
-    expect(field.type).toBe("protocol-eth-value");
+  });
+
+  it("validates a wei value field as a required uint256, keyed off the transform", () => {
+    // The field's type follows the transform registry, not the label: an
+    // action with weiToEther on ethValue gets integer validation and is
+    // required. Checked here through the registry builder and below through
+    // the workflow validator, which is what a save actually runs.
+    const layerzero = requireProtocol("layerzero");
+    const send = layerzero.actions.find((a) => a.slug === "oft-send");
+    if (!send) {
+      throw new Error("layerzero/oft-send not registered");
+    }
+    expect(getEncodeTransformKind("layerzero", "oft-send", "ethValue")).toBe(
+      "weiToEther"
+    );
+    const field = ethValueField(layerzero, send);
+    expect(field.type).toBe("protocol-uint");
+    expect(field.solidityType).toBe("uint256");
+    expect(field.required).toBe(true);
+  });
+
+  it("refuses a decimal or blank fee on the wei field and accepts integers and templates", () => {
+    const wallet = "0x1111111111111111111111111111111111111111";
+    const base = {
+      actionType: "layerzero/oft-send",
+      network: "1",
+      contractAddress: "0x6C96dE32CEa08842dcc4058c14d3aaAD7Fa41dee",
+      dstEid: "30110",
+      to: wallet,
+      amountLD: "1000000",
+      minAmountLD: "990000",
+      nativeFee: "218756042576226",
+      refundAddress: wallet,
+    };
+    const issuesFor = (ethValue: unknown) =>
+      validateWorkflowActionConfigs([
+        {
+          id: "send-1",
+          type: "action",
+          data: {
+            type: "action",
+            label: "OFT Send",
+            config: ethValue === undefined ? base : { ...base, ethValue },
+          },
+        },
+      ]).issues.filter((issue) => issue.field === "ethValue");
+
+    // Ether typed into the wei field. The decimal field would accept this
+    // and the step would then refuse it at run time; the validator now
+    // refuses it at save time.
+    expect(issuesFor("0.001").map((i) => i.code)).not.toEqual([]);
+    expect(issuesFor("").map((i) => i.code)).toEqual([
+      "MISSING_REQUIRED_FIELD",
+    ]);
+    expect(issuesFor(undefined).map((i) => i.code)).toEqual([
+      "MISSING_REQUIRED_FIELD",
+    ]);
+    // A JSON number is refused too: only a string carries wei exactly.
+    expect(issuesFor(218_756_042_576_226)).not.toEqual([]);
+    expect(issuesFor("218756042576226")).toEqual([]);
+    expect(issuesFor("{{@quote:OFT Quote Send.fee.nativeFee}}")).toEqual([]);
+  });
+
+  it("keeps decimal validation and optionality on an ether value field", () => {
+    // wrapped/wrap: no transform, so the historical decimal field, required
+    // because it is the action's only input.
+    const issuesFor = (config: Record<string, unknown>) =>
+      validateWorkflowActionConfigs([
+        {
+          id: "wrap-1",
+          type: "action",
+          data: {
+            type: "action",
+            label: "Wrap",
+            config: { actionType: "wrapped/wrap", network: "1", ...config },
+          },
+        },
+      ]).issues.filter((issue) => issue.field === "ethValue");
+    expect(issuesFor({ ethValue: "0.5" })).toEqual([]);
+    expect(issuesFor({ ethValue: "abc" }).length).toBeGreaterThan(0);
+    expect(issuesFor({}).map((i) => i.code)).toEqual([
+      "MISSING_REQUIRED_FIELD",
+    ]);
   });
 
   it("derives payableValue onto a payable function and omits it otherwise", () => {
