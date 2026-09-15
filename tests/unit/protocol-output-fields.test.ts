@@ -57,14 +57,22 @@ describe("Protocol output field advertisements", () => {
         const reachablePaths = new Set<string>(["result", "success", "error"]);
 
         if (abiOutputs.length === 1) {
-          const abiName = abiOutputs[0].name?.trim();
+          const abiOutput = abiOutputs[0];
+          const abiName = abiOutput.name?.trim();
           if (abiName) {
             // Named single output: result is { [name]: value }
             reachablePaths.add(`result.${abiName}`);
+          } else if (abiOutput.type === "tuple" && Array.isArray(abiOutput.components)) {
+            // Unnamed single tuple: structureAbiOutputs returns the tuple
+            // directly (not wrapped), so components are at result.componentName.
+            for (const comp of abiOutput.components as Array<{ name?: string }>) {
+              if (comp.name) {
+                reachablePaths.add(`result.${comp.name}`);
+              }
+            }
           }
           // Unnamed single scalar: result is the bare value, so only "result"
-          // is reachable. Unnamed single tuple: components would be
-          // result.componentName, but we don't currently advertise those.
+          // is reachable.
         } else if (abiOutputs.length > 1) {
           // Multiple outputs: result is an object with one key per output.
           for (const [index, abiOutput] of abiOutputs.entries()) {
