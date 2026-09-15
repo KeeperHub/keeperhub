@@ -72,25 +72,25 @@ export class TraceListener {
       this.unsubscribe();
       this.unsubscribe = null;
     }
-    logger.log(
-      `[TraceListener] stopped ${this.opts.workflowId}`,
-    );
+    logger.log(`[TraceListener] stopped ${this.opts.workflowId}`);
   }
 
-  private async onTrace(matches: Array<{
-    blockNumber: number;
-    transactionHash: string;
-    transactionIndex: number;
-    frameIndex: number;
-    callType: string;
-    from: string;
-    to: string;
-    value: string;
-    selector: string;
-    input: string;
-    depth: number;
-    reverted: boolean;
-  }>): Promise<void> {
+  private async onTrace(
+    matches: Array<{
+      blockNumber: number;
+      transactionHash: string;
+      transactionIndex: number;
+      frameIndex: number;
+      callType: string;
+      from: string;
+      to: string;
+      value: string;
+      selector: string;
+      input: string;
+      depth: number;
+      reverted: boolean;
+    }>,
+  ): Promise<void> {
     // Process each matched frame
     const dispatches = matches.map((match) => this.dispatchMatch(match));
 

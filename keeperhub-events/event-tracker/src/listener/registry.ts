@@ -99,7 +99,10 @@ export interface TraceRegistration {
   configHash: string;
 }
 
-export type AnyRegistration = WorkflowRegistration | StateThresholdRegistration | TraceRegistration;
+export type AnyRegistration =
+  | WorkflowRegistration
+  | StateThresholdRegistration
+  | TraceRegistration;
 
 /**
  * Discriminates the two registration shapes. A type predicate rather than an

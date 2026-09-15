@@ -452,20 +452,22 @@ interface TraceSubscriber {
   handler: TraceCallHandler;
 }
 
-type TraceCallHandler = (matches: Array<{
-  blockNumber: number;
-  transactionHash: string;
-  transactionIndex: number;
-  frameIndex: number;
-  callType: string;
-  from: string;
-  to: string;
-  value: string;
-  selector: string;
-  input: string;
-  depth: number;
-  reverted: boolean;
-}>) => Promise<void>;
+type TraceCallHandler = (
+  matches: Array<{
+    blockNumber: number;
+    transactionHash: string;
+    transactionIndex: number;
+    frameIndex: number;
+    callType: string;
+    from: string;
+    to: string;
+    value: string;
+    selector: string;
+    input: string;
+    depth: number;
+    reverted: boolean;
+  }>,
+) => Promise<void>;
 
 interface ChainEntry {
   chainId: number;
@@ -918,7 +920,11 @@ export class ChainProviderManager {
    * alone is reason enough to keep the block subscription alive.
    */
   private detachIfIdle(entry: ChainEntry): void {
-    if (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0 && entry.traceSubscribers.size === 0) {
+    if (
+      entry.subscribers.size === 0 &&
+      entry.stateSubscribers.size === 0 &&
+      entry.traceSubscribers.size === 0
+    ) {
       this.detachBlockListener(entry);
       this.stopHeartbeat(entry);
     }
@@ -1433,7 +1439,9 @@ export class ChainProviderManager {
       entry.isReconnecting ||
       this.isDestroyed ||
       !entry.provider ||
-      (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0 && entry.traceSubscribers.size === 0) ||
+      (entry.subscribers.size === 0 &&
+        entry.stateSubscribers.size === 0 &&
+        entry.traceSubscribers.size === 0) ||
       entry.headBlock === null
     ) {
       return;
@@ -2050,24 +2058,24 @@ export class ChainProviderManager {
       try {
         const blockHex = `0x${blockNumber.toString(16)}`;
         // Fetch block with transaction hashes to check if it's empty
-        const block = await this.sendWithTimeout(
+        const block = (await this.sendWithTimeout(
           provider,
           "eth_getBlockByNumber",
           [blockHex, false],
           10000,
-        ) as { transactions?: string[] } | null;
+        )) as { transactions?: string[] } | null;
 
         if (!block || !block.transactions || block.transactions.length === 0) {
           continue;
         }
 
         // Fetch traces for this block
-        const traces = await this.sendWithTimeout(
+        const traces = (await this.sendWithTimeout(
           provider,
           "debug_traceBlockByNumber",
           [blockHex, { tracer: "callTracer" }],
           30000,
-        ) as Array<{ result?: any }> | null;
+        )) as Array<{ result?: any }> | null;
 
         if (!traces || !Array.isArray(traces)) {
           continue;
@@ -2121,14 +2129,21 @@ export class ChainProviderManager {
     txIndex: number,
     subscribers: TraceSubscriber[],
   ): Array<{ subscriber: TraceSubscriber; frames: any[] }> {
-    const flatFrames = this.flattenCallTrace(call, blockNumber, txHash, txIndex);
+    const flatFrames = this.flattenCallTrace(
+      call,
+      blockNumber,
+      txHash,
+      txIndex,
+    );
 
-    return subscribers.map((sub) => {
-      const matched = flatFrames.filter((frame) =>
-        this.frameMatchesSubscriber(frame, sub),
-      );
-      return { subscriber: sub, frames: matched };
-    }).filter((m) => m.frames.length > 0);
+    return subscribers
+      .map((sub) => {
+        const matched = flatFrames.filter((frame) =>
+          this.frameMatchesSubscriber(frame, sub),
+        );
+        return { subscriber: sub, frames: matched };
+      })
+      .filter((m) => m.frames.length > 0);
   }
 
   /**
