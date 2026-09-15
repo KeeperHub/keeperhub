@@ -117,7 +117,13 @@ function ruleToExpression(rule: ConditionRule): string {
       return `(${left} !== undefined)`;
 
     case "matchesRegex":
-      return `new RegExp(${wrapOperand(rule.rightOperand)}).test(String(${left}))`;
+      // Emitted as an allowlisted global rather than `new RegExp(...).test(...)`.
+      // The compiled form is what broke this operator twice over: `new` is in
+      // DANGEROUS_PATTERNS (validator.ts) and the interpreter's ALLOWED_METHODS
+      // carries no `test`, so the builder generated an expression that could
+      // neither validate nor evaluate. A named call keeps the interpreter's
+      // grammar closed and puts the RegExp construction in trusted code.
+      return `matchesRegex(String(${left}), ${wrapOperand(rule.rightOperand)})`;
 
     case "isTrue":
       return `${left} === true`;
