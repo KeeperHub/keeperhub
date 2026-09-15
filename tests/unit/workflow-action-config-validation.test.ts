@@ -7,6 +7,7 @@ import {
   isKnownConfigKeyForAction,
   validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
+import { findActionById } from "@/plugins/registry";
 
 function actionNode(
   actionType: string,
@@ -1429,6 +1430,26 @@ describe("hasDraftActionNodes", () => {
         { id: "n-1", type: "trigger", data: { type: "trigger", config: {} } },
       ])
     ).toBe(false);
+  });
+
+  it("returns false for an action that declares no config fields", () => {
+    expect(
+      hasDraftActionNodes([
+        actionNode("evm-chain/chain-info", { integrationId: "int-1" }),
+      ])
+    ).toBe(false);
+  });
+
+  it("returns false for a zero-field action with no integration selected", () => {
+    expect(hasDraftActionNodes([actionNode("evm-chain/chain-info", {})])).toBe(
+      false
+    );
+  });
+
+  it("keeps the registry actions used by the zero-field cases field-free", () => {
+    const action = findActionById("evm-chain/chain-info");
+    expect(action).toBeDefined();
+    expect(action?.configFields ?? []).toEqual([]);
   });
 });
 

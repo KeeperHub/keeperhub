@@ -892,6 +892,15 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           abiFunctionField: "abiFunction",
         },
+        {
+          key: "callerAddress",
+          label: "Caller Address",
+          type: "template-input",
+          placeholder: "Optional - 0x... or {{NodeName.address}}",
+          helpTip:
+            "Optional. The address this read is made from - some contracts answer differently depending on who asks. Nothing is signed or sent from it, and a write is never sent from this address, so take care before gating a transfer on an answer obtained as someone else. Leave empty to keep the current behaviour.",
+          isAddressField: true,
+        },
         readFailOnErrorField(),
       ],
     },
@@ -1716,6 +1725,55 @@ const web3Plugin: IntegrationPlugin = {
           type: "template-input",
           placeholder: "0x... or {{NodeName.address}}",
           example: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+          required: true,
+        },
+        readFailOnErrorField(),
+      ],
+    },
+    {
+      slug: "check-approval-exploit",
+      label: "Check Approval Exploit List",
+      description:
+        "Check whether the spenders in a set of ERC-20 approvals appear in the Revoke.cash approval exploit list, and return the matching incident details. A spender that is absent from the list is not a safety certificate: the list carries only incidents reported and verified upstream.",
+      category: "Web3",
+      stepFunction: "checkApprovalExploitStep",
+      stepImportPath: "check-approval-exploit",
+      outputFields: [
+        {
+          field: "success",
+          description:
+            "Whether the check completed. Also true when failOnError is off and a failed list retrieval was softened; the result fields are null and `error` is set.",
+        },
+        {
+          field: "checked",
+          description: "How many approvals were checked",
+        },
+        {
+          field: "matchCount",
+          description: "How many of the spenders appear in the exploit list",
+        },
+        {
+          field: "matches",
+          description:
+            "One entry per matching approval: tokenAddress, spenderAddress, and the incident (name, description, date, amount in millions of USD - the Bancor record's 0.135 is $135k - and metaArticleUrls)",
+        },
+        {
+          field: "chainCoverage",
+          description:
+            "One entry per chain the upstream list covers: chainId, incidentCount (incidents listing an address on that chain) and listedAddressCount (distinct addresses listed). Read it to tell a chain with nothing listed from a lookup that matched nothing. Null when failOnError is off and a failed list retrieval was softened.",
+        },
+        checkErrorOutput(),
+      ],
+      configFields: [
+        evmNetworkField(),
+        {
+          key: "approvals",
+          label: "Approvals (JSON)",
+          type: "template-textarea",
+          placeholder:
+            '[{"tokenAddress":"0x...","spenderAddress":"0x..."}]',
+          example:
+            '[{"tokenAddress":"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48","spenderAddress":"0x8dFEB86C7C962577deD19AB2050AC78654feA9F7"}]',
           required: true,
         },
         readFailOnErrorField(),

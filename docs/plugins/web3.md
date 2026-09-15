@@ -468,7 +468,7 @@ Schedule (every 15 min)
 
 Execute state-changing functions on smart contracts using your Turnkey wallet. Requires a connected wallet.
 
-**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Gas Limit Multiplier (optional, in Advanced section)
+**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit Multiplier (optional, in Advanced section)
 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `error`
 
@@ -477,6 +477,19 @@ Execute state-changing functions on smart contracts using your Turnkey wallet. R
 **Gas Configuration:** Optionally set a custom Gas Limit Multiplier in the Advanced section to override the chain default. See [Gas Management](/wallet-management/gas) for details.
 
 **Note:** The `gasUsed` output represents the total transaction cost in wei (gas units × effective gas price), not just the number of gas units consumed.
+
+### When a write fails
+
+`Fail workflow on error` is on by default, so a write that fails stops the run and the failure is reported on the node.
+
+Turn it off and the failure is softened instead: the workflow continues, and the node reports `success: true` with `error` and `rejection` set. The softened result carries only those three fields, so `transactionHash`, `transactionLink` and the receipt fields are absent from it. Read `error` to tell a softened failure from a real success, because at the node the two are otherwise identical.
+
+The two halves of a softened failure are reported in different places, which is the part that surprises people:
+
+- **On the node:** `success: true`, `error` set, no `transactionHash`.
+- **On the execution:** `status: success`, `transactionHashes: []`, and `errorContext: null`, because that field is only populated for a failed status. The run reads as a success in `/api/analytics/runs` with no hash against it.
+
+Not every failure softens. A failure with no class, or one classified as a third-party dependency, is softened. One classified as this workflow's own configuration or as a platform problem still fails the run whatever the toggle says, and so does a write whose outcome the platform cannot yet determine: a send that is still in flight is never reported as a success.
 
 ### Direct-API field names
 
@@ -491,6 +504,7 @@ If you're building this action via the [Workflows API](/api/workflows) rather th
 | Contract ABI | `abi` | JSON-encoded string (same convention as `functionArgs`) |
 | Web3 Connection | `web3Connection` | Sender routing: `"default"` (org policy), `"eoa"` (force the Turnkey EOA), or `"safe:<safeWalletId>"`. The signing wallet is your org's Turnkey wallet, resolved automatically. |
 | Network | `network` | numeric chain id as a string (e.g. `"11155111"`) |
+| Fail workflow on error | `failOnError` | boolean, on by default. `false`, or the string `"false"`, softens a failed write into `success: true` with `error` set; any other value stays on. |
 
 See the [generic web3 write-contract example](/api/workflows#generic-web3-write-contract-example-manual-trigger) in the Workflows API docs for a full working request body.
 

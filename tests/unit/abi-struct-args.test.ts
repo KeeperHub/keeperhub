@@ -1,5 +1,41 @@
 import { describe, expect, it } from "vitest";
-import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
+import {
+  asRawFunctionArgs,
+  coerceArgsForAbi,
+  reshapeArgsForAbi,
+} from "@/lib/abi/struct-args";
+
+describe("asRawFunctionArgs", () => {
+  it("keeps an array and a non-empty string", () => {
+    const array = ["0xabc", "1"];
+    expect(asRawFunctionArgs(array)).toBe(array);
+    expect(asRawFunctionArgs('["1"]')).toBe('["1"]');
+    expect(asRawFunctionArgs([])).toEqual([]);
+  });
+
+  it("reads every falsy value as absent, not as a parse error", () => {
+    // isMissingRequiredValue in lib/workflow/validation/action-config.ts
+    // treats null as missing and skips field validation, so a workflow
+    // authored over MCP with one of these persists and then has to run.
+    // The steps read them as absent through a truthiness test before
+    // arrays were admitted, and still do.
+    for (const absent of [null, undefined, 0, false, "", "   ", Number.NaN]) {
+      expect([String(absent), asRawFunctionArgs(absent)]).toEqual([
+        String(absent),
+        undefined,
+      ]);
+    }
+  });
+
+  it("prints a truthy non-array so the caller's parse rejects it", () => {
+    // Testing the shape here rather than in the condition guarding the
+    // caller's try is what keeps these off the throwing path. What comes
+    // back is a string, so JSON.parse raises inside the try.
+    expect(asRawFunctionArgs(5)).toBe("5");
+    expect(asRawFunctionArgs(true)).toBe("true");
+    expect(typeof asRawFunctionArgs({ a: 1 })).toBe("string");
+  });
+});
 
 describe("reshapeArgsForAbi", () => {
   it("returns empty array unchanged", () => {
