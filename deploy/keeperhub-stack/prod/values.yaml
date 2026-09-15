@@ -42,7 +42,7 @@ app:
     # keep their code defaults (7, 7 and 30).
     EXECUTION_RETENTION_ENABLED:
       type: kv
-      value: "true"
+      value: "false"
     # Second switch, for run rows only. Every billing count reads
     # workflow_executions by started_at with no floor and the invoices page
     # recounts it per period on every load, so deleting a run row rewrites what

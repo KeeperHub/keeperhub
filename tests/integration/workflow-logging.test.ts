@@ -10,6 +10,11 @@ vi.mock("@/lib/logging", () => ({
   logSystemError: vi.fn(),
   logSystemWarn: vi.fn(),
 }));
+// Claim cleanup is covered in step-claim.test.ts; stub it so these tests stay
+// about status reconciliation and do not reach the claims table.
+vi.mock("@/lib/workflow/executor/step-claim", () => ({
+  clearStepClaims: vi.fn(() => Promise.resolve()),
+}));
 
 vi.mock("@/lib/metrics", () => ({
   getMetricsCollector: () => ({

@@ -369,6 +369,80 @@ describe("simulateContractCall", () => {
     }
   });
 
+  // #2430: a revert raised in a callee, not in the contract being called. The
+  // ABI that encodes `setValue` cannot name it, so it arrives as hex and the
+  // caller learns nothing from a field that is supposed to carry the reason.
+  const CALLEE_ERROR = "error ReleaseBlocked(uint256 jobId, bytes32 reason)";
+  const CALLEE_ERROR_DATA = new ethers.Interface([
+    CALLEE_ERROR,
+  ]).encodeErrorResult("ReleaseBlocked", [
+    BigInt(8),
+    "0x455f5354414c4500000000000000000000000000000000000000000000000000",
+  ]);
+  const CALLEE_ERROR_ABI = JSON.stringify([
+    {
+      type: "error",
+      name: "ReleaseBlocked",
+      inputs: [
+        { name: "jobId", type: "uint256" },
+        { name: "reason", type: "bytes32" },
+      ],
+    },
+  ]);
+
+  it("decodes a callee's custom error when its ABI travels in errorAbis", async () => {
+    resetSpies();
+    executeWithFailover.mockRejectedValueOnce({
+      data: CALLEE_ERROR_DATA,
+      message: "execution reverted (unknown custom error)",
+    });
+
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: WRITE_ABI,
+      functionName: "setValue",
+      functionArgs: JSON.stringify(["1"]),
+      errorAbis: [CALLEE_ERROR_ABI],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.wouldRevert).toBe(true);
+    if (!result.success && result.failureKind !== "unavailable") {
+      expect(result.failureKind).toBe("revert");
+      expect(result.revertReason).toContain("ReleaseBlocked(8");
+      expect(result.revertReason).toContain("0x455f5354414c45");
+    }
+  });
+
+  it("leaves that error undecoded when errorAbis is absent", async () => {
+    // The same request without the extra ABI, so the case above is evidence
+    // about the field rather than about the fixture.
+    resetSpies();
+    executeWithFailover.mockRejectedValueOnce({
+      data: CALLEE_ERROR_DATA,
+      message: "execution reverted (unknown custom error)",
+    });
+
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: WRITE_ABI,
+      functionName: "setValue",
+      functionArgs: JSON.stringify(["1"]),
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success && result.failureKind !== "unavailable") {
+      expect(result.revertReason).not.toContain("ReleaseBlocked");
+      expect(result.revertReason).toContain("unknown custom error");
+      // The bytes are kept, which is how a caller knows more ABI would help.
+      expect(result.undecodedRevertData).toBe(CALLEE_ERROR_DATA);
+    }
+  });
+
   it("returns unavailable instead of claiming an RPC outage would revert", async () => {
     resetSpies();
     executeWithFailover.mockRejectedValueOnce(

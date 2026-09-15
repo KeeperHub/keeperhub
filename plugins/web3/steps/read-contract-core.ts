@@ -27,6 +27,7 @@ import { getErrorMessage } from "@/lib/utils";
 import { getAbiFunctionKey } from "@/lib/abi/function-key";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import { formatContractError } from "@/lib/web3/decode-revert-error";
+import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import {
   applyReadFailOnError,
   type ReadDestinationFailure,
@@ -55,6 +56,9 @@ export type ReadContractCoreInput = {
   // See applyReadFailOnError in read-fail-on-error-core.ts. When false, no
   // failure of this step fails the run.
   failOnError?: boolean;
+  // #2430: extra ABI documents whose error entries join the decode path, after
+  // `abi`. Decoding only - `abi` still encodes the call and reads its result.
+  errorAbis?: string[];
   _context?: { executionId?: string; organizationId?: string };
 };
 
@@ -102,6 +106,7 @@ async function readContractInner(
     abiFunction,
     functionArgs,
     callerAddress,
+    errorAbis,
     _context,
   } = input;
 
@@ -406,7 +411,10 @@ async function readContractInner(
         chain_id: String(chainId),
       }
     );
-    const message = formatContractError(error, contractInterface);
+    const message = formatContractError(
+      error,
+      buildErrorDecodeInterface(contractInterface, errorAbis)
+    );
     return {
       success: false,
       error: message,

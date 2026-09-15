@@ -550,16 +550,25 @@ describe("execution retention purge (real database)", () => {
 
     it("still knows every table that references a run row", async () => {
       // The pass deletes workflow_execution_logs and feedback before the parent
-      // because nothing cascades. A third child added later would fail on a
-      // 500-day-old row in production; it fails here instead.
+      // because neither cascades. A further non-cascading child added later
+      // would fail on a 500-day-old row in production; it fails here instead.
+      // workflow_step_claims is listed but needs no pass: it cascades, which
+      // the second assertion below is what actually holds it to.
       const rows = await queryClient`
-        SELECT conrelid::regclass::text AS child FROM pg_constraint
+        SELECT conrelid::regclass::text AS child, confdeltype AS on_delete
+          FROM pg_constraint
          WHERE contype = 'f' AND confrelid = 'workflow_executions'::regclass
          ORDER BY 1`;
       expect(rows.map((r) => r.child)).toEqual([
         "feedback",
         "workflow_execution_logs",
+        "workflow_step_claims",
       ]);
+      // 'c' is cascade, 'a' is no action. A child the purge does not delete
+      // itself has to cascade, or an aged parent delete fails.
+      expect(
+        rows.find((r) => r.child === "workflow_step_claims")?.on_delete
+      ).toBe("c");
     });
   });
 });
