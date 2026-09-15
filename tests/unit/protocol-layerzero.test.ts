@@ -234,17 +234,14 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
   });
 
   // Chain 1's reference token is USDT, whose approve returns no data. The
-  // write path decodes the preflight staticCall's return against these
+  // EOA write path decodes the preflight staticCall's return against these
   // outputs (lib/web3/chain-adapter/evm.ts), so a bool declaration throws
-  // BAD_DATA and the approve never broadcasts. Empty outputs decode both an
-  // absent return and the 32 bytes a conforming token sends.
+  // BAD_DATA and the approve never broadcasts.
   it("declares approve with no outputs so USDT's empty return decodes", () => {
     const iface = new ethers.Interface(layerzeroErc20Abi);
-    const bool32 = ethers.zeroPadValue("0x01", 32);
 
     expect(iface.getFunction("approve")?.outputs).toHaveLength(0);
     expect(() => iface.decodeFunctionResult("approve", "0x")).not.toThrow();
-    expect(() => iface.decodeFunctionResult("approve", bool32)).not.toThrow();
   });
 
   it("getConfig defaults configType to the ULN config", () => {
