@@ -481,7 +481,8 @@ function buildConfigFieldsFromAction(
 }
 
 function buildOutputFieldsFromAction(
-  action: ProtocolAction
+  action: ProtocolAction,
+  def: ProtocolDefinition
 ): Array<{ field: string; description: string }> {
   const outputs: Array<{ field: string; description: string }> = [];
 
@@ -489,9 +490,95 @@ function buildOutputFieldsFromAction(
   // Write actions still have ABI-derived outputs at the model layer, but
   // writeContractCore returns result: undefined, so surfacing them would
   // create template suggestions that resolve to undefined at runtime.
-  if (action.type === "read" && action.outputs) {
-    for (const output of action.outputs) {
-      outputs.push({ field: output.name, description: output.label });
+  if (action.type === "read") {
+    outputs.push({
+      field: "result",
+      description: "The contract function return value",
+    });
+
+    // Derive advertised paths from the ABI output shape, matching what
+    // structureAbiOutputs produces at runtime. Protocol action.outputs
+    // provides labels and decimals but not paths; the ABI determines whether
+    // the runtime result is a bare scalar, result.fieldName, or an object
+    // with multiple keys.
+    const contract = def.contracts[action.contract];
+    if (contract?.abi && action.function) {
+      try {
+        const abiArray = JSON.parse(contract.abi);
+        if (Array.isArray(abiArray)) {
+          const functionAbi = abiArray.find(
+            (entry) =>
+              entry.type === "function" && entry.name === action.function
+          );
+          if (functionAbi?.outputs) {
+            const abiOutputs = functionAbi.outputs as Array<{
+              name?: string;
+              type?: string;
+            }>;
+            const actionOutputs = action.outputs || [];
+
+            if (abiOutputs.length === 1) {
+              const abiOutput = abiOutputs[0];
+              const abiName = abiOutput.name?.trim();
+              // Authoring-time key: "result" for single output, matching
+              // protocol-derive.ts:104-105 defaultOutputName.
+              const authoringKey = "result";
+              const override = actionOutputs.find(
+                (o) => o.name === authoringKey
+              );
+
+              if (abiName) {
+                // Named single output: runtime is { [name]: value }, so the
+                // path is result.name.
+                outputs.push({
+                  field: `result.${abiName}`,
+                  description: override?.label || abiName,
+                });
+              } else if (
+                abiOutput.type === "tuple" &&
+                "components" in abiOutput &&
+                Array.isArray(abiOutput.components)
+              ) {
+                // Unnamed single tuple: structureAbiValue unwraps components
+                // directly onto result, so each component becomes result.componentName.
+                // This is the getUserAccountData case (aave-v4.ts:277-295).
+                const components = abiOutput.components as Array<{
+                  name?: string;
+                  type?: string;
+                }>;
+                for (const comp of components) {
+                  if (comp.name) {
+                    outputs.push({
+                      field: `result.${comp.name}`,
+                      description: comp.name,
+                    });
+                  }
+                }
+              }
+              // Unnamed single scalar: runtime is the bare value, already
+              // advertised as `result` above.
+            } else if (abiOutputs.length > 1) {
+              // Multiple outputs: runtime is an object with one key per output,
+              // named or falling back to unnamedOutput<i>.
+              for (const [index, abiOutput] of abiOutputs.entries()) {
+                const abiName =
+                  abiOutput.name?.trim() || `unnamedOutput${index}`;
+                // Authoring-time key: result0, result1, etc. for multiple outputs
+                const authoringKey = `result${index}`;
+                const override = actionOutputs.find(
+                  (o) => o.name === authoringKey
+                );
+                outputs.push({
+                  field: `result.${abiName}`,
+                  description: override?.label || abiName,
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // ABI parse failure: fall through to the base result field only.
+      }
     }
   }
 
@@ -530,7 +617,7 @@ export function protocolActionToPluginAction(
     requiresCredentials: action.type === "write",
     ...(action.type === "write" ? { credentialIntegrationType: "web3" } : {}),
     configFields: buildConfigFieldsFromAction(def, action),
-    outputFields: buildOutputFieldsFromAction(action),
+    outputFields: buildOutputFieldsFromAction(action, def),
     ...(action.docUrl ? { docUrl: action.docUrl } : {}),
   };
 }
