@@ -75,11 +75,31 @@ describe("encode transform registry invariants", () => {
     expect(weiToEtherOnDeclaredAbiInputs(listEncodeTransforms())).toEqual([]);
   });
 
+  it("registers weiToEther on layerzero/oft-send/ethValue and nowhere else", () => {
+    // The positive half of the invariant above. One production entry
+    // exists, on the one action whose value field is labelled as wei. In
+    // particular chainlink/ccip-send has no entry: it has the same
+    // wei-quote gap, but existing workflows type ether into its value
+    // field, so registering the conversion there would change what they
+    // send (#2470 scope).
+    const entries = listEncodeTransforms().filter(
+      (t) => t.kind === "weiToEther"
+    );
+    expect(entries).toEqual([
+      {
+        protocolSlug: "layerzero",
+        actionSlug: "oft-send",
+        inputName: "ethValue",
+        kind: "weiToEther",
+      },
+    ]);
+  });
+
   it("the detector catches a violation rather than passing vacuously", () => {
-    // Nothing registers weiToEther in production today, so the assertion
-    // above would hold even if this function stopped working. Feed it a
-    // synthetic entry naming a real action and a real declared input of
-    // that action, without touching the registry.
+    // The only production weiToEther entry is on a virtual field, so the
+    // assertion above would hold even if this function stopped working.
+    // Feed it a synthetic entry naming a real action and a real declared
+    // input of that action, without touching the registry.
     const { protocolSlug, actionSlug, inputName } = anyActionWithInputs();
     const synthetic: RegisteredEncodeTransform[] = [
       { protocolSlug, actionSlug, inputName, kind: "weiToEther" },

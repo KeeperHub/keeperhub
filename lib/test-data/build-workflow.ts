@@ -354,15 +354,19 @@ function buildProtocolActionNode(
     );
   }
 
-  // Optional virtual `ethValue` for payable actions. The execution engine
-  // expects an ETH string (e.g. "0.01"), not wei. Provide a plain string
-  // binding in TEST_DATA actions: `{ ethValue: "0.01" }`.
+  // Optional virtual `ethValue` for payable actions. Bound as a plain
+  // string in the unit the action's value field takes: whole ether by
+  // default (`{ ethValue: "0.01" }`), or integer wei for an action that
+  // registers a weiToEther transform on ethValue (layerzero/oft-send). The
+  // builder passes it through untouched; the write step and the calldata
+  // harness apply the registered transform, so the two never disagree on
+  // the unit.
   if (bindings.ethValue !== undefined) {
     const ev = bindings.ethValue;
     if (typeof ev !== "string") {
       throw new Error(
-        `${protocol.slug}/${action.slug}: ethValue binding must be a plain ETH ` +
-          `string (e.g. "0.01"), got ${JSON.stringify(ev)}.`
+        `${protocol.slug}/${action.slug}: ethValue binding must be a plain ` +
+          `string in the value field's unit (e.g. "0.01"), got ${JSON.stringify(ev)}.`
       );
     }
     config.ethValue = ev;
