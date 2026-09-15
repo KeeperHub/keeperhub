@@ -16,7 +16,7 @@
     "test:unit": "vitest run tests/unit"
   },
   "dependencies": {
-    "@aws-sdk/client-sqs": "^3.1126.0",
+    "@aws-sdk/client-sqs": "^3.1130.0",
     "@kubernetes/client-node": "^1.0.0",
     "cron-parser": "^5.10.0",
     "ethers": "^6.17.0",
@@ -26,11 +26,11 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/express": "^5.0.0",
-    "@types/node": "^24.13.3",
+    "@types/node": "^24.13.4",
     "@types/ws": "^8.18.1",
     "tsx": "^4.23.12",
     "typescript": "^5.9.3",
-    "vite": "^8.2.2",
+    "vite": "^8.3.0",
     "vitest": "4.1.11",
     "ws": "^8.21.3"
   },

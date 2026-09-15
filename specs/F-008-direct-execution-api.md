@@ -228,6 +228,6 @@ The check-and-execute gate evaluates conditions against contract read results:
 
 - All custom code in `keeperhub/` per fork policy
 - Step files with `"use step"` cannot export functions -- use `-core.ts` pattern
-- No Node.js-only SDKs in step files -- use `fetch()` directly
+- No Node.js-only SDKs in step files - use `safeFetch()` from `@/lib/safe-fetch` for HTTP calls, not the raw `fetch` global
 - Biome lint: block statements, cognitive complexity max 15, top-level regex
 - Database migrations: `pnpm drizzle-kit generate`, never `db:push`

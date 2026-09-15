@@ -42,7 +42,7 @@ app:
     # keep their code defaults (7, 7 and 30).
     EXECUTION_RETENTION_ENABLED:
       type: kv
-      value: "false"
+      value: "true"
     # Second switch, for run rows only. Every billing count reads
     # workflow_executions by started_at with no floor and the invoices page
     # recounts it per period on every load, so deleting a run row rewrites what
@@ -51,12 +51,11 @@ app:
     EXECUTION_RETENTION_EXECUTIONS_ENABLED:
       type: kv
       value: "false"
-    # Report what each pass would touch and delete nothing. Prod stays disabled
-    # until staging has run for real: enable with dry-run on first, read the
-    # counts, then flip dry-run off.
+    # Real deletes. Set back to "true" to report what each pass would touch
+    # and delete nothing, without a code change.
     EXECUTION_RETENTION_DRY_RUN:
       type: kv
-      value: "true"
+      value: "false"
     # Ceiling on the no-join backstop pass. That pass runs at the longest
     # window any organization is actually on, capped here, so raising this
     # only bites once some plan sells a longer window than the value below.
