@@ -91,7 +91,11 @@ export type TransferSplTokenResult =
       recipientTokenAccount: string;
       createdRecipientAccount: boolean;
     }
-  | { success: false; error: string };
+  | {
+      success: false;
+      error: string;
+      broadcastAttempted?: boolean;
+    };
 
 type SolanaAccount = AccountInfo<Buffer> | null;
 
@@ -536,7 +540,11 @@ async function executeTransfer(
         chain_id: String(chainId),
       }
     );
-    return { success: false, error: getErrorMessage(error) };
+    return {
+      success: false,
+      error: getErrorMessage(error),
+      broadcastAttempted: true,
+    };
   }
 }
 

@@ -587,6 +587,7 @@ describe("transferSplTokenCore", () => {
     expect(result).toEqual({
       success: false,
       error: expect.stringContaining("Simulation failed"),
+      broadcastAttempted: true,
     });
   });
 

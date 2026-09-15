@@ -1,4 +1,5 @@
 import "server-only";
+import { broadcastTransactionHash } from "@/lib/web3/onchain-revert";
 
 import { ethers } from "ethers";
 import type { Hex } from "viem";
@@ -49,11 +50,15 @@ export type TransferWithMemoResult =
       validBefore: number | null;
       chainId: number;
     }
-  | { success: false; error: string };
+  | {
+      success: false;
+      error: string;
+      transactionHash?: string;
+      chainId?: number;
+      broadcastAttempted?: boolean;
+    };
 
-async function stepHandler(
-  input: TransferWithMemoInput
-): Promise<TransferWithMemoResult> {
+async function stepHandlerImpl(input: TransferWithMemoInput): Promise<TransferWithMemoResult> {
   const { network, tokenConfig, amount, recipientAddress, memo, _context } =
     input;
 
@@ -108,6 +113,8 @@ async function stepHandler(
     return orgCtx;
   }
 
+  let broadcastHash: string | undefined;
+
   try {
     const rpcManager = await getRpcProvider({
       chainId,
@@ -134,6 +141,7 @@ async function stepHandler(
       executionId: _context?.executionId,
     });
 
+    broadcastHash = hash;
     const transactionLink = await buildTempoTxLink(chainId, hash);
     return {
       success: true,
@@ -153,8 +161,22 @@ async function stepHandler(
       error,
       { plugin_name: "tempo", action_name: "transfer-with-memo" }
     );
-    return { success: false, error: getErrorMessage(error) };
+    const transactionHash = broadcastHash ?? broadcastTransactionHash(error);
+    return {
+      success: false,
+      error: getErrorMessage(error),
+      broadcastAttempted: transactionHash ? true : false,
+      ...(transactionHash ? { transactionHash, chainId } : {}),
+    };
   }
+}
+
+async function stepHandler(input: TransferWithMemoInput): Promise<TransferWithMemoResult> {
+  const result = await stepHandlerImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }
 
 export async function transferWithMemoStep(

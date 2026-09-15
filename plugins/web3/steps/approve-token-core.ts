@@ -6,6 +6,7 @@
  * exporting functions from "use step" files (which breaks the workflow bundler).
  */
 import "server-only";
+import { isDefinitelyPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
@@ -129,6 +130,7 @@ export type ApproveTokenResult =
       // True when the terminal failure came from the gas-sponsored path, so
       // the finalizer can report the route accurately on a failed execution.
       sponsored?: boolean;
+      broadcastAttempted?: boolean;
     };
 
 /**
@@ -139,7 +141,7 @@ export type ApproveTokenResult =
  * When _context.organizationId is provided, skips workflowExecutions lookup.
  */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Token approval handler with comprehensive validation and error handling
-export async function approveTokenCore(
+async function approveTokenCoreImpl(
   input: ApproveTokenCoreInput
 ): Promise<ApproveTokenResult> {
   const {
@@ -442,6 +444,7 @@ export async function approveTokenCore(
           // in-flight send into success.
           errorClass: decision.errorClass,
           sponsored: true,
+          broadcastAttempted: decision.broadcastAttempted,
           ...(decision.transactionHash
             ? { transactionHash: decision.transactionHash, chainId }
             : {}),
@@ -481,6 +484,7 @@ export async function approveTokenCore(
     // Keep contract instance for error formatting in catch block
     const contract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
 
+    let receivedTransactionHash: string | undefined;
     try {
       // Get token decimals and symbol via failover
       const [decimals, symbol] = await rpcManager.executeWithFailover(
@@ -608,6 +612,7 @@ export async function approveTokenCore(
         );
       }
 
+      receivedTransactionHash = receipt.hash;
       const gasUsedUnits = receipt.gasUsed.toString();
       const effectiveGasPrice = receipt.effectiveGasPrice.toString();
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
@@ -644,6 +649,8 @@ export async function approveTokenCore(
         }
       );
       const rejection = classifyRevert(error, contract.interface);
+      const broadcastHash =
+        broadcastTransactionHash(error) ?? receivedTransactionHash;
       // Attributed as a system fault so the execution log records a fault
       // domain for it; a relay-determined class is more specific, so it wins.
       const errorClass =
@@ -658,10 +665,24 @@ export async function approveTokenCore(
         ),
         ...(errorClass ? { errorClass } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
-        ...(broadcastTransactionHash(error)
-          ? { transactionHash: broadcastTransactionHash(error), chainId }
-          : {}),
+        broadcastAttempted:
+          broadcastHash ? true
+            : rejection.kind !== "unknown" ||
+                isDefinitelyPreBroadcastNetworkError(error)
+              ? false
+              : true,
+        ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
       };
     }
   });
+}
+
+export async function approveTokenCore(
+  input: ApproveTokenCoreInput
+): Promise<ApproveTokenResult> {
+  const result = await approveTokenCoreImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }

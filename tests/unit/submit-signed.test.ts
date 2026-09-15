@@ -262,6 +262,61 @@ describe("submitSignedTransactionWithFailover", () => {
     ).rejects.toBe(originalError);
   });
 
+  it("preserves the deterministic hash when failover mixes timeout with connection refusal", async () => {
+    const { signer } = makeMockSigner();
+    const originalError = new Error(
+      "RPC failed on both endpoints. Primary: request timed out. Fallback: ECONNREFUSED"
+    );
+    const { rpcManager } = makeMockRpcManager({
+      broadcastTransaction: vi.fn().mockRejectedValue(originalError),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
+    await expect(
+      submitSignedTransactionWithFailover(signer, TEST_TX_REQUEST, rpcManager)
+    ).rejects.toMatchObject({
+      name: "OnChainPendingError",
+      kind: "onchain-pending",
+      transactionHash: EXPECTED_HASH,
+    });
+  });
+
+  it("treats an all-refused failover round as definitely pre-broadcast", async () => {
+    const { signer } = makeMockSigner();
+    const originalError = new Error(
+      "RPC failed on both endpoints. Primary: connection refused. Fallback: ECONNREFUSED"
+    );
+    const { rpcManager } = makeMockRpcManager({
+      broadcastTransaction: vi.fn().mockRejectedValue(originalError),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
+    await expect(
+      submitSignedTransactionWithFailover(signer, TEST_TX_REQUEST, rpcManager)
+    ).rejects.toBe(originalError);
+  });
+
+  it("preserves the deterministic hash when a send reply is ambiguous", async () => {
+    const { signer } = makeMockSigner();
+    const { rpcManager } = makeMockRpcManager({
+      broadcastTransaction: vi
+        .fn()
+        .mockRejectedValue(new Error("request timed out")),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
+    await expect(
+      submitSignedTransactionWithFailover(signer, TEST_TX_REQUEST, rpcManager)
+    ).rejects.toMatchObject({
+      name: "OnChainPendingError",
+      kind: "onchain-pending",
+      transactionHash: EXPECTED_HASH,
+    });
+  });
+
   it("does not invoke sign or any rpc call when populateTransaction throws", async () => {
     const populateError = new Error("populate boom");
     const populate = vi.fn().mockRejectedValue(populateError);
