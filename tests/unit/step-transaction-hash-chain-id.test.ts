@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { outputFragmentFactories } from "@/plugins/field-fragments";
@@ -23,17 +23,15 @@ const STEP_FILENAME = /\.ts$/;
  */
 
 /**
- * Steps whose `transactionHash` is a Solana signature (base58), not an EVM
- * hash. None of them reports a chainId, and the tracker records a base58
- * signature only when the step said which Solana chain it was on
+ * Remaining Solana instruction steps without a chainId. The tracker records
+ * a base58 signature only when the step said which Solana chain it was on
  * (isRecordableTransactionHash), so these outputs never reach reconciliation
- * and have no numeric chain to verify against. Adding an EVM-shaped step to
- * this list would silently reopen the hole.
+ * and have no numeric chain to verify against. SPL transfers report chainId
+ * and participate in receipt verification, so they must not be exempted.
  */
 const NON_EVM_HASH_STEPS = new Set([
   "web3/steps/call-solana-program-core.ts",
   "web3/steps/send-raw-solana-instruction-core.ts",
-  "web3/steps/transfer-spl-token-core.ts",
 ]);
 
 function collectStepFiles(): string[] {
@@ -119,7 +117,7 @@ const producers = stepFiles
       /* setParentNodes */ true
     );
     return {
-      relative: path.replace(`${PLUGINS_DIR}/`, ""),
+      relative: relative(PLUGINS_DIR, path).split(sep).join("/"),
       branches: successBranchesWithHash(source),
     };
   })
@@ -130,7 +128,7 @@ describe("step results that report a transaction hash", () => {
     expect(stepFiles.length).toBeGreaterThan(0);
   });
 
-  it("finds the known EVM hash producers", () => {
+  it("finds the known EVM and SPL hash producers", () => {
     const scanned = producers.map((p) => p.relative);
     expect(scanned).toEqual(
       expect.arrayContaining([
@@ -138,6 +136,7 @@ describe("step results that report a transaction hash", () => {
         "web3/steps/write-contract-core.ts",
         "web3/steps/transfer-funds-core.ts",
         "web3/steps/transfer-token-core.ts",
+        "web3/steps/transfer-spl-token-core.ts",
       ])
     );
   });
@@ -175,7 +174,6 @@ describe("step results that report a transaction hash", () => {
 const NON_EVM_HASH_ACTIONS = new Set([
   "call-solana-program-anchor",
   "send-raw-solana-instruction",
-  "transfer-spl-token",
 ]);
 
 type PublishedAction = {
@@ -211,7 +209,10 @@ function collectPublishedActions(): PublishedAction[] {
     }
     let source: string;
     try {
-      source = readFileSync(join(PLUGINS_DIR, plugin.name, "index.ts"), "utf8");
+      source = readFileSync(
+        join(PLUGINS_DIR, plugin.name, "index.ts"),
+        "utf8"
+      ).replaceAll("\r\n", "\n");
     } catch {
       continue;
     }
@@ -239,8 +240,11 @@ describe("published action schemas that report a transaction hash", () => {
     a.outputFields.includes("transactionHash")
   );
 
-  it("finds the EVM write actions", () => {
+  it("finds write actions including SPL transfers", () => {
     expect(published.length).toBeGreaterThan(0);
+    expect(published.map((action) => action.slug)).toContain(
+      "transfer-spl-token"
+    );
   });
 
   for (const { slug, outputFields } of published) {

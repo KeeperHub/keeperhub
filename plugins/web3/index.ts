@@ -1,3 +1,4 @@
+
 import type { IntegrationPlugin } from "@/plugins/registry";
 import {
   amountField,
@@ -361,6 +362,7 @@ const web3Plugin: IntegrationPlugin = {
           field: "transactionHash",
           description: "The transaction signature of the successful transfer",
         },
+        receiptChainIdOutput(),
         transactionLinkOutput(),
         transferAmountOutput(),
         {

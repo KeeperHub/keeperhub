@@ -218,6 +218,24 @@ describe("transferSplTokenCore", () => {
     expect(isSplTransferPath(8453)).toBe(false); // EVM Base
   });
 
+  it.each([
+    ["solana", 101],
+    ["solana-mainnet", 101],
+    ["101", 101],
+    ["solana-devnet", 103],
+    ["solana-testnet", 103],
+    ["103", 103],
+  ])("returns the receipt chain for network %s", async (network, chainId) => {
+    const result = await transferSplTokenCore({ ...validInput, network });
+
+    expect(result).toMatchObject({
+      success: true,
+      transactionHash: "mock-signature",
+      chainId,
+    });
+    expect(getChainAdapter).toHaveBeenCalledWith(chainId);
+  });
+
   it("transfers when the recipient token account already exists", async () => {
     const result = await transferSplTokenCore(validInput);
 
@@ -225,6 +243,7 @@ describe("transferSplTokenCore", () => {
       success: true,
       transactionHash: "mock-signature",
       transactionLink: "https://solscan.io/tx/mock-signature",
+      chainId: 103,
       amount: "1.5",
       mint: MINT.toBase58(),
       decimals: 6,
