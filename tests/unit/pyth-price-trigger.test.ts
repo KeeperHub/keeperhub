@@ -30,9 +30,10 @@ const update = (price: string, time = 1000, expo = 0) =>
 
 describe("Pyth threshold semantics", () => {
   it("arms the first crossing when the baseline starts below the threshold", () => {
-    expect(evaluatePythPrice(config, empty, update("99"), 1000)).toMatchObject(
-      { outcome: "baseline", checkpoint: { armed: true } }
-    );
+    expect(evaluatePythPrice(config, empty, update("99"), 1000)).toMatchObject({
+      outcome: "baseline",
+      checkpoint: { armed: true },
+    });
   });
 
   it("does not fire again when the baseline is already inside the trigger side", () => {
