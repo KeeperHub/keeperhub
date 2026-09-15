@@ -374,7 +374,11 @@ function StepLogRow({ step }: StepLogRowProps): ReactNode {
               getStepStatusColor(step.status)
             )}
           />
-          <span className="min-w-0 truncate text-xs text-muted-foreground">
+          {/* `truncate` keeps the label on one line, which on a phone becomes the
+              table's minimum width and pans the row: the label cannot wrap and
+              its full text sets the floor. Below md it wraps instead; the
+              ellipsis and the single line return at md and up. */}
+          <span className="min-w-0 truncate text-xs text-muted-foreground max-md:whitespace-normal">
             {step.nodeName}
             <span className="ml-1.5 text-muted-foreground/60">
               ({step.nodeType})
