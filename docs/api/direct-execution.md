@@ -344,11 +344,14 @@ EOA on a direct send, that same EOA when a relayer paid the gas, and the Safe
 on a Safe-routed organization, where the EOA signs the outer transaction but
 `msg.sender` at the target is the Safe.
 
-One precision: `from` is the sender of the frame that hit the target. When the
-target is called directly, which is every case above, that is `msg.sender`. If
-the address you passed as the target is an implementation reached by
-`DELEGATECALL`, `from` is the delegating contract, since `msg.sender` inside
-delegated code is inherited from its caller.
+One precision: `from` is the sender of the trace frame that hit the target,
+which is not always the Solidity-level `msg.sender`. When the target is called
+directly, which is every case above, the two are the same. If the address you
+passed as the target is an implementation reached by `DELEGATECALL`, `from` is
+the contract that issued the `DELEGATECALL` (the proxy), because that is what
+the trace frame records. The `msg.sender` seen inside the delegated code is a
+different value: it is inherited unchanged from the proxy's own caller, and is
+not what this field reports.
 
 `executedCall` is best-effort. It is omitted entirely when the transaction
 cannot be traced (an RPC without `debug_traceTransaction`, or no call frame
