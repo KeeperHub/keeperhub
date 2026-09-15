@@ -25,6 +25,12 @@ When a workflow does not behave as expected, the Runs panel provides the informa
 3. For webhooks, test the URL directly
 4. For events, confirm the contract address and event signature
 
+For an Event trigger, [Preview Event Trigger](/api/workflows#preview-event-trigger)
+answers this directly: it reports whether the trigger can be registered at all
+and how many times it would have fired over recent blocks. A trigger that is
+misconfigured and one that is merely waiting look identical from the Runs
+panel, and the preview is what tells them apart.
+
 ### Node Execution Failure
 
 **Symptoms**: Run shows failed status; specific node shows error.
