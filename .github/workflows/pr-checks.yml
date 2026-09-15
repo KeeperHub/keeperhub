@@ -412,6 +412,12 @@ jobs:
         with:
           discover-plugins: "true"
 
+      # The DevKit run retention suite works on the `workflow` schema, which
+      # the DevKit bootstrap creates, not db:migrate. Same order as the deploy
+      # job, so the migration that indexes that schema runs too.
+      - name: Create the Workflow DevKit schema
+        run: pnpm db:setup-workflow
+
       - name: Apply migrations to a fresh database
         run: pnpm db:migrate
 

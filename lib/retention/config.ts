@@ -77,7 +77,7 @@ const DEFAULTS = {
   planChangeGraceHours: 24,
 } as const;
 
-function readBool(name: string, fallback: boolean): boolean {
+export function readBool(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
   if (raw === undefined || raw === "") {
     return fallback;
@@ -90,7 +90,7 @@ function readBool(name: string, fallback: boolean): boolean {
  * falls back to the default rather than to 0 -- a 0 window would mean "delete
  * everything", which is the one outcome a typo must never produce.
  */
-function readPositiveInt(name: string, fallback: number): number {
+export function readPositiveInt(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw === "") {
     return fallback;

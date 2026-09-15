@@ -81,6 +81,26 @@ app:
     EXECUTION_RETENTION_MAX_RUNTIME_SECONDS:
       type: kv
       value: "240"
+    # The retention-devkit CronJob deletes finished Workflow DevKit runs, with
+    # their steps and events, once they are older than DEVKIT_RETENTION_DAYS.
+    # A run in any other status is never touched.
+    DEVKIT_RETENTION_ENABLED:
+      type: kv
+      value: "true"
+    # Dry run first: the job reports how many runs are past the window and
+    # deletes nothing. Set to "false" to delete.
+    DEVKIT_RETENTION_DRY_RUN:
+      type: kv
+      value: "true"
+    DEVKIT_RETENTION_DAYS:
+      type: kv
+      value: "30"
+    DEVKIT_RETENTION_BATCH_SIZE:
+      type: kv
+      value: "500"
+    DEVKIT_RETENTION_MAX_RUNTIME_SECONDS:
+      type: kv
+      value: "240"
     CHAIN_RPC_CONFIG:
       type: parameterStore
       name: chain-rpc-config
@@ -966,6 +986,39 @@ app:
         # repeats that load on a day something is already wrong. Quoted on
         # purpose: the chart renders `backoffLimit | default "6"`, and `default`
         # treats a numeric 0 as empty, so an unquoted 0 would deploy as 6.
+        restartPolicy: Never
+        backoffLimit: "0"
+      # Deletes finished Workflow DevKit runs, with their steps and events, once
+      # they are older than DEVKIT_RETENTION_DAYS. Daily is enough: a missed run
+      # only leaves the rows for the next one.
+      - name: retention-devkit
+        image:
+          repository: ${ECR_REGISTRY}/keeperhub-staging
+          tag: app-${IMAGE_TAG}
+          imagePullPolicy: Always
+        schedule: "12 5 * * *" # 05:12 UTC, offset to clear every other job in this list
+        command: ["/bin/sh"]
+        args:
+          - "/app/deploy/scripts/reaper.sh"
+          - "http://keeperhub-common:3000/api/internal/retention/devkit"
+        env:
+          INTERNAL_SERVICE_HMAC_SECRET:
+            type: parameterStore
+            name: internal-service-hmac-secret
+            parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "10m"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        # No retries, and quoted for the same chart `default` reason as the
+        # retention job above. The next scheduled run picks up whatever this
+        # one left.
         restartPolicy: Never
         backoffLimit: "0"
 

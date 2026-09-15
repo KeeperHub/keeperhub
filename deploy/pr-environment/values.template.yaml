@@ -51,6 +51,24 @@ shared_env: &shared_env
   EXECUTION_RETENTION_MAX_RUNTIME_SECONDS:
     type: kv
     value: "240"
+  # A PR environment runs the DevKit run retention job for real, so its SQL is
+  # exercised on a real database before staging. The seed data is hours old,
+  # well inside the window, so it deletes nothing.
+  DEVKIT_RETENTION_ENABLED:
+    type: kv
+    value: "true"
+  DEVKIT_RETENTION_DRY_RUN:
+    type: kv
+    value: "false"
+  DEVKIT_RETENTION_DAYS:
+    type: kv
+    value: "30"
+  DEVKIT_RETENTION_BATCH_SIZE:
+    type: kv
+    value: "500"
+  DEVKIT_RETENTION_MAX_RUNTIME_SECONDS:
+    type: kv
+    value: "240"
 
 replicaCount: 1
 
@@ -609,6 +627,33 @@ cronjob:
       args:
         - "/app/deploy/scripts/reaper.sh"
         - "http://keeperhub-pr-${PR_NUMBER}-common:3000/api/internal/retention"
+      env:
+        INTERNAL_SERVICE_HMAC_SECRET:
+          type: parameterStore
+          name: internal-service-hmac-secret
+          parameter_name: /eks/techops-staging/keeperhub/internal-service-hmac-secret
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "10m"
+        limits:
+          memory: "32Mi"
+          cpu: "10m"
+      concurrencyPolicy: Forbid
+      successfulJobsHistoryLimit: 3
+      failedJobsHistoryLimit: 3
+      restartPolicy: OnFailure
+      backoffLimit: 2
+    - name: retention-devkit
+      image:
+        repository: ${ECR_REGISTRY}/keeperhub-staging
+        tag: app-${IMAGE_TAG}
+        imagePullPolicy: Always
+      schedule: "5-59/10 * * * *" # every 10 minutes, offset from retention (daily on staging and prod)
+      command: ["/bin/sh"]
+      args:
+        - "/app/deploy/scripts/reaper.sh"
+        - "http://keeperhub-pr-${PR_NUMBER}-common:3000/api/internal/retention/devkit"
       env:
         INTERNAL_SERVICE_HMAC_SECRET:
           type: parameterStore
