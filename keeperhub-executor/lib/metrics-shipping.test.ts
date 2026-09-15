@@ -40,9 +40,12 @@ const workflowCounters = {
   executionsFinished: makeCounter(),
 };
 
+const executorBroadcastsTotal = makeCounter();
+
 vi.mock("../../lib/metrics/collectors/prometheus", () => ({
   rpcMetrics: counters,
   workflowCounterMetrics: workflowCounters,
+  executorBroadcastsTotal,
 }));
 
 const {

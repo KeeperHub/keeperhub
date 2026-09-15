@@ -9,7 +9,10 @@
  * Only counters are shipped. Gauges carry state (not accumulations) and
  * histograms cannot be merged without losing bucket fidelity. RPC latency
  * histograms from Job pods are intentionally dropped; executor-native
- * workflows still record them directly.
+ * workflows still record them directly. The executor broadcast counter is
+ * included: it is bumped by the pod that performed the broadcast and merged
+ * additively on the executor side, giving the #2289 broadcast stage a
+ * fleet-visible total even where the per-run timestamp is not shipped.
  */
 
 import type { Counter } from "prom-client";
@@ -20,17 +23,39 @@ export type MetricDelta = {
   value: number;
 };
 
+/**
+ * A single latency observation from a runner pod: a duration between two
+ * recorded stages of one execution, labeled per-run. The executor maps the
+ * correlation id back to its ExecutionLatency timeline (rebuilding the
+ * observed timestamp for legacy/absent messages) and records the sample into
+ * the central histograms the pod cannot reach. Histograms cannot be merged
+ * across pods without losing bucket fidelity - point observations can.
+ */
+export type LatencyObservation = {
+  correlationId: string;
+  executionId: string;
+  workflowId: string;
+  triggerType: string;
+  dispatchTarget: string;
+  /** Stage interval the observation covers: observed->broadcast or received->completed. */
+  stage: "observed-broadcast" | "received-completed";
+  durationMs: number;
+};
+
 export type IngestPayload = {
   deltas: MetricDelta[];
+  /** Optional: per-run latency observations from the pod (issue #2289). */
+  observations?: LatencyObservation[];
 };
 
 async function loadShippableCounters(): Promise<
   Record<string, Counter<string>>
 > {
-  const { rpcMetrics, workflowCounterMetrics } = await import(
+  const { rpcMetrics, workflowCounterMetrics, executorBroadcastsTotal } = await import(
     "../../lib/metrics/collectors/prometheus"
   );
   return {
+    keeperhub_executor_broadcasts_total: executorBroadcastsTotal,
     keeperhub_rpc_primary_attempts_total: rpcMetrics.primaryAttempts,
     keeperhub_rpc_primary_failures_total: rpcMetrics.primaryFailures,
     keeperhub_rpc_fallback_attempts_total: rpcMetrics.fallbackAttempts,
@@ -47,6 +72,7 @@ async function loadShippableCounters(): Promise<
 }
 
 export const SHIPPABLE_COUNTER_NAMES = [
+  "keeperhub_executor_broadcasts_total",
   "keeperhub_rpc_primary_attempts_total",
   "keeperhub_rpc_primary_failures_total",
   "keeperhub_rpc_fallback_attempts_total",
@@ -81,6 +107,39 @@ export async function collectCounterDeltas(): Promise<MetricDelta[]> {
   }
 
   return deltas;
+}
+
+/**
+ * Applier for pod latency observations, injected by index.ts to avoid a
+ * dependency cycle (the collector needs the registry; the runner bundle must
+ * not import it).
+ */
+export type LatencyObservationApplier = (
+  observations: readonly LatencyObservation[]
+) => { applied: number; skipped: number };
+
+let applyLatencyObservationsImpl: LatencyObservationApplier | undefined;
+
+/** Register the executor-side applier. No-op when called twice. */
+export function setLatencyObservationApplier(
+  impl: LatencyObservationApplier
+): void {
+  applyLatencyObservationsImpl = impl;
+}
+
+/**
+ * Fold pod observations into the executor's latency timelines and central
+ * histograms. Runs on every ingest that carries observations. When no
+ * applier is registered (runner bundle, tests without one) observations are
+ * still validated by isIngestPayload but simply skipped.
+ */
+export function applyLatencyObservations(
+  observations: readonly LatencyObservation[]
+): { applied: number; skipped: number } {
+  if (!applyLatencyObservationsImpl) {
+    return { applied: 0, skipped: observations.length };
+  }
+  return applyLatencyObservationsImpl(observations);
 }
 
 export async function applyCounterDeltas(
@@ -150,9 +209,38 @@ export function isIngestPayload(value: unknown): value is IngestPayload {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  const { deltas } = value as { deltas?: unknown };
+  const { deltas, observations } = value as {
+    deltas?: unknown;
+    observations?: unknown;
+  };
   if (!Array.isArray(deltas)) {
     return false;
   }
-  return deltas.every(isMetricDelta);
+  if (!deltas.every(isMetricDelta)) {
+    return false;
+  }
+  if (observations !== undefined) {
+    if (!Array.isArray(observations) || !observations.every(isLatencyObservation)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function isLatencyObservation(value: unknown): value is LatencyObservation {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const o = value as Record<string, unknown>;
+  return (
+    typeof o.correlationId === "string" &&
+    typeof o.executionId === "string" &&
+    typeof o.workflowId === "string" &&
+    typeof o.triggerType === "string" &&
+    typeof o.dispatchTarget === "string" &&
+    (o.stage === "observed-broadcast" || o.stage === "received-completed") &&
+    typeof o.durationMs === "number" &&
+    Number.isFinite(o.durationMs) &&
+    o.durationMs >= 0
+  );
 }
