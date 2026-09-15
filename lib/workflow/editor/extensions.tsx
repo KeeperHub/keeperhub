@@ -531,12 +531,7 @@ registerFieldRenderer(
   }
 );
 
-/**
- * Protocol Tuple Array Field
- * Structured array builder for tuple[] inputs (e.g. CCIP tokenAmounts).
- * Delegates to ArrayInputField + TupleInputField for add/remove items with
- * per-component typed fields instead of raw JSON text input.
- */
+/** Protocol scalar-array field with one typed editor row per item. */
 registerFieldRenderer(
   "protocol-array",
   ({ field, config, onUpdateConfig, disabled }) => {
@@ -573,6 +568,12 @@ registerFieldRenderer(
   }
 );
 
+/**
+ * Protocol Tuple Array Field
+ * Structured array builder for tuple[] inputs (e.g. CCIP tokenAmounts).
+ * Delegates to ArrayInputField + TupleInputField for add/remove items with
+ * per-component typed fields instead of raw JSON text input.
+ */
 registerFieldRenderer(
   "protocol-tuple-array",
   ({ field, config, onUpdateConfig, disabled }) => {

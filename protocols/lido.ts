@@ -281,6 +281,13 @@ export default defineAbiProtocol({
         "get-steth-by-wsteth": [{ nonZero: true }],
         "get-wsteth-by-steth": [{ nonZero: true }],
         "get-wsteth-total-supply": [{ nonZero: true }],
+        // get-withdrawal-requests is intentionally liveness-only: the shared
+        // test wallet does not own a durable queue NFT at the pinned block, so
+        // an empty array is a valid response.
+        "get-withdrawal-status": [{ notEmpty: true }],
+        "get-last-checkpoint-index": [{ nonZero: true }],
+        "find-checkpoint-hints": [{ notEmpty: true }],
+        "get-claimable-ether": [{ notEmpty: true }],
       },
       // The Tier 2 app approve path attempts gas sponsorship, which is
       // unconfigured on the CI fork, then falls back to direct signing;
@@ -322,6 +329,11 @@ export default defineAbiProtocol({
             _amounts: { name: "amounts", label: "stETH Amounts (wei)" },
             _owner: { name: "owner", label: "Withdrawal NFT Owner" },
           },
+          outputs: {
+            requestIds: {
+              label: "Withdrawal Request IDs",
+            },
+          },
         },
         requestWithdrawalsWstETH: {
           slug: "request-withdrawals-wsteth",
@@ -332,12 +344,22 @@ export default defineAbiProtocol({
             _amounts: { name: "amounts", label: "wstETH Amounts (wei)" },
             _owner: { name: "owner", label: "Withdrawal NFT Owner" },
           },
+          outputs: {
+            requestIds: {
+              label: "Withdrawal Request IDs",
+            },
+          },
         },
         getWithdrawalRequests: {
           slug: "get-withdrawal-requests",
           label: "Get Withdrawal Requests",
           description: "List withdrawal request IDs owned by an address.",
           inputs: { _owner: { name: "owner", label: "Withdrawal NFT Owner" } },
+          outputs: {
+            requestsIds: {
+              label: "Withdrawal Request IDs",
+            },
+          },
         },
         getWithdrawalStatus: {
           slug: "get-withdrawal-status",
@@ -345,12 +367,22 @@ export default defineAbiProtocol({
           description:
             "Read the owner, locked amount, and finalization state for withdrawal request IDs.",
           inputs: { _requestIds: { name: "requestIds", label: "Request IDs" } },
+          outputs: {
+            statuses: {
+              label: "Withdrawal Statuses (stETH and share amounts are wei)",
+            },
+          },
         },
         getLastCheckpointIndex: {
           slug: "get-last-checkpoint-index",
           label: "Get Last Checkpoint Index",
           description:
             "Read the final checkpoint index used to calculate claim hints.",
+          outputs: {
+            lastCheckpointIndex: {
+              label: "Last Checkpoint Index",
+            },
+          },
         },
         findCheckpointHints: {
           slug: "find-checkpoint-hints",
@@ -364,6 +396,11 @@ export default defineAbiProtocol({
             },
             _lastIndex: { name: "lastIndex", label: "Last Checkpoint Index" },
           },
+          outputs: {
+            hints: {
+              label: "Checkpoint Hints",
+            },
+          },
         },
         getClaimableEther: {
           slug: "get-claimable-ether",
@@ -373,6 +410,12 @@ export default defineAbiProtocol({
           inputs: {
             _requestIds: { name: "requestIds", label: "Request IDs" },
             _hints: { name: "hints", label: "Checkpoint Hints" },
+          },
+          outputs: {
+            claimableEther: {
+              label: "Claimable ETH Amounts (wei)",
+              decimals: 18,
+            },
           },
         },
         claimWithdrawals: {

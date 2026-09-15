@@ -198,6 +198,34 @@ describe("Lido Protocol Definition", () => {
     });
   });
 
+  it("describes every Withdrawal Queue output and 18-decimal claimable ETH", () => {
+    const queueReads = [
+      "get-withdrawal-requests",
+      "get-withdrawal-status",
+      "get-last-checkpoint-index",
+      "find-checkpoint-hints",
+      "get-claimable-ether",
+    ];
+
+    for (const slug of queueReads) {
+      const action = lidoDef.actions.find(
+        (candidate) => candidate.slug === slug
+      );
+      expect(
+        action?.outputs,
+        `${slug} must declare output metadata`
+      ).toHaveLength(1);
+    }
+
+    const claimable = lidoDef.actions.find(
+      (action) => action.slug === "get-claimable-ether"
+    );
+    expect(claimable?.outputs?.[0]).toMatchObject({
+      name: "claimableEther",
+      decimals: 18,
+    });
+  });
+
   it("all event slugs are valid kebab-case", () => {
     for (const event of lidoDef.events ?? []) {
       expect(event.slug).toMatch(KEBAB_CASE_REGEX);
