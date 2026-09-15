@@ -12,6 +12,13 @@ import { getProtocol, type ProtocolActionInput } from "@/lib/protocol-registry";
 // well-formed bytes32 (a wrong address, or the zero address) and broadcast,
 // where the untransformed value would have been rejected by the ABI encoder.
 const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+// An already-encoded bytes32. Before this route applied any transform, a
+// bytes32 param could only be satisfied by sending the 32-byte value
+// itself (ethers rejects a 20-byte value for a bytes32 slot), so every
+// caller that works on the CCIP receiver or a LayerZero recipient today
+// sends this shape. It stays accepted: padAddressToBytes leaves 64 hex
+// characters untouched, so the calldata is byte-identical to before.
+const HEX_BYTES32 = /^0x[0-9a-fA-F]{64}$/;
 
 export type BuildProtocolFunctionArgsResult =
   | { ok: true; functionArgs: string | undefined }
@@ -87,22 +94,34 @@ export function buildProtocolFunctionArgs(
     if (!resolved.ok) {
       return resolved;
     }
-    // Every input the form collects as an address, and every input a pad
-    // transform is registered on whatever its declared type, must be a real
-    // address before the pad can make it look like one.
-    const mustBeAddress =
-      inp.type === "address" ||
+    // An input a pad transform is registered on takes either a 20-byte
+    // address (padded below) or an already-encoded bytes32 (passed through,
+    // which is what the route did for it before it applied transforms).
+    // Any other shape - 39, 41, 63 or 65 hex characters, a bare 0x, non-hex
+    // - is refused here, before the pad can make it look well-formed.
+    // An address-typed input with no transform takes a 20-byte address
+    // only, which is what the ABI encoder enforced for it before.
+    const isPadded =
       getEncodeTransformKind(protocolSlug, protocolAction.slug, inp.name) ===
-        "padAddressToBytes";
-    if (
-      mustBeAddress &&
-      resolved.value !== "" &&
-      !HEX_ADDRESS.test(resolved.value)
+      "padAddressToBytes";
+    const value = resolved.value;
+    if (isPadded && value !== "") {
+      if (!(HEX_ADDRESS.test(value) || HEX_BYTES32.test(value))) {
+        return {
+          ok: false,
+          field: inp.name,
+          error: `Invalid address for field ${inp.name}: expected a 0x-prefixed 20-byte hex address (or the same address already encoded as 32 bytes), got "${value}"`,
+        };
+      }
+    } else if (
+      inp.type === "address" &&
+      value !== "" &&
+      !HEX_ADDRESS.test(value)
     ) {
       return {
         ok: false,
         field: inp.name,
-        error: `Invalid address for field ${inp.name}: expected a 0x-prefixed 20-byte hex address, got "${resolved.value}"`,
+        error: `Invalid address for field ${inp.name}: expected a 0x-prefixed 20-byte hex address, got "${value}"`,
       };
     }
     named.push({ name: inp.name, value: resolved.value });

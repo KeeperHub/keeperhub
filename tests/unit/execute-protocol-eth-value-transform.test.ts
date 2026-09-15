@@ -13,8 +13,13 @@
  * writeContractCore and the cap byte-for-byte as it did before.
  */
 
-import { parseEther } from "ethers";
+import { Interface, parseEther } from "ethers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  coerceArgsForAbi,
+  type FunctionAbiEntry,
+  reshapeArgsForAbi,
+} from "@/lib/abi/struct-args";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/protocols", () => ({}));
@@ -396,6 +401,162 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
       const args = JSON.parse(good.functionArgs ?? "[]") as string[];
       expect(args).toContain(PADDED_WALLET);
     }
+  });
+
+  // Before this route applied transforms, a padded input could only be
+  // satisfied by the 32-byte value itself (ethers rejects 20 bytes for a
+  // bytes32 slot), so that is what every working caller sends today. It
+  // must keep working, and produce the exact calldata origin/staging
+  // produced: the raw value forwarded verbatim into the encoder.
+  it("keeps accepting an already-encoded bytes32 CCIP receiver, with byte-identical calldata", async () => {
+    getProtocolMock.mockReturnValue(chainlinkDef);
+    const { buildProtocolFunctionArgs } = await import(
+      "@/app/api/execute/_lib/protocol-function-args"
+    );
+    const send = chainlinkDef.actions.find((a) => a.slug === "ccip-send");
+    if (!send) {
+      throw new Error("chainlink/ccip-send not in definition");
+    }
+    const inputs = Object.fromEntries(
+      send.inputs.map((inp) => [
+        inp.name,
+        inp.type === "address"
+          ? WALLET
+          : inp.type.endsWith("[]")
+            ? []
+            : (inp.default ?? "1"),
+      ])
+    );
+    const encoded: Record<string, unknown> = {
+      ...inputs,
+      receiver: PADDED_WALLET,
+    };
+
+    const result = buildProtocolFunctionArgs(
+      encoded,
+      "chainlink",
+      send.contract,
+      send.function
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const newArgs = JSON.parse(result.functionArgs ?? "[]") as string[];
+    // What origin/staging forwarded: every input verbatim, in order (an
+    // array input as its JSON string, as resolveInputValue has always done).
+    const stagingArgs = send.inputs.map((inp) => {
+      const v = encoded[inp.name];
+      return typeof v === "object" ? JSON.stringify(v) : String(v);
+    });
+    expect(newArgs).toEqual(stagingArgs);
+
+    // And through the same reshape/coerce/encode pipeline
+    // writeContractCore runs, the calldata is identical.
+    const iface = new Interface(
+      JSON.parse(chainlinkDef.contracts[send.contract].abi as string)
+    );
+    const fragment = iface.getFunction(send.function);
+    if (!fragment) {
+      throw new Error("ccipSend fragment missing");
+    }
+    const abi = JSON.parse(fragment.format("json")) as FunctionAbiEntry;
+    // Array params arrive as JSON strings on both sides; parse them the
+    // way the core does before reshaping.
+    const parseArrays = (args: unknown[]) =>
+      args.map((a) =>
+        typeof a === "string" && a.startsWith("[") ? JSON.parse(a) : a
+      );
+    const calldataFor = (args: unknown[]) =>
+      iface.encodeFunctionData(
+        fragment,
+        coerceArgsForAbi(reshapeArgsForAbi(parseArrays(args), abi), abi)
+      );
+    expect(calldataFor(newArgs)).toBe(calldataFor(stagingArgs));
+  });
+
+  it.each([
+    ["63 hex characters", `0x${"1".repeat(63)}`],
+    ["65 hex characters", `0x${"1".repeat(65)}`],
+    ["39 hex characters", `0x${"1".repeat(39)}`],
+    ["a bare 0x", "0x"],
+    ["64 non-hex characters", `0x${"g".repeat(64)}`],
+  ])(
+    "refuses %s as the CCIP receiver, neither an address nor a bytes32",
+    async (_label, receiver) => {
+      getProtocolMock.mockReturnValue(chainlinkDef);
+      const { buildProtocolFunctionArgs } = await import(
+        "@/app/api/execute/_lib/protocol-function-args"
+      );
+      const send = chainlinkDef.actions.find((a) => a.slug === "ccip-send");
+      if (!send) {
+        throw new Error("chainlink/ccip-send not in definition");
+      }
+      const inputs = Object.fromEntries(
+        send.inputs.map((inp) => [
+          inp.name,
+          inp.type === "address" ? WALLET : (inp.default ?? "1"),
+        ])
+      );
+      expect(
+        buildProtocolFunctionArgs(
+          { ...inputs, receiver },
+          "chainlink",
+          send.contract,
+          send.function
+        )
+      ).toMatchObject({ ok: false, field: "receiver" });
+    }
+  );
+
+  it("accepts an already-encoded bytes32 OFT recipient untouched, on the route", async () => {
+    getProtocolMock.mockReturnValue(layerzeroDef);
+    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
+
+    const response = await post(["layerzero", "oft-send"], {
+      ...sendBody(FEE_WEI),
+      to: PADDED_WALLET,
+    });
+
+    expect(response.status).toBe(202);
+    const core = writeContractCoreMock.mock.calls[0][0] as {
+      functionArgs: string;
+    };
+    expect((JSON.parse(core.functionArgs) as string[])[1]).toBe(PADDED_WALLET);
+  });
+
+  it.each([
+    ["63 hex characters", `0x${"1".repeat(63)}`],
+    ["65 hex characters", `0x${"1".repeat(65)}`],
+  ])("refuses %s as the OFT recipient on the route", async (_label, to) => {
+    getProtocolMock.mockReturnValue(layerzeroDef);
+    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
+
+    const response = await post(["layerzero", "oft-send"], {
+      ...sendBody(FEE_WEI),
+      to,
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).field).toBe("to");
+    expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
+    expect(writeContractCoreMock).not.toHaveBeenCalled();
+  });
+
+  it("does not extend the bytes32 shape to an address input with no transform", async () => {
+    // refundAddress is a plain address param: the ABI encoder never took
+    // 32 bytes for it, so neither does the route.
+    getProtocolMock.mockReturnValue(layerzeroDef);
+    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
+
+    const response = await post(["layerzero", "oft-send"], {
+      ...sendBody(FEE_WEI),
+      refundAddress: PADDED_WALLET,
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).field).toBe("refundAddress");
+    expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
   });
 
   it("refuses a malformed refundAddress too (an address input with no transform)", async () => {

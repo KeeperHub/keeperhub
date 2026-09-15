@@ -230,6 +230,33 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
     ).toBe(true);
   });
 
+  it("resolves from _protocolMeta alone, the older node shape, and reserves the converted value", async () => {
+    protocolWrite();
+    const { _actionType: _omitted, ...config } = sendConfig(FEE_WEI);
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "layerzero/oft-send",
+        config: {
+          ...config,
+          _protocolMeta: JSON.stringify({
+            protocolSlug: "layerzero",
+            contractKey: "oft",
+            functionName: "send",
+            actionType: "write",
+          }),
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reserved: { kind: "evm", valueWei: FEE_WEI },
+      })
+    );
+  });
+
   it("refuses a value when the config carries no metadata, instead of reserving for a step that will fail", async () => {
     // executeNode hands the step only the config, so a config without
     // _actionType/_protocolMeta fails inside the step ("Invalid
