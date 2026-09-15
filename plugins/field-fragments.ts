@@ -173,6 +173,14 @@ export function executedCallArgsOutput(): OutputField {
   };
 }
 
+export function executedCallFromOutput(): OutputField {
+  return {
+    description:
+      "Wallet that made the executed call: the organization's wallet even when a relayer sent the transaction, or the Safe when routed through one",
+    field: "executedCall.from",
+  };
+}
+
 export function executedCallSponsoredOutput(): OutputField {
   return {
     description: "Whether the transaction was routed through a gas-sponsorship relayer/wrapper",
@@ -225,6 +233,7 @@ export const outputFragmentFactories: Record<string, () => OutputField> = {
   tokenSymbolOutput,
   executedCallContractAddressOutput,
   executedCallArgsOutput,
+  executedCallFromOutput,
   executedCallSponsoredOutput,
   executedCallRevertedOutput,
   querySuccessOutput,

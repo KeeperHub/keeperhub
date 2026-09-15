@@ -314,35 +314,45 @@ conclude nothing happened even though the transaction succeeded. Check the
 
 ### Who acted
 
-The transaction's `from` is the relayer on a sponsored execution, so it does
-not name the wallet whose call ran. `result.executedCall.from` does: it is
-`msg.sender` at the target contract, read from the traced call frame that
-actually hit it.
+On a sponsored execution the transaction's `from` is the sponsor's fee payer,
+not your wallet, and its `to` is the sponsor's entry contract, not the target.
+Your wallet acts inside that transaction. `result.executedCall.from` names it:
+the sender of the traced call frame that actually hit the target contract.
+
+A sponsored `approve` on Base Sepolia, as returned by
+`GET /api/execute/{executionId}/status` and trimmed to the relevant fields:
 
 ```json
 {
-  "executionId": "exec_123",
+  "executionId": "4k4qm0kkjrkfc095jubo9",
+  "status": "completed",
   "sponsored": true,
   "result": {
+    "sponsored": true,
     "executedCall": {
       "contractAddress": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-      "from": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+      "from": "0xe7dbacbdd4cb2ddff5681dcd9e56fcf488e36ac9",
       "functionName": "approve",
       "functionSignature": "approve(address,uint256)",
-      "args": { "spender": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "value": "5000000" },
+      "args": { "spender": "0xd36E12a5b2926A5cbE6B4DE42a0D60Fd35d3cb04", "amount": "1" },
       "sponsored": true,
-      "topLevelTo": "0x6331eb4571de9284f7e9ead98ac7b0661a091e99",
+      "topLevelTo": "0x5af5194b4b0909eb978e3cf1e25333852277f07d",
       "reverted": false
     }
   }
 }
 ```
 
+Here the transaction was sent by the fee payer to `topLevelTo`, the sponsor's
+entry contract, which called the organization's wallet, which called `approve`
+on the token: `from` is that wallet, `0xe7db...`, not the fee payer and not
+`topLevelTo`.
+
 Because it comes from the frame rather than the transaction, it is the acting
 address under every routing mode with no second definition: your organization's
-EOA on a direct send, that same EOA when a relayer paid the gas, and the Safe
-on a Safe-routed organization, where the EOA signs the outer transaction but
-`msg.sender` at the target is the Safe.
+wallet on a direct send, that same wallet when a sponsor paid the gas, and the
+Safe on a Safe-routed organization, where the wallet signs the outer transaction
+but `msg.sender` at the target is the Safe.
 
 One precision: `from` is the sender of the trace frame that hit the target,
 which is not always the Solidity-level `msg.sender`. When the target is called
