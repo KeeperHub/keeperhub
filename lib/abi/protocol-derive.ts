@@ -43,6 +43,25 @@ export type AbiOutputOverride = {
 };
 
 /**
+ * Editorial text for the virtual payable value field of a payable action.
+ * The field itself is not an ABI input - the registry adds it to every
+ * payable action's config (lib/protocol-registry.ts) - so it cannot be
+ * labelled through `inputs`. Declaring this on a non-payable function is an
+ * authoring error and throws at derive time: a label for a field that is
+ * never rendered would otherwise be accepted and silently dropped.
+ *
+ * Exists so an action whose value field takes a unit other than whole ether
+ * can say so at the point the user types the number. An action that declares
+ * nothing keeps the default "ETH Value" field unchanged.
+ */
+export type PayableValueOverride = {
+  label: string;
+  helpTip?: string;
+  docUrl?: string;
+  placeholder?: string;
+};
+
+/**
  * Override applied to an ABI function. Override keys for `inputs` and
  * `outputs` are the raw ABI param names (or `arg<index>` / `result` /
  * `result<index>` defaults if the ABI declares the param unnamed) - NOT
@@ -61,6 +80,9 @@ export type AbiFunctionOverride = {
    *  match parseGasLimitConfig in lib/web3/gas-defaults.ts. Only meaningful
    *  on write actions; ignored on reads. */
   gasLimit?: { mode: "maxGasLimit" | "multiplier"; value: string };
+  /** Label and help text for the payable value field. Payable functions
+   *  only; see PayableValueOverride. */
+  payableValue?: PayableValueOverride;
 };
 
 /**
@@ -280,6 +302,15 @@ function deriveAction(
 
   if (payable) {
     action.payable = true;
+  }
+
+  if (override?.payableValue !== undefined) {
+    if (!payable) {
+      throw new Error(
+        `Override for "${fn.name}" on contract "${contractKey}" declares payableValue, but the function is ${fn.stateMutability}, so no payable value field exists to label. Remove payableValue or fix the ABI's stateMutability.`
+      );
+    }
+    action.payableValue = { ...override.payableValue };
   }
 
   return action;

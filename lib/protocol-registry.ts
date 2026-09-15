@@ -84,6 +84,19 @@ export type ProtocolAction = {
    *  fed to the gas-limit-multiplier field as defaultValue. Only set on
    *  write actions whose override declared a gasLimit; reads ignore it. */
   gasLimitDefault?: string;
+  /** Label and help text for the virtual payable value field, declared by
+   *  a payable action whose value is not typed in whole ether (an action
+   *  with a weiToEther transform on ethValue takes wei). Absent on every
+   *  action that declares nothing, which keeps its "ETH Value" field
+   *  exactly as before. See PayableValueOverride in lib/abi/protocol-derive.ts. */
+  payableValue?: PayableValueField;
+};
+
+export type PayableValueField = {
+  label: string;
+  helpTip?: string;
+  docUrl?: string;
+  placeholder?: string;
 };
 
 export type ProtocolDefinition = {
@@ -202,6 +215,13 @@ export function defineProtocol(def: ProtocolDefinition): ProtocolDefinition {
 
   for (const action of def.actions) {
     validateSlug(action.slug, `action of protocol "${def.slug}"`);
+    // The ABI deriver refuses this too; the check is repeated here for a
+    // definition built by hand, which never passes through the deriver.
+    if (action.payableValue !== undefined && !action.payable) {
+      throw new Error(
+        `Action "${action.slug}" of protocol "${def.slug}" declares payableValue but is not payable, so no value field exists to label`
+      );
+    }
   }
 
   validateAddresses(def.contracts);
@@ -231,6 +251,7 @@ export type {
   AbiFunctionOverride,
   AbiInputOverride,
   AbiOutputOverride,
+  PayableValueOverride,
 } from "@/lib/abi/protocol-derive";
 
 export function defineAbiProtocol(
@@ -387,6 +408,28 @@ function buildInputField(input: ProtocolActionInput): ActionConfigFieldBase {
   };
 }
 
+// The payable value field every payable action gets. Kept as one small
+// function so the label hook can be swapped for a dedicated field type
+// (a `protocol-wei-value` input, say) without touching the field list
+// around it. An action that declares no payableValue gets the field
+// exactly as it was before the hook existed: "ETH Value", placeholder
+// "0.0", no help text.
+function buildPayableValueField(
+  action: ProtocolAction,
+  required: boolean
+): ActionConfigFieldBase {
+  const declared = action.payableValue;
+  return {
+    key: "ethValue",
+    label: declared?.label ?? "ETH Value",
+    type: "protocol-eth-value",
+    placeholder: declared?.placeholder ?? "0.0",
+    required,
+    ...(declared?.helpTip ? { helpTip: declared.helpTip } : {}),
+    ...(declared?.docUrl ? { docUrl: declared.docUrl } : {}),
+  };
+}
+
 function buildConfigFieldsFromAction(
   def: ProtocolDefinition,
   action: ProtocolAction
@@ -425,13 +468,7 @@ function buildConfigFieldsFromAction(
     // swaps default to ERC20-to-ERC20 with no msg.value, NFT position
     // mint/burn/collect rarely send ETH, etc.).
     const isOnlyInput = action.inputs.length === 0;
-    fields.push({
-      key: "ethValue",
-      label: "ETH Value",
-      type: "protocol-eth-value",
-      placeholder: "0.0",
-      required: isOnlyInput,
-    });
+    fields.push(buildPayableValueField(action, isOnlyInput));
   }
 
   const advancedFields: ActionConfigFieldBase[] = [];
