@@ -8,7 +8,7 @@
  * This ensures the protocol registry is populated when the Next.js
  * server starts (via the plugin import chain).
  *
- * Registered protocols: aave-v3, aave-v4, aerodrome, ajna, chainlink, chronicle, coinbase-cbeth, compound, cowswap, curve, ethena, ether-fi, frax-ether-v2, hyperliquid, layerzero, lido, morpho, pendle, pyth, robinhood, rocket-pool, safe, sky, spark, superfluid, uniswap, wrapped, yearn
+ * Registered protocols: aave-v3, aave-v4, aerodrome, ajna, chainlink, chronicle, coinbase-cbeth, compound, cowswap, curve, ethena, ether-fi, euler-v2, frax-ether-v2, hyperliquid, layerzero, lido, morpho, pendle, pyth, robinhood, rocket-pool, safe, sky, spark, superfluid, uniswap, wrapped, yearn
  */
 
 import { protocolToPlugin, registerProtocol } from "@/lib/protocol-registry";
@@ -26,6 +26,7 @@ import cowswapDef from "./cowswap";
 import curveDef from "./curve";
 import ethenaDef from "./ethena";
 import etherFiDef from "./ether-fi";
+import eulerV2Def from "./euler-v2";
 import fraxEtherV2Def from "./frax-ether-v2";
 import hyperliquidDef from "./hyperliquid";
 import layerzeroDef from "./layerzero";
@@ -67,6 +68,8 @@ registerProtocol(ethenaDef);
 registerIntegration(protocolToPlugin(ethenaDef));
 registerProtocol(etherFiDef);
 registerIntegration(protocolToPlugin(etherFiDef));
+registerProtocol(eulerV2Def);
+registerIntegration(protocolToPlugin(eulerV2Def));
 registerProtocol(fraxEtherV2Def);
 registerIntegration(protocolToPlugin(fraxEtherV2Def));
 registerProtocol(hyperliquidDef);

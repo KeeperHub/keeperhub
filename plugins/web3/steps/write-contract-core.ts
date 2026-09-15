@@ -51,6 +51,7 @@ import {
   formatContractError,
   type RevertKind,
 } from "@/lib/web3/decode-revert-error";
+import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import {
   parsePriorityFeeGwei,
   resolveGasLimitOverrides,
@@ -92,6 +93,9 @@ export type WriteContractCoreInput = {
   // Per-node Web3 Connection field. See ParsedWeb3Connection / parseWeb3Connection
   // in lib/safe/signer-resolver.ts. Missing -> "default" -> org-policy resolver.
   web3Connection?: string;
+  // #2430: extra ABI documents whose error entries join the decode path, after
+  // `abi`. Decoding only - `abi` still encodes the call.
+  errorAbis?: string[];
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -231,6 +235,7 @@ export async function writeContractCore(
     usePrivateMempool,
     strict,
     web3Connection,
+    errorAbis,
     _context,
   } = input;
 
@@ -773,7 +778,10 @@ export async function writeContractCore(
         (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
       return {
         success: false,
-        error: formatContractError(error, contractInterface),
+        error: formatContractError(
+          error,
+          buildErrorDecodeInterface(contractInterface, errorAbis)
+        ),
         ...(errorClass ? { errorClass } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
         ...(broadcastHash

@@ -416,8 +416,57 @@ Call any smart contract function. Automatically detects read vs write operations
   with a 400 naming both values.
 - `functionArgs` (optional): JSON array string of function arguments (e.g., `"[\"0x...\", \"1000\"]"`)
 - `abi` (optional): Contract ABI as JSON string. Auto-fetched from block explorer if omitted.
+- `errorAbis` (optional): JSON array of ABI documents whose `error` entries join
+  revert decoding, after the ABI above. Decoding only: `abi` still encodes the
+  call, so the extra documents cannot change the calldata. Use it when the
+  revert is raised somewhere other than the call target, such as a hook the
+  target calls or an implementation behind a proxy. At most 4 documents, 16 KB
+  each; a document declaring no error the decoder can build is rejected with a
+  400 rather than accepted and ignored.
 - `value` (optional): Native value to send with the call, as a decimal string in ether units (e.g. `0.1`) (for payable functions)
 - `gasLimitMultiplier` (optional): Gas limit multiplier
+
+### Raw calldata
+
+Callers that already hold encoded calldata (execution frameworks, transaction
+builders, replayed transactions) may send `data` instead of `functionName` and
+`functionArgs`:
+
+```json
+{
+  "contractAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "chainId": 8453,
+  "data": "0x095ea7b3000000000000000000000000c1256ae5ff1cf2719d4937adb3bbccab2e00a2ca00000000000000000000000000000000000000000000000000000000004c4b40",
+  "abi": "[{...}]",
+  "simulate": true
+}
+```
+
+The route decodes `data` against the ABI, either the `abi` in the body or the
+explorer-verified ABI it fetches when `abi` is omitted, into the canonical
+function key (`approve(address,uint256)`) and a typed `functionArgs` array, and
+then continues exactly as a typed request: read functions return their result,
+`simulate` dry-runs, writes reserve against the spending caps and the
+stablecoin limit, and the execution record carries the decoded function and
+arguments rather than opaque bytes.
+
+Nothing is inferred. A selector the ABI does not contain is rejected with
+`400` on field `data`; supply the contract's ABI or the typed fields instead.
+No signature database is consulted, so a guessed signature can never reach the
+signing path. `data` must be 0x-prefixed hex of whole bytes carrying at least
+the 4-byte selector; plain value transfers use [Transfer Funds](#transfer-funds).
+
+The decode must be lossless. The transaction that is broadcast is rebuilt from
+the decoded function and arguments, not from the bytes you sent, so calldata is
+re-encoded and compared against `data`, and anything that does not survive the
+round trip - trailing bytes past the arguments (an ERC-2771 appended sender,
+for example), non-minimal offsets, non-canonical padding - is rejected with
+`400` on field `data` rather than dropped silently.
+
+Send `data` or the typed fields, not both. A body carrying `data` alongside
+`functionName` (or `abiFunction`) describes the same call twice and is rejected
+with `400` on field `data`, for the same reason a differing `functionName` and
+`abiFunction` pair is. `check-and-execute` does not accept `data`.
 
 **Direct execution vs. workflow node field names**
 
@@ -546,6 +595,7 @@ Read a contract value, evaluate a condition, and conditionally execute a write o
   "functionName": "balanceOf",
   "functionArgs": "[\"0x742d35Cc6634C0532925a3b844Bc454e4438f44e\"]",
   "abi": "[{...}]",
+  "errorAbis": ["[{...}]"],
   "condition": {
     "operator": "gt",
     "value": "1000000000000000000"
@@ -559,6 +609,10 @@ Read a contract value, evaluate a condition, and conditionally execute a write o
   }
 }
 ```
+
+`errorAbis` (optional) is the same field the contract-call route accepts, and it
+sits at the top level rather than inside `action` so one list covers both calls
+this route makes: the check read and the action write. Decoding only, for both.
 
 **Condition Operators:**
 
@@ -650,6 +704,82 @@ Add `"simulate": true` to any of the standard request bodies:
 
 Because a dry run never signs or broadcasts, a credential scoped `mcp:read` may run one. Removing `simulate` to broadcast requires `mcp:write`.
 
+### A sequence of calls
+
+A single dry run resolves against latest state, so the second call of an
+approve-then-deposit pair reverts on allowance every time: the approve has not
+landed. Send `calls` instead of the single top-level call to dry-run an ordered
+sequence, each call against the state the one before it produced:
+
+```json
+{
+  "chainId": 84532,
+  "simulate": true,
+  "calls": [
+    {
+      "contractAddress": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+      "functionName": "approve",
+      "functionArgs": "[\"0xd36e12a5b2926a5cbe6b4de42a0d60fd35d3cb04\", \"1000\"]"
+    },
+    {
+      "contractAddress": "0xd36e12a5b2926a5cbe6b4de42a0d60fd35d3cb04",
+      "functionName": "deposit",
+      "functionArgs": "[\"1000\", \"0x...orgWallet\"]"
+    }
+  ]
+}
+```
+
+Each call takes its own `abi`, falling back to a top-level `abi` and then to the
+explorer-verified ABI, so a sequence spanning two contracts needs no extra
+round trip from you. `value` is accepted per call. At most 10 calls.
+
+**`calls` is a dry-run shape only.** This endpoint broadcasts one transaction
+per request, so `calls` without `simulate: true` is rejected with `400`. The
+response says the same thing in `atomic: false`: the entries describe N separate
+transactions sent from the wallet in that order, and on the real chain nothing
+stops another transaction landing between them.
+
+The response carries one result per call, in order, each the same shape a
+single-call dry run returns:
+
+```json
+{
+  "success": false,
+  "status": "simulated",
+  "from": "0x...orgWallet",
+  "atomic": false,
+  "mechanism": "eth_simulateV1",
+  "wouldRevert": true,
+  "results": [
+    { "success": true, "status": "simulated", "gasEstimate": "55425", "wouldRevert": false },
+    {
+      "success": false,
+      "status": "simulated",
+      "failureKind": "revert",
+      "wouldRevert": true,
+      "revertReason": "ERC4626: deposit more than max"
+    }
+  ]
+}
+```
+
+`success` is true only when every call answered cleanly. The status code follows
+the worst call: `503` if the node could not answer one, `400` if one would
+revert or did not validate, `200` otherwise.
+
+`mechanism` names how the answer was produced. `eth_simulateV1` carries state
+across calls in one request and is used wherever the chain's node offers it.
+Nodes without it fall back to `state-overrides`, which replays each call's
+`debug_traceCall` state diff as an `eth_call` override for the next one — the
+same answer, one round trip per call instead of one for the sequence. If a node
+offers neither, the calls after the first report `failureKind: "unavailable"`
+rather than quietly answering against latest state.
+
+The per-transaction stablecoin ceiling is applied to each call, exactly as it is
+on the single-call path: these are separate transactions at broadcast, so a call
+over the ceiling would fail at send and must not dry-run clean.
+
 ### Response — successful simulate
 
 ```json
@@ -696,7 +826,7 @@ When the chain would have rejected the transaction, the endpoint returns HTTP 40
 - `wouldRevert`: `true` on this failure path; use it together with `failureKind`, not as
   a revert discriminator by itself
 
-Revert decoding tries (in order): the contract's own ABI custom errors, common OpenZeppelin / standard errors, then the standard `Error(string)` revert (which is surfaced as `Error(<message>)`). If none match, the failure is either attributed to a funding shortfall (see below) or the raw RPC error message is surfaced.
+Revert decoding tries (in order): custom errors in the ABI the request supplied, custom errors in any of its `errorAbis` documents, common OpenZeppelin / standard errors, then the standard `Error(string)` revert (which is surfaced as `Error(<message>)`). If none match, the failure is either attributed to a funding shortfall (see below) or the raw RPC error message is surfaced. A revert raised in a contract other than the call target - a hook, a proxy implementation, a router - is only decodable through `errorAbis`, because the ABI that encodes the call is the target's own.
 
 ### Response — underfunded sender
 
@@ -729,6 +859,7 @@ A node asked to estimate gas for a transfer the sender cannot pay for rejects it
 - `nativeSymbol`: the chain's native currency symbol (`ETH`, `BNB`, `POL`); falls back to `native` if the chain is not seeded
 - `originalError`: the node's own message, kept verbatim. Attribution only ever adds — nothing the chain said is discarded
 - `undecodedRevertData`: present only when the node did return revert data that no ABI on the decode path matched. The first four bytes are the custom-error selector, which you can look up in a selector database. When this field is set, funding the wallet may not be enough on its own — the contract is also rejecting the call
+- When `undecodedRevertData` is set, the selector alone is not the whole answer: a selector database names it but cannot give its arguments, and the arguments are where a reason code or a job id lives. Supply the ABI of the contract that raised the revert in the request's `errorAbis` field (see [Call Smart Contract](#call-smart-contract)) and the revert decodes with its arguments instead of staying hex
 
 The comparison is against the transfer value only; gas is not included (the gas estimate is what failed, so there is no number to add). A wallet funded with exactly the transfer amount therefore still fails, carrying the node's own `insufficient funds for gas * price + value` message and no `code`.
 

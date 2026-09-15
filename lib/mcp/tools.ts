@@ -1757,6 +1757,9 @@ export function registerTools(
         .describe(
           "ERC20 token contract address. Omit for native token transfers."
         ),
+      gas_limit_multiplier: looseString(
+        "Gas limit multiplier (e.g., '1.5' for 50% buffer)"
+      ).optional(),
       simulate: SIMULATE_ARG,
       idempotency_key: IDEMPOTENCY_KEY_ARG,
     },
@@ -1776,6 +1779,7 @@ export function registerTools(
               recipientAddress: args.to_address,
               amount: args.amount,
               tokenAddress: args.token_address,
+              gasLimitMultiplier: args.gas_limit_multiplier,
               simulate: args.simulate,
             },
             args.idempotency_key,

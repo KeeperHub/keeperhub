@@ -20,6 +20,7 @@ export default {
   curve: "Curve",
   ethena: "Ethena",
   "ether-fi": "ether.fi",
+  "euler-v2": "Euler V2",
   "frax-ether-v2": "Frax Ether V2",
   layerzero: "LayerZero",
   lido: "Lido",
