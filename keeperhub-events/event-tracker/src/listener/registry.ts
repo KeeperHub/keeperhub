@@ -11,6 +11,8 @@ import { TokenBucketPacer } from "./pacer";
 import { SHUTDOWN_DRAIN_TIMEOUT_MS } from "./shutdown";
 import type { StateThresholdSubscription } from "./state-threshold";
 import { StateThresholdListener } from "./state-threshold-listener";
+import { TraceListener } from "./trace-listener";
+import type { TraceSubscription } from "./trace-subscription";
 
 /**
  * In-process registry of EventListener instances, keyed by workflow ID.
@@ -80,7 +82,27 @@ export interface StateThresholdRegistration {
   configHash: string;
 }
 
-export type AnyRegistration = WorkflowRegistration | StateThresholdRegistration;
+/**
+ * A trace registration (issue #2464). Follows the same pattern as
+ * StateThresholdRegistration: only workflow and connection fields are
+ * shared with event triggers, so this is a separate discriminated type.
+ */
+export interface TraceRegistration {
+  kind: "trace";
+  workflowId: string;
+  userId: string;
+  workflowName: string;
+  chainId: number;
+  wssUrl: string;
+  fallbackWssUrl?: string;
+  subscription: TraceSubscription;
+  configHash: string;
+}
+
+export type AnyRegistration =
+  | WorkflowRegistration
+  | StateThresholdRegistration
+  | TraceRegistration;
 
 /**
  * Discriminates the two registration shapes. A type predicate rather than an
@@ -91,6 +113,12 @@ export function isStateRegistration(
   reg: AnyRegistration,
 ): reg is StateThresholdRegistration {
   return "kind" in reg && reg.kind === "state";
+}
+
+export function isTraceRegistration(
+  reg: AnyRegistration,
+): reg is TraceRegistration {
+  return "kind" in reg && reg.kind === "trace";
 }
 
 export interface RegistryDeps {
@@ -110,7 +138,7 @@ export interface RegistryDeps {
 }
 
 interface RegistryEntry {
-  listener: EventListener | StateThresholdListener;
+  listener: EventListener | StateThresholdListener | TraceListener;
   configHash: string;
 }
 
@@ -170,6 +198,10 @@ export class ListenerRegistry {
       await this.addStateThreshold(reg);
       return;
     }
+    if (isTraceRegistration(reg)) {
+      await this.addTrace(reg);
+      return;
+    }
     const listener = new EventListener({
       ...reg,
       providerManager: this.deps.providerManager,
@@ -224,6 +256,35 @@ export class ListenerRegistry {
     } catch (err) {
       logger.warn(
         `[ListenerRegistry] failed to start state listener ${reg.workflowId}: ${formatError(err)}`,
+      );
+      return;
+    }
+    this.entries.set(reg.workflowId, {
+      listener,
+      configHash: reg.configHash,
+    });
+  }
+
+  private async addTrace(reg: TraceRegistration): Promise<void> {
+    const listener = new TraceListener({
+      workflowId: reg.workflowId,
+      userId: reg.userId,
+      workflowName: reg.workflowName,
+      chainId: reg.chainId,
+      wssUrl: reg.wssUrl,
+      fallbackWssUrl: reg.fallbackWssUrl,
+      subscription: reg.subscription,
+      sqs: this.deps.sqs,
+      sqsQueueUrl: this.deps.sqsQueueUrl,
+      providerManager: this.deps.providerManager,
+      pacer: this.pacerFor(reg.chainId),
+      inFlight: this.inFlight,
+    });
+    try {
+      await listener.start();
+    } catch (err) {
+      logger.warn(
+        `[ListenerRegistry] failed to start trace listener ${reg.workflowId}: ${formatError(err)}`,
       );
       return;
     }
