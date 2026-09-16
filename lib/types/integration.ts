@@ -42,6 +42,7 @@ export type IntegrationType =
   | "math"
   | "morpho"
   | "pendle"
+  | "predge"
   | "protocol"
   | "pyth"
   | "resend"
