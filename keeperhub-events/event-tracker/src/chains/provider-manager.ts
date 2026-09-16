@@ -1745,7 +1745,11 @@ export class ChainProviderManager {
     }
     // Blocks are only expected while a subscriber (and thus a block
     // listener) is attached; an idle provider is legitimately silent.
-    if (entry.subscribers.size === 0) {
+    if (
+      entry.subscribers.size === 0 &&
+      entry.stateSubscribers.size === 0 &&
+      entry.traceSubscribers.size === 0
+    ) {
       return;
     }
     // Measure from the most recent of the last delivered block and the
