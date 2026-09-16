@@ -42,6 +42,11 @@ import { ActionConfigRenderer } from "./action-config-renderer";
 import { CronScheduleBuilder } from "./cron-schedule-builder";
 import { SchemaBuilder } from "./schema-builder";
 
+// Built once rather than spread inline in the field list: ChainSelectField
+// refetches whenever this prop's identity changes, so a new array on every
+// render leaves it fetching forever and the picker empty.
+const TRACE_NETWORK_IDS: string[] = [...TRACE_SEED_CHAIN_IDS];
+
 type TriggerConfigProps = {
   config: Record<string, unknown>;
   onUpdateConfig: (key: string, value: string) => void;
@@ -387,7 +392,7 @@ function TraceTriggerFields({
       // reconnect and runs a single replica, so a derived list would be empty
       // after every restart until a drain runs. When capability reporting
       // exists it unions with this seed instead of replacing it.
-      allowedChainIds: [...TRACE_SEED_CHAIN_IDS],
+      allowedChainIds: TRACE_NETWORK_IDS,
       placeholder: "Select network",
       required: true,
     },
