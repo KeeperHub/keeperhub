@@ -22,6 +22,7 @@ type SuccessResult = {
   resultType: string;
   operation: string;
   inputCount: number;
+  divisionByZero?: true;
 };
 
 type FailureResult = {
@@ -461,19 +462,267 @@ describe("math/aggregate - BigInt arithmetic", () => {
     expect(result.resultType).toBe("bigint");
   });
 
-  it("aggregates with bigint precision then converts for post-operation", async () => {
-    // 9007199254740993 + 1 = 9007199254740994 (BigInt aggregation preserves this)
-    // Then multiply by 1 to verify post-op applies to the correct aggregated value
+  it("keeps bigint precision through a post-operation", async () => {
     const result = await expectSuccess({
       operation: "sum",
       explicitValues: `${largeValue1}, 1`,
       postOperation: "multiply",
       postOperand: "1",
     });
-    expect(result.resultType).toBe("number");
-    // The aggregation used BigInt (9007199254740993 + 1 = 9007199254740994)
-    // then converted to Number for the post-op
     expect(result.result).toBe("9007199254740994");
+    expect(result.resultType).toBe("bigint");
+  });
+});
+
+// ─── Mixed magnitudes ───────────────────────────────────────────────────────
+//
+// A wei amount next to a fractional rate used to put the set on the bigint
+// path, where every fraction was truncated to an integer and the step still
+// reported success. These pin the fixed-point path that replaced it.
+
+describe("math/aggregate - mixed magnitudes", () => {
+  const wei = "1000000000000000000"; // 1e18, past MAX_SAFE_INTEGER
+
+  it("sums a wei amount and a fractional rate without dropping the fraction", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: `${wei}, 0.05`,
+    });
+    expect(result.result).toBe("1000000000000000000.05");
+    expect(result.resultType).toBe("number");
+    expect(result.inputCount).toBe(2);
+  });
+
+  it("does not turn a fractional rate into zero in a product", async () => {
+    const result = await expectSuccess({
+      operation: "product",
+      explicitValues: `${wei}, 0.05`,
+    });
+    expect(result.result).toBe("50000000000000000");
+    expect(result.resultType).toBe("bigint");
+  });
+
+  it("averages a wei amount and a fraction exactly", async () => {
+    const result = await expectSuccess({
+      operation: "average",
+      explicitValues: `${wei}, 0.5`,
+    });
+    expect(result.result).toBe("500000000000000000.25");
+  });
+
+  it("keeps the original digits of a decimal string rather than the nearest float", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: `${wei}, 0.1, 0.2`,
+    });
+    expect(result.result).toBe("1000000000000000000.3");
+  });
+
+  it("accepts exponent-form numbers from a JSON array on the fixed-point path", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      inputMode: "array",
+      arrayInput: JSON.stringify([1e21, 2.5e-3, "9007199254740993"]),
+    });
+    expect(result.result).toBe("1000009007199254740993.0025");
+  });
+
+  it("expands exponent-form text exactly rather than through the float", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: `${wei}, 1.5e-3, 1e-7, 2E+1`,
+    });
+    expect(result.result).toBe("1000000000000000020.0015001");
+  });
+
+  it("keeps min and max exact across magnitudes", async () => {
+    const min = await expectSuccess({
+      operation: "min",
+      explicitValues: `${wei}, 0.000001`,
+    });
+    expect(min.result).toBe("0.000001");
+    const max = await expectSuccess({
+      operation: "max",
+      explicitValues: `${wei}, 0.000001`,
+    });
+    expect(max.result).toBe(wei);
+    expect(max.resultType).toBe("bigint");
+  });
+
+  it("halves an even-count median exactly", async () => {
+    const result = await expectSuccess({
+      operation: "median",
+      explicitValues: `${wei}, 1000000000000000001`,
+    });
+    expect(result.result).toBe("1000000000000000000.5");
+  });
+
+  it("truncates a non-terminating average at 18 places", async () => {
+    const result = await expectSuccess({
+      operation: "average",
+      explicitValues: `${wei}, ${wei}, 1`,
+    });
+    expect(result.result).toBe("666666666666666667");
+    const tenThirds = await expectSuccess({
+      operation: "average",
+      explicitValues: "9007199254740993, 1, 0",
+    });
+    expect(tenThirds.result).toBe("3002399751580331.333333333333333333");
+  });
+});
+
+// ─── Post-operations in fixed point ─────────────────────────────────────────
+
+describe("math/aggregate - post-operations on the fixed-point path", () => {
+  const wei = "1500000000000000000";
+
+  it("divides a wei sum by 1e18 without dropping to float", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: `${wei}, ${wei}`,
+      postOperation: "divide",
+      postOperand: "1000000000000000000",
+    });
+    expect(result.result).toBe("3");
+    expect(result.resultType).toBe("bigint");
+  });
+
+  it("returns a fractional quotient exactly", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: `${wei}, 1`,
+      postOperation: "divide",
+      postOperand: "1000000000000000000",
+    });
+    expect(result.result).toBe("1.500000000000000001");
+    expect(result.resultType).toBe("number");
+  });
+
+  it("parses the operand from its text, so a large operand is not rounded", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "1000000000000000001",
+      postOperation: "subtract",
+      postOperand: "1000000000000000001",
+    });
+    expect(result.result).toBe("0");
+  });
+
+  it("falls back to float for a fractional exponent", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "9007199254740993",
+      postOperation: "power",
+      postOperand: "0.5",
+    });
+    expect(Number(result.result)).toBeCloseTo(94_906_265.62, 1);
+    expect(result.resultType).toBe("number");
+  });
+
+  it("reports Infinity, not a failure, when a float-fallback power overflows", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "1000000000000000000",
+      postOperation: "power",
+      postOperand: "300",
+    });
+    expect(result.result).toBe("Infinity");
+    expect(result.resultType).toBe("number");
+  });
+
+  it("computes a large integer power exactly", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "1000000000000000000",
+      postOperation: "power",
+      postOperand: "65",
+    });
+    expect(result.result).toBe(`1${"0".repeat(18 * 65)}`);
+    expect(result.resultType).toBe("bigint");
+  });
+
+  it("multiplies by a fractional operand exactly", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: wei,
+      postOperation: "multiply",
+      postOperand: "0.5",
+    });
+    expect(result.result).toBe("750000000000000000");
+  });
+
+  it("adds and subtracts across scales", async () => {
+    const added = await expectSuccess({
+      operation: "sum",
+      explicitValues: wei,
+      postOperation: "add",
+      postOperand: "0.25",
+    });
+    expect(added.result).toBe("1500000000000000000.25");
+    const subtracted = await expectSuccess({
+      operation: "sum",
+      explicitValues: wei,
+      postOperation: "subtract",
+      postOperand: "0.25",
+    });
+    expect(subtracted.result).toBe("1499999999999999999.75");
+  });
+
+  it("computes modulo on the aligned scale", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: `${wei}, 0.5`,
+      postOperation: "modulo",
+      postOperand: "1000000000000000000",
+    });
+    expect(result.result).toBe("500000000000000000.5");
+  });
+
+  it("raises to an integer power exactly", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "9007199254740993",
+      postOperation: "power",
+      postOperand: "2",
+    });
+    expect(result.result).toBe("81129638414606699710187514626049");
+    expect(result.resultType).toBe("bigint");
+  });
+
+  it("rounds to N decimal places half up", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: `${wei}, 0.125`,
+      postOperation: "round-decimals",
+      postDecimalPlaces: "2",
+    });
+    expect(result.result).toBe("1500000000000000000.13");
+  });
+
+  it("rounds, floors and ceils to an integer", async () => {
+    const base = { operation: "sum" as const, explicitValues: `${wei}, 0.5` };
+    expect(
+      (await expectSuccess({ ...base, postOperation: "round" })).result
+    ).toBe("1500000000000000001");
+    expect(
+      (await expectSuccess({ ...base, postOperation: "floor" })).result
+    ).toBe("1500000000000000000");
+    expect(
+      (await expectSuccess({ ...base, postOperation: "ceil" })).result
+    ).toBe("1500000000000000001");
+  });
+
+  it("floors and ceils negatives toward the right side", async () => {
+    const base = { operation: "sum" as const, explicitValues: `-${wei}, -0.5` };
+    expect(
+      (await expectSuccess({ ...base, postOperation: "floor" })).result
+    ).toBe("-1500000000000000001");
+    expect(
+      (await expectSuccess({ ...base, postOperation: "ceil" })).result
+    ).toBe("-1500000000000000000");
+    expect(
+      (await expectSuccess({ ...base, postOperation: "abs" })).result
+    ).toBe("1500000000000000000.5");
   });
 });
 
@@ -521,14 +770,49 @@ describe("math/aggregate - post-operations (binary)", () => {
     expect(result.result).toBe("15");
   });
 
-  it("fails on division by zero", async () => {
-    const result = await expectFailure({
+  it("reports division by zero instead of failing", async () => {
+    const result = await expectSuccess({
       operation: "sum",
       explicitValues: "10",
       postOperation: "divide",
       postOperand: "0",
     });
-    expect(result.error).toContain("Division by zero");
+    expect(result.result).toBe("Infinity");
+    expect(result.divisionByZero).toBe(true);
+  });
+
+  it("reports a zero over zero as NaN", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "0",
+      postOperation: "divide",
+      postOperand: "0",
+    });
+    expect(result.result).toBe("NaN");
+    expect(result.divisionByZero).toBe(true);
+  });
+
+  it("reports division by zero on the fixed-point path the same way", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "-9007199254740993",
+      postOperation: "divide",
+      postOperand: "0",
+    });
+    expect(result.result).toBe("-Infinity");
+    expect(result.resultType).toBe("number");
+    expect(result.divisionByZero).toBe(true);
+  });
+
+  it("does not set divisionByZero on an ordinary division", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "10",
+      postOperation: "divide",
+      postOperand: "4",
+    });
+    expect(result.result).toBe("2.5");
+    expect(result.divisionByZero).toBeUndefined();
   });
 
   it("computes modulo", async () => {
@@ -541,14 +825,15 @@ describe("math/aggregate - post-operations (binary)", () => {
     expect(result.result).toBe("2");
   });
 
-  it("fails on modulo by zero", async () => {
-    const result = await expectFailure({
+  it("reports modulo by zero as NaN instead of failing", async () => {
+    const result = await expectSuccess({
       operation: "sum",
       explicitValues: "10",
       postOperation: "modulo",
       postOperand: "0",
     });
-    expect(result.error).toContain("Modulo by zero");
+    expect(result.result).toBe("NaN");
+    expect(result.divisionByZero).toBe(true);
   });
 
   it("raises to a power", async () => {

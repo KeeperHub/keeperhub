@@ -39,7 +39,7 @@ const mathPlugin: IntegrationPlugin = {
         {
           field: "resultType",
           description:
-            'Whether the result used "number" (standard) or "bigint" (large integer) arithmetic',
+            '"bigint" when the result is a whole number computed in fixed point, "number" otherwise',
         },
         {
           field: "operation",
@@ -48,6 +48,11 @@ const mathPlugin: IntegrationPlugin = {
         {
           field: "inputCount",
           description: "Number of values that were aggregated",
+        },
+        {
+          field: "divisionByZero",
+          description:
+            "true when the divide or modulo post-operation had a zero operand; result is then Infinity, -Infinity or NaN",
         },
         { field: "error", description: "Error message if aggregation failed" },
       ],
