@@ -47,7 +47,17 @@ const predgePlugin: IntegrationPlugin = {
       configKey: "PREDGE_SIGNER_KEY_ID",
       envVar: "PREDGE_SIGNER_KEY_ID",
       helpText:
-        "Optional. When set, only signals signed by this key verify. Leave blank to accept any key the signal carries.",
+        "Optional. Overrides Predge's published signing key with your own deployment's key. Leave blank to verify against Predge's published key. The key the response carries is never trusted on its own.",
+    },
+    {
+      id: "maxSignalAgeSeconds",
+      label: "Max Signal Age, seconds (optional)",
+      type: "text",
+      placeholder: "600",
+      configKey: "PREDGE_MAX_SIGNAL_AGE_SECONDS",
+      envVar: "PREDGE_MAX_SIGNAL_AGE_SECONDS",
+      helpText:
+        "Optional. Reject an attestation issued more than this many seconds ago. Defaults to 600.",
     },
   ],
 
@@ -63,7 +73,7 @@ const predgePlugin: IntegrationPlugin = {
       slug: "read-signal",
       label: "Read Predge Signal",
       description:
-        "Fetch a wallet's conviction signal from Predge and verify its ed25519 signature offline. Gate execution on the `verified` output.",
+        "Fetch a wallet's conviction signal from Predge and verify it offline: pinned ed25519 signer, signature over the canonical payload, subject binding to the wallet, and freshness. Gate execution on the `verified` output.",
       category: "Predge",
       stepFunction: "readSignalStep",
       stepImportPath: "read-signal",
@@ -82,9 +92,22 @@ const predgePlugin: IntegrationPlugin = {
         {
           field: "verified",
           description:
-            "Whether the ed25519 signature verified offline. Gate execution on this being true.",
+            "True only when the signal is signed by the pinned Predge key, the signature matches, the payload is about the requested wallet, and it is fresh. Gate execution on this being true.",
         },
-        { field: "signer", description: "Hex ed25519 public key that signed the signal" },
+        {
+          field: "reason",
+          description: "Why verification failed, when it did. Empty on a clean pass.",
+        },
+        { field: "signer", description: "Hex ed25519 public key the attestation claims to be signed by" },
+        {
+          field: "subjectMatch",
+          description: "Whether the signed payload is about the requested wallet",
+        },
+        { field: "issuedAt", description: "ISO-8601 issue time carried by the attestation" },
+        {
+          field: "ageSeconds",
+          description: "Age of the attestation in seconds at verification time (-1 if unknown)",
+        },
         { field: "error", description: "Error message if failed" },
       ],
       configFields: [walletField()],

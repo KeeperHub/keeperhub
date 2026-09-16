@@ -43,6 +43,7 @@ export type IntegrationType =
   | "morpho"
   | "pagerduty"
   | "pendle"
+  | "predge"
   | "protocol"
   | "pyth"
   | "renzo"
