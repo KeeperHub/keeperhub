@@ -176,7 +176,7 @@ export function executedCallArgsOutput(): OutputField {
 export function executedCallFromOutput(): OutputField {
   return {
     description:
-      "Wallet that made the executed call: the organization's wallet even when a relayer sent the transaction, or the Safe when routed through one",
+      "Sender of the trace frame that hit the target: the organization's wallet even when a relayer sent the transaction, the Safe when routed through one, or the delegating proxy when the target is an implementation reached by DELEGATECALL",
     field: "executedCall.from",
   };
 }

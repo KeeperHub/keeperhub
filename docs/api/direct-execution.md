@@ -331,7 +331,7 @@ A sponsored `approve` on Base Sepolia, as returned by
     "sponsored": true,
     "executedCall": {
       "contractAddress": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-      "from": "0xe7dbacbdd4cb2ddff5681dcd9e56fcf488e36ac9",
+      "from": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
       "functionName": "approve",
       "functionSignature": "approve(address,uint256)",
       "args": { "spender": "0xd36E12a5b2926A5cbE6B4DE42a0D60Fd35d3cb04", "amount": "1" },
@@ -345,8 +345,12 @@ A sponsored `approve` on Base Sepolia, as returned by
 
 Here the transaction was sent by the fee payer to `topLevelTo`, the sponsor's
 entry contract, which called the organization's wallet, which called `approve`
-on the token: `from` is that wallet, `0xe7db...`, not the fee payer and not
-`topLevelTo`.
+on the token: `from` is that wallet, `0x742d...`, not the fee payer and not
+`topLevelTo`. The capture is a real Base Sepolia execution with the
+organization's wallet replaced by the placeholder used elsewhere on this page.
+`args` keys are the parameter names of the ABI the call was decoded with: the
+ABI supplied here named the second parameter `amount`; the platform's own
+ERC-20 ABI names it `value`.
 
 Because it comes from the frame rather than the transaction, it is the acting
 address under every routing mode with no second definition: your organization's

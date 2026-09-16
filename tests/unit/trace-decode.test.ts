@@ -320,6 +320,38 @@ describe("trace-decode", () => {
       expect(viaImpl?.from).toBe(PROXY);
     });
 
+    it("takes the outermost frame when the target is hit twice with the same function", async () => {
+      // A hook inside the target re-enters it (or a helper calls it again deeper in the tree). The
+      // caller's own frame is the shallower one, and depth-first pre-order lists it first; that
+      // ordering is what makes from the caller's wallet rather than the target's own address.
+      const HELPER = "0x00000000000000000000000000000000000000e3";
+      const tree: RawCallFrame = {
+        type: "CALL",
+        from: ORG_EOA,
+        to: TARGET,
+        input: transferData,
+        calls: [
+          {
+            type: "CALL",
+            from: TARGET,
+            to: HELPER,
+            input: "0x12345678",
+            calls: [
+              { type: "CALL", from: HELPER, to: TARGET, input: transferData },
+            ],
+          },
+        ],
+      };
+      const provider = { send: vi.fn<SendFn>().mockResolvedValue(tree) };
+      const result = await resolveExecutedCall(provider, "0xhash", {
+        target: TARGET,
+        iface: IFACE,
+        functionName: "transfer",
+      });
+      expect(result?.from).toBe(ORG_EOA);
+      expect(result?.from).not.toBe(HELPER);
+    });
+
     it("lowercases from, as it does every other address", async () => {
       const provider = {
         send: vi.fn<SendFn>().mockResolvedValue({
