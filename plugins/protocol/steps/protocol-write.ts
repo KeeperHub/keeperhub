@@ -43,6 +43,10 @@ const UNISWAP_PAYABLE_SWAP_FUNCTIONS: ReadonlySet<string> = new Set([
   "exactOutputSingle",
 ]);
 
+// KEEP-2499: Uniswap V3 SwapRouter sentinel values that rewrite recipient or trigger special behaviors
+const UNISWAP_SENTINEL_MSG_SENDER = "0x0000000000000000000000000000000000000001";
+const UNISWAP_SENTINEL_ROUTER = "0x0000000000000000000000000000000000000002";
+
 type PreflightResult =
   | { ok: true }
   | { ok: false; error: string };
@@ -170,6 +174,73 @@ function checkUniswapNativeEthPreflight(
       ok: false,
       error: `ETH Value is set but Input Token (${tokenIn}) is not the WETH address for chain "${input.network}" (${wethAddress}). To swap native ETH, set Input Token to the WETH address; otherwise the ETH would be stranded in SwapRouter02.`,
     };
+  }
+
+  return { ok: true };
+}
+
+// KEEP-2499: Guard against Uniswap V3 SwapRouter sentinel values that cause
+// silent failures. The router treats recipient == address(1) as msg.sender,
+// recipient == address(2) as the router itself, and amountIn == 0 (on
+// exactInputSingle) as CONTRACT_BALANCE. Setting recipient to address(2)
+// leaves swap output in the router, where it can be claimed by anyone via the
+// public sweepToken function. The CONTRACT_BALANCE flag should never be used
+// since the router should never hold a balance between transactions.
+//
+// Runs before ABI resolution so a misconfigured swap fails fast without paying
+// for an Etherscan ABI fetch.
+function checkUniswapSentinelValues(
+  input: ProtocolWriteInput,
+  meta: ProtocolMeta
+): PreflightResult {
+  const isUniswapSwap =
+    meta.protocolSlug === "uniswap" &&
+    UNISWAP_PAYABLE_SWAP_FUNCTIONS.has(meta.functionName);
+  if (!isUniswapSwap) {
+    return { ok: true };
+  }
+
+  // Check recipient for sentinel values (both swap actions have this parameter)
+  const recipient = input.recipient;
+  if (typeof recipient === "string" && recipient.trim() !== "") {
+    const recipientLower = recipient.trim().toLowerCase();
+    if (recipientLower === UNISWAP_SENTINEL_MSG_SENDER.toLowerCase()) {
+      return {
+        ok: false,
+        error: `Recipient address ${recipient} is a Uniswap sentinel value (address(1) = msg.sender rewrite). Use the actual recipient address instead - the router will rewrite this value at runtime, making it impossible to verify the intended recipient before execution.`,
+      };
+    }
+    if (recipientLower === UNISWAP_SENTINEL_ROUTER.toLowerCase()) {
+      return {
+        ok: false,
+        error: `Recipient address ${recipient} is a Uniswap sentinel value (address(2) = router itself). This would leave swap output in SwapRouter02, where it can be claimed by anyone via the public sweepToken function. Use the actual recipient address instead.`,
+      };
+    }
+  }
+
+  // Check amountIn == 0 for exactInputSingle (CONTRACT_BALANCE flag)
+  if (meta.functionName === "exactInputSingle") {
+    const amountIn = input.amountIn;
+    if (typeof amountIn === "string" && amountIn.trim() !== "") {
+      // Parse as bigint to handle both decimal and hex representations
+      let parsedAmount: bigint;
+      try {
+        const trimmed = amountIn.trim();
+        parsedAmount = trimmed.startsWith("0x")
+          ? BigInt(trimmed)
+          : BigInt(trimmed);
+      } catch {
+        // Malformed value - let the downstream ABI encoder produce the
+        // canonical error rather than shadowing it here
+        return { ok: true };
+      }
+      if (parsedAmount === BigInt(0)) {
+        return {
+          ok: false,
+          error: `Amount In cannot be 0 - this is a Uniswap sentinel value (CONTRACT_BALANCE flag) that would swap the router's entire balance. The router should never hold a balance between transactions, so this flag has no legitimate use case in a workflow step.`,
+        };
+      }
+    }
   }
 
   return { ok: true };
@@ -327,9 +398,14 @@ export async function protocolWriteStep(
 
     // Run cheap protocol-specific preflights before any network I/O so a
     // misconfigured action fails fast (no Etherscan ABI fetch, no RPC).
-    const preflight = checkUniswapNativeEthPreflight(input, meta);
-    if (!preflight.ok) {
-      return { success: false, error: preflight.error };
+    const nativeEthPreflight = checkUniswapNativeEthPreflight(input, meta);
+    if (!nativeEthPreflight.ok) {
+      return { success: false, error: nativeEthPreflight.error };
+    }
+
+    const sentinelPreflight = checkUniswapSentinelValues(input, meta);
+    if (!sentinelPreflight.ok) {
+      return { success: false, error: sentinelPreflight.error };
     }
 
     // 4. Resolve ABI (from definition or auto-fetch from explorer)
