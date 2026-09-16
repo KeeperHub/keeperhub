@@ -165,3 +165,59 @@ describe("GET /api/analytics/runs auth", () => {
     );
   });
 });
+
+describe("GET /api/analytics/runs pagination parsing", () => {
+  function paramsRequest(query: Record<string, string>): NextRequest {
+    return {
+      method: "GET",
+      headers: new Headers({ Authorization: "Bearer fake-jwt" }),
+      nextUrl: { searchParams: new URLSearchParams(query) },
+    } as unknown as NextRequest;
+  }
+
+  const optionsOf = () => {
+    const [, , options] = vi.mocked(getUnifiedRuns).mock.calls[0] ?? [];
+    return options as { page?: number; limit?: number } | undefined;
+  };
+
+  it("drops an unreadable page instead of passing NaN through", async () => {
+    // getUnifiedRuns computes offset = (page - 1) * pageLimit, so a NaN page
+    // sliced to nothing and answered with zero runs beside a non-zero total,
+    // which reads as data loss rather than a rejected parameter.
+    for (const page of ["abc", "", "   ", "NaN", "1e", "--3"]) {
+      vi.mocked(getUnifiedRuns).mockClear();
+      await GET(paramsRequest({ page }));
+      expect(optionsOf()?.page, `page=${JSON.stringify(page)}`).toBeUndefined();
+    }
+  });
+
+  it("keeps a readable page, floored and never below one", async () => {
+    for (const [raw, expected] of [
+      ["1", 1],
+      ["4", 4],
+      ["2.9", 2],
+      ["0", 1],
+    ] as const) {
+      vi.mocked(getUnifiedRuns).mockClear();
+      await GET(paramsRequest({ page: raw }));
+      expect(optionsOf()?.page, `page=${raw}`).toBe(expected);
+    }
+  });
+
+  it("drops an unreadable or meaningless limit the same way", async () => {
+    for (const limit of ["abc", "", "0", "-5"]) {
+      vi.mocked(getUnifiedRuns).mockClear();
+      await GET(paramsRequest({ limit }));
+      expect(
+        optionsOf()?.limit,
+        `limit=${JSON.stringify(limit)}`
+      ).toBeUndefined();
+    }
+  });
+
+  it("keeps a readable limit", async () => {
+    vi.mocked(getUnifiedRuns).mockClear();
+    await GET(paramsRequest({ limit: "25" }));
+    expect(optionsOf()?.limit).toBe(25);
+  });
+});

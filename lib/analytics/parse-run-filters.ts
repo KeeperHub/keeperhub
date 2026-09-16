@@ -24,7 +24,14 @@ const VALID_GAS = new Set<GasSpend>(["sponsored", "wallet", "free"]);
 // and the cap keeps an ILIKE pattern from being handed an arbitrary payload.
 const MAX_SEARCH_LENGTH = 128;
 
-function parseNonNegativeInt(raw: string | null): number | undefined {
+/**
+ * A whole number from a query string, or undefined when it is not one.
+ *
+ * Exported because pagination needs the same rule: `Number("abc")` is NaN,
+ * and NaN reaches arithmetic rather than being rejected, so a caller gets an
+ * empty page beside a non-zero total instead of an error.
+ */
+export function parseNonNegativeInt(raw: string | null): number | undefined {
   if (raw === null) {
     return undefined;
   }
