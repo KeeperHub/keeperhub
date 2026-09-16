@@ -578,28 +578,46 @@ describe("LayerZero reference map completeness", () => {
 // fourth endpoint action in front of users to serve a test, so the address
 // map - which is the thing under test here - is checked directly instead.
 // Values read over eth_call on 2026-09-09; all seven match LAYERZERO_EIDS.
+//
+// The loop follows the endpoint address map rather than LAYERZERO_EIDS,
+// which now publishes an endpoint ID for every chain KeeperHub runs so the
+// view read below can reach them. Only chains with an endpoint address have
+// something to call here.
 const EID_ABI = ["function eid() view returns (uint32)"];
 
+/** Failover-aware manager for a chain in one of the LayerZero address maps. */
+async function managerForChain(
+  chainId: string,
+  label: string
+): Promise<RpcProviderManager> {
+  const cfg = getChainConfig(Number(chainId));
+  if (!cfg) {
+    throw new Error(
+      `chain ${chainId} is in a LayerZero address map but not in CHAIN_CONFIG, so no RPC can be resolved for it`
+    );
+  }
+  return await getRpcProviderFromUrls(
+    resolveRpcUrl(cfg.jsonKey, cfg.envKey, cfg.publicDefault, "primary"),
+    resolveRpcUrl(
+      cfg.jsonKey,
+      cfg.fallbackEnvKey,
+      cfg.publicFallback ?? cfg.publicDefault,
+      "fallback"
+    ),
+    Number(chainId),
+    label
+  );
+}
+
 describe("LayerZero EndpointV2 deployments identify their own chain", () => {
-  for (const chainId of Object.keys(LAYERZERO_EIDS)) {
+  for (const chainId of Object.keys(
+    layerzeroDef.contracts.endpointV2.addresses
+  )) {
     itOnchain(
       `chain ${chainId} endpoint reports EID ${LAYERZERO_EIDS[chainId]}`,
       async () => {
-        const cfg = getChainConfig(Number(chainId));
-        if (!cfg) {
-          throw new Error(
-            `chain ${chainId} is in LAYERZERO_EIDS but not in CHAIN_CONFIG, so no RPC can be resolved for it`
-          );
-        }
-        const manager = await getRpcProviderFromUrls(
-          resolveRpcUrl(cfg.jsonKey, cfg.envKey, cfg.publicDefault, "primary"),
-          resolveRpcUrl(
-            cfg.jsonKey,
-            cfg.fallbackEnvKey,
-            cfg.publicFallback ?? cfg.publicDefault,
-            "fallback"
-          ),
-          Number(chainId),
+        const manager = await managerForChain(
+          chainId,
           `layerzero-endpoint-eid-${chainId}`
         );
         const iface = new ethers.Interface(EID_ABI);
@@ -609,6 +627,55 @@ describe("LayerZero EndpointV2 deployments identify their own chain", () => {
         );
         const [eid] = iface.decodeFunctionResult("eid", result);
         expect(Number(eid)).toBe(LAYERZERO_EIDS[chainId]);
+      },
+      30_000
+    );
+  }
+});
+
+// The view map is the one thing standing between a user and a wrong answer
+// on the executable read: the action calls whatever address is listed for
+// the destination chain, and a wrong address either reverts or, worse,
+// answers from some unrelated contract. Every entry is exercised here.
+//
+// executable() on a nonce that was never sent returns NotExecutable (0)
+// rather than reverting, so the assertion is that the call decodes to a
+// value in range. An address holding no code, or holding something that is
+// not the view, fails to decode and the test fails with it.
+const VIEW_ABI = [
+  "function executable((uint32 srcEid, bytes32 sender, uint64 nonce) origin, address receiver) view returns (uint8)",
+];
+const UNUSED_ORIGIN = {
+  srcEid: 30_101,
+  sender: ethers.zeroPadValue("0x000000000000000000000000000000000000dEaD", 32),
+  nonce: 1,
+};
+
+describe("LayerZero EndpointV2View deployments answer executable()", () => {
+  for (const chainId of Object.keys(
+    layerzeroDef.contracts.endpointV2View.addresses
+  )) {
+    itOnchain(
+      `chain ${chainId} view returns an execution state`,
+      async () => {
+        const manager = await managerForChain(
+          chainId,
+          `layerzero-endpoint-view-${chainId}`
+        );
+        const iface = new ethers.Interface(VIEW_ABI);
+        const view = layerzeroDef.contracts.endpointV2View.addresses[chainId];
+        const result = await manager.executeWithFailover((p) =>
+          p.call({
+            to: view,
+            data: iface.encodeFunctionData("executable", [
+              UNUSED_ORIGIN,
+              "0x000000000000000000000000000000000000dEaD",
+            ]),
+          })
+        );
+        const [state] = iface.decodeFunctionResult("executable", result);
+        expect(Number(state)).toBeGreaterThanOrEqual(0);
+        expect(Number(state)).toBeLessThanOrEqual(3);
       },
       30_000
     );

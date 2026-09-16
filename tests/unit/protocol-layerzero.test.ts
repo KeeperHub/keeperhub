@@ -38,6 +38,7 @@ const READ_SLUGS = [
   "endpoint-get-send-library",
   "endpoint-get-config",
   "endpoint-is-supported-eid",
+  "endpoint-view-executable",
 ];
 const WRITE_SLUGS = ["oft-approve"];
 
@@ -61,7 +62,7 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     }
   });
 
-  it("has exactly the twelve accepted actions: eleven reads and one write", () => {
+  it("has exactly the thirteen accepted actions: twelve reads and one write", () => {
     const slugs = layerzeroDef.actions.map((a) => a.slug).sort();
     expect(slugs).toEqual([...READ_SLUGS, ...WRITE_SLUGS].sort());
     for (const slug of READ_SLUGS) {
@@ -105,6 +106,86 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     for (const chain of ["11155111", "84532"]) {
       expect(ep.addresses[chain]).toBe(ENDPOINT_TESTNET);
     }
+  });
+
+  it("endpointV2View covers every chain with a published endpoint ID", () => {
+    const view = layerzeroDef.contracts.endpointV2View;
+    expect(view.userSpecifiedAddress).toBeUndefined();
+    // The view read is answerable wherever LayerZero deploys the view and
+    // KeeperHub has an RPC, which is every chain in the endpoint ID table --
+    // a wider set than the endpoint contract's own reference deployments.
+    expect(Object.keys(view.addresses).sort()).toEqual(
+      Object.keys(LAYERZERO_EIDS).sort()
+    );
+    for (const chain of Object.keys(
+      layerzeroDef.contracts.endpointV2.addresses
+    )) {
+      expect(view.addresses[chain], chain).toBeDefined();
+    }
+    for (const [chain, addr] of Object.entries(view.addresses)) {
+      expect(ethers.getAddress(addr), chain).toBe(addr);
+    }
+  });
+
+  it("gives each view address to only the chains that share a deployment", () => {
+    // The view address differs per chain on the long-standing chains, so a
+    // duplicate there is the likely transcription error. It is NOT unique
+    // everywhere: the newer chains are deployed from shared factories, so
+    // Plasma and Robinhood Chain genuinely share one mainnet address and four
+    // testnets share another. Both were confirmed by calling each chain's own
+    // deployment, so pin the sharing rather than asserting uniqueness.
+    const byAddress = new Map<string, string[]>();
+    for (const [chain, addr] of Object.entries(
+      layerzeroDef.contracts.endpointV2View.addresses
+    )) {
+      byAddress.set(addr, [...(byAddress.get(addr) ?? []), chain]);
+    }
+    const shared = [...byAddress.entries()]
+      .filter(([, chains]) => chains.length > 1)
+      .map(([addr, chains]) => [addr, chains.sort()] as const)
+      .sort(([a], [b]) => a.localeCompare(b));
+    expect(shared).toEqual([
+      [
+        "0x6Ac7bdc07A0583A362F1497252872AE6c0A5F5B8",
+        ["16602", "46630", "9746"],
+      ],
+      ["0xAaB5A48CFC03Efa9cC34A2C1aAcCCB84b4b770e4", ["4663", "9745"]],
+    ]);
+  });
+
+  it("executable flattens Origin plus receiver and names its state output", () => {
+    const exe = action("endpoint-view-executable");
+    expect(exe.contract).toBe("endpointV2View");
+    expect(exe.function).toBe("executable");
+    expect(exe.inputs.map((i) => i.name)).toEqual([
+      "srcEid",
+      "sender",
+      "nonce",
+      "receiver",
+    ]);
+    expect(exe.outputs?.map((o) => o.name)).toEqual(["state"]);
+    // The read returns the raw enum ordinal, so the four states and the two
+    // caveats a cleared message and lzCompose carry have to reach the user
+    // through the action's own text.
+    expect(exe.description).toContain("0 not yet verified");
+    expect(exe.description).toContain("3 executed");
+    expect(exe.description).toContain("cleared");
+    expect(exe.description).toContain("lzCompose");
+  });
+
+  it("pads an EVM sender for executable and leaves a bytes32 sender alone", () => {
+    expect(
+      getEncodeTransformKind("layerzero", "endpoint-view-executable", "sender")
+    ).toBe("padAddressToBytes");
+    const transform = getEncodeTransform(
+      "layerzero",
+      "endpoint-view-executable",
+      "sender"
+    );
+    const address = "0x14E4A1B13bf7F943c8ff7C51fb60FA964A298D92";
+    expect(transform?.(address)).toBe(`0x${"0".repeat(24)}${address.slice(2)}`);
+    const bytes32 = `0x${"ab".repeat(32)}`;
+    expect(transform?.(bytes32)).toBe(bytes32);
   });
 
   it("oft and oftToken are user-specified-address contracts", () => {
@@ -234,14 +315,17 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
   });
 
   // Chain 1's reference token is USDT, whose approve returns no data. The
-  // EOA write path decodes the preflight staticCall's return against these
+  // write path decodes the preflight staticCall's return against these
   // outputs (lib/web3/chain-adapter/evm.ts), so a bool declaration throws
-  // BAD_DATA and the approve never broadcasts.
+  // BAD_DATA and the approve never broadcasts. Empty outputs decode both an
+  // absent return and the 32 bytes a conforming token sends.
   it("declares approve with no outputs so USDT's empty return decodes", () => {
     const iface = new ethers.Interface(layerzeroErc20Abi);
+    const bool32 = ethers.zeroPadValue("0x01", 32);
 
     expect(iface.getFunction("approve")?.outputs).toHaveLength(0);
     expect(() => iface.decodeFunctionResult("approve", "0x")).not.toThrow();
+    expect(() => iface.decodeFunctionResult("approve", bool32)).not.toThrow();
   });
 
   it("getConfig defaults configType to the ULN config", () => {
@@ -264,6 +348,16 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     expect(LAYERZERO_EIDS["137"]).toBe(30_109);
     expect(LAYERZERO_EIDS["11155111"]).toBe(40_161);
     expect(LAYERZERO_EIDS["84532"]).toBe(40_245);
+    // Chains whose endpoint ID cannot be read off the metadata by chain ID
+    // alone, each taken from the endpoint's own eid() call: Plasma Testnet
+    // carries three metadata rows and its endpoint reports the third.
+    expect(LAYERZERO_EIDS["9746"]).toBe(40_417);
+    expect(LAYERZERO_EIDS["56"]).toBe(30_102);
+    expect(LAYERZERO_EIDS["43114"]).toBe(30_106);
+    expect(LAYERZERO_EIDS["4217"]).toBe(30_410);
+    expect(LAYERZERO_EIDS["4663"]).toBe(30_416);
+    expect(LAYERZERO_EIDS["9745"]).toBe(30_383);
+    expect(LAYERZERO_EIDS["16661"]).toBe(30_388);
   });
 
   it("names every chain in the endpoint map in the destination help text", () => {
@@ -276,8 +370,23 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
       "42161": "Arbitrum One",
       "10": "Optimism",
       "137": "Polygon",
+      "56": "BNB Chain",
+      "43114": "Avalanche",
+      "9745": "Plasma",
+      "16661": "0G",
+      "4217": "Tempo",
+      "4663": "Robinhood Chain",
       "11155111": "Ethereum Sepolia",
       "84532": "Base Sepolia",
+      "421614": "Arbitrum Sepolia",
+      "11155420": "Optimism Sepolia",
+      "80002": "Polygon Amoy",
+      "97": "BNB Chain Testnet",
+      "43113": "Avalanche Fuji",
+      "9746": "Plasma Testnet",
+      "16602": "0G Galileo",
+      "42431": "Tempo Testnet",
+      "46630": "Robinhood Chain Testnet",
     };
     const tip = action("oft-quote-send").inputs.find(
       (i) => i.name === "dstEid"
