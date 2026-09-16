@@ -120,6 +120,58 @@ export function scanForLeftoverLiterals(
  * reports anything. Always fails closed; KEEP-525 removed the legacy
  * silent-substitute opt-out.
  */
+/**
+ * The two keys a Condition node resolves for itself.
+ *
+ * `condition` and `conditionConfig` carry their own template tokens and are
+ * rendered by `evaluateConditionExpression`, which has its own leftover-token
+ * gate. The action-level scan must not see them: otherwise every Condition
+ * node downstream of a For Each or a Code step reports a correct reference as
+ * an unresolved literal and the body cannot run.
+ */
+const CONDITION_OWNED_KEYS = ["condition", "conditionConfig"] as const;
+
+/**
+ * Split a node config into the part the action-level scan reads and the
+ * Condition-owned part it must not.
+ *
+ * Both keys are set to undefined on the returned config whether or not they
+ * were present, which is what the scan walks; only the ones that were present
+ * come back in `lifted`, so `restoreConditionFields` puts back exactly what
+ * was there and adds nothing.
+ *
+ * This is exported so the executor and the tests covering it lift the same
+ * two keys. A test that re-implements the lift asserts against its own copy
+ * and says nothing about the executor.
+ */
+export function liftConditionFields(config: Record<string, unknown>): {
+  rest: Record<string, unknown>;
+  lifted: Record<string, unknown>;
+} {
+  const rest: Record<string, unknown> = { ...config };
+  const lifted: Record<string, unknown> = {};
+  for (const key of CONDITION_OWNED_KEYS) {
+    if (config[key] !== undefined) {
+      lifted[key] = config[key];
+    }
+    rest[key] = undefined;
+  }
+  return { rest, lifted };
+}
+
+/** Re-attach what `liftConditionFields` took, after the scan has run. */
+export function restoreConditionFields(
+  processed: Record<string, unknown>,
+  lifted: Record<string, unknown>
+): Record<string, unknown> {
+  for (const key of CONDITION_OWNED_KEYS) {
+    if (lifted[key] !== undefined) {
+      processed[key] = lifted[key];
+    }
+  }
+  return processed;
+}
+
 export function assertResolved(
   tracker: TemplateResolutionTracker,
   renderedConfig: unknown,
