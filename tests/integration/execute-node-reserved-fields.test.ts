@@ -344,10 +344,15 @@ describe("POST /api/execute/node reserved-field gating", () => {
   it("budgets an absent maxRetries at the default the executor will apply", async () => {
     // The validator used to default a missing count to 0, so this was checked
     // as one attempt of 600000ms - inside the budget - and then run by
-    // resolveConfig as four, up to 2_400_000ms. That is four times the
-    // idempotency processing lock this budget exists to stay inside: the lock
-    // expires mid-flight and a concurrent request under the same key can
-    // reserve fresh.
+    // resolveConfig as four, up to 2_400_000ms: four times the idempotency
+    // processing lock this budget exists to stay inside.
+    //
+    // A run that long does not lose its lock on its own. withIdempotencyHeartbeat
+    // re-stamps expiresAt every couple of minutes and the reclaim is fenced on
+    // an expired row, so the lock only lapses if the heartbeat also fails - and
+    // it is fire-and-forget with an empty catch. The budget is the invariant
+    // that keeps a request inside its own reservation without depending on
+    // that; this pins the arithmetic, not the failure mode.
     const response = await nodePOST(
       postRequest({
         actionType: "web3/write-contract",
@@ -359,6 +364,47 @@ describe("POST /api/execute/node reserved-field gating", () => {
     expect(response.status).toBe(400);
     expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
     expect(mocks.stepFn).not.toHaveBeenCalled();
+  });
+
+  it("names the effective attempt count and the safe remedy in the rejection", async () => {
+    // Without the attempt count the arithmetic reads as self-contradicting to
+    // a caller who sent no maxRetries: they compute 600000 x (0 + 1), which is
+    // not over the limit.
+    //
+    // Naming maxRetries: 0 is the safety-relevant half. The apparent remedy is
+    // to lower timeoutMs, and a timeoutMs under the chain's confirmation
+    // latency is what turns one slow write into several: withTimeout races a
+    // setTimeout rather than cancelling, so an abandoned attempt can still
+    // broadcast while the next one signs at the next nonce.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { timeoutMs: 600_000 },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error?: string };
+    expect(body.error).toContain("4 attempts");
+    expect(body.error).toContain("maxRetries defaults to 3");
+    expect(body.error).toContain("2400000ms");
+    expect(body.error).toContain("maxRetries: 0");
+  });
+
+  it("omits the defaulting note when the caller set maxRetries itself", async () => {
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 10, timeoutMs: 600_000 },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error?: string };
+    expect(body.error).toContain("11 attempts");
+    expect(body.error).not.toContain("defaults to");
   });
 
   it("still accepts an absent maxRetries whose defaulted budget fits", async () => {
