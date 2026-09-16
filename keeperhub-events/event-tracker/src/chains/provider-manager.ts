@@ -1530,16 +1530,26 @@ export class ChainProviderManager {
       if (entry.stateSubscribers.size > 0 && entry.headBlock !== null) {
         await this.sampleState(entry, entry.headBlock);
       }
-      // Trace processing: fetch and dispatch matched frames for blocks with
-      // trace subscribers. Unlike state sampling (reads at head only), traces
-      // are fetched per block in the range [from, to] so no matched frame is
-      // missed during catchup.
-      if (entry.traceSubscribers.size > 0) {
-        await this.processTraces(entry, from, to);
-      }
     } finally {
       entry.draining = false;
       entry.drainingTo = null;
+    }
+
+    // Trace processing: scheduled outside the drain lock to prevent holding it
+    // for up to 17 minutes. Traces are fetched per block in the range [from, to]
+    // so no matched frame is missed during catchup. Fire-and-forget: a slow trace
+    // fetch cannot block the next drain or state sample.
+    if (entry.traceSubscribers.size > 0 && from <= to) {
+      // Capture provider and range for the scheduled work
+      const provider = entry.provider;
+      const traceFrom = from;
+      const traceTo = to;
+      // Schedule asynchronously, don't await
+      void this.processTraces(entry, traceFrom, traceTo).catch((err) => {
+        logger.warn(
+          `[ChainProviderManager] chain=${entry.chainId} trace processing failed: ${String(err)}`,
+        );
+      });
     }
 
     // More owed than one request could take, the head moved while the request
