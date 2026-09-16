@@ -33,6 +33,13 @@ function seedWorkflowFiles(dir: string): string[] {
 
 const files = seedWorkflowFiles(SEED_WORKFLOW_DIR);
 
+// Seeds that approve a token with no check-allowance node upstream. The
+// approve-side hint is the one warning the seeds are expected to raise: they
+// approve an exact amount and spend it in the next node, which is the pattern
+// the hint's wording explicitly allows for. It is pinned rather than asserted
+// empty so a change on either side is noticed.
+const SEEDS_THAT_APPROVE_BLIND = 12;
+
 describe("validateWorkflow - shipped seed workflows", () => {
   it("finds seed workflows to check", () => {
     expect(files.length).toBeGreaterThan(0);
@@ -56,5 +63,31 @@ describe("validateWorkflow - shipped seed workflows", () => {
       (w) => w.code === "missing-allowance-preflight"
     );
     expect(allowanceWarnings).toEqual([]);
+  });
+
+  // The approve-side hint fires on every seed that approves without a
+  // check-allowance upstream. Seeds carry no such read today, so this pins
+  // the count: a seed gaining or losing an approve, or the detector changing
+  // shape, moves this number and has to be looked at.
+  it("raises the approve-without-allowance-check hint on exactly the seeds that approve blind", () => {
+    const flagged = files.filter((file) => {
+      const raw = JSON.parse(readFileSync(file, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      const result = validateWorkflow({
+        id: file,
+        nodes: Array.isArray(raw.nodes) ? raw.nodes : [],
+        edges: Array.isArray(raw.edges) ? raw.edges : [],
+        inputSchema: null,
+        outputMapping: null,
+        isListed: false,
+        workflowType: raw.type === "write" ? "write" : "read",
+      });
+      return result.warnings.some(
+        (w) => w.code === "approve-without-allowance-check"
+      );
+    });
+    expect(flagged).toHaveLength(SEEDS_THAT_APPROVE_BLIND);
   });
 });
