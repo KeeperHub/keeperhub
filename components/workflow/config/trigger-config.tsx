@@ -33,6 +33,7 @@ import { parseSchemaFields } from "@/lib/schema-fields";
 import {
   parseTraceCallTypes,
   TRACE_CALL_TYPES,
+  TRACE_SEED_CHAIN_IDS,
   TRACE_STATUS_OPTIONS,
 } from "@/lib/workflow/trace-trigger-config";
 import type { ActionConfigField } from "@/plugins/registry";
@@ -361,6 +362,18 @@ function TraceTriggerFields({
       label: "Network",
       type: "chain-select",
       chainTypeFilter: "evm",
+      // The networks whose RPC endpoints are known to serve the block call
+      // traces this trigger reads. A trigger offered on a network that does
+      // not serve them never fires and reports nothing, which is the worst
+      // failure a trigger can have, so the list is a floor rather than every
+      // EVM chain.
+      //
+      // Stated here rather than derived from what the tracker can actually
+      // do: the tracker learns a capability per connection, relearns it on
+      // reconnect and runs a single replica, so a derived list would be empty
+      // after every restart until a drain runs. When capability reporting
+      // exists it unions with this seed instead of replacing it.
+      allowedChainIds: [...TRACE_SEED_CHAIN_IDS],
       placeholder: "Select network",
       required: true,
     },
@@ -519,8 +532,8 @@ function TraceTriggerFields({
         </p>
       </div>
       <p className="text-muted-foreground text-xs">
-        Trace triggers read block call traces, which only some networks' RPC
-        endpoints serve. On a network that does not, the trigger never fires.
+        Trace triggers read block call traces, so the networks listed are the
+        ones whose RPC endpoints serve them.
       </p>
     </>
   );

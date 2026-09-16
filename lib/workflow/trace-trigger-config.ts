@@ -7,6 +7,26 @@
  * shape the editor stores with the shape the tracker expects.
  */
 
+/**
+ * Networks a Trace trigger may be configured for.
+ *
+ * A cold-start floor, not a capability report: these are the chains whose
+ * RPC endpoints are known to serve the block call traces this trigger reads.
+ * Offering the trigger on a chain that does not serve them produces a
+ * trigger that never fires and reports nothing.
+ *
+ * The tracker learns what a connection supports at runtime, relearns it on
+ * reconnect and runs a single replica, so a list derived from that alone is
+ * empty after every restart until a drain runs. This seed is what that
+ * report would union with once it exists.
+ */
+export const TRACE_SEED_CHAIN_IDS = [
+  "9745", // Plasma
+  "9746", // Plasma Testnet
+  "4217", // Tempo
+  "42431", // Tempo Testnet
+] as const;
+
 /** Frame types the tracker accepts in `traceCallTypes`. */
 export const TRACE_CALL_TYPES = [
   "CALL",
