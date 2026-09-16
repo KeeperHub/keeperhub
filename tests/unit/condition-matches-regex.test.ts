@@ -220,6 +220,12 @@ describe("matchesRegex pattern rule", () => {
     ["a scheme with one optional letter", "^https?://[^\\s]+$"],
     ["two quantified groups over disjoint sets", "(?:ab)+(?:cd)+"],
     ["two optional atoms, which match one way", "a?a?"],
+    // A group whose body trails an unbounded atom, with nothing overlapping
+    // after it: the rule refuses the split, not the group. These are the cases
+    // that stop the edge propagation from tightening into uselessness.
+    ["a lone group trailing an unbounded atom", "(a*)$"],
+    ["two such groups over disjoint sets", "(a*)(b*)$"],
+    ["an unbounded group preceded by a disjoint atom", "[0-9]+(a*)$"],
   ])("admits %s", (_label, pattern) => {
     expect(admit(pattern as string)).toEqual({ valid: true });
   });
@@ -296,6 +302,23 @@ describe("matchesRegex adjacent quantifier rule", () => {
     ["overlapping shorthands", "\\w+\\d+$"],
     ["a dot repetition followed by whitespace", ".*\\s+$"],
     ["the same shape inside an unquantified group", "(a+a+)"],
+    // The split does not have to be between two atoms at the top level. An
+    // unquantified group carries its body's ambiguity across the `)`, and an
+    // atom whose quantifier permits zero occurrences does not separate the atoms
+    // around it because it can vanish. Measured here with
+    // `new RegExp(src).test("a".repeat(25) + "!")`: eight `(a*)` groups return
+    // after 1.90 s and ten after 25.25 s, about 3.3x per added group, and the
+    // 512 character pattern cap admits roughly 127 of them.
+    ["an unquantified group trailing an unbounded atom", "(a+)a+$"],
+    ["a group whose body leads with an unbounded atom", "a+(a+)$"],
+    ["the same shape written non-capturing", "(?:a+)a+$"],
+    ["an optional atom between two overlapping quantified atoms", "a+b?a+$"],
+    ["two unquantified groups, each trailing an unbounded atom", "(a*)(a*)$"],
+    ["three of them", "(a*)(a*)(a*)$"],
+    [
+      "eight of them, 25.25 s when the pattern is allowed to run",
+      `${"(a*)".repeat(8)}$`,
+    ],
   ])("refuses %s", (_label, pattern) => {
     expect(rejects(pattern as string)).toContain("split between them");
   });
@@ -355,6 +378,52 @@ describe("matchesRegex adjacent quantifier rule", () => {
         __v0: noisyValue,
       })
     ).toThrow(/split between them/);
+  });
+
+  it("refuses the group-edge shapes through the executor, not only the builder", () => {
+    // The reviewer measured `safeEvaluateCondition` with six `(a*)` groups
+    // returning `true` rather than throwing, which is the whole reason the
+    // group's edges have to be propagated: the atom-level rule saw one atom.
+    // Driving `evaluateConditionExpression` is the path a stored condition
+    // actually takes, pre-validation through substitution through validation
+    // through evaluation.
+    const outputs = {
+      node1: {
+        label: "Webhook",
+        data: { error: `${"a".repeat(25)}!` },
+      },
+    } as never;
+
+    for (const pattern of [
+      "(a*)(a*)(a*)(a*)(a*)(a*)$",
+      "(a+)a+$",
+      "a+(a+)$",
+      "a+b?a+$",
+    ]) {
+      expect(() =>
+        evaluateConditionExpression(
+          `matchesRegex(String({{@node1:Webhook.error}}), ${JSON.stringify(pattern)})`,
+          outputs
+        )
+      ).toThrow(/split between them/);
+    }
+
+    // And the same path still runs the pattern the product recommends, so the
+    // refusal above is the split and not the surrounding machinery.
+    const outputs2 = {
+      node1: {
+        label: "Webhook",
+        data: {
+          error: "Contract call failed: Error(Splitter/kicked-too-soon)",
+        },
+      },
+    } as never;
+    expect(
+      evaluateConditionExpression(
+        'matchesRegex(String({{@node1:Webhook.error}}), "Error\\\\(")',
+        outputs2
+      ).result
+    ).toBe(true);
   });
 });
 

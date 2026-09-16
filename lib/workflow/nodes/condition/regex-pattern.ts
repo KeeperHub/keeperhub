@@ -292,12 +292,34 @@ function escapedChar(
   return null;
 }
 
+/** The two edges of an atom: what its first and last atoms admit, and whether
+ *  either edge can give characters back. */
+type AtomEdges = {
+  leading: AtomSet;
+  leadingAmbiguous: boolean;
+  trailing: AtomSet;
+  trailingAmbiguous: boolean;
+};
+
+type Atom = {
+  set: AtomSet;
+  next: number;
+  /**
+   * Present only for a group. A non-group atom's edges are its own set, and the
+   * ambiguity at them is whatever quantifier the caller reads beside it, so the
+   * caller supplies that default rather than this function inventing one.
+   */
+  edges?: AtomEdges;
+};
+
 /**
  * One atom at `index`: a class, a group, an escape, an anchor or a literal.
  * A group's set is the union of the sets inside it, which is what makes an
- * alternation's branches count as one atom here.
+ * alternation's branches count as one atom here, and its edges describe the
+ * first and last atoms of its body so a group can be compared against its
+ * neighbours by the characters that actually touch them.
  */
-function atomAt(source: string, index: number): { set: AtomSet; next: number } {
+function atomAt(source: string, index: number): Atom {
   const char = source[index];
   if (char === "[") {
     const end = classEnd(source, index);
@@ -311,8 +333,10 @@ function atomAt(source: string, index: number): { set: AtomSet; next: number } {
     if (end === -1) {
       return { set: "any", next: index + 1 };
     }
+    const bodyStart = groupBodyStart(source, index);
     return {
-      set: groupSet(source, groupBodyStart(source, index), end),
+      set: groupSet(source, bodyStart, end),
+      edges: groupBodyEdges(source, bodyStart, end),
       next: end + 1,
     };
   }
@@ -349,6 +373,65 @@ function atomAt(source: string, index: number): { set: AtomSet; next: number } {
     return { set: new Set([marker ?? "\\"]), next: index + 2 };
   }
   return { set: new Set([char]), next: index + 1 };
+}
+
+/**
+ * The edges of a group's body, which is what lets an unquantified group be
+ * compared against its neighbours.
+ *
+ * `(a*)` repeated is the case: the group as a whole carries no quantifier, so
+ * `isAmbiguous` says nothing about it, and the body's trailing `a*` is the only
+ * thing that shows characters can be given back across the `)`. The same holds
+ * the other way for `a+(a+)$`, where the ambiguity the group presents is
+ * whatever leads its body.
+ *
+ * The body walks the same way `groupSet` does, and folds an atom whose
+ * quantifier permits zero occurrences into the trailing edge rather than letting
+ * it replace it, because such an atom can disappear and leave the atom before it
+ * touching the `)`.
+ */
+function groupBodyEdges(
+  source: string,
+  bodyStart: number,
+  end: number
+): AtomEdges {
+  let leading: AtomSet = "none";
+  let leadingAmbiguous = false;
+  let trailing: AtomSet = "none";
+  let trailingAmbiguous = false;
+  let sawAtom = false;
+  let index = bodyStart;
+
+  while (index < end) {
+    const atom = atomAt(source, index);
+    const quantifier = quantifierAt(source, atom.next);
+    const edges = atom.edges ?? {
+      leading: atom.set,
+      leadingAmbiguous: false,
+      trailing: atom.set,
+      trailingAmbiguous: false,
+    };
+    const ambiguous = isAmbiguous(quantifier) || edges.trailingAmbiguous;
+
+    if (atom.set !== "none") {
+      if (!sawAtom) {
+        leading = edges.leading;
+        leadingAmbiguous = isAmbiguous(quantifier) || edges.leadingAmbiguous;
+        sawAtom = true;
+      }
+      if (quantifier !== null && quantifier.min === 0) {
+        trailing = unionSets(trailing, edges.trailing);
+        trailingAmbiguous = trailingAmbiguous || ambiguous;
+      } else {
+        trailing = edges.trailing;
+        trailingAmbiguous = ambiguous;
+      }
+    }
+
+    index = quantifier === null ? atom.next : quantifier.next;
+  }
+
+  return { leading, leadingAmbiguous, trailing, trailingAmbiguous };
 }
 
 /** The union of the sets of the atoms inside a group's body. */
@@ -482,6 +565,23 @@ function isAmbiguous(quantifier: Quantifier | null): boolean {
   return unbounded && quantifier.max > quantifier.min;
 }
 
+function unionSets(left: AtomSet, right: AtomSet): AtomSet {
+  if (left === "none") {
+    return right;
+  }
+  if (right === "none") {
+    return left;
+  }
+  if (left === "any" || right === "any") {
+    return "any";
+  }
+  const union = new Set(left);
+  for (const value of right) {
+    union.add(value);
+  }
+  return union;
+}
+
 function setsOverlap(left: AtomSet, right: AtomSet): boolean {
   if (left === "none" || right === "none") {
     return false;
@@ -499,7 +599,7 @@ function setsOverlap(left: AtomSet, right: AtomSet): boolean {
 
 /**
  * True when two adjacent quantified atoms can split the same input between
- * them, with no parentheses involved.
+ * them.
  *
  * `hasNestedQuantifier` only looks at quantifiers applied to a `(...)` group, so
  * `a+a+$` was never examined. Measured against the caps this operator enforces
@@ -508,15 +608,30 @@ function setsOverlap(left: AtomSet, right: AtomSet): boolean {
  * alone allows hundreds of terms, so the shape has to be refused rather than
  * bounded.
  *
+ * Two things make the shape reach further than two bare atoms, and both were
+ * missed by the first version of this guard:
+ *
+ * - An unquantified group carries its body's ambiguity across the `)`. `(a*)`
+ *   repeated has no quantifier for `isAmbiguous` to read, and the split is
+ *   between the group's trailing `a*` and whatever follows. Measured at the
+ *   enforced caps against a 25 character value: 8 groups take 698 ms, 10 take
+ *   7.7 s, 12 take 72 s, 14 take 160 s, and the 512 character pattern cap admits
+ *   about 127 of them. The same holds for the body's leading atom, which is what
+ *   `a+(a+)$` uses.
+ * - An atom whose quantifier permits zero occurrences does not separate the atoms
+ *   around it, because it can vanish. `a+b?a+$` splits between the two `a+` with
+ *   a `b?` between them.
+ *
  * Conservative in the same way as `hasNestedQuantifier`, and for the same
  * reason: it also refuses `\w+\d+$` (28 ms at the cap) and `.*\s+$` (0.1 ms),
  * which do not stall. Telling an ambiguous split from a harmless one needs a
  * real regex analysis, and the cost of the false refusal is a pattern the author
- * can rewrite.
+ * can rewrite. It remains a syntactic guard, so it is a race against the next
+ * shape by construction rather than a bound on evaluation.
  *
- * Deliberately not reported for `[a-z]+[0-9]+` or `\d{4}-\d{2}-\d{2}`: the sets
- * do not overlap, so each character belongs to exactly one atom and there is
- * nothing to split.
+ * Deliberately not reported for `[a-z]+[0-9]+`, `\d{4}-\d{2}-\d{2}$` or
+ * `(?:0x)?[0-9a-f]+`: the sets do not overlap at the point of contact, so each
+ * character belongs to exactly one atom and there is nothing to split.
  */
 export function hasAdjacentQuantifiedAtoms(source: string): boolean {
   let previous: AtomSet = "none";
@@ -525,7 +640,15 @@ export function hasAdjacentQuantifiedAtoms(source: string): boolean {
   while (index < source.length) {
     const atom = atomAt(source, index);
     const quantifier = quantifierAt(source, atom.next);
-    const ambiguous = isAmbiguous(quantifier);
+    const edges = atom.edges ?? {
+      leading: atom.set,
+      leadingAmbiguous: false,
+      trailing: atom.set,
+      trailingAmbiguous: false,
+    };
+    // A group with no quantifier of its own is still ambiguous when the body it
+    // closes over can give characters back.
+    const ambiguous = isAmbiguous(quantifier) || edges.trailingAmbiguous;
 
     if (atom.set === "none") {
       previous = "none";
@@ -534,12 +657,19 @@ export function hasAdjacentQuantifiedAtoms(source: string): boolean {
       if (
         ambiguous &&
         previousWasAmbiguous &&
-        setsOverlap(previous, atom.set)
+        setsOverlap(previous, edges.leading)
       ) {
         return true;
       }
-      previous = atom.set;
-      previousWasAmbiguous = ambiguous;
+      if (quantifier !== null && quantifier.min === 0) {
+        // Can vanish, so it does not end the boundary: fold it into the
+        // candidate rather than replacing what came before it.
+        previous = unionSets(previous, edges.trailing);
+        previousWasAmbiguous = previousWasAmbiguous || ambiguous;
+      } else {
+        previous = edges.trailing;
+        previousWasAmbiguous = ambiguous;
+      }
     }
 
     if (source[index] === "(") {
