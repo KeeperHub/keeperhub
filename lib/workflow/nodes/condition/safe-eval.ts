@@ -548,6 +548,200 @@ function resolveMissingOperands(
   };
 }
 
+/**
+ * Decimal grammar for a relational operand: integer or fixed-point, with an
+ * optional sign. Deliberately the same shape as `NUMERIC_LITERAL_RE` in
+ * ./expression.ts, which is what the visual builder uses to decide whether a
+ * value may be emitted as a bare number rather than a quoted string. Hex and
+ * exponent forms are excluded there, so they are excluded here too: a value the
+ * builder would have quoted is not one this evaluator reads as a number.
+ */
+const NUMERIC_OPERAND_RE = /^[+-]?\d+(\.\d+)?$/;
+
+/** A decimal operand split into sign, integer digits and fraction digits. */
+type DecimalOperand = {
+  negative: boolean;
+  integer: string;
+  fraction: string;
+};
+
+function splitDecimal(literal: string): DecimalOperand {
+  const negative = literal.startsWith("-");
+  const unsigned =
+    negative || literal.startsWith("+") ? literal.slice(1) : literal;
+  const point = unsigned.indexOf(".");
+  return {
+    negative,
+    integer: point === -1 ? unsigned : unsigned.slice(0, point),
+    fraction: point === -1 ? "" : unsigned.slice(point + 1),
+  };
+}
+
+/**
+ * A BigInt has to be printed before it can be read as a decimal, and printing
+ * one is superlinear: 132 ms at 300,000 digits on the machine this was
+ * measured on. Past this magnitude the operand is handed back unprinted and
+ * the pair falls back to the comparison it had before this file converted
+ * anything, which for a BigInt against a numeric string is JavaScript's own
+ * BigInt comparison and already exact. Declining reverses nothing. The bound
+ * is compared against rather than counted, so reaching it costs one BigInt
+ * comparison.
+ *
+ * A uint256 is 78 digits, and that same value formatted with 18 decimals is 97
+ * characters, so no on-chain read comes near it.
+ *
+ * Two strings need no bound at all. They are ordered as digits and never
+ * become BigInts, which is what an earlier revision of this file used a
+ * length cap to avoid: measured here, a 1,000,000-digit pair costs 0.006 ms
+ * ordered as digits against 349 ms parsed into BigInts first. A cap applied to
+ * one operand at a time is also what made the pair fall back while the other
+ * side had already converted, and a length cap has no boundary to get wrong
+ * once nothing is parsed.
+ */
+const MAX_PRINTABLE_MAGNITUDE = BigInt(`1${"0".repeat(256)}`);
+
+/**
+ * The operand as a decimal, or undefined when it is not one. Strings, BigInts
+ * and numbers all arrive: the builder emits a value the author typed as a bare
+ * number when it looks like one (`NUMERIC_LITERAL_RE` in ./expression.ts), and
+ * template resolution hands the other side over as a string, so a rule built
+ * in the UI is usually a string against a number.
+ *
+ * A value is read through its own decimal form, and has to match the grammar
+ * above to count. For a number that means `toString`, which is the shortest
+ * decimal that reads back as the same double: exact for the safe integers,
+ * and past them the value the literal actually became, so
+ * `"9007199254740993" > 9007199254740992` answers true here where handing the
+ * pair to the operator would put the string through ToNumber and lose it.
+ * Ordering by that form is the same ordering as by value, since two different
+ * doubles never print the same.
+ *
+ * NaN, the infinities and any number large or small enough to print in
+ * exponent form are not decimals, and neither is a string outside the grammar.
+ * Those are handed back untouched.
+ */
+function asDecimalOperand(value: unknown): DecimalOperand | undefined {
+  if (typeof value === "string") {
+    return NUMERIC_OPERAND_RE.test(value) ? splitDecimal(value) : undefined;
+  }
+  if (typeof value === "bigint") {
+    if (value >= MAX_PRINTABLE_MAGNITUDE || value <= -MAX_PRINTABLE_MAGNITUDE) {
+      return undefined;
+    }
+    return splitDecimal(value.toString());
+  }
+  if (typeof value === "number") {
+    const literal = value.toString();
+    return NUMERIC_OPERAND_RE.test(literal) ? splitDecimal(literal) : undefined;
+  }
+  return undefined;
+}
+
+/** The integer digits with leading zeros dropped, so "007" and "7" agree. */
+function significantDigits(digits: string): string {
+  let first = 0;
+  while (first < digits.length && digits[first] === "0") {
+    first += 1;
+  }
+  return digits.slice(first);
+}
+
+/** True when no digit on either side of the point is non-zero. */
+function isZeroOperand(operand: DecimalOperand): boolean {
+  return (
+    significantDigits(operand.integer) === "" &&
+    significantDigits(operand.fraction) === ""
+  );
+}
+
+/**
+ * -1, 0 or 1 on magnitude alone.
+ *
+ * Two runs of digits of the same length order the same way as the numbers they
+ * spell, so the longer integer wins and equal lengths compare as text. Nothing
+ * is parsed, which is what lets an operand of any length through: the cost is
+ * the length of the shorter operand rather than the square of the longer.
+ */
+function compareMagnitude(left: DecimalOperand, right: DecimalOperand): number {
+  const a = significantDigits(left.integer);
+  const b = significantDigits(right.integer);
+  if (a.length !== b.length) {
+    return a.length < b.length ? -1 : 1;
+  }
+  if (a !== b) {
+    return a < b ? -1 : 1;
+  }
+  const width = Math.max(left.fraction.length, right.fraction.length);
+  const fractionA = left.fraction.padEnd(width, "0");
+  const fractionB = right.fraction.padEnd(width, "0");
+  if (fractionA === fractionB) {
+    return 0;
+  }
+  return fractionA < fractionB ? -1 : 1;
+}
+
+/**
+ * -1, 0 or 1. Fractions are padded and never rounded, so this stays exact.
+ *
+ * Zero carries no sign here: "-0" and "0" are one value, so the sign is read
+ * only once the pair is known not to be zero.
+ */
+function compareDecimals(left: DecimalOperand, right: DecimalOperand): number {
+  if (isZeroOperand(left) && isZeroOperand(right)) {
+    return 0;
+  }
+  if (left.negative !== right.negative) {
+    return left.negative ? -1 : 1;
+  }
+  const magnitude = compareMagnitude(left, right);
+  return left.negative ? -magnitude : magnitude;
+}
+
+/**
+ * Order two relational operands, or undefined to leave the comparison alone.
+ *
+ * `<`, `<=`, `>` and `>=` are documented as numeric ("Numeric less than" in
+ * docs/workflows/creating.md, `category: "number"` in the operator metadata the
+ * builder shows the user), but template resolution hands the evaluator its
+ * values as strings, so two numbers would reach JavaScript's code-unit ordering
+ * and `"9" < "10"` would be false.
+ *
+ * Both operands have to be decimals before either one moves, and the comparison
+ * happens here rather than at the operator. Converting one side and letting the
+ * engine coerce the other is what reverses a digit string against a hex string,
+ * and what makes `<`, `>` and `===` false all at once against a word. A pair
+ * this does not recognise is handed back untouched.
+ *
+ * The equality operators ask this too. Ordering on its own is not enough: for
+ * a pair that is numerically equal and textually different, a formatter's
+ * "1000000000000000000.0" against the integer an author typed, numeric `<` and
+ * `>` beside a textual `===` leave all three false and the Condition takes no
+ * branch at all. Which is the same hole as the one above, in the place the
+ * author is most likely to meet it. One notion of equality for all of them is
+ * what closes it, so ordering and equality both come through here.
+ */
+function compareRelational(left: unknown, right: unknown): number | undefined {
+  // Both operands are BigInts whenever applyBigIntConversion has fired, which
+  // is every wei-scale comparison the executor reaches. Order them as they
+  // are, rather than printing and reparsing each one on every comparison.
+  if (typeof left === "bigint" && typeof right === "bigint") {
+    if (left < right) {
+      return -1;
+    }
+    return left > right ? 1 : 0;
+  }
+
+  const a = asDecimalOperand(left);
+  if (a === undefined) {
+    return undefined;
+  }
+  const b = asDecimalOperand(right);
+  if (b === undefined) {
+    return undefined;
+  }
+  return compareDecimals(a, b);
+}
+
 function applyBinary(
   operator: string,
   rawLeft: unknown,
@@ -556,24 +750,51 @@ function applyBinary(
   const { left, right } = resolveMissingOperands(operator, rawLeft, rawRight);
 
   switch (operator) {
-    case "===":
-      return left === right;
-    case "!==":
-      return left !== right;
-    case "==":
+    // A pair compareRelational recognises is equal when it compares equal, so
+    // that these four and the four below agree on when two operands are the
+    // same value. Everything else keeps the equality it has always had.
+    case "===": {
+      const order = compareRelational(left, right);
+      return order === undefined ? left === right : order === 0;
+    }
+    case "!==": {
+      const order = compareRelational(left, right);
+      return order === undefined ? left !== right : order !== 0;
+    }
+    case "==": {
+      const order = compareRelational(left, right);
       // biome-ignore lint/suspicious/noDoubleEquals: condition grammar intentionally supports loose == for cross-type comparisons
-      return left == right;
-    case "!=":
+      return order === undefined ? left == right : order === 0;
+    }
+    case "!=": {
+      const order = compareRelational(left, right);
       // biome-ignore lint/suspicious/noDoubleEquals: condition grammar intentionally supports loose != for cross-type comparisons
-      return left != right;
-    case ">":
-      return (left as number) > (right as number);
-    case "<":
-      return (left as number) < (right as number);
-    case ">=":
-      return (left as number) >= (right as number);
-    case "<=":
-      return (left as number) <= (right as number);
+      return order === undefined ? left != right : order !== 0;
+    }
+    case ">": {
+      const order = compareRelational(left, right);
+      return order === undefined
+        ? (left as number) > (right as number)
+        : order > 0;
+    }
+    case "<": {
+      const order = compareRelational(left, right);
+      return order === undefined
+        ? (left as number) < (right as number)
+        : order < 0;
+    }
+    case ">=": {
+      const order = compareRelational(left, right);
+      return order === undefined
+        ? (left as number) >= (right as number)
+        : order >= 0;
+    }
+    case "<=": {
+      const order = compareRelational(left, right);
+      return order === undefined
+        ? (left as number) <= (right as number)
+        : order <= 0;
+    }
     case "+":
       return (left as number) + (right as number);
     case "-":

@@ -110,13 +110,13 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | Operator | Label | Type | Description |
 | -------- | ----- | ---- | ----------- |
 | `==` | soft equals | Comparison | Loose equality (type coercion) |
-| `===` | equals | Comparison | Strict equality (no type coercion) |
+| `===` | equals | Comparison | Same value; plain decimals by magnitude ("1.0" equals 1) |
 | `!=` | soft not equals | Comparison | Loose inequality |
-| `!==` | not equals | Comparison | Strict inequality |
-| `>` | greater than | Comparison | Numeric greater than |
-| `>=` | greater than or equal | Comparison | Numeric greater than or equal |
-| `<` | less than | Comparison | Numeric less than |
-| `<=` | less than or equal | Comparison | Numeric less than or equal |
+| `!==` | not equals | Comparison | Different value; plain decimals by magnitude ("1.0" equals 1) |
+| `>` | greater than | Comparison | Greater than; plain decimals by magnitude |
+| `>=` | greater than or equal | Comparison | Greater than or equal; plain decimals by magnitude |
+| `<` | less than | Comparison | Less than; plain decimals by magnitude |
+| `<=` | less than or equal | Comparison | Less than or equal; plain decimals by magnitude |
 | `contains` | contains | String | Left operand contains right operand |
 | `startsWith` | starts with | String | Left operand starts with right operand |
 | `endsWith` | ends with | String | Left operand ends with right operand |
@@ -130,11 +130,34 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `isUndefined` | is undefined | Existence | Value is strictly undefined (null does not match) |
 | `isNotUndefined` | is not undefined | Existence | Value is anything except undefined (null still matches) |
 
+**What counts as a number:** an operand is compared by magnitude only when it is a
+plain decimal - an optional sign, digits, and at most one point, such as `42`, `-0.50` or
+`1000000000000000000`. A JavaScript number is read through the shortest decimal that prints it
+back, so one large or small enough to print in exponent form is not one. Hex, exponent form and
+anything carrying whitespace are outside the grammar, which matches the visual builder: it quotes
+such a value rather than emitting a bare number.
+
+**Outside that grammar the comparison is JavaScript's own, which is not numeric.** Two strings are
+then ordered character by character, and that still produces an answer - the wrong one. A pair of
+different types usually produces no answer at all: `<`, `===` and `>` are false at once, so a
+Condition branching on all three takes no branch.
+
+```
+"0x10" vs "16"                        <  true    ===  false    >  false
+"1e18" vs "1000000000000000000"       <  false   ===  false    >  true
+"0x10" vs 16                          <  false   ===  false    >  false
+1e21   vs "1000000000000000000000"    <  false   ===  false    >  false
+" 1"   vs 1                           <  false   ===  false    >  false
+```
+
+`"0x10" < "16"` is true because `"0"` sorts before `"6"`, and `"1e18" > "1000000000000000000"` is
+true because `"e"` sorts after `"0"`. Write the value as a plain decimal and both go away.
+
 **When to use `doesNotExist` vs `isNull` / `isUndefined`:** `exists` and `doesNotExist` treat null and undefined the same, which is the right choice for most checks (for example, a node output field that may or may not be present). Reach for `isNull`, `isNotNull`, `isUndefined`, or `isNotUndefined` only when you need to tell null and undefined apart, since these match one but not the other.
 
 **Referencing a field that may be absent:** the existence operators are also the only ones that accept a field path that is not present on the upstream output at all. Every other operator fails the run when the path is missing, so that a mistyped reference is caught rather than quietly satisfying a comparison. Put an existence operator in the first clause of an AND group to guard the clauses after it. See [Runtime resolution](/workflows/templating#runtime-resolution) in the templating reference for the full rules.
 
-**When to use soft vs strict equality:** Use `==` (soft equals) when comparing values that may differ in type, such as a string `"0"` against a number `0`. Use `===` (equals) when you need exact type matching. Most blockchain data arrives as strings, so soft equality is the default for new conditions.
+**When to use soft vs strict equality:** `===` does not mean type-strict. Two plain decimals compare by magnitude under both operators, so `"1.0"`, `"1"` and `1` are one value either way, and a string `"0"` against a number `0` matches under both. They part company only where one side is not a number: `"0"` against `false` matches under `==` and does not under `===`. Most blockchain data arrives as strings, so soft equality is the default for new conditions.
 
 #### Expression Mode
 
