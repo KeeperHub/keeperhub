@@ -36,6 +36,7 @@
  * T-33-02 (Information Disclosure) mitigation: never log the secret,
  * signature, or timestamp in error paths.
  */
+import { parseAuthTimestamp } from "@/lib/auth-timestamp";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { listActiveHmacSecrets, lookupHmacSecret } from "./hmac-secret-store";
 
@@ -72,8 +73,8 @@ export async function verifyHmacRequest(
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const ts = Number.parseInt(timestamp, 10);
-  if (!Number.isFinite(ts) || Math.abs(now - ts) > REPLAY_WINDOW_SECONDS) {
+  const ts = parseAuthTimestamp(timestamp);
+  if (ts === null || Math.abs(now - ts) > REPLAY_WINDOW_SECONDS) {
     return { ok: false, status: 401, error: "Timestamp outside replay window" };
   }
 

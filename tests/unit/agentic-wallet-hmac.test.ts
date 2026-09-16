@@ -377,6 +377,31 @@ describe("verifyHmacRequest", () => {
     }
   });
 
+  it.each(["123abc", "123.5", "+123", "123e2", "00123"])(
+    "returns 401 for non-canonical timestamp %s",
+    async (timestamp) => {
+      const body = '{"chain":"base"}';
+      const sig = expectedSig(
+        TEST_SECRET,
+        signingString("POST", TEST_PATH, TEST_SUB_ORG, body, timestamp)
+      );
+      const request = buildRequest({
+        headers: {
+          "X-KH-Sub-Org": TEST_SUB_ORG,
+          "X-KH-Timestamp": timestamp,
+          "X-KH-Signature": sig,
+        },
+      });
+
+      const result = await verifyHmacRequest(request, body);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.status).toBe(401);
+      }
+    }
+  );
+
   it("returns ok:false status:404 when sub-org lookup returns null", async () => {
     mockLookupSecret.mockResolvedValueOnce(null);
     const body = '{"chain":"base"}';
