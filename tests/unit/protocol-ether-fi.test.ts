@@ -73,12 +73,12 @@ describe("ether.fi Protocol Definition (ABI-driven)", () => {
     expect(etherFiDef.contracts.eeth.label).toBe("eETH Token");
   });
 
-  it("has 13 actions: 3 writes and 10 reads", () => {
-    expect(etherFiDef.actions).toHaveLength(13);
+  it("has 14 actions: 4 writes and 10 reads", () => {
+    expect(etherFiDef.actions).toHaveLength(14);
     const reads = etherFiDef.actions.filter((a) => a.type === "read");
     const writes = etherFiDef.actions.filter((a) => a.type === "write");
     expect(reads).toHaveLength(10);
-    expect(writes).toHaveLength(3);
+    expect(writes).toHaveLength(4);
   });
 
   it("exposes the expected action slugs", () => {
@@ -86,6 +86,7 @@ describe("ether.fi Protocol Definition (ABI-driven)", () => {
     expect(slugs).toEqual(
       [
         "amount-for-share",
+        "approve-eeth",
         "eeth-balance-of",
         "eeth-total-shares",
         "get-eeth-by-weeth",

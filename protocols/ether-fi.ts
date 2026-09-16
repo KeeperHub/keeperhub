@@ -56,6 +56,12 @@ const TEST_DATA: ProtocolTestData = {
       stake: { ethValue: "0.02" },
     },
     skipped: {
+      // approve needs a spender address and amount. The weETH contract address
+      // is the natural spender for wrapping, but testing approve in isolation
+      // without a following wrap provides no coverage of the wrap path itself.
+      // Testing approve plus wrap together is the integration tier's job.
+      "approve-eeth":
+        "needs a spender address; covered by wrap integration tests",
       // wrap and unwrap need an eETH (resp. weETH) balance and an ERC20
       // approval to the weETH contract. On a fresh fork the wallet holds
       // neither until the stake fixture runs, and wrap additionally needs an
@@ -331,6 +337,33 @@ export default defineAbiProtocol({
         "1": "0x35fA164735182de50811E8e2E824cFb9B6118ac2",
       },
       overrides: {
+        approve: {
+          slug: "approve-eeth",
+          label: "Approve eETH Spending",
+          description:
+            "Approve the weETH contract (or another spender) to transfer eETH on your behalf. Required before wrapping eETH into weETH.",
+          docUrl: ETHER_FI_DOCS,
+          inputs: {
+            spender: {
+              label: "Spender Address",
+              helpTip:
+                "Address that will be approved to spend eETH. Use the weETH contract address (0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee) for wrapping.",
+              docUrl: ETHER_FI_DOCS,
+            },
+            amount: {
+              label: "Approval Amount (wei)",
+              helpTip:
+                "Amount of eETH to approve for spending, in wei. Use a large value or the exact wrap amount.",
+              docUrl: ETHER_FI_DOCS,
+              decimals: 18,
+            },
+          },
+          outputs: {
+            success: {
+              label: "Approval Success",
+            },
+          },
+        },
         balanceOf: {
           slug: "eeth-balance-of",
           label: "Get eETH Balance",

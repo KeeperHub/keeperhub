@@ -16,6 +16,7 @@ Contracts: Liquidity Pool `0x308861A430be4cce5502d0A12724771Fc6DaF216`, eETH `0x
 | Action | Type | Credentials | Description |
 |--------|------|-------------|-------------|
 | Stake ETH for eETH | Write | Wallet | Deposit native ETH into the Liquidity Pool and mint eETH |
+| Approve eETH Spending | Write | Wallet | Approve the weETH contract to spend eETH (required before wrapping) |
 | Wrap eETH into weETH | Write | Wallet | Wrap rebasing eETH into non-rebasing weETH |
 | Unwrap weETH into eETH | Write | Wallet | Unwrap weETH back into eETH at the current rate |
 | Get Total Pooled ETH | Read | No | Total ETH the pool accounts for across all stakers |
@@ -43,9 +44,26 @@ Deposit native ETH into the ether.fi Liquidity Pool and mint eETH to the sending
 
 ---
 
+## Approve eETH Spending
+
+Approve the weETH contract (or another spender) to transfer eETH on your behalf. This is required before wrapping eETH into weETH.
+
+**Inputs:**
+
+| Input | Type | Description |
+|-------|------|-------------|
+| spender | address | Address that will be approved to spend eETH (use weETH contract 0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee for wrapping) |
+| amount | uint256 | Amount of eETH to approve (wei), 18 decimals |
+
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `error`
+
+**When to use:** before any wrap transaction. The weETH contract needs approval to pull eETH from your wallet. Use a large value to avoid approving repeatedly, or the exact amount you plan to wrap.
+
+---
+
 ## Wrap eETH into weETH
 
-Wrap rebasing eETH into non-rebasing weETH. The weETH contract must be approved to spend at least the wrapped amount of eETH first.
+Wrap rebasing eETH into non-rebasing weETH. You must approve the weETH contract to spend eETH first (see Approve eETH Spending).
 
 **Inputs:**
 
