@@ -9,7 +9,6 @@ import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { integrations } from "@/lib/db/schema";
 import {
   beginIdempotentFromRequest,
-  PROCESSING_TTL_MS as IDEMPOTENCY_PROCESSING_TTL_MS,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
   recordIdempotentResponse,
@@ -36,68 +35,15 @@ import {
 import { checkRateLimit } from "../_lib/rate-limit";
 import { parseNodeNativeValueWei } from "../_lib/reserved-value";
 import {
-  DEFAULT_TIMEOUT_MS as DEFAULT_RETRY_TIMEOUT_MS,
   executeWithRetry,
   genericRetryOptions,
   type TransactionResult,
   transactionRetryOptions,
 } from "../_lib/retry";
+import { validateRetryConfig } from "../_lib/retry-budget";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import type { NodeExecuteRequest, RetryConfig } from "../_lib/types";
 import { requireWallet } from "../_lib/wallet-check";
-
-// The worst-case retry budget (timeoutMs x attempts) must not exceed the
-// idempotency processing-lock TTL, so a single request cannot outlive its own
-// reservation and have a reclaimer take the slot mid-flight.
-const MAX_RETRY_BUDGET_MS = IDEMPOTENCY_PROCESSING_TTL_MS;
-
-function validateRetryConfig(
-  raw: unknown
-): { valid: true; data: RetryConfig } | { valid: false; error: string } {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { valid: false, error: "retry must be a JSON object" };
-  }
-  const r = raw as Record<string, unknown>;
-
-  if (
-    r.maxRetries !== undefined &&
-    (typeof r.maxRetries !== "number" || r.maxRetries < 0 || r.maxRetries > 10)
-  ) {
-    return {
-      valid: false,
-      error: "retry.maxRetries must be a number between 0 and 10",
-    };
-  }
-  if (
-    r.timeoutMs !== undefined &&
-    (typeof r.timeoutMs !== "number" ||
-      r.timeoutMs < 1000 ||
-      r.timeoutMs > 600_000)
-  ) {
-    return {
-      valid: false,
-      error: "retry.timeoutMs must be a number between 1000 and 600000",
-    };
-  }
-
-  const attempts = ((r.maxRetries as number | undefined) ?? 0) + 1;
-  const perAttempt =
-    (r.timeoutMs as number | undefined) ?? DEFAULT_RETRY_TIMEOUT_MS;
-  if (attempts * perAttempt > MAX_RETRY_BUDGET_MS) {
-    return {
-      valid: false,
-      error: `retry budget (timeoutMs x (maxRetries + 1)) must not exceed ${MAX_RETRY_BUDGET_MS}ms`,
-    };
-  }
-
-  return {
-    valid: true,
-    data: {
-      maxRetries: r.maxRetries as number | undefined,
-      timeoutMs: r.timeoutMs as number | undefined,
-    },
-  };
-}
 
 function validateRequest(
   body: unknown

@@ -2,7 +2,15 @@ import "server-only";
 
 import type { RetryConfig } from "./types";
 
-const DEFAULT_MAX_RETRIES = 3;
+/**
+ * Attempts beyond the first when a request sends no `retry.maxRetries`.
+ *
+ * Exported because the direct-execution route has to size its retry budget
+ * against the same number the executor will actually use: assuming a
+ * different default there lets a request validate as one attempt and run as
+ * four, outliving the idempotency lock it reserved.
+ */
+export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_TIMEOUT_MS = 120_000;
 
 /**
