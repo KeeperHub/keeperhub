@@ -7,7 +7,7 @@ import {
   type StepInput,
 } from "@/lib/workflow/executor/step-handler";
 import type { PredgeCredentials } from "../credentials";
-import { fetchSignedSignal, verifySignedAttestation } from "./predge-core";
+import { fetchSignedSignal, verifyPredgeSignal } from "./predge-core";
 
 type ReadSignalResult =
   | {
@@ -17,10 +17,19 @@ type ReadSignalResult =
       conviction: number;
       action: string;
       window: string;
-      // The whole point: did the ed25519 signature verify offline?
+      // The whole point: did the signal verify against Predge's pinned key,
+      // about this wallet, recently enough? Gate execution on this.
       verified: boolean;
-      // hex ed25519 public key that signed the signal.
+      // Why verification failed, when it did. Empty on a clean pass.
+      reason: string;
+      // hex ed25519 public key the attestation claims to be signed by.
       signer: string;
+      // Whether the signed payload is about the requested wallet.
+      subjectMatch: boolean;
+      // ISO-8601 issue time of the attestation, when present.
+      issuedAt: string;
+      // Age of the attestation in seconds at verification time (-1 if unknown).
+      ageSeconds: number;
     }
   | {
       success: false;
@@ -36,6 +45,14 @@ export type ReadSignalInput = StepInput &
   ReadSignalCoreInput & {
     integrationId?: string;
   };
+
+function parseMaxAgeSeconds(raw?: string): number | undefined {
+  if (!raw?.trim()) {
+    return undefined;
+  }
+  const parsed = Number(raw.trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
 
 async function stepHandler(
   input: ReadSignalCoreInput,
@@ -56,13 +73,15 @@ async function stepHandler(
   }
 
   const signed = result.data;
-  // Verify offline against Predge's key. If PREDGE_SIGNER_KEY_ID is set on the
-  // connection, only that signer is trusted; otherwise any signature that
-  // matches its embedded key passes. A workflow gates execution on `verified`.
-  const verified = await verifySignedAttestation(
-    signed,
-    credentials.PREDGE_SIGNER_KEY_ID?.trim() || undefined
-  );
+  // Verify offline against Predge's pinned key. PREDGE_SIGNER_KEY_ID overrides
+  // the pinned default; the key the response carries is never trusted on its
+  // own. Binds the signal to this wallet and rejects stale attestations. A
+  // workflow gates execution on `verified`.
+  const verification = await verifyPredgeSignal(signed, {
+    requestedWallet: wallet,
+    expectedKeyId: credentials.PREDGE_SIGNER_KEY_ID?.trim() || undefined,
+    maxAgeSeconds: parseMaxAgeSeconds(credentials.PREDGE_MAX_SIGNAL_AGE_SECONDS),
+  });
 
   const signal = signed.attestation.payload;
   return {
@@ -71,8 +90,12 @@ async function stepHandler(
     conviction: signal.conviction,
     action: signal.action,
     window: signal.window,
-    verified,
-    signer: signed.attestation.keyId,
+    verified: verification.verified,
+    reason: verification.reason ?? "",
+    signer: verification.signer,
+    subjectMatch: verification.subjectMatch,
+    issuedAt: verification.issuedAt ?? "",
+    ageSeconds: verification.ageSeconds ?? -1,
   };
 }
 
