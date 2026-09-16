@@ -90,10 +90,10 @@ function stubViewport({
       : query.includes("max-width: 767px") && width < 768,
     media: query,
     onchange: null,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    addListener: () => {},
-    removeListener: () => {},
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
     dispatchEvent: () => false,
   })) as unknown as typeof window.matchMedia;
 }

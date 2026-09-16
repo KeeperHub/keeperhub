@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import { useEffect, useState } from "react";
 
 /**
  * Whether the workflow editor is offered at this viewport.
@@ -89,9 +89,9 @@ function measure(): EditorAvailability {
 
 export function useEditorAvailability(): EditorAvailability {
   const [availability, setAvailability] =
-    React.useState<EditorAvailability>("unknown");
+    useState<EditorAvailability>("unknown");
 
-  React.useEffect(() => {
+  useEffect(() => {
     const update = () => setAvailability(measure());
     update();
 
