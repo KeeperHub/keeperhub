@@ -734,13 +734,15 @@ function executionOrder(
     .filter((node) => (inDegree.get(node.id) ?? 0) === 0)
     .map((node) => node.id);
   const remaining = new Map(inDegree);
-  while (queue.length > 0) {
-    const id = queue.shift() as string;
+  for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
     if (seen.has(id)) {
       continue;
     }
     seen.add(id);
-    ordered.push(byId.get(id) as WorkflowSimulationNode);
+    const node = byId.get(id);
+    if (node !== undefined) {
+      ordered.push(node);
+    }
     for (const next of out.get(id) ?? []) {
       const left = (remaining.get(next) ?? 1) - 1;
       remaining.set(next, left);
@@ -791,10 +793,10 @@ function extendsRun(
   counts: EdgeCounts,
   edgeFrom: (source: string, target: string) => boolean
 ): boolean {
-  if (run.length === 0) {
+  const previous = run.at(-1);
+  if (previous === undefined) {
     return true;
   }
-  const previous = run.at(-1) as ReadyNode;
   return (
     previous.context.actionType === "web3/write-contract" &&
     candidate.context.actionType === "web3/write-contract" &&
