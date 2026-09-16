@@ -132,7 +132,9 @@ class RunBudget {
  *
  * Five passes, deliberately ordered child-before-parent because every foreign
  * key into `workflow_executions` is ON DELETE NO ACTION -- nothing cascades, so
- * a parent delete with a surviving child simply fails.
+ * a parent delete with a surviving child simply fails. The one exception is
+ * `workflow_step_claims`, which is ephemeral coordination state rather than
+ * history and cascades on delete, so no pass here has to know about it.
  *
  * None of the passes bounds its scan from below by a fixed lookback. An earlier
  * version did, and it meant each run only ever saw rows that had crossed their

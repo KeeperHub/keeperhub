@@ -913,6 +913,9 @@ function renderField(
         onUpdateConfig={onUpdateConfig}
         value={value}
       />
+      {field.helpText && (
+        <p className="text-muted-foreground text-xs">{field.helpText}</p>
+      )}
     </div>
   );
 }

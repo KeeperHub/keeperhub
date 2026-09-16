@@ -1,6 +1,6 @@
 ---
 title: "Data Plugin"
-description: "Reshape workflow data without writing a script: encode and decode strings, extract named fields, flatten findings, and hold static config."
+description: "Reshape workflow data without writing a script: encode and decode strings, convert numbers between decimal and hex, extract named fields, flatten findings, and hold static config."
 ---
 
 # Data Plugin
@@ -11,7 +11,7 @@ Four nodes that cover the data-shaping work that would otherwise go into a Code 
 
 | Action | Description |
 | ------ | ----------- |
-| Encode / Decode | Convert text to padded hex (bytes8/16/32), raw hex or base64, and back |
+| Encode / Decode | Convert text to padded hex (bytes8/16/32), raw hex or base64, and back; convert numbers between decimal and hex |
 | Extract Fields | Pick named values out of upstream node output by dotted path |
 | Flatten Findings | Merge several monitoring results into one labelled findings list |
 | Static Config | Hold static JSON configuration on the canvas |
@@ -20,16 +20,19 @@ Four nodes that cover the data-shaping work that would otherwise go into a Code 
 
 ## Encode / Decode
 
-Converts a string, or a JSON array of strings, between text and a hex or base64 representation. The common case is producing the `bytes32` form of a short name for a contract call.
+Converts a string, or a JSON array of strings, between text and a hex or base64 representation, or converts a number between decimal and hex. The common cases are producing the `bytes32` form of a short name for a contract call, and turning a decimal amount into the `uint256` word a contract argument expects.
 
 ### Inputs
 
 | Input | Required | Description |
 | ----- | -------- | ----------- |
-| operation | Yes | `encode` (text to hex/base64) or `decode` (hex/base64 to text). Default `encode` |
+| operation | Yes | `encode` (text to hex/base64), `decode` (hex/base64 to text), `decimal-to-hex` (number to hex) or `hex-to-decimal` (hex to number). Default `encode` |
 | value | Yes | A single value, or a JSON array of values to convert in one step |
-| format | Yes | `bytes32`, `bytes16`, `bytes8`, `hex` (no padding) or `base64`. Default `bytes32` |
-| padding | No | `right` (Solidity string to bytesN, the default) or `left` (numeric, big-endian). Fixed-size formats only |
+| format | Yes | `encode` and `decode` only. `bytes32`, `bytes16`, `bytes8`, `hex` (no padding) or `base64`. Default `bytes32` |
+| numberFormat | No | `decimal-to-hex` only. `hex` (minimal, `0xff`), `uint256`, `uint128` or `uint64` (left-padded word of that width). Default `hex` |
+| padding | No | `encode` and `decode` with a fixed-size format only. `right` (Solidity string to bytesN, the default) or `left` (numeric, big-endian) |
+
+The editor shows only the inputs that apply to the selected operation. `hex-to-decimal` needs nothing beyond `value`: leading zeros do not change a number, so a padded word and its minimal form give the same result.
 
 ### Outputs
 
@@ -38,8 +41,8 @@ Converts a string, or a JSON array of strings, between text and a hex or base64 
 | result | The converted value: a string for a single input, an array for an array input |
 | map | Object keyed by each original value, holding its converted value |
 | count | Number of values converted |
-| operation | `encode` or `decode` |
-| format | The format that was used |
+| operation | `encode`, `decode`, `decimal-to-hex` or `hex-to-decimal` |
+| format | The format that was used: the text format for `encode` and `decode`, the chosen `numberFormat` for `decimal-to-hex`. Absent for `hex-to-decimal`, which has no format |
 | error | Error message if the conversion failed |
 
 ### Notes
@@ -47,8 +50,10 @@ Converts a string, or a JSON array of strings, between text and a hex or base64 
 - Encoding a value that does not fit the chosen size fails the step rather than truncating.
 - `hex` applies no padding, so `SKY` becomes `0x534b59`.
 - Decoding strips the zero padding from the side named by `padding`, so a round trip through `bytes32` returns the original string.
+- `decimal-to-hex` accepts a non-negative integer of any size and always pads on the left, so `255` with `uint256` becomes `0x00...00ff`. Negative numbers, fractions and text fail the step, as does a number too large for the chosen width.
+- `hex-to-decimal` accepts hex with or without the `0x` prefix and returns the number as a decimal string, so values above 2^53 stay exact when passed on as a contract argument or into a template.
 
-### Example
+### Examples
 
 ```
 -> Encode / Decode (Encode Networks):
@@ -57,6 +62,23 @@ Converts a string, or a JSON array of strings, between text and a hex or base64 
      format: bytes32
 -> Read Contract:
      args: {{@encode:Encode Networks.map.SKY}}
+```
+
+```
+-> Encode / Decode (Amount Word):
+     operation: decimal-to-hex
+     value: {{@config:Static Config.result.amount}}
+     numberFormat: uint256
+-> Write Contract:
+     args: {{@encode:Amount Word.result}}
+```
+
+```
+-> Encode / Decode (Balance):
+     operation: hex-to-decimal
+     value: {{@call:Raw Call.result}}
+-> Condition:
+     {{@encode:Balance.result}} > 1000000
 ```
 
 ---

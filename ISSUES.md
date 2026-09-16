@@ -25,6 +25,8 @@ any code is written.
 - Database schema or migrations
 - Authentication, permissions, validation, or rate limiting
 - Dependencies added, removed, or upgraded
+- Protocol definitions, contract addresses, ABIs, or the chains a protocol is
+  offered on
 - CI, build, deployment, or environment configuration
 - Pricing, limits, plans, or anything a user is charged for
 - New features and new abstractions
@@ -84,6 +86,38 @@ have silently changed every existing caller's amount by a factor of 1e18,
 because the API's documented unit is ether and the misleading thing is the
 internal function name. That was caught by reading the plan. Unwritten, it would
 have been caught by reading the pull request.
+
+### Contract addresses carry their evidence
+
+An issue that adds a protocol, or adds a chain to one already here, is answered
+from its addresses. So they have to be in it, each with the authoritative source
+it came from - the protocol team's published addresses, their official
+repository, or a verified contract on the block explorer - and each ABI with the
+URL and the version it belongs to.
+
+This is the same standard the rest of this page asks for - *what told you to
+expect it* - applied to a claim about a chain. "Aave V3 is on Base" is an
+assertion; Aave's own deployed-addresses page naming that Pool contract on Base
+is the evidence. The two are not close to each other in value, because the first
+one is sometimes true and reads identically when it is not.
+
+An address is the one kind of mistake here that no reviewer catches by reading.
+It is forty hex digits, it is correct or it is not, and a wrong one is
+indistinguishable from a right one until it reverts on chain. A chain listed in
+a protocol's `addresses` map is a chain users can select
+(`lib/protocol-registry.ts:395`), so the failure is not latent - it belongs to
+whoever picks that chain from the dropdown, in production, holding real funds.
+
+Two specific things, because both have gone wrong here before:
+
+- **A chain the protocol is not deployed on never goes in the map**, including
+  to make local testing easier. If there is no testnet deployment, the tests
+  fork mainnet instead.
+- **Token decimals come from calling `decimals()` on the chain**, not from the
+  symbol and not from the explorer's metadata field. USDC is 6.
+
+The full requirements, including which ABI sources count and in what order, are
+in [CONTRIBUTING.md](CONTRIBUTING.md#protocols-and-contract-addresses).
 
 ### Already filed an issue
 
