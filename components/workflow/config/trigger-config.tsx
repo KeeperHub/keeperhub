@@ -536,7 +536,7 @@ function TraceTriggerFields({
         <p className="text-muted-foreground text-xs">
           {selectorInvalid
             ? "A selector is 0x followed by exactly 8 hex characters, for example 0x8456cb59. A value in any other shape matches nothing, so the trigger would register and never fire."
-            : "A raw 4-byte selector, for a contract without a published ABI or a view function. Takes precedence over the function above."}
+            : "A raw 4-byte selector, for a contract without a published ABI or a view function. Choosing a function above fills this in."}
         </p>
       </div>
       <div className="space-y-2">
