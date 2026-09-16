@@ -1107,6 +1107,13 @@
       "when": 1789418108876,
       "tag": "0157_workflow_step_claims",
       "breakpoints": true
+    },
+    {
+      "idx": 158,
+      "version": "7",
+      "when": 1789418108877,
+      "tag": "0158_keep_2305_condition_group_to_condition_config",
+      "breakpoints": true
     }
   ]
 }
