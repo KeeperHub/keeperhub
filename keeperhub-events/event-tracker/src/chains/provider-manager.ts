@@ -2143,11 +2143,11 @@ export class ChainProviderManager {
         const errCode = err?.code;
 
         if (errCode === -32601 || errMsg.includes("does not exist/is not available")) {
-          logger.info(
+          logger.warn(
             `[ChainProviderManager] chain=${entry.chainId} debug_traceBlockByNumber not supported, skipping trace processing`,
           );
           // Clear trace subscribers to prevent further attempts
-          entry.traceSubscribers = [];
+          entry.traceSubscribers = new Set();
           return;
         }
 
