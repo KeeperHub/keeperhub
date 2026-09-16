@@ -2,16 +2,52 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+// safe-fetch reaches for @sentry/nextjs and the metrics collector at module
+// load, and the real @/lib/logging module pulls both in too. Same stubs, for
+// the same reason, as tests/unit/blockscout-ssrf.test.ts:21-29.
+vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
+vi.mock("@/lib/metrics", () => ({
+  getMetricsCollector: () => ({
+    incrementCounter: vi.fn(),
+    recordLatency: vi.fn(),
+    recordError: vi.fn(),
+    setGauge: vi.fn(),
+  }),
+}));
+
 const {
   safeFetchMock,
   assertUrlIsPublicMock,
   fetchCredentialsMock,
   ssrfBlockedErrorMock,
+  logUserErrorMock,
 } = vi.hoisted(() => ({
   safeFetchMock: vi.fn(),
   assertUrlIsPublicMock: vi.fn(),
   fetchCredentialsMock: vi.fn(),
-  ssrfBlockedErrorMock: class SsrfBlockedError extends Error {},
+  // Matches the real constructor in lib/safe-fetch.ts:35-53. A double whose
+  // constructor takes a string would make `message` "[object Object]", and the
+  // user-facing text for a blocked target is the whole point of that path.
+  ssrfBlockedErrorMock: class SsrfBlockedError extends Error {
+    readonly code = "SSRF_BLOCKED";
+    readonly hostname: string;
+    readonly resolvedIp?: string;
+    readonly reason: string;
+
+    constructor(params: {
+      hostname: string;
+      resolvedIp?: string;
+      reason: string;
+      message: string;
+    }) {
+      super(params.message);
+      this.name = "SsrfBlockedError";
+      this.hostname = params.hostname;
+      this.resolvedIp = params.resolvedIp;
+      this.reason = params.reason;
+    }
+  },
+  logUserErrorMock: vi.fn(),
 }));
 
 vi.mock("@/lib/safe-fetch", () => ({
@@ -22,6 +58,17 @@ vi.mock("@/lib/safe-fetch", () => ({
 
 vi.mock("@/lib/credential-fetcher", () => ({
   fetchCredentials: fetchCredentialsMock,
+}));
+
+// Required mock (plugins/CLAUDE.md:140-143). Without it the real module runs,
+// and nothing can observe the classification this file's URL tests assert.
+vi.mock("@/lib/logging", () => ({
+  ErrorCategory: {
+    VALIDATION: "validation",
+    NETWORK_RPC: "network_rpc",
+    EXTERNAL_SERVICE: "external_service",
+  },
+  logUserError: logUserErrorMock,
 }));
 
 // The step wraps its handler in metrics and logging; the tests assert on the
@@ -75,6 +122,7 @@ beforeEach(() => {
   safeFetchMock.mockReset();
   assertUrlIsPublicMock.mockReset();
   fetchCredentialsMock.mockReset();
+  logUserErrorMock.mockReset();
   fetchCredentialsMock.mockResolvedValue(CREDS);
   assertUrlIsPublicMock.mockResolvedValue(undefined);
 });
@@ -153,12 +201,25 @@ describe("request shape", () => {
 
   it("bounds the request itself, not only the response text", async () => {
     safeFetchMock.mockResolvedValue(jsonResponse({ ok: true, runId: "run-t" }));
-    await callStep();
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    let timeoutMs: unknown;
+    try {
+      await callStep();
+      // Read the argument before restoring: mockRestore() clears the recorded
+      // calls along with the implementation.
+      timeoutMs = timeout.mock.calls[0]?.[0];
+    } finally {
+      timeout.mockRestore();
+    }
 
     // A hung instance must not hold the step open indefinitely. OpenClaw
     // answers 503 for its own 15-second admission window, so the client
     // timeout has to sit above that, hence an AbortSignal rather than a race.
+    // The value is the load-bearing part: at or below 15000 the client aborts
+    // mid-admission and the mapped 503 never gets a chance to arrive.
     expect(lastInit().signal).toBeInstanceOf(AbortSignal);
+    expect(typeof timeoutMs).toBe("number");
+    expect(timeoutMs as number).toBeGreaterThan(15_000);
   });
 
   it("derives the idempotency key from the execution id, as a header only", async () => {
@@ -273,7 +334,21 @@ describe("URL validation", () => {
     if (!result.success) {
       expect(result.errorClass).toBe("user");
       expect(result.error).toContain("not allowed");
+      // The blocked host has to reach the author. With a double whose
+      // constructor takes a string this assertion fails, which is the point.
+      expect(result.error).toContain("10.0.0.5");
     }
+    // The classification fix is the change under test, so assert on what it
+    // emits rather than on the branch that happens to run.
+    expect(logUserErrorMock).toHaveBeenCalledTimes(1);
+    const [category, message, error, context] = logUserErrorMock.mock.calls[0];
+    expect(category).toBe("validation");
+    expect(message).toBe("[OpenClaw] Blocked SSRF target");
+    expect(error).toBeInstanceOf(SsrfBlockedError);
+    expect(context).toEqual({
+      plugin_name: "openclaw",
+      action_name: "trigger-agent",
+    });
   });
 
   it("classifies an unparseable instance URL as the author's mistake", async () => {
@@ -425,6 +500,28 @@ describe("status mapping", () => {
     if (!result.success) {
       expect(result.error.length).toBeLessThan(700);
       expect(result.error).toContain("500");
+    }
+  });
+
+  it("caps the body it reads before parsing or redacting it", async () => {
+    // The host is the author's, so the body size is not ours to trust. The
+    // slice happens before the parse, which is observable: a JSON document
+    // this long cannot parse once truncated, so the raw head is what the
+    // author sees, and the result still lands inside the 400-character bound.
+    const huge = `{"error": "${"x".repeat(9000)}"}`;
+    safeFetchMock.mockResolvedValue(
+      new Response(huge, {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    const result = await callStep();
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain('{"error"');
+      expect(result.error).not.toContain("x".repeat(500));
+      expect(result.error.length).toBeLessThan(700);
     }
   });
 
