@@ -14,6 +14,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { MobileEditorNotice } from "@/components/workflow/mobile-editor-notice";
 import { NodeConfigPanel } from "@/components/workflow/node-config-panel";
 import { useGatedWorkflowWarning } from "@/hooks/use-features";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -1176,8 +1177,11 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
         </div>
       )}
 
-      {/* Mobile: NodeConfigPanel renders the overlay trigger button - only show if trigger exists */}
-      {isMobile && hasTriggerNode && <NodeConfigPanel />}
+      {/* Mobile: the editor is not offered at this width, so the node
+          configuration panel is replaced by the notice that says where the
+          surface does exist. The canvas and the toolbar's run controls are
+          withheld by the shell for the same reason. */}
+      {isMobile && <MobileEditorNotice />}
     </div>
   );
 };

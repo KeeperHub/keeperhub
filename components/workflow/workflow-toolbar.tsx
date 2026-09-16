@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
 import { MobileNavSheet } from "@/components/navigation/mobile-nav-sheet";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
 import { Switch } from "@/components/ui/switch";
@@ -1418,6 +1419,7 @@ function ToolbarActions({
   state: ReturnType<typeof useWorkflowState>;
   actions: ReturnType<typeof useWorkflowActions>;
 }) {
+  const isMobile = useIsMobile();
   const { open: openOverlay, push } = useOverlay();
   const [selectedNodeId] = useAtom(selectedNodeAtom);
   const [selectedEdgeId] = useAtom(selectedEdgeAtom);
@@ -1438,6 +1440,14 @@ function ToolbarActions({
   // already gated by ownership elsewhere.
   const isPreviewContext = !state.isOwner;
   if (workflowId && isPreviewContext) {
+    return null;
+  }
+
+  // A phone gets no authoring controls and no manual run: the canvas is not
+  // mounted at this width either, so Save would have nothing to save and Run
+  // would start a workflow the user cannot then watch. Monitoring surfaces,
+  // including the navigation sheet this toolbar hosts, are unaffected.
+  if (isMobile) {
     return null;
   }
 
