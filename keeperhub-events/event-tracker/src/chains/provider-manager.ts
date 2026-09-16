@@ -2142,7 +2142,10 @@ export class ChainProviderManager {
         const errMsg = String(err?.message || err);
         const errCode = err?.code;
 
-        if (errCode === -32601 || errMsg.includes("does not exist/is not available")) {
+        if (
+          errCode === -32601 ||
+          errMsg.includes("does not exist/is not available")
+        ) {
           logger.warn(
             `[ChainProviderManager] chain=${entry.chainId} debug_traceBlockByNumber not supported, skipping trace processing`,
           );
