@@ -1,3 +1,21 @@
+// Chains whose token lineup does not mirror Ethereum mainnet's stablecoin set
+// (Plasma ships USDT0 with no Circle USDC and no Sky USDS; Tempo mainnet and
+// testnet pay gas in stablecoins; Arc mainnet and testnet carry their own
+// lineup). For these chains the wallet modal and
+// /api/supported-tokens return the chain's own supported_tokens rows directly
+// instead of overlaying them on the mainnet master list, which would print a
+// "Not available" row for every mainnet asset that simply does not exist
+// there. One set, read by both consumers: it used to be two copies kept in
+// sync by hand, and a chain added to one but not the other rendered correctly
+// in the API and wrongly in the modal.
+export const INDEPENDENT_TOKEN_LIST_CHAIN_IDS: ReadonlySet<number> = new Set([
+  42_431, 4217, 9745, 5042, 5_042_002,
+]);
+
+export function hasIndependentTokenList(chainId: number): boolean {
+  return INDEPENDENT_TOKEN_LIST_CHAIN_IDS.has(chainId);
+}
+
 const CHAIN_NAMES: Record<string, string> = {
   "1": "Ethereum",
   "10": "Optimism",
