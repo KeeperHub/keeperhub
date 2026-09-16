@@ -125,6 +125,10 @@ const openClawPlugin: IntegrationPlugin = {
           key: "timeoutSeconds",
           label: "Timeout (seconds)",
           type: "number",
+          // Without a floor an author can type 0, the step drops the field at
+          // trigger-agent.ts (the `> 0` guard) and the run silently takes the
+          // instance default instead of the value on screen.
+          min: 1,
           placeholder: "300",
         },
       ],

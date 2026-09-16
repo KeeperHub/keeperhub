@@ -49,6 +49,16 @@ const TRAILING_SLASHES = /\/+$/;
  */
 const MAX_ERROR_CHARS = 400;
 
+/**
+ * Cap on what is read off the wire before anything parses or redacts it.
+ *
+ * The response comes from a host the workflow author chose, so neither its
+ * status nor its size is under our control: a redirect to a large document,
+ * or a hostile instance, would otherwise pull an unbounded string into memory
+ * before the 400-character bound below ever applies.
+ */
+const MAX_RAW_BODY_CHARS = 8_192;
+
 /** Placeholder written in place of anything that could carry the hook token. */
 const REDACTED = "[redacted]";
 
@@ -111,6 +121,16 @@ function redactSecrets(text: string, hookToken: string): string {
 }
 
 /**
+ * Read the body, capped before any parse or redaction runs over it.
+ *
+ * Both reads below go through here: the failure path, whose text lands in the
+ * run log, and the success path, which only needs `ok` and `runId`.
+ */
+async function readBoundedText(response: Response): Promise<string> {
+  return (await response.text()).slice(0, MAX_RAW_BODY_CHARS);
+}
+
+/**
  * Read whatever the instance returned, without assuming it is JSON.
  *
  * The result is redacted before it is bounded: an instance, or a reverse proxy
@@ -122,7 +142,7 @@ async function readFailureText(
   hookToken: string
 ): Promise<string> {
   try {
-    const raw = await response.text();
+    const raw = await readBoundedText(response);
     if (!raw) {
       return "";
     }
@@ -324,7 +344,7 @@ async function stepHandler(
       return { success: false, ...failure };
     }
 
-    const raw = await response.text();
+    const raw = await readBoundedText(response);
     let payload: { ok?: unknown; runId?: unknown };
     try {
       payload = JSON.parse(raw) as { ok?: unknown; runId?: unknown };
