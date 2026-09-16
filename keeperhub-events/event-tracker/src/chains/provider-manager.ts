@@ -2077,9 +2077,9 @@ export class ChainProviderManager {
         const traces = (await this.sendWithTimeout(
           provider,
           "debug_traceBlockByNumber",
-          [blockHex, { tracer: "callTracer" }],
+          [blockHex, { tracer: "callTracer", timeout: "15s" }],
           30000,
-        )) as Array<{ result?: any }> | null;
+        )) as Array<{ result?: any; txHash?: string }> | null;
 
         if (!traces || !Array.isArray(traces)) {
           continue;
@@ -2092,7 +2092,12 @@ export class ChainProviderManager {
             continue;
           }
 
-          const txHash = block.transactions[txIndex];
+          // Use the transaction hash from the trace result or fall back to block.transactions
+          const txHash = trace.txHash || block.transactions[txIndex];
+          if (!txHash) {
+            continue;
+          }
+
           const matches = this.extractTraceMatches(
             trace.result,
             blockNumber,
@@ -2101,22 +2106,43 @@ export class ChainProviderManager {
             subscribers,
           );
 
-          // Dispatch matches to handlers
-          await Promise.all(
-            matches.map(async ({ subscriber, frames }) => {
+          // Dispatch matches with a cap of 25 per subscription per block
+          const dispatchTasks = matches.flatMap(({ subscriber, frames }) => {
+            const cappedFrames = frames.slice(0, 25);
+            if (frames.length > 25) {
+              logger.warn(
+                `[ChainProviderManager] chain=${entry.chainId} block=${blockNumber} capping trace dispatch from ${frames.length} to 25 for subscription`,
+              );
+            }
+            return cappedFrames.map((frame) => async () => {
               try {
-                await subscriber.handler(frames);
+                await subscriber.handler([frame]);
               } catch (err) {
                 logger.warn(
                   `[ChainProviderManager] chain=${entry.chainId} trace subscriber handler threw: ${String(err)}`,
                 );
               }
-            }),
-          );
+            });
+          });
+
+          await Promise.all(dispatchTasks.map((task) => task()));
         }
-      } catch (err) {
+      } catch (err: any) {
+        // Classify errors to avoid infinite retry on unsupported methods
+        const errMsg = String(err?.message || err);
+        const errCode = err?.code;
+
+        if (errCode === -32601 || errMsg.includes("does not exist/is not available")) {
+          logger.info(
+            `[ChainProviderManager] chain=${entry.chainId} debug_traceBlockByNumber not supported, skipping trace processing`,
+          );
+          // Clear trace subscribers to prevent further attempts
+          entry.traceSubscribers = [];
+          return;
+        }
+
         logger.warn(
-          `[ChainProviderManager] chain=${entry.chainId} trace fetch failed for block ${blockNumber}: ${String(err)}`,
+          `[ChainProviderManager] chain=${entry.chainId} trace fetch failed for block ${blockNumber}: ${errMsg}`,
         );
       }
     }
