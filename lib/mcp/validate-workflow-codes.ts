@@ -15,6 +15,19 @@ export const VALIDATION_ERROR_CODES = {
   // Web3 codes added in Plan 48-02:
   UNKNOWN_CHAIN_ID: "unknown-chain-id",
   INVALID_TOKEN_ADDRESS: "invalid-token-address",
+  // Event-trigger registration codes. Each names a condition under which the
+  // event tracker declines to register the workflow, or its listener fails to
+  // start, without anything reaching the user. See validate-workflow-trigger.ts.
+  TRIGGER_MISSING_NETWORK: "trigger-missing-network",
+  TRIGGER_CHAIN_HAS_NO_WEBSOCKET: "trigger-chain-has-no-websocket",
+  TRIGGER_MISSING_CONTRACT_ADDRESS: "trigger-missing-contract-address",
+  TRIGGER_MISSING_EVENT_NAME: "trigger-missing-event-name",
+  TRIGGER_MISSING_ABI: "trigger-missing-abi",
+  TRIGGER_ABI_NOT_JSON: "trigger-abi-not-json",
+  TRIGGER_ABI_NOT_ARRAY: "trigger-abi-not-array",
+  TRIGGER_ABI_HAS_NO_EVENTS: "trigger-abi-has-no-events",
+  TRIGGER_ABI_EVENT_MISSING_INPUTS: "trigger-abi-event-missing-inputs",
+  TRIGGER_EVENT_NOT_IN_ABI: "trigger-event-not-in-abi",
 } as const;
 
 export const VALIDATION_WARNING_CODES = {

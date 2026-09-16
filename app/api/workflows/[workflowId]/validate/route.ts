@@ -54,12 +54,21 @@ export async function GET(
   const { searchParams } = new URL(request.url);
   const deepCheck = searchParams.get("deepCheck") === "true";
 
-  // Pre-fetch enabled chain IDs ONCE per request — validator stays pure.
+  // Pre-fetch enabled chain rows ONCE per request — validator stays pure.
+  // default_primary_wss rides along on the query that was already being made:
+  // an Event trigger on a chain without a WebSocket endpoint is never
+  // registered, and that is the one condition a user cannot self-diagnose.
   const enabledChainRows = await db
-    .select({ chainId: chains.chainId })
+    .select({
+      chainId: chains.chainId,
+      defaultPrimaryWss: chains.defaultPrimaryWss,
+    })
     .from(chains)
     .where(eq(chains.isEnabled, true));
   const chainIds = new Set(enabledChainRows.map((r) => r.chainId));
+  const chainWebsockets = new Map(
+    enabledChainRows.map((r) => [r.chainId, r.defaultPrimaryWss])
+  );
 
   const workflow: ValidatorWorkflow = {
     id: row.id,
@@ -73,9 +82,14 @@ export async function GET(
     workflowType: (row.workflowType ?? "read") as "read" | "write",
   };
 
+  // chainWebsockets is passed on the fast path only. validateWorkflowDeep
+  // calls validateWorkflow with no options at all, so the deep tier already
+  // drops chainIds and would drop this the same way; widening its options type
+  // would advertise support that does not exist. That is a pre-existing bug in
+  // the deep tier rather than one this check introduces.
   const result: ValidationResult = deepCheck
     ? await validateWorkflowDeep(workflow, { chainIds })
-    : validateWorkflow(workflow, { chainIds });
+    : validateWorkflow(workflow, { chainIds, chainWebsockets });
 
   return NextResponse.json({
     ok: true,
