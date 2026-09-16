@@ -33,7 +33,10 @@ export const LAYERZERO_DEPLOYMENTS_DOCS =
 // supports. Source: LayerZero metadata API
 // (metadata.layerzero-api.com/v1/metadata), 2026-09-16, with every entry
 // then confirmed against the chain itself by calling eid() on that chain's
-// EndpointV2 (the integration suite repeats that check).
+// EndpointV2. The integration suite repeats that check for all of them: it
+// asks each chain's view which endpoint it serves and that endpoint which
+// chain it is on, so a corrected or mistyped ID here fails CI rather than
+// being compared against itself in a unit test.
 //
 // Chosen by hand, one chain at a time, because the metadata cannot be
 // filtered on nativeChainId alone: chain 1 is both Ethereum and Aptos, and
@@ -573,14 +576,21 @@ export default defineAbiProtocol({
     // chain 1's reference token is USDT, so the declaration has to cover
     // both shapes.
     //
-    // The mismatch is not inert on the write path, which is what a bool
-    // declaration would assume. Before broadcasting,
-    // EvmChainAdapter.executeContractCall runs a preflight `staticCall`
-    // (lib/web3/chain-adapter/evm.ts), and ethers decodes that call's return
-    // data against the declared outputs. Against USDT it decodes "0x" as a
-    // bool and throws BAD_DATA, so the approve fails before it is sent, with
-    // "Contract returned no data, but the ABI you supplied declares 1 output
-    // (bool)". It is a decode error reported as a contract failure.
+    // The mismatch is not inert, which is what a bool declaration would
+    // assume. On the EOA path, EvmChainAdapter.executeContractCall runs a
+    // preflight `staticCall` before broadcasting (lib/web3/chain-adapter/
+    // evm.ts), and ethers decodes that call's return data against the
+    // declared outputs. Against USDT it decodes "0x" as a bool and throws
+    // BAD_DATA, so the approve fails before it is sent, with "Contract
+    // returned no data, but the ABI you supplied declares 1 output (bool)".
+    // It is a decode error reported as a contract failure.
+    //
+    // Only that path decodes. Safe, Safe-role and Turnkey-sponsored sends
+    // encode the call and estimate gas without a staticCall
+    // (lib/safe/execute-as-safe.ts, lib/web3/sponsored-transaction-manager.ts),
+    // so a bool declaration survives them. Stating this precisely matters:
+    // the same node, ABI and token fails for an EOA connection and succeeds
+    // for a Safe one, so a repro that omits the signer mode proves nothing.
     //
     // An empty `outputs` decodes both shapes: ethers reads nothing and
     // ignores the 32 bytes a conforming token returns. Nothing downstream
@@ -751,7 +761,14 @@ export default defineAbiProtocol({
           inputs: {
             srcEid: {
               label: "Source Endpoint ID",
-              helpTip: `LayerZero endpoint ID of the chain the message was sent from, not the EVM chain ID. ${EID_TABLE}`,
+              // Solana's endpoint IDs are named here and nowhere else in the
+              // file. The source may be non-EVM -- that is what the bytes32
+              // sender is for -- and a user polling a Solana send has no
+              // other way to learn the ID. A wrong one returns 0 forever,
+              // which reads as "not delivered yet" rather than "wrong lane".
+              // It says nothing about destinations: the action's network
+              // picker is EVM-only, and Solana has no view contract.
+              helpTip: `LayerZero endpoint ID of the chain the message was sent from, not the EVM chain ID. ${EID_TABLE} A non-EVM source works too, with its sender given as bytes32: Solana 30168, Solana Devnet 40168.`,
               docUrl: LAYERZERO_DEPLOYMENTS_DOCS,
             },
             sender: {

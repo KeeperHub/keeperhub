@@ -644,7 +644,12 @@ describe("LayerZero EndpointV2 deployments identify their own chain", () => {
 // not the view, fails to decode and the test fails with it.
 const VIEW_ABI = [
   "function executable((uint32 srcEid, bytes32 sender, uint64 nonce) origin, address receiver) view returns (uint8)",
+  "function endpoint() view returns (address)",
 ];
+// EndpointV2View's runtime code, identical on every chain apart from its
+// immutables. Pinned so a mapped address that merely answers cannot pass as
+// the view.
+const VIEW_CODE_BYTES = 2304;
 const UNUSED_ORIGIN = {
   srcEid: 30_101,
   sender: ethers.zeroPadValue("0x000000000000000000000000000000000000dEaD", 32),
@@ -676,6 +681,38 @@ describe("LayerZero EndpointV2View deployments answer executable()", () => {
         const [state] = iface.decodeFunctionResult("executable", result);
         expect(Number(state)).toBeGreaterThanOrEqual(0);
         expect(Number(state)).toBeLessThanOrEqual(3);
+
+        // `0 <= state <= 3` alone is satisfied by any contract whose
+        // fallback returns 32 zero bytes, so it cannot tell a correct
+        // address from a proxy or a permissive one. These two can.
+        const code = await manager.executeWithFailover((p) => p.getCode(view));
+        expect((code.length - 2) / 2, `code size on ${chainId}`).toBe(
+          VIEW_CODE_BYTES
+        );
+
+        // The identity check: ask the view which endpoint it serves, then
+        // ask that endpoint which chain it is on. A transcription error onto
+        // another chain's view fails here, and it is also what pins the 15
+        // endpoint IDs that no other on-chain assertion reaches -- the unit
+        // tests can only compare the constant against itself.
+        const endpointResult = await manager.executeWithFailover((p) =>
+          p.call({ to: view, data: iface.encodeFunctionData("endpoint") })
+        );
+        const [endpointAddress] = iface.decodeFunctionResult(
+          "endpoint",
+          endpointResult
+        );
+        const eidIface = new ethers.Interface(EID_ABI);
+        const eidResult = await manager.executeWithFailover((p) =>
+          p.call({
+            to: endpointAddress as string,
+            data: eidIface.encodeFunctionData("eid"),
+          })
+        );
+        const [eid] = eidIface.decodeFunctionResult("eid", eidResult);
+        expect(Number(eid), `eid reported on chain ${chainId}`).toBe(
+          LAYERZERO_EIDS[chainId]
+        );
       },
       30_000
     );

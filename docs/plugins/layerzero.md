@@ -29,7 +29,7 @@ The last row is the one that does not announce itself. The other failures are lo
 
 Supported chains for the OFT and endpoint configuration actions: Ethereum, Base, Arbitrum One, Optimism, Polygon, Ethereum Sepolia, Base Sepolia.
 
-Endpoint Message Executable runs on a wider set, because it needs no token deployment to point at: every chain KeeperHub supports where LayerZero deploys its endpoint view. That adds BNB Chain, Avalanche, Plasma, 0G, Tempo and Robinhood Chain, and the testnets of each, to the list above.
+Endpoint Message Executable runs on a wider set, because it needs no token deployment to point at: every chain KeeperHub supports where LayerZero deploys its endpoint view. On top of the seven above, that is BNB Chain, Avalanche, Plasma, 0G, Tempo and Robinhood Chain, plus the testnets Arbitrum Sepolia, Optimism Sepolia, Polygon Amoy, BNB Chain Testnet, Avalanche Fuji, Plasma Testnet, 0G Galileo, Tempo Testnet and Robinhood Chain Testnet: twenty-two in all.
 
 The OFT actions and the underlying-token actions take the contract address as an input, because there is no single OFT address the way there is a single lending pool: every omnichain token is its own deployment. The EndpointV2 actions do not, because LayerZero's endpoint has one known address per chain (`0x1a44076050125825900e736c501f859c50fE728c` on the mainnets listed above, `0x6EDCE65403992e310A62460808c4b910D972f10f` on both testnets), which is resolved from the chain you select. Endpoint Message Executable reads LayerZero's EndpointV2View the same way; its address differs on almost every chain and is also resolved for you.
 
