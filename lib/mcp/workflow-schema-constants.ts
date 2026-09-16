@@ -318,20 +318,23 @@ export const TRIGGERS = {
     optionalFields: {
       traceCaller: "string - Only match calls made from this address",
       traceSelector:
-        'string - Only match this 4-byte function selector (e.g., "0x8456cb59"). Takes precedence over abiFunction',
+        'string - Only match this 4-byte function selector, 0x followed by 8 hex characters (e.g., "0x8456cb59"). A value in any other shape is refused, since it would match nothing',
       abiFunction:
-        "string - Only match this function, resolved against contractABI to its selector",
+        "string - The function chosen in the editor, which fills in traceSelector. Resolving it to a selector is the editor's job, so send traceSelector when creating a workflow here",
       contractABI: "string - Contract ABI JSON, needed only for abiFunction",
       traceCallTypes:
         "string[] - Only match these frame types: CALL, STATICCALL, DELEGATECALL, CALLCODE, CREATE, CREATE2, SELFDESTRUCT. Empty matches all",
       traceMinValueWei:
         "string - Only match calls moving at least this much native value, in wei (decimal integer)",
+      traceMinValue:
+        "string - The same minimum as traceMinValueWei written in native token units, which is what the editor displays. Set both, or the editor shows an empty box while traceMinValueWei is in force",
       traceStatus:
-        '"success" (default) | "reverted" | "any" - Which call outcomes match',
+        '"success" (default, applied when absent) | "reverted" | "any" - Which call outcomes match',
     },
     outputFields: {
       transactionHash: "string - Hash of the transaction the call ran in",
       blockNumber: "number - Block height the transaction landed in",
+      chainId: "number - Numeric chain ID the call ran on",
       from: "string - Address that made the call",
       to: "string - Address that was called (the watched contract)",
       value: "string - Native value moved by the call, in wei (decimal)",

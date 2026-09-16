@@ -3,12 +3,16 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { type Chain, chains, workflows } from "@/lib/db/schema";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { getProtocol } from "@/lib/protocol-registry";
 import type { WorkflowNode } from "@/lib/workflow/store";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
-import { normalizeTraceTriggerConfig } from "@/lib/workflow/trace-trigger-config";
+import {
+  isValidTraceCallTypes,
+  isValidTraceSelector,
+  normalizeTraceTriggerConfig,
+} from "@/lib/workflow/trace-trigger-config";
 
 // The Transfer trigger always watches the fixed TIP-20
 // TransferWithMemo event. The event-tracker's mapper needs an ABI + event name
@@ -118,6 +122,30 @@ export async function GET(request: Request) {
           const config = triggerNode.data?.config;
 
           if (isTraceTrigger && config) {
+            // A selector the matcher can never match produces a trigger that
+            // registers and never fires, reporting nothing -- so it is
+            // refused here rather than handed to the tracker. The editor
+            // marks the field invalid, but nothing validates trigger nodes
+            // on save (action-config validation covers action nodes only),
+            // so the editor's check cannot be the only one.
+            if (!isValidTraceCallTypes(config.traceCallTypes)) {
+              logUserError(
+                ErrorCategory.VALIDATION,
+                "[Workflow Events] Trace trigger has unreadable call types",
+                undefined,
+                { workflowId: workflow.id }
+              );
+              return null;
+            }
+            if (!isValidTraceSelector(config.traceSelector)) {
+              logUserError(
+                ErrorCategory.VALIDATION,
+                "[Workflow Events] Trace trigger has a malformed function selector",
+                undefined,
+                { workflowId: workflow.id }
+              );
+              return null;
+            }
             normalizeTraceTriggerConfig(config);
           }
 

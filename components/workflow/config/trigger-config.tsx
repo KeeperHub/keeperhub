@@ -31,6 +31,7 @@ import { TimezoneSelect } from "@/components/ui/timezone-select";
 import { parseIntervalSeconds } from "@/lib/cron-utils";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import {
+  isValidTraceSelector,
   parseTraceCallTypes,
   TRACE_CALL_TYPES,
   TRACE_SEED_CHAIN_IDS,
@@ -353,6 +354,19 @@ function TraceTriggerFields({
       : [];
   }, [config.traceCallTypes]);
 
+  // `defaultValue` on the select is display-only: the renderer shows it and
+  // never writes it back, so a user who never opens the dropdown saves a
+  // config with no traceStatus at all. Persisting it on first render keeps
+  // what the panel shows and what the tracker receives in step, rather than
+  // relying on both sides defaulting to the same value.
+  useEffect(() => {
+    if (config.traceStatus === undefined || config.traceStatus === "") {
+      onUpdateConfig("traceStatus", "success");
+    }
+  }, [config.traceStatus, onUpdateConfig]);
+
+  const selector = (config.traceSelector as string) || "";
+  const selectorInvalid = !isValidTraceSelector(selector);
   const minValue = (config.traceMinValue as string) || "";
   const minValueInvalid = minValue.trim() !== "" && toWeiString(minValue) === null;
 
@@ -420,14 +434,6 @@ function TraceTriggerFields({
 
   const selectorFields: ActionConfigField[] = [
     {
-      key: "traceSelector",
-      label: "Function Selector (Optional)",
-      type: "text",
-      placeholder: "0x8456cb59",
-      helpTip:
-        "A raw 4-byte selector, for a contract without a published ABI or a view function. Takes precedence over the function above.",
-    },
-    {
       key: "traceCaller",
       label: "Caller (Optional)",
       type: "text",
@@ -450,9 +456,12 @@ function TraceTriggerFields({
       return;
     }
     const wei = toWeiString(value);
-    if (wei !== null) {
-      onUpdateConfig("traceMinValueWei", wei);
-    }
+    // Clearing on a parse failure matters as much as setting on success.
+    // traceMinValueWei is what registers; traceMinValue is only what the box
+    // shows. Leaving a stale wei value behind after the text stops parsing
+    // means the panel reads "0.5x" while the trigger still filters at 0.5,
+    // and nothing blocks saving it.
+    onUpdateConfig("traceMinValueWei", wei ?? "");
   }
 
   return (
@@ -510,6 +519,24 @@ function TraceTriggerFields({
         </div>
         <p className="text-muted-foreground text-xs">
           Leave all unchecked to match every call type.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <Label className="ml-1" htmlFor="traceSelector">
+          Function Selector (Optional)
+        </Label>
+        <Input
+          aria-invalid={selectorInvalid}
+          disabled={disabled}
+          id="traceSelector"
+          onChange={(e) => onUpdateConfig("traceSelector", e.target.value)}
+          placeholder="0x8456cb59"
+          value={selector}
+        />
+        <p className="text-muted-foreground text-xs">
+          {selectorInvalid
+            ? "A selector is 0x followed by exactly 8 hex characters, for example 0x8456cb59. A value in any other shape matches nothing, so the trigger would register and never fire."
+            : "A raw 4-byte selector, for a contract without a published ABI or a view function. Takes precedence over the function above."}
         </p>
       </div>
       <div className="space-y-2">

@@ -27,6 +27,27 @@ export const TRACE_SEED_CHAIN_IDS = [
   "42431", // Tempo Testnet
 ] as const;
 
+/** A raw 4-byte function selector, as typed into the Trace trigger. */
+export const TRACE_SELECTOR_PATTERN = /^0x[0-9a-fA-F]{8}$/;
+
+/**
+ * Whether a stored `traceSelector` is usable.
+ *
+ * Empty means "any function" and is valid. Anything else has to be a
+ * 4-byte selector: the matcher compares it against the first four bytes of
+ * a call frame's input, so `pause()` or a truncated `0x845` matches nothing
+ * and produces a trigger that registers, never fires, and reports no error
+ * anywhere. Checked in the panel and again on the way to the tracker, since
+ * trigger nodes are not covered by the action-config validation that runs
+ * on save.
+ */
+export function isValidTraceSelector(raw: unknown): boolean {
+  if (raw === undefined || raw === null || raw === "") {
+    return true;
+  }
+  return typeof raw === "string" && TRACE_SELECTOR_PATTERN.test(raw.trim());
+}
+
 /** Frame types the tracker accepts in `traceCallTypes`. */
 export const TRACE_CALL_TYPES = [
   "CALL",
@@ -75,4 +96,29 @@ export function normalizeTraceTriggerConfig(
   if (config.traceCallTypes !== undefined) {
     config.traceCallTypes = parseTraceCallTypes(config.traceCallTypes);
   }
+}
+
+/**
+ * Whether a stored `traceCallTypes` is a shape the tracker can read.
+ *
+ * An unparseable value used to be passed through on the theory that the
+ * tracker would refuse it and log; no such refusal exists, and a bare string
+ * reaching the matcher has `.some` called on it inside the per-block drain.
+ * Meanwhile the editor collapses a non-array to an empty list, so the panel
+ * shows nothing checked and the first toggle silently overwrites it. Neither
+ * half was doing what the comment claimed, so the value is checked instead.
+ */
+export function isValidTraceCallTypes(raw: unknown): boolean {
+  if (raw === undefined || raw === null || raw === "") {
+    return true;
+  }
+  const parsed = parseTraceCallTypes(raw);
+  if (!Array.isArray(parsed)) {
+    return false;
+  }
+  return parsed.every(
+    (entry) =>
+      typeof entry === "string" &&
+      (TRACE_CALL_TYPES as readonly string[]).includes(entry)
+  );
 }

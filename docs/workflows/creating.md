@@ -108,16 +108,14 @@ The workflow runs once for each call to the watched contract that matches every 
 | Setting | Config key | Matches |
 |---------|------------|---------|
 | Call Outcome | `traceStatus` | `"success"` (default), `"reverted"`, or `"any"` |
-| Function | `abiFunction` + `contractABI`, or `traceSelector` | Calls to one function. A raw 4-byte selector takes precedence |
+| Function | `traceSelector` | Calls to one function, given as its raw 4-byte selector. Selecting a function from the ABI fills this in for you |
 | Caller | `traceCaller` | Calls made from one address |
 | Call Types | `traceCallTypes` | Any of `CALL`, `STATICCALL`, `DELEGATECALL`, `CALLCODE`, `CREATE`, `CREATE2`, `SELFDESTRUCT`. Empty matches all |
 | Minimum Value | `traceMinValueWei` | Calls moving at least this much native token, in wei |
 
-A filter value that cannot be read (for example a malformed address or selector) stops the trigger from registering, rather than being ignored and matching more calls than you asked for.
+A malformed function selector stops the trigger from registering, rather than being accepted and then matching nothing. Other filter values are not validated yet, so check a caller address before saving.
 
 Each run receives `transactionHash`, `blockNumber`, `from`, `to`, `value` (wei, as a decimal string), `selector`, `input`, `callType`, `reverted`, `depth`, `frameIndex` and `transactionIndex`. For example, `{{@trigger:Trigger.from}}` is the address that made the call.
-
-To avoid a burst of runs from one busy block, a Trace trigger fires at most 25 times per block. Narrow the filter if you expect more matches than that.
 
 > **Network support:** Trace triggers need an RPC endpoint that serves `debug_traceBlockByNumber`. Plasma and Tempo serve it today. On a network whose endpoint does not, the trigger registers but never fires.
 

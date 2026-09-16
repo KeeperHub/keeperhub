@@ -190,8 +190,9 @@ export function getTempoPaymentOutputFields(): OutputField[] {
 /**
  * Get output fields for the Trace trigger. One run fires per matching call
  * frame; the fields mirror the payload the event tracker's trace listener
- * sends (keeperhub-events/event-tracker/src/listener/trace-trigger.ts,
- * buildTracePayload).
+ * sends from its dispatch path. The tracker side is a separate change, so
+ * this list is written against the agreed payload rather than against code
+ * that exists here -- if the two drift, this is the half to correct.
  */
 export function getTraceTriggerOutputFields(): OutputField[] {
   return [
@@ -202,6 +203,10 @@ export function getTraceTriggerOutputFields(): OutputField[] {
     {
       field: "blockNumber",
       description: "Block height the transaction landed in",
+    },
+    {
+      field: "chainId",
+      description: "Numeric chain ID the call ran on",
     },
     { field: "from", description: "Address that made the call" },
     {

@@ -3,16 +3,22 @@ import { detectListingTriggerType } from "@/lib/mcp/trigger-input-schema";
 import { TRIGGERS } from "@/lib/mcp/workflow-schema-constants";
 import { getTriggerOutputFields } from "@/lib/workflow/editor/trigger-output-fields";
 import {
+  isValidTraceCallTypes,
+  isValidTraceSelector,
   normalizeTraceTriggerConfig,
   parseTraceCallTypes,
 } from "@/lib/workflow/trace-trigger-config";
 
-// The Trace trigger's triggerData is produced by buildTracePayload in
-// keeperhub-events/event-tracker/src/listener/trace-trigger.ts, and its config
-// is read by buildTraceRegistration in
-// keeperhub-events/event-tracker/src/listener/workflow-mapper.ts. The tracker
-// is a separate package this suite cannot import, so the names are listed here
-// and these tests guard the app side against drifting from them.
+// The Trace trigger's payload and config are produced and read by the event
+// tracker, a separate package this suite cannot import, so the agreed names
+// are listed here and these tests guard the app side against drifting from
+// them.
+//
+// Their limit is worth stating plainly: they compare the app against this
+// hand-copied list, not against the tracker. A divergence introduced on the
+// tracker side -- a different key spelling, or a value in hex where this side
+// documents decimal -- passes every test here. They catch drift within the
+// app, and nothing more.
 const TRACE_PAYLOAD_KEYS = [
   "blockNumber",
   "transactionHash",
@@ -26,6 +32,7 @@ const TRACE_PAYLOAD_KEYS = [
   "input",
   "depth",
   "reverted",
+  "chainId",
 ] as const;
 
 const TRACE_CONFIG_KEYS = [
@@ -35,6 +42,7 @@ const TRACE_CONFIG_KEYS = [
   "contractABI",
   "traceCallTypes",
   "traceMinValueWei",
+  "traceMinValue",
   "traceStatus",
 ] as const;
 
@@ -64,6 +72,35 @@ describe("Trace trigger schema", () => {
     expect(Object.keys(TRIGGERS.Trace.optionalFields).sort()).toEqual(
       [...TRACE_CONFIG_KEYS].sort()
     );
+  });
+
+  it("accepts only a 4-byte selector, since anything else matches nothing", () => {
+    // The failure being prevented is silent: a selector the matcher can
+    // never match registers happily and then never fires, which is
+    // indistinguishable from a quiet contract.
+    expect(isValidTraceSelector("0x8456cb59")).toBe(true);
+    expect(isValidTraceSelector("")).toBe(true);
+    expect(isValidTraceSelector(undefined)).toBe(true);
+    for (const bad of [
+      "pause()",
+      "0x845",
+      "0x8456cb5",
+      "8456cb59",
+      "0xzzzzzzzz",
+    ]) {
+      expect(isValidTraceSelector(bad), bad).toBe(false);
+    }
+  });
+
+  it("accepts only call types the tracker can read", () => {
+    expect(isValidTraceCallTypes(undefined)).toBe(true);
+    expect(isValidTraceCallTypes('["CALL","CREATE2"]')).toBe(true);
+    expect(isValidTraceCallTypes(["DELEGATECALL"])).toBe(true);
+    // A bare string reaching the matcher has .some called on it inside the
+    // per-block drain, so it is refused here rather than forwarded.
+    expect(isValidTraceCallTypes("CALL")).toBe(false);
+    expect(isValidTraceCallTypes('["NOT_A_TYPE"]')).toBe(false);
+    expect(isValidTraceCallTypes("{oops")).toBe(false);
   });
 
   it("shares the on-chain-event input discriminant for MCP callers", () => {
