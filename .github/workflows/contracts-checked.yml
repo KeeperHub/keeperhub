@@ -1,0 +1,158 @@
+name: Contracts Checked
+
+# Blocks merge of a pull request that introduces an Ethereum or Solana
+# address until a maintainer has verified the address and applied the
+# `contracts-checked` label.
+#
+# Use case: a protocol definition, plugin or doc that names an on-chain
+# address. `tests/unit/protocol-<slug>.test.ts` asserts only that an
+# address matches ^0x[0-9a-fA-F]{40}$ - that it is well formed, not that
+# code is deployed at it on the chain claimed. A syntactically valid
+# address on a chain where the protocol is not deployed passes every
+# check, becomes user-selectable in the workflow builder (the chain
+# selector auto-exposes every key in `contract.addresses`), and reverts
+# at runtime for every user who picks it. Nothing in CI catches that, and
+# nothing else asks for the explorer page that would.
+#
+# Workflow:
+#   1. Contributor opens a pull request that adds an address.
+#   2. This check fails and lists every address with its file and line.
+#   3. A maintainer checks each address against the authoritative source
+#      the description cites - the protocol team's published addresses,
+#      their official repository, or a verified contract on the block
+#      explorer - per the contract evidence section of CONTRIBUTING.md.
+#      Making that judgement is the maintainer's job; this check only
+#      makes sure it is not skipped.
+#   4. The maintainer applies `contracts-checked`. Merge unblocks.
+#
+# What counts as an address is decided by scripts/scan-contract-addresses.mjs:
+# added lines only, excluding lockfiles and generated output, excluding
+# addresses already present on the base branch, excluding zero-dominated
+# synthetic fixtures, and - for Solana - only base58 that decodes to
+# exactly 32 bytes. Run it locally with:
+#
+#   node scripts/scan-contract-addresses.mjs --base origin/staging --head HEAD
+#
+# The label is an attestation by whoever applies it, like
+# `metrics-db-reviewed`. It does not record WHICH addresses were checked,
+# so a later push that adds a new address while the label is already on
+# will not re-trigger it. Re-verify after any push that changes the
+# address list; the check prints the full list on every run.
+#
+# The `labeled` / `unlabeled` trigger types are required: without them
+# the status check would not re-evaluate when the label is applied and
+# would stay red until the next push. The job ALWAYS runs rather than
+# using a path filter, because a required check skipped by a path filter
+# sits at "Expected" forever and blocks the pull request.
+#
+# SAFETY: this runs on pull_request_target so it also covers fork pull
+# requests, which is where an unverified protocol address actually
+# arrives - a `pull_request` run on a fork waits for per-run maintainer
+# approval, leaving the gate silent exactly where it is needed. The job
+# therefore runs with the base repository's token and MUST NOT execute
+# pull request code. It checks out the BASE commit only; the head is
+# fetched as git objects and never checked out, so no file from the pull
+# request is ever placed in the working tree, and the scanner it runs is
+# the base branch's copy, not the contributor's. Do not add a checkout
+# of the head ref to this file, and do not add an install or build step.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches:
+      - staging
+      - prod
+
+concurrency:
+  group: contracts-checked-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  contracts-checked:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout base
+        uses: actions/checkout@v7
+        with:
+          # The base commit, never the pull request head. fetch-depth 0 is
+          # needed for the three-dot diff and for the base-branch lookup
+          # that suppresses addresses which already exist.
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+
+      - name: Fetch pull request head as objects
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Fetches the commits without checking any of them out. Nothing
+          # from the pull request reaches the working tree.
+          git fetch --no-tags --quiet origin "pull/${PR_NUMBER}/head"
+          echo "fetched=$(git rev-parse FETCH_HEAD)"
+
+      - name: Scan added lines for contract addresses
+        id: scan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # A force-push between the event firing and the fetch above can
+          # leave the event's head commit unreachable. Fall back to what
+          # was actually fetched rather than failing the gate on a race;
+          # the synchronize event for the new head re-runs this anyway.
+          if git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            TARGET="$HEAD_SHA"
+          else
+            TARGET=$(git rev-parse FETCH_HEAD)
+            echo "Head $HEAD_SHA is unreachable (force-push race); scanning $TARGET instead."
+          fi
+
+          node scripts/scan-contract-addresses.mjs \
+            --base "$BASE_SHA" --head "$TARGET" > findings.txt
+          COUNT=$(grep -c . findings.txt || true)
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "Addresses introduced by this pull request: $COUNT"
+
+      - name: No addresses introduced - gate passes
+        if: steps.scan.outputs.count == '0'
+        run: echo "No contract addresses added; check passes."
+
+      - name: Require contracts-checked label
+        if: steps.scan.outputs.count != '0'
+        env:
+          LABEL: contracts-checked
+          LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          COUNT: ${{ steps.scan.outputs.count }}
+        run: |
+          set -euo pipefail
+
+          # findings.txt holds contributor-controlled file paths. It is
+          # printed as plain text and never through a ::workflow command,
+          # so nothing in it can be parsed as one.
+          {
+            echo "### Contract addresses introduced by this pull request"
+            echo
+            echo '```'
+            head -n 50 findings.txt
+            if [ "$COUNT" -gt 50 ]; then
+              echo "... and $((COUNT - 50)) more"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Addresses introduced by this pull request:"
+          head -n 50 findings.txt
+
+          if printf '%s' "$LABELS_JSON" | jq -e --arg L "$LABEL" 'any(. == $L)' >/dev/null; then
+            echo "'$LABEL' present; contract addresses confirmed; gate passes."
+            exit 0
+          fi
+
+          echo "::error::This pull request introduces $COUNT contract address(es) and the 'contracts-checked' label is not set. Check each address listed in the job summary against the authoritative source the description cites - the protocol team's published addresses, their official repository, or a verified contract on the block explorer - then apply the 'contracts-checked' label. See the contract evidence section of CONTRIBUTING.md."
+          exit 1
