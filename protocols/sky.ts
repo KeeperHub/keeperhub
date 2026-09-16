@@ -178,6 +178,30 @@ const ERC20_READONLY_ABI = JSON.stringify([
   },
 ]);
 
+const ERC20_READONLY_WITH_SUPPLY_ABI = JSON.stringify([
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalSupply",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+]);
+
 const DAI_USDS_CONVERTER_ABI = JSON.stringify([
   {
     type: "function",
@@ -326,6 +350,14 @@ export default defineAbiProtocol({
           owner: wallet(),
         },
       },
+      skipped: {
+        "get-susds-balance-l2":
+          "L2 action - sUsdsL2 contract only on Base/Arbitrum",
+        "get-susds-total-supply-l2":
+          "L2 action - sUsdsL2 contract only on Base/Arbitrum",
+        "get-susds-total-assets-l2":
+          "L2 action - sUsdsL2 contract only on Base/Arbitrum",
+      },
       // approve-dai and approve-usds run the app's real approve-token path,
       // which fans out cold token state on a fresh fork and runs past the
       // default two-minute wait; give them the same headroom as ethena
@@ -381,6 +413,171 @@ export default defineAbiProtocol({
         ],
       },
     },
+    "8453": {
+      setup: {
+        minNativeHuman: "0.01",
+        requiredTokens: [],
+        approvals: [],
+      },
+      actions: {
+        "get-susds-balance-l2": { account: wallet() },
+        "get-susds-total-supply-l2": {},
+        "get-susds-total-assets-l2": {},
+      },
+      skipped: {
+        "vault-asset": "Mainnet only - sUsds contract not on Base",
+        "vault-total-assets": "Mainnet only - sUsds contract not on Base",
+        "vault-total-supply": "Mainnet only - sUsds contract not on Base",
+        "vault-balance": "Mainnet only - sUsds contract not on Base",
+        "vault-convert-to-assets": "Mainnet only - sUsds contract not on Base",
+        "vault-convert-to-shares": "Mainnet only - sUsds contract not on Base",
+        "vault-preview-deposit": "Mainnet only - sUsds contract not on Base",
+        "vault-preview-mint": "Mainnet only - sUsds contract not on Base",
+        "vault-preview-withdraw": "Mainnet only - sUsds contract not on Base",
+        "vault-preview-redeem": "Mainnet only - sUsds contract not on Base",
+        "vault-max-deposit": "Mainnet only - sUsds contract not on Base",
+        "vault-max-mint": "Mainnet only - sUsds contract not on Base",
+        "vault-max-withdraw": "Mainnet only - sUsds contract not on Base",
+        "vault-max-redeem": "Mainnet only - sUsds contract not on Base",
+        "vault-deposit": "Mainnet only - sUsds contract not on Base",
+        "vault-mint": "Mainnet only - sUsds contract not on Base",
+        "vault-withdraw": "Mainnet only - sUsds contract not on Base",
+        "vault-redeem": "Mainnet only - sUsds contract not on Base",
+        "st-usds-vault-asset": "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-total-assets":
+          "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-total-supply":
+          "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-balance": "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-convert-to-assets":
+          "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-convert-to-shares":
+          "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-preview-deposit":
+          "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-preview-mint":
+          "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-preview-withdraw":
+          "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-preview-redeem":
+          "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-max-deposit":
+          "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-max-mint": "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-max-withdraw":
+          "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-max-redeem":
+          "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-deposit": "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-mint": "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-withdraw": "Mainnet only - stUsds contract not on Base",
+        "st-usds-vault-redeem": "Mainnet only - stUsds contract not on Base",
+        "get-usds-balance": "Mainnet only - usds contract not on Base",
+        "approve-usds": "Mainnet only - usds contract not on Base",
+        "get-dai-balance": "Mainnet only - dai contract not on Base",
+        "approve-dai": "Mainnet only - dai contract not on Base",
+        "get-sky-balance": "Mainnet only - sky contract not on Base",
+        "approve-sky": "Mainnet only - sky contract not on Base",
+        "get-mkr-balance": "Mainnet only - mkr contract not on Base",
+        "approve-mkr": "Mainnet only - mkr contract not on Base",
+        "convert-dai-to-usds": "Mainnet only - daiUsds contract not on Base",
+        "convert-usds-to-dai": "Mainnet only - daiUsds contract not on Base",
+        "convert-mkr-to-sky": "Mainnet only - mkrSky contract not on Base",
+        "convert-sky-to-mkr": "Mainnet only - mkrSky contract not on Base",
+      },
+      expectations: {
+        "get-susds-total-supply-l2": [{ nonZero: true }],
+        "get-susds-total-assets-l2": [{ nonZero: true }],
+      },
+    },
+    "42161": {
+      setup: {
+        minNativeHuman: "0.01",
+        requiredTokens: [],
+        approvals: [],
+      },
+      actions: {
+        "get-susds-balance-l2": { account: wallet() },
+        "get-susds-total-supply-l2": {},
+        "get-susds-total-assets-l2": {},
+      },
+      skipped: {
+        "vault-asset": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-total-assets": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-total-supply": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-balance": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-convert-to-assets":
+          "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-convert-to-shares":
+          "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-preview-deposit":
+          "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-preview-mint": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-preview-withdraw":
+          "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-preview-redeem": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-max-deposit": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-max-mint": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-max-withdraw": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-max-redeem": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-deposit": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-mint": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-withdraw": "Mainnet only - sUsds contract not on Arbitrum",
+        "vault-redeem": "Mainnet only - sUsds contract not on Arbitrum",
+        "st-usds-vault-asset": "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-total-assets":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-total-supply":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-balance":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-convert-to-assets":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-convert-to-shares":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-preview-deposit":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-preview-mint":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-preview-withdraw":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-preview-redeem":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-max-deposit":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-max-mint":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-max-withdraw":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-max-redeem":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-deposit":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-mint": "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-withdraw":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "st-usds-vault-redeem":
+          "Mainnet only - stUsds contract not on Arbitrum",
+        "get-usds-balance": "Mainnet only - usds contract not on Arbitrum",
+        "approve-usds": "Mainnet only - usds contract not on Arbitrum",
+        "get-dai-balance": "Mainnet only - dai contract not on Arbitrum",
+        "approve-dai": "Mainnet only - dai contract not on Arbitrum",
+        "get-sky-balance": "Mainnet only - sky contract not on Arbitrum",
+        "approve-sky": "Mainnet only - sky contract not on Arbitrum",
+        "get-mkr-balance": "Mainnet only - mkr contract not on Arbitrum",
+        "approve-mkr": "Mainnet only - mkr contract not on Arbitrum",
+        "convert-dai-to-usds":
+          "Mainnet only - daiUsds contract not on Arbitrum",
+        "convert-usds-to-dai":
+          "Mainnet only - daiUsds contract not on Arbitrum",
+        "convert-mkr-to-sky": "Mainnet only - mkrSky contract not on Arbitrum",
+        "convert-sky-to-mkr": "Mainnet only - mkrSky contract not on Arbitrum",
+      },
+      expectations: {
+        "get-susds-total-supply-l2": [{ nonZero: true }],
+        "get-susds-total-assets-l2": [{ nonZero: true }],
+      },
+    },
   },
 
   contracts: {
@@ -390,12 +587,57 @@ export default defineAbiProtocol({
       addresses: {
         // Ethereum Mainnet -- proxy
         "1": "0xa3931d71877C0E7a3148CB7Eb4463524FEc27fbD",
-        // Base
-        "8453": "0x5875eEE11Cf8398102FdAd704C9E96607675467a",
-        // Arbitrum One
-        "42161": "0xdDb46999F8891663a8F2828d25298f70416d7610",
       },
       overrides: erc4626AbiOverrides(),
+    },
+    sUsdsL2: {
+      label: "sUSDS (Savings USDS) - L2",
+      abi: ERC20_READONLY_WITH_SUPPLY_ABI,
+      addresses: {
+        // Base - only ERC-20 functions (ERC-4626 vault functions not implemented)
+        "8453": "0x5875eEE11Cf8398102FdAd704C9E96607675467a",
+        // Arbitrum One - only ERC-20 functions (ERC-4626 vault functions not implemented)
+        "42161": "0xdDb46999F8891663a8F2828d25298f70416d7610",
+      },
+      overrides: {
+        balanceOf: {
+          slug: "get-susds-balance-l2",
+          label: "Get sUSDS Balance (L2)",
+          description: "Check the sUSDS balance of an address on L2",
+          inputs: { account: { label: "Wallet Address" } },
+          outputs: {
+            result: {
+              name: "balance",
+              label: "sUSDS Balance (wei)",
+              decimals: 18,
+            },
+          },
+        },
+        totalSupply: {
+          slug: "get-susds-total-supply-l2",
+          label: "Get sUSDS Total Supply (L2)",
+          description: "Get the total supply of sUSDS tokens on L2",
+          outputs: {
+            result: {
+              name: "totalSupply",
+              label: "Total sUSDS Supply (wei)",
+              decimals: 18,
+            },
+          },
+        },
+        totalAssets: {
+          slug: "get-susds-total-assets-l2",
+          label: "Get sUSDS Total Assets (L2)",
+          description: "Get the total assets in the sUSDS vault on L2",
+          outputs: {
+            result: {
+              name: "totalAssets",
+              label: "Total Assets (wei)",
+              decimals: 18,
+            },
+          },
+        },
+      },
     },
     stUsds: {
       label: "stUSDS (Staked USDS)",

@@ -74,26 +74,30 @@ describe("Lido Protocol Definition", () => {
     }
   });
 
-  it("has exactly 10 actions", () => {
-    expect(lidoDef.actions).toHaveLength(10);
+  it("has exactly 12 actions", () => {
+    expect(lidoDef.actions).toHaveLength(12);
   });
 
-  it("has 3 write actions and 7 read actions", () => {
+  it("has 3 write actions and 9 read actions", () => {
     const readActions = lidoDef.actions.filter((a) => a.type === "read");
     const writeActions = lidoDef.actions.filter((a) => a.type === "write");
     expect(writeActions).toHaveLength(3);
-    expect(readActions).toHaveLength(7);
+    expect(readActions).toHaveLength(9);
   });
 
-  it("has 2 contracts", () => {
-    expect(Object.keys(lidoDef.contracts)).toHaveLength(2);
+  it("has 3 contracts", () => {
+    expect(Object.keys(lidoDef.contracts)).toHaveLength(3);
   });
 
-  it("wsteth contract is available on Mainnet, Base, and Sepolia", () => {
+  it("wsteth contract is available on Mainnet and Sepolia", () => {
     const chains = Object.keys(lidoDef.contracts.wsteth.addresses);
     expect(chains).toContain("1");
-    expect(chains).toContain("8453");
     expect(chains).toContain("11155111");
+  });
+
+  it("wstethL2 contract is available on Base", () => {
+    const chains = Object.keys(lidoDef.contracts.wstethL2.addresses);
+    expect(chains).toContain("8453");
   });
 
   it("steth contract is available on Mainnet and Sepolia", () => {
