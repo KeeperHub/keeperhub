@@ -102,10 +102,21 @@ describe("ether.fi on-chain integration", () => {
 
   /**
    * Resolves cleanly when the deployed bytecode accepted the calldata: either
-   * the call returned hex, or it reverted with CALL_EXCEPTION at the contract
-   * level (an acceptable business revert from a zero-balance sender). Any
+   * the call returned hex or it reverted with CALL_EXCEPTION carrying revert
+   * data (an acceptable business revert from a zero-balance sender). Any
    * other error class is rethrown so the test fails, signalling an ABI or
    * bytecode mismatch.
+   *
+   * The revert data is what makes this mean anything. A selector the contract
+   * has never heard of also fails with CALL_EXCEPTION, because the fallback
+   * reverts without returndata, so accepting any CALL_EXCEPTION would pass for
+   * a function that does not exist:
+   *
+   *   weETH 0xdeadbeef -> CALL_EXCEPTION, data null
+   *   weETH wrap(1)    -> CALL_EXCEPTION, data 0x8d6f21e1
+   *
+   * Requiring non-null data is what proves the dispatcher matched a real
+   * selector and the body ran far enough to revert on its own terms.
    *
    * Throws instead of asserting so the helper holds no expect() outside an
    * it() block. Call sites use
@@ -137,6 +148,12 @@ describe("ether.fi on-chain integration", () => {
         "code" in err &&
         err.code === "CALL_EXCEPTION"
       ) {
+        const revertData = (err as { data?: unknown }).data;
+        if (revertData == null) {
+          throw new Error(
+            `${actionSlug}: reverted with no return data, which is what an unknown selector does. The deployed bytecode did not dispatch this call.`
+          );
+        }
         return;
       }
       throw err;
