@@ -165,10 +165,46 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     expect(options?.limit).toBe(25);
   });
 
-  it("floors a fractional page rather than passing it to the offset", async () => {
+  it("drops a fractional page rather than reinterpreting it", async () => {
+    // parseInt would read "2.7" as 2, which is not the page the caller wrote.
+    // The exact round-trip rejects it, so it falls back to the default.
     const options = await optionsFor({ page: "2.7" });
 
-    expect(options?.page).toBe(2);
+    expect(options?.page).toBeUndefined();
+  });
+
+  it("drops notations Number() would silently reinterpret", async () => {
+    // Number() reads these as 16, 3 and 1e+302. None is what a caller writing
+    // a page number meant, and 1e302 reaches Postgres as a bigint cast error.
+    for (const page of ["0x10", " 3 ", "1e302", "12abc"]) {
+      vi.mocked(getUnifiedRuns).mockClear();
+      const options = await optionsFor({ page });
+      expect(options?.page, `page=${page}`).toBeUndefined();
+    }
+  });
+
+  it("drops a page past the ceiling instead of unbounding the SQL LIMIT", async () => {
+    // getUnifiedRuns turns the page into
+    // fetchLimit = (page - 1) * pageLimit + pageLimit + 1, and that becomes the
+    // LIMIT on both source queries. page=999999999 asks for 49999999951 rows -
+    // every run in range - then slices an empty window out of them.
+    for (const page of ["999999999", "9007199254740993", "201"]) {
+      vi.mocked(getUnifiedRuns).mockClear();
+      const options = await optionsFor({ page });
+      expect(options?.page, `page=${page}`).toBeUndefined();
+    }
+  });
+
+  it("accepts the largest page it will honour", async () => {
+    const options = await optionsFor({ page: "200" });
+
+    expect(options?.page).toBe(200);
+  });
+
+  it("drops a limit past the ceiling", async () => {
+    const options = await optionsFor({ limit: "100000" });
+
+    expect(options?.limit).toBeUndefined();
   });
 
   it("drops a page below the first one instead of clamping silently", async () => {
