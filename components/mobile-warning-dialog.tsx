@@ -3,9 +3,9 @@
 import { Monitor } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { isPhoneLikeViewport } from "@/hooks/use-editor-availability";
 
 const STORAGE_KEY = "keeperhub-mobile-warning-dismissed";
-const MOBILE_BREAKPOINT = 768;
 
 export function MobileWarningDialog() {
   const [open, setOpen] = useState(false);
@@ -18,7 +18,12 @@ export function MobileWarningDialog() {
       // Safari Private Browsing / Lockdown Mode blocks storage access and
       // throws SecurityError. Treat as not dismissed and show the warning.
     }
-    if (!dismissed && window.innerWidth < MOBILE_BREAKPOINT) {
+    // Deliberately not every narrow viewport: this warning tells the reader to
+    // use a larger screen, which is the wrong advice for a phone, where the app
+    // now offers a purpose-built monitoring surface and the workflow route says
+    // for itself that authoring needs a desktop. A narrow desktop window is what
+    // this is for, and it is the case the shared phone test leaves out.
+    if (!(dismissed || isPhoneLikeViewport())) {
       setOpen(true);
     }
   }, []);
