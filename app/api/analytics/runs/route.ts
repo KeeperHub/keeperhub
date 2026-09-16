@@ -8,6 +8,30 @@ import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
 
+/**
+ * Parse a positive-integer pagination parameter, falling back to `undefined`
+ * so a malformed value behaves exactly as an absent one and getUnifiedRuns
+ * applies its own default.
+ *
+ * The finiteness test is the point. `Number("abc")` is NaN, and NaN survives
+ * both `Math.max(1, ...)` and `Math.min(..., 100)`, so an unguarded parse
+ * reached the query as NaN: the offset became NaN, `slice(NaN, NaN)` returned
+ * nothing, and the echoed parameter serialized as `null`. The response was
+ * zero runs beside a non-zero total, which reads as data loss rather than as a
+ * rejected parameter.
+ *
+ * Mirrors parseNonNegativeInt in lib/analytics/parse-run-filters.ts, with a
+ * floor of 1 rather than 0: page 0 is not a page, and a limit of 0 is an empty
+ * page rather than a default one.
+ */
+function parsePositiveInt(raw: string | null): number | undefined {
+  if (raw === null || raw === "") {
+    return undefined;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : undefined;
+}
+
 export async function GET(req: NextRequest): Promise<Response> {
   const authCtx = await resolveOrganizationId(req);
   if ("error" in authCtx) {
@@ -30,11 +54,8 @@ export async function GET(req: NextRequest): Promise<Response> {
     const customEnd = params.get("customEnd") ?? undefined;
     const cursor = params.get("cursor") ?? undefined;
 
-    const pageParam = params.get("page");
-    const page = pageParam ? Math.max(1, Number(pageParam)) : undefined;
-
-    const limitParam = params.get("limit");
-    const limit = limitParam ? Number(limitParam) : undefined;
+    const page = parsePositiveInt(params.get("page"));
+    const limit = parsePositiveInt(params.get("limit"));
 
     const projectId = params.get("projectId") ?? undefined;
 
