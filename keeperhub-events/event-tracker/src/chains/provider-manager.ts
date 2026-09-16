@@ -1643,7 +1643,7 @@ export class ChainProviderManager {
     }
     // Blocks are only expected while a subscriber (and thus a block
     // listener) is attached; an idle provider is legitimately silent.
-    if (entry.subscribers.size === 0) {
+    if (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0) {
       return;
     }
     // Measure from the most recent of the last delivered block and the
@@ -1780,7 +1780,11 @@ export class ChainProviderManager {
       // still set. Scheduled rather than awaited: a drain dispatches to
       // handlers that may each sleep seconds of jitter, and awaiting it would
       // hold the chain reconnecting long after the socket was healthy.
-      if (!this.isDestroyed && entry.provider && entry.subscribers.size > 0) {
+      if (
+        !this.isDestroyed &&
+        entry.provider &&
+        (entry.subscribers.size > 0 || entry.stateSubscribers.size > 0)
+      ) {
         this.armCatchUp(entry, GETLOGS_MIN_INTERVAL_MS);
       }
     }
