@@ -25,6 +25,6 @@
     "name": "mintFrxEthPaused",
     "stateMutability": "view",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "bool" }]
+    "outputs": [{ "name": "paused", "type": "bool" }]
   }
 ]

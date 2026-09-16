@@ -7,11 +7,7 @@ import {
   readContractCore,
 } from "@/plugins/web3/steps/read-contract-core";
 import { resolveAbi } from "@/lib/abi/cache";
-import {
-  getProtocol,
-  type ProtocolAction,
-  resolveContractAddress,
-} from "@/lib/protocol-registry";
+import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
 import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
 import {
@@ -27,35 +23,18 @@ type ProtocolReadInput = StepInput & {
   [key: string]: unknown;
 };
 
-function findProtocolAction(meta: ProtocolMeta): ProtocolAction | undefined {
-  return getProtocol(meta.protocolSlug)?.actions.find(
-    (a) => a.function === meta.functionName && a.contract === meta.contractKey
-  );
-}
-
-/**
- * Names the protocol declares for this action's outputs, positionally aligned
- * with the ABI's output list, for readContractCore to fall back on where the
- * ABI names nothing.
- *
- * Without this, an `outputs` override on a function whose ABI output is
- * unnamed advertises a template path that never exists at runtime:
- * structureAbiOutputs keys a single unnamed output as the bare value, so
- * `{{steps.X.<declaredName>}}` resolved to undefined and the workflow read
- * empty while still saving and running.
- */
-function buildDeclaredOutputNames(
-  meta: ProtocolMeta
-): string[] | undefined {
-  const outputs = findProtocolAction(meta)?.outputs;
-  return outputs?.map((output) => output.name);
-}
-
 function buildFunctionArgs(
   input: ProtocolReadInput,
   meta: ProtocolMeta
 ): string | undefined {
-  const protocolAction = findProtocolAction(meta);
+  const protocol = getProtocol(meta.protocolSlug);
+  if (!protocol) {
+    return undefined;
+  }
+
+  const protocolAction = protocol.actions.find(
+    (a) => a.function === meta.functionName && a.contract === meta.contractKey
+  );
 
   if (!protocolAction || protocolAction.inputs.length === 0) {
     return undefined;
@@ -155,7 +134,6 @@ export async function protocolReadStep(
       abi: resolvedAbi,
       abiFunction: meta.functionName,
       functionArgs,
-      declaredOutputNames: buildDeclaredOutputNames(meta),
       _context: input._context
         ? { executionId: input._context.executionId }
         : undefined,

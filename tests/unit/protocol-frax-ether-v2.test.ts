@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getProtocol, registerProtocol } from "@/lib/protocol-registry";
+import { structureAbiOutputs } from "@/plugins/web3/steps/structure-abi-result";
 import fraxEtherV2Def from "@/protocols/frax-ether-v2";
 
 const KEBAB_CASE_REGEX = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
@@ -140,6 +141,37 @@ describe("Frax Ether V2 Protocol Definition (ABI-driven)", () => {
     expect(mintPaused?.outputs?.[0].type).toBe("bool");
     expect(mintPaused?.outputs?.[0].label).toBe("Mint Paused");
     expect(mintPaused?.function).toBe("mintFrxEthPaused");
+  });
+
+  it("advertises a mint-paused path the runtime actually produces", () => {
+    // mintFrxEthPaused declared its ABI output unnamed, so structureAbiOutputs
+    // returned the bare boolean and the advertised `paused` resolved to
+    // undefined - a Condition node gating on it read nothing. Naming the ABI
+    // output repairs it without changing the runtime, which is shared by every
+    // protocol read.
+    const mintPaused = fraxEtherV2Def.actions.find(
+      (a) => a.slug === "mint-paused"
+    );
+    const abi = JSON.parse(
+      fraxEtherV2Def.contracts.minter.abi ?? "[]"
+    ) as Array<{
+      type?: string;
+      name?: string;
+      outputs?: { name?: string; type?: string }[];
+    }>;
+    const fragment = abi.find(
+      (entry) => entry.type === "function" && entry.name === "mintFrxEthPaused"
+    );
+
+    expect(fragment?.outputs?.[0]?.name).toBe("paused");
+
+    const shaped = structureAbiOutputs([false], fragment?.outputs ?? []);
+    expect(shaped).toEqual({ paused: false });
+
+    // Every advertised field resolves against that shape.
+    for (const output of mintPaused?.outputs ?? []) {
+      expect(shaped).toHaveProperty(output.name);
+    }
   });
 
   it("minter contract is deployed on Ethereum mainnet only (chain 1)", () => {
