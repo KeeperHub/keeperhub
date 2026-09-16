@@ -34,8 +34,14 @@ export interface TraceSubscription {
 
   /**
    * Minimum wei value moved by the frame (decimal string).
-   * Matches value-bearing frames including CREATE with endowment
-   * and SELFDESTRUCT sweeping a balance.
+   *
+   * Scoped to frames where the watched contract is the callee, because
+   * `frameMatchesSubscriber` requires `frame.to === contractAddress` before
+   * any other filter runs. A CREATE carrying an endowment names the new
+   * contract in `to`, a SELFDESTRUCT names the beneficiary, so neither
+   * matches a subscription on the contract that performed it.
+   * Making the address test direction-aware would change matching for every
+   * filter, not just this one, so it is left for its own change.
    */
   minValueWei?: string;
 

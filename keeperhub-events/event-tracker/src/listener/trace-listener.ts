@@ -7,6 +7,7 @@ import { logger } from "../../lib/utils/logger";
 import { enqueueWorkflowEventTrigger } from "../../lib/workflow-sqs";
 import type {
   ChainProviderManager,
+  TraceCallFrame,
   Unsubscribe,
 } from "../chains/provider-manager";
 import type { InFlightTracker } from "./in-flight";
@@ -75,22 +76,7 @@ export class TraceListener {
     logger.log(`[TraceListener] stopped ${this.opts.workflowId}`);
   }
 
-  private async onTrace(
-    matches: Array<{
-      blockNumber: number;
-      transactionHash: string;
-      transactionIndex: number;
-      frameIndex: number;
-      callType: string;
-      from: string;
-      to: string;
-      value: string;
-      selector: string;
-      input: string;
-      depth: number;
-      reverted: boolean;
-    }>,
-  ): Promise<void> {
+  private async onTrace(matches: TraceCallFrame[]): Promise<void> {
     // Process each matched frame
     const dispatches = matches.map((match) => this.dispatchMatch(match));
 
@@ -102,20 +88,7 @@ export class TraceListener {
     }
   }
 
-  private async dispatchMatch(match: {
-    blockNumber: number;
-    transactionHash: string;
-    transactionIndex: number;
-    frameIndex: number;
-    callType: string;
-    from: string;
-    to: string;
-    value: string;
-    selector: string;
-    input: string;
-    depth: number;
-    reverted: boolean;
-  }): Promise<void> {
+  private async dispatchMatch(match: TraceCallFrame): Promise<void> {
     // Dedup key includes frame index to distinguish multiple matches in one tx
     const dispatchKey = `${this.opts.workflowId}:${this.opts.chainId}:${match.transactionHash}:${match.frameIndex}`;
 

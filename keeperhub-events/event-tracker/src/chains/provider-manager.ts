@@ -345,7 +345,19 @@ export interface ChainHealth {
   connected: boolean;
   reconnecting: boolean;
   lastBlockAt: number | null;
+  /**
+   * Log subscribers only, which is what this field has always counted.
+   * Reported alongside `traceSubscriberCount` rather than folded into it, so
+   * an existing consumer reading this keeps the number it has always read.
+   */
   subscriberCount: number;
+  /**
+   * Trace subscribers on this chain. Without it a trace-only chain reports
+   * zero subscribers while issuing a `debug_traceBlockByNumber` per block,
+   * so an operator looking at health sees an idle chain doing steady work
+   * and has nothing to attribute the calls to.
+   */
+  traceSubscriberCount: number;
   /**
    * Smoothed inter-block interval in milliseconds, or null before the
    * current connection has observed enough intervals to estimate one.
@@ -452,22 +464,85 @@ interface TraceSubscriber {
   handler: TraceCallHandler;
 }
 
-type TraceCallHandler = (
-  matches: Array<{
-    blockNumber: number;
-    transactionHash: string;
-    transactionIndex: number;
-    frameIndex: number;
-    callType: string;
-    from: string;
-    to: string;
-    value: string;
-    selector: string;
-    input: string;
-    depth: number;
-    reverted: boolean;
-  }>,
-) => Promise<void>;
+type TraceCallHandler = (matches: TraceCallFrame[]) => Promise<void>;
+
+/**
+ * One matched call frame, as handed to a trace subscriber.
+ *
+ * Exported and used everywhere this shape appears. It was previously
+ * redeclared inline in three places across two files. `noExplicitAny` is off
+ * in this workspace, so a field-name typo between the matcher and the
+ * listener would not have been caught by anything.
+ */
+export interface TraceCallFrame {
+  blockNumber: number;
+  transactionHash: string;
+  transactionIndex: number;
+  frameIndex: number;
+  callType: string;
+  from: string;
+  to: string;
+  value: string;
+  selector: string;
+  input: string;
+  depth: number;
+  reverted: boolean;
+}
+
+/**
+ * A node of a `callTracer` result, as the upstream returns it. Only the
+ * fields the matcher reads are named; anything else is ignored.
+ */
+interface RawCallTraceNode {
+  type?: string;
+  from?: string;
+  to?: string;
+  value?: string;
+  input?: string;
+  error?: string;
+  calls?: RawCallTraceNode[];
+}
+
+/**
+ * Refusals that will not change if the same connection is asked again, so
+ * asking again is a warn line per block forever rather than a recovery.
+ *
+ * The vocabulary and the precedence come from the repo's own trace-method
+ * probe, which is the tested version of this judgement. Rate limiting is
+ * tested before plan gating because free tiers throttle using the plan
+ * vocabulary. Calling a throttle a permanent absence is the expensive
+ * direction to be wrong in. A rate limit or a timeout is retryable, so
+ * neither sets the flag.
+ */
+const TRACE_TIER_GATED =
+  /api[ -]?key|upgrade|\bpaid\b|\bplan\b|\btier\b|subscription|not authori[sz]ed|unauthori[sz]ed|forbidden|access denied/;
+const TRACE_NOT_SUPPORTED =
+  /does not exist|unsupported|not supported|disabled|not enabled|not allowed|not permitted/;
+const TRACE_RATE_LIMITED = /rate.?limit|too many|\b429\b|quota|throttl/;
+/**
+ * The BLOCK is missing rather than the method. Retryable. Tested before the
+ * not-supported patterns above because "block does not
+ * exist" would otherwise match `/does not exist/` and read as a capability
+ * verdict. `\bblock\b` never a bare /block/, since method names contain the
+ * word.
+ */
+const TRACE_BLOCK_UNAVAILABLE =
+  /\bblock\b.{0,24}(not found|not available|unavailable|does not exist)|header not found|missing trie node|state (is )?not available/;
+
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
+}
+
+function errorCode(err: unknown): number | undefined {
+  if (typeof err === "object" && err !== null && "code" in err) {
+    const code = (err as { code?: unknown }).code;
+    return typeof code === "number" ? code : undefined;
+  }
+  return undefined;
+}
 
 interface ChainEntry {
   chainId: number;
@@ -514,6 +589,19 @@ interface ChainEntry {
    * pattern as state subscriptions and eth_getLogs.
    */
   traceSubscribers: Set<TraceSubscriber>;
+  /**
+   * Learned capability: this connection has answered a trace request with a
+   * refusal that will not change on retry, meaning an absent method or one
+   * gated behind a plan. Set once, logged once, then cleared in `reconnect()` so a
+   * replacement connection re-learns rather than inheriting a verdict about
+   * an endpoint it may not even be talking to, since failover can land on a
+   * different upstream.
+   *
+   * The subscriptions themselves are left alone. Dropping them would take the
+   * chain's triggers away with no path back. The unsubscribe closures would
+   * then be deleting from a set that no longer holds them.
+   */
+  traceUnsupported: boolean;
   /** Cached Multicall3 deployment status for this chain. */
   multicall3: Multicall3Status;
   blockListener: ((blockNumber: number) => Promise<void>) | null;
@@ -977,6 +1065,15 @@ export class ChainProviderManager {
   }
 
   /**
+   * Number of active trace subscribers for `chainId`. Returns 0 for an
+   * unknown chain. Same purpose as the two counters above: assert that trace
+   * subscriptions multiplex through the one ChainEntry.
+   */
+  traceSubscriberCount(chainId: number): number {
+    return this.chains.get(chainId)?.traceSubscribers.size ?? 0;
+  }
+
+  /**
    * Returns true iff the manager has an active provider for `chainId`
    * and is not currently reconnecting. Deliberately asymmetric with the
    * `/healthz` endpoint's "no chains registered = 200 OK" rule: per-chain
@@ -1023,6 +1120,7 @@ export class ChainProviderManager {
       reconnecting: entry.isReconnecting,
       lastBlockAt: entry.lastBlockAt,
       subscriberCount: entry.subscribers.size,
+      traceSubscriberCount: entry.traceSubscribers.size,
       blockIntervalMs: entry.blockIntervalEwmaMs,
       blocksBehindHead:
         entry.headBlock !== null && entry.lastProcessedBlock !== null
@@ -1105,6 +1203,7 @@ export class ChainProviderManager {
       subscribers: new Set(),
       stateSubscribers: new Set(),
       traceSubscribers: new Set(),
+      traceUnsupported: false,
       multicall3: "unknown",
       blockListener: null,
       errorListener: null,
@@ -1755,11 +1854,7 @@ export class ChainProviderManager {
     }
     // Blocks are only expected while a subscriber (and thus a block
     // listener) is attached; an idle provider is legitimately silent.
-    if (
-      entry.subscribers.size === 0 &&
-      entry.stateSubscribers.size === 0 &&
-      entry.traceSubscribers.size === 0
-    ) {
+    if (entry.subscribers.size === 0) {
       return;
     }
     // Measure from the most recent of the last delivered block and the
@@ -1927,6 +2022,10 @@ export class ChainProviderManager {
     entry.provider = null;
     entry.activeWssUrl = null;
     entry.readyPromise = null;
+    // The trace verdict was learned from the connection being replaced, and
+    // the walk below tries primary before fallback, so the replacement may
+    // not even be the same upstream. Clear it and re-learn.
+    entry.traceUnsupported = false;
 
     if (this.isDestroyed) {
       return;
@@ -2047,6 +2146,46 @@ export class ChainProviderManager {
   }
 
   /**
+   * Record a trace refusal against the connection that produced it.
+   *
+   * Returns true when the refusal is permanent for this connection, which is
+   * the caller's signal to stop asking. The flag is per entry and is cleared
+   * in `reconnect()`, so the verdict never outlives the connection it was
+   * learned from. Logged once at the transition rather than per block: an
+   * upstream that answers -32601 is otherwise re-asked on every block of
+   * every drain, up to the dispatch cap, each with its own warn line.
+   */
+  private recordTraceRefusal(entry: ChainEntry, err: unknown): boolean {
+    if (entry.traceUnsupported) {
+      return true;
+    }
+    const message = describeError(err).toLowerCase();
+    const code = errorCode(err);
+
+    // Retryable, in precedence order. A throttle answers in the plan
+    // vocabulary. A missing block answers in the not-supported vocabulary.
+    // Both are settled before either verdict is reachable.
+    if (code === -32005 || TRACE_RATE_LIMITED.test(message)) {
+      return false;
+    }
+    if (TRACE_BLOCK_UNAVAILABLE.test(message)) {
+      return false;
+    }
+
+    const gated = TRACE_TIER_GATED.test(message);
+    const absent = code === -32601 || TRACE_NOT_SUPPORTED.test(message);
+    if (!(gated || absent)) {
+      return false;
+    }
+
+    entry.traceUnsupported = true;
+    logger.warn(
+      `[ChainProviderManager] chain=${entry.chainId} debug_traceBlockByNumber refused (${gated ? "tier-gated" : "method absent"}), trace matching paused on this connection until it reconnects: ${describeError(err)}`,
+    );
+    return true;
+  }
+
+  /**
    * Fetch and dispatch trace matches for the block range [from, to].
    * Each block with transactions is traced via debug_traceBlockByNumber,
    * and matched frames are dispatched to their subscribers.
@@ -2058,7 +2197,7 @@ export class ChainProviderManager {
   ): Promise<void> {
     const subscribers = [...entry.traceSubscribers];
     const provider = entry.provider;
-    if (subscribers.length === 0 || !provider) {
+    if (subscribers.length === 0 || !provider || entry.traceUnsupported) {
       return;
     }
 
@@ -2071,40 +2210,45 @@ export class ChainProviderManager {
 
       try {
         const blockHex = `0x${blockNumber.toString(16)}`;
-        // Fetch block with transaction hashes to check if it's empty
-        const block = (await this.sendWithTimeout(
-          provider,
-          "eth_getBlockByNumber",
-          [blockHex, false],
-          10000,
-        )) as { transactions?: string[] } | null;
-
-        if (!block || !block.transactions || block.transactions.length === 0) {
-          continue;
-        }
-
-        // Fetch traces for this block
+        // No eth_getBlockByNumber. Each element of the callTracer result
+        // carries its own txHash, so the block was only ever being fetched to
+        // index into `block.transactions[txIndex]`, which assumed the trace
+        // array and the block's transaction list have the same length and
+        // order. Nothing guarantees that. A chain whose trace array includes
+        // system transactions breaks it. So does a reorg landing between the
+        // two calls. Either way it
+        // yields the wrong hash or `undefined`. The dispatch key is built from
+        // it, so `undefined` produced `<wf>:<chain>:undefined:<frameIndex>`,
+        // and the unique index then made every later match at that frame
+        // index look like a duplicate, killing the trigger permanently behind
+        // a debug line. Reading the hash the tracer already returns removes
+        // the assumption and halves the RPC cost. An empty block returns an
+        // empty array, so it needs no separate check.
         const traces = (await this.sendWithTimeout(
           provider,
           "debug_traceBlockByNumber",
           [blockHex, { tracer: "callTracer", timeout: "15s" }],
           30000,
-        )) as Array<{ result?: any; txHash?: string }> | null;
+        )) as Array<{ result?: RawCallTraceNode; txHash?: string }> | null;
 
-        if (!traces || !Array.isArray(traces)) {
+        if (!Array.isArray(traces)) {
           continue;
         }
 
         // Process each transaction's trace
         for (let txIndex = 0; txIndex < traces.length; txIndex++) {
           const trace = traces[txIndex];
-          if (!trace || !trace.result) {
+          if (!trace?.result) {
             continue;
           }
 
-          // Use the transaction hash from the trace result or fall back to block.transactions
-          const txHash = trace.txHash || block.transactions[txIndex];
+          // Skip rather than guess. A frame with no hash cannot be deduped,
+          // and a fabricated key is worse than a missed match.
+          const txHash = trace.txHash;
           if (!txHash) {
+            logger.warn(
+              `[ChainProviderManager] chain=${entry.chainId} block=${blockNumber} trace entry ${txIndex} carried no txHash, skipping`,
+            );
             continue;
           }
 
@@ -2137,25 +2281,12 @@ export class ChainProviderManager {
 
           await Promise.all(dispatchTasks.map((task) => task()));
         }
-      } catch (err: any) {
-        // Classify errors to avoid infinite retry on unsupported methods
-        const errMsg = String(err?.message || err);
-        const errCode = err?.code;
-
-        if (
-          errCode === -32601 ||
-          errMsg.includes("does not exist/is not available")
-        ) {
-          logger.warn(
-            `[ChainProviderManager] chain=${entry.chainId} debug_traceBlockByNumber not supported, skipping trace processing`,
-          );
-          // Clear trace subscribers to prevent further attempts
-          entry.traceSubscribers = new Set();
+      } catch (err: unknown) {
+        if (this.recordTraceRefusal(entry, err)) {
           return;
         }
-
         logger.warn(
-          `[ChainProviderManager] chain=${entry.chainId} trace fetch failed for block ${blockNumber}: ${errMsg}`,
+          `[ChainProviderManager] chain=${entry.chainId} trace fetch failed for block ${blockNumber}: ${describeError(err)}`,
         );
       }
     }
@@ -2166,12 +2297,12 @@ export class ChainProviderManager {
    * against each subscriber's criteria.
    */
   private extractTraceMatches(
-    call: any,
+    call: RawCallTraceNode,
     blockNumber: number,
     txHash: string,
     txIndex: number,
     subscribers: TraceSubscriber[],
-  ): Array<{ subscriber: TraceSubscriber; frames: any[] }> {
+  ): Array<{ subscriber: TraceSubscriber; frames: TraceCallFrame[] }> {
     const flatFrames = this.flattenCallTrace(
       call,
       blockNumber,
@@ -2193,35 +2324,35 @@ export class ChainProviderManager {
    * Flatten a nested call trace into a list of frames with metadata.
    */
   private flattenCallTrace(
-    call: any,
+    call: RawCallTraceNode,
     blockNumber: number,
     txHash: string,
     txIndex: number,
     depth = 0,
     frameIndex = { value: 0 },
-  ): any[] {
-    const frames: any[] = [];
+  ): TraceCallFrame[] {
+    const frames: TraceCallFrame[] = [];
     const currentIndex = frameIndex.value++;
 
-    const frame = {
+    const frame: TraceCallFrame = {
       blockNumber,
       transactionHash: txHash,
       transactionIndex: txIndex,
       frameIndex: currentIndex,
-      callType: call.type || "CALL",
-      from: (call.from || "").toLowerCase(),
-      to: (call.to || "").toLowerCase(),
-      value: call.value || "0x0",
+      callType: call.type ?? "CALL",
+      from: (call.from ?? "").toLowerCase(),
+      to: (call.to ?? "").toLowerCase(),
+      value: call.value ?? "0x0",
       selector: this.extractSelector(call.input),
-      input: call.input || "0x",
+      input: call.input ?? "0x",
       depth,
-      reverted: !!(call.error || call.revertReason),
+      reverted: call.error !== undefined,
     };
 
     frames.push(frame);
 
     // Recurse into subcalls
-    if (call.calls && Array.isArray(call.calls)) {
+    if (Array.isArray(call.calls)) {
       for (const subcall of call.calls) {
         frames.push(
           ...this.flattenCallTrace(
@@ -2252,7 +2383,10 @@ export class ChainProviderManager {
   /**
    * Check if a frame matches a subscriber's filters.
    */
-  private frameMatchesSubscriber(frame: any, sub: TraceSubscriber): boolean {
+  private frameMatchesSubscriber(
+    frame: TraceCallFrame,
+    sub: TraceSubscriber,
+  ): boolean {
     // Contract address (callee) is required
     if (frame.to !== sub.contractAddress.toLowerCase()) {
       return false;
