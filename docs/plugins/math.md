@@ -109,7 +109,7 @@ When any input value is an integer that exceeds JavaScript's `Number.MAX_SAFE_IN
 - Power is exact for a whole-number exponent from 0 to 256; any other exponent is computed in floating point
 - `resultType` is `"bigint"` when the result is a whole number and `"number"` when it carries a fraction; the `result` string is exact either way
 
-When every input fits in the safe-integer range the node uses standard floating-point arithmetic, as before.
+When every input fits in the safe-integer range the node uses standard floating-point arithmetic.
 
 ### Division by Zero
 
