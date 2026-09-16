@@ -36,6 +36,7 @@ import {
 import { checkRateLimit } from "../_lib/rate-limit";
 import { parseNodeNativeValueWei } from "../_lib/reserved-value";
 import {
+  DEFAULT_MAX_RETRIES,
   DEFAULT_TIMEOUT_MS as DEFAULT_RETRY_TIMEOUT_MS,
   executeWithRetry,
   genericRetryOptions,
@@ -80,7 +81,12 @@ function validateRetryConfig(
     };
   }
 
-  const attempts = ((r.maxRetries as number | undefined) ?? 0) + 1;
+  // Both defaults must match what resolveConfig will apply, or the budget is
+  // measured against a run that never happens: an absent maxRetries executes
+  // as DEFAULT_MAX_RETRIES, so defaulting it to 0 here admitted four times the
+  // ceiling this check exists to enforce.
+  const attempts =
+    ((r.maxRetries as number | undefined) ?? DEFAULT_MAX_RETRIES) + 1;
   const perAttempt =
     (r.timeoutMs as number | undefined) ?? DEFAULT_RETRY_TIMEOUT_MS;
   if (attempts * perAttempt > MAX_RETRY_BUDGET_MS) {

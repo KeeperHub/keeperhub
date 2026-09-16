@@ -340,6 +340,56 @@ describe("POST /api/execute/node reserved-field gating", () => {
 
     expect([200, 202]).toContain(response.status);
   });
+
+  it("budgets an absent maxRetries at the default the executor will apply", async () => {
+    // The validator used to default a missing count to 0, so this was checked
+    // as one attempt of 600000ms - inside the budget - and then run by
+    // resolveConfig as four, up to 2_400_000ms. That is four times the
+    // idempotency processing lock this budget exists to stay inside: the lock
+    // expires mid-flight and a concurrent request under the same key can
+    // reserve fresh.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { timeoutMs: 600_000 },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(mocks.stepFn).not.toHaveBeenCalled();
+  });
+
+  it("still accepts an absent maxRetries whose defaulted budget fits", async () => {
+    // The counterpart to the case above: defaulting to DEFAULT_MAX_RETRIES
+    // must not reject everything that omits the field. 4 x 120000 = 480000,
+    // inside the 600000ms lock TTL.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { timeoutMs: 120_000 },
+      })
+    );
+
+    expect([200, 202]).toContain(response.status);
+  });
+
+  it("budgets an explicit maxRetries of 0 as the single attempt it is", async () => {
+    // Defaulting must not become clamping: 0 is a meaningful value that
+    // resolveConfig honours via ??, so one attempt of 600000ms is exactly the
+    // budget and stays admissible.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 0, timeoutMs: 600_000 },
+      })
+    );
+
+    expect([200, 202]).toContain(response.status);
+  });
 });
 
 describe("POST /api/execute/node broadcast hash on a failed step", () => {

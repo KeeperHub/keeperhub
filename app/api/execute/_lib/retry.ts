@@ -2,7 +2,12 @@ import "server-only";
 
 import type { RetryConfig } from "./types";
 
-const DEFAULT_MAX_RETRIES = 3;
+/**
+ * Exported so a caller validating a retry budget can model what
+ * `resolveConfig` will actually run, rather than restating the number and
+ * letting the two drift.
+ */
+export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_TIMEOUT_MS = 120_000;
 
 /**
