@@ -121,4 +121,67 @@ describe("structureAbiOutputs", () => {
       amounts: ["1", "2", "3"],
     });
   });
+
+  describe("declared output names", () => {
+    it("keys a single unnamed output by the declared name", () => {
+      // The regression: a protocol declares an `outputs` override on a
+      // function whose ABI output is unnamed. Without the declared name the
+      // value comes back bare and the suggested template path finds nothing.
+      const outputs: AbiOutputParam[] = [{ name: "", type: "bool" }];
+      expect(
+        structureAbiOutputs([true], outputs, ["approvalRequired"])
+      ).toEqual({ approvalRequired: true });
+    });
+
+    it("keys unnamed outputs of a multi-output call by their declared names", () => {
+      const outputs: AbiOutputParam[] = [
+        { name: "", type: "uint256" },
+        { name: "", type: "uint256" },
+      ];
+      expect(
+        structureAbiOutputs(["1", "2"], outputs, ["value", "age"])
+      ).toEqual({ value: "1", age: "2" });
+    });
+
+    it("lets the ABI name win over a declared name", () => {
+      // The ABI is authoritative. A declared name that disagrees must not
+      // rename a real output, or paths that work today would break.
+      const outputs: AbiOutputParam[] = [{ name: "fee", type: "uint256" }];
+      expect(structureAbiOutputs(["1"], outputs, ["cost"])).toEqual({
+        fee: "1",
+      });
+    });
+
+    it("falls back to unnamedOutput<index> where no name is declared", () => {
+      const outputs: AbiOutputParam[] = [
+        { name: "", type: "bool" },
+        { name: "", type: "uint256" },
+      ];
+      expect(structureAbiOutputs([true, "7"], outputs, ["ok"])).toEqual({
+        ok: true,
+        unnamedOutput1: "7",
+      });
+    });
+
+    it("ignores blank declared names rather than keying on an empty string", () => {
+      const outputs: AbiOutputParam[] = [{ name: "", type: "uint256" }];
+      expect(structureAbiOutputs(["1"], outputs, ["   "])).toBe("1");
+    });
+
+    it("structures a declared-name tuple's components as usual", () => {
+      const outputs: AbiOutputParam[] = [
+        {
+          name: "",
+          type: "tuple",
+          components: [
+            { name: "drawn", type: "uint256" },
+            { name: "premium", type: "uint256" },
+          ],
+        },
+      ];
+      expect(structureAbiOutputs([["1", "2"]], outputs, ["debt"])).toEqual({
+        debt: { drawn: "1", premium: "2" },
+      });
+    });
+  });
 });

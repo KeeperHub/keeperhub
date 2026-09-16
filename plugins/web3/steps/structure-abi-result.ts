@@ -72,6 +72,28 @@ export function structureAbiValue(
 }
 
 /**
+ * Names supplied by a protocol definition for outputs the ABI leaves unnamed,
+ * positionally aligned with the ABI's output list. A blank or absent entry
+ * means "no declared name", leaving the ABI-derived behaviour untouched.
+ *
+ * Only consulted where the ABI names nothing: an ABI that names an output is
+ * always authoritative, so a declared name can never shadow a real one.
+ */
+export type DeclaredOutputNames = readonly (string | undefined)[];
+
+function resolveOutputKey(
+  output: AbiOutputParam,
+  index: number,
+  declaredNames: DeclaredOutputNames | undefined
+): string | undefined {
+  const abiName = output.name?.trim();
+  if (abiName) {
+    return abiName;
+  }
+  return declaredNames?.[index]?.trim() || undefined;
+}
+
+/**
  * Structure the full output list of a function call.
  *
  * `outputValues[i]` must be the serialized value of the i-th ABI output. Each
@@ -83,10 +105,16 @@ export function structureAbiValue(
  * - 1 output: returns the structured value, wrapped in `{ [name]: value }`
  *   only when the output is named.
  * - N outputs: returns an object keyed by output name (or `unnamedOutput<i>`).
+ *
+ * `declaredNames` lets a protocol definition name an output the ABI left
+ * unnamed, so the template path the builder suggests is the path the value
+ * actually lands on. Callers without protocol metadata omit it and get the
+ * ABI-only behaviour described above, unchanged.
  */
 export function structureAbiOutputs(
   outputValues: unknown[],
-  outputs: AbiOutputParam[]
+  outputs: AbiOutputParam[],
+  declaredNames?: DeclaredOutputNames
 ): unknown {
   if (outputs.length === 0) {
     return outputValues;
@@ -94,12 +122,13 @@ export function structureAbiOutputs(
   if (outputs.length === 1) {
     const output = outputs[0];
     const structured = structureAbiValue(outputValues[0], output);
-    const name = output.name?.trim();
+    const name = resolveOutputKey(output, 0, declaredNames);
     return name ? { [name]: structured } : structured;
   }
   const out: Record<string, unknown> = {};
   for (const [index, output] of outputs.entries()) {
-    const key = output.name?.trim() || `unnamedOutput${index}`;
+    const key =
+      resolveOutputKey(output, index, declaredNames) ?? `unnamedOutput${index}`;
     out[key] = structureAbiValue(outputValues[index], output);
   }
   return out;

@@ -34,6 +34,7 @@ import {
 } from "@/plugins/web3/steps/read-fail-on-error-core";
 import {
   type AbiOutputParam,
+  type DeclaredOutputNames,
   structureAbiOutputs,
 } from "@/plugins/web3/steps/structure-abi-result";
 
@@ -59,6 +60,11 @@ export type ReadContractCoreInput = {
   // #2430: extra ABI documents whose error entries join the decode path, after
   // `abi`. Decoding only - `abi` still encodes the call and reads its result.
   errorAbis?: string[];
+  // Names for outputs the ABI leaves unnamed, positionally aligned with the
+  // function's output list. Supplied by protocol-read from the protocol's
+  // declared outputs so the key the value lands on matches the template path
+  // the builder suggests. An ABI-supplied name always wins.
+  declaredOutputNames?: DeclaredOutputNames;
   _context?: { executionId?: string; organizationId?: string };
 };
 
@@ -390,7 +396,11 @@ async function readContractInner(
         outputs.length === 1
           ? [serializedResult]
           : (serializedResult as unknown[]);
-      structuredResult = structureAbiOutputs(outputValues, outputs);
+      structuredResult = structureAbiOutputs(
+        outputValues,
+        outputs,
+        input.declaredOutputNames
+      );
     }
 
     const addressLink = await adapter.getAddressUrl(contractAddress);

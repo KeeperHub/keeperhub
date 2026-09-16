@@ -348,6 +348,11 @@ describe("protocolReadStep", () => {
         abi: '[{"name":"getUtilization","type":"function"}]',
         abiFunction: "getUtilization",
         functionArgs: undefined,
+        // getUtilization's ABI output is unnamed, so the name the action
+        // declares is the only thing that can key the returned value. Without
+        // it the builder's `{{steps.X.utilization}}` suggestion resolves to
+        // undefined at runtime.
+        declaredOutputNames: ["utilization"],
         _context: { executionId: "exec-123" },
       });
     });
