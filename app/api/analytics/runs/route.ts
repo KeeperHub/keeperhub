@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import {
-  parseNonNegativeInt,
+  parseBoundedInt,
   parseRunFilters,
 } from "@/lib/analytics/parse-run-filters";
 import { getUnifiedRuns } from "@/lib/analytics/queries";
@@ -10,6 +10,14 @@ import { apiError } from "@/lib/api-error";
 import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
+import { MAX_PAGE_SIZE } from "@/lib/pagination";
+
+// The highest page this endpoint serves. getUnifiedRuns caps the page size at
+// 100, so fetchLimit = (page - 1) * pageSize + pageSize + 1 stays at or below
+// 20,001 rows per source here, where an unbounded page reads every run the
+// organization holds. 200 pages is 20,000 runs of history at the largest page
+// size, past what a numbered pager is used for.
+const MAX_RUNS_PAGE = 200;
 
 export async function GET(req: NextRequest): Promise<Response> {
   const authCtx = await resolveOrganizationId(req);
@@ -33,25 +41,26 @@ export async function GET(req: NextRequest): Promise<Response> {
     const customEnd = params.get("customEnd") ?? undefined;
     const cursor = params.get("cursor") ?? undefined;
 
-    // Both are parsed rather than coerced: Number("abc") is NaN, and
-    // Math.max(1, NaN) is NaN, which flowed through to
-    // offset = (page - 1) * pageLimit and produced an empty page beside a
-    // non-zero total -- indistinguishable from data loss. An unreadable
-    // value now falls back to the default the query already applies.
-    // A blank value is absent rather than zero: Number("") is 0, which would
-    // turn `?page=` into a deliberate-looking first page and `?limit=` into
-    // a zero-row request.
-    const present = (name: string): string | null => {
-      const raw = params.get(name);
-      return raw !== null && raw.trim() !== "" ? raw : null;
-    };
-
-    const parsedPage = parseNonNegativeInt(present("page"));
-    const page = parsedPage === undefined ? undefined : Math.max(1, parsedPage);
-
-    const parsedLimit = parseNonNegativeInt(present("limit"));
-    const limit =
-      parsedLimit === undefined || parsedLimit < 1 ? undefined : parsedLimit;
+    // Parsed and bounded rather than coerced, falling back to the query's own
+    // defaults (page 1, the default page size) for anything outside the
+    // bounds - the convention app/api/earnings/route.ts already follows.
+    //
+    // The page ceiling is what stops the expensive case. fetchLimit grows
+    // linearly with the page, so an unbounded page reads every run the
+    // organization holds; at MAX_RUNS_PAGE it stays bounded however large the
+    // request.
+    //
+    // limit keeps 0 legal. ?limit=0 fetches a single row and returns an empty
+    // page with an accurate total, which callers use as a cheap count, and
+    // dropping it would turn that into a full default-sized page.
+    const page = parseBoundedInt(params.get("page"), {
+      min: 1,
+      max: MAX_RUNS_PAGE,
+    });
+    const limit = parseBoundedInt(params.get("limit"), {
+      min: 0,
+      max: MAX_PAGE_SIZE,
+    });
 
     const projectId = params.get("projectId") ?? undefined;
 

@@ -27,16 +27,45 @@ const MAX_SEARCH_LENGTH = 128;
 /**
  * A whole number from a query string, or undefined when it is not one.
  *
- * Exported because pagination needs the same rule: `Number("abc")` is NaN,
- * and NaN reaches arithmetic rather than being rejected, so a caller gets an
- * empty page beside a non-zero total instead of an error.
+ * A blank value is absent rather than zero. Number("") and Number("   ") are
+ * both 0, so without this `?durationMax=` became durationMaxMs: 0 and filtered
+ * on duration < 0, matching nothing.
  */
-export function parseNonNegativeInt(raw: string | null): number | undefined {
-  if (raw === null) {
+function parseNonNegativeInt(raw: string | null): number | undefined {
+  if (raw === null || raw.trim() === "") {
     return undefined;
   }
   const value = Number(raw);
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+}
+
+/**
+ * A pagination integer within bounds, or undefined to fall back to the
+ * query's own default.
+ *
+ * Parsed with Number.parseInt and required to round-trip exactly, the house
+ * rule for page numbers (app/api/workflows/route.ts): Number() accepts
+ * `0x10` as 16, `1e2` as 100 and " 3" as 3, none of which a caller meant as a
+ * page number, and parseInt alone accepts "12abc" as 12.
+ *
+ * The upper bound is the point. Rejecting NaN is not enough: a large readable
+ * page such as 999999999 is finite, and it reaches
+ * offset = (page - 1) * pageLimit and fetchLimit = offset + pageLimit + 1,
+ * which becomes the SQL LIMIT on both run sources. That reads every run the
+ * organization holds into Node, sorts them, and slices an empty window.
+ */
+export function parseBoundedInt(
+  raw: string | null,
+  { min, max }: { min: number; max: number }
+): number | undefined {
+  if (raw === null) {
+    return undefined;
+  }
+  const value = Number.parseInt(raw, 10);
+  if (Number.isNaN(value) || String(value) !== raw) {
+    return undefined;
+  }
+  return value >= min && value <= max ? value : undefined;
 }
 
 /**

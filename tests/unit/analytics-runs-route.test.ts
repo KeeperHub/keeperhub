@@ -175,49 +175,64 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     } as unknown as NextRequest;
   }
 
-  const optionsOf = () => {
+  // Asserting only that page is undefined would also pass if the handler
+  // returned early or threw into apiError before reaching the query, since
+  // an uncalled mock yields no options. Each case therefore also asserts the
+  // query ran: "fell back to the default" and "refused the request" are the
+  // distinction this change hinges on.
+  async function optionsFor(
+    query: Record<string, string>
+  ): Promise<{ page?: number; limit?: number }> {
+    vi.mocked(getUnifiedRuns).mockClear();
+    await GET(paramsRequest(query));
+    expect(getUnifiedRuns, JSON.stringify(query)).toHaveBeenCalledTimes(1);
     const [, , options] = vi.mocked(getUnifiedRuns).mock.calls[0] ?? [];
-    return options as { page?: number; limit?: number } | undefined;
-  };
+    return options as { page?: number; limit?: number };
+  }
 
-  it("drops an unreadable page instead of passing NaN through", async () => {
-    // getUnifiedRuns computes offset = (page - 1) * pageLimit, so a NaN page
-    // sliced to nothing and answered with zero runs beside a non-zero total,
-    // which reads as data loss rather than a rejected parameter.
+  it("falls back to the default for an unreadable page", async () => {
     for (const page of ["abc", "", "   ", "NaN", "1e", "--3"]) {
-      vi.mocked(getUnifiedRuns).mockClear();
-      await GET(paramsRequest({ page }));
-      expect(optionsOf()?.page, `page=${JSON.stringify(page)}`).toBeUndefined();
+      expect((await optionsFor({ page })).page, `page=${page}`).toBeUndefined();
     }
   });
 
-  it("keeps a readable page, floored and never below one", async () => {
-    for (const [raw, expected] of [
-      ["1", 1],
-      ["4", 4],
-      ["2.9", 2],
-      ["0", 1],
-    ] as const) {
-      vi.mocked(getUnifiedRuns).mockClear();
-      await GET(paramsRequest({ page: raw }));
-      expect(optionsOf()?.page, `page=${raw}`).toBe(expected);
+  it("refuses page spellings Number() would have accepted", async () => {
+    // Number() reads 0x10 as 16, 1e2 as 100 and " 3" as 3, and parseInt alone
+    // reads "12abc" as 12. None is a page number a caller meant.
+    for (const page of ["0x10", "1e2", " 3", "3 ", "12abc", "2.9"]) {
+      expect((await optionsFor({ page })).page, `page=${page}`).toBeUndefined();
     }
   });
 
-  it("drops an unreadable or meaningless limit the same way", async () => {
-    for (const limit of ["abc", "", "0", "-5"]) {
-      vi.mocked(getUnifiedRuns).mockClear();
-      await GET(paramsRequest({ limit }));
+  it("bounds a large readable page instead of scanning every run", async () => {
+    // The case that did the damage: finite, so it survived a NaN check, and
+    // it drove fetchLimit - the SQL LIMIT on both run sources - to every row
+    // the organization holds, before slicing an empty window.
+    for (const page of ["201", "999999999", "1000000000000"]) {
+      expect((await optionsFor({ page })).page, `page=${page}`).toBeUndefined();
+    }
+  });
+
+  it("keeps a readable page in range", async () => {
+    expect((await optionsFor({ page: "1" })).page).toBe(1);
+    expect((await optionsFor({ page: "4" })).page).toBe(4);
+    expect((await optionsFor({ page: "200" })).page).toBe(200);
+    expect((await optionsFor({ page: "0" })).page).toBeUndefined();
+  });
+
+  it("falls back for an unreadable or out-of-range limit", async () => {
+    for (const limit of ["abc", "", "-5", "201", "0x20"]) {
       expect(
-        optionsOf()?.limit,
-        `limit=${JSON.stringify(limit)}`
+        (await optionsFor({ limit })).limit,
+        `limit=${limit}`
       ).toBeUndefined();
     }
   });
 
-  it("keeps a readable limit", async () => {
-    vi.mocked(getUnifiedRuns).mockClear();
-    await GET(paramsRequest({ limit: "25" }));
-    expect(optionsOf()?.limit).toBe(25);
+  it("keeps a readable limit, including 0 as a count probe", async () => {
+    // ?limit=0 fetches one row and returns an empty page with an accurate
+    // total, which is a cheap count. Dropping it would cost a full page.
+    expect((await optionsFor({ limit: "25" })).limit).toBe(25);
+    expect((await optionsFor({ limit: "0" })).limit).toBe(0);
   });
 });
