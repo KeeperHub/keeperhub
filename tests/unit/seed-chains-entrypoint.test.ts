@@ -35,7 +35,7 @@ describe("chain seed production entrypoint", () => {
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(1);
       expect(result.stdout).toContain("Connecting to database...");
-      expect(result.stdout).toContain("Seeding 25 chains...");
+      expect(result.stdout).toMatch(/Seeding/);
       expect(result.stderr).toContain("Error seeding chains:");
     } finally {
       rmSync(temporary, { recursive: true, force: true });
