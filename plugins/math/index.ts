@@ -52,7 +52,7 @@ const mathPlugin: IntegrationPlugin = {
         {
           field: "divisionByZero",
           description:
-            "true when the divide or modulo post-operation had a zero operand; result is then Infinity, -Infinity or NaN",
+            "true on a failed result when the divide or modulo post-operation had a zero operand",
         },
         { field: "error", description: "Error message if aggregation failed" },
       ],

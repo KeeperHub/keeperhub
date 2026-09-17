@@ -97,7 +97,7 @@ Applied to the aggregated result. Useful for unit conversions, thresholds, and f
 | resultType | `"bigint"` for a whole number computed in fixed point, `"number"` otherwise |
 | operation  | Description of operations performed (e.g., `"sum then divide"`)    |
 | inputCount | Number of values that were aggregated                               |
-| divisionByZero | `true` when divide or modulo had a zero operand (see below)     |
+| divisionByZero | `true` on a failed result when divide or modulo had a zero operand (see below) |
 | error      | Error message if the aggregation failed                             |
 
 ### Large Values and Fractions
@@ -114,7 +114,7 @@ When every input fits in the safe-integer range the node uses standard floating-
 
 ### Division by Zero
 
-A zero operand on the divide or modulo post-operation does not fail the step. The result follows IEEE arithmetic (`Infinity`, `-Infinity`, or `NaN` for `0 / 0` and any modulo by zero) and the `divisionByZero` output is `true`, so a Condition node can branch on it. A zero denominator is often a legitimate state, for example a ratio whose denominator is a rate of consumption that is currently zero.
+A zero operand on the divide or modulo post-operation fails the step, as any other invalid operation does, so a downstream amount bound to the result never receives a non-number. The failure carries `divisionByZero: true` alongside the error, so a workflow that treats a zero denominator as a legitimate state (a ratio whose denominator is a rate of consumption that is currently zero) can tell it apart from any other failure. A divisor that is not zero as written but rounds to zero at the 256-decimal-place bound fails with a precision message instead and does not set the flag.
 
 ### String-Encoded Numbers
 

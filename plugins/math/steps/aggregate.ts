@@ -95,17 +95,25 @@ type AggregateResult =
       resultType: ResultType;
       operation: string;
       inputCount: number;
-      divisionByZero?: true;
     }
-  | { success: false; error: string; errorClass?: ExecutionErrorType };
+  | {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+      /**
+       * Set when a divide or modulo post-operation had a zero operand. The
+       * step still fails, so a downstream amount bound to the result never
+       * receives a non-number, but the cause is named for anyone who wants to
+       * branch on it: a zero denominator is a legitimate state for a ratio.
+       */
+      divisionByZero?: true;
+    };
 
-// Division by zero is reported, not thrown, so a workflow can branch on it:
-// a zero denominator is a legitimate state for a ratio. The reported value
-// follows IEEE arithmetic (Infinity, -Infinity, NaN).
 type PostResult<T> =
   | { kind: "value"; value: T }
   | { kind: "float"; value: number }
-  | { kind: "divisionByZero"; value: number };
+  | { kind: "divisionByZero"; postOp: "divide" | "modulo" }
+  | { kind: "underflow"; postOp: "divide" | "modulo" };
 
 export type AggregateCoreInput = {
   operation: AggregateOperation;
@@ -165,6 +173,23 @@ function isBinaryPostOperation(value: string): value is BinaryPostOperation {
 
 function failedAggregation(error: string): AggregateResult {
   return { success: false, error, errorClass: ExecutionErrorType.USER };
+}
+
+function failedPostOperation(
+  post: Extract<PostResult<never>, { kind: "divisionByZero" | "underflow" }>
+): AggregateResult {
+  const name = post.postOp === "divide" ? "Division" : "Modulo";
+  if (post.kind === "divisionByZero") {
+    return {
+      success: false,
+      error: `${name} by zero.`,
+      errorClass: ExecutionErrorType.USER,
+      divisionByZero: true,
+    };
+  }
+  return failedAggregation(
+    `${name} by an operand below the ${MAX_SCALE}-decimal-place precision this step carries.`
+  );
 }
 
 // ─── Arithmetic implementations ─────────────────────────────────────────────
@@ -496,18 +521,26 @@ function applyBinaryDecimalPostOperation(
     case "subtract":
       return valueOf({ value: a - b, decimals: scale });
     case "multiply":
-      return valueOf({
-        value: value.value * operandDecimal.value,
-        decimals: value.decimals + operandDecimal.decimals,
-      });
+      return valueOf(
+        boundScale({
+          value: value.value * operandDecimal.value,
+          decimals: value.decimals + operandDecimal.decimals,
+        })
+      );
     case "divide":
+      if (isUnderflow(operand, b)) {
+        return { kind: "underflow", postOp };
+      }
       if (b === BIGINT_ZERO) {
-        return divisionByZero(value, postOp);
+        return divisionByZero(postOp);
       }
       return valueOf(decimalDivide(value, operandDecimal));
     case "modulo":
+      if (isUnderflow(operand, b)) {
+        return { kind: "underflow", postOp };
+      }
       if (b === BIGINT_ZERO) {
-        return divisionByZero(value, postOp);
+        return divisionByZero(postOp);
       }
       return valueOf({ value: a % b, decimals: scale });
     case "power": {
@@ -590,21 +623,19 @@ function isWholeDecimal(d: Decimal): boolean {
   return d.decimals <= 0 || d.value % pow10(d.decimals) === BIGINT_ZERO;
 }
 
-function divisionByZero(
-  numerator: Decimal | number,
-  postOp: BinaryPostOperation
-): PostResult<never> {
-  const sign =
-    typeof numerator === "number"
-      ? Math.sign(numerator)
-      : Number(numerator.value > BIGINT_ZERO) - Number(numerator.value < BIGINT_ZERO);
-  if (postOp === "modulo" || sign === 0) {
-    return { kind: "divisionByZero", value: Number.NaN };
+function divisionByZero(postOp: "divide" | "modulo"): PostResult<never> {
+  return { kind: "divisionByZero", postOp };
+}
+
+// The operand was not zero as written but rounds to zero at MAX_SCALE. That
+// is a precision limit, not a zero divisor, and is reported as one.
+function isUnderflow(operand: NumericValue, aligned: bigint): boolean {
+  if (aligned !== BIGINT_ZERO) {
+    return false;
   }
-  return {
-    kind: "divisionByZero",
-    value: sign < 0 ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
-  };
+  return operand.kind === "bigint"
+    ? operand.value !== BIGINT_ZERO
+    : operand.value !== 0;
 }
 
 // ─── Generic aggregation ────────────────────────────────────────────────────
@@ -708,12 +739,12 @@ function applyBinaryPostOperation(
       return valueOf(value * operand);
     case "divide":
       if (operand === 0) {
-        return divisionByZero(value, postOp);
+        return divisionByZero(postOp);
       }
       return valueOf(value / operand);
     case "modulo":
       if (operand === 0) {
-        return divisionByZero(value, postOp);
+        return divisionByZero(postOp);
       }
       return valueOf(value % operand);
     case "power":
@@ -870,14 +901,16 @@ function stepHandler(input: AggregateCoreInput): AggregateResult {
       const post = isActivePostOperation(postOperation)
         ? applyDecimalPostOperation(aggregated, postOperation, operand)
         : valueOf(aggregated);
-      if (post.kind !== "value") {
+      if (post.kind === "divisionByZero" || post.kind === "underflow") {
+        return failedPostOperation(post);
+      }
+      if (post.kind === "float") {
         return {
           success: true,
           result: String(post.value),
           resultType: "number",
           operation: operationLabel,
           inputCount: parsed.length,
-          ...(post.kind === "divisionByZero" ? { divisionByZero: true } : {}),
         };
       }
       return {
@@ -904,13 +937,15 @@ function stepHandler(input: AggregateCoreInput): AggregateResult {
         )
       : valueOf(aggregated);
 
+    if (post.kind === "divisionByZero" || post.kind === "underflow") {
+      return failedPostOperation(post);
+    }
     return {
       success: true,
       result: String(post.value),
       resultType: "number",
       operation: operationLabel,
       inputCount: parsed.length,
-      ...(post.kind === "divisionByZero" ? { divisionByZero: true } : {}),
     };
   } catch (error) {
     return failedAggregation(`Aggregation failed: ${getErrorMessage(error)}`);

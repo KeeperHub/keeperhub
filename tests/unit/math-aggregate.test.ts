@@ -22,12 +22,12 @@ type SuccessResult = {
   resultType: string;
   operation: string;
   inputCount: number;
-  divisionByZero?: true;
 };
 
 type FailureResult = {
   success: false;
   error: string;
+  divisionByZero?: true;
 };
 
 type AggregateResult = SuccessResult | FailureResult;
@@ -681,22 +681,39 @@ describe("math/aggregate - bounds on fixed-point work", () => {
   });
 });
 
-describe("math/aggregate - zero divisor sign and negative rounding", () => {
-  it("takes the sign of a tiny numerator from its digits, not from a float", async () => {
-    const positive = await expectSuccess({
+describe("math/aggregate - divisor precision and negative rounding", () => {
+  it("reports a divisor that rounds to zero at the scale bound as underflow, not a zero divisor", async () => {
+    const result = await expectFailure({
       operation: "sum",
-      explicitValues: "1e-200, 9007199254740993, -9007199254740993",
+      explicitValues: "9007199254740993",
       postOperation: "divide",
-      postOperand: "0",
+      postOperand: "1e-257",
     });
-    expect(positive.result).toBe("Infinity");
-    const negative = await expectSuccess({
+    expect(result.error).toContain("256-decimal-place precision");
+    expect(result.divisionByZero).toBeUndefined();
+  });
+
+  it("divides by a divisor at the scale bound exactly", async () => {
+    const result = await expectSuccess({
       operation: "sum",
-      explicitValues: "-1e-200, 9007199254740993, -9007199254740993",
+      explicitValues: "9007199254740993",
       postOperation: "divide",
-      postOperand: "0",
+      postOperand: "1e-256",
     });
-    expect(negative.result).toBe("-Infinity");
+    expect(result.result).toBe(`9007199254740993${"0".repeat(256)}`);
+    expect(result.resultType).toBe("bigint");
+  });
+
+  it("bounds the scale of a multiply like every other intermediate", async () => {
+    const tiny = `0.${"0".repeat(255)}1`;
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: `${tiny}, 9007199254740993, -9007199254740993`,
+      postOperation: "multiply",
+      postOperand: tiny,
+    });
+    // 1e-256 times 1e-256 is below the 256-place bound and rounds to zero.
+    expect(result.result).toBe("0");
   });
 
   it("rounds to tens for negative decimal places on both paths", async () => {
@@ -916,48 +933,33 @@ describe("math/aggregate - post-operations (binary)", () => {
     expect(result.result).toBe("15");
   });
 
-  it("reports division by zero instead of failing", async () => {
-    const result = await expectSuccess({
+  it("fails on division by zero and names the cause", async () => {
+    const result = await expectFailure({
       operation: "sum",
       explicitValues: "10",
       postOperation: "divide",
       postOperand: "0",
     });
-    expect(result.result).toBe("Infinity");
+    expect(result.error).toContain("Division by zero");
     expect(result.divisionByZero).toBe(true);
   });
 
-  it("reports a zero over zero as NaN", async () => {
-    const result = await expectSuccess({
-      operation: "sum",
-      explicitValues: "0",
-      postOperation: "divide",
-      postOperand: "0",
-    });
-    expect(result.result).toBe("NaN");
-    expect(result.divisionByZero).toBe(true);
-  });
-
-  it("reports division by zero on the fixed-point path the same way", async () => {
-    const result = await expectSuccess({
+  it("fails on division by zero on the fixed-point path the same way", async () => {
+    const result = await expectFailure({
       operation: "sum",
       explicitValues: "-9007199254740993",
       postOperation: "divide",
       postOperand: "0",
     });
-    expect(result.result).toBe("-Infinity");
-    expect(result.resultType).toBe("number");
+    expect(result.error).toContain("Division by zero");
     expect(result.divisionByZero).toBe(true);
   });
 
-  it("does not set divisionByZero on an ordinary division", async () => {
-    const result = await expectSuccess({
-      operation: "sum",
-      explicitValues: "10",
-      postOperation: "divide",
-      postOperand: "4",
+  it("does not set divisionByZero on an ordinary failure", async () => {
+    const result = await expectFailure({
+      operation: "average",
+      explicitValues: "abc",
     });
-    expect(result.result).toBe("2.5");
     expect(result.divisionByZero).toBeUndefined();
   });
 
@@ -971,14 +973,14 @@ describe("math/aggregate - post-operations (binary)", () => {
     expect(result.result).toBe("2");
   });
 
-  it("reports modulo by zero as NaN instead of failing", async () => {
-    const result = await expectSuccess({
+  it("fails on modulo by zero and names the cause", async () => {
+    const result = await expectFailure({
       operation: "sum",
       explicitValues: "10",
       postOperation: "modulo",
       postOperand: "0",
     });
-    expect(result.result).toBe("NaN");
+    expect(result.error).toContain("Modulo by zero");
     expect(result.divisionByZero).toBe(true);
   });
 
