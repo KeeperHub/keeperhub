@@ -95,7 +95,7 @@ describe("validateWorkflow - approve without allowance check", () => {
     }
   });
 
-  it("makes no claim about the amount when it is a template or an argument it cannot read", () => {
+  it("makes no claim about the amount when it is a template reference", () => {
     const templated = validateWorkflow(
       chain(
         [
@@ -105,18 +105,48 @@ describe("validateWorkflow - approve without allowance check", () => {
         [edge("e1", "trigger-1", "a1")]
       )
     );
-    const raw = validateWorkflow(
+    const templatedArg = validateWorkflow(
       chain(
-        [triggerNode(), writeApproveNode("w1")],
+        [
+          triggerNode(),
+          writeApproveNode("w1", {
+            functionArgs: JSON.stringify([
+              ROUTER,
+              "{{@trigger-1:Trigger.amount}}",
+            ]),
+          }),
+        ],
         [edge("e1", "trigger-1", "w1")]
       )
     );
-    for (const result of [templated, raw]) {
+    for (const result of [templated, templatedArg]) {
       const [warning] = warningsOf(result);
       expect(warning?.message).not.toContain("unlimited");
       expect(warning?.message).not.toContain("exact amount");
       expect(warning?.message).toContain("web3/check-allowance");
     }
+  });
+
+  it("reads a write-contract approve's amount from the second argument", () => {
+    const exact = validateWorkflow(
+      chain(
+        [triggerNode(), writeApproveNode("w1")],
+        [edge("e1", "trigger-1", "w1")]
+      )
+    );
+    expect(warningsOf(exact)[0]?.message).toContain("exact amount");
+    const unlimited = validateWorkflow(
+      chain(
+        [
+          triggerNode(),
+          writeApproveNode("w1", {
+            functionArgs: JSON.stringify([ROUTER, MAX_UINT256]),
+          }),
+        ],
+        [edge("e1", "trigger-1", "w1")]
+      )
+    );
+    expect(warningsOf(unlimited)[0]?.message).toContain("unlimited");
   });
 
   it("reads a write-contract approve's spender from functionArgs, the key the editor writes", () => {
@@ -352,79 +382,46 @@ describe("validateWorkflow - approve gate: an earlier approve of the same grant"
   });
 });
 
-describe("validateWorkflow - approve gate on batch-write-contract", () => {
+describe("validateWorkflow - approve gate leaves batch-write-contract alone", () => {
   const batchNode = (id: string, calls: unknown[]) =>
     actionNode(id, {
       actionType: "web3/batch-write-contract",
       calls: JSON.stringify(calls),
     });
+  const batchApprove = {
+    contractAddress: WETH,
+    abiFunction: "approve",
+    args: JSON.stringify([ROUTER, "1"]),
+  };
 
-  it("warns once per approve call in the batch, pointing at that call", () => {
+  // Inside a batch the approve's owner is the Multicall3 contract, not the
+  // wallet. That is a different defect, covered by the batch node's own
+  // description, and not a missing allowance read.
+  it("does not warn on an approve call inside a batch", () => {
     const result = validateWorkflow(
       chain(
-        [
-          triggerNode(),
-          batchNode("b1", [
-            { contractAddress: WETH, abiFunction: "transfer", args: "[]" },
-            {
-              contractAddress: WETH,
-              abiFunction: "approve",
-              args: JSON.stringify([ROUTER, "1"]),
-            },
-          ]),
-        ],
+        [triggerNode(), batchNode("b1", [batchApprove])],
         [edge("e1", "trigger-1", "b1")]
-      )
-    );
-    const warnings = warningsOf(result);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]?.parameterPath).toBe(
-      "nodes[1].config.calls[1].abiFunction"
-    );
-  });
-
-  it("is suppressed for the batch when a check-allowance node is upstream", () => {
-    const result = validateWorkflow(
-      chain(
-        [
-          triggerNode(),
-          checkAllowanceNode(),
-          batchNode("b1", [
-            {
-              contractAddress: WETH,
-              abiFunction: "approve",
-              args: JSON.stringify([ROUTER, "1"]),
-            },
-          ]),
-        ],
-        [edge("e1", "trigger-1", "ca"), edge("e2", "ca", "b1")]
       )
     );
     expect(warningsOf(result)).toHaveLength(0);
   });
 
-  it("treats an approve call inside an upstream batch as an earlier grant", () => {
+  it("does not treat an approve call inside an upstream batch as an earlier grant", () => {
     const result = validateWorkflow(
       chain(
         [
           triggerNode(),
-          batchNode("b1", [
-            {
-              contractAddress: WETH,
-              abiFunction: "approve",
-              args: JSON.stringify([ROUTER, "1"]),
-            },
-          ]),
+          batchNode("b1", [batchApprove]),
           approveTokenNode("a2"),
         ],
         [edge("e1", "trigger-1", "b1"), edge("e2", "b1", "a2")]
       )
     );
+    // The batch granted Multicall3's allowance, so a2 is still blind.
     const warnings = warningsOf(result);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]?.parameterPath).toBe(
-      "nodes[1].config.calls[0].abiFunction"
-    );
+    expect(warnings[0]?.parameterPath).toBe("nodes[2].config.spenderAddress");
   });
 });
 

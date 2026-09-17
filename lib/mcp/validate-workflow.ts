@@ -669,11 +669,12 @@ function runAllowancePreflightCheck(
 // re-grants what is already there; an exact-amount approve is consumed by the
 // spend after it and is needed every run. The message says which of the two
 // it is looking at, and says nothing about redundancy when the amount is a
-// template or a write-contract argument it cannot read.
+// template reference.
 //
-// Covers web3/approve-token and a web3/write-contract or batch call whose
-// method is `approve`. Protocol nodes are out of scope here: their method is
-// not in the config this module reads, and that resolution is its own seam.
+// Covers web3/approve-token and a web3/write-contract whose method is
+// `approve`. Protocol nodes are out of scope here: their method is not in the
+// config this module reads, and that resolution is its own seam. Batch nodes
+// are out for the reason given at approveGrantsOf.
 //
 // Two gates suppress the hint. An upstream allowance read (the same
 // reachability rule the spend-side warning uses), and an upstream approve of
@@ -705,6 +706,9 @@ type ApproveGrant = {
 };
 
 function approveAmountOf(raw: unknown): ApproveAmount {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return "exact";
+  }
   if (typeof raw !== "string") {
     return "unknown";
   }
@@ -778,45 +782,25 @@ function approveGrantsOf(idx: number, cfg: NodeActionConfig): ApproveGrant[] {
       },
     ];
   }
+  // A batch node is left out on purpose: its calls run with msg.sender set
+  // to the Multicall3 contract, so an approve inside one grants Multicall3's
+  // allowance, not the wallet's. That is a different defect from a missing
+  // read, the batch node's own documentation covers it, and such an approve
+  // must not count as an earlier grant for a later approve either.
   if (cfg.actionType === BATCH_WRITE_CONTRACT_ACTION_TYPE) {
-    const grants: ApproveGrant[] = [];
-    let calls: unknown = cfg.calls;
-    if (typeof calls === "string") {
-      try {
-        calls = JSON.parse(calls);
-      } catch {
-        return grants;
-      }
-    }
-    if (!Array.isArray(calls)) {
-      return grants;
-    }
-    for (const [callIdx, call] of calls.entries()) {
-      if (call === null || typeof call !== "object") {
-        continue;
-      }
-      const entry = call as Record<string, unknown>;
-      if (bareMethodName(entry.abiFunction) !== APPROVE_METHOD) {
-        continue;
-      }
-      grants.push({
-        token: literalAddress(entry.contractAddress),
-        spender: literalAddress(parseArgs(entry.args)[0]),
-        amount: "unknown",
-        parameterPath: `nodes[${idx}].config.calls[${callIdx}].abiFunction`,
-      });
-    }
-    return grants;
+    return [];
   }
   if (
     isWriteActionType(cfg.actionType) &&
     bareMethodName(cfg.abiFunction) === APPROVE_METHOD
   ) {
+    // ERC-20 approve(spender, amount): the amount is the second argument.
+    const args = parseArgs(cfg.functionArgs);
     return [
       {
         token: literalAddress(cfg.contractAddress),
-        spender: literalAddress(parseArgs(cfg.functionArgs)[0]),
-        amount: "unknown",
+        spender: literalAddress(args[0]),
+        amount: approveAmountOf(args[1]),
         parameterPath: `nodes[${idx}].config.abiFunction`,
       },
     ];
