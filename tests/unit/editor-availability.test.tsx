@@ -25,10 +25,7 @@ vi.mock("@/components/workflow/workflow-canvas", () => ({
 }));
 
 import { PersistentCanvas } from "@/components/workflow/persistent-canvas";
-import {
-  isEditorPath,
-  useEditorAvailability,
-} from "@/hooks/use-editor-availability";
+import { useEditorAvailability } from "@/hooks/use-editor-availability";
 
 type Viewport = {
   width: number;
@@ -41,6 +38,8 @@ const DESKTOP_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36";
 const PHONE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
+const IPAD_UA =
+  "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
 
 const PHONE_VIEWPORT: Viewport = {
   width: 390,
@@ -194,36 +193,70 @@ describe("useEditorAvailability", () => {
     expect(render(<AvailabilityProbe />).textContent).toBe("available");
   });
 
-  it("keeps the editor on a narrow touchscreen laptop whose pointer is fine", () => {
-    // The review's third blocker, isolated: a touchscreen Windows laptop reports
-    // ten touch points with `pointer: fine`, because `pointer` describes the
-    // primary input and that is the trackpad. A disjunct on maxTouchPoints reads
-    // the zoomed-laptop case as a phone and withdraws the editor from it.
+  it("keeps the editor on a narrow touchscreen laptop", () => {
+    // A touchscreen Windows laptop reports ten touch points with `pointer: fine`,
+    // because `pointer` describes the primary input and that is the trackpad. The
+    // gate does not read the pointer at all any more, which is what makes this
+    // case fall out of the signal rather than out of a second term.
     stubViewport({ width: 700, coarse: false, touch: true });
     expect(render(<AvailabilityProbe />).textContent).toBe("available");
   });
 
-  it("keeps the editor for a wide touch device", () => {
-    // An iPad in landscape or an iPhone Pro Max in landscape: touch, but room.
+  it("withholds the editor from a phone in landscape", () => {
+    // The round-6 finding, closed: an iPhone Pro Max in landscape is 932px wide,
+    // and a width term read that as a desktop, handing over the full editor and a
+    // live Run button while the decision says the editor is not available to
+    // mobile users at all.
     stubViewport({ ...PHONE_VIEWPORT, width: 932 });
+    expect(render(<AvailabilityProbe />).textContent).toBe("unavailable");
+  });
+
+  it("withholds it from a tablet, in either orientation", () => {
+    for (const width of [744, 1024]) {
+      stubViewport({ width, coarse: true, userAgent: IPAD_UA });
+      expect(render(<AvailabilityProbe />).textContent).toBe("unavailable");
+    }
+  });
+
+  it("keeps it for a desktop at the same width", () => {
+    // Same width, different device: this pair is what the gate is about.
+    stubViewport({ width: 932, coarse: false, userAgent: DESKTOP_UA });
     expect(render(<AvailabilityProbe />).textContent).toBe("available");
   });
 
   it.each([
-    [767, "unavailable"],
-    [768, "available"],
-  ])("measures a phone at %ipx as %s", (width, expected) => {
-    stubViewport({ ...PHONE_VIEWPORT, width });
-    expect(render(<AvailabilityProbe />).textContent).toBe(expected);
+    [390, "unavailable"],
+    [932, "unavailable"],
+    [1440, "unavailable"],
+  ])(
+    "measures a phone at %ipx as %s, whatever the width",
+    (width, expected) => {
+      stubViewport({ ...PHONE_VIEWPORT, width });
+      expect(render(<AvailabilityProbe />).textContent).toBe(expected);
+    }
+  );
+
+  it.each([767, 768, 1440])(
+    "keeps the editor for a desktop at %ipx",
+    (width) => {
+      stubViewport({
+        width,
+        coarse: false,
+        touch: false,
+        userAgent: DESKTOP_UA,
+      });
+      expect(render(<AvailabilityProbe />).textContent).toBe("available");
+    }
+  );
+
+  it("gives the editor to a phone that switched to desktop mode", () => {
+    // The escape hatch the decision names, and the reason the gate reads the user
+    // agent rather than the window: desktop mode reports a desktop user agent.
+    stubViewport({ ...PHONE_VIEWPORT, width: 390, userAgent: DESKTOP_UA });
+    expect(render(<AvailabilityProbe />).textContent).toBe("available");
   });
 
-  it("reads a mobile user agent on a narrow viewport as a phone even without a coarse pointer", () => {
-    stubViewport({ width: 390, userAgent: PHONE_UA });
-    expect(render(<AvailabilityProbe />).textContent).toBe("unavailable");
-  });
-
-  it("re-measures when the viewport changes after mount", () => {
-    // A phone rotating to landscape: 932px is not narrow, so the editor is back.
+  it("does not re-measure on rotation, because the device did not change", () => {
     stubViewport({ ...PHONE_VIEWPORT, width: 767 });
     const { container } = mount(<AvailabilityProbe />);
     expect(container.textContent).toBe("unavailable");
@@ -232,22 +265,15 @@ describe("useEditorAvailability", () => {
     act(() => {
       fireMediaChange("max-width: 767px");
     });
-    expect(container.textContent).toBe("available");
-
-    resize({ width: 500 });
-    act(() => {
-      fireMediaChange("max-width: 767px");
-    });
     expect(container.textContent).toBe("unavailable");
   });
 
-  it("releases every listener it registered", () => {
+  it("registers no media listener, because nothing about the device can change", () => {
     stubViewport(PHONE_VIEWPORT);
     const { unmount } = mount(<AvailabilityProbe />);
-    expect(mediaListenerCount()).toBeGreaterThan(0);
-    const before = mediaListenerCount();
+    expect(mediaListenerCount()).toBe(0);
     unmount();
-    expect(mediaListenerCount()).toBeLessThan(before);
+    expect(mediaListenerCount()).toBe(0);
   });
 
   it("stays unavailable on a phone, with no way in from the page", () => {
@@ -263,34 +289,6 @@ describe("useEditorAvailability", () => {
     });
     expect(container.textContent).toBe("unavailable");
     expect(window.sessionStorage.length).toBe(0);
-  });
-});
-
-describe("isEditorPath", () => {
-  it("names the editor route", () => {
-    expect(
-      isEditorPath("/workflows/5f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8")
-    ).toBe(true);
-    expect(isEditorPath("/workflows/5f1a2b3c/")).toBe(true);
-  });
-
-  it("leaves the list and the create route alone", () => {
-    // Both are reachable on a phone and neither is the editor.
-    expect(isEditorPath("/workflows")).toBe(false);
-    expect(isEditorPath("/workflows/new")).toBe(false);
-    expect(isEditorPath("/workflows/new/")).toBe(false);
-  });
-
-  it("leaves every other route alone", () => {
-    for (const path of [
-      "/",
-      "/analytics",
-      "/executions/abc",
-      "/workflows/abc/runs",
-      "/settings/hub",
-    ]) {
-      expect(isEditorPath(path)).toBe(false);
-    }
   });
 });
 
@@ -317,6 +315,13 @@ describe("PersistentCanvas", () => {
 
   it("mounts no canvas on a phone", () => {
     stubViewport(PHONE_VIEWPORT);
+    expect(render(<PersistentCanvas />).innerHTML).not.toContain(
+      "workflow-canvas"
+    );
+  });
+
+  it("mounts no canvas on a phone in landscape", () => {
+    stubViewport({ ...PHONE_VIEWPORT, width: 932 });
     expect(render(<PersistentCanvas />).innerHTML).not.toContain(
       "workflow-canvas"
     );

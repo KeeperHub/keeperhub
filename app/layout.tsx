@@ -6,7 +6,6 @@ import Script from "next/script";
 import type { ReactNode } from "react";
 import { AppBanner } from "@/components/app-banner";
 import { AuthProvider } from "@/components/auth/provider";
-import { EditorNavigationGuard } from "@/components/editor-navigation-guard";
 import { KeeperHubExtensionLoader } from "@/components/extension-loader";
 import { FeatureSessionInvalidator } from "@/components/feature-session-invalidator";
 import { GlobalModals } from "@/components/global-modals";
@@ -162,7 +161,6 @@ const RootLayout = async ({ children }: RootLayoutProps) => {
                 <Toaster />
                 <GlobalModals />
                 <MobileWarningDialog />
-                <EditorNavigationGuard />
                 <EditorWalkthrough />
               </OverlayProvider>
             </AuthProvider>

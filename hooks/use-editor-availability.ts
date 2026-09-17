@@ -3,77 +3,65 @@
 import { useEffect, useState } from "react";
 
 /**
- * Whether the workflow editor is offered at this viewport.
+ * Whether the workflow editor is offered on this device.
  *
  * The editor is desktop-only by product decision: a phone gets monitoring (the
- * runs list, a run's steps, analytics). Width alone cannot express that, and
- * using it as the test catches the wrong people: a 1366x768 laptop at 200%
- * browser zoom reports about 683 CSS px, a 1440px display at half width reports
- * 720px, and an iPad mini in portrait (744) is a phone by width while an iPhone
- * Pro Max in landscape (932) is not. WCAG 1.4.4 also requires content to stay
- * usable at 200% zoom, so a width gate cannot be the only test.
+ * runs list, a run's steps, analytics). So the gate is the device, not the window:
+ * the browser's user agent is the signal, and there is no width term at all.
  *
- * So the gate is a phone test: a narrow viewport AND a device the browser
- * describes as touch-first, which here means a coarse primary pointer or a
- * mobile user agent. Touch points are deliberately not part of it: a touchscreen
- * Windows laptop reports ten of them with `pointer: fine`, because `pointer`
- * describes the primary input and that is the trackpad, so a disjunct on
- * `maxTouchPoints` reads such a laptop as a phone and withdraws the editor from
- * the very zoomed-window case above.
+ * The width term was there, and it was wrong in both directions. A narrow window
+ * is not a phone: a 1366x768 laptop at 200% browser zoom reports about 683 CSS px,
+ * and WCAG 1.4.4 requires content to stay usable at that zoom, so a gate that
+ * withdraws the editor for being narrow withdraws it from a desktop. It also missed
+ * the case the round-6 review measured: an iPhone Pro Max in landscape is 932px
+ * wide, so a width term read it as a desktop and gave it the full editor and a live
+ * Run button, while the decision is that the editor is not available to mobile
+ * users at all.
  *
- * There is no override. A phone that wants the editor is told to switch its
- * browser to desktop mode, which is the browser's own escape hatch rather than a
- * second one of ours: `components/mobile-warning-dialog.tsx` gives the same
- * advice, and an in-app override would be a hidden second definition of
- * "desktop" that the route itself does not agree with.
+ * A user agent is a device signal rather than a viewport signal, so a phone is a
+ * phone at every width and in both orientations, and nothing is ever removed
+ * because of viewport size. It also makes the escape hatch work by construction: a
+ * phone that switches its browser to desktop mode reports a desktop user agent and
+ * gets the editor. That is the browser's own answer rather than a second one of
+ * ours, and it is the advice `components/mobile-warning-dialog.tsx` gives.
  *
- * The value is three-state because the first client render has not measured yet.
- * `use-mobile.ts` starts at `undefined` and returns `!!undefined`, so a consumer
- * that reads it renders the desktop surface for one frame before the effect runs.
- * For a gate whose job is to keep a Run button off a phone, that frame is the
- * defect. `components/navigation/mobile-nav-sheet.tsx` carries the same guard for
- * the same reason.
+ * There is no override and no listener. The value is measured once, because a user
+ * agent does not change without a reload, which leaves rotation and window resizing
+ * with nothing to re-measure. The value is still three-state, because the first
+ * client render has not measured yet: `use-mobile.ts` starts at `undefined` and
+ * returns `!!undefined`, so a consumer that reads it paints the desktop surface for
+ * one frame before its effect runs. For a gate whose job is to keep a Run button
+ * off a phone, that frame is the defect.
  */
 export type EditorAvailability = "unknown" | "available" | "unavailable";
 
 const NARROW_VIEWPORT = "(max-width: 767px)";
-const COARSE_POINTER = "(pointer: coarse)";
 const MOBILE_USER_AGENT = /Android|iPhone|iPad|iPod|Mobile/i;
 
 /**
- * The editor route, and only the editor route.
+ * Window width alone, for the two places that need it and not the gate.
  *
- * `app/workflows/[workflowId]/page.tsx` is the whole subtree, so a workflow id is
- * the only thing that reaches it. `/workflows` is the list and `/workflows/new`
- * is the create route, both of which a phone may use, so both are excluded by
- * name rather than by a length test.
+ * `components/mobile-warning-dialog.tsx` warns a narrow desktop window that the app
+ * is desktop-optimised, which is a statement about the window rather than about the
+ * device.
  */
-const EDITOR_PATH = /^\/workflows\/(?!new\/?$)[^/]+\/?$/;
-
-export function isEditorPath(pathname: string): boolean {
-  return EDITOR_PATH.test(pathname);
-}
-
 export function isNarrowViewport(): boolean {
   return window.matchMedia(NARROW_VIEWPORT).matches;
 }
 
 /**
- * True when the device presents itself as a phone or a tablet rather than a
- * narrow window on a desktop. Exported because the desktop-optimised warning has
- * to agree with this gate: a phone that is told to use a desktop, and then told
- * the editor is desktop-only, has been told the same contradictory thing twice.
+ * True when the browser describes itself as a mobile browser.
+ *
+ * Exported because the warning dialog has to agree with this gate: on a phone the
+ * editor is gone and the notice says so, so a phone must not also be told that the
+ * app is desktop-optimised and that it should come back on a desktop.
  */
-export function isPhoneLikeViewport(): boolean {
-  if (!isNarrowViewport()) {
-    return false;
-  }
-  const coarse = window.matchMedia(COARSE_POINTER).matches;
-  return coarse || MOBILE_USER_AGENT.test(navigator.userAgent);
+export function isMobileBrowser(): boolean {
+  return MOBILE_USER_AGENT.test(navigator.userAgent);
 }
 
 function measure(): EditorAvailability {
-  return isPhoneLikeViewport() ? "unavailable" : "available";
+  return isMobileBrowser() ? "unavailable" : "available";
 }
 
 export function useEditorAvailability(): EditorAvailability {
@@ -81,18 +69,7 @@ export function useEditorAvailability(): EditorAvailability {
     useState<EditorAvailability>("unknown");
 
   useEffect(() => {
-    const update = () => setAvailability(measure());
-    update();
-
-    const narrow = window.matchMedia(NARROW_VIEWPORT);
-    const coarse = window.matchMedia(COARSE_POINTER);
-    narrow.addEventListener("change", update);
-    coarse.addEventListener("change", update);
-
-    return () => {
-      narrow.removeEventListener("change", update);
-      coarse.removeEventListener("change", update);
-    };
+    setAvailability(measure());
   }, []);
 
   return availability;

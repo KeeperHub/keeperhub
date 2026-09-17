@@ -31,6 +31,7 @@ import {
   integrationsVersionAtom,
 } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
+import { editorSurface } from "@/lib/workflow/editor/editor-surface";
 import {
   currentExecutionIdAtom,
   currentWorkflowDescriptionAtom,
@@ -148,6 +149,9 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   // The editor half of the same gate the shell uses, so the panel and the notice
   // cannot disagree about whether this device gets an editor.
   const editorAvailability = useEditorAvailability();
+  // One predicate for the three surfaces below and for the width effect that
+  // reserves the overlay's column, so they cannot drift apart.
+  const surface = editorSurface(editorAvailability, isMobile);
   const [isGenerating, setIsGenerating] = useAtom(isGeneratingAtom);
   const [_isSaving, setIsSaving] = useAtom(isSavingAtom);
   const [nodes] = useAtom(nodesAtom);
@@ -351,12 +355,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     // overlay only at md and up, so below that the width stays null and the
     // canvas keeps the full width rather than reserving a column for a panel
     // that is not there.
-    if (
-      editorAvailability === "available" &&
-      !isMobile &&
-      panelVisible &&
-      !panelCollapsed
-    ) {
+    if (surface === "desktop" && panelVisible && !panelCollapsed) {
       setRightPanelWidth(`${panelWidth}%`);
     } else {
       // During initial render or when collapsed, set to null so prompt is centered
@@ -365,14 +364,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     return () => {
       setRightPanelWidth(null);
     };
-  }, [
-    editorAvailability,
-    isMobile,
-    setRightPanelWidth,
-    panelWidth,
-    panelVisible,
-    panelCollapsed,
-  ]);
+  }, [surface, setRightPanelWidth, panelWidth, panelVisible, panelCollapsed]);
 
   // Handle panel resize
   const handleResizeStart = useCallback(
@@ -1158,7 +1150,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
         )}
 
       {/* Right panel overlay (desktop only) - only show if trigger exists */}
-      {editorAvailability === "available" && !isMobile && hasTriggerNode && (
+      {surface === "desktop" && hasTriggerNode && (
         <div
           className="pointer-events-auto absolute top-[calc(6rem+var(--app-banner-height,0px))] right-0 bottom-0 z-20 border-l bg-background transition-transform duration-300 ease-out lg:top-[calc(60px+var(--app-banner-height,0px))]"
           style={{
@@ -1207,11 +1199,9 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       {/* Below md on a desktop-shaped session, the panel is the same one a phone
           would get: the overlay above is `md:flex` at the content level, so
           rendering it narrower paints an opaque empty strip over the canvas. */}
-      {editorAvailability === "available" && isMobile && hasTriggerNode && (
-        <NodeConfigPanel />
-      )}
+      {surface === "narrow" && hasTriggerNode && <NodeConfigPanel />}
 
-      {editorAvailability === "unavailable" && <MobileEditorNotice />}
+      {surface === "notice" && <MobileEditorNotice />}
     </div>
   );
 };

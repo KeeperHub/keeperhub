@@ -4,8 +4,8 @@ import { Monitor } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
+  isMobileBrowser,
   isNarrowViewport,
-  isPhoneLikeViewport,
 } from "@/hooks/use-editor-availability";
 
 const STORAGE_KEY = "keeperhub-mobile-warning-dismissed";
@@ -24,11 +24,11 @@ export function MobileWarningDialog() {
     // A narrow desktop window: wide enough that the app is still the desktop
     // app, narrow enough that the layout is cramped. Both halves of the test are
     // load-bearing. Without the width half this fires on every desktop at every
-    // size, because the phone test is false there and the storage key it checks
-    // is only ever written below the breakpoint. Without the phone half it fires
+    // size, because the device test is false there and the storage key it checks
+    // is only ever written below the breakpoint. Without the device half it fires
     // on a phone, which now has a purpose-built monitoring surface and a workflow
     // route that states its own case.
-    if (!dismissed && isNarrowViewport() && !isPhoneLikeViewport()) {
+    if (!dismissed && isNarrowViewport() && !isMobileBrowser()) {
       setOpen(true);
     }
   }, []);

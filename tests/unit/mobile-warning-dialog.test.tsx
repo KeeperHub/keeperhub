@@ -49,9 +49,12 @@ function installStubs(): void {
     configurable: true,
     value: store,
   });
+  // A getter rather than a fixed value: the cases move `coarse` after the stub is
+  // installed, and the device half of the dialog's condition now reads the user
+  // agent, so it has to move with them.
   Object.defineProperty(navigator, "userAgent", {
     configurable: true,
-    value: userAgent,
+    get: () => userAgent,
   });
   window.matchMedia = ((query: string) => ({
     matches: query.includes("pointer: coarse")
