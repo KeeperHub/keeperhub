@@ -255,6 +255,36 @@ describe("authenticateInternalService - HMAC scheme", () => {
     });
   });
 
+  it.each(["123abc", "123.5", "+123", "123e2", "00123"])(
+    "rejects non-canonical timestamp %s",
+    async (timestamp) => {
+      const { authenticateInternalService } = await import(
+        "@/lib/internal-service-auth"
+      );
+      const body = "";
+      const headers = signedHeaders({
+        method: "GET",
+        pathname: "/api/internal/schedules",
+        caller: "scheduler",
+        body,
+        timestamp,
+      });
+      const request = buildRequest({
+        method: "GET",
+        pathname: "/api/internal/schedules",
+        headers,
+      });
+
+      const result = await authenticateInternalService(request);
+
+      expect(result).toMatchObject({
+        authenticated: false,
+        status: 401,
+        error: "Timestamp outside replay window",
+      });
+    }
+  );
+
   it("rejects an unknown caller value in X-KH-Caller", async () => {
     const { authenticateInternalService } = await import(
       "@/lib/internal-service-auth"

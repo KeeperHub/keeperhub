@@ -1,3 +1,4 @@
+import { parseAuthTimestamp } from "@/lib/auth-timestamp";
 /**
  * @security Internal service-to-service authentication.
  *
@@ -199,8 +200,8 @@ async function verifyHmac(
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const ts = Number.parseInt(timestamp, 10);
-  if (!Number.isFinite(ts) || Math.abs(now - ts) > REPLAY_WINDOW_SECONDS) {
+  const ts = parseAuthTimestamp(timestamp);
+  if (ts === null || Math.abs(now - ts) > REPLAY_WINDOW_SECONDS) {
     return {
       authenticated: false,
       error: "Timestamp outside replay window",
