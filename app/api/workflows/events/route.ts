@@ -133,7 +133,7 @@ export async function GET(request: Request) {
                 ErrorCategory.VALIDATION,
                 "[Workflow Events] Trace trigger has unreadable call types",
                 undefined,
-                { workflowId: workflow.id }
+                { workflow_id: workflow.id }
               );
               return null;
             }
@@ -142,7 +142,7 @@ export async function GET(request: Request) {
                 ErrorCategory.VALIDATION,
                 "[Workflow Events] Trace trigger has a malformed function selector",
                 undefined,
-                { workflowId: workflow.id }
+                { workflow_id: workflow.id }
               );
               return null;
             }

@@ -3366,7 +3366,11 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
             ...deserializeTriggerInput(triggerType, triggerInput),
           };
 
-          if (triggerType === "Event" || triggerType === "Transfer") {
+          if (
+            triggerType === "Event" ||
+            triggerType === "Transfer" ||
+            triggerType === "Trace"
+          ) {
             // Enrich event data with explorer links so the execution log UI can
             // render clickable transaction/address links. Uses a step function
             // to keep db/schema out of the workflow bundle.

@@ -364,11 +364,17 @@ function TraceTriggerFields({
   // config with no traceStatus at all. Persisting it on first render keeps
   // what the panel shows and what the tracker receives in step, rather than
   // relying on both sides defaulting to the same value.
+  //
+  // Skipped when the panel is read-only: a viewer who cannot edit must not
+  // dirty the canvas and trigger an autosave the server will refuse.
   useEffect(() => {
+    if (disabled) {
+      return;
+    }
     if (config.traceStatus === undefined || config.traceStatus === "") {
       onUpdateConfig("traceStatus", "success");
     }
-  }, [config.traceStatus, onUpdateConfig]);
+  }, [config.traceStatus, disabled, onUpdateConfig]);
 
   const selector = (config.traceSelector as string) || "";
   const selectorInvalid = !isValidTraceSelector(selector);
@@ -399,7 +405,7 @@ function TraceTriggerFields({
     {
       key: "contractAddress",
       label: "Watched Contract",
-      type: "text",
+      type: "template-input",
       placeholder: "0x... calls made to this contract are matched",
       required: true,
       isAddressField: true,
@@ -441,7 +447,7 @@ function TraceTriggerFields({
     {
       key: "traceCaller",
       label: "Caller (Optional)",
-      type: "text",
+      type: "template-input",
       placeholder: "0x... only match calls from this address",
       isAddressField: true,
     },
@@ -541,7 +547,7 @@ function TraceTriggerFields({
         <p className="text-muted-foreground text-xs">
           {selectorInvalid
             ? "A selector is 0x followed by exactly 8 hex characters, for example 0x8456cb59. A value in any other shape matches nothing, so the trigger would register and never fire."
-            : "A raw 4-byte selector, for a contract without a published ABI or a view function. Choosing a function above fills this in."}
+            : "A raw 4-byte selector, which is what narrows the trigger to one function. Choosing a function above does not fill this in yet, so without a selector every function matches."}
         </p>
       </div>
       <div className="space-y-2">

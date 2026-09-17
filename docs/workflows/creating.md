@@ -92,7 +92,7 @@ For trigger nodes, you'll also configure specific settings based on the trigger 
 | Webhook  | `"Webhook"`  | (none) | `webhookSchema`, `webhookMockRequest` |
 | Event    | `"Event"`    | `network`, `contractAddress`, `contractABI`, `eventName` | (none) |
 | Block    | `"Block"`    | `network`, `blockInterval` | (none) |
-| Trace    | `"Trace"`    | `network`, `contractAddress` | `traceStatus`, `abiFunction` + `contractABI`, `traceSelector`, `traceCaller`, `traceCallTypes`, `traceMinValueWei` |
+| Trace    | `"Trace"`    | `network`, `contractAddress` | `traceStatus`, `traceSelector`, `traceCaller`, `traceCallTypes`, `traceMinValueWei` + `traceMinValue` |
 
 #### Trace trigger
 
@@ -108,14 +108,14 @@ The workflow runs once for each call to the watched contract that matches every 
 | Setting | Config key | Matches |
 |---------|------------|---------|
 | Call Outcome | `traceStatus` | `"success"` (default), `"reverted"`, or `"any"` |
-| Function | `traceSelector` | Calls to one function, given as its raw 4-byte selector. Selecting a function from the ABI fills this in for you |
+| Function | `traceSelector` | Calls to one function, given as its raw 4-byte selector. Choosing a function from the ABI in the editor stores `abiFunction`, which nothing reads yet, so the filter narrows to one function only when `traceSelector` is set |
 | Caller | `traceCaller` | Calls made from one address |
 | Call Types | `traceCallTypes` | Any of `CALL`, `STATICCALL`, `DELEGATECALL`, `CALLCODE`, `CREATE`, `CREATE2`, `SELFDESTRUCT`. Empty matches all |
-| Minimum Value | `traceMinValueWei` | Calls moving at least this much native token, in wei |
+| Minimum Value | `traceMinValueWei` | Calls moving at least this much native token, in wei. Set `traceMinValue` to the same amount in native token units as well: the editor displays that key, and clearing its box removes the filter |
 
 A malformed function selector stops the trigger from registering, rather than being accepted and then matching nothing. Other filter values are not validated yet, so check a caller address before saving.
 
-Each run receives `transactionHash`, `blockNumber`, `from`, `to`, `value` (wei, as a decimal string), `selector`, `input`, `callType`, `reverted`, `depth`, `frameIndex` and `transactionIndex`. For example, `{{@trigger:Trigger.from}}` is the address that made the call.
+Each run receives `transactionHash`, `blockNumber`, `from`, `to`, `value` (wei, as the hex string the node's call tracer reports, for example `0x0`), `selector`, `input`, `callType`, `reverted`, `depth`, `frameIndex` and `transactionIndex`. For example, `{{@trigger:Trigger.from}}` is the address that made the call.
 
 > **Network support:** Trace triggers need an RPC endpoint that serves `debug_traceBlockByNumber`. Plasma and Tempo serve it today. On a network whose endpoint does not, the trigger registers but never fires.
 

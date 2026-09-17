@@ -1,10 +1,10 @@
 /**
  * Trace trigger config shared by the editor and the events worker endpoint.
  *
- * The event tracker validates every field again at map time
- * (keeperhub-events/event-tracker/src/listener/workflow-mapper.ts) and refuses
- * a workflow whose filter it cannot read. This module only reconciles the
- * shape the editor stores with the shape the tracker expects.
+ * Reconciles the shape the editor stores with the shape the tracker expects,
+ * and holds the checks the events endpoint applies before handing a Trace
+ * workflow over. Those checks are the only ones: nothing validates trigger
+ * nodes on save, and the tracker does not re-validate these fields.
  */
 
 /**
@@ -70,9 +70,8 @@ export const TRACE_STATUS_OPTIONS = [
  *
  * The editor persists every config value as a string, so a multi-select
  * arrives as a JSON array string. An array is returned unchanged. Anything
- * unparseable is returned as-is so the tracker refuses it with a log line,
- * rather than being silently dropped here and widening the filter to every
- * frame type.
+ * unparseable is returned as-is rather than dropped, which would widen the
+ * filter to every frame type; isValidTraceCallTypes is what refuses it.
  */
 export function parseTraceCallTypes(raw: unknown): unknown {
   if (Array.isArray(raw) || typeof raw !== "string") {
@@ -95,6 +94,12 @@ export function normalizeTraceTriggerConfig(
 ): void {
   if (config.traceCallTypes !== undefined) {
     config.traceCallTypes = parseTraceCallTypes(config.traceCallTypes);
+  }
+  // Validated trimmed, so it has to leave trimmed: the matcher compares the
+  // selector against the frame's first four bytes as-is, and a value pasted
+  // with a trailing space would register and never match.
+  if (typeof config.traceSelector === "string") {
+    config.traceSelector = config.traceSelector.trim();
   }
 }
 

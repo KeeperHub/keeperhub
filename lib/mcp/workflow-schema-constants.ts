@@ -320,7 +320,7 @@ export const TRIGGERS = {
       traceSelector:
         'string - Only match this 4-byte function selector, 0x followed by 8 hex characters (e.g., "0x8456cb59"). A value in any other shape is refused, since it would match nothing',
       abiFunction:
-        "string - The function chosen in the editor, which fills in traceSelector. Resolving it to a selector is the editor's job, so send traceSelector when creating a workflow here",
+        "string - The function chosen in the editor. Nothing reads it yet and it does not fill in traceSelector, so send traceSelector to narrow the trigger to one function",
       contractABI: "string - Contract ABI JSON, needed only for abiFunction",
       traceCallTypes:
         "string[] - Only match these frame types: CALL, STATICCALL, DELEGATECALL, CALLCODE, CREATE, CREATE2, SELFDESTRUCT. Empty matches all",
@@ -337,7 +337,8 @@ export const TRIGGERS = {
       chainId: "number - Numeric chain ID the call ran on",
       from: "string - Address that made the call",
       to: "string - Address that was called (the watched contract)",
-      value: "string - Native value moved by the call, in wei (decimal)",
+      value:
+        'string - Native value moved by the call, in wei, as the hex string the call tracer reports (e.g. "0x0")',
       selector: "string - 4-byte selector of the call, or 0x when none",
       input: "string - Full calldata of the call",
       callType: "string - CALL, DELEGATECALL, STATICCALL, CREATE, ...",

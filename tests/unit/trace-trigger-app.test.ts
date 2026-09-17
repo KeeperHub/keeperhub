@@ -124,7 +124,7 @@ describe("parseTraceCallTypes", () => {
     expect(parseTraceCallTypes("")).toEqual([]);
   });
 
-  it("leaves an unreadable value for the tracker to refuse, not a wildcard", () => {
+  it("leaves an unreadable value for the validator to refuse, not a wildcard", () => {
     // Returning [] here would silently widen the filter to every frame type.
     expect(parseTraceCallTypes("CALL")).toBe("CALL");
     expect(parseTraceCallTypes('{"a":1}')).toBe('{"a":1}');
@@ -144,6 +144,18 @@ describe("normalizeTraceTriggerConfig", () => {
       traceCallTypes: ["CALL"],
       traceStatus: "reverted",
     });
+  });
+
+  it("trims the selector it validated trimmed, so a pasted space still matches", () => {
+    // isValidTraceSelector accepts "  0x8456cb59  ", and the matcher compares
+    // the selector as-is, so an untrimmed value would register and never fire.
+    const config: Record<string, unknown> = {
+      triggerType: "Trace",
+      traceSelector: "  0x8456cb59  ",
+    };
+    expect(isValidTraceSelector(config.traceSelector)).toBe(true);
+    normalizeTraceTriggerConfig(config);
+    expect(config.traceSelector).toBe("0x8456cb59");
   });
 
   it("does not add a call-type field that was never set", () => {
