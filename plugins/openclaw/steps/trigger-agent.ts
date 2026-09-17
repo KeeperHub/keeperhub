@@ -50,12 +50,12 @@ const TRAILING_SLASHES = /\/+$/;
 const MAX_ERROR_CHARS = 400;
 
 /**
- * Cap on what is read off the wire before anything parses or redacts it.
+ * Cap on the response text this module parses, redacts and logs.
  *
- * The response comes from a host the workflow author chose, so neither its
- * status nor its size is under our control: a redirect to a large document,
- * or a hostile instance, would otherwise pull an unbounded string into memory
- * before the 400-character bound below ever applies.
+ * It is not an allocation bound: `response.text()` materialises the whole body
+ * before the slice runs. The read it is left on is the failure path, whose
+ * text is only ever logged, so truncating there costs nothing and keeps a
+ * proxy's HTML error page out of the run log.
  */
 const MAX_RAW_BODY_CHARS = 8_192;
 
@@ -121,10 +121,15 @@ function redactSecrets(text: string, hookToken: string): string {
 }
 
 /**
- * Read the body, capped before any parse or redaction runs over it.
+ * Read a failure body, capped before the parse, the redaction passes and the
+ * 400-character log bound run over it.
  *
- * Both reads below go through here: the failure path, whose text lands in the
- * run log, and the success path, which only needs `ok` and `runId`.
+ * Only the failure path goes through here. The success read stays unbounded on
+ * purpose: it has to parse, and an admission receipt longer than this cap
+ * would truncate to invalid JSON, which this module reports as "a 200 that was
+ * not JSON" for a turn OpenClaw really admitted. The author then re-runs, and
+ * that mints a fresh `executionId`, a fresh replay key and a second turn - the
+ * duplicate this design exists to narrow, produced by our own cap.
  */
 async function readBoundedText(response: Response): Promise<string> {
   return (await response.text()).slice(0, MAX_RAW_BODY_CHARS);
@@ -313,7 +318,26 @@ async function stepHandler(
       headers["Idempotency-Key"] = input.idempotencyKey;
     }
 
+    // The config field carries `min: 1`, but nothing clamps it on the way in:
+    // `action-config-renderer.tsx` passes `e.target.value` straight through, so
+    // a saved `0` reaches this line. Dropping the field silently would run with
+    // the instance default while the form shows the author's own value.
+    const timeoutIsSet =
+      input.timeoutSeconds !== undefined &&
+      input.timeoutSeconds !== null &&
+      String(input.timeoutSeconds).trim() !== "";
     const timeoutSeconds = Number(input.timeoutSeconds);
+    if (
+      timeoutIsSet &&
+      (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0)
+    ) {
+      return {
+        success: false,
+        error:
+          "Timeout (seconds) must be a positive number. Clear the field to use the instance default.",
+        errorClass: ExecutionErrorType.USER,
+      };
+    }
     const body: Record<string, unknown> = {
       message,
       // `deliver` defaults to true on OpenClaw's side, so pinning it false is
@@ -344,10 +368,10 @@ async function stepHandler(
       return { success: false, ...failure };
     }
 
-    const raw = await readBoundedText(response);
-    let payload: { ok?: unknown; runId?: unknown };
+    const raw = await response.text();
+    let payload: { ok?: unknown; runId?: unknown } | null;
     try {
-      payload = JSON.parse(raw) as { ok?: unknown; runId?: unknown };
+      payload = JSON.parse(raw) as { ok?: unknown; runId?: unknown } | null;
     } catch {
       return {
         success: false,
@@ -357,8 +381,11 @@ async function stepHandler(
       };
     }
 
-    const runId = typeof payload.runId === "string" ? payload.runId.trim() : "";
-    if (payload.ok !== true || !runId) {
+    // `JSON.parse` returns `null` for a body of `null`, and reading a field
+    // off it would throw into the catch below - reported as a failure to reach
+    // an instance that answered, instead of the receipt failure this case is.
+    const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
+    if (payload?.ok !== true || !runId) {
       return {
         success: false,
         error:
@@ -369,6 +396,25 @@ async function stepHandler(
 
     return { success: true, admitted: true, runId };
   } catch (error) {
+    // `safeFetch` validates DNS-resolved IPs on every redirect hop and throws
+    // `SsrfBlockedError` from inside the call, so an instance URL that 302s to
+    // an internal address arrives here rather than at the pre-flight check
+    // above. That is the author's configuration, not a third-party outage, and
+    // classifying it `external` is what this file's own comment at the pre-flight
+    // check says it does not do. Same treatment as the sibling plugins.
+    if (error instanceof SsrfBlockedError) {
+      logUserError(
+        ErrorCategory.VALIDATION,
+        "[OpenClaw] Blocked SSRF target",
+        error,
+        { plugin_name: "openclaw", action_name: "trigger-agent" }
+      );
+      return {
+        success: false,
+        error: `OpenClaw instance URL is not allowed: ${error.message}`,
+        errorClass: ExecutionErrorType.USER,
+      };
+    }
     return {
       success: false,
       error: `Failed to reach OpenClaw: ${bound(getErrorMessage(error))}`,

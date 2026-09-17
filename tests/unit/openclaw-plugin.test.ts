@@ -308,11 +308,34 @@ describe("request shape", () => {
     expect(body.timeoutSeconds).toBe(90);
   });
 
-  it("omits an invalid timeout instead of sending it", async () => {
-    safeFetchMock.mockResolvedValue(jsonResponse({ ok: true, runId: "run-5" }));
-    await callStep({ timeoutSeconds: "-5" });
+  it("refuses a timeout that is not a positive number", async () => {
+    // `min: 1` on the config field lands in the DOM as an attribute and nothing
+    // clamps it (action-config-renderer.tsx passes `e.target.value` straight
+    // through), so these values do reach the step. Omitting the field silently
+    // would run with the instance default while the form still shows the
+    // author's own number.
+    for (const bad of ["0", "-5", "abc"]) {
+      safeFetchMock.mockClear();
+      const result = await callStep({ timeoutSeconds: bad });
 
-    expect(JSON.parse(lastInit().body).timeoutSeconds).toBeUndefined();
+      expect(safeFetchMock).not.toHaveBeenCalled();
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorClass).toBe("user");
+        expect(result.error).toContain("Timeout (seconds)");
+      }
+    }
+  });
+
+  it("treats an absent timeout as the instance default", async () => {
+    safeFetchMock.mockResolvedValue(jsonResponse({ ok: true, runId: "run-5" }));
+
+    for (const absent of [undefined, null, ""]) {
+      safeFetchMock.mockClear();
+      await callStep({ timeoutSeconds: absent });
+
+      expect(JSON.parse(lastInit().body).timeoutSeconds).toBeUndefined();
+    }
   });
 });
 
@@ -349,6 +372,31 @@ describe("URL validation", () => {
       plugin_name: "openclaw",
       action_name: "trigger-agent",
     });
+  });
+
+  it("classifies an SSRF block raised inside safeFetch as the author's mistake", async () => {
+    // safeFetch re-validates DNS-resolved IPs on every redirect hop, so an
+    // instance URL that 302s to an internal address throws from inside the call
+    // rather than at the pre-flight check above. Filing that under `external`
+    // blames a third party for the author's own URL.
+    safeFetchMock.mockRejectedValue(
+      new SsrfBlockedError({
+        hostname: "169.254.169.254",
+        resolvedIp: "169.254.169.254",
+        reason: "private-ip",
+        message: 'safe-fetch: hostname "169.254.169.254" is not public',
+      })
+    );
+    const result = await callStep();
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorClass).toBe("user");
+      expect(result.error).toContain("not allowed");
+      expect(result.error).toContain("169.254.169.254");
+    }
+    expect(logUserErrorMock).toHaveBeenCalledTimes(1);
+    expect(logUserErrorMock.mock.calls[0][0]).toBe("validation");
   });
 
   it("classifies an unparseable instance URL as the author's mistake", async () => {
@@ -488,6 +536,45 @@ describe("status mapping", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.errorClass).toBe("external");
+    }
+  });
+
+  it("reads the admission receipt without capping it", async () => {
+    // A receipt longer than the failure-path cap still has to parse. Capping
+    // this read would truncate the JSON, and the module would report "a 200
+    // that was not JSON" for a turn OpenClaw really admitted, so the author
+    // re-runs and mints the duplicate this design exists to narrow.
+    safeFetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, runId: "run-long", note: "x".repeat(9000) }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    const result = await callStep();
+
+    expect(result).toMatchObject({
+      success: true,
+      admitted: true,
+      runId: "run-long",
+    });
+  });
+
+  it("reports a null body as a missing receipt, not as an unreachable instance", async () => {
+    // JSON.parse returns null for a body of "null", and reading a field off it
+    // would throw into the outer catch - an instance that answered would be
+    // reported as unreachable instead.
+    safeFetchMock.mockResolvedValue(
+      new Response("null", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    const result = await callStep();
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("admission receipt");
+      expect(result.error).not.toContain("Failed to reach");
     }
   });
 
