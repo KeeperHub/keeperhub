@@ -183,16 +183,36 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     }
   });
 
-  it("drops a page past the ceiling instead of unbounding the SQL LIMIT", async () => {
+  it("clamps a page past the ceiling instead of unbounding the SQL LIMIT", async () => {
     // getUnifiedRuns turns the page into
     // fetchLimit = (page - 1) * pageLimit + pageLimit + 1, and that becomes the
     // LIMIT on both source queries. page=999999999 asks for 49999999951 rows -
     // every run in range - then slices an empty window out of them.
-    for (const page of ["999999999", "9007199254740993", "201"]) {
+    for (const page of ["999999999", "201"]) {
       vi.mocked(getUnifiedRuns).mockClear();
       const options = await optionsFor({ page });
-      expect(options?.page, `page=${page}`).toBeUndefined();
+      expect(options?.page, `page=${page}`).toBe(200);
     }
+  });
+
+  it("clamps rather than dropping, so the pager and the rows agree", async () => {
+    // Dropping is indistinguishable from absent, so getUnifiedRuns would fall
+    // back to page 1 and echo it. The table computes totalPages from the real
+    // total and keeps Next enabled past the ceiling, so an org with more than
+    // 10000 runs in range would page to 201 and silently receive rows 1-50
+    // while the pager still read 10001-10050.
+    const options = await optionsFor({ page: "201" });
+
+    expect(options?.page).not.toBe(1);
+    expect(options?.page).toBe(200);
+  });
+
+  it("drops a page too large to round-trip rather than clamping a value the caller never wrote", async () => {
+    // 9007199254740993 parses to ...992, so the string does not round-trip and
+    // the value is not the one that was sent.
+    const options = await optionsFor({ page: "9007199254740993" });
+
+    expect(options?.page).toBeUndefined();
   });
 
   it("accepts the largest page it will honour", async () => {
@@ -201,10 +221,10 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     expect(options?.page).toBe(200);
   });
 
-  it("drops a limit past the ceiling", async () => {
+  it("clamps a limit past the ceiling", async () => {
     const options = await optionsFor({ limit: "100000" });
 
-    expect(options?.limit).toBeUndefined();
+    expect(options?.limit).toBe(200);
   });
 
   it("drops a page below the first one instead of clamping silently", async () => {

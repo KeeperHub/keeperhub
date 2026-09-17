@@ -18,8 +18,10 @@ import { MAX_PAGE_SIZE } from "@/lib/pagination";
  * then concatenated and sorted in Node before an empty window is sliced out of
  * them - O(all runs) of work to return nothing.
  *
- * Bounding the page at MAX_PAGE_SIZE caps fetchLimit at 20101 rows, and 200
- * pages of up to 100 is past anything the UI pages through.
+ * Bounding the page at MAX_PAGE_SIZE caps fetchLimit at 20101 rows. The UI
+ * does page past it - the table sizes its pager off the real total - so the
+ * bound clamps rather than rejects, and the response echoes the clamped page
+ * so the pager and the rows describe the same window.
  */
 const MAX_PAGE = MAX_PAGE_SIZE;
 
@@ -49,10 +51,18 @@ function parsePaginationParam(
   const value = Number.parseInt(raw, 10);
   // parseInt("12abc") is 12 and parseInt(" 5") is 5, so the string must
   // round-trip exactly or the value is not the one the caller wrote.
-  if (Number.isNaN(value) || String(value) !== raw) {
+  if (Number.isNaN(value) || String(value) !== raw || value < 1) {
     return undefined;
   }
-  return value >= 1 && value <= max ? value : undefined;
+  // Clamp rather than drop. A dropped value is indistinguishable from an
+  // absent one, so getUnifiedRuns would fall back to page 1 and echo it: the
+  // caller asks for page 201 and silently receives the first page. The table
+  // computes totalPages from the real total and keeps Next enabled past the
+  // ceiling, so an organization with more than MAX_PAGE * 50 runs in range
+  // would page forwards into the first rows with the pager still reading 201.
+  // Clamping keeps the echoed page and the returned rows describing the same
+  // window.
+  return Math.min(value, max);
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
