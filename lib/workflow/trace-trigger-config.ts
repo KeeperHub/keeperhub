@@ -3,8 +3,10 @@
  *
  * Reconciles the shape the editor stores with the shape the tracker expects,
  * and holds the checks the events endpoint applies before handing a Trace
- * workflow over. Those checks are the only ones: nothing validates trigger
- * nodes on save, and the tracker does not re-validate these fields.
+ * workflow over. Nothing validates trigger nodes on save, so these are the
+ * app side's only checks. The tracker's workflow mapper re-validates the same
+ * fields at map time (#2469) and skips a workflow it cannot read, but that
+ * refusal is a log line, so a bad filter is still refused here first.
  */
 
 /**
