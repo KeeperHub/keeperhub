@@ -160,14 +160,19 @@ const ENDPOINT_V2_ADDRESSES: Record<string, string> = {
 // chain, so none of it is derivable.
 //
 // Source: LayerZero metadata API `endpointV2View`, 2026-09-16. Every entry
-// was called on its own chain that day: each holds the same 2304 bytes of
-// code and answers executable() with 0 for an unused nonce, so a wrong-chain
-// or wrong-shaped address cannot pass silently.
+// was called on its own chain that day: each answers executable() with 0
+// for an unused nonce, and the endpoint it reports serves the eid
+// LAYERZERO_EIDS lists for that chain. That endpoint()/eid() round-trip is
+// what identifies the address; the contract is an upgradeable proxy, so its
+// code is the same for every view behind the same admin and says nothing
+// about which chain's view it is.
 //
-// Executed (3) is returned both when the receiver's lzReceive ran and when
-// the OApp cleared the payload with clear() without running it: the endpoint
-// deletes the payload hash either way, so the two leave the same state. It
-// says nothing about lzCompose, which runs as a separate call afterwards.
+// Executed (3) means the endpoint holds no payload for that nonce and the
+// path has reached it. That covers lzReceive having run, the OApp having
+// dropped the message with clear(), skip() or burn(), and any nonce at or
+// below the path's lazy inbound nonce, whether or not it is the message the
+// caller meant. It says nothing about lzCompose, which runs as a separate
+// call afterwards.
 const ENDPOINT_V2_VIEW_ADDRESSES: Record<string, string> = {
   "1": "0x8FAFC84cAeA1Cef8475cb5CB344658D160c9CE0b",
   "8453": "0x5e2A88c385B86f00eb8F4d9f861649a6feB93F24",
@@ -756,14 +761,14 @@ export default defineAbiProtocol({
           slug: "endpoint-view-executable",
           label: "Endpoint Message Executable",
           description:
-            "Where an inbound message stands on this (the destination) chain: 0 not yet verified, 1 verified but waiting on an earlier nonce, 2 ready to execute, 3 executed. 3 is also returned when the receiving app cleared the message without executing it, and it does not cover lzCompose.",
+            "Where an inbound message stands on this (the destination) chain: 0 not yet verified, 1 verified but waiting on an earlier nonce, 2 ready to execute, 3 executed. 3 is also returned when the receiving app cleared, skipped or burned the message, and for any nonce the path has already moved past, so it confirms the path is past that nonce rather than that this message arrived. It does not cover lzCompose.",
           docUrl: LAYERZERO_PROTOCOL_DOCS,
           inputs: {
             srcEid: {
               label: "Source Endpoint ID",
               // Solana's endpoint IDs are named here and nowhere else in the
-              // file. The source may be non-EVM -- that is what the bytes32
-              // sender is for -- and a user polling a Solana send has no
+              // file. The source may be non-EVM - that is what the bytes32
+              // sender is for - and a user polling a Solana send has no
               // other way to learn the ID. A wrong one returns 0 forever,
               // which reads as "not delivered yet" rather than "wrong lane".
               // It says nothing about destinations: the action's network
@@ -790,8 +795,11 @@ export default defineAbiProtocol({
             },
           },
           outputs: {
-            result: {
-              name: "state",
+            // Named in the ABI rather than renamed here: the step wraps a
+            // single output as { [name]: value } only when the ABI names it,
+            // so a renamed output would advertise a path that resolves to
+            // nothing.
+            state: {
               label:
                 "Execution State (0 not executable, 1 verified but not executable, 2 executable, 3 executed)",
             },

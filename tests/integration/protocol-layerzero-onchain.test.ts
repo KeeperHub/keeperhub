@@ -3,11 +3,13 @@
  *
  * Proves that the ABI-driven LayerZero protocol definition produces
  * calldata the deployed contracts accept on Ethereum mainnet, and - for
- * the eleven reads - that what comes back decodes into the shapes the
- * runtime expects. The twelfth action is a write and is simulated only:
- * USDT's approve returns no data, so there is nothing to decode and that
- * test asserts acceptance rather than a return value. Three
- * deployments answer: the USDT0 OFT Adapter, the USDT token it locks,
+ * eleven of the twelve reads - that what comes back decodes into the shapes
+ * the runtime expects. The twelfth read, Endpoint Message Executable, has
+ * its own suite at the end of this file, run against every chain in its
+ * view map. The one write is simulated only: USDT's approve returns no
+ * data, so there is nothing to decode and that test asserts acceptance
+ * rather than a return value. In the mainnet suite three deployments
+ * answer: the USDT0 OFT Adapter, the USDT token it locks,
  * and the LayerZero EndpointV2. Every action goes through the shared
  * calldata builder, so the test exercises the definition itself - its
  * flattened SendParam tuple, the padAddressToBytes transform on the
@@ -640,16 +642,18 @@ describe("LayerZero EndpointV2 deployments identify their own chain", () => {
 //
 // executable() on a nonce that was never sent returns NotExecutable (0)
 // rather than reverting, so the assertion is that the call decodes to a
-// value in range. An address holding no code, or holding something that is
-// not the view, fails to decode and the test fails with it.
-const VIEW_ABI = [
-  "function executable((uint32 srcEid, bytes32 sender, uint64 nonce) origin, address receiver) view returns (uint8)",
-  "function endpoint() view returns (address)",
-];
-// EndpointV2View's runtime code, identical on every chain apart from its
-// immutables. Pinned so a mapped address that merely answers cannot pass as
-// the view.
-const VIEW_CODE_BYTES = 2304;
+// value in range. It is encoded and decoded through the ABI the definition
+// ships, so a drift in that file fails here rather than only in a golden
+// generated from it.
+const SHIPPED_VIEW_ABI = new ethers.Interface(
+  JSON.parse(layerzeroDef.contracts.endpointV2View.abi as string)
+);
+// endpoint() is not an action, so it is not in the shipped ABI.
+const VIEW_ENDPOINT_ABI = ["function endpoint() view returns (address)"];
+// The size of the proxy every mapped view sits behind. Two views behind the
+// same proxy admin have identical code, so this pins the contract's shape
+// only; the endpoint()/eid() round-trip below is the one identity check.
+const VIEW_PROXY_CODE_BYTES = 2304;
 const UNUSED_ORIGIN = {
   srcEid: 30_101,
   sender: ethers.zeroPadValue("0x000000000000000000000000000000000000dEaD", 32),
@@ -667,7 +671,7 @@ describe("LayerZero EndpointV2View deployments answer executable()", () => {
           chainId,
           `layerzero-endpoint-view-${chainId}`
         );
-        const iface = new ethers.Interface(VIEW_ABI);
+        const iface = SHIPPED_VIEW_ABI;
         const view = layerzeroDef.contracts.endpointV2View.addresses[chainId];
         const result = await manager.executeWithFailover((p) =>
           p.call({
@@ -683,11 +687,12 @@ describe("LayerZero EndpointV2View deployments answer executable()", () => {
         expect(Number(state)).toBeLessThanOrEqual(3);
 
         // `0 <= state <= 3` alone is satisfied by any contract whose
-        // fallback returns 32 zero bytes, so it cannot tell a correct
-        // address from a proxy or a permissive one. These two can.
+        // fallback returns 32 zero bytes. The code size rules out an empty
+        // account or a contract of another shape, but not another view
+        // behind the same proxy, so it is a shape check only.
         const code = await manager.executeWithFailover((p) => p.getCode(view));
         expect((code.length - 2) / 2, `code size on ${chainId}`).toBe(
-          VIEW_CODE_BYTES
+          VIEW_PROXY_CODE_BYTES
         );
 
         // The identity check: ask the view which endpoint it serves, then
@@ -695,10 +700,14 @@ describe("LayerZero EndpointV2View deployments answer executable()", () => {
         // another chain's view fails here, and it is also what pins the 15
         // endpoint IDs that no other on-chain assertion reaches -- the unit
         // tests can only compare the constant against itself.
+        const endpointIface = new ethers.Interface(VIEW_ENDPOINT_ABI);
         const endpointResult = await manager.executeWithFailover((p) =>
-          p.call({ to: view, data: iface.encodeFunctionData("endpoint") })
+          p.call({
+            to: view,
+            data: endpointIface.encodeFunctionData("endpoint"),
+          })
         );
-        const [endpointAddress] = iface.decodeFunctionResult(
+        const [endpointAddress] = endpointIface.decodeFunctionResult(
           "endpoint",
           endpointResult
         );

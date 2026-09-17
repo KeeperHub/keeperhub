@@ -17,7 +17,11 @@
       { "name": "receiver", "type": "address", "internalType": "address" }
     ],
     "outputs": [
-      { "name": "", "type": "uint8", "internalType": "enum ExecutionState" }
+      {
+        "name": "state",
+        "type": "uint8",
+        "internalType": "enum ExecutionState"
+      }
     ]
   }
 ]

@@ -44,12 +44,27 @@ LayerZero addresses chains by its own identifier, the endpoint ID (EID). It is n
 | Network | EVM chain ID | LayerZero endpoint ID |
 |---------|--------------|-----------------------|
 | Ethereum | 1 | 30101 |
-| Optimism | 10 | 30111 |
-| Polygon | 137 | 30109 |
 | Base | 8453 | 30184 |
 | Arbitrum One | 42161 | 30110 |
+| Optimism | 10 | 30111 |
+| Polygon | 137 | 30109 |
+| BNB Chain | 56 | 30102 |
+| Avalanche | 43114 | 30106 |
+| Plasma | 9745 | 30383 |
+| 0G | 16661 | 30388 |
+| Tempo | 4217 | 30410 |
+| Robinhood Chain | 4663 | 30416 |
 | Ethereum Sepolia | 11155111 | 40161 |
 | Base Sepolia | 84532 | 40245 |
+| Arbitrum Sepolia | 421614 | 40231 |
+| Optimism Sepolia | 11155420 | 40232 |
+| Polygon Amoy | 80002 | 40267 |
+| BNB Chain Testnet | 97 | 40102 |
+| Avalanche Fuji | 43113 | 40106 |
+| Plasma Testnet | 9746 | 40417 |
+| 0G Galileo | 16602 | 40428 |
+| Tempo Testnet | 42431 | 40444 |
+| Robinhood Chain Testnet | 46630 | 40451 |
 
 Mainnet endpoint IDs start at 30000 and testnet endpoint IDs at 40000. A destination outside this table still works as long as the endpoint supports it; check it with Endpoint Is Supported EID and look the identifier up on the [LayerZero deployed contracts page](https://docs.layerzero.network/v2/deployments/deployed-contracts).
 
@@ -421,13 +436,15 @@ Where an inbound message stands on the destination chain. Select the destination
 | 0 | Not verified. The verifier set has not yet delivered the payload to this endpoint |
 | 1 | Verified, but an earlier nonce on the same path is still outstanding, so this one cannot run yet |
 | 2 | Executable. Verified and next in line, waiting on the executor |
-| 3 | Executed |
+| 3 | Executed, or the path has already moved past this nonce |
 
-Two limits are worth stating plainly, because both can make a workflow act on a transfer that has not finished.
+Three limits are worth stating plainly, because each can make a workflow act on a transfer that has not finished.
 
-A `3` means the endpoint no longer holds the payload. That is the state after the receiving app ran the message, and it is equally the state after the app called `clear()` to drop the message without running it. Read it as "executed or cleared" rather than as proof of delivery.
+A `3` means the endpoint no longer holds the payload. That is the state after the receiving app ran the message, and it is equally the state after the app dropped the message without running it, with `clear()`, `skip()` or `burn()`. Read it as "executed or cleared" rather than as proof of delivery.
 
-A `3` also covers `lzReceive` only. An app that composes further work runs `lzCompose` as a separate call afterwards, which can fail on its own. If your workflow acts on funds arriving, confirm the balance rather than the state alone.
+A `3` is also returned for every nonce the path has already moved past, whether or not a message with that nonce is the one you mean. A mistyped or guessed nonce below the path's latest executed nonce reads as `3`, so a `3` confirms the path is past that nonce, not that this message arrived. Take the nonce from the send's `PacketSent` event rather than typing it. A wrong source endpoint ID, sender or receiver behaves differently: each names a path with no history, so it returns `0` indefinitely.
+
+Finally, a `3` covers `lzReceive` only. An app that composes further work runs `lzCompose` as a separate call afterwards, which can fail on its own. If your workflow acts on funds arriving, confirm the balance rather than the state alone.
 
 The inputs identify the message, and all four come from the source chain's `PacketSent` event. Nothing here searches by transaction hash, so a workflow that starts from a send needs the nonce and sender out of that event.
 

@@ -5,6 +5,8 @@ import {
   getEncodeTransformKind,
 } from "@/lib/protocol-encode-transforms";
 import { getProtocol, registerProtocol } from "@/lib/protocol-registry";
+import { structureAbiOutputs } from "@/plugins/web3/steps/structure-abi-result";
+import layerzeroEndpointV2ViewAbi from "@/protocols/abis/layerzero-endpoint-v2-view.json";
 import layerzeroErc20Abi from "@/protocols/abis/layerzero-erc20.json";
 import layerzeroDef, {
   DEFAULT_EXTRA_OPTIONS,
@@ -171,6 +173,22 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     expect(exe.description).toContain("3 executed");
     expect(exe.description).toContain("cleared");
     expect(exe.description).toContain("lzCompose");
+  });
+
+  it("executable's advertised state path resolves on the structured result", () => {
+    // The editor offers exe.outputs as template paths, while the step builds
+    // its result from the shipped ABI. A single output is wrapped as
+    // { [name]: value } only when the ABI names it, so a name that exists
+    // only in an override would advertise a path that resolves to nothing.
+    const exe = action("endpoint-view-executable");
+    const fn = layerzeroEndpointV2ViewAbi.find(
+      (entry) => entry.type === "function" && entry.name === "executable"
+    );
+    const result = structureAbiOutputs([BigInt(3)], fn?.outputs ?? []);
+    expect(result).toEqual({ state: expect.anything() });
+    for (const output of exe.outputs ?? []) {
+      expect(result).toHaveProperty(output.name);
+    }
   });
 
   it("pads an EVM sender for executable and leaves a bytes32 sender alone", () => {
