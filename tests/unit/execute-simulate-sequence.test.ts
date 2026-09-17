@@ -353,6 +353,64 @@ describe("simulateCallSequence on a node without eth_simulateV1", () => {
       spies.send.mock.calls.filter(([m]) => m === "eth_call")
     ).toHaveLength(0);
   });
+
+  it("reports a transport failure on eth_call as unavailable, not a revert (#2542)", async () => {
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call" || method === "eth_estimateGas") {
+        return Promise.reject(new Error("connection reset"));
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    const result = await run();
+
+    expect(result.mechanism).toBe("state-overrides");
+    expect(result.wouldRevert).toBe(false);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "unavailable",
+      wouldRevert: false,
+    });
+  });
+
+  it("still reports an eth_call CALL_EXCEPTION as a revert (#2542)", async () => {
+    const { makeError } = await import("ethers");
+    const revertErr = makeError(
+      "execution reverted: ERC20: transfer amount exceeds allowance",
+      "CALL_EXCEPTION",
+      {
+        action: "call",
+        data: null,
+        reason: "ERC20: transfer amount exceeds allowance",
+        transaction: {},
+        invocation: null,
+        revert: null,
+      }
+    );
+
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call" || method === "eth_estimateGas") {
+        return Promise.reject(revertErr);
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    const result = await run();
+
+    expect(result.mechanism).toBe("state-overrides");
+    expect(result.wouldRevert).toBe(true);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "revert",
+      wouldRevert: true,
+    });
+  });
 });
 
 describe("simulateCallSequence validation", () => {
