@@ -2,6 +2,7 @@ import "server-only";
 
 import { ethers } from "ethers";
 import {
+  classifySimulationError,
   getRpcManagerForChain,
   type PreparedSimulationCall,
   prepareSimulationCall,
@@ -241,13 +242,27 @@ async function runWithStateOverrides(
       );
       results.push({ status: "0x1", gasUsed: gasHex, returnData });
     } catch (err) {
-      results.push({
-        status: "0x0",
-        error: {
-          message: getErrorMessage(err),
-          data: extractDataFromError(err),
-        },
-      });
+      // A transport / node failure is not a reverting call. Agents treat
+      // status "0x0" as "do not broadcast"; reporting "we could not find out"
+      // the same way makes them abandon transactions that would have worked.
+      // Reuse the single-call classifier so the two paths agree.
+      const kind = classifySimulationError(err);
+      if (kind === "revert") {
+        results.push({
+          status: "0x0",
+          error: {
+            message: getErrorMessage(err),
+            data: extractDataFromError(err),
+          },
+        });
+      } else {
+        results.push({
+          error: {
+            message: getErrorMessage(err),
+            data: extractDataFromError(err),
+          },
+        });
+      }
       // The sequence is what the caller asked about, so keep going: the later
       // calls still answer against the state as it stands.
       continue;
