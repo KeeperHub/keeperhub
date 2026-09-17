@@ -34,6 +34,7 @@ const NON_CALLDATA_MUTATING_ACTION_TYPES = new Set([
   "web3/approve-token",
   "web3/transfer-funds",
   "web3/transfer-token",
+  "web3/disburse",
   // Tempo is a stablecoin chain with no native gas token, so none of its
   // writes carry native value and the daily value cap never sees them. Every
   // one broadcasts a signed TIP-20 transaction from the org wallet, and none

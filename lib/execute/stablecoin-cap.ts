@@ -237,6 +237,75 @@ export async function checkStablecoinTransferAmount(params: {
 }
 
 /**
+ * Bound the total stablecoin value a set of amount-based transfers would move
+ * in one node execution, the way `checkStablecoinCalldataBatch` bounds a
+ * Tempo transaction's total.
+ *
+ * web3/disburse is the case that reasoning did not reach: it is N separate
+ * transactions from one config rather than one signed transaction, so the
+ * per-call check in `checkStablecoinTransferAmount` -- run again on each leg
+ * right before it sends -- bounds any single recipient but nothing bounds
+ * what the whole execution moves. At the default caps, MAX_DISBURSE_LEGS
+ * transfers of the per-call ceiling each would clear it every time while the
+ * execution moved several multiples of the batch ceiling. This is the same
+ * gap `checkStablecoinCalldataBatch`'s own comment names, on a payout shape
+ * that never produces calldata to sum.
+ *
+ * Call this once, against every leg's amount, before any leg is claimed --
+ * summing after legs have already sent would bound nothing.
+ */
+export async function checkStablecoinTransferAmountBatch(params: {
+  organizationId: string;
+  chainId: number;
+  tokenAddress: string;
+  amounts: readonly string[];
+  context: string;
+}): Promise<StablecoinCapDecision> {
+  const token = await loadStablecoin(params.chainId, params.tokenAddress);
+  if (!token) {
+    return ALLOWED;
+  }
+
+  let totalMicroUsd = BigInt(0);
+  for (const amount of params.amounts) {
+    let amountBase: bigint;
+    try {
+      amountBase = ethers.parseUnits(amount, token.decimals);
+    } catch {
+      return {
+        kind: "denied",
+        error: `Invalid ${token.symbol} amount: ${amount}`,
+      };
+    }
+    if (amountBase < BigInt(0)) {
+      return {
+        kind: "denied",
+        error: `${token.symbol} amount must not be negative`,
+      };
+    }
+    totalMicroUsd += rescaleToMicroUsd(amountBase, token.decimals);
+  }
+
+  return compareAgainstCap({
+    microUsd: totalMicroUsd,
+    // The same constant checkStablecoinCalldataBatch enforces, read the same
+    // way -- not a value chosen for this call site.
+    capMicroUsd: BigInt(getDefaultBatchStablecoinCapMicroUsd()),
+    blocked: true,
+    verb: "transfer",
+    unit: `${token.symbol} across ${params.amounts.length} leg(s)`,
+    limit: "per-transaction batch limit",
+    event: {
+      organizationId: params.organizationId,
+      surface: params.context,
+      chainId: params.chainId,
+      erc20Function: "batch",
+      callCount: params.amounts.length,
+    },
+  });
+}
+
+/**
  * A decoded contract call, as `writeContractCore` has it: an ABI function plus
  * already-coerced argument values.
  */

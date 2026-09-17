@@ -33,9 +33,9 @@ import { buildEdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-util
 import { buildEdgesBySource } from "@/lib/workflow/executor/convergence-barrier";
 import {
   claimCollectOwner,
-  identifyLoopBody,
   orderForEachNodesOuterFirst,
 } from "@/lib/workflow/executor/executor.workflow";
+import { identifyLoopBody } from "@/lib/workflow/executor/loop-body";
 import type { WorkflowNode } from "@/lib/workflow/store";
 
 // ---------------------------------------------------------------------------

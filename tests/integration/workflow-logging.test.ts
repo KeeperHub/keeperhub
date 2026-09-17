@@ -1198,6 +1198,127 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
     expect(entries[1].receiptStatus).toBe("not_found");
   });
 
+  // A multi-leg step (web3/disburse) reports one hash per leg in
+  // legTransactions. Reading only transactionHash would record one leg and
+  // leave the rest unrecorded and unverified.
+  it("records and verifies every leg of a failed multi-leg step", async () => {
+    const executionId = "exec_disburse_failed";
+    allLogs = [
+      {
+        id: "log_d",
+        nodeId: "disburse-1",
+        nodeName: "Disburse",
+        status: "error",
+        iterationIndex: null,
+        forEachNodeId: null,
+        outputRaw: {
+          chainId: 84_532,
+          legTransactions: [
+            { hash: "0xleg0", chainId: 84_532, legIndex: 0 },
+            { hash: "0xleg2", chainId: 84_532, legIndex: 2 },
+          ],
+        },
+      },
+    ] as unknown as LogRow[];
+
+    verifyExecutionReceiptsMock.mockResolvedValueOnce({
+      allVerified: true,
+      results: [
+        {
+          hash: "0xleg0",
+          chainId: 84_532,
+          verified: true,
+          status: "success" as const,
+          verifiedAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          hash: "0xleg2",
+          chainId: 84_532,
+          verified: false,
+          status: "reverted" as const,
+          verifiedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    await logWorkflowCompleteDb({
+      executionId,
+      status: "error",
+      error: "1 leg failed",
+      startTime: Date.now() - 1000,
+    });
+
+    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith([
+      { hash: "0xleg0", chainId: 84_532 },
+      { hash: "0xleg2", chainId: 84_532 },
+    ]);
+    expect(getExecUpdate()?.set.transactionHashes).toEqual([
+      expect.objectContaining({
+        hash: "0xleg0",
+        nodeId: "disburse-1",
+        legIndex: 0,
+        receiptStatus: "success",
+      }),
+      expect.objectContaining({
+        hash: "0xleg2",
+        legIndex: 2,
+        receiptStatus: "reverted",
+      }),
+    ]);
+  });
+
+  it("recovers every leg from the logs when a successful run finalizes on another pod", async () => {
+    const executionId = "exec_disburse_cross_pod";
+    allLogs = [
+      {
+        id: "log_d",
+        nodeId: "disburse-1",
+        nodeName: "Disburse",
+        status: "success",
+        iterationIndex: null,
+        forEachNodeId: null,
+        outputRaw: {
+          chainId: 84_532,
+          legTransactions: [
+            { hash: "0xpaid0", legIndex: 0 },
+            { hash: "0xpaid1", legIndex: 1 },
+          ],
+        },
+      },
+    ] as unknown as LogRow[];
+    verifyExecutionReceiptsMock.mockResolvedValueOnce({
+      allVerified: true,
+      results: ["0xpaid0", "0xpaid1"].map((hash) => ({
+        hash,
+        chainId: 84_532,
+        verified: true,
+        status: "success" as const,
+        verifiedAt: "2026-01-01T00:00:00.000Z",
+      })),
+    });
+
+    await logWorkflowCompleteDb({
+      executionId,
+      status: "success",
+      startTime: Date.now() - 1000,
+    });
+
+    const update = getExecUpdate();
+    expect(update?.set.status).toBe("success");
+    expect(update?.set.transactionHashes).toEqual([
+      expect.objectContaining({
+        hash: "0xpaid0",
+        chainId: 84_532,
+        legIndex: 0,
+      }),
+      expect.objectContaining({
+        hash: "0xpaid1",
+        chainId: 84_532,
+        legIndex: 1,
+      }),
+    ]);
+  });
+
   /**
    * KEEP-431's cross-pod re-fire leaves an orphan `error` row for a node that
    * then succeeded on another pod under a different hash. That dead hash will

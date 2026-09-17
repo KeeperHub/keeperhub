@@ -1,6 +1,10 @@
 import "server-only";
 import { ethers, isError } from "ethers";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  type BroadcastHook,
+  runBroadcastHook,
+} from "@/lib/web3/broadcast-hook";
 
 export type BroadcastResult = {
   hash: string;
@@ -56,15 +60,24 @@ export class NonceConflictError extends Error {
  *   does not failover during populateTransaction.
  * - `response.wait()` polls on the provider that successfully broadcast;
  *   wait-side failover is a separate concern.
+ *
+ * `beforeBroadcast`, when given, is awaited after signing and before the first
+ * broadcast attempt, with the final hash (see broadcast-hook.ts). A throw
+ * aborts: nothing is broadcast. Without it the helper behaves as it always has.
  */
 export async function submitSignedTransactionWithFailover(
   signer: ethers.Signer,
   txRequest: ethers.TransactionRequest,
-  rpcManager: RpcProviderManager
+  rpcManager: RpcProviderManager,
+  beforeBroadcast?: BroadcastHook
 ): Promise<BroadcastResult> {
   const populated = await signer.populateTransaction(txRequest);
   const signedHex = await signer.signTransaction(populated);
   const expectedHash = computeTxHash(signedHex);
+  await runBroadcastHook(beforeBroadcast, {
+    kind: "evm-signed",
+    transactionHash: expectedHash,
+  });
 
   try {
     const response = await rpcManager.executeWithFailover(

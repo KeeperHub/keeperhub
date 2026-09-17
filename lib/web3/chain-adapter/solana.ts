@@ -11,6 +11,10 @@ import type { RpcOperationType } from "@/lib/rpc/providers/index";
 import type { SolanaProviderManager } from "@/lib/rpc/providers/solana";
 import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
+import {
+  BroadcastHookError,
+  runBroadcastHook,
+} from "@/lib/web3/broadcast-hook";
 import type { NonceSession } from "../nonce-manager";
 import { assertMaxSolLamportsOutflow } from "../solana-max-sol-guard";
 import {
@@ -317,6 +321,22 @@ export class SolanaChainAdapter implements ChainAdapter {
         signerPublicKey,
         blockhashRefs
       );
+
+      if (options.beforeBroadcast) {
+        // The signature is fixed by the signed bytes, so a caller recording
+        // it before submission can always look the transaction up later.
+        const presigned = deriveSolanaSignature(signedAttempt.signedBytes);
+        if (!presigned) {
+          throw new BroadcastHookError(
+            "solana-signed",
+            new Error("the signed transaction has no derivable signature")
+          );
+        }
+        await runBroadcastHook(options.beforeBroadcast, {
+          kind: "solana-signed",
+          signature: presigned,
+        });
+      }
 
       try {
         const submitResult = await submitSignedSolanaTransactionWithFailover(

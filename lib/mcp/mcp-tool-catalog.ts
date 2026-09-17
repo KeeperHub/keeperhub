@@ -48,6 +48,7 @@ export const AUTHENTICATED_MCP_TOOLS: readonly string[] = [
   "list_workflow",
   "list_workflows",
   "prepare_test_pin_data",
+  "resolve_disburse_leg",
   "search_plugins",
   "search_protocol_actions",
   "search_templates",

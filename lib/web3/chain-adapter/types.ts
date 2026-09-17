@@ -1,5 +1,6 @@
 import type { ethers } from "ethers";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import type { BroadcastHook } from "@/lib/web3/broadcast-hook";
 import type { NonceSession } from "../nonce-manager";
 
 export type TransactionReceipt = {
@@ -109,4 +110,10 @@ export type TransactionOptions = {
   solanaSigner?: SolanaTransactionSigner;
   /** Declared max native SOL outflow (lamports) for arbitrary instruction txs. */
   maxSolLamports?: bigint;
+  /**
+   * Awaited after signing and before broadcast (see broadcast-hook.ts). A throw
+   * aborts the send. Requires a path that signs before broadcasting: the EVM
+   * adapter refuses the hook when no rpcManager is given.
+   */
+  beforeBroadcast?: BroadcastHook;
 };

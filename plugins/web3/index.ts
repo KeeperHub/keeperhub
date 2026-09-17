@@ -223,6 +223,109 @@ const web3Plugin: IntegrationPlugin = {
       ],
     },
     {
+      slug: "disburse",
+      label: "Disburse",
+      description:
+        "Pay a list of recipients one at a time and record every leg under a run key. Re-running with the same key skips the legs that already paid, sends the ones that certainly did not, and stops at any leg that may have paid until it is resolved.",
+      category: "Web3",
+      requiresCredentials: true,
+      egress: "fixed-host",
+      stepFunction: "disburseStep",
+      stepImportPath: "disburse",
+      outputFields: [
+        {
+          field: "success",
+          description:
+            "True only when every leg is paid, either by this run or an earlier run with the same key",
+        },
+        {
+          field: "runKey",
+          description: "The run key the legs are recorded under",
+        },
+        {
+          field: "results",
+          description:
+            "Per leg, in order: { index, recipient, amount, status, transactionHash?, sendTransactionStatusId?, error? }. status is paid, already_paid, failed, unknown (may have paid; resolve before re-running), in_progress, conflict or not_attempted.",
+        },
+        {
+          field: "counts",
+          description: "Number of legs in each status",
+        },
+        {
+          field: "legTransactions",
+          description:
+            "Every transaction this run broadcast: [{ hash, chainId, legIndex }]",
+        },
+        receiptChainIdOutput(),
+        {
+          field: "error",
+          description: "Why the run did not pay every leg, when it did not",
+        },
+      ],
+      configFields: [
+        {
+          key: "network",
+          label: "Network",
+          type: "chain-select",
+          chainTypeFilter: ["evm", "solana"],
+          placeholder: "Select network",
+          required: true,
+        },
+        {
+          key: "assetType",
+          label: "Asset",
+          type: "select",
+          options: [
+            { value: "native", label: "Native token (ETH, SOL, ...)" },
+            { value: "erc20", label: "ERC-20 token (EVM)" },
+            { value: "spl", label: "SPL token (Solana)" },
+          ],
+          defaultValue: "native",
+          required: true,
+        },
+        {
+          key: "tokenAddress",
+          label: "Token Address",
+          type: "template-input",
+          placeholder: "0x...",
+          example: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          required: true,
+          showWhen: { field: "assetType", equals: "erc20" },
+        },
+        {
+          key: "mint",
+          label: "Mint Address",
+          type: "template-input",
+          placeholder: "Base58 mint address",
+          required: true,
+          showWhen: { field: "assetType", equals: "spl" },
+        },
+        {
+          key: "runKey",
+          label: "Run Key",
+          type: "template-input",
+          placeholder: "payroll-2026-09 or {{NodeName.batchId}}",
+          example: "payroll-2026-09",
+          required: true,
+          helpTip:
+            "Names this payout run. Re-running with the same key resumes it; a new payout needs a new key.",
+        },
+        {
+          key: "legs",
+          label: "Legs",
+          type: "template-textarea",
+          placeholder:
+            '[{"recipient": "0x...", "amount": "1.5"}] or {{NodeName.legs}}',
+          example:
+            '[{"recipient": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e", "amount": "1.5"}]',
+          rows: 6,
+          required: true,
+          helpTip:
+            "A JSON array of {recipient, amount}, at most 100. Keep the order when re-running: a leg is identified by its position.",
+        },
+      ],
+    },
+    {
       slug: "transfer-funds",
       label: "Transfer Native Token",
       description:

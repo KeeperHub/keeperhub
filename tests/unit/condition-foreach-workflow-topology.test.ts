@@ -5,9 +5,9 @@ vi.mock("server-only", () => ({}));
 import { buildEdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-utils";
 import {
   evaluateConditionExpression,
-  identifyLoopBody,
   resolveBodyConditionTargets,
 } from "@/lib/workflow/executor/executor.workflow";
+import { identifyLoopBody } from "@/lib/workflow/executor/loop-body";
 
 type TestNode = {
   id: string;

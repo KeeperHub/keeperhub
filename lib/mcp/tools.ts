@@ -1176,6 +1176,60 @@ export function registerTools(
     )
   );
 
+  server.tool(
+    "resolve_disburse_leg",
+    'Record an operator\'s answer for one leg of a web3/disburse run that the platform could not resolve on its own: a leg whose status is unknown (it may have paid, so it was never sent again) or one stuck sending whose run is presumed dead. Every other leg state settles or fails from the run itself and this call refuses to touch it. outcome="paid" requires transactionHash, the transaction that proves it. Either outcome requires a note saying what you checked (e.g. what you found, or did not find, on a block explorer). Resolving as paid moves the leg to settled; resolving as not paid moves it to failed, so the next disburse run with the same runKey sends it again.',
+    {
+      runKey: z
+        .string()
+        .describe(
+          "The disburse node's runKey config value for this payout run"
+        ),
+      legIndex: z
+        .number()
+        .int()
+        .min(0)
+        .describe("The leg's position in the legs list, 0-based"),
+      outcome: z
+        .enum(["paid", "not_paid"])
+        .describe("What you determined actually happened to this leg"),
+      transactionHash: z
+        .string()
+        .optional()
+        .describe(
+          'Required when outcome is "paid": the transaction that paid it'
+        ),
+      note: z
+        .string()
+        .describe(
+          "What you checked to reach this conclusion (required for either outcome)"
+        ),
+    },
+    {
+      title: "Resolve Disburse Leg",
+      readOnlyHint: false,
+      destructiveHint: true,
+    },
+    scoped("resolve_disburse_leg", (args) =>
+      withToolLogging("resolve_disburse_leg", undefined, async () => {
+        const data = await callApi(
+          internalApiBaseUrl,
+          authHeader,
+          `/api/organizations/self/disbursement-legs/${encodeURIComponent(args.runKey)}/${args.legIndex}/resolve`,
+          "POST",
+          {
+            outcome: args.outcome,
+            transactionHash: args.transactionHash,
+            note: args.note,
+          }
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        };
+      })
+    )
+  );
+
   // =========================================================================
   // Execution
   // =========================================================================

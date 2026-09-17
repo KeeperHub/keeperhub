@@ -84,6 +84,7 @@ const WRITE_TOOLS = new Set<string>([
   "tempo_sign_and_hold",
   "tempo_cancel_hold",
   "tempo_release_hold",
+  "resolve_disburse_leg",
 ]);
 
 export function isScopeValid(scope: string): boolean {

@@ -64,7 +64,7 @@ import {
 import { clearStepClaims } from "@/lib/workflow/executor/step-claim";
 import {
   getTransactionHashes,
-  isRecordableTransactionHash,
+  transactionHashesFromOutput,
 } from "@/lib/workflow/executor/step-success-tracker";
 import { computeTrulyFailedNodes } from "@/lib/workflow/executor/truly-failed-nodes";
 
@@ -159,34 +159,27 @@ type HashLogRow = {
   outputRaw: unknown;
 };
 
-/** Shared so both harvests build identically shaped entries. */
-function toHashEntry(row: HashLogRow): TransactionHashEntry | null {
-  const o = row.outputRaw as {
-    transactionHash?: unknown;
-    chainId?: unknown;
-    network?: unknown;
-  } | null;
-  if (
-    o === null ||
-    typeof o !== "object" ||
-    typeof o.transactionHash !== "string" ||
-    !isRecordableTransactionHash(o.transactionHash, o.chainId)
-  ) {
-    return null;
-  }
-  return {
-    hash: o.transactionHash,
+/**
+ * Shared so both harvests build identically shaped entries. A row yields one
+ * entry per on-chain write, which is more than one for a multi-leg step (see
+ * transactionHashesFromOutput).
+ */
+function toHashEntries(row: HashLogRow): TransactionHashEntry[] {
+  return transactionHashesFromOutput(row.outputRaw).map((found) => ({
+    hash: found.hash,
     nodeId: row.nodeId,
     nodeName: row.nodeName,
-    ...(typeof o.chainId === "number" && { chainId: o.chainId }),
-    ...(typeof o.network === "string" && { network: o.network }),
+    ...(found.chainId !== undefined && { chainId: found.chainId }),
+    ...(found.network !== undefined && { network: found.network }),
     ...(row.iterationIndex !== null && {
       iterationIndex: row.iterationIndex,
     }),
-  };
+    ...(found.legIndex !== undefined && { legIndex: found.legIndex }),
+  }));
 }
 
-async function loadHashesFromLogs(
+/** Exported for the database test of its filter; not for other callers. */
+export async function loadHashesFromLogs(
   executionId: string
 ): Promise<TransactionHashEntry[]> {
   try {
@@ -194,7 +187,7 @@ async function loadHashesFromLogs(
       where: and(
         eq(workflowExecutionLogs.executionId, executionId),
         eq(workflowExecutionLogs.status, "success"),
-        sql`${workflowExecutionLogs.outputRaw}->>'transactionHash' IS NOT NULL`
+        sql`(${workflowExecutionLogs.outputRaw}->>'transactionHash' IS NOT NULL OR ${workflowExecutionLogs.outputRaw}->'legTransactions' IS NOT NULL)`
       ),
       columns: {
         nodeId: true,
@@ -208,12 +201,13 @@ async function loadHashesFromLogs(
     const seen = new Set<string>();
     const entries: TransactionHashEntry[] = [];
     for (const row of rows) {
-      const entry = toHashEntry(row);
-      if (!entry || seen.has(entry.hash)) {
-        continue;
+      for (const entry of toHashEntries(row)) {
+        if (seen.has(entry.hash)) {
+          continue;
+        }
+        seen.add(entry.hash);
+        entries.push(entry);
       }
-      seen.add(entry.hash);
-      entries.push(entry);
     }
     return entries;
   } catch (queryError) {
@@ -301,14 +295,15 @@ async function loadFailureBroadcasts(executionId: string): Promise<{
     const record: TransactionHashEntry[] = [];
     const inFlight: TransactionHashEntry[] = [];
     for (const row of rows) {
-      const entry = toHashEntry(row);
-      if (!entry || seen.has(entry.hash)) {
-        continue;
-      }
-      seen.add(entry.hash);
-      record.push(entry);
-      if (row.status === "error" && !succeeded.has(attemptKey(row))) {
-        inFlight.push(entry);
+      for (const entry of toHashEntries(row)) {
+        if (seen.has(entry.hash)) {
+          continue;
+        }
+        seen.add(entry.hash);
+        record.push(entry);
+        if (row.status === "error" && !succeeded.has(attemptKey(row))) {
+          inFlight.push(entry);
+        }
       }
     }
     return { record, inFlight };

@@ -5,6 +5,10 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { sleep } from "@/lib/sleep";
 import { getTurnkeyClientForOrg } from "@/lib/turnkey/agentic-wallet";
 import {
+  type BroadcastHook,
+  runBroadcastHook,
+} from "@/lib/web3/broadcast-hook";
+import {
   formatRevertChain,
   type RevertChainEntry,
   SponsoredTxPendingError,
@@ -98,6 +102,8 @@ export type TurnkeySponsoredTxParams = {
   to: string;
   value?: bigint;
   data?: Hex;
+  /** See broadcast-hook.ts. Absent: behaviour is unchanged. */
+  onBroadcastEvent?: BroadcastHook;
 };
 
 export type TurnkeySponsoredTxResult = {
@@ -121,6 +127,11 @@ export async function submitTurnkeySponsoredTransaction(
 
   const turnkey = getTurnkeyClientForOrg(params.subOrgId);
   const client = turnkey.apiClient();
+
+  // Before the request leaves: a throw here means Turnkey was never asked.
+  await runBroadcastHook(params.onBroadcastEvent, {
+    kind: "sponsored-submitting",
+  });
 
   let statusId: string;
   try {
@@ -161,6 +172,9 @@ export async function submitTurnkeySponsoredTransaction(
     // double-send this path exists to prevent. Surface a pending error with no
     // status id instead, and never fall back.
     if (isDefinitePreBroadcastRejection(error)) {
+      await runBroadcastHook(params.onBroadcastEvent, {
+        kind: "sponsored-not-broadcast",
+      });
       return null;
     }
     throw new SponsoredTxPendingError({
@@ -169,8 +183,29 @@ export async function submitTurnkeySponsoredTransaction(
     });
   }
 
+  // Already submitted, so a failing hook cannot undo anything. Report the send
+  // as pending with its id rather than letting the caller fall back and send
+  // a second transaction.
+  try {
+    await runBroadcastHook(params.onBroadcastEvent, {
+      kind: "sponsored-accepted",
+      sendTransactionStatusId: statusId,
+    });
+  } catch (error) {
+    throw new SponsoredTxPendingError({
+      message: `Turnkey accepted the send but recording it failed; outcome unknown: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      sendTransactionStatusId: statusId,
+    });
+  }
+
   const txHash = await pollForTxHash(params.subOrgId, statusId, pollOptions);
   if (txHash === null) {
+    // pollForTxHash returns null only for a terminal pre-broadcast status.
+    await runBroadcastHook(params.onBroadcastEvent, {
+      kind: "sponsored-not-broadcast",
+    });
     return null;
   }
 

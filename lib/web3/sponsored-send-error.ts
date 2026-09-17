@@ -2,6 +2,7 @@ import "server-only";
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logSystemWarn, logUserError } from "@/lib/logging";
+import { isBroadcastHookError } from "@/lib/web3/broadcast-hook";
 import {
   isSponsoredTxPendingError,
   isSponsoredTxRevertError,
@@ -22,6 +23,11 @@ export type SponsoredSendDecision =
       // failure would hide that from the operator. The revert case is a
       // clean, terminal outcome and stays eligible for softening.
       errorClass?: ExecutionErrorType;
+      // Turnkey's activity id, whenever Turnkey assigned one. A send that ends
+      // pending before any hash exists carries nothing else: without this id
+      // the transaction may be on its way to the chain and there is no handle
+      // anywhere in our data to look it up by.
+      sendTransactionStatusId?: string;
     }
   | { fallback: true };
 
@@ -46,6 +52,26 @@ export function resolveSponsoredSendError(
 ): SponsoredSendDecision {
   const { logPrefix, actionName, chainId } = ctx;
 
+  // A caller's pre-broadcast hook failed. Falling back to direct signing would
+  // send without the record the hook exists to write, so this is terminal.
+  if (isBroadcastHookError(error)) {
+    logSystemWarn(
+      ErrorCategory.TRANSACTION,
+      `${logPrefix} Pre-broadcast hook failed; not falling back to direct signing`,
+      error,
+      {
+        plugin_name: "web3",
+        action_name: actionName,
+        chain_id: String(chainId),
+      }
+    );
+    return {
+      fallback: false,
+      error: error.message,
+      errorClass: ExecutionErrorType.SYSTEM,
+    };
+  }
+
   if (isSponsoredTxRevertError(error)) {
     logUserError(
       ErrorCategory.TRANSACTION,
@@ -64,6 +90,9 @@ export function resolveSponsoredSendError(
       fallback: false,
       error: `Transaction reverted: ${error.message} (tx ${error.txHash})`,
       transactionHash: error.txHash,
+      ...(error.sendTransactionStatusId
+        ? { sendTransactionStatusId: error.sendTransactionStatusId }
+        : {}),
     };
   }
 
@@ -91,6 +120,9 @@ export function resolveSponsoredSendError(
       // not confirm. Without it the transaction exists on-chain and nowhere in
       // our data, which leaves nothing to reconcile against.
       ...(error.txHash ? { transactionHash: error.txHash } : {}),
+      ...(error.sendTransactionStatusId
+        ? { sendTransactionStatusId: error.sendTransactionStatusId }
+        : {}),
       errorClass: ExecutionErrorType.SYSTEM,
     };
   }

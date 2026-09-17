@@ -22,6 +22,7 @@ import {
   stripIpv6Brackets,
 } from "@/lib/safe-fetch";
 import { sleep } from "@/lib/sleep";
+import type { BroadcastHook } from "@/lib/web3/broadcast-hook";
 import { isTestnetChain } from "@/lib/web3/chainlink-feeds";
 import { createSponsoredClient } from "@/lib/web3/sponsored-client";
 import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
@@ -53,6 +54,8 @@ type SponsoredTxParams = {
   to: string;
   value?: bigint;
   data?: Hex;
+  /** See broadcast-hook.ts. Absent: behaviour is unchanged. */
+  onBroadcastEvent?: BroadcastHook;
 };
 
 type SponsoredContractTxParams = {
@@ -67,6 +70,8 @@ type SponsoredContractTxParams = {
   functionName: string;
   args: unknown[];
   value?: bigint;
+  /** See broadcast-hook.ts. Absent: behaviour is unchanged. */
+  onBroadcastEvent?: BroadcastHook;
 };
 
 /**
@@ -132,6 +137,7 @@ export async function executeSponsoredTransaction(
     to: params.to,
     value: params.value,
     data: params.data,
+    onBroadcastEvent: params.onBroadcastEvent,
   });
 
   if (submitResult === null) {
@@ -198,6 +204,7 @@ export async function executeSponsoredContractTransaction(
     to: params.to,
     value: params.value,
     data: callData,
+    onBroadcastEvent: params.onBroadcastEvent,
   });
 
   if (submitResult === null) {

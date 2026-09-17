@@ -296,6 +296,17 @@ describe("per-listing workflow MCP server annotations", () => {
     expect(annotation.destructiveHint).toBe(false);
   });
 
+  // Disburse broadcasts one transfer per leg from the org wallet but carries
+  // no ABI, so it is mutating without being a calldata write.
+  it("treats a read-typed listing containing web3/disburse as destructive", () => {
+    const annotation = listingAnnotations({
+      workflowType: "read" as const,
+      nodes: [actionNode("n1", "web3/disburse")],
+    });
+    expect(annotation.readOnlyHint).toBe(false);
+    expect(annotation.destructiveHint).toBe(true);
+  });
+
   // Tempo carries no native gas token, so none of its writes register on the
   // daily native value cap and this annotation is the only thing standing
   // between an MCP client and an auto-approved stablecoin transfer.

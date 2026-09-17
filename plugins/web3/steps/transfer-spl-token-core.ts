@@ -25,6 +25,7 @@ import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { isSolanaChain } from "@/lib/rpc/provider-factory";
 import { getErrorMessage } from "@/lib/utils";
+import type { BroadcastHook } from "@/lib/web3/broadcast-hook";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import type { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
 import type { SolanaTransactionSigner } from "@/lib/web3/chain-adapter/types";
@@ -74,6 +75,11 @@ export type TransferSplTokenCoreInput = {
   recipientAddress: string;
   amount: string;
   _context?: { executionId?: string; organizationId?: string };
+  /**
+   * Internal: awaited before the transfer is submitted (see
+   * broadcast-hook.ts). Used by web3/disburse. Not a node config field.
+   */
+  _broadcastHook?: BroadcastHook;
 };
 
 export type TransferSplTokenResult =
@@ -103,6 +109,7 @@ type TransferContext = {
   mintPk: PublicKey;
   amount: string;
   solanaSigner: SolanaTransactionSigner;
+  broadcastHook?: BroadcastHook;
 };
 
 /**
@@ -500,7 +507,11 @@ async function executeTransfer(
       undefined as unknown as ethers.Signer, // unused by SolanaChainAdapter
       { to: recipientPk.toBase58(), data },
       undefined as unknown as NonceSession, // unused by SolanaChainAdapter
-      { solanaSigner: ctx.solanaSigner, gasOverrides: {} }
+      {
+        solanaSigner: ctx.solanaSigner,
+        gasOverrides: {},
+        beforeBroadcast: ctx.broadcastHook,
+      }
     );
 
     const transactionLink = await adapter.getTransactionUrl(receipt.hash);
@@ -613,5 +624,6 @@ export async function transferSplTokenCore(
     mintPk,
     amount,
     solanaSigner: wallet.signer,
+    broadcastHook: input._broadcastHook,
   });
 }

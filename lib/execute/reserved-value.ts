@@ -114,6 +114,16 @@ export function parseNodeNativeValueWei(
       : parsed;
   }
 
+  // web3/disburse charges each leg against the cap itself, as it sends it:
+  // how much native value a run moves is only known once the leg list is
+  // parsed and the legs already paid are skipped. Reserving nothing up front
+  // keeps the direct-execution route from charging the run twice.
+  if (stepFunction === "disburseStep") {
+    return isSolanaNetwork(config.network)
+      ? { ok: true, kind: "solana", valueLamports: "0" }
+      : { ok: true, kind: "evm", valueWei: "0" };
+  }
+
   const parsed = parseNativeValueEther(
     typeof config.ethValue === "string" ? config.ethValue : undefined
   );

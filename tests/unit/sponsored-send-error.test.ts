@@ -33,6 +33,7 @@ describe("resolveSponsoredSendError", () => {
     expect(decision).toMatchObject({
       error: "Transaction reverted: Guard/not-allowed (tx 0xabc)",
       transactionHash: "0xabc",
+      sendTransactionStatusId: "sid",
     });
     // No errorClass: a clean, terminal revert stays eligible for
     // applyFailOnError's softening, same as a direct-signing revert.
@@ -54,10 +55,21 @@ describe("resolveSponsoredSendError", () => {
       error: expect.stringContaining("not confirmed"),
       errorClass: ExecutionErrorType.SYSTEM,
     });
-    // No hash was ever assigned, so there is nothing to reconcile against.
+    // No hash was ever assigned. The activity id is the only handle on a send
+    // that may still land, so it must survive into the decision.
     if (!decision.fallback) {
       expect(decision.transactionHash).toBeUndefined();
+      expect(decision.sendTransactionStatusId).toBe("sid");
     }
+  });
+
+  it("carries no status id when Turnkey never assigned one", () => {
+    const error = new SponsoredTxPendingError({ message: "transport failure" });
+
+    const decision = resolveSponsoredSendError(error, CTX);
+
+    expect(decision.fallback).toBe(false);
+    expect(decision).not.toHaveProperty("sendTransactionStatusId");
   });
 
   it("surfaces the hash of a broadcast whose outcome could not be read", () => {

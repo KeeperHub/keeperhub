@@ -327,4 +327,58 @@ describe("recordTransactionHashIfPresent (KEEP-470)", () => {
 
     clearExecution(executionId);
   });
+  // web3/disburse sends one transaction per leg and reports each in
+  // legTransactions; a single transactionHash would record only one of them.
+  it("records every leg of a multi-leg step with its leg index", () => {
+    const executionId = "exec_legs";
+    recordTransactionHashIfPresent(ctx({ executionId, nodeId: "disburse-1" }), {
+      chainId: 8453,
+      network: "base",
+      legTransactions: [
+        { hash: "0xleg0", legIndex: 0 },
+        { hash: "0xleg3", chainId: 8453, legIndex: 3 },
+      ],
+    });
+
+    expect(getTransactionHashes(executionId)).toEqual([
+      expect.objectContaining({
+        hash: "0xleg0",
+        nodeId: "disburse-1",
+        chainId: 8453,
+        network: "base",
+        legIndex: 0,
+      }),
+      expect.objectContaining({ hash: "0xleg3", legIndex: 3 }),
+    ]);
+    clearExecution(executionId);
+  });
+
+  it("skips legs whose hash is not recordable", () => {
+    const executionId = "exec_legs_junk";
+    recordTransactionHashIfPresent(ctx({ executionId }), {
+      chainId: 1,
+      legTransactions: [
+        { hash: "not-a-hash", legIndex: 0 },
+        null,
+        { legIndex: 1 },
+        { hash: "0xgood", legIndex: 2 },
+      ],
+    });
+
+    expect(getTransactionHashes(executionId).map((e) => e.hash)).toEqual([
+      "0xgood",
+    ]);
+    clearExecution(executionId);
+  });
+
+  it("keeps a step's single hash entry free of a leg index", () => {
+    const executionId = "exec_single_no_leg";
+    recordTransactionHashIfPresent(ctx({ executionId }), {
+      transactionHash: "0xone",
+      chainId: 1,
+    });
+
+    expect(getTransactionHashes(executionId)[0]).not.toHaveProperty("legIndex");
+    clearExecution(executionId);
+  });
 });

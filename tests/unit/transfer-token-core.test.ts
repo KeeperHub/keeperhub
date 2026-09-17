@@ -351,3 +351,39 @@ describe("transfer-token-core - validation", () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe("transfer-token-core - pre-broadcast hook", () => {
+  it("passes the hook to the send", async () => {
+    const hook = vi.fn().mockResolvedValue(undefined);
+
+    await transferTokenCore(makeInput({ _broadcastHook: hook }));
+
+    expect(mockExecuteContractCall).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ beforeBroadcast: hook })
+    );
+  });
+
+  // The Safe paths broadcast through their own helpers, which never run the
+  // hook. A caller that needs it must be refused before anything is signed.
+  it("refuses a Safe signer when a hook is required", async () => {
+    const { resolveSignerForNode } = await import("@/lib/safe/signer-resolver");
+    vi.mocked(resolveSignerForNode).mockResolvedValueOnce({
+      kind: "safe",
+      safeAddress: "0xSafe",
+      ownerAddress: "0xWalletAddress",
+    } as never);
+
+    const result = await transferTokenCore(
+      makeInput({ _broadcastHook: vi.fn() })
+    );
+
+    expect(result).toMatchObject({ success: false });
+    if (!result.success) {
+      expect(result.error).toContain("Safe and Role signer modes");
+    }
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+});

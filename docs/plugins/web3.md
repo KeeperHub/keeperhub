@@ -26,6 +26,7 @@ Interact with EVM-compatible blockchain networks and Solana. Read-only actions w
 | Query Contract Events | Web3 | No | Query historical smart contract events across a block range |
 | Query Transaction History | Web3 | No | Query historical transactions by function call with optional argument filtering |
 | Sign Typed Data (EIP-712) | Web3 | Wallet | Produce an EIP-712 signature over a typed-data payload for off-chain signed intents |
+| Disburse | Web3 | Wallet | Pay a list of recipients one at a time, recording every leg so a re-run skips what already paid |
 | Decode Calldata | Security | No | Decode raw calldata into human-readable function calls |
 | Assess Transaction Risk | Security | No | AI-powered risk scoring with built-in DeFi rules |
 
@@ -551,6 +552,28 @@ Send SPL tokens on Solana from your Turnkey wallet to a recipient address. If th
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total lamport fee), `gasUsedUnits`, `effectiveGasPrice`, `amount`, `mint`, `decimals`, `recipient`, `recipientTokenAccount`, `createdRecipientAccount`, `error`
 
 **When to use:** Distribute SPL tokens, automate treasury payouts on Solana, or move tokens between wallets on Solana networks.
+
+---
+
+## Disburse
+
+Pay a list of recipients from your organization wallet, one at a time, on a single network and a single asset (native token, an ERC-20 token, or an SPL token). Each leg is recorded under the run key you provide, so re-running a partly failed payout with the same run key and the same leg list:
+
+- skips a leg that already settled, reporting `already_paid` with the transaction that paid it and sending nothing;
+- sends a leg that certainly did not pay (`failed`) again;
+- stops the whole run at a leg whose outcome is `unknown` -- it may have paid -- before sending anything else, since a leg that reached this state may still be on chain and could hold, for example, the EVM nonce the next leg would need.
+
+A leg the platform cannot resolve on its own (`unknown`, or `sending` whose run is presumed dead) stays that way until an operator resolves it with [`resolve_disburse_leg`](/api/organizations#resolve-a-disbursement-leg), which is also exposed as an MCP tool of the same name. Resolving a leg as paid settles it; resolving it as not paid fails it, so the next run with the same run key sends it again.
+
+Disburse sends from the organization wallet only. Safe and Role signer routing are not supported; a workflow that configures one on this action's network is refused, both at validation time and again when the node runs.
+
+**Inputs:** Network (EVM or Solana), Asset (native, ERC-20, or SPL), Token/Mint Address (when the asset is ERC-20 or SPL), Run Key, Legs (a JSON array of `{recipient, amount}`, at most 100, in the order to send them)
+
+**Outputs:** `success` (true only once every leg is paid, this run or an earlier one), `runKey`, `results` (per leg: `index`, `recipient`, `amount`, `status` -- `paid`, `already_paid`, `failed`, `unknown`, `in_progress`, `conflict`, or `not_attempted` -- plus `transactionHash`, `sendTransactionStatusId`, and `error` where they apply), `counts` (number of legs in each status), `legTransactions` (every transaction this run broadcast), `error`
+
+**When to use:** Payroll and contributor payouts, airdrops, and any list-based payout where a run failing partway through must be resumable without re-paying anyone.
+
+**Note:** The run key names the payout, not the list contents. Re-running with a changed leg list under the same key is refused (`conflict`); a genuinely different payout needs a new key.
 
 ---
 

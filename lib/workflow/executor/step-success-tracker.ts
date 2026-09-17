@@ -64,6 +64,78 @@ export function isRecordableTransactionHash(
   return hash.startsWith("0x");
 }
 
+/** A hash a step output reports, before node and iteration context is added. */
+export type OutputTransactionHash = {
+  hash: string;
+  chainId?: number;
+  network?: string;
+  legIndex?: number;
+};
+
+/**
+ * Every recordable hash a step output reports.
+ *
+ * Most write steps send one transaction and report it as `transactionHash`. A
+ * step that sends several - web3/disburse, one transaction per leg - reports
+ * them in `legTransactions` instead, each with its leg index. Reading only
+ * `transactionHash` would record and re-verify one leg and silently drop the
+ * rest. Shared by this tracker and the log-row harvest in logging.ts so the
+ * two reconstructions cannot drift apart.
+ */
+export function transactionHashesFromOutput(
+  output: unknown
+): OutputTransactionHash[] {
+  if (output === null || typeof output !== "object") {
+    return [];
+  }
+  const o = output as {
+    transactionHash?: unknown;
+    chainId?: unknown;
+    network?: unknown;
+    legTransactions?: unknown;
+  };
+  const chainId = typeof o.chainId === "number" ? o.chainId : undefined;
+  const network = typeof o.network === "string" ? o.network : undefined;
+  const found: OutputTransactionHash[] = [];
+  if (
+    typeof o.transactionHash === "string" &&
+    isRecordableTransactionHash(o.transactionHash, o.chainId)
+  ) {
+    found.push({
+      hash: o.transactionHash,
+      ...(chainId !== undefined && { chainId }),
+      ...(network !== undefined && { network }),
+    });
+  }
+  if (Array.isArray(o.legTransactions)) {
+    for (const item of o.legTransactions as unknown[]) {
+      const leg = item as {
+        hash?: unknown;
+        chainId?: unknown;
+        legIndex?: unknown;
+      } | null;
+      if (leg === null || typeof leg !== "object") {
+        continue;
+      }
+      const legChainId =
+        typeof leg.chainId === "number" ? leg.chainId : chainId;
+      if (
+        typeof leg.hash !== "string" ||
+        !isRecordableTransactionHash(leg.hash, legChainId)
+      ) {
+        continue;
+      }
+      found.push({
+        hash: leg.hash,
+        ...(legChainId !== undefined && { chainId: legChainId }),
+        ...(network !== undefined && { network }),
+        ...(typeof leg.legIndex === "number" && { legIndex: leg.legIndex }),
+      });
+    }
+  }
+  return found;
+}
+
 export type IterationKey = {
   forEachNodeId: string;
   iterationIndex: number;
@@ -143,45 +215,38 @@ export function recordTransactionHashIfPresent(
   if (context.executionId === undefined) {
     return;
   }
-  const o = output as {
-    transactionHash?: unknown;
-    chainId?: unknown;
-    network?: unknown;
-  } | null;
-  if (
-    o === null ||
-    typeof o !== "object" ||
-    typeof o.transactionHash !== "string" ||
-    !isRecordableTransactionHash(o.transactionHash, o.chainId)
-  ) {
+  const hashes = transactionHashesFromOutput(output);
+  if (hashes.length === 0) {
     return;
   }
-  const entry: TransactionHashEntry = {
-    hash: o.transactionHash,
-    nodeId: context.nodeId,
-    nodeName: context.nodeName,
-    ...(typeof o.chainId === "number" && { chainId: o.chainId }),
-    ...(typeof o.network === "string" && { network: o.network }),
-    ...(typeof context.iterationIndex === "number" && {
-      iterationIndex: context.iterationIndex,
-    }),
-  };
   const list = txHashEntries.get(context.executionId) ?? [];
-  // One on-chain write, one entry. A step can be recorded more than once for
-  // the same node -- a replay that reuses a completed step records it so the
-  // tracker stays complete -- and resolveTransactionHashesForSuccess feeds
-  // this list straight into the run's transactionHashes, so a duplicate would
-  // be re-verified against the chain and counted twice in the digest.
-  const alreadyTracked = list.some(
-    (existing) =>
-      existing.hash === entry.hash &&
-      existing.nodeId === entry.nodeId &&
-      existing.iterationIndex === entry.iterationIndex
-  );
-  if (alreadyTracked) {
-    return;
+  for (const found of hashes) {
+    const entry: TransactionHashEntry = {
+      hash: found.hash,
+      nodeId: context.nodeId,
+      nodeName: context.nodeName,
+      ...(found.chainId !== undefined && { chainId: found.chainId }),
+      ...(found.network !== undefined && { network: found.network }),
+      ...(typeof context.iterationIndex === "number" && {
+        iterationIndex: context.iterationIndex,
+      }),
+      ...(found.legIndex !== undefined && { legIndex: found.legIndex }),
+    };
+    // One on-chain write, one entry. A step can be recorded more than once for
+    // the same node -- a replay that reuses a completed step records it so the
+    // tracker stays complete -- and resolveTransactionHashesForSuccess feeds
+    // this list straight into the run's transactionHashes, so a duplicate would
+    // be re-verified against the chain and counted twice in the digest.
+    const alreadyTracked = list.some(
+      (existing) =>
+        existing.hash === entry.hash &&
+        existing.nodeId === entry.nodeId &&
+        existing.iterationIndex === entry.iterationIndex
+    );
+    if (!alreadyTracked) {
+      list.push(entry);
+    }
   }
-  list.push(entry);
   txHashEntries.set(context.executionId, list);
 }
 

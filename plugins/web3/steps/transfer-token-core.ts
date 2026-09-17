@@ -51,6 +51,7 @@ import {
   broadcastTransactionHash,
   isOnChainPendingError,
 } from "@/lib/web3/onchain-revert";
+import type { BroadcastHook } from "@/lib/web3/broadcast-hook";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
@@ -82,6 +83,12 @@ export type TransferTokenCoreInput = {
   // Per-node Web3 Connection field. See parseWeb3Connection in
   // lib/safe/signer-resolver.ts. Missing -> "default" -> org-policy resolver.
   web3Connection?: string;
+  /**
+   * Internal: awaited before the transfer is broadcast (see broadcast-hook.ts).
+   * Used by web3/disburse to record a leg before it can leave. Not a node
+   * config field. Only the EOA signer path supports it.
+   */
+  _broadcastHook?: BroadcastHook;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -128,6 +135,10 @@ export type TransferTokenResult =
       // True when the terminal failure came from the gas-sponsored path, so
       // the finalizer can report the route accurately on a failed execution.
       sponsored?: boolean;
+      // Turnkey's activity id for a sponsored send that did not settle. The
+      // only reconcilable handle when the send ended pending before any hash
+      // was assigned.
+      sendTransactionStatusId?: string;
     };
 
 /**
@@ -397,6 +408,17 @@ export async function transferTokenCore(
     };
   }
 
+  // A caller that needs the pre-broadcast hook cannot use the Safe paths, which
+  // broadcast through their own helpers without it. Refuse before anything is
+  // signed rather than send without the record the hook exists to write.
+  if (input._broadcastHook && signerMode.kind !== SIGNER_MODE.EOA) {
+    return {
+      success: false,
+      error:
+        "This transfer needs the organization wallet signer; Safe and Role signer modes are not supported here.",
+    };
+  }
+
   // Get workflow ID for transaction tracking. The executor already puts
   // workflowId directly on _context for every real workflow execution, so
   // only fall back to a DB lookup when a caller supplies executionId
@@ -481,6 +503,7 @@ export async function transferTokenCore(
         abi: ERC20_ABI,
         functionName: "transfer",
         args: [recipientAddress, amountRaw],
+        onBroadcastEvent: input._broadcastHook,
       });
 
       if (sponsoredResult !== null) {
@@ -539,6 +562,9 @@ export async function transferTokenCore(
           sponsored: true,
           ...(decision.transactionHash
             ? { transactionHash: decision.transactionHash, chainId }
+            : {}),
+          ...(decision.sendTransactionStatusId
+            ? { sendTransactionStatusId: decision.sendTransactionStatusId }
             : {}),
         };
       }
@@ -700,6 +726,7 @@ export async function transferTokenCore(
             gasOverrides: { multiplierOverride, gasLimitOverride },
             workflowId,
             rpcManager,
+            beforeBroadcast: input._broadcastHook,
           }
         );
       }

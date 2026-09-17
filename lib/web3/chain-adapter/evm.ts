@@ -3,6 +3,7 @@ import { logWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
+import { BroadcastHookError } from "@/lib/web3/broadcast-hook";
 import {
   isOnChainPendingError,
   OnChainPendingError,
@@ -31,6 +32,22 @@ import type {
 const TEMPO_CHAIN_IDS = new Set<number>([4217, 42_431]);
 const TEMPO_RECEIPT_TIMEOUT_MS = 60_000;
 const TEMPO_RECEIPT_POLL_INTERVAL_MS = 1500;
+
+/**
+ * The legacy no-rpcManager branch hands signing and broadcasting to ethers in
+ * one call, so there is no point between them to run a pre-broadcast hook. A
+ * caller that asked for one must not get a send that skipped it.
+ */
+function refuseHookWithoutSignedPath(options: TransactionOptions): void {
+  if (options.beforeBroadcast && !options.rpcManager) {
+    throw new BroadcastHookError(
+      "evm-signed",
+      new Error(
+        "a pre-broadcast hook needs the signed-broadcast path (rpcManager)"
+      )
+    );
+  }
+}
 
 export class EvmChainAdapter implements ChainAdapter {
   readonly chainFamily = "evm";
@@ -112,12 +129,14 @@ export class EvmChainAdapter implements ChainAdapter {
       maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
       chainId: this.chainId,
     };
+    refuseHookWithoutSignedPath(options);
     const tx = options.rpcManager
       ? (
           await submitSignedTransactionWithFailover(
             signer,
             txRequest,
-            options.rpcManager
+            options.rpcManager,
+            options.beforeBroadcast
           )
         ).response
       : await signer.sendTransaction(txRequest);
@@ -206,6 +225,7 @@ export class EvmChainAdapter implements ChainAdapter {
     // populates / signs / broadcasts with failover and reconciles on error.
     // Direct `fn(...)` call kept as fallback for callers without an
     // rpcManager (legacy code paths; tracked by KEEP-548).
+    refuseHookWithoutSignedPath(options);
     let tx: ethers.TransactionResponse;
     if (options.rpcManager) {
       const calldata = contract.interface.encodeFunctionData(
@@ -226,7 +246,8 @@ export class EvmChainAdapter implements ChainAdapter {
       const broadcast = await submitSignedTransactionWithFailover(
         signer,
         txRequest,
-        options.rpcManager
+        options.rpcManager,
+        options.beforeBroadcast
       );
       tx = broadcast.response;
     } else {

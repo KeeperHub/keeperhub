@@ -23,10 +23,8 @@ vi.mock("server-only", () => ({}));
 
 import { buildEdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-utils";
 import { buildEdgesBySource } from "@/lib/workflow/executor/convergence-barrier";
-import {
-  identifyLoopBody,
-  resolveBodyConditionTargets,
-} from "@/lib/workflow/executor/executor.workflow";
+import { resolveBodyConditionTargets } from "@/lib/workflow/executor/executor.workflow";
+import { identifyLoopBody } from "@/lib/workflow/executor/loop-body";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 
 type ActionResult = {

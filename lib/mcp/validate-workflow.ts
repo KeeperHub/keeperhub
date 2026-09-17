@@ -20,6 +20,12 @@ import {
   chainExists,
   tokenAddressFormat,
 } from "@/lib/mcp/validate-workflow-web3";
+import { buildEdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-utils";
+import { buildEdgesBySource } from "@/lib/workflow/executor/convergence-barrier";
+import {
+  identifyLoopBody,
+  type LoopBodyNode,
+} from "@/lib/workflow/executor/loop-body";
 
 export type ValidationIssue = {
   code: ValidationErrorCode | ValidationWarningCode;
@@ -83,6 +89,9 @@ export function validateWorkflow(
   // Allowance preflight hint: a write-contract node calling an
   // allowance-consuming method with no check-allowance node in the workflow.
   runAllowancePreflightCheck(workflow, warnings);
+
+  runDisburseSignerCheck(workflow, errors);
+  runTransferInForEachWarning(workflow, warnings);
 
   // VALID-05: chain ID existence — only when caller pre-fetched chainIds.
   // Per-node check mitigates Pitfall 12 (multi-chain WETH false positives).
@@ -333,6 +342,142 @@ function runWriteActionCheck(
         'workflowType is "read" but workflow contains a write-action node. Confirm this is intentional.',
       parameterPath: "workflowType",
     });
+  }
+}
+
+const DISBURSE_ACTION_TYPE = "web3/disburse";
+
+// The two action types the reported issue observed double-paying inside a
+// For Each: each sends one signed transaction with maxRetries=0 and no
+// per-leg record, so a re-run after a partial failure resends every leg,
+// paid or not. Scoped to these two, not every write action, because they are
+// the specific shape the issue and the migration path (web3/disburse) cover.
+const LOOP_RISK_ACTION_TYPES = new Set([
+  "web3/transfer-funds",
+  "web3/transfer-token",
+]);
+
+type LiteNode = {
+  id: string;
+  data?: { type?: string; config?: Record<string, unknown> };
+};
+type LiteEdge = {
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+};
+
+/**
+ * This used to be a hand-maintained approximation of the executor's real
+ * loop-body walk, justified as "deliberately over-inclusive" because a
+ * warning can afford to be generous where an error cannot. It was not
+ * uniformly over-inclusive: a For Each whose outgoing edge carried a
+ * non-`loop` sourceHandle made the executor's real walk seed from every
+ * outgoing edge (handle-aware mode requires a `loop` OR `done` handle to
+ * exist, not specifically `loop`), while this approximation's
+ * `legacyTargets` filtered on `!sourceHandle` and excluded it -- producing
+ * no warning for a transfer the executor genuinely runs once per iteration.
+ * It also warned on transfers reachable only through a Collect node, which
+ * the executor never runs as loop body at all.
+ *
+ * Now calls `identifyLoopBody` directly -- the same function
+ * executor.workflow.ts runs at execution time, imported from
+ * lib/workflow/executor/loop-body.ts, which has no imports beyond types and
+ * therefore costs this module nothing against the fast-tier purity gate.
+ * One function decides what a For Each's body is; this warning and the
+ * executor can no longer disagree about it.
+ */
+function runTransferInForEachWarning(
+  workflow: ValidatorWorkflow,
+  warnings: ValidationIssue[]
+): void {
+  if (!(Array.isArray(workflow.nodes) && Array.isArray(workflow.edges))) {
+    return;
+  }
+  const nodes = workflow.nodes as LiteNode[];
+  const edges = workflow.edges as LiteEdge[];
+  const forEachIds = nodes
+    .filter((n) => getWorkflowActionType(n) === "For Each")
+    .map((n) => n.id);
+  if (forEachIds.length === 0) {
+    return;
+  }
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const nodeMap = new Map<string, LoopBodyNode>(
+    nodes.map((n) => [
+      n.id,
+      { data: { type: n.data?.type ?? "", config: n.data?.config } },
+    ])
+  );
+  const edgesBySource = buildEdgesBySource(edges);
+  const edgesBySourceHandle = buildEdgesBySourceHandle(edges);
+
+  for (const forEachId of forEachIds) {
+    let body: string[];
+    try {
+      body = identifyLoopBody(
+        forEachId,
+        edgesBySource,
+        nodeMap,
+        edgesBySourceHandle
+      ).bodyNodeIds;
+    } catch {
+      // A topology identifyLoopBody itself refuses (e.g. two For Each loops
+      // sharing one in-body Collect) is a different, structural problem;
+      // this warning is not the check responsible for surfacing it, and the
+      // executor will refuse the run at execution time regardless.
+      continue;
+    }
+    for (const nodeId of body) {
+      const node = byId.get(nodeId);
+      const actionType = node ? getWorkflowActionType(node) : undefined;
+      if (actionType && LOOP_RISK_ACTION_TYPES.has(actionType)) {
+        warnings.push({
+          code: VALIDATION_WARNING_CODES.TRANSFER_IN_FOR_EACH_BODY,
+          message: `${actionType} inside a For Each body re-sends every leg, paid or not, if the run is re-run after a partial failure -- there is no per-leg record to skip what already paid. This is not fixed by anything in this workflow; use web3/disburse for a payout that can resume safely.`,
+          parameterPath: `nodes[${nodes.indexOf(node as LiteNode)}]`,
+        });
+      }
+    }
+  }
+}
+
+/**
+ * web3/disburse sends from the organization wallet only. It records each leg
+ * through the pre-broadcast hook, and the Safe and Role signer paths broadcast
+ * through helpers that never run it, so a leg sent that way could be reported
+ * as not paid after it went out. The node has no Web3 Connection field; this
+ * catches a config that sets one anyway (an import, or an API-built node). An
+ * organization policy that routes the network through a Safe is only known at
+ * run time, where the node refuses before recording anything.
+ */
+function runDisburseSignerCheck(
+  workflow: ValidatorWorkflow,
+  errors: ValidationIssue[]
+): void {
+  if (!Array.isArray(workflow.nodes)) {
+    return;
+  }
+  for (const [index, node] of workflow.nodes.entries()) {
+    if (getWorkflowActionType(node) !== DISBURSE_ACTION_TYPE) {
+      continue;
+    }
+    const config = (node as { data?: { config?: Record<string, unknown> } })
+      .data?.config;
+    const connection = config?.web3Connection;
+    if (
+      typeof connection === "string" &&
+      connection !== "" &&
+      connection !== "default" &&
+      connection !== "eoa"
+    ) {
+      errors.push({
+        code: VALIDATION_ERROR_CODES.DISBURSE_SIGNER_UNSUPPORTED,
+        message:
+          "Disburse sends from the organization wallet only; Safe and Role signers are not supported. Remove web3Connection from this node.",
+        parameterPath: `nodes[${index}].data.config.web3Connection`,
+      });
+    }
   }
 }
 

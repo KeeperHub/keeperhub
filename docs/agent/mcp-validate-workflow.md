@@ -131,6 +131,7 @@ All error codes are stable kebab-case identifiers. When any error is present, `v
 | `missing-write-action-for-write-workflow` | `workflowType` is `"write"` but no node is a write action (`write-contract` or a protocol-write step) | Add a write-action node, or change `workflowType` to `"read"` |
 | `unknown-chain-id` | A node's `network` field is a chain ID not enabled on the platform | Use a supported chain ID — call `list_action_schemas?includeChains=true` to see the full list |
 | `invalid-token-address` | A `contractAddress` or `tokenConfig.customToken.address` fails the EVM address format check | Use a valid `0x`-prefixed 40-hex-character address |
+| `disburse-signer-unsupported` | A Disburse node sets `web3Connection` to a Safe. Disburse sends from the organization wallet only | Remove `web3Connection` from the node |
 
 ## Warning code reference
 
@@ -141,6 +142,7 @@ Warnings do not set `valid: false`. They indicate something worth reviewing, but
 | `write-action-on-read-workflow` | `workflowType` is `"read"` but the workflow contains a write-action node | When the classification is intentional (for example, a simulate-then-read pattern) |
 | `low-confidence-abi-match` | (`deepCheck` only) The declared ABI's function signatures do not match those resolved from the contract's on-chain bytecode | Always safe to ignore for proxy contracts — Aave V3 Pool, Uniswap V3, WETH, and any EIP-1967 / EIP-1822 / EIP-2535 proxy. The platform's runtime ABI resolver handles proxies automatically; a deep-check mismatch here is informational only |
 | `missing-allowance-preflight` | A `write-contract` node calls an allowance-consuming method (`transferFrom`, `redeem`, `withdrawFrom`) and no Check Allowance node is upstream of it | When the spender already has sufficient allowance, or allowance is granted outside this workflow |
+| `transfer-in-for-each-body` | A `web3/transfer-funds` or `web3/transfer-token` node sits inside a For Each body. This is informational only -- it names a real risk (re-running a partially failed loop re-sends every leg, paid or not) but fixes nothing by itself | When the loop's amounts are trivial, or the workflow is never re-run after a partial failure. For a payout that must resume safely, use `web3/disburse` instead, which records each leg and skips what already paid |
 
 ### What "upstream" means for `missing-allowance-preflight`
 

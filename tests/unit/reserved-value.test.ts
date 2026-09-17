@@ -57,6 +57,20 @@ describe("parseNodeNativeValueWei", () => {
     ).toEqual({ ok: true, kind: "evm", valueWei: "0" });
   });
 
+  // Disburse charges each leg itself; reserving here too would double-charge
+  // the direct-execution path.
+  it("reserves nothing up front for disburse, on either chain family", () => {
+    expect(
+      parseNodeNativeValueWei("disburseStep", {
+        network: "base-sepolia",
+        ethValue: "5",
+      })
+    ).toEqual({ ok: true, kind: "evm", valueWei: "0" });
+    expect(
+      parseNodeNativeValueWei("disburseStep", { network: "solana-devnet" })
+    ).toEqual({ ok: true, kind: "solana", valueLamports: "0" });
+  });
+
   it("reserves 0 for off-chain / unrecognized steps with no ethValue", () => {
     expect(parseNodeNativeValueWei("httpRequestStep", { amount: "5" })).toEqual(
       { ok: true, kind: "evm", valueWei: "0" }

@@ -444,6 +444,13 @@
     },
     {
       "method": "POST",
+      "path": "/api/organizations/{organizationId}/disbursement-legs/{runKey}/{legIndex}/resolve",
+      "route_file": "app/api/organizations/[organizationId]/disbursement-legs/[runKey]/[legIndex]/resolve/route.ts",
+      "source": "docs/api/organizations.md",
+      "line": 31
+    },
+    {
+      "method": "POST",
       "path": "/api/organizations/{organizationId}/leave",
       "route_file": "app/api/organizations/[organizationId]/leave/route.ts",
       "source": "docs/api/organizations.md",

@@ -15,7 +15,10 @@ import { isRecordableTransactionHash } from "@/lib/workflow/executor/step-succes
  * here (transactionHash, chainId, network) are not redacted (lib/utils/redact.ts),
  * so `output` carries the same values.
  *
- * It mirrors loadHashesFromLogs and toHashEntry (lib/workflow/executor/logging.ts):
+ * Single-hash steps only. The multi-leg `legTransactions` shape postdates every
+ * run this backfill targets, so it is not read here.
+ *
+ * It mirrors loadHashesFromLogs and toHashEntries (lib/workflow/executor/logging.ts):
  * success steps only, ordered by started_at, deduplicated by hash, the same
  * shape check, chainId kept only when it is a number and network only when it
  * is a string. A backfilled array and a freshly written one cannot drift.

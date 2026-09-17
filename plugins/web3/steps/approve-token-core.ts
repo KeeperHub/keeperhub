@@ -129,6 +129,10 @@ export type ApproveTokenResult =
       // True when the terminal failure came from the gas-sponsored path, so
       // the finalizer can report the route accurately on a failed execution.
       sponsored?: boolean;
+      // Turnkey's activity id for a sponsored send that did not settle. The
+      // only reconcilable handle when the send ended pending before any hash
+      // was assigned.
+      sendTransactionStatusId?: string;
     };
 
 /**
@@ -444,6 +448,9 @@ export async function approveTokenCore(
           sponsored: true,
           ...(decision.transactionHash
             ? { transactionHash: decision.transactionHash, chainId }
+            : {}),
+          ...(decision.sendTransactionStatusId
+            ? { sendTransactionStatusId: decision.sendTransactionStatusId }
             : {}),
         };
       }

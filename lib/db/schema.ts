@@ -1,6 +1,7 @@
 import { isNotNull, relations, sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -665,6 +666,11 @@ export type TransactionHashEntry = {
   chainId?: number;
   network?: string;
   iterationIndex?: number;
+  // The leg of a multi-transfer step (web3/disburse) this hash paid. A step
+  // that sends several transactions reports each one, so iterationIndex -
+  // which names a For Each iteration, and a disburse node can sit inside one -
+  // cannot also carry the leg.
+  legIndex?: number;
   // KEEP-966: independent on-chain verification result for this hash,
   // populated by logWorkflowCompleteDb/selfHealWorkflowAfterLateStepCommit at
   // finalize time. Named receiptStatus (not `status`) to avoid colliding with
@@ -962,6 +968,85 @@ export const workflowStepClaims = pgTable(
     }),
   ]
 );
+
+/**
+ * Where one leg of a web3/disburse payout run stands, across executions.
+ *
+ * Keyed on the caller's run key, not the execution: a re-run of a partly
+ * failed payout is a new execution, and this row is what lets it skip the legs
+ * that already paid. The receipt evidence is not copied here. A leg points at
+ * the execution and hash that paid it, and that execution's
+ * transaction_hashes entry carries the independent on-chain verification.
+ *
+ * Status lifecycle:
+ *   claimed  - this run intends to send the leg; nothing has been signed.
+ *   sending  - the pre-broadcast hook fired: the leg may be on its way to the
+ *              chain. transaction_hash or send_transaction_status_id holds
+ *              whatever identifies it.
+ *   settled  - the transfer confirmed on chain, or an operator resolved it as
+ *              paid with the transaction that proves it.
+ *   failed   - certainly did not pay: rejected before broadcast, reverted, or
+ *              resolved as not paid. The next run sends it again.
+ *   unknown  - may have paid. Blocks every later run until resolved.
+ *
+ * execution_id is deliberately not a foreign key. A payout record has to
+ * outlive the execution retention window; losing the execution loses only the
+ * receipt detail, never the fact that a leg paid.
+ */
+export const disbursementLegs = pgTable(
+  "disbursement_legs",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    runKey: text("run_key").notNull(),
+    legIndex: integer("leg_index").notNull(),
+    // What the leg pays. A later run with the same key and index must name
+    // the same four values, or the whole run is refused.
+    chainId: integer("chain_id").notNull(),
+    asset: text("asset").notNull(),
+    recipient: text("recipient").notNull(),
+    amount: text("amount").notNull(),
+    status: text("status").notNull().$type<DisbursementLegStatus>(),
+    // Fences a claim: only the run holding this token may move the leg to
+    // sending, so a claim taken over after going stale can never be used by
+    // the run that lost it.
+    claimToken: text("claim_token"),
+    claimedAt: timestamp("claimed_at").notNull().defaultNow(),
+    executionId: text("execution_id"),
+    nodeId: text("node_id"),
+    transactionHash: text("transaction_hash"),
+    sendTransactionStatusId: text("send_transaction_status_id"),
+    lastError: text("last_error"),
+    settledAt: timestamp("settled_at"),
+    resolvedBy: text("resolved_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    resolutionNote: text("resolution_note"),
+    resolvedAt: timestamp("resolved_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: "disbursement_legs_pk",
+      columns: [table.organizationId, table.runKey, table.legIndex],
+    }),
+    check(
+      "disbursement_legs_status_check",
+      sql`${table.status} IN ('claimed', 'sending', 'settled', 'failed', 'unknown')`
+    ),
+    check("disbursement_legs_leg_index_check", sql`${table.legIndex} >= 0`),
+  ]
+);
+
+export type DisbursementLegStatus =
+  | "claimed"
+  | "sending"
+  | "settled"
+  | "failed"
+  | "unknown";
+export type DisbursementLeg = typeof disbursementLegs.$inferSelect;
 
 export {
   type AgenticWalletCredit,
