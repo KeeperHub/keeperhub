@@ -215,8 +215,7 @@ export function getTraceTriggerOutputFields(): OutputField[] {
     },
     {
       field: "value",
-      description:
-        "Native value moved by the call, in wei, as the tracer's hex string",
+      description: "Native value moved by the call, in wei (decimal string)",
     },
     {
       field: "selector",

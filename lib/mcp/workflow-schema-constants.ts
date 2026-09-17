@@ -337,8 +337,7 @@ export const TRIGGERS = {
       chainId: "number - Numeric chain ID the call ran on",
       from: "string - Address that made the call",
       to: "string - Address that was called (the watched contract)",
-      value:
-        'string - Native value moved by the call, in wei, as the hex string the call tracer reports (e.g. "0x0")',
+      value: "string - Native value moved by the call, in wei (decimal)",
       selector: "string - 4-byte selector of the call, or 0x when none",
       input: "string - Full calldata of the call",
       callType: "string - CALL, DELEGATECALL, STATICCALL, CREATE, ...",

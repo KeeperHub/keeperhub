@@ -115,7 +115,7 @@ The workflow runs once for each call to the watched contract that matches every 
 
 A malformed function selector stops the trigger from registering, rather than being accepted and then matching nothing. Other filter values are not validated yet, so check a caller address before saving.
 
-Each run receives `transactionHash`, `blockNumber`, `from`, `to`, `value` (wei, as the hex string the node's call tracer reports, for example `0x0`), `selector`, `input`, `callType`, `reverted`, `depth`, `frameIndex` and `transactionIndex`. For example, `{{@trigger:Trigger.from}}` is the address that made the call.
+Each run receives `transactionHash`, `blockNumber`, `from`, `to`, `value` (wei, as a decimal string), `selector`, `input`, `callType`, `reverted`, `depth`, `frameIndex` and `transactionIndex`. For example, `{{@trigger:Trigger.from}}` is the address that made the call.
 
 > **Network support:** Trace triggers need an RPC endpoint that serves `debug_traceBlockByNumber`. Plasma and Tempo serve it today. On a network whose endpoint does not, the trigger registers but never fires.
 
