@@ -16,6 +16,8 @@ const SPEND_CODE = "missing-allowance-preflight";
 const WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 const ROUTER = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45";
 const OTHER_SPENDER = "0x1111111111111111111111111111111111111111";
+const OTHER_TOKEN = "0x2222222222222222222222222222222222222222";
+const MAX_UINT256 = (BigInt(2) ** BigInt(256) - BigInt(1)).toString();
 
 const tokenConfig = (address: string) =>
   JSON.stringify({ mode: "custom", customToken: { address, symbol: "TKN" } });
@@ -41,7 +43,7 @@ const writeApproveNode = (
     actionType: "web3/write-contract",
     contractAddress: WETH,
     abiFunction: "approve",
-    args: JSON.stringify([ROUTER, "1000000"]),
+    functionArgs: JSON.stringify([ROUTER, "1000000"]),
     ...overrides,
   });
 
@@ -70,9 +72,62 @@ describe("validateWorkflow - approve without allowance check", () => {
     expect(warning?.parameterPath).toBe("nodes[1].config.spenderAddress");
     expect(warning?.message).toContain(ROUTER.toLowerCase());
     expect(warning?.message).toContain("web3/check-allowance");
-    // The hint must not call the approve redundant: an exact-amount approve
-    // is consumed by the spend that follows it.
+    // An exact amount is consumed by the spend after it, so the hint says it
+    // is needed every run rather than calling it redundant.
+    expect(warning?.message).toContain("exact amount");
     expect(warning?.message).toContain("not a redundancy claim");
+    // The remedy names the Condition that consumes the read: the check alone
+    // does not skip anything.
+    expect(warning?.message).toContain("Condition");
+  });
+
+  it("says an unlimited approve re-grants an allowance already in place", () => {
+    for (const amount of ["max", "MAX", MAX_UINT256]) {
+      const result = validateWorkflow(
+        chain(
+          [triggerNode(), approveTokenNode("a1", { amount })],
+          [edge("e1", "trigger-1", "a1")]
+        )
+      );
+      const [warning] = warningsOf(result);
+      expect(warning?.message).toContain("unlimited");
+      expect(warning?.message).not.toContain("exact amount");
+    }
+  });
+
+  it("makes no claim about the amount when it is a template or an argument it cannot read", () => {
+    const templated = validateWorkflow(
+      chain(
+        [
+          triggerNode(),
+          approveTokenNode("a1", { amount: "{{@trigger-1:Trigger.amount}}" }),
+        ],
+        [edge("e1", "trigger-1", "a1")]
+      )
+    );
+    const raw = validateWorkflow(
+      chain(
+        [triggerNode(), writeApproveNode("w1")],
+        [edge("e1", "trigger-1", "w1")]
+      )
+    );
+    for (const result of [templated, raw]) {
+      const [warning] = warningsOf(result);
+      expect(warning?.message).not.toContain("unlimited");
+      expect(warning?.message).not.toContain("exact amount");
+      expect(warning?.message).toContain("web3/check-allowance");
+    }
+  });
+
+  it("reads a write-contract approve's spender from functionArgs, the key the editor writes", () => {
+    const result = validateWorkflow(
+      chain(
+        [triggerNode(), writeApproveNode("w1")],
+        [edge("e1", "trigger-1", "w1")]
+      )
+    );
+    const [warning] = warningsOf(result);
+    expect(warning?.message).toContain(ROUTER.toLowerCase());
   });
 
   it("warns on a write-contract node calling approve with no check-allowance upstream", () => {
@@ -195,7 +250,7 @@ describe("validateWorkflow - approve gate: an earlier approve of the same grant"
           triggerNode(),
           writeApproveNode("w1", {
             contractAddress: WETH.toLowerCase(),
-            args: JSON.stringify([ROUTER.toLowerCase(), "1"]),
+            functionArgs: JSON.stringify([ROUTER.toLowerCase(), "1"]),
           }),
           approveTokenNode("a2"),
         ],
@@ -240,6 +295,41 @@ describe("validateWorkflow - approve gate: an earlier approve of the same grant"
             spenderAddress: "{{@trigger-1:Trigger.spender}}",
           }),
           approveTokenNode("a2"),
+        ],
+        [edge("e1", "trigger-1", "a1"), edge("e2", "a1", "a2")]
+      )
+    );
+    expect(warningsOf(result)).toHaveLength(2);
+  });
+
+  it("does not let an approve on a cycle suppress itself", () => {
+    const result = validateWorkflow(
+      chain(
+        [triggerNode(), approveTokenNode("a1"), approveTokenNode("a2")],
+        [
+          edge("e1", "trigger-1", "a1"),
+          edge("e2", "a1", "a2"),
+          edge("e3", "a2", "a1"),
+        ]
+      )
+    );
+    // Each is the other's ancestor through the cycle, so neither ran earlier
+    // and neither suppresses the other.
+    expect(warningsOf(result)).toHaveLength(2);
+  });
+
+  it("resolves the token from tokenConfig even when a legacy tokenAddress is present", () => {
+    // The step ignores tokenAddress when tokenConfig exists; so does the gate,
+    // otherwise two approves of different tokens could match as one grant.
+    const result = validateWorkflow(
+      chain(
+        [
+          triggerNode(),
+          approveTokenNode("a1", { tokenAddress: OTHER_TOKEN }),
+          approveTokenNode("a2", {
+            tokenConfig: tokenConfig(OTHER_TOKEN),
+            tokenAddress: WETH,
+          }),
         ],
         [edge("e1", "trigger-1", "a1"), edge("e2", "a1", "a2")]
       )

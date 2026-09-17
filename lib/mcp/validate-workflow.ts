@@ -359,10 +359,11 @@ type NodeActionConfig = {
   abiFunction: unknown;
   calls: unknown;
   contractAddress: unknown;
-  args: unknown;
+  functionArgs: unknown;
   tokenConfig: unknown;
   tokenAddress: unknown;
   spenderAddress: unknown;
+  amount: unknown;
 };
 
 function readNodeActionConfig(node: unknown): NodeActionConfig | null {
@@ -385,10 +386,11 @@ function readNodeActionConfig(node: unknown): NodeActionConfig | null {
     abiFunction: cfg.abiFunction,
     calls: cfg.calls,
     contractAddress: cfg.contractAddress,
-    args: cfg.args,
+    functionArgs: cfg.functionArgs,
     tokenConfig: cfg.tokenConfig,
     tokenAddress: cfg.tokenAddress,
     spenderAddress: cfg.spenderAddress,
+    amount: cfg.amount,
   };
 }
 
@@ -661,12 +663,13 @@ function runAllowancePreflightCheck(
 //
 // An approve with no upstream allowance read runs blind: it cannot know whether
 // the spender already holds enough allowance, so it cannot skip itself. That
-// is worth a hint, and only a hint. It is not a redundancy claim: this module
-// reads no chain state and no amount, and lib/scan/factory/validate.ts blocks
-// MaxUint256, so the exact-amount approve the platform pushes people toward is
-// consumed by the spend that follows it and is needed on every run. The
-// wording below says so, because a warning that called such an approve
-// pointless would be wrong on exactly the workflows it fires on most.
+// is worth a hint, and only a hint: this module reads no chain state. What the
+// hint can say depends on the configured amount. An unlimited approve ("max"
+// or MaxUint256) stays in place once it has landed, so every later run
+// re-grants what is already there; an exact-amount approve is consumed by the
+// spend after it and is needed every run. The message says which of the two
+// it is looking at, and says nothing about redundancy when the amount is a
+// template or a write-contract argument it cannot read.
 //
 // Covers web3/approve-token and a web3/write-contract or batch call whose
 // method is `approve`. Protocol nodes are out of scope here: their method is
@@ -684,15 +687,33 @@ function runAllowancePreflightCheck(
 const APPROVE_TOKEN_ACTION_TYPE = "web3/approve-token";
 const APPROVE_METHOD = "approve";
 const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+// The same two spellings approve-token-core maps to ethers.MaxUint256.
+const MAX_UINT256 = (BigInt(2) ** BigInt(256) - BigInt(1)).toString();
+const LITERAL_AMOUNT_PATTERN = /^\d+(\.\d+)?$/;
+
+type ApproveAmount = "unlimited" | "exact" | "unknown";
 
 type ApproveGrant = {
   /** Lower-cased token contract address, when it resolves to a literal. */
   token: string | null;
   /** Lower-cased spender address, when it resolves to a literal. */
   spender: string | null;
+  /** What the approve grants, when the amount is a literal the reader can see. */
+  amount: ApproveAmount;
   /** Where the hint should point. */
   parameterPath: string;
 };
+
+function approveAmountOf(raw: unknown): ApproveAmount {
+  if (typeof raw !== "string") {
+    return "unknown";
+  }
+  const amount = raw.trim();
+  if (amount.toLowerCase() === "max" || amount === MAX_UINT256) {
+    return "unlimited";
+  }
+  return LITERAL_AMOUNT_PATTERN.test(amount) ? "exact" : "unknown";
+}
 
 function literalAddress(value: unknown): string | null {
   return typeof value === "string" && EVM_ADDRESS_PATTERN.test(value.trim())
@@ -704,12 +725,13 @@ function literalAddress(value: unknown): string | null {
 // bare address in the legacy tokenAddress field. A platform-listed token is
 // identified by id rather than address in the config and cannot be compared
 // here, so it resolves to null and never matches.
+// Same precedence as parseTokenAddress in transfer-token-core: the legacy
+// tokenAddress counts only when there is no tokenConfig at all.
 function approveTokenAddress(cfg: NodeActionConfig): string | null {
-  const direct = literalAddress(cfg.tokenAddress);
-  if (direct !== null) {
-    return direct;
-  }
   let config: unknown = cfg.tokenConfig;
+  if (config === undefined || config === null || config === "") {
+    return literalAddress(cfg.tokenAddress);
+  }
   if (typeof config === "string") {
     const fromString = literalAddress(config);
     if (fromString !== null) {
@@ -751,6 +773,7 @@ function approveGrantsOf(idx: number, cfg: NodeActionConfig): ApproveGrant[] {
       {
         token: approveTokenAddress(cfg),
         spender: literalAddress(cfg.spenderAddress),
+        amount: approveAmountOf(cfg.amount),
         parameterPath: `nodes[${idx}].config.spenderAddress`,
       },
     ];
@@ -779,6 +802,7 @@ function approveGrantsOf(idx: number, cfg: NodeActionConfig): ApproveGrant[] {
       grants.push({
         token: literalAddress(entry.contractAddress),
         spender: literalAddress(parseArgs(entry.args)[0]),
+        amount: "unknown",
         parameterPath: `nodes[${idx}].config.calls[${callIdx}].abiFunction`,
       });
     }
@@ -791,7 +815,8 @@ function approveGrantsOf(idx: number, cfg: NodeActionConfig): ApproveGrant[] {
     return [
       {
         token: literalAddress(cfg.contractAddress),
-        spender: literalAddress(parseArgs(cfg.args)[0]),
+        spender: literalAddress(parseArgs(cfg.functionArgs)[0]),
+        amount: "unknown",
         parameterPath: `nodes[${idx}].config.abiFunction`,
       },
     ];
@@ -806,6 +831,23 @@ function sameGrant(a: ApproveGrant, b: ApproveGrant): boolean {
     a.token === b.token &&
     a.spender === b.spender
   );
+}
+
+const APPROVE_REMEDY =
+  "To skip it when the allowance already covers the amount, add a web3/check-allowance node upstream and a Condition on its allowance output that routes around this approve; the check alone only reads.";
+
+function approveHintMessage(idx: number, grant: ApproveGrant): string {
+  const target =
+    grant.spender === null ? "its spender" : `spender ${grant.spender}`;
+  const lead = `nodes[${idx}].config approves ${target} without reading the current allowance first: no web3/check-allowance node is upstream of it.`;
+  switch (grant.amount) {
+    case "unlimited":
+      return `${lead} This approve is unlimited, so once it has landed every later run re-grants an allowance that is already in place. ${APPROVE_REMEDY}`;
+    case "exact":
+      return `${lead} This approve is for an exact amount, which the spend after it consumes, so it is needed on every run; this is a hint, not a redundancy claim. ${APPROVE_REMEDY}`;
+    default:
+      return `${lead} ${APPROVE_REMEDY}`;
+  }
 }
 
 function runApproveGateCheck(
@@ -840,8 +882,13 @@ function runApproveGateCheck(
       id !== null && gate.incoming !== null ? ancestorsOf(id, gate) : null;
     for (const grant of grants) {
       let granted = false;
-      if (upstream !== null) {
+      if (upstream !== null && id !== null) {
         for (const ancestorId of upstream) {
+          // On a cycle every node is an ancestor of every other, itself
+          // included; none of them ran earlier. Only a one-way ancestor counts.
+          if (ancestorId === id || ancestorsOf(ancestorId, gate).has(id)) {
+            continue;
+          }
           const earlier = grantsByNodeId.get(ancestorId);
           if (earlier?.some((g) => sameGrant(g, grant))) {
             granted = true;
@@ -852,11 +899,9 @@ function runApproveGateCheck(
       if (granted) {
         continue;
       }
-      const target =
-        grant.spender === null ? "its spender" : `spender ${grant.spender}`;
       warnings.push({
         code: VALIDATION_WARNING_CODES.APPROVE_WITHOUT_ALLOWANCE_CHECK,
-        message: `nodes[${idx}].config approves ${target} without reading the current allowance first: no web3/check-allowance node is upstream of it. Add one before this approve if the workflow should skip the approve when the allowance already covers the amount. This is a hint, not a redundancy claim: an exact-amount approve is consumed by the spend that follows it and is needed on every run.`,
+        message: approveHintMessage(idx, grant),
         parameterPath: grant.parameterPath,
       });
     }
