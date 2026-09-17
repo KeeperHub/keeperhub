@@ -2,6 +2,8 @@ import { sleep } from "@/lib/sleep";
 import { ethers } from "ethers";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
+import { coerceArgsForAbi } from "@/lib/abi/struct-args";
+import type { AbiParam } from "@/lib/abi/types";
 
 export type AbiEntry = { type: string; name: string };
 
@@ -70,6 +72,10 @@ function resolveEventFilter(
  * indexed inputs are bound -- non-indexed event parameters can never become
  * topics, so they have no position in the returned array.
  *
+ * Values pass through `coerceArgsForAbi` (the same coercion write-contract
+ * applies: `"true"`/`"false"` strings become booleans, template variables
+ * pass through untouched).
+ *
  * Throws on invalid JSON, non-array values, or more values than the event
  * has indexed inputs, so config errors surface before any RPC work happens.
  */
@@ -77,9 +83,7 @@ export function parseIndexedEventArgs(
   eventFragment: ethers.EventFragment,
   eventArgs: string | unknown[] | undefined
 ): (unknown | null)[] {
-  const indexedCount = eventFragment.inputs.filter(
-    (input) => input.indexed
-  ).length;
+  const indexedInputs = eventFragment.inputs.filter((input) => input.indexed);
 
   let values: unknown[];
   if (eventArgs === undefined || eventArgs === null) {
@@ -107,21 +111,31 @@ export function parseIndexedEventArgs(
     throw new Error("eventArgs must be a JSON array string or an array");
   }
 
-  if (values.length > indexedCount) {
+  if (values.length > indexedInputs.length) {
     throw new Error(
-      `eventArgs has ${values.length} value(s) but event '${eventFragment.name}' has only ${indexedCount} indexed input(s)`
+      `eventArgs has ${values.length} value(s) but event '${eventFragment.name}' has only ${indexedInputs.length} indexed input(s)`
     );
   }
 
   // Pad short arrays with wildcards: a missing entry matches anything.
   const result: (unknown | null)[] = [];
-  for (let i = 0; i < indexedCount; i++) {
+  for (let i = 0; i < indexedInputs.length; i++) {
     const value = values[i];
     result.push(
       value === undefined || value === null || value === "" ? null : value
     );
   }
-  return result;
+
+  return coerceArgsForAbi(result, { inputs: toAbiParams(indexedInputs) });
+}
+
+function toAbiParams(inputs: readonly ethers.ParamType[]): AbiParam[] {
+  return inputs.map((input) => ({
+    name: input.name,
+    type: input.type,
+    ...(input.components ? { components: toAbiParams(input.components) } : {}),
+    indexed: input.indexed,
+  }));
 }
 
 async function fetchFixedBatch(
