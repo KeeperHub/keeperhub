@@ -306,6 +306,29 @@ const TOKEN_CONFIGS: TokenConfig[] = [
     isStablecoin: true,
     sortOrder: 1,
   },
+
+  // ==========================================================================
+  // Arc Mainnet (chainId: 5042) / Arc Testnet (chainId: 5042002)
+  // ==========================================================================
+  // USDC is Arc's native gas token (18 decimals). This address is Circle's
+  // fixed, optional ERC-20 interface over that same native balance (6
+  // decimals) -- not a separate bridged or wrapped token, and identical on
+  // both networks. Verified on-chain: eth_call to decimals()/symbol() at
+  // this address on both chains returns 6 and "USDC".
+  {
+    chainId: 5042,
+    tokenAddress: "0x3600000000000000000000000000000000000000", // USDC (native ERC-20 interface)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 5_042_002,
+    tokenAddress: "0x3600000000000000000000000000000000000000", // USDC (native ERC-20 interface)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
 ];
 
 /**

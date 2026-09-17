@@ -95,6 +95,13 @@ export const PUBLIC_RPCS = {
   // eth_subscribe -- and dRPC's free tier rejects eth_subscribe outright. There
   // is no public WSS endpoint for this chain to fall back to, so event and
   // block triggers depend on the WSS URLs in CHAIN_RPC_CONFIG.
+  // Arc (Circle). Native gas token is USDC, not ETH -- see CHAIN_CONFIG
+  // comment below. Chain IDs and RPC URLs verified directly on-chain via
+  // eth_chainId (5042 mainnet, 5042002 testnet), not just against docs.
+  ARC_MAINNET: "https://rpc.mainnet.arc.io",
+  ARC_MAINNET_FALLBACK: "https://5042.rpc.thirdweb.com",
+  ARC_TESTNET: "https://rpc.testnet.arc.io",
+  ARC_TESTNET_FALLBACK: "https://5042002.rpc.thirdweb.com",
   SOLANA_MAINNET: "https://api.mainnet-beta.solana.com",
   SOLANA_DEVNET: "https://api.devnet.solana.com",
 } as const;
@@ -288,6 +295,24 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     fallbackEnvKey: "CHAIN_ROBINHOOD_TESTNET_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.ROBINHOOD_TESTNET,
     publicFallback: PUBLIC_RPCS.ROBINHOOD_TESTNET_FALLBACK,
+  },
+  // Arc Mainnet (Circle) - native gas token is USDC (18 decimals), the
+  // 0x3600... address is an optional 6-decimal ERC-20 interface over that
+  // same balance, not a separate token. See scripts/seed/seed-tokens.ts.
+  5042: {
+    jsonKey: "arc-mainnet",
+    envKey: "CHAIN_ARC_MAINNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_ARC_MAINNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.ARC_MAINNET,
+    publicFallback: PUBLIC_RPCS.ARC_MAINNET_FALLBACK,
+  },
+  // Arc Testnet
+  5042002: {
+    jsonKey: "arc-testnet",
+    envKey: "CHAIN_ARC_TESTNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_ARC_TESTNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.ARC_TESTNET,
+    publicFallback: PUBLIC_RPCS.ARC_TESTNET_FALLBACK,
   },
   // Solana Mainnet
   101: {

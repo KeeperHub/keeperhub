@@ -579,6 +579,56 @@ const DEFAULT_CHAINS: NewChain[] = [
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "robinhood-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "robinhood-testnet" }),
   },
+  // Arc chains (Circle) - native gas token is USDC, not ETH. Onboarded
+  // testnet-first, same as Robinhood Chain / Plasma / 0G above. Chain IDs
+  // verified directly on-chain via eth_chainId, not just against docs.
+  {
+    chainId: getChainConfigValue("arc-mainnet", "chainId", 5042),
+    name: "Arc",
+    symbol: getChainConfigValue("arc-mainnet", "symbol", "USDC"),
+    chainType: "evm",
+    defaultPrimaryRpc: getRpcUrlByChainId(5042, "primary"),
+    defaultFallbackRpc: getRpcUrlByChainId(5042, "fallback"),
+    defaultPrimaryWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[5042].jsonKey,
+      type: "primary",
+    }),
+    defaultFallbackWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[5042].jsonKey,
+      type: "fallback",
+    }),
+    isTestnet: getChainConfigValue("arc-mainnet", "isTestnet", false),
+    isEnabled: getChainConfigValue("arc-mainnet", "isEnabled", true),
+    status: "experimental",
+    usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "arc-mainnet" }),
+    defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "arc-mainnet" }),
+    aliases: ["arc"],
+  },
+  {
+    chainId: getChainConfigValue("arc-testnet", "chainId", 5_042_002),
+    name: "Arc Testnet",
+    symbol: getChainConfigValue("arc-testnet", "symbol", "USDC"),
+    chainType: "evm",
+    defaultPrimaryRpc: getRpcUrlByChainId(5_042_002, "primary"),
+    defaultFallbackRpc: getRpcUrlByChainId(5_042_002, "fallback"),
+    defaultPrimaryWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[5_042_002].jsonKey,
+      type: "primary",
+    }),
+    defaultFallbackWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[5_042_002].jsonKey,
+      type: "fallback",
+    }),
+    isTestnet: getChainConfigValue("arc-testnet", "isTestnet", true),
+    isEnabled: getChainConfigValue("arc-testnet", "isEnabled", true),
+    status: "experimental",
+    usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "arc-testnet" }),
+    defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "arc-testnet" }),
+  },
   // Solana chains (non-EVM - uses SolanaProviderManager)
   {
     chainId: getChainConfigValue("solana-mainnet", "chainId", 101),
@@ -854,6 +904,32 @@ const EXPLORER_CONFIG_TEMPLATES: Record<
     explorerAddressPath: "/address/{address}",
     explorerContractPath: "/address/{address}?tab=contract",
   },
+  // Arc Mainnet - Blockscout, but the API sits behind a Cloudflare
+  // challenge (Circle's docs call mainnet explorer access "permissioned").
+  // Direct browser links resolve fine; automated API polling against this
+  // host may 403 until Circle opens it up. Verified: curl against
+  // explorer.arc.io/api returns a Cloudflare challenge page, not JSON.
+  5042: {
+    chainType: "evm",
+    explorerUrl: "https://explorer.arc.io",
+    explorerApiType: "blockscout",
+    explorerApiUrl: "https://explorer.arc.io/api",
+    explorerTxPath: "/tx/{hash}",
+    explorerAddressPath: "/address/{address}",
+    explorerContractPath: "/address/{address}?tab=contract",
+  },
+  // Arc Testnet - Blockscout, publicly queryable. Verified: both
+  // /api?module=contract&action=getabi and /api/v2/smart-contracts/{addr}
+  // return real data (200, not a challenge page).
+  5042002: {
+    chainType: "evm",
+    explorerUrl: "https://explorer.testnet.arc.io",
+    explorerApiType: "blockscout",
+    explorerApiUrl: "https://explorer.testnet.arc.io/api",
+    explorerTxPath: "/tx/{hash}",
+    explorerAddressPath: "/address/{address}",
+    explorerContractPath: "/address/{address}?tab=contract",
+  },
   // Solana Mainnet - Solscan
   101: {
     chainType: "solana",
@@ -991,6 +1067,8 @@ async function seedChains() {
     "0G Galileo": 16_602,
     "Robinhood Chain": 4663,
     "Robinhood Chain Testnet": 46_630,
+    Arc: 5042,
+    "Arc Testnet": 5_042_002,
     Solana: 101,
     "Solana Devnet": 103,
   };
