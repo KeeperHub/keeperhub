@@ -21,6 +21,7 @@ all of that.
 - [Pull Request Process](#pull-request-process)
 - [Plugin Development Guide](#plugin-development-guide)
 - [Protocols and Contract Addresses](#protocols-and-contract-addresses)
+- [Adding a Chain](#adding-a-chain)
 - [Testing Guidelines](#testing-guidelines)
 
 ## Development Setup
@@ -281,6 +282,21 @@ It fires on test fixtures and documentation examples too, which is intended -
 an address in a guide is one a reader may send funds to. If the addresses in
 your pull request are fixtures, say so in the description; that is all the
 reviewer needs to clear the label.
+
+## Adding a Chain
+
+A chain touches nine places in this repository before it works end to end,
+and the ones that are easy to miss fail quietly: an explorer config that is
+never written, a wallet modal that prints "Not available" next to real
+tokens, an Event trigger that saves and never fires. The full procedure, with
+what each step is for and how to verify it, is in
+[specs/adding-an-evm-chain.md](specs/adding-an-evm-chain.md). Read it before
+opening the issue; the facts it asks for are the facts the issue needs.
+
+Your pull request ends at this repository. Private RPC endpoints and
+per-environment overrides live in `KeeperHub/chain-config` and are wired by
+maintainers after merge; an entry there for a chain this repository does not
+know does nothing.
 
 ## Testing Guidelines
 
