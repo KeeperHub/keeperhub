@@ -47,14 +47,57 @@ export function isNearHeadBatch(
   return toBlockIsLatest && toBlock - batchEnd < TIP_SAFETY_MARGIN_BLOCKS;
 }
 
+/**
+ * Expand an indexed-only positional arg array (the output of
+ * `parseIndexedEventArgs`) to a full positional array over ALL of the
+ * event's inputs, interleaving `null` wildcards at non-indexed positions.
+ *
+ * ethers maps filter args positionally over every event input
+ * (`contract.filters[eventName](...args)` and
+ * `iface.encodeFilterTopics(fragment, values)` alike): passing the
+ * indexed-only array straight through misaligns whenever a non-indexed
+ * input precedes an indexed one (e.g. `Mixed(uint256 amount, address
+ * indexed who)`), binding the address to the non-indexed slot and making
+ * topic encoding throw "cannot filter non-indexed parameters; must be
+ * null". Always run the parsed args through this before touching ethers.
+ */
+export function expandIndexedArgsToEventPositions(
+  eventFragment: ethers.EventFragment,
+  indexedArgs: (unknown | null)[]
+): (unknown | null)[] {
+  const indexedCount = eventFragment.inputs.filter(
+    (input) => input.indexed
+  ).length;
+  if (indexedArgs.length > indexedCount) {
+    // Defense in depth: the step handler's parseIndexedEventArgs already
+    // rejects over-count input before any RPC work, but the batch path
+    // must never silently drop a filter value either.
+    throw new Error(
+      `too many arguments for event '${eventFragment.name}': got ${indexedArgs.length} indexed arg(s), event has only ${indexedCount} indexed input(s)`
+    );
+  }
+  const full: (unknown | null)[] = [];
+  let i = 0;
+  for (const input of eventFragment.inputs) {
+    full.push(input.indexed ? (indexedArgs[i++] ?? null) : null);
+  }
+  return full;
+}
+
 function resolveEventFilter(
   contract: ethers.Contract,
   eventName: string,
+  eventFragment: ethers.EventFragment | null,
   indexedArgs: (unknown | null)[]
 ): ethers.DeferredTopicFilter {
   // indexedArgs is positional over the event's indexed inputs (null = topic
-  // wildcard). An empty array reproduces the old match-all filter exactly.
-  const eventFilter = contract.filters[eventName]?.(...indexedArgs);
+  // wildcard). ethers expects args positional over ALL inputs, so expand
+  // with null wildcards at non-indexed positions first. An empty array
+  // reproduces the old match-all filter exactly.
+  const fullArgs = eventFragment
+    ? expandIndexedArgsToEventPositions(eventFragment, indexedArgs)
+    : indexedArgs;
+  const eventFilter = contract.filters[eventName]?.(...fullArgs);
   if (eventFilter === undefined || eventFilter === null) {
     throw new Error(`Could not create filter for event '${eventName}'`);
   }
@@ -70,7 +113,10 @@ function resolveEventFilter(
  * array string or a raw array. Empty/unset input, and empty-string entries,
  * become `null` wildcards (match anything at that topic position). Only
  * indexed inputs are bound -- non-indexed event parameters can never become
- * topics, so they have no position in the returned array.
+ * topics, so they have no position in the returned array. Because ethers
+ * maps filter args positionally over ALL event inputs, run the result
+ * through `expandIndexedArgsToEventPositions` before passing it to
+ * `contract.filters[eventName](...)` or `iface.encodeFilterTopics`.
  *
  * Values pass through `coerceArgsForAbi` (the same coercion write-contract
  * applies: `"true"`/`"false"` strings become booleans, template variables
@@ -134,7 +180,7 @@ function toAbiParams(inputs: readonly ethers.ParamType[]): AbiParam[] {
     name: input.name,
     type: input.type,
     ...(input.components ? { components: toAbiParams(input.components) } : {}),
-    indexed: input.indexed,
+    indexed: input.indexed ?? undefined,
   }));
 }
 
@@ -148,7 +194,13 @@ async function fetchFixedBatch(
   indexedArgs: (unknown | null)[] = []
 ): Promise<BatchQueryResult> {
   const contract = new ethers.Contract(contractAddress, parsedAbi, provider);
-  const eventFilter = resolveEventFilter(contract, eventName, indexedArgs);
+  const eventFragment = new ethers.Interface(parsedAbi).getEvent(eventName);
+  const eventFilter = resolveEventFilter(
+    contract,
+    eventName,
+    eventFragment,
+    indexedArgs
+  );
   const events = await contract.queryFilter(eventFilter, start, end);
   return { events, actualEnd: end };
 }
@@ -180,7 +232,13 @@ async function fetchTipBatch(
   indexedArgs: (unknown | null)[] = []
 ): Promise<BatchQueryResult> {
   const contract = new ethers.Contract(contractAddress, parsedAbi, provider);
-  const eventFilter = resolveEventFilter(contract, eventName, indexedArgs);
+  const eventFragment = new ethers.Interface(parsedAbi).getEvent(eventName);
+  const eventFilter = resolveEventFilter(
+    contract,
+    eventName,
+    eventFragment,
+    indexedArgs
+  );
   const events = await contract.queryFilter(eventFilter, start, "latest");
 
   const actualEnd = events.reduce(

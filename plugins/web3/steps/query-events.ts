@@ -15,6 +15,7 @@ import {
 } from "./block-range-helpers";
 import {
   type AbiEntry,
+  expandIndexedArgsToEventPositions,
   isNearHeadBatch,
   parseIndexedEventArgs,
   queryBatchWithRetry,
@@ -245,15 +246,19 @@ async function stepHandler(
   }
 
   // Normalize the optional indexed-argument filters into a positional array
-  // over the event's indexed inputs (null = topic wildcard). Eagerly encode
-  // the topics here so a bad value (e.g. a malformed address) fails fast
-  // with a clear error instead of surfacing from inside a retried RPC batch.
-  // The per-batch filter build re-encodes the same values identically via
-  // contract.filters.
+  // over the event's indexed inputs (null = topic wildcard), then expand it
+  // to full event positions (nulls interleaved at non-indexed inputs) before
+  // ethers sees it -- ethers maps filter args over ALL event inputs.
+  // Eagerly encode the topics here so a bad value (e.g. a malformed
+  // address) fails fast with a clear error instead of surfacing from
+  // inside a retried RPC batch. The per-batch filter build re-encodes the
+  // same values identically via contract.filters.
   let indexedArgs: (unknown | null)[];
   try {
     indexedArgs = parseIndexedEventArgs(eventFragment, input.eventArgs);
-    iface.encodeFilterTopics(eventFragment, [...indexedArgs]);
+    iface.encodeFilterTopics(eventFragment, [
+      ...expandIndexedArgsToEventPositions(eventFragment, indexedArgs),
+    ]);
   } catch (error) {
     return {
       success: false,

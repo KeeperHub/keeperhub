@@ -2,15 +2,19 @@
  * Demo for issue #2489: filter Query Contract Events by indexed event arguments.
  *
  * Offline demo (no RPC, no credentials, no network): it runs the exact
- * normalization the step uses (`parseIndexedEventArgs`) and then builds the
+ * normalization the step uses (`parseIndexedEventArgs` +
+ * `expandIndexedArgsToEventPositions`) and then builds the
  * real DeferredTopicFilter the batch path builds
- * (`contract.filters[eventName](...indexedArgs)`), printing the resulting
+ * (`contract.filters[eventName](...fullArgs)`), printing the resulting
  * eth_getLogs topics for each case.
  *
  * Run: pnpm tsx scripts/demo-event-arg-filters.ts
  */
 import { ethers } from "ethers";
-import { parseIndexedEventArgs } from "@/plugins/web3/steps/query-events-core";
+import {
+  expandIndexedArgsToEventPositions,
+  parseIndexedEventArgs,
+} from "@/plugins/web3/steps/query-events-core";
 
 const ERC20_ABI = [
   "event Transfer(address indexed from, address indexed to, uint256 value)",
@@ -37,7 +41,10 @@ function showTopics(
   try {
     const indexedArgs = parseIndexedEventArgs(fragment, eventArgs);
     // Eager validation, same as the step handler does before any RPC work.
-    iface.encodeFilterTopics(fragment, [...indexedArgs]);
+    // The args are expanded to full event positions first, exactly like
+    // the step and the batch path do.
+    const fullArgs = expandIndexedArgsToEventPositions(fragment, indexedArgs);
+    iface.encodeFilterTopics(fragment, [...fullArgs]);
     // The exact filter construction fetchFixedBatch/fetchTipBatch use.
     const contract = new ethers.Contract(CONTRACT_ADDRESS, ERC20_ABI);
     const filter = (
@@ -45,7 +52,7 @@ function showTopics(
         string,
         (...args: unknown[]) => { topics: unknown }
       >
-    )[eventName]?.(...indexedArgs);
+    )[eventName]?.(...fullArgs);
     console.log(`eventArgs=${label}`);
     console.log(`  indexedArgs=${JSON.stringify(indexedArgs)}`);
     console.log(`  topics=${JSON.stringify(filter?.topics)}`);
