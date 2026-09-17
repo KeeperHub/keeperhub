@@ -16,6 +16,7 @@ import {
 import {
   type AbiEntry,
   isNearHeadBatch,
+  parseIndexedEventArgs,
   queryBatchWithRetry,
 } from "./query-events-core";
 import {
@@ -61,6 +62,10 @@ export type QueryEventsCoreInput = ReadFailOnErrorInput & {
   contractAddress: string;
   abi: string;
   eventName: string;
+  // Optional indexed event-argument filters: JSON array string (or array)
+  // positional over the event's indexed inputs. Empty/unset entries act as
+  // wildcards; unset entirely means match-all (previous behavior).
+  eventArgs?: string | unknown[];
   fromBlock?: string;
   toBlock?: string;
   blockCount?: number | string;
@@ -115,7 +120,8 @@ async function queryEventBatches(
   parsedAbi: AbiEntry[],
   eventName: string,
   eventFragment: ethers.EventFragment,
-  range: BlockRange
+  range: BlockRange,
+  indexedArgs: (unknown | null)[]
 ): Promise<EventBatchesResult> {
   const batchSize = DEFAULT_BATCH_SIZE;
   const allEvents: DecodedEvent[] = [];
@@ -137,7 +143,8 @@ async function queryEventBatches(
       eventName,
       start,
       end,
-      isTipBatch
+      isTipBatch,
+      indexedArgs
     );
 
     for (const event of batchEvents) {
@@ -176,6 +183,7 @@ async function stepHandler(
     contractAddress: input.contractAddress,
     network: input.network,
     eventName: input.eventName,
+    eventArgs: input.eventArgs,
     fromBlock: input.fromBlock,
     toBlock: input.toBlock,
     blockCount: input.blockCount,
@@ -236,6 +244,23 @@ async function stepHandler(
     };
   }
 
+  // Normalize the optional indexed-argument filters into a positional array
+  // over the event's indexed inputs (null = topic wildcard). Eagerly encode
+  // the topics here so a bad value (e.g. a malformed address) fails fast
+  // with a clear error instead of surfacing from inside a retried RPC batch.
+  // The per-batch filter build re-encodes the same values identically via
+  // contract.filters.
+  let indexedArgs: (unknown | null)[];
+  try {
+    indexedArgs = parseIndexedEventArgs(eventFragment, input.eventArgs);
+    iface.encodeFilterTopics(eventFragment, [...indexedArgs]);
+  } catch (error) {
+    return {
+      success: false,
+      error: `Invalid event argument filters: ${getErrorMessage(error)}`,
+    };
+  }
+
   let rpcManager: RpcProviderManager;
   try {
     rpcManager = await getRpcProvider({ chainId, userId });
@@ -284,7 +309,8 @@ async function stepHandler(
       abiResult.parsed,
       eventName,
       eventFragment,
-      range
+      range,
+      indexedArgs
     );
 
     console.log("[Query Events] Query complete. Events found:", events.length);

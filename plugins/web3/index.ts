@@ -1214,6 +1214,15 @@ const web3Plugin: IntegrationPlugin = {
           required: true,
         },
         {
+          key: "eventArgs",
+          label: "Event Argument Filters",
+          type: "abi-function-args",
+          abiField: "abi",
+          abiEventField: "eventName",
+          helpTip:
+            "Optional: filter by indexed event argument values. Only indexed parameters can be filtered on-chain (they become eth_getLogs topics); leave empty to match all events of this type.",
+        },
+        {
           type: "group",
           label: "Block Range",
           defaultExpanded: true,

@@ -119,6 +119,11 @@ export type ActionConfigFieldBase = {
   // For abi-function-args: which field contains the ABI JSON and selected function
   abiFunctionField?: string;
 
+  // For abi-function-args in event mode: which field contains the selected
+  // event name (e.g. query-events' `eventName`). When set, the args renderer
+  // shows that event's indexed inputs instead of a function's.
+  abiEventField?: string;
+
   // For abi-with-auto-fetch: which field contains the contract address
   contractAddressField?: string;
 

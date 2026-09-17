@@ -4,6 +4,8 @@ export type AbiFunctionInput = {
   name: string;
   type: string;
   components?: AbiItemComponent[];
+  /** Set for event inputs: whether the parameter is indexed (topic-filterable). */
+  indexed?: boolean;
 };
 
 /**
@@ -84,6 +86,77 @@ export function resolveFunctionInputs(
       type: input.type,
       components: input.components,
     })),
+    malformed: false,
+  };
+}
+
+/**
+ * Resolve the inputs of an *event* entry in a user-pasted ABI, for indexed
+ * argument filtering (eth_getLogs topics).
+ *
+ * Event counterpart of `resolveFunctionInputs`: looks up `type === "event"`
+ * entries by name and returns only the *indexed* inputs, in ABI order, each
+ * flagged `indexed: true`. The list is positional over the indexed inputs,
+ * which is exactly the order `contract.filters[eventName](...indexedArgs)`
+ * and `Interface#encodeFilterTopics` expect -- non-indexed parameters can
+ * never become topics, so they are excluded rather than rendered.
+ *
+ * Like `resolveFunctionInputs`, never throws: malformed ABIs yield
+ * `{ inputs: [], malformed: true }` so callers render a notice instead of an
+ * incomplete argument list.
+ */
+export function resolveEventInputs(
+  abiValue: string | undefined | null,
+  eventValue: string | undefined | null
+): ResolvedFunctionInputs {
+  if (!(abiValue?.trim() && eventValue?.trim())) {
+    return EMPTY;
+  }
+
+  let abi: unknown;
+  try {
+    abi = JSON.parse(abiValue);
+  } catch {
+    return MALFORMED;
+  }
+
+  if (!Array.isArray(abi)) {
+    return MALFORMED;
+  }
+
+  const event = (
+    abi as { type?: unknown; name?: unknown; inputs?: unknown }[]
+  ).find(
+    (item) =>
+      item != null &&
+      typeof item === "object" &&
+      item.type === "event" &&
+      item.name === eventValue
+  );
+  if (!event) {
+    return EMPTY;
+  }
+
+  const inputs = event.inputs;
+  if (!Array.isArray(inputs)) {
+    return inputs === undefined ? EMPTY : MALFORMED;
+  }
+
+  if (!inputs.every(isValidAbiInput)) {
+    return MALFORMED;
+  }
+
+  return {
+    inputs: (
+      inputs as (AbiFunctionInput & { indexed?: unknown })[]
+    )
+      .filter((input) => input.indexed === true)
+      .map((input) => ({
+        name: input.name || "unnamed",
+        type: input.type,
+        components: input.components,
+        indexed: true,
+      })),
     malformed: false,
   };
 }

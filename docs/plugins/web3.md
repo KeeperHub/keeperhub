@@ -373,6 +373,7 @@ Query historical smart contract events (logs) across a block range with automati
 - Contract Address (required)
 - Contract ABI (required, auto-fetched from block explorer)
 - Event Name (required, selected from ABI)
+- Event Argument Filters (optional) -- values for the event's indexed arguments, selected from the ABI. Indexed arguments become eth_getLogs topics (topic1..n), so filtering happens server-side on the RPC node instead of after the download. Only indexed parameters can be filtered; leave a value empty to wildcard that position, or leave the whole field empty to match all events of this type
 - Block Lookback -- number of blocks to scan back from To Block (default: 6500, ~1 day on Ethereum). Ignored if From Block is set
 - From Block -- explicit start block (overrides Block Lookback)
 - To Block -- end block number (default: latest)
@@ -383,7 +384,7 @@ Query historical smart contract events (logs) across a block range with automati
 
 1. Resolves the block range from inputs (either explicit From/To or lookback from latest)
 2. Splits the range into 2,000-block batches to avoid RPC provider limits
-3. Queries each batch via `eth_getLogs` and decodes events using the ABI
+3. Queries each batch via `eth_getLogs` and decodes events using the ABI. When Event Argument Filters are set, the indexed values are encoded as log topics so the RPC node only returns matching logs; empty/unset filters match all events
 4. Concatenates all results and returns the full event list
 
 **When to use:** Index historical events, monitor contract activity over time, aggregate on-chain data for analytics, trigger downstream actions based on past events.

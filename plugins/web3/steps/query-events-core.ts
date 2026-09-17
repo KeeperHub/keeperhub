@@ -47,13 +47,81 @@ export function isNearHeadBatch(
 
 function resolveEventFilter(
   contract: ethers.Contract,
-  eventName: string
+  eventName: string,
+  indexedArgs: (unknown | null)[]
 ): ethers.DeferredTopicFilter {
-  const eventFilter = contract.filters[eventName]?.();
+  // indexedArgs is positional over the event's indexed inputs (null = topic
+  // wildcard). An empty array reproduces the old match-all filter exactly.
+  const eventFilter = contract.filters[eventName]?.(...indexedArgs);
   if (eventFilter === undefined || eventFilter === null) {
     throw new Error(`Could not create filter for event '${eventName}'`);
   }
   return eventFilter;
+}
+
+/**
+ * Normalize the `eventArgs` step input into a positional array over the
+ * event's indexed inputs, for eth_getLogs topic filtering via
+ * `contract.filters[eventName](...indexedArgs)`.
+ *
+ * Accepts the same shapes as query-transactions' `functionArgs`: a JSON
+ * array string or a raw array. Empty/unset input, and empty-string entries,
+ * become `null` wildcards (match anything at that topic position). Only
+ * indexed inputs are bound -- non-indexed event parameters can never become
+ * topics, so they have no position in the returned array.
+ *
+ * Throws on invalid JSON, non-array values, or more values than the event
+ * has indexed inputs, so config errors surface before any RPC work happens.
+ */
+export function parseIndexedEventArgs(
+  eventFragment: ethers.EventFragment,
+  eventArgs: string | unknown[] | undefined
+): (unknown | null)[] {
+  const indexedCount = eventFragment.inputs.filter(
+    (input) => input.indexed
+  ).length;
+
+  let values: unknown[];
+  if (eventArgs === undefined || eventArgs === null) {
+    values = [];
+  } else if (Array.isArray(eventArgs)) {
+    values = eventArgs;
+  } else if (typeof eventArgs === "string") {
+    if (eventArgs.trim() === "") {
+      values = [];
+    } else {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(eventArgs);
+      } catch (error) {
+        throw new Error(
+          `eventArgs is not valid JSON: ${getErrorMessage(error)}`
+        );
+      }
+      if (!Array.isArray(parsed)) {
+        throw new Error("eventArgs must be a JSON array of argument values");
+      }
+      values = parsed;
+    }
+  } else {
+    throw new Error("eventArgs must be a JSON array string or an array");
+  }
+
+  if (values.length > indexedCount) {
+    throw new Error(
+      `eventArgs has ${values.length} value(s) but event '${eventFragment.name}' has only ${indexedCount} indexed input(s)`
+    );
+  }
+
+  // Pad short arrays with wildcards: a missing entry matches anything.
+  const result: (unknown | null)[] = [];
+  for (let i = 0; i < indexedCount; i++) {
+    const value = values[i];
+    result.push(
+      value === undefined || value === null || value === "" ? null : value
+    );
+  }
+  return result;
 }
 
 async function fetchFixedBatch(
@@ -62,10 +130,11 @@ async function fetchFixedBatch(
   parsedAbi: AbiEntry[],
   eventName: string,
   start: number,
-  end: number
+  end: number,
+  indexedArgs: (unknown | null)[] = []
 ): Promise<BatchQueryResult> {
   const contract = new ethers.Contract(contractAddress, parsedAbi, provider);
-  const eventFilter = resolveEventFilter(contract, eventName);
+  const eventFilter = resolveEventFilter(contract, eventName, indexedArgs);
   const events = await contract.queryFilter(eventFilter, start, end);
   return { events, actualEnd: end };
 }
@@ -93,10 +162,11 @@ async function fetchTipBatch(
   contractAddress: string,
   parsedAbi: AbiEntry[],
   eventName: string,
-  start: number
+  start: number,
+  indexedArgs: (unknown | null)[] = []
 ): Promise<BatchQueryResult> {
   const contract = new ethers.Contract(contractAddress, parsedAbi, provider);
-  const eventFilter = resolveEventFilter(contract, eventName);
+  const eventFilter = resolveEventFilter(contract, eventName, indexedArgs);
   const events = await contract.queryFilter(eventFilter, start, "latest");
 
   const actualEnd = events.reduce(
@@ -124,7 +194,8 @@ export async function queryBatchWithRetry(
   eventName: string,
   start: number,
   end: number,
-  isTipBatch: boolean
+  isTipBatch: boolean,
+  indexedArgs: (unknown | null)[] = []
 ): Promise<BatchQueryResult> {
   let lastError: unknown;
 
@@ -132,14 +203,22 @@ export async function queryBatchWithRetry(
     try {
       return await rpcManager.executeWithFailover((provider) =>
         isTipBatch
-          ? fetchTipBatch(provider, contractAddress, parsedAbi, eventName, start)
+          ? fetchTipBatch(
+              provider,
+              contractAddress,
+              parsedAbi,
+              eventName,
+              start,
+              indexedArgs
+            )
           : fetchFixedBatch(
               provider,
               contractAddress,
               parsedAbi,
               eventName,
               start,
-              end
+              end,
+              indexedArgs
             )
       );
     } catch (error) {

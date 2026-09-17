@@ -31,6 +31,7 @@ import { TupleInputField } from "@/components/workflow/config/tuple-input-field"
 import {
   type AbiFunctionInput,
   isValidAbiInput,
+  resolveEventInputs,
   resolveFunctionInputs,
 } from "@/lib/abi/function-inputs";
 import { parseAbiFunctionArgs } from "@/lib/abi/parse-args";
@@ -603,6 +604,14 @@ export function AbiFunctionSelectField({
 export type AbiFunctionArgsProps = FieldProps & {
   abiValue: string;
   functionValue: string;
+  /**
+   * Event-argument mode (set when the field config carries `abiEventField`):
+   * `functionValue` is the selected *event* name, and only that event's
+   * indexed inputs are rendered -- the only arguments that can become
+   * eth_getLogs topics. Stored value is a JSON array positional over the
+   * indexed inputs, identical to function mode otherwise.
+   */
+  isEventArgs?: boolean;
 };
 
 export function AbiFunctionArgsField({
@@ -612,11 +621,15 @@ export function AbiFunctionArgsField({
   disabled,
   abiValue,
   functionValue,
+  isEventArgs = false,
 }: AbiFunctionArgsProps) {
-  // Parse the function inputs from the ABI
+  // Parse the function/event inputs from the ABI
   const { inputs: functionInputs, malformed } = React.useMemo(
-    () => resolveFunctionInputs(abiValue, functionValue),
-    [abiValue, functionValue]
+    () =>
+      isEventArgs
+        ? resolveEventInputs(abiValue, functionValue)
+        : resolveFunctionInputs(abiValue, functionValue),
+    [abiValue, functionValue, isEventArgs]
   );
 
   // Use local state to manage arg values - this prevents race conditions on blur
@@ -658,8 +671,12 @@ export function AbiFunctionArgsField({
     return (
       <div className="rounded-md border border-dashed p-3 text-center text-muted-foreground text-sm">
         {functionValue
-          ? "This function has no parameters"
-          : "Select a function above to see parameters"}
+          ? isEventArgs
+            ? "This event has no indexed parameters to filter by"
+            : "This function has no parameters"
+          : isEventArgs
+            ? "Select an event above to see filterable parameters"
+            : "Select a function above to see parameters"}
       </div>
     );
   }
@@ -682,6 +699,11 @@ export function AbiFunctionArgsField({
               <Label className="ml-1 text-xs" htmlFor={`${field.key}-${index}`}>
                 {input.name}{" "}
                 <span className="text-muted-foreground">({input.type})</span>
+                {isEventArgs && (
+                  <span className="ml-1 rounded bg-muted px-1.5 py-0.5 text-muted-foreground text-[10px] uppercase tracking-wide">
+                    indexed
+                  </span>
+                )}
               </Label>
               {isArray ? (
                 <ArrayInputField
@@ -778,10 +800,14 @@ function renderAbiFunctionArgs(
   disabled?: boolean
 ) {
   const abiField = field.abiField || "abi";
-  const functionField = field.abiFunctionField || "abiFunction";
+  // Event-argument mode: the field config carries `abiEventField` (e.g. the
+  // query-events `eventName` selector) instead of `abiFunctionField`, and the
+  // renderer shows that event's indexed inputs rather than a function's.
+  const isEventArgs = Boolean(field.abiEventField);
+  const sourceField = field.abiEventField || field.abiFunctionField || "abiFunction";
   const rawAbi = config[abiField];
   const abiValue = typeof rawAbi === "string" ? rawAbi : "";
-  const rawFunction = config[functionField];
+  const rawFunction = config[sourceField];
   const functionValue = typeof rawFunction === "string" ? rawFunction : "";
   const rawValue = config[field.key];
   const value =
@@ -797,6 +823,7 @@ function renderAbiFunctionArgs(
         disabled={disabled}
         field={field}
         functionValue={functionValue}
+        isEventArgs={isEventArgs}
         onChange={(val) => onUpdateConfig(field.key, val)}
         value={value}
       />
