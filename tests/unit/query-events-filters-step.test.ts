@@ -97,6 +97,9 @@ vi.mock("ethers", async () => {
     ethers: {
       ...actual.ethers,
       Contract: class MockContract {
+        // Real ethers v6 exposes the parsed ABI here; production code reads
+        // `contract.interface.getEvent(...)` instead of re-parsing the ABI.
+        interface = realIface;
         filters = new Proxy(
           {},
           {
@@ -334,14 +337,14 @@ describe("queryEventsStep with event arg filters (issue #2489)", () => {
       expect(mockQueryFilter).not.toHaveBeenCalled();
     });
 
-    it("rejects a malformed address before any RPC", async () => {
+    it("rejects a malformed address before any RPC, naming the parameter", async () => {
       const result = await queryEventsStep(
         baseInput({ eventArgs: JSON.stringify(["not-an-address", ""]) })
       );
 
       expect(result).toMatchObject({ success: false });
       expect((result as { error?: string }).error ?? "").toMatch(
-        /^Invalid event argument filters: .*invalid address/i
+        /^Invalid event argument filters: 'from' \(address\): .*invalid address/i
       );
       expect(mockGetRpcProvider).not.toHaveBeenCalled();
       expect(mockQueryFilter).not.toHaveBeenCalled();

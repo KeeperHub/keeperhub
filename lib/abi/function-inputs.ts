@@ -96,10 +96,22 @@ export function resolveFunctionInputs(
  *
  * Event counterpart of `resolveFunctionInputs`: looks up `type === "event"`
  * entries by name and returns only the *indexed* inputs, in ABI order, each
- * flagged `indexed: true`. The list is positional over the indexed inputs,
- * which is exactly the order `contract.filters[eventName](...indexedArgs)`
- * and `Interface#encodeFilterTopics` expect -- non-indexed parameters can
- * never become topics, so they are excluded rather than rendered.
+ * flagged `indexed: true`. The returned list is positional over the indexed
+ * inputs only -- non-indexed parameters can never become topics, so they are
+ * excluded rather than rendered.
+ *
+ * IMPORTANT: this is NOT the argument order ethers expects. Both
+ * `contract.filters[eventName](...args)` and `Interface#encodeFilterTopics`
+ * map arguments positionally over ALL of the event's inputs, so callers must
+ * run the result through `expandIndexedArgsToEventPositions` (re-interleaving
+ * null wildcards at the non-indexed positions) before passing values to
+ * ethers. Feeding this list straight to ethers misaligns whenever a
+ * non-indexed input precedes an indexed one.
+ *
+ * Indexed array and tuple inputs are excluded as well: ethers'
+ * `encodeFilterTopics` refuses them outright ("filtering with tuples or
+ * arrays not supported"), so rendering a control for them would only break
+ * once used.
  *
  * Like `resolveFunctionInputs`, never throws: malformed ABIs yield
  * `{ inputs: [], malformed: true }` so callers render a notice instead of an
@@ -142,15 +154,25 @@ export function resolveEventInputs(
     return inputs === undefined ? EMPTY : MALFORMED;
   }
 
-  if (!inputs.every(isValidAbiInput)) {
+  // Filter to indexed inputs FIRST: a single malformed non-indexed input
+  // (some explorer ABIs emit tuples with no `components`) must not hide
+  // indexed filters that are themselves fine.
+  const indexed = (
+    inputs as (AbiFunctionInput & { indexed?: unknown })[]
+  ).filter((input) => input.indexed === true);
+
+  if (!indexed.every(isValidAbiInput)) {
     return MALFORMED;
   }
 
   return {
-    inputs: (
-      inputs as (AbiFunctionInput & { indexed?: unknown })[]
-    )
-      .filter((input) => input.indexed === true)
+    inputs: indexed
+      // ethers' Interface#encodeFilterTopics refuses indexed arrays and
+      // tuples outright, so they are excluded rather than rendered: the
+      // control would only break once used.
+      .filter(
+        (input) => !(input.type.endsWith("]") || input.type.startsWith("tuple"))
+      )
       .map((input) => ({
         name: input.name || "unnamed",
         type: input.type,

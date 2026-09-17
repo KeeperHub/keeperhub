@@ -84,6 +84,51 @@ export function expandIndexedArgsToEventPositions(
   return full;
 }
 
+/**
+ * Encode the eth_getLogs topics for an event's indexed-argument filters,
+ * attributing encoding failures to the offending parameter by name and type.
+ *
+ * ethers' own errors name neither the parameter nor its position (a mistyped
+ * `from` surfaces as `invalid address (argument="address", value="0x...")`),
+ * so each non-wildcard value is first probed on its own topic position: the
+ * first value that fails to encode throws with the parameter's name and type
+ * prefixed. A final full encode then validates the combination.
+ */
+export function encodeEventFilterTopics(
+  iface: ethers.Interface,
+  eventFragment: ethers.EventFragment,
+  indexedArgs: (unknown | null)[]
+): (string | string[] | null)[] {
+  const fullArgs = expandIndexedArgsToEventPositions(eventFragment, indexedArgs);
+  // Map each indexed input to its position in the full (all-inputs) array.
+  const indexedPositions: number[] = [];
+  for (const [position, input] of eventFragment.inputs.entries()) {
+    if (input.indexed) {
+      indexedPositions.push(position);
+    }
+  }
+  for (let i = 0; i < indexedPositions.length; i++) {
+    const value = indexedArgs[i];
+    if (value === null || value === undefined) {
+      continue;
+    }
+    const position = indexedPositions[i];
+    const input = eventFragment.inputs[position];
+    const probe = new Array<unknown>(fullArgs.length).fill(null);
+    probe[position] = value;
+    try {
+      iface.encodeFilterTopics(eventFragment, probe);
+    } catch (error) {
+      // No "Invalid event argument filters:" prefix here: the step handler
+      // adds it when it wraps this error.
+      throw new Error(
+        `'${input.name}' (${input.type}): ${getErrorMessage(error)}`
+      );
+    }
+  }
+  return iface.encodeFilterTopics(eventFragment, [...fullArgs]);
+}
+
 function resolveEventFilter(
   contract: ethers.Contract,
   eventName: string,
@@ -194,7 +239,9 @@ async function fetchFixedBatch(
   indexedArgs: (unknown | null)[] = []
 ): Promise<BatchQueryResult> {
   const contract = new ethers.Contract(contractAddress, parsedAbi, provider);
-  const eventFragment = new ethers.Interface(parsedAbi).getEvent(eventName);
+  // Reuse the contract's own Interface: constructing a second one re-parses
+  // the full ABI on every batch (and every retry attempt).
+  const eventFragment = contract.interface.getEvent(eventName);
   const eventFilter = resolveEventFilter(
     contract,
     eventName,
@@ -232,7 +279,9 @@ async function fetchTipBatch(
   indexedArgs: (unknown | null)[] = []
 ): Promise<BatchQueryResult> {
   const contract = new ethers.Contract(contractAddress, parsedAbi, provider);
-  const eventFragment = new ethers.Interface(parsedAbi).getEvent(eventName);
+  // Reuse the contract's own Interface: constructing a second one re-parses
+  // the full ABI on every batch (and every retry attempt).
+  const eventFragment = contract.interface.getEvent(eventName);
   const eventFilter = resolveEventFilter(
     contract,
     eventName,

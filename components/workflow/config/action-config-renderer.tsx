@@ -640,14 +640,20 @@ export function AbiFunctionArgsField({
   // Track the last function to detect when user selects a different function
   const lastFunctionRef = React.useRef(functionValue);
 
-  // Sync from prop only when function changes (user selected different function)
+  // Sync from prop only when function changes (user selected different function).
+  // The stored args are positional over the previous function/event's inputs,
+  // so they are meaningless for the new selection: reset local state AND
+  // write the cleared value out through onChange. Without the onChange, the
+  // stale value stays persisted -- e.g. switching to an event with no indexed
+  // inputs leaves no input to overwrite it, and every run fails validation
+  // with no escape short of deleting the node.
   React.useEffect(() => {
     if (functionValue !== lastFunctionRef.current) {
-      // Function changed - reset to prop value (which should be empty for new function)
-      setLocalArgValues(parseAbiFunctionArgs(value));
       lastFunctionRef.current = functionValue;
+      setLocalArgValues([]);
+      onChange(JSON.stringify([]));
     }
-  }, [functionValue, value]);
+  }, [functionValue, value, onChange]);
 
   // Handle individual arg change - update local state and propagate to parent
   const handleArgChange = (index: number, newValue: unknown) => {

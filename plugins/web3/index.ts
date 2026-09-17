@@ -1219,6 +1219,8 @@ const web3Plugin: IntegrationPlugin = {
           type: "abi-function-args",
           abiField: "abi",
           abiEventField: "eventName",
+          placeholder:
+            'JSON array of filter values, positional over the event\'s indexed inputs only (e.g. ["0xabc...", null] to filter the first indexed argument; empty entries are wildcards)',
           helpTip:
             "Optional: filter by indexed event argument values. Only indexed parameters can be filtered on-chain (they become eth_getLogs topics); leave empty to match all events of this type.",
         },

@@ -83,6 +83,9 @@ vi.mock("ethers", async () => {
     ethers: {
       ...actual.ethers,
       Contract: class MockContract {
+        // Real ethers v6 exposes the parsed ABI here; production code reads
+        // `contract.interface.getEvent(...)` instead of re-parsing the ABI.
+        interface = realIface;
         filters = new Proxy(
           {},
           {
@@ -120,6 +123,7 @@ vi.mock("ethers", async () => {
 
 import {
   type BatchQueryResult,
+  encodeEventFilterTopics,
   expandIndexedArgsToEventPositions,
   isNearHeadBatch,
   MAX_BATCH_RETRIES,
@@ -1096,13 +1100,96 @@ describe("resolveEventInputs", () => {
       inputs: [],
       malformed: true,
     });
+    // An indexed input without a type is still malformed ...
     expect(
       resolveEventInputs(
         JSON.stringify([
-          { type: "event", name: "Bad", inputs: [{ name: "x" }] },
+          {
+            type: "event",
+            name: "Bad",
+            inputs: [{ name: "x", indexed: true }],
+          },
         ]),
         "Bad"
       )
     ).toEqual({ inputs: [], malformed: true });
+  });
+
+  it("excludes indexed array and tuple inputs (ethers cannot encode them as topics)", () => {
+    const abiJson = JSON.stringify([
+      {
+        type: "event",
+        name: "BatchMinted",
+        inputs: [
+          { name: "ids", type: "uint256[]", indexed: true },
+          { name: "to", type: "address", indexed: false },
+          {
+            name: "meta",
+            type: "tuple",
+            indexed: true,
+            components: [{ name: "a", type: "uint256" }],
+          },
+          { name: "setter", type: "address", indexed: true },
+        ],
+      },
+    ]);
+    expect(resolveEventInputs(abiJson, "BatchMinted")).toEqual({
+      inputs: [{ name: "setter", type: "address", indexed: true }],
+      malformed: false,
+    });
+  });
+
+  it("validates indexed inputs only: a malformed non-indexed input does not hide fine indexed filters", () => {
+    // Some explorer ABIs emit tuples with no `components`; when such an
+    // input is non-indexed it must not suppress the indexed filters.
+    const abiJson = JSON.stringify([
+      {
+        type: "event",
+        name: "Weird",
+        inputs: [
+          { name: "who", type: "address", indexed: true },
+          { name: "data", type: "tuple", indexed: false },
+        ],
+      },
+    ]);
+    const result = resolveEventInputs(abiJson, "Weird");
+    expect(result.malformed).toBe(false);
+    expect(result.inputs.map((input) => input.name)).toEqual(["who"]);
+  });
+});
+
+describe("encodeEventFilterTopics", () => {
+  const iface = new ethers.Interface(mockFilterTestAbi);
+  const transfer = iface.getEvent("Transfer");
+  if (!transfer) {
+    throw new Error("test ABI is missing the Transfer event");
+  }
+
+  it("encodes topics identically to a direct encodeFilterTopics call", () => {
+    const indexedArgs = [ADDR_A, null];
+    expect(encodeEventFilterTopics(iface, transfer, indexedArgs)).toEqual(
+      iface.encodeFilterTopics(transfer, [ADDR_A, null, null])
+    );
+  });
+
+  it("names the parameter and type when a value fails to encode", () => {
+    expect(() =>
+      encodeEventFilterTopics(iface, transfer, ["not-an-address", ""])
+    ).toThrow(/^'from' \(address\): .*invalid address/i);
+  });
+
+  it("attributes the failure to the right parameter, not just the first", () => {
+    expect(() =>
+      encodeEventFilterTopics(iface, transfer, [ADDR_A, "not-an-address"])
+    ).toThrow(/^'to' \(address\): .*invalid address/i);
+  });
+
+  it("skips wildcard positions and encodes nothing for an empty filter", () => {
+    expect(encodeEventFilterTopics(iface, transfer, [null, null])).toEqual(
+      iface.encodeFilterTopics(transfer, [null, null, null])
+    );
+    expect(encodeEventFilterTopics(iface, transfer, [])).toEqual(
+      iface.encodeFilterTopics(transfer, [null, null, null])
+    );
   });
 });

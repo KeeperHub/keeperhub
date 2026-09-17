@@ -373,9 +373,24 @@ Query historical smart contract events (logs) across a block range with automati
 - Contract Address (required)
 - Contract ABI (required, auto-fetched from block explorer)
 - Event Name (required, selected from ABI)
-- Event Argument Filters (optional) -- values for the event's indexed arguments, selected from the ABI. Indexed arguments become eth_getLogs topics (topic1..n), so filtering happens server-side on the RPC node instead of after the download. Only indexed parameters can be filtered; leave a value empty to wildcard that position, or leave the whole field empty to match all events of this type
+- Event Argument Filters (optional) -- values for the event's indexed arguments, selected from the ABI. Indexed arguments become eth_getLogs topics (topic1..n), so filtering happens server-side on the RPC node instead of after the download. Only indexed parameters can be filtered; leave a value empty to wildcard that position, or leave the whole field empty to match all events of this type. The filter array is positional over the event's *indexed* inputs only (in ABI order), not over all event inputs
 - Block Lookback -- number of blocks to scan back from To Block (default: 6500, ~1 day on Ethereum). Ignored if From Block is set
 - From Block -- explicit start block (overrides Block Lookback)
+
+**Event Argument Filters -- details and limits:**
+- Indexed `string` or `bytes` parameters match on the keccak256 hash of the value, so filtering is whole-value equality: you can match an exact string, but you cannot do prefix/substring matching, and the original value cannot be read back out of the log (only its hash is stored in the topic).
+- Indexed `intN` (signed integer) parameters cannot be filtered by a negative value: topic encoding goes through `toBeHex`, which rejects negatives. Filter non-negative values only.
+- Indexed array and tuple parameters cannot be filtered at all (ethers refuses to encode them as topics) and are not offered in the config panel.
+- Changing the selected event clears any previously entered filter values, since the stored values are positional over the previous event's indexed inputs.
+
+**Example workflow -- Treasury Inflow Tracker:**
+```
+Schedule (every hour)
+  -> Query Contract Events: USDC contract, event "Transfer", Event Argument Filters ["", "0xTreasuryAddress..."] (wildcard sender, fixed recipient)
+  -> Math Aggregate: sum of QueryEvents.events[].args.value
+  -> Condition: total > 0
+  -> Discord: "{{MathAggregate.sum}} USDC flowed into treasury in the last hour"
+```
 - To Block -- end block number (default: latest)
 
 **Outputs:** `success`, `events` (array of decoded event objects with `blockNumber`, `transactionHash`, `logIndex`, `args`), `fromBlock`, `toBlock`, `eventCount`, `error`
