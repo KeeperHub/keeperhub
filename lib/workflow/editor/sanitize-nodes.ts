@@ -137,15 +137,37 @@ function normalizeConditionGroup(
 /**
  * Normalize conditionConfig inside a Condition node's config.
  * Fixes: missing ids, wrong operator formats, field name aliases, array-shaped groups.
+ *
+ * KEEP-2305: some producers (certain MCP/import/AI-generated paths) emit
+ * `group` at the config root - matching the `ConditionConfig` type's own
+ * literal `{ group }` shape - instead of nested under `conditionConfig`,
+ * which is what the resolver (resolveConditionExpression) actually reads.
+ * The previous guard required `config.conditionConfig` to already exist
+ * before normalizing anything, so a root-level `group` was silently never
+ * migrated in and the condition resolved to `undefined` with no signal
+ * pointing at the real cause. Treat a root-level `group` as an alternate
+ * input to the same normalization instead of a separate, unhandled shape.
  */
 function normalizeConditionConfig(
   config: Record<string, unknown>
 ): Record<string, unknown> {
-  if (config.actionType !== "Condition" || !config.conditionConfig) {
+  if (config.actionType !== "Condition") {
     return config;
   }
 
-  const conditionConfig = config.conditionConfig as Record<string, unknown>;
+  const nestedConditionConfig = config.conditionConfig as
+    | Record<string, unknown>
+    | undefined;
+  const rootGroup = config.group as
+    | Record<string, unknown>
+    | Record<string, unknown>[]
+    | undefined;
+
+  if (!nestedConditionConfig && rootGroup === undefined) {
+    return config;
+  }
+
+  const conditionConfig = nestedConditionConfig ?? { group: rootGroup };
   let group = conditionConfig.group as
     | Record<string, unknown>
     | Record<string, unknown>[];
@@ -165,8 +187,12 @@ function normalizeConditionConfig(
     return config;
   }
 
+  // Drop a stray root-level `group` once it's been folded into
+  // conditionConfig, so the two copies can't drift out of sync.
+  const { group: _rootGroup, ...rest } = config;
+
   return {
-    ...config,
+    ...rest,
     conditionConfig: {
       group: normalizeConditionGroup(group),
     },

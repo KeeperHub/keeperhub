@@ -464,6 +464,98 @@ describe("sanitizeWorkflowData", () => {
       expect(rules[0].operator).toBe("===");
       expect(rules[1].operator).toBe(">=");
     });
+
+    // KEEP-2305: some producers emit `group` at the config root instead of
+    // nested under `conditionConfig` (matching the ConditionConfig type's
+    // own `{ group }` shape). Previously this was silently dropped because
+    // the function bailed out whenever `conditionConfig` didn't already
+    // exist, leaving the condition to resolve as `undefined` with no
+    // signal pointing at the real cause.
+    it("folds a root-level group into conditionConfig instead of dropping it", () => {
+      const { nodes } = sanitizeWorkflowData(
+        [
+          {
+            id: "c1",
+            type: "action",
+            data: {
+              label: "Condition",
+              type: "action",
+              config: {
+                actionType: "Condition",
+                group: {
+                  rules: [
+                    {
+                      leftOperand: "{{@a:B.x}}",
+                      operator: "===",
+                      rightOperand: "1",
+                    },
+                  ],
+                  logic: "AND",
+                },
+              },
+            },
+          },
+        ],
+        []
+      );
+
+      const data = nodes[0].data as Record<string, unknown>;
+      const config = data.config as Record<string, unknown>;
+
+      // The stray root-level copy should not survive normalization.
+      expect(config.group).toBeUndefined();
+
+      const conditionConfig = config.conditionConfig as Record<string, unknown>;
+      expect(conditionConfig).toBeDefined();
+      const group = conditionConfig.group as Record<string, unknown>;
+      expect(group.id).toBeDefined();
+      expect(group.logic).toBe("AND");
+      const rules = group.rules as Record<string, unknown>[];
+      expect(rules[0].leftOperand).toBe("{{@a:B.x}}");
+      expect(rules[0].operator).toBe("===");
+    });
+
+    it("prefers an existing conditionConfig over a stray root-level group", () => {
+      const { nodes } = sanitizeWorkflowData(
+        [
+          {
+            id: "c1",
+            type: "action",
+            data: {
+              label: "Condition",
+              type: "action",
+              config: {
+                actionType: "Condition",
+                conditionConfig: {
+                  group: {
+                    id: "real-group",
+                    logic: "OR",
+                    rules: [
+                      {
+                        id: "r1",
+                        leftOperand: "a",
+                        operator: "==",
+                        rightOperand: "b",
+                      },
+                    ],
+                  },
+                },
+                // A stray leftover that should be ignored, not merged in.
+                group: { logic: "AND", rules: [] },
+              },
+            },
+          },
+        ],
+        []
+      );
+
+      const data = nodes[0].data as Record<string, unknown>;
+      const config = data.config as Record<string, unknown>;
+      const conditionConfig = config.conditionConfig as Record<string, unknown>;
+      const group = conditionConfig.group as Record<string, unknown>;
+      expect(group.id).toBe("real-group");
+      expect(group.logic).toBe("OR");
+    });
   });
 
   describe("Auto-layout", () => {
