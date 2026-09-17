@@ -8,7 +8,7 @@
 // there. One set, read by both consumers: it used to be two copies kept in
 // sync by hand, and a chain added to one but not the other rendered correctly
 // in the API and wrongly in the modal.
-export const INDEPENDENT_TOKEN_LIST_CHAIN_IDS: ReadonlySet<number> = new Set([
+const INDEPENDENT_TOKEN_LIST_CHAIN_IDS: ReadonlySet<number> = new Set([
   42_431, 4217, 9745, 5042, 5_042_002,
 ]);
 
