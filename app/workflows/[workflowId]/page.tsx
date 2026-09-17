@@ -347,7 +347,16 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   // Set right panel width for AI prompt positioning
   // Only set it after the panel is visible (animated in) to coordinate the animation
   useEffect(() => {
-    if (!isMobile && panelVisible && !panelCollapsed) {
+    // The same condition the panel itself renders under: it is the desktop
+    // overlay only at md and up, so below that the width stays null and the
+    // canvas keeps the full width rather than reserving a column for a panel
+    // that is not there.
+    if (
+      editorAvailability === "available" &&
+      !isMobile &&
+      panelVisible &&
+      !panelCollapsed
+    ) {
       setRightPanelWidth(`${panelWidth}%`);
     } else {
       // During initial render or when collapsed, set to null so prompt is centered
@@ -356,7 +365,14 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     return () => {
       setRightPanelWidth(null);
     };
-  }, [isMobile, setRightPanelWidth, panelWidth, panelVisible, panelCollapsed]);
+  }, [
+    editorAvailability,
+    isMobile,
+    setRightPanelWidth,
+    panelWidth,
+    panelVisible,
+    panelCollapsed,
+  ]);
 
   // Handle panel resize
   const handleResizeStart = useCallback(
@@ -1125,6 +1141,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
 
       {/* Expand button when panel is collapsed - only show if trigger exists */}
       {editorAvailability === "available" &&
+        !isMobile &&
         hasTriggerNode &&
         panelCollapsed && (
           <button
@@ -1141,7 +1158,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
         )}
 
       {/* Right panel overlay (desktop only) - only show if trigger exists */}
-      {editorAvailability === "available" && hasTriggerNode && (
+      {editorAvailability === "available" && !isMobile && hasTriggerNode && (
         <div
           className="pointer-events-auto absolute top-[calc(6rem+var(--app-banner-height,0px))] right-0 bottom-0 z-20 border-l bg-background transition-transform duration-300 ease-out lg:top-[calc(60px+var(--app-banner-height,0px))]"
           style={{
@@ -1187,6 +1204,13 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
           configuration panel is replaced by the notice that says where the
           surface does exist. The canvas and the toolbar's run controls are
           withheld by the shell for the same reason. */}
+      {/* Below md on a desktop-shaped session, the panel is the same one a phone
+          would get: the overlay above is `md:flex` at the content level, so
+          rendering it narrower paints an opaque empty strip over the canvas. */}
+      {editorAvailability === "available" && isMobile && hasTriggerNode && (
+        <NodeConfigPanel />
+      )}
+
       {editorAvailability === "unavailable" && <MobileEditorNotice />}
     </div>
   );
