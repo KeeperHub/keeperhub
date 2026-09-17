@@ -57,6 +57,12 @@ describe("seed-chains explorer coverage", () => {
     }
   });
 
+  it("maps each chain name to a distinct default id", () => {
+    // Two names sharing an id would give one chain the other's explorer.
+    const ids = Object.values(CHAIN_TO_DEFAULT_ID);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("has no CHAIN_TO_DEFAULT_ID entry that no seeded chain uses", () => {
     const seededNames = new Set(DEFAULT_CHAINS.map((c) => c.name));
     const orphans = Object.keys(CHAIN_TO_DEFAULT_ID).filter(
