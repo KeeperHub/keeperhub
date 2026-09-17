@@ -119,7 +119,9 @@ export function canonicalize(value: unknown): string {
     .join(",")}}`;
 }
 
-function hexToBytes(hex: string): Uint8Array {
+// Returns an ArrayBuffer-backed view (not ArrayBufferLike) so it satisfies
+// WebCrypto's BufferSource parameters without a cast.
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
   const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
   if (clean.length % 2 !== 0 || /[^0-9a-fA-F]/.test(clean)) {
     throw new Error("invalid hex");
@@ -178,40 +180,66 @@ export async function verifyPredgeSignal(
   signed: PredgeSignedAttestation,
   input: PredgeVerifyInput
 ): Promise<PredgeVerifyResult> {
-  const attestation = signed?.attestation;
+  const attestation = signed?.attestation as PredgeAttestation | undefined;
   const signature = signed?.signature;
-  const signer = attestation?.keyId ?? "";
-  const issuedAt = attestation?.issuedAt;
 
+  // Malformed guard first, before any field is read, and type-check the exact
+  // fields the checks below call string methods on. A hostile or self-hosted
+  // response (`200 {}`, `{"wallet": 123}`, a numeric keyId) then returns a
+  // clean `verified: false` instead of throwing out of the step. Read the
+  // untrusted body through an `unknown` view so the checks are real at runtime.
+  const raw = attestation as unknown as {
+    scheme?: unknown;
+    keyId?: unknown;
+    issuedAt?: unknown;
+    payload?: { wallet?: unknown };
+  } | undefined;
+  if (
+    !raw ||
+    typeof signature !== "string" ||
+    typeof raw.scheme !== "string" ||
+    typeof raw.keyId !== "string" ||
+    typeof raw.payload?.wallet !== "string"
+  ) {
+    return {
+      verified: false,
+      reason: "malformed attestation",
+      signer: typeof raw?.keyId === "string" ? raw.keyId : "",
+      subjectMatch: false,
+    };
+  }
+
+  const signer = raw.keyId;
+  const walletInPayload = raw.payload.wallet;
+  const issuedAt = typeof raw.issuedAt === "string" ? raw.issuedAt : undefined;
   const pinned = (input.expectedKeyId?.trim() || DEFAULT_PINNED_SIGNER).toLowerCase();
-  const subjectMatch =
-    !!attestation?.payload?.wallet &&
-    normalizeWallet(attestation.payload.wallet) ===
-      normalizeWallet(input.requestedWallet);
 
+  // subjectMatch is reported true only after scheme, signer and signature have
+  // held, so the field never claims a binding the signature has not earned.
   const fail = (reason: string, ageSeconds?: number): PredgeVerifyResult => ({
     verified: false,
     reason,
     signer,
-    subjectMatch,
+    subjectMatch: false,
     issuedAt,
     ageSeconds,
   });
 
-  if (!attestation || typeof signature !== "string") {
-    return fail("malformed attestation");
+  if (raw.scheme !== PREDGE_SCHEME) {
+    return fail(`unexpected scheme ${JSON.stringify(raw.scheme)}`);
   }
-  if (attestation.scheme !== PREDGE_SCHEME) {
-    return fail(`unexpected scheme ${JSON.stringify(attestation.scheme)}`);
-  }
-  if (!signer || signer.toLowerCase() !== pinned) {
+  if (signer.toLowerCase() !== pinned) {
     // The finding that matters: without this, the responder chooses both the
     // key and the signature over it, and `verified` means nothing.
     return fail("signer is not the pinned Predge key");
   }
-  if (!(await ed25519SignatureValid(attestation, signature))) {
+  if (!(await ed25519SignatureValid(attestation as PredgeAttestation, signature))) {
     return fail("signature does not match payload");
   }
+
+  // Subject binding, checked only now that the signature holds.
+  const subjectMatch =
+    normalizeWallet(walletInPayload) === normalizeWallet(input.requestedWallet);
   if (!subjectMatch) {
     return fail("signal is about a different wallet");
   }

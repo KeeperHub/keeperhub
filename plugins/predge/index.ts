@@ -8,7 +8,9 @@ const walletField = (): ActionConfigField => ({
   label: "Wallet",
   type: "template-input",
   placeholder: "0x... or {{NodeName.address}}",
-  example: "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
+  // A wallet Predge currently ranks, so the example returns a live signed
+  // signal rather than a 404 (only verified smart-money wallets carry one).
+  example: "0x0224bb9eb0a5c9fd261ac9123a72cbdd5748292a",
   required: true,
 });
 
@@ -17,7 +19,7 @@ const predgePlugin: IntegrationPlugin = {
   egress: "user-destination",
   label: "Predge",
   description:
-    "Read verifiable smart-money signals from Predge and gate a workflow on the signature",
+    "Read verifiable smart-money signals from Predge. The signal's ed25519 signature is checked offline against a pinned key before the step succeeds, so a workflow only ever acts on a verified number.",
 
   icon: PredgeIcon,
 
@@ -73,13 +75,13 @@ const predgePlugin: IntegrationPlugin = {
       slug: "read-signal",
       label: "Read Predge Signal",
       description:
-        "Fetch a wallet's conviction signal from Predge and verify it offline: pinned ed25519 signer, signature over the canonical payload, subject binding to the wallet, and freshness. Gate execution on the `verified` output.",
+        "Fetch a wallet's conviction signal from Predge and verify it offline: pinned ed25519 signer, signature over the canonical payload, subject binding to the wallet, and freshness. The step FAILS if verification does not hold, with the reason in its error, so a successful step is a verified signal and there is no `verified` flag to forget to gate on.",
       category: "Predge",
       stepFunction: "readSignalStep",
       stepImportPath: "read-signal",
       outputFields: [
-        { field: "success", description: "Whether the lookup succeeded" },
-        { field: "wallet", description: "The wallet the signal is about" },
+        { field: "success", description: "True only for a signal that verified; the step errors otherwise" },
+        { field: "wallet", description: "The wallet asked for, which the signal was bound to" },
         {
           field: "conviction",
           description: "Predge conviction score (0-100) from the wallet's on-chain track record",
@@ -89,26 +91,13 @@ const predgePlugin: IntegrationPlugin = {
           description: "Recommended action for the wallet (accumulate / reduce / hold)",
         },
         { field: "window", description: "Scoring window for the signal (7d / 30d)" },
-        {
-          field: "verified",
-          description:
-            "True only when the signal is signed by the pinned Predge key, the signature matches, the payload is about the requested wallet, and it is fresh. Gate execution on this being true.",
-        },
-        {
-          field: "reason",
-          description: "Why verification failed, when it did. Empty on a clean pass.",
-        },
-        { field: "signer", description: "Hex ed25519 public key the attestation claims to be signed by" },
-        {
-          field: "subjectMatch",
-          description: "Whether the signed payload is about the requested wallet",
-        },
-        { field: "issuedAt", description: "ISO-8601 issue time carried by the attestation" },
+        { field: "signer", description: "Hex ed25519 public key the signature verified against (Predge's published key, or your pinned override)" },
+        { field: "issuedAt", description: "ISO-8601 issue time carried by the verified attestation" },
         {
           field: "ageSeconds",
-          description: "Age of the attestation in seconds at verification time (-1 if unknown)",
+          description: "Age of the attestation in seconds at verification time; can be slightly negative within the clock-skew tolerance",
         },
-        { field: "error", description: "Error message if failed" },
+        { field: "error", description: "On failure, why the lookup or verification did not hold" },
       ],
       configFields: [walletField()],
     },
