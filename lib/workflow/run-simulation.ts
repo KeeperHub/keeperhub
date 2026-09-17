@@ -711,7 +711,6 @@ function outcomeFromResult(
 type Graph = {
   out: Map<string, string[]>;
   inDegree: Map<string, number>;
-  outDegree: Map<string, number>;
   has: (source: string, target: string) => boolean;
 };
 
@@ -722,7 +721,6 @@ function graphOf(
   const ids = new Set(nodes.map((node) => node.id));
   const out = new Map<string, string[]>();
   const inDegree = new Map<string, number>();
-  const outDegree = new Map<string, number>();
   const pairs = new Set<string>();
   for (const edge of edges ?? []) {
     if (typeof edge.source !== "string" || typeof edge.target !== "string") {
@@ -733,13 +731,11 @@ function graphOf(
     }
     out.set(edge.source, [...(out.get(edge.source) ?? []), edge.target]);
     inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1);
-    outDegree.set(edge.source, (outDegree.get(edge.source) ?? 0) + 1);
     pairs.add(`${edge.source}->${edge.target}`);
   }
   return {
     out,
     inDegree,
-    outDegree,
     has: (source, target) => pairs.has(`${source}->${target}`),
   };
 }
