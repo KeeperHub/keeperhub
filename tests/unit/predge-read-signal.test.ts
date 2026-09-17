@@ -193,6 +193,69 @@ describe("verifyPredgeSignal", () => {
     });
     expect(result.verified).toBe(true);
   });
+
+  it("verifies a captured live signal against the default pin, no override", async () => {
+    // A real 200 from https://api.predge.io/v1/signal/<wallet>, signed by the
+    // production attestation key. This exercises the hardcoded
+    // DEFAULT_PINNED_SIGNER (no expectedKeyId passed) against Predge's real
+    // bytes, so a wrong keyId form or a canonicalization drift from the real
+    // signer would fail here rather than pass invisibly. `now` is pinned near
+    // issuedAt so freshness does not reject a stored fixture.
+    const LIVE: PredgeSignedAttestation = {
+      attestation: {
+        scheme: "veri402-ed25519-v1",
+        resource: "conviction:0x0224bb9eb0a5c9fd261ac9123a72cbdd5748292a",
+        payload: {
+          wallet: "0x0224bb9eb0a5c9fd261ac9123a72cbdd5748292a",
+          conviction: 100,
+          action: "accumulate",
+          window: "30d",
+        },
+        issuedAt: "2026-09-17T08:41:47.097Z",
+        nonce: "478637d087a23312fe549b4217cf97ec",
+        keyId:
+          "13fa3d18a369e6c71bf941563ba47822b30182273d5106a0e8fb61c5016352d9",
+      },
+      signature:
+        "b8e960636ed0badfcb26ca364e91ebaaffce0ccf10bc1364ae00b73497a10493d5ea007b57d27c776e3121ab353492d5e9a731348e7d1b8c1c18848cc609bf05",
+    };
+    const result = await verifyPredgeSignal(LIVE, {
+      requestedWallet: "0x0224bb9eb0a5c9fd261ac9123a72cbdd5748292a",
+      now: Date.parse(LIVE.attestation.issuedAt) + 1000,
+    });
+    expect(result.verified).toBe(true);
+    expect(result.signer).toBe(
+      "13fa3d18a369e6c71bf941563ba47822b30182273d5106a0e8fb61c5016352d9"
+    );
+    expect(result.subjectMatch).toBe(true);
+  });
+
+  it("returns a clean verified:false on a malformed body instead of throwing", async () => {
+    const bad: PredgeSignedAttestation[] = [
+      {} as unknown as PredgeSignedAttestation,
+      { attestation: {} } as unknown as PredgeSignedAttestation,
+      {
+        attestation: { scheme: SCHEME, keyId: 123, payload: { wallet: WALLET } },
+        signature: "00",
+      } as unknown as PredgeSignedAttestation,
+      {
+        attestation: {
+          scheme: SCHEME,
+          keyId: signer.keyIdHex,
+          payload: { wallet: 123 },
+        },
+        signature: "00",
+      } as unknown as PredgeSignedAttestation,
+    ];
+    for (const b of bad) {
+      const result = await verifyPredgeSignal(b, {
+        requestedWallet: WALLET,
+        now: NOW,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.reason).toMatch(/malformed/i);
+    }
+  });
 });
 
 describe("readSignalStep", () => {
@@ -214,44 +277,63 @@ describe("readSignalStep", () => {
     });
   }
 
-  it("returns a verified signal when the pinned key matches", async () => {
+  it("succeeds with a verified signal when the pin matches", async () => {
     mockFetchCredentials.mockResolvedValue({
       PREDGE_SIGNER_KEY_ID: signer.keyIdHex,
     });
-    respondWith(await signSignal(signer));
+    // Fresh issuedAt so the step's real-clock freshness check passes whenever
+    // the suite runs.
+    respondWith(await signSignal(signer, { issuedAt: new Date().toISOString() }));
 
     const out = (await readSignalStep({
       wallet: WALLET,
       integrationId: "int_1",
     } as never)) as {
       success: boolean;
-      verified: boolean;
       conviction: number;
-      subjectMatch: boolean;
       signer: string;
+      wallet: string;
     };
 
     expect(out.success).toBe(true);
-    expect(out.verified).toBe(true);
     expect(out.conviction).toBe(82);
-    expect(out.subjectMatch).toBe(true);
     expect(out.signer).toBe(signer.keyIdHex);
+    expect(out.wallet).toBe(WALLET);
   });
 
-  it("returns verified=false with a reason when the signer is not pinned", async () => {
-    // No credentials, so the default Predge key is the pin and the test-key
-    // signature must fail closed.
+  it("fails the step, not the data, when verification does not hold", async () => {
+    // No credentials, so the default Predge pin applies and the test-key
+    // signature is rejected. The step must error rather than return success
+    // with an unverified payload beside it.
     mockFetchCredentials.mockResolvedValue({});
-    respondWith(await signSignal(signer));
+    respondWith(await signSignal(signer, { issuedAt: new Date().toISOString() }));
 
     const out = (await readSignalStep({
       wallet: WALLET,
       integrationId: "int_1",
-    } as never)) as { success: boolean; verified: boolean; reason: string };
+    } as never)) as { success: boolean; error: string };
 
-    expect(out.success).toBe(true);
-    expect(out.verified).toBe(false);
-    expect(out.reason).toMatch(/pinned Predge key/i);
+    expect(out.success).toBe(false);
+    expect(out.error).toMatch(/did not verify/i);
+    expect(out.error).toMatch(/pinned Predge key/i);
+  });
+
+  it("fails cleanly on a malformed 200 body rather than throwing", async () => {
+    mockFetchCredentials.mockResolvedValue({});
+    safeFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: () => Promise.resolve({}), // 200 with an empty body
+    });
+
+    const out = (await readSignalStep({
+      wallet: WALLET,
+      integrationId: "int_1",
+    } as never)) as { success: boolean; error: string };
+
+    expect(out.success).toBe(false);
+    expect(out.error).toMatch(/malformed/i);
   });
 
   it("surfaces a wallet-required error before any fetch", async () => {

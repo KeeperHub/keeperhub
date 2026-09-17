@@ -9,26 +9,26 @@ import {
 import type { PredgeCredentials } from "../credentials";
 import { fetchSignedSignal, verifyPredgeSignal } from "./predge-core";
 
+// A successful step means a verified signal: the step fails (below) if
+// verification does not hold, so success carries only the verified data. A
+// failed verification travels the error path with its reason, not the data
+// path with a `verified: false` an author could forget to gate on.
 type ReadSignalResult =
   | {
       success: true;
+      // The wallet the step asked for; equals the signed subject, which was
+      // checked to match before this point.
       wallet: string;
       // 0-100 conviction from Predge's on-chain track-record model.
       conviction: number;
       action: string;
       window: string;
-      // The whole point: did the signal verify against Predge's pinned key,
-      // about this wallet, recently enough? Gate execution on this.
-      verified: boolean;
-      // Why verification failed, when it did. Empty on a clean pass.
-      reason: string;
-      // hex ed25519 public key the attestation claims to be signed by.
+      // hex ed25519 public key the signature verified against.
       signer: string;
-      // Whether the signed payload is about the requested wallet.
-      subjectMatch: boolean;
-      // ISO-8601 issue time of the attestation, when present.
+      // ISO-8601 issue time carried by the verified attestation.
       issuedAt: string;
-      // Age of the attestation in seconds at verification time (-1 if unknown).
+      // Age of the attestation in seconds at verification time. Can be slightly
+      // negative within the clock-skew tolerance.
       ageSeconds: number;
     }
   | {
@@ -46,12 +46,16 @@ export type ReadSignalInput = StepInput &
     integrationId?: string;
   };
 
+// Blank falls back to the default window. `0` is honored literally (reject
+// anything not issued this instant) rather than silently becoming the default,
+// so an operator who types it gets what they asked for. Negatives and
+// non-numbers are ignored.
 function parseMaxAgeSeconds(raw?: string): number | undefined {
   if (!raw?.trim()) {
     return undefined;
   }
   const parsed = Number(raw.trim());
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 async function stepHandler(
@@ -75,27 +79,37 @@ async function stepHandler(
   const signed = result.data;
   // Verify offline against Predge's pinned key. PREDGE_SIGNER_KEY_ID overrides
   // the pinned default; the key the response carries is never trusted on its
-  // own. Binds the signal to this wallet and rejects stale attestations. A
-  // workflow gates execution on `verified`.
+  // own. Binds the signal to this wallet and rejects stale attestations.
   const verification = await verifyPredgeSignal(signed, {
     requestedWallet: wallet,
     expectedKeyId: credentials.PREDGE_SIGNER_KEY_ID?.trim() || undefined,
     maxAgeSeconds: parseMaxAgeSeconds(credentials.PREDGE_MAX_SIGNAL_AGE_SECONDS),
   });
 
+  // A gate that did not hold belongs on the error path, not in the data. Fail
+  // the step with the reason rather than handing the workflow an unverified
+  // payload it might act on. This also means the payload below is only read
+  // once verification has vouched for it.
+  if (!verification.verified) {
+    return {
+      success: false,
+      error: `Predge signal did not verify: ${verification.reason ?? "unknown reason"}`,
+      errorClass: ExecutionErrorType.EXTERNAL,
+    };
+  }
+
   const signal = signed.attestation.payload;
   return {
     success: true,
-    wallet: signal.wallet ?? wallet,
+    // The requested wallet; subject binding already confirmed it equals the
+    // signed subject, so this never reports a different wallet than asked for.
+    wallet,
     conviction: signal.conviction,
     action: signal.action,
     window: signal.window,
-    verified: verification.verified,
-    reason: verification.reason ?? "",
     signer: verification.signer,
-    subjectMatch: verification.subjectMatch,
     issuedAt: verification.issuedAt ?? "",
-    ageSeconds: verification.ageSeconds ?? -1,
+    ageSeconds: verification.ageSeconds ?? 0,
   };
 }
 
