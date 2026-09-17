@@ -40,6 +40,26 @@ export interface TraceListenerOptions {
   inFlight?: InFlightTracker;
 }
 
+/**
+ * `callTracer` reports `value` as a hex quantity. The trigger's output
+ * contract documents it as wei in a decimal string, and `minValueWei` is
+ * configured in decimal, so `{{Trigger.value}}` rendered
+ * `0x16345785d8a0000` against a field that promises `100000000000000000`.
+ * Converted once here, at the boundary between the matcher's shape and the
+ * workflow payload, rather than in the matcher, which compares it as a
+ * BigInt and does not care which base it arrived in.
+ *
+ * A value the tracer did not send, or one it sent malformed, becomes "0"
+ * rather than propagating a string no downstream step can parse.
+ */
+function toDecimalWei(value: string): string {
+  try {
+    return BigInt(value).toString(10);
+  } catch {
+    return "0";
+  }
+}
+
 export class TraceListener {
   private readonly opts: TraceListenerOptions;
   private unsubscribe: Unsubscribe | null = null;
@@ -130,7 +150,7 @@ export class TraceListener {
         callType: match.callType,
         from: match.from,
         to: match.to,
-        value: match.value,
+        value: toDecimalWei(match.value),
         selector: match.selector,
         input: match.input,
         depth: match.depth,

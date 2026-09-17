@@ -781,6 +781,7 @@ describe("ChainProviderManager", () => {
         lastBlockAt: null,
         subscriberCount: 1,
         traceSubscriberCount: 0,
+        traceUnsupported: false,
         blockIntervalMs: null,
         blocksBehindHead: null,
         getLogsCallsTotal: 0,
