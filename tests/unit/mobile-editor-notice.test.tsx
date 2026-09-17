@@ -39,6 +39,16 @@ describe("MobileEditorNotice", () => {
     expect(html).not.toContain("<h1");
   });
 
+  it("names pointer-events-auto, because the layout wrapper removes clicks", () => {
+    // components/layout-content.tsx wraps every route's children in
+    // pointer-events-none and pointer-events inherits, so without this the escape
+    // hatch cannot be tapped on the only devices that render it, which is the
+    // review's first blocker. jsdom does no hit testing, so this asserts the class
+    // and the browser capture taps the real button at its real coordinates.
+    const html = renderToStaticMarkup(<MobileEditorNotice />);
+    expect(html).toContain("pointer-events-auto");
+  });
+
   it("is composed the way the analytics empty state is composed", () => {
     // Read the sibling file rather than restating it here. The point of the check
     // is that these two states cannot drift into two designs, and a copied

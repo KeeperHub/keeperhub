@@ -1552,27 +1552,27 @@ function ToolbarActions({
           overlay and delete are not offered where the editor is not. */}
       {editorAvailable && (
         <ButtonGroup className="flex lg:hidden" orientation="vertical">
-        <Button
-          className="border hover:bg-black/5 dark:hover:bg-white/5"
-          onClick={() => openOverlay(ConfigurationOverlay, {})}
-          size="icon"
-          title="Configuration"
-          variant="secondary"
-        >
-          <Settings2 className="size-4" />
-        </Button>
-        {/* Delete - Show when node or edge is selected */}
-        {hasSelection && (
           <Button
             className="border hover:bg-black/5 dark:hover:bg-white/5"
-            onClick={handleDeleteConfirm}
+            onClick={() => openOverlay(ConfigurationOverlay, {})}
             size="icon"
-            title="Delete"
+            title="Configuration"
             variant="secondary"
           >
-            <Trash2 className="size-4" />
+            <Settings2 className="size-4" />
           </Button>
-        )}
+          {/* Delete - Show when node or edge is selected */}
+          {hasSelection && (
+            <Button
+              className="border hover:bg-black/5 dark:hover:bg-white/5"
+              onClick={handleDeleteConfirm}
+              size="icon"
+              title="Delete"
+              variant="secondary"
+            >
+              <Trash2 className="size-4" />
+            </Button>
+          )}
         </ButtonGroup>
       )}
 
@@ -1653,7 +1653,15 @@ function ToolbarActions({
         </button>
       )}
 
-      {editorAvailable && <RunButtonGroup actions={actions} state={state} />}
+      {/* The group is the Stop control as well as the Run control (`:1854`
+          returns "Stop Execution" while a run is in flight), so gating it on the
+          editor alone would let a viewport crossing take the cancel away: a phone
+          in landscape starts a run at 932px and rotating to portrait, or a laptop
+          zooming to 200% mid-run, would leave it unstoppable. Withholding the
+          start is the rule; withholding the stop was never part of it. */}
+      {(editorAvailable || state.isExecuting) && (
+        <RunButtonGroup actions={actions} state={state} />
+      )}
     </>
   );
 }

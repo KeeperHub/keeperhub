@@ -13,8 +13,13 @@ import { useEffect, useState } from "react";
  * Pro Max in landscape (932) is not. WCAG 1.4.4 also requires content to stay
  * usable at 200% zoom, so a width gate cannot be the only test.
  *
- * So the gate is a phone test: a narrow viewport AND a device that reports
- * itself as touch-first (coarse pointer, touch points, or a mobile user agent).
+ * So the gate is a phone test: a narrow viewport AND a device the browser
+ * describes as touch-first, which here means a coarse primary pointer or a
+ * mobile user agent. Touch points are deliberately not part of it: a touchscreen
+ * Windows laptop reports ten of them with `pointer: fine`, because `pointer`
+ * describes the primary input and that is the trackpad, so a disjunct on
+ * `maxTouchPoints` reads such a laptop as a phone and withdraws the editor from
+ * the very zoomed-window case above.
  * A narrow desktop window keeps the editor, and a phone user who wants it anyway
  * can say so once with `requestEditorOnNarrowViewport`, which is the escape hatch
  * `components/mobile-warning-dialog.tsx` already offered with its Continue Anyway
@@ -54,28 +59,59 @@ export function isPhoneLikeViewport(): boolean {
     return false;
   }
   const coarse = window.matchMedia(COARSE_POINTER).matches;
-  const touch = (navigator.maxTouchPoints ?? 0) > 0;
-  return coarse || touch || MOBILE_USER_AGENT.test(navigator.userAgent);
+  return coarse || MOBILE_USER_AGENT.test(navigator.userAgent);
 }
 
+/**
+ * In-memory counterpart to the stored flag.
+ *
+ * Storage can refuse to write (Safari private mode, lockdown) and it can refuse
+ * to read. When it refuses the write, a stored-only override is a silent no-op:
+ * the event fires, `measure()` reads storage, the read throws, and the device is
+ * told `unavailable` again. So the click sets this too, and the store is what
+ * makes the choice outlive the page.
+ */
+let overrideThisSession = false;
+
 export function prefersEditorOnNarrowViewport(): boolean {
+  if (overrideThisSession) {
+    return true;
+  }
   try {
-    // window.localStorage rather than the bare global: Node defines a
-    // `localStorage` global of its own that is unusable without a flag, and it
-    // shadows the DOM one under a jsdom test environment.
-    return window.localStorage.getItem(EDITOR_OVERRIDE_KEY) === "1";
+    // window.sessionStorage rather than the bare global: Node defines globals
+    // for both stores that are unusable without a flag, and they shadow the DOM
+    // ones under a jsdom test environment.
+    //
+    // Session rather than local persistence, deliberately: the override is a
+    // decision about this device right now, and a phone that stored it forever
+    // would have no way back to its own monitoring surface short of clearing
+    // site data, because the notice that carries the control stops rendering
+    // once the choice is made. Closing the tab restores it.
+    return window.sessionStorage.getItem(EDITOR_OVERRIDE_KEY) === "1";
   } catch {
-    // Storage blocked (Safari private mode, lockdown). Not an override.
+    // Storage blocked: the in-memory flag above is all there is.
     return false;
   }
 }
 
 /** Called by the notice's escape hatch: this device wants the editor. */
 export function requestEditorOnNarrowViewport(): void {
+  overrideThisSession = true;
   try {
-    window.localStorage.setItem(EDITOR_OVERRIDE_KEY, "1");
+    window.sessionStorage.setItem(EDITOR_OVERRIDE_KEY, "1");
   } catch {
-    // Storage blocked: the override lasts for this page only.
+    // Storage blocked: overrideThisSession carries it until the page reloads.
+  }
+  window.dispatchEvent(new Event(OVERRIDE_EVENT));
+}
+
+/** Undo it, for a control that wants to hand the device back to its surface. */
+export function clearEditorOverride(): void {
+  overrideThisSession = false;
+  try {
+    window.sessionStorage.removeItem(EDITOR_OVERRIDE_KEY);
+  } catch {
+    // Nothing stored to remove.
   }
   window.dispatchEvent(new Event(OVERRIDE_EVENT));
 }
