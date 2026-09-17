@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { MobileEditorNotice } from "@/components/workflow/mobile-editor-notice";
@@ -35,5 +37,28 @@ describe("MobileEditorNotice", () => {
     const html = renderToStaticMarkup(<MobileEditorNotice />);
     expect(html).toContain("<h2");
     expect(html).not.toContain("<h1");
+  });
+
+  it("is composed the way the analytics empty state is composed", () => {
+    // Read the sibling file rather than restating it here. The point of the check
+    // is that these two states cannot drift into two designs, and a copied
+    // expectation would drift with the component it is meant to hold.
+    const sibling = readFileSync(
+      resolve(process.cwd(), "components/analytics/empty-state.tsx"),
+      "utf8"
+    );
+    const html = renderToStaticMarkup(<MobileEditorNotice />);
+
+    for (const shared of [
+      "flex min-h-[60vh] flex-col items-center justify-center gap-6 text-center",
+      "flex size-20 items-center justify-center rounded-2xl bg-muted",
+      "size-10 text-muted-foreground",
+      "space-y-2",
+      "text-xl font-semibold tracking-tight",
+      "max-w-sm text-sm text-muted-foreground",
+    ]) {
+      expect(sibling).toContain(shared);
+      expect(html).toContain(shared);
+    }
   });
 });
