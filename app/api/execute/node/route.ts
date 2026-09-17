@@ -91,7 +91,7 @@ function validateRetryConfig(
     (r.timeoutMs as number | undefined) ?? DEFAULT_RETRY_TIMEOUT_MS;
   if (attempts * perAttempt > MAX_RETRY_BUDGET_MS) {
     // State the effective attempt count, and say where it came from when the
-    // caller did not set it -- otherwise the arithmetic reads as
+    // caller did not set it - otherwise the arithmetic reads as
     // self-contradicting to someone who sent no maxRetries.
     //
     // Naming maxRetries: 0 matters more than the arithmetic. The apparent
