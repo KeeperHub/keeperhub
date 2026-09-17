@@ -137,7 +137,7 @@ import {
 const CONTRACT_ADDRESS = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 const ADDR_A = "0xdac17f958d2ee523a2206206994597c13d831ec7";
 const ADDR_A_CHECKSUMMED = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
-const ADDR_B = "0xab8483f64d9c6d1ecf9b849ae677dd3315835cb2";
+const ADDR_B = "0x00000000000000000000000000000000a1b2c3d4"; // synthetic fixture: 32 leading zeros, skipped by scan-contract-addresses.mjs
 const TX_HASH = `0x${"11".repeat(32)}`;
 
 const stepTestIface = new ethers.Interface(mockStepTestAbi);
