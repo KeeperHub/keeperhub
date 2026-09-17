@@ -4,7 +4,7 @@ export type AbiFunctionInput = {
   name: string;
   type: string;
   components?: AbiItemComponent[];
-  /** Set for event inputs: whether the parameter is indexed (topic-filterable). */
+  /** Set for event inputs: whether the parameter is indexed. */
   indexed?: boolean;
 };
 

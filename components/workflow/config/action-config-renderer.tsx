@@ -668,15 +668,19 @@ export function AbiFunctionArgsField({
   }
 
   if (functionInputs.length === 0) {
+    let emptyMessage: string;
+    if (!functionValue) {
+      emptyMessage = isEventArgs
+        ? "Select an event above to see filterable parameters"
+        : "Select a function above to see parameters";
+    } else {
+      emptyMessage = isEventArgs
+        ? "This event has no indexed parameters to filter by"
+        : "This function has no parameters";
+    }
     return (
       <div className="rounded-md border border-dashed p-3 text-center text-muted-foreground text-sm">
-        {functionValue
-          ? isEventArgs
-            ? "This event has no indexed parameters to filter by"
-            : "This function has no parameters"
-          : isEventArgs
-            ? "Select an event above to see filterable parameters"
-            : "Select a function above to see parameters"}
+        {emptyMessage}
       </div>
     );
   }
@@ -804,7 +808,8 @@ function renderAbiFunctionArgs(
   // query-events `eventName` selector) instead of `abiFunctionField`, and the
   // renderer shows that event's indexed inputs rather than a function's.
   const isEventArgs = Boolean(field.abiEventField);
-  const sourceField = field.abiEventField || field.abiFunctionField || "abiFunction";
+  const sourceField =
+    field.abiEventField || field.abiFunctionField || "abiFunction";
   const rawAbi = config[abiField];
   const abiValue = typeof rawAbi === "string" ? rawAbi : "";
   const rawFunction = config[sourceField];
