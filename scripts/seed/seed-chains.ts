@@ -882,30 +882,30 @@ export const EXPLORER_CONFIG_TEMPLATES: Record<
 // the templates are keyed by. Every DEFAULT_CHAINS entry needs a row here;
 // tests/unit/seed-chains-explorer-coverage.test.ts fails when one is missing.
 export const CHAIN_TO_DEFAULT_ID: Record<string, number> = {
-    "Ethereum Mainnet": 1,
-    "Ethereum Sepolia": 11_155_111,
-    Base: 8453,
-    "Base Sepolia": 84_532,
-    "Tempo Testnet": 42_431,
-    Tempo: 4217,
-    "BNB Chain": 56,
-    "BNB Chain Testnet": 97,
-    Polygon: 137,
-    "Arbitrum One": 42_161,
-    "Polygon Amoy": 80_002,
-    "Arbitrum Sepolia": 421_614,
-    Optimism: 10,
-    "Optimism Sepolia": 11_155_420,
-    Avalanche: 43_114,
-    "Avalanche Fuji": 43_113,
-    Plasma: 9745,
-    "Plasma Testnet": 9746,
-    "0G": 16_661,
-    "0G Galileo": 16_602,
-    "Robinhood Chain": 4663,
-    "Robinhood Chain Testnet": 46_630,
-    Solana: 101,
-    "Solana Devnet": 103,
+  "Ethereum Mainnet": 1,
+  "Ethereum Sepolia": 11_155_111,
+  Base: 8453,
+  "Base Sepolia": 84_532,
+  "Tempo Testnet": 42_431,
+  Tempo: 4217,
+  "BNB Chain": 56,
+  "BNB Chain Testnet": 97,
+  Polygon: 137,
+  "Arbitrum One": 42_161,
+  "Polygon Amoy": 80_002,
+  "Arbitrum Sepolia": 421_614,
+  Optimism: 10,
+  "Optimism Sepolia": 11_155_420,
+  Avalanche: 43_114,
+  "Avalanche Fuji": 43_113,
+  Plasma: 9745,
+  "Plasma Testnet": 9746,
+  "0G": 16_661,
+  "0G Galileo": 16_602,
+  "Robinhood Chain": 4663,
+  "Robinhood Chain Testnet": 46_630,
+  Solana: 101,
+  "Solana Devnet": 103,
 };
 
 // The explorer_configs rows the seed writes: one per chain, keyed by the
@@ -937,6 +937,15 @@ export function buildExplorerConfigs(
 }
 
 async function seedChains() {
+  // Resolved before anything is written: a chain with no explorer mapping
+  // fails the run here, with the database untouched, rather than after every
+  // chain row has been upserted and stale ones disabled.
+  const EXPLORER_CONFIGS = buildExplorerConfigs(
+    DEFAULT_CHAINS,
+    CHAIN_TO_DEFAULT_ID,
+    EXPLORER_CONFIG_TEMPLATES
+  );
+
   const connectionString = getDatabaseUrl();
 
   console.log("Connecting to database...");
@@ -1024,12 +1033,6 @@ async function seedChains() {
       }
     }
   }
-
-  const EXPLORER_CONFIGS = buildExplorerConfigs(
-    DEFAULT_CHAINS,
-    CHAIN_TO_DEFAULT_ID,
-    EXPLORER_CONFIG_TEMPLATES
-  );
 
   console.log(`\nSeeding ${EXPLORER_CONFIGS.length} explorer configs...`);
 
