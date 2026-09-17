@@ -571,6 +571,152 @@ describe("math/aggregate - mixed magnitudes", () => {
   });
 });
 
+describe("math/aggregate - fixed-point inputs that only Number() understands", () => {
+  const big = "9007199254740993";
+
+  it("carries hex, binary, octal and trailing-dot forms as the float's digits", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "0xde0b6b3a7640000, 1000000000000000000",
+    });
+    expect(result.result).toBe("2000000000000000000");
+    const mixed = await expectSuccess({
+      operation: "sum",
+      explicitValues: `0x10, 0b1010, 0o17, 5., 1., ${big}`,
+    });
+    expect(mixed.result).toBe("9007199254741040");
+    expect(mixed.inputCount).toBe(6);
+  });
+
+  it("gives the same answer for a token whether or not a large sibling is present", async () => {
+    const alone = await expectSuccess({
+      operation: "sum",
+      explicitValues: "0x10, 5",
+    });
+    const withBig = await expectSuccess({
+      operation: "sum",
+      explicitValues: `0x10, 5, ${big}`,
+    });
+    expect(alone.result).toBe("21");
+    expect(withBig.result).toBe("9007199254741014");
+  });
+});
+
+describe("math/aggregate - quotients far below the working scale", () => {
+  it("keeps significant digits when the numerator is much smaller than the divisor", async () => {
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "1, 9007199254740993, -9007199254740993",
+      postOperation: "divide",
+      postOperand: "10000000000000000000",
+    });
+    expect(result.result).toBe("0.0000000000000000001");
+    expect(result.resultType).toBe("number");
+    const third = await expectSuccess({
+      operation: "sum",
+      explicitValues: "1, 9007199254740993, -9007199254740993",
+      postOperation: "divide",
+      postOperand: "3000000000000000000",
+    });
+    expect(third.result).toBe("0.000000000000000000333333333333333333");
+  });
+
+  it("keeps a dust amount over a raw supply from collapsing to zero in an average", async () => {
+    const result = await expectSuccess({
+      operation: "average",
+      explicitValues:
+        "0.000000000000000000001, 9007199254740993, -9007199254740993",
+    });
+    expect(result.result).toBe("0.000000000000000000000333333333333333333");
+  });
+});
+
+describe("math/aggregate - bounds on fixed-point work", () => {
+  it("treats a shift far below the scale bound as zero and returns quickly", async () => {
+    const start = performance.now();
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "1e-100000, 9007199254740993",
+    });
+    expect(performance.now() - start).toBeLessThan(200);
+    expect(result.result).toBe("9007199254740993");
+  });
+
+  it("bounds the operand the same way", async () => {
+    const start = performance.now();
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: "9007199254740993",
+      postOperation: "add",
+      postOperand: "1e-60000",
+    });
+    expect(performance.now() - start).toBeLessThan(200);
+    expect(result.result).toBe("9007199254740993");
+  });
+
+  it("caps the accumulated scale of a product", async () => {
+    const tiny = `0.${"0".repeat(99)}1`;
+    const values = Array.from({ length: 10 }, () => tiny).join(", ");
+    const start = performance.now();
+    const result = await expectSuccess({
+      operation: "product",
+      explicitValues: `${values}, 9007199254740993`,
+    });
+    expect(performance.now() - start).toBeLessThan(200);
+    // 1e-1000 times a safe-range integer is below 1e-256 and rounds to zero.
+    expect(result.result).toBe("0");
+  });
+
+  it("sends a power whose result would be too long through float", async () => {
+    const base = "1".repeat(1000);
+    const start = performance.now();
+    const result = await expectSuccess({
+      operation: "sum",
+      explicitValues: base,
+      postOperation: "power",
+      postOperand: "256",
+    });
+    expect(performance.now() - start).toBeLessThan(200);
+    expect(result.result).toBe("Infinity");
+  });
+});
+
+describe("math/aggregate - zero divisor sign and negative rounding", () => {
+  it("takes the sign of a tiny numerator from its digits, not from a float", async () => {
+    const positive = await expectSuccess({
+      operation: "sum",
+      explicitValues: "1e-200, 9007199254740993, -9007199254740993",
+      postOperation: "divide",
+      postOperand: "0",
+    });
+    expect(positive.result).toBe("Infinity");
+    const negative = await expectSuccess({
+      operation: "sum",
+      explicitValues: "-1e-200, 9007199254740993, -9007199254740993",
+      postOperation: "divide",
+      postOperand: "0",
+    });
+    expect(negative.result).toBe("-Infinity");
+  });
+
+  it("rounds to tens for negative decimal places on both paths", async () => {
+    const fixed = await expectSuccess({
+      operation: "sum",
+      explicitValues: "9007199254740993",
+      postOperation: "round-decimals",
+      postDecimalPlaces: "-2",
+    });
+    expect(fixed.result).toBe("9007199254741000");
+    const float = await expectSuccess({
+      operation: "sum",
+      explicitValues: "1234",
+      postOperation: "round-decimals",
+      postDecimalPlaces: "-2",
+    });
+    expect(float.result).toBe("1200");
+  });
+});
+
 // ─── Post-operations in fixed point ─────────────────────────────────────────
 
 describe("math/aggregate - post-operations on the fixed-point path", () => {

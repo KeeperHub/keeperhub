@@ -56,13 +56,23 @@ const BIGINT_TWO = BigInt(2);
 const EXPLICIT_SEPARATOR = /[,\n]+/;
 const COMMA_STRIP = /,/g;
 const INTEGER_PATTERN = /^-?\d+$/;
-// Fractional digits kept when a fixed-point division cannot be exact
-// (average, median of an even count, the divide post-op). 18 covers a wei
-// amount divided by 1e18 without loss. Beyond that the quotient is truncated.
+// A fixed-point division that cannot be exact (average, the divide post-op)
+// keeps at least this many fractional digits and at least this many
+// significant digits, whichever needs more, then truncates. 18 covers a wei
+// amount divided by 1e18 exactly and a dust amount over a raw supply to 18
+// significant digits.
 const DIVISION_PRECISION = 18;
-const EXPONENT_FORM = /^([+-]?(?:\d+\.?\d*|\.\d+))[eE]([+-]?\d+)$/;
-// Largest exponent computed exactly on the fixed-point path. A wei amount to
-// this power is under 5,000 digits; anything larger goes through float.
+// The text grammars that convert to fixed point exactly. Anything else that
+// Number() accepts ("0x10", "5.") is carried as the float's own digits.
+const DECIMAL_TEXT = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/;
+const EXPONENT_FORM = /^([+-]?(?:\d+(?:\.\d+)?|\.\d+))[eE]([+-]?\d+)$/;
+// Bounds on the fixed-point work, so ordinary input cannot make the step
+// spend seconds or memory on digits no on-chain unit has. Fractional digits
+// beyond MAX_SCALE are dropped wherever a scale is produced: on every parsed
+// value, and after each product, power and division. An integer power whose
+// result would pass MAX_DIGITS goes through float instead.
+const MAX_SCALE = 256;
+const MAX_DIGITS = 4096;
 const MAX_EXACT_POWER = 256;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -200,9 +210,11 @@ function parseStringToNumericValue(cleaned: string): NumericValue | null {
     return { kind: "number", value: Number(bi), text: cleaned };
   }
   const num = Number(cleaned);
-  return Number.isFinite(num)
-    ? { kind: "number", value: num, text: cleaned }
-    : null;
+  if (!Number.isFinite(num)) {
+    return null;
+  }
+  const exact = DECIMAL_TEXT.test(cleaned) || EXPONENT_FORM.test(cleaned);
+  return { kind: "number", value: num, text: exact ? cleaned : String(num) };
 }
 
 function parseUnknownToNumericValue(value: unknown): NumericValue | null {
@@ -303,7 +315,24 @@ function convertNumericValuesToNumbers(values: NumericValue[]): number[] {
 
 // ─── Fixed-point conversion ─────────────────────────────────────────────────
 
+// Drops fractional digits past MAX_SCALE. Applied wherever a scale is made,
+// so no input or intermediate can push the whole set to an absurd scale.
+function boundScale(d: Decimal): Decimal {
+  if (d.decimals <= MAX_SCALE) {
+    return d;
+  }
+  return {
+    value: d.value / pow10(d.decimals - MAX_SCALE),
+    decimals: MAX_SCALE,
+  };
+}
+
+function digitCount(value: bigint): number {
+  return (value < BIGINT_ZERO ? -value : value).toString().length;
+}
+
 // "1.5e-3" is the decimal 1.5 shifted three places: exact, no float involved.
+// A shift far below MAX_SCALE lands on zero, as the float would.
 function parseExponentForm(text: string): Decimal | null {
   const match = EXPONENT_FORM.exec(text);
   if (match === null) {
@@ -312,6 +341,9 @@ function parseExponentForm(text: string): Decimal | null {
   const mantissa = parseDecimal(match[1], "value");
   const exponent = Number(match[2]);
   const decimals = mantissa.decimals - exponent;
+  if (decimals > MAX_SCALE) {
+    return { value: BIGINT_ZERO, decimals: 0 };
+  }
   if (decimals >= 0) {
     return { value: mantissa.value, decimals };
   }
@@ -319,12 +351,14 @@ function parseExponentForm(text: string): Decimal | null {
 }
 
 // The value's own text is what gets parsed, so "0.1" stays 0.1 rather than
-// the nearest float.
+// the nearest float. The text is always one of the two grammars above.
 function toDecimal(v: NumericValue): Decimal {
   if (v.kind === "bigint") {
     return { value: v.value, decimals: 0 };
   }
-  return parseExponentForm(v.text) ?? parseDecimal(v.text, "value");
+  return boundScale(
+    parseExponentForm(v.text) ?? parseDecimal(v.text, "value")
+  );
 }
 
 function alignAll(decimals: Decimal[]): { values: bigint[]; scale: number } {
@@ -371,15 +405,20 @@ function ceilDropping(value: bigint, drop: number): bigint {
   return value > BIGINT_ZERO && q * p !== value ? q + BIGINT_ONE : q;
 }
 
+// The quotient keeps DIVISION_PRECISION fractional digits, and more when the
+// magnitudes call for it: a numerator far smaller than its denominator would
+// otherwise truncate to zero and be labelled whole.
 function decimalDivide(numerator: Decimal, denominator: Decimal): Decimal {
-  const scale = Math.max(
-    numerator.decimals,
-    denominator.decimals,
-    DIVISION_PRECISION
+  const { values, scale } = alignAll([numerator, denominator]);
+  const [n, d] = values;
+  const magnitudeGap = digitCount(d) - digitCount(n);
+  const wanted = Math.max(
+    scale,
+    DIVISION_PRECISION,
+    DIVISION_PRECISION + magnitudeGap
   );
-  const n = rescale(numerator, scale);
-  const d = rescale(denominator, scale);
-  return { value: divideScaled(n, d, scale), decimals: scale };
+  const quotientScale = Math.min(wanted, MAX_SCALE);
+  return { value: divideScaled(n, d, quotientScale), decimals: quotientScale };
 }
 
 function sortBigInts(values: bigint[]): bigint[] {
@@ -391,20 +430,12 @@ function sortBigInts(values: bigint[]): bigint[] {
   });
 }
 
+// Called with at least one value: the fixed-point path only runs when some
+// value is a bigint.
 function aggregateDecimals(
   decimals: Decimal[],
   operation: AggregateOperation
 ): Decimal {
-  if (decimals.length === 0) {
-    if (operation === "count" || operation === "sum") {
-      return { value: BIGINT_ZERO, decimals: 0 };
-    }
-    if (operation === "product") {
-      return { value: BIGINT_ONE, decimals: 0 };
-    }
-    throw new Error(`Cannot compute ${operation} on an empty set of values.`);
-  }
-
   const { values, scale } = alignAll(decimals);
   const sum = reduceValues(values, BIGINT_ZERO, (a, b) => a + b);
 
@@ -424,7 +455,7 @@ function aggregateDecimals(
       if (sorted.length % 2 === 0) {
         // One extra place makes halving exact.
         const doubled = (sorted[mid - 1] + sorted[mid]) * BigInt(10);
-        return { value: doubled / BIGINT_TWO, decimals: scale + 1 };
+        return boundScale({ value: doubled / BIGINT_TWO, decimals: scale + 1 });
       }
       return { value: sorted[mid], decimals: scale };
     }
@@ -434,10 +465,11 @@ function aggregateDecimals(
       return { value: findExtremeValue(values, (a, b) => b < a), decimals: scale };
     case "product":
       return decimals.reduce<Decimal>(
-        (acc, d) => ({
-          value: acc.value * d.value,
-          decimals: acc.decimals + d.decimals,
-        }),
+        (acc, d) =>
+          boundScale({
+            value: acc.value * d.value,
+            decimals: acc.decimals + d.decimals,
+          }),
         { value: BIGINT_ONE, decimals: 0 }
       );
     default:
@@ -482,12 +514,15 @@ function applyBinaryDecimalPostOperation(
       if (
         Number.isInteger(exponent) &&
         exponent >= 0 &&
-        exponent <= MAX_EXACT_POWER
+        exponent <= MAX_EXACT_POWER &&
+        digitCount(value.value) * exponent <= MAX_DIGITS
       ) {
-        return valueOf({
-          value: value.value ** BigInt(exponent),
-          decimals: value.decimals * exponent,
-        });
+        return valueOf(
+          boundScale({
+            value: value.value ** BigInt(exponent),
+            decimals: value.decimals * exponent,
+          })
+        );
       }
       return {
         kind: "float",
@@ -495,14 +530,19 @@ function applyBinaryDecimalPostOperation(
       };
     }
     case "round-decimals": {
-      const places = Math.max(0, Math.trunc(exponent));
+      const places = Math.trunc(exponent);
       if (places >= value.decimals) {
         return valueOf(value);
       }
-      return valueOf({
-        value: roundDropping(value.value, value.decimals - places),
-        decimals: places,
-      });
+      if (places >= 0) {
+        return valueOf({
+          value: roundDropping(value.value, value.decimals - places),
+          decimals: places,
+        });
+      }
+      // Negative places round to tens, hundreds, ... as the number path does.
+      const rounded = roundDropping(value.value, value.decimals - places);
+      return valueOf({ value: rounded * pow10(-places), decimals: 0 });
     }
     default:
       throw new Error(`Unknown post-operation: ${postOp}`);
@@ -554,16 +594,16 @@ function divisionByZero(
   numerator: Decimal | number,
   postOp: BinaryPostOperation
 ): PostResult<never> {
-  const n =
+  const sign =
     typeof numerator === "number"
-      ? numerator
-      : Number(formatScaled(numerator.value, numerator.decimals));
-  if (postOp === "modulo" || n === 0) {
+      ? Math.sign(numerator)
+      : Number(numerator.value > BIGINT_ZERO) - Number(numerator.value < BIGINT_ZERO);
+  if (postOp === "modulo" || sign === 0) {
     return { kind: "divisionByZero", value: Number.NaN };
   }
   return {
     kind: "divisionByZero",
-    value: n < 0 ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+    value: sign < 0 ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
   };
 }
 

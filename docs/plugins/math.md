@@ -105,9 +105,10 @@ Applied to the aggregated result. Useful for unit conversions, thresholds, and f
 When any input value is an integer that exceeds JavaScript's `Number.MAX_SAFE_INTEGER` (2^53 - 1), the whole set is computed in fixed-point arithmetic: every value is carried as an integer plus a decimal scale, so a wei balance and a fractional rate can be aggregated together without either losing digits. Decimal strings keep their exact digits (`0.1` stays `0.1`); numbers written in exponent form (`1e18`, `2.5e-3`) are expanded first.
 
 - Sum, product, min, max, median and the add, subtract, multiply, modulo, abs, round, floor, ceil and round-decimals post-operations are exact
-- Average and the divide post-operation keep up to 18 decimal places and truncate beyond that
-- Power is exact for a whole-number exponent from 0 to 256; any other exponent is computed in floating point
+- Average and the divide post-operation keep at least 18 decimal places and at least 18 significant digits, whichever needs more, and truncate beyond that, so a dust amount divided by a raw supply keeps its digits rather than becoming zero
+- Power is exact for a whole-number exponent from 0 to 256 when the result stays under 4,096 digits; any other exponent, or a larger result, is computed in floating point
 - `resultType` is `"bigint"` when the result is a whole number and `"number"` when it carries a fraction; the `result` string is exact either way
+- Values are carried to at most 256 decimal places; fractional digits beyond that are dropped, on inputs and on every intermediate. Inputs that only the JavaScript number parser understands (`0x...` hex, `5.`) are carried as the number's own digits
 
 When every input fits in the safe-integer range the node uses standard floating-point arithmetic.
 
