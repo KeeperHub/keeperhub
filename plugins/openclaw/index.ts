@@ -88,6 +88,10 @@ const openClawPlugin: IntegrationPlugin = {
       stepImportPath: "trigger-agent",
       outputFields: [
         {
+          field: "success",
+          description: "Whether the step completed without an error",
+        },
+        {
           field: "admitted",
           description:
             "True when OpenClaw accepted the turn. Proves admission, not completion",
