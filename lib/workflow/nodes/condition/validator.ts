@@ -142,17 +142,25 @@ const MATCHES_REGEX_CALL_PATTERN = /matchesRegex\s*\(/g;
  * that call's own parentheses so a nested call cannot hand back the wrong
  * operand.
  */
-function regexPatternOperands(expression: string): string[] {
-  const operands: string[] = [];
+function regexPatternOperands(
+  expression: string,
+  scanned: string = expression
+): { pattern: string; extraArguments: boolean }[] {
+  const operands: { pattern: string; extraArguments: boolean }[] = [];
   const callPattern = new RegExp(MATCHES_REGEX_CALL_PATTERN.source, "g");
   let call: RegExpExecArray | null = null;
+  // The call is found in `scanned`, the masked copy, and the operands are sliced
+  // out of `expression` at the same offsets. The mask is length-preserving, so the
+  // offsets line up, and a `matchesRegex(...)` that is text inside an unrelated
+  // string literal is masked and therefore not a call.
   // biome-ignore lint/suspicious/noAssignInExpressions: Standard pattern for regex.exec in loop
-  while ((call = callPattern.exec(expression)) !== null) {
+  while ((call = callPattern.exec(scanned)) !== null) {
     const openIndex = call.index + call[0].length - 1;
     let depth = 0;
     let literal: string | null = null;
     let escaped = false;
     let commaIndex = -1;
+    let secondCommaIndex = -1;
     let endIndex = -1;
     for (let i = openIndex; i < expression.length; i += 1) {
       const char = expression[i];
@@ -186,14 +194,30 @@ function regexPatternOperands(expression: string): string[] {
         }
         continue;
       }
-      if (char === "," && depth === 1 && commaIndex === -1) {
-        commaIndex = i;
+      if (char === "," && depth === 1) {
+        if (commaIndex === -1) {
+          commaIndex = i;
+        } else if (secondCommaIndex === -1) {
+          secondCommaIndex = i;
+        }
       }
     }
     if (commaIndex === -1 || endIndex === -1) {
       continue;
     }
-    operands.push(expression.slice(commaIndex + 1, endIndex).trim());
+    // The operand ends at the next top-level comma, not at the closing paren: a
+    // third argument is an arity error, and reading the whole tail as the pattern
+    // reported it as "not a quoted pattern" instead, which is the message a user
+    // with `matchesRegex(x, "a", "i")` actually saw.
+    operands.push({
+      extraArguments: secondCommaIndex !== -1,
+      pattern: expression
+        .slice(
+          commaIndex + 1,
+          secondCommaIndex === -1 ? endIndex : secondCommaIndex
+        )
+        .trim(),
+    });
   }
   return operands;
 }
@@ -211,20 +235,41 @@ const QUOTED_PATTERN = /^(['"])((?:\\.|(?!\1).)*)\1$/;
  * scanning the raw body inspected one string while the engine ran another:
  * `"(a\x2b)\x2b$"` carries no `+` to find and compiles to `(a+)+$`.
  */
-function checkRegexPatterns(expression: string): ValidationResult {
-  for (const operand of regexPatternOperands(expression)) {
-    const literal = operand.match(QUOTED_PATTERN);
+function checkRegexPatterns(
+  expression: string,
+  scanned: string
+): ValidationResult {
+  for (const operand of regexPatternOperands(expression, scanned)) {
+    if (operand.extraArguments) {
+      return {
+        valid: false,
+        error:
+          'matchesRegex takes exactly two arguments: a flags argument such as "i" is not supported',
+      };
+    }
+    const literal = operand.pattern.match(QUOTED_PATTERN);
     if (literal === null) {
       return {
         valid: false,
-        error: `matchesRegex needs a quoted pattern, not an expression: ${operand.slice(0, 80)}`,
+        error: `matchesRegex needs a quoted pattern, not an expression: ${operand.pattern.slice(0, 80)}`,
       };
     }
     const decoded = decodeLiteralBody(literal[2], literal[1]);
     if (decoded === null) {
       return {
         valid: false,
-        error: `matchesRegex pattern carries an escape sequence the evaluator cannot decode: ${operand.slice(0, 80)}`,
+        error: `matchesRegex pattern carries an escape sequence the evaluator cannot decode: ${operand.pattern.slice(0, 80)}`,
+      };
+    }
+    // Requiring a literal is only worth it if the pattern can be built before the
+    // run: without this, `matchesRegex(__v0, "(")` validated clean and threw
+    // `Unterminated group` inside the executor, which turns into a failed run.
+    try {
+      new RegExp(decoded);
+    } catch (error) {
+      return {
+        valid: false,
+        error: `matchesRegex pattern is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
     const problem = regexPatternProblem(decoded);
@@ -477,7 +522,7 @@ export function validateConditionExpression(
 
   // A regex pattern is bounded before anything runs it: the executor evaluates
   // conditions with no timeout, so an unbounded match stalls the run.
-  const regexCheck = checkRegexPatterns(expression);
+  const regexCheck = checkRegexPatterns(expression, scanned);
   if (!regexCheck.valid) {
     return regexCheck;
   }
@@ -617,6 +662,9 @@ function tokenizeExpression(
   expression: string
 ): ValidationResult & { tokens?: Token[] } {
   const tokens: Token[] = [];
+  // Depth of the call parentheses, so the argument separator can be accepted
+  // inside a call and refused as a stray token anywhere else.
+  let parenDepth = 0;
   let i = 0;
 
   while (i < expression.length) {
@@ -682,7 +730,7 @@ function tokenizeExpression(
     // Argument separator. Typed as a separator rather than an operator so the
     // operator rules below do not read it as one: `matchesRegex(a, b)` is a call,
     // not a comma-expression.
-    if (expression[i] === ",") {
+    if (expression[i] === "," && parenDepth > 0) {
       tokens.push({
         type: "separator",
         value: ",",
@@ -698,6 +746,11 @@ function tokenizeExpression(
         expression[i]
       )
     ) {
+      if (expression[i] === "(") {
+        parenDepth += 1;
+      } else if (expression[i] === ")") {
+        parenDepth -= 1;
+      }
       tokens.push({
         type: "operator",
         value: expression[i],

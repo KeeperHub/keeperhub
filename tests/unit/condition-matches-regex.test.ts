@@ -16,6 +16,7 @@ import {
 import {
   preValidateConditionExpression,
   validateConditionExpression,
+  validateConditionExpressionUI,
 } from "@/lib/workflow/nodes/condition/validator";
 
 /**
@@ -58,7 +59,11 @@ describe("matchesRegex compiles to a form the pipeline accepts", () => {
   });
 
   it("passes the runtime validator", () => {
-    expect(validateConditionExpression(expression)).toEqual({ valid: true });
+    // On the substituted expression, which is what the executor validates: the
+    // template token is not part of what reaches the condition.
+    expect(validateConditionExpression(resolve(expression))).toEqual({
+      valid: true,
+    });
   });
 
   // The UI validator is deliberately not asserted here. Its spacing scan reads
@@ -505,6 +510,85 @@ describe("matchesRegex literal syntax is not read as code", () => {
       outputs
     );
     expect(notMatched.result).toBe(false);
+  });
+});
+
+/**
+ * The four mechanical items from the round-5 review, each of which reaches a user
+ * differently: a mask that turned a string's text into a call, an arity error
+ * reported as a bad pattern, a pattern that validated clean and threw inside the
+ * executor, and a separator token accepted anywhere.
+ */
+describe("matchesRegex call parsing", () => {
+  it("does not read a call that is text inside a string literal", () => {
+    // The three-argument shape inside an unrelated literal used to be parsed as a
+    // call, so a `contains` rule against that text was refused.
+    for (const validate of [
+      validateConditionExpression,
+      validateConditionExpressionUI,
+    ]) {
+      expect(validate('String(__v0).includes("matchesRegex(a, b)")')).toEqual({
+        valid: true,
+      });
+    }
+  });
+
+  it("reports a third argument as an arity error, not as a bad pattern", () => {
+    const result = validateConditionExpression('matchesRegex(__v0, "a", "i")');
+    if (result.valid) {
+      throw new Error("expected a refusal");
+    }
+    expect(result.error).toContain("exactly two arguments");
+    // The operand used to be read as everything after the first comma, so the
+    // message named `"a", "i"` as a pattern that is not a quoted literal.
+    expect(result.error).not.toContain("quoted pattern");
+  });
+
+  it("refuses a pattern the engine cannot compile, before the run", () => {
+    // Requiring a literal is only worth it if the pattern can be built first:
+    // this validated clean and threw `Unterminated group` inside the executor.
+    for (const pattern of ["(", "[", "a{2,1}", "*x"]) {
+      const result = validateConditionExpression(
+        `matchesRegex(__v0, ${JSON.stringify(pattern)})`
+      );
+      if (result.valid) {
+        throw new Error(`expected ${pattern} to be refused`);
+      }
+      expect(result.error).toContain("not a valid regular expression");
+    }
+  });
+
+  it("still admits a pattern the engine compiles", () => {
+    expect(
+      validateConditionExpression('matchesRegex(__v0, "^0x[0-9a-fA-F]{40}$")')
+    ).toEqual({ valid: true });
+  });
+
+  it("refuses a separator token outside a call", () => {
+    // The token exists for `matchesRegex(a, b)`. Accepted anywhere it loosened
+    // the editor into accepting `{{@a:B.f}} === 1, 2`, which staging refuses.
+    const result = validateConditionExpressionUI("{{@a:B.f}} === 1, 2");
+    if (result.valid) {
+      throw new Error("expected a refusal");
+    }
+    expect(result.error).toContain("Invalid character");
+  });
+
+  it("still admits a comma inside a literal", () => {
+    expect(
+      validateConditionExpressionUI('String(__v0).includes("a, b")')
+    ).toEqual({ valid: true });
+  });
+
+  it("validates the substituted expression, as the executor does", () => {
+    // The call sites in `scanned` are the masked copy, so the operands are sliced
+    // from the original at the same offsets. A length-preserving mask is what
+    // makes that safe, and this pins the property rather than the mechanism.
+    expect(
+      validateConditionExpression(
+        'matchesRegex(String({{@n:N.thing}}), "^[a-c]+$")'
+      )
+    ).toEqual({ valid: true });
   });
 });
 
