@@ -10,6 +10,7 @@ import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { simulateContractCall } from "@/lib/execute/simulate";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
   recordIdempotentResponse,
@@ -323,9 +324,12 @@ async function executeConditionalWrite(
       transactionHash: result.transactionHash,
       chainId: result.chainId,
       sponsored: result.sponsored,
+      broadcastAttempted: result.broadcastAttempted,
     });
     outcome = { status: settled.status, error: result.error };
   }
+
+  const disposition = dispositionForExecutionOutcome(outcome.status, result);
 
   return recordIdempotentResponse(
     idem,
@@ -339,7 +343,7 @@ async function executeConditionalWrite(
       },
       { status: HttpStatus.ACCEPTED }
     ),
-    outcome.status === "completed" ? "success" : "failed"
+    disposition
   );
 }
 

@@ -9,6 +9,7 @@ import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { integrations } from "@/lib/db/schema";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   PROCESSING_TTL_MS as IDEMPOTENCY_PROCESSING_TTL_MS,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
@@ -268,12 +269,24 @@ async function handleResult(
         : undefined;
     const chainId =
       output && typeof output.chainId === "number" ? output.chainId : undefined;
+    const broadcastAttempted =
+      output && typeof output.broadcastAttempted === "boolean"
+        ? output.broadcastAttempted
+        : undefined;
     const settled = await failExecution(executionId, errorMsg, {
       transactionHash,
       chainId,
+      broadcastAttempted,
     });
-    // The step ran (possibly broadcasting): finalize as failed so a retry
-    // replays the failure instead of re-executing.
+    // A hash is only adjudicable together with its numeric chain id. Without
+    // that pair, failExecution cannot verify a receipt and this arbitrary node
+    // may already have produced a side effect, so the idempotency key stays
+    // held. broadcastAttempted is still forwarded above so a hashless attempted
+    // chain send becomes unconfirmed/reconcilable instead of terminal.
+    const disposition =
+      transactionHash && chainId !== undefined
+        ? dispositionForExecutionOutcome(settled.status, { transactionHash })
+        : "failed";
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
@@ -286,7 +299,7 @@ async function handleResult(
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }
       ),
-      "failed"
+      disposition
     );
   }
 
@@ -314,6 +327,16 @@ async function handleResult(
   // assert an outcome we do not have. It is non-terminal, so the caller polls
   // the status endpoint and the reconciler settles the row.
   if (outcome.status !== "completed") {
+    // Mirror the failure branch above: only a hash+chain pair could have been
+    // independently verified by completeExecution. A hash without a numeric
+    // chain id is evidence of a possible send, not evidence of a conclusive
+    // failure, so keep the key held.
+    const disposition =
+      completeParams.transactionHash && completeParams.chainId !== undefined
+        ? dispositionForExecutionOutcome(outcome.status, {
+            transactionHash: completeParams.transactionHash,
+          })
+        : "failed";
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
@@ -325,7 +348,7 @@ async function handleResult(
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }
       ),
-      "failed"
+      disposition
     );
   }
 
@@ -456,7 +479,10 @@ async function executeNode(
 
     if (!invokeResult.ok) {
       await failExecution(executionId, invokeResult.error);
-      // The step ran (possibly broadcasting): finalize as failed.
+      // Deliberately NOT dispositionForExecutionOutcome: there is no hash to
+      // adjudicate here, so failExecution would answer "failed" from the mere
+      // absence of one and the key would be released. The step ran and may
+      // have broadcast, which is the unknown case -- hold the key.
       return recordIdempotentResponse(
         idem,
         NextResponse.json(
@@ -483,7 +509,8 @@ async function executeNode(
   } catch (err: unknown) {
     const errorMsg = getErrorMessage(err);
     await failExecution(executionId, errorMsg);
-    // A thrown error may have left a tx mid-broadcast: finalize as failed.
+    // Also deliberately held: a throw can land between broadcast and hash
+    // capture, so "no hash" here does not mean "nothing was sent".
     return recordIdempotentResponse(
       idem,
       NextResponse.json(

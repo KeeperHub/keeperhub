@@ -138,13 +138,22 @@ export async function POST(
     });
     if (!result.ok) {
       const status = mapReleaseFailureStatus(result.reason);
+      const disposition =
+        result.reason === "broadcast-pending" ? "failed" : "release";
       return recordIdempotentResponse(
         idem,
         NextResponse.json(
-          { error: result.error, code: result.reason },
+          {
+            error: result.error,
+            code: result.reason,
+            ...(result.transactionHash
+              ? { transactionHash: result.transactionHash }
+              : {}),
+            status: result.status,
+          },
           { status }
         ),
-        "release"
+        disposition
       );
     }
     await recordAuditEvent({
@@ -183,13 +192,18 @@ export async function POST(
         { error: "Failed to broadcast held payment" },
         { status: 500 }
       ),
-      "release"
+      "failed"
     );
   }
 }
 
 function mapReleaseFailureStatus(
-  reason: "not-found" | "expired" | "not-pending" | "broadcast-failed"
+  reason:
+    | "not-found"
+    | "expired"
+    | "not-pending"
+    | "broadcast-failed"
+    | "broadcast-pending"
 ): number {
   switch (reason) {
     case "not-found":
@@ -198,6 +212,8 @@ function mapReleaseFailureStatus(
       return 410;
     case "not-pending":
       return 409;
+    case "broadcast-pending":
+      return 504;
     default:
       return 502;
   }

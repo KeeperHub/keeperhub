@@ -26,6 +26,8 @@
  * honored when a fee-payer co-signs, so it cannot be used here.
  */
 import "server-only";
+import { isDefinitelyPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
+import { OnChainPendingError, OnChainRevertError } from "@/lib/web3/onchain-revert";
 
 import { ethers } from "ethers";
 import { TxEnvelopeTempo } from "ox/tempo";
@@ -540,9 +542,9 @@ export async function broadcastStoredTempoTx(
       );
     }
   }
+  const actualHash = TxEnvelopeTempo.hash(envelope as TxEnvelopeTempo.Signed);
   if (expectedHash) {
-    const actual = TxEnvelopeTempo.hash(envelope as TxEnvelopeTempo.Signed);
-    if (actual.toLowerCase() !== expectedHash.toLowerCase()) {
+    if (actualHash.toLowerCase() !== expectedHash.toLowerCase()) {
       throw new Error(
         "Stored Tempo transaction does not match its expected hash; refusing to broadcast."
       );
@@ -566,16 +568,34 @@ export async function broadcastStoredTempoTx(
       error,
       { chain_id: String(chainId) }
     );
-    throw error;
+    if (isDefinitelyPreBroadcastNetworkError(error)) {
+      throw error;
+    }
+    throw new OnChainPendingError({
+      message: `Tempo transaction send outcome could not be determined (${message})`,
+      transactionHash: actualHash,
+    });
   }
 
   if (!waitForConfirmation) {
     return { hash, confirmed: false };
   }
 
-  const receipt = await waitForReceipt(rpcManager, hash);
+  let receipt: ethers.TransactionReceipt;
+  try {
+    receipt = await waitForReceipt(rpcManager, hash);
+  } catch (error) {
+    throw new OnChainPendingError({
+      message: error instanceof Error ? error.message : String(error),
+      transactionHash: actualHash,
+    });
+  }
   if (receipt.status === 0) {
-    throw new Error(`Tempo transaction reverted (${hash})`);
+    throw new OnChainRevertError({
+      message: `Tempo transaction reverted (${hash})`,
+      transactionHash: actualHash,
+      blockNumber: receipt.blockNumber,
+    });
   }
   return { hash, confirmed: true };
 }
@@ -621,6 +641,7 @@ export async function signAndBroadcastTempoTx(
     chainId: params.chainId,
     userId: params.userId,
     serialized: signed.serialized,
+    expectedHash: signed.hash,
     waitForConfirmation: true,
   });
   return { hash, from: signed.from };

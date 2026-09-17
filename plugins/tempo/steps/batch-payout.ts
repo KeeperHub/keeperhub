@@ -1,4 +1,5 @@
 import "server-only";
+import { broadcastTransactionHash } from "@/lib/web3/onchain-revert";
 
 import { ethers } from "ethers";
 import type { Hex } from "viem";
@@ -48,7 +49,13 @@ export type BatchPayoutResult =
       totalAmount: string;
       chainId: number;
     }
-  | { success: false; error: string };
+  | {
+      success: false;
+      error: string;
+      transactionHash?: string;
+      chainId?: number;
+      broadcastAttempted?: boolean;
+    };
 
 function coerceAmount(value: unknown): string {
   if (typeof value === "string") {
@@ -129,7 +136,7 @@ function buildPayoutCalls(
   return { calls, total };
 }
 
-async function stepHandler(input: BatchPayoutInput): Promise<BatchPayoutResult> {
+async function stepHandlerImpl(input: BatchPayoutInput): Promise<BatchPayoutResult> {
   const { network, tokenConfig, payouts, memo, _context } = input;
 
   let chainId: number;
@@ -155,6 +162,8 @@ async function stepHandler(input: BatchPayoutInput): Promise<BatchPayoutResult> 
     return orgCtx;
   }
 
+  let broadcastHash: string | undefined;
+
   try {
     const rpcManager = await getRpcProvider({
       chainId,
@@ -173,6 +182,7 @@ async function stepHandler(input: BatchPayoutInput): Promise<BatchPayoutResult> 
       executionId: _context?.executionId,
     });
 
+    broadcastHash = hash;
     const transactionLink = await buildTempoTxLink(chainId, hash);
     return {
       success: true,
@@ -190,8 +200,22 @@ async function stepHandler(input: BatchPayoutInput): Promise<BatchPayoutResult> 
       error,
       { plugin_name: "tempo", action_name: "batch-payout" }
     );
-    return { success: false, error: getErrorMessage(error) };
+    const transactionHash = broadcastHash ?? broadcastTransactionHash(error);
+    return {
+      success: false,
+      error: getErrorMessage(error),
+      broadcastAttempted: transactionHash ? true : false,
+      ...(transactionHash ? { transactionHash, chainId } : {}),
+    };
   }
+}
+
+async function stepHandler(input: BatchPayoutInput): Promise<BatchPayoutResult> {
+  const result = await stepHandlerImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }
 
 export async function batchPayoutStep(

@@ -352,6 +352,7 @@ describe("transferSplTokenCore", () => {
 
     expect(result).toEqual({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining("only supported on Solana networks"),
     });
     expect(mockAdapter.executeWithSolanaFailover).not.toHaveBeenCalled();
@@ -365,6 +366,7 @@ describe("transferSplTokenCore", () => {
 
     expect(result).toEqual({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining("Invalid Solana mint address"),
     });
     expect(mockAdapter.executeWithSolanaFailover).not.toHaveBeenCalled();
@@ -378,6 +380,7 @@ describe("transferSplTokenCore", () => {
 
     expect(result).toEqual({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining("Invalid Solana recipient address"),
     });
     expect(mockAdapter.executeWithSolanaFailover).not.toHaveBeenCalled();
@@ -390,6 +393,7 @@ describe("transferSplTokenCore", () => {
 
     expect(result).toEqual({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining("Mint account not found"),
     });
   });
@@ -404,6 +408,7 @@ describe("transferSplTokenCore", () => {
 
     expect(result).toEqual({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining("is not an SPL token mint"),
     });
   });
@@ -449,6 +454,7 @@ describe("transferSplTokenCore", () => {
 
     expect(result).toEqual({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining("no token account for mint"),
     });
   });
@@ -464,6 +470,7 @@ describe("transferSplTokenCore", () => {
 
     expect(result).toEqual({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining("Insufficient token balance"),
     });
   });
@@ -479,6 +486,7 @@ describe("transferSplTokenCore", () => {
 
     expect(result).toEqual({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining(
         "must be a wallet address, not a token account"
       ),
@@ -498,6 +506,7 @@ describe("transferSplTokenCore", () => {
 
     expect(result).toEqual({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining("Insufficient SOL balance"),
     });
   });
@@ -573,6 +582,7 @@ describe("transferSplTokenCore", () => {
 
     expect(result).toEqual({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining("Failed to read mint account"),
     });
   });
@@ -587,6 +597,7 @@ describe("transferSplTokenCore", () => {
     expect(result).toEqual({
       success: false,
       error: expect.stringContaining("Simulation failed"),
+      broadcastAttempted: true,
     });
   });
 
@@ -596,8 +607,9 @@ describe("transferSplTokenCore", () => {
       _context: undefined,
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining(
         "Execution ID or organization ID is required"
       ),
@@ -607,14 +619,19 @@ describe("transferSplTokenCore", () => {
   it("rejects an empty amount", async () => {
     const result = await transferSplTokenCore({ ...validInput, amount: "  " });
 
-    expect(result).toEqual({ success: false, error: "Amount is required" });
+    expect(result).toMatchObject({
+      success: false,
+      broadcastAttempted: false,
+      error: "Amount is required",
+    });
   });
 
   it("rejects an unparseable amount", async () => {
     const result = await transferSplTokenCore({ ...validInput, amount: "abc" });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining("Invalid token amount"),
     });
   });
@@ -622,8 +639,9 @@ describe("transferSplTokenCore", () => {
   it("rejects a zero amount before building or sending anything", async () => {
     const result = await transferSplTokenCore({ ...validInput, amount: "0" });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       success: false,
+      broadcastAttempted: false,
       error: expect.stringContaining("greater than zero"),
     });
     // A zero transfer must never create the recipient's token account.

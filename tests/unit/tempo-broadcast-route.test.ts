@@ -191,4 +191,51 @@ describe("POST /api/tempo/held-payments/[id]/broadcast authorization", () => {
       userId: "user-1",
     });
   });
+
+  it("holds the idempotency key when broadcast outcome is pending", async () => {
+    mockReleaseHeldPaymentNow.mockResolvedValue({
+      ok: false,
+      reason: "broadcast-pending",
+      error: "receipt unavailable",
+      status: "broadcast",
+      transactionHash: "0xpending123",
+    });
+
+    const res = await post({ signature: "0xdeadbeef" });
+    expect(res.status).toBe(504);
+    expect(recordIdempotentResponseMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "failed"
+    );
+  });
+
+  it("releases the idempotency key when broadcast failure is definite", async () => {
+    mockReleaseHeldPaymentNow.mockResolvedValue({
+      ok: false,
+      reason: "broadcast-failed",
+      error: "reverted on-chain",
+      status: "failed",
+    });
+
+    const res = await post({ signature: "0xdeadbeef" });
+    expect(res.status).toBe(502);
+    expect(recordIdempotentResponseMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "release"
+    );
+  });
+
+  it("holds the idempotency key when an unexpected error throws during broadcast", async () => {
+    mockReleaseHeldPaymentNow.mockRejectedValue(new Error("unexpected crash"));
+
+    const res = await post({ signature: "0xdeadbeef" });
+    expect(res.status).toBe(500);
+    expect(recordIdempotentResponseMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "failed"
+    );
+  });
 });

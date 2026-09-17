@@ -666,6 +666,26 @@ describe("writeContractCore broadcast with an unreadable receipt", () => {
     }
     expect(applyFailOnError(result, false).success).toBe(true);
   });
+
+  it("retains the receipt hash when post-broadcast explorer decoration fails", async () => {
+    mockGetTransactionUrl.mockRejectedValueOnce(
+      new Error("explorer lookup unavailable")
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.transactionHash).toBe("0xhash");
+      expect(result.broadcastAttempted).toBe(true);
+    }
+  });
 });
 
 describe("writeContractCore sponsored-relay failure link", () => {
