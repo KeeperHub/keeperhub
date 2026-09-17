@@ -20,10 +20,12 @@ import { useEffect, useState } from "react";
  * describes the primary input and that is the trackpad, so a disjunct on
  * `maxTouchPoints` reads such a laptop as a phone and withdraws the editor from
  * the very zoomed-window case above.
- * A narrow desktop window keeps the editor, and a phone user who wants it anyway
- * can say so once with `requestEditorOnNarrowViewport`, which is the escape hatch
- * `components/mobile-warning-dialog.tsx` already offered with its Continue Anyway
- * button.
+ *
+ * There is no override. A phone that wants the editor is told to switch its
+ * browser to desktop mode, which is the browser's own escape hatch rather than a
+ * second one of ours: `components/mobile-warning-dialog.tsx` gives the same
+ * advice, and an in-app override would be a hidden second definition of
+ * "desktop" that the route itself does not agree with.
  *
  * The value is three-state because the first client render has not measured yet.
  * `use-mobile.ts` starts at `undefined` and returns `!!undefined`, so a consumer
@@ -38,10 +40,19 @@ const NARROW_VIEWPORT = "(max-width: 767px)";
 const COARSE_POINTER = "(pointer: coarse)";
 const MOBILE_USER_AGENT = /Android|iPhone|iPad|iPod|Mobile/i;
 
-/** Stored when a user on a narrow touch device asks for the editor anyway. */
-export const EDITOR_OVERRIDE_KEY = "keeperhub-editor-on-narrow-viewport";
+/**
+ * The editor route, and only the editor route.
+ *
+ * `app/workflows/[workflowId]/page.tsx` is the whole subtree, so a workflow id is
+ * the only thing that reaches it. `/workflows` is the list and `/workflows/new`
+ * is the create route, both of which a phone may use, so both are excluded by
+ * name rather than by a length test.
+ */
+const EDITOR_PATH = /^\/workflows\/(?!new\/?$)[^/]+\/?$/;
 
-const OVERRIDE_EVENT = "keeperhub-editor-override";
+export function isEditorPath(pathname: string): boolean {
+  return EDITOR_PATH.test(pathname);
+}
 
 export function isNarrowViewport(): boolean {
   return window.matchMedia(NARROW_VIEWPORT).matches;
@@ -49,10 +60,9 @@ export function isNarrowViewport(): boolean {
 
 /**
  * True when the device presents itself as a phone or a tablet rather than a
- * narrow window on a desktop. Exported because the desktop-optimised warning
- * has to agree with this gate: a phone that is told to use a desktop, and then
- * told the editor is desktop-only, has been told the same contradictory thing
- * twice.
+ * narrow window on a desktop. Exported because the desktop-optimised warning has
+ * to agree with this gate: a phone that is told to use a desktop, and then told
+ * the editor is desktop-only, has been told the same contradictory thing twice.
  */
 export function isPhoneLikeViewport(): boolean {
   if (!isNarrowViewport()) {
@@ -62,65 +72,8 @@ export function isPhoneLikeViewport(): boolean {
   return coarse || MOBILE_USER_AGENT.test(navigator.userAgent);
 }
 
-/**
- * In-memory counterpart to the stored flag.
- *
- * Storage can refuse to write (Safari private mode, lockdown) and it can refuse
- * to read. When it refuses the write, a stored-only override is a silent no-op:
- * the event fires, `measure()` reads storage, the read throws, and the device is
- * told `unavailable` again. So the click sets this too, and the store is what
- * makes the choice outlive the page.
- */
-let overrideThisSession = false;
-
-export function prefersEditorOnNarrowViewport(): boolean {
-  if (overrideThisSession) {
-    return true;
-  }
-  try {
-    // window.sessionStorage rather than the bare global: Node defines globals
-    // for both stores that are unusable without a flag, and they shadow the DOM
-    // ones under a jsdom test environment.
-    //
-    // Session rather than local persistence, deliberately: the override is a
-    // decision about this device right now, and a phone that stored it forever
-    // would have no way back to its own monitoring surface short of clearing
-    // site data, because the notice that carries the control stops rendering
-    // once the choice is made. Closing the tab restores it.
-    return window.sessionStorage.getItem(EDITOR_OVERRIDE_KEY) === "1";
-  } catch {
-    // Storage blocked: the in-memory flag above is all there is.
-    return false;
-  }
-}
-
-/** Called by the notice's escape hatch: this device wants the editor. */
-export function requestEditorOnNarrowViewport(): void {
-  overrideThisSession = true;
-  try {
-    window.sessionStorage.setItem(EDITOR_OVERRIDE_KEY, "1");
-  } catch {
-    // Storage blocked: overrideThisSession carries it until the page reloads.
-  }
-  window.dispatchEvent(new Event(OVERRIDE_EVENT));
-}
-
-/** Undo it, for a control that wants to hand the device back to its surface. */
-export function clearEditorOverride(): void {
-  overrideThisSession = false;
-  try {
-    window.sessionStorage.removeItem(EDITOR_OVERRIDE_KEY);
-  } catch {
-    // Nothing stored to remove.
-  }
-  window.dispatchEvent(new Event(OVERRIDE_EVENT));
-}
-
 function measure(): EditorAvailability {
-  if (!isPhoneLikeViewport() || prefersEditorOnNarrowViewport()) {
-    return "available";
-  }
-  return "unavailable";
+  return isPhoneLikeViewport() ? "unavailable" : "available";
 }
 
 export function useEditorAvailability(): EditorAvailability {
@@ -135,12 +88,10 @@ export function useEditorAvailability(): EditorAvailability {
     const coarse = window.matchMedia(COARSE_POINTER);
     narrow.addEventListener("change", update);
     coarse.addEventListener("change", update);
-    window.addEventListener(OVERRIDE_EVENT, update);
 
     return () => {
       narrow.removeEventListener("change", update);
       coarse.removeEventListener("change", update);
-      window.removeEventListener(OVERRIDE_EVENT, update);
     };
   }, []);
 

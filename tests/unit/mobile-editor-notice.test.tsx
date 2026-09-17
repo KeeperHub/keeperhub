@@ -17,7 +17,7 @@ describe("MobileEditorNotice", () => {
   it("says the editor is desktop-only", () => {
     const html = renderToStaticMarkup(<MobileEditorNotice />);
     expect(html).toContain("The editor is built for a desktop");
-    expect(html).toContain("Authoring a workflow needs a larger screen.");
+    expect(html).toContain("switch this browser to desktop mode");
   });
 
   it("names the surfaces that do exist on a phone", () => {
@@ -27,9 +27,14 @@ describe("MobileEditorNotice", () => {
     );
   });
 
-  it("offers the escape hatch rather than removing content with no way back", () => {
+  it("offers no way in, because there is no override any more", () => {
+    // The product decision: switching the browser to desktop mode is the way
+    // through, so the notice names that rather than carrying a control that would
+    // only work on the devices the gate had to measure carefully to exclude.
     const html = renderToStaticMarkup(<MobileEditorNotice />);
-    expect(html).toContain("Use the editor anyway");
+    expect(html).not.toContain("<button");
+    expect(html).not.toContain("Use the editor anyway");
+    expect(html).toContain("desktop mode");
   });
 
   it("heads with an h2, because the page can already carry an h1", () => {
@@ -39,14 +44,14 @@ describe("MobileEditorNotice", () => {
     expect(html).not.toContain("<h1");
   });
 
-  it("names pointer-events-auto, because the layout wrapper removes clicks", () => {
+  it("carries nothing to press, which is why it needs no pointer-events-auto", () => {
     // components/layout-content.tsx wraps every route's children in
-    // pointer-events-none and pointer-events inherits, so without this the escape
-    // hatch cannot be tapped on the only devices that render it, which is the
-    // review's first blocker. jsdom does no hit testing, so this asserts the class
-    // and the browser capture taps the real button at its real coordinates.
+    // pointer-events-none and pointer-events inherits. The analytics empty state
+    // has one button and claims the class back for it; this state has no
+    // interactive content, so it takes no wrapper and the shared class list stays
+    // identical to the sibling it is composed from.
     const html = renderToStaticMarkup(<MobileEditorNotice />);
-    expect(html).toContain("pointer-events-auto");
+    expect(html).not.toContain("pointer-events-auto");
   });
 
   it("is composed the way the analytics empty state is composed", () => {

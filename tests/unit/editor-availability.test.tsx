@@ -26,9 +26,7 @@ vi.mock("@/components/workflow/workflow-canvas", () => ({
 
 import { PersistentCanvas } from "@/components/workflow/persistent-canvas";
 import {
-  clearEditorOverride,
-  EDITOR_OVERRIDE_KEY,
-  requestEditorOnNarrowViewport,
+  isEditorPath,
   useEditorAvailability,
 } from "@/hooks/use-editor-availability";
 
@@ -170,9 +168,6 @@ beforeEach(() => {
   ).IS_REACT_ACT_ENVIRONMENT = true;
   stubStorage();
   mediaListeners.clear();
-  // The override is module state: without this, one case would leave the next
-  // reading `available`.
-  clearEditorOverride();
   document.body.innerHTML = "";
   stubViewport({ width: 1440 });
 });
@@ -255,54 +250,47 @@ describe("useEditorAvailability", () => {
     expect(mediaListenerCount()).toBeLessThan(before);
   });
 
-  it("flips a mounted consumer when the escape hatch is used, without a reload", () => {
+  it("stays unavailable on a phone, with no way in from the page", () => {
+    // The product decision, as a test: switching the browser to desktop mode is
+    // the way through, so nothing here can flip this device back to available.
     stubViewport(PHONE_VIEWPORT);
     const { container } = mount(<AvailabilityProbe />);
     expect(container.textContent).toBe("unavailable");
 
     act(() => {
-      requestEditorOnNarrowViewport();
-    });
-    expect(container.textContent).toBe("available");
-    expect(window.sessionStorage.getItem(EDITOR_OVERRIDE_KEY)).toBe("1");
-  });
-
-  it("hands the device back to its own surface when the override is cleared", () => {
-    stubViewport(PHONE_VIEWPORT);
-    const { container } = mount(<AvailabilityProbe />);
-
-    act(() => {
-      requestEditorOnNarrowViewport();
-    });
-    expect(container.textContent).toBe("available");
-
-    act(() => {
-      clearEditorOverride();
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+      window.dispatchEvent(new Event("resize"));
     });
     expect(container.textContent).toBe("unavailable");
-    expect(window.sessionStorage.getItem(EDITOR_OVERRIDE_KEY)).toBeNull();
+    expect(window.sessionStorage.length).toBe(0);
+  });
+});
+
+describe("isEditorPath", () => {
+  it("names the editor route", () => {
+    expect(
+      isEditorPath("/workflows/5f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8")
+    ).toBe(true);
+    expect(isEditorPath("/workflows/5f1a2b3c/")).toBe(true);
   });
 
-  it("honours the escape hatch when storage refuses to write", () => {
-    // iOS private browsing: setItem throws, so a stored-only override is a silent
-    // no-op, the event fires, the read throws into false, and the button appears
-    // to do nothing.
-    const blocked = memoryStore();
-    Object.defineProperty(blocked, "setItem", {
-      value: () => {
-        throw new DOMException("blocked", "SecurityError");
-      },
-    });
-    Object.defineProperty(window, "sessionStorage", {
-      configurable: true,
-      value: blocked,
-    });
-    stubViewport(PHONE_VIEWPORT);
+  it("leaves the list and the create route alone", () => {
+    // Both are reachable on a phone and neither is the editor.
+    expect(isEditorPath("/workflows")).toBe(false);
+    expect(isEditorPath("/workflows/new")).toBe(false);
+    expect(isEditorPath("/workflows/new/")).toBe(false);
+  });
 
-    act(() => {
-      requestEditorOnNarrowViewport();
-    });
-    expect(render(<AvailabilityProbe />).textContent).toBe("available");
+  it("leaves every other route alone", () => {
+    for (const path of [
+      "/",
+      "/analytics",
+      "/executions/abc",
+      "/workflows/abc/runs",
+      "/settings/hub",
+    ]) {
+      expect(isEditorPath(path)).toBe(false);
+    }
   });
 });
 
@@ -332,13 +320,5 @@ describe("PersistentCanvas", () => {
     expect(render(<PersistentCanvas />).innerHTML).not.toContain(
       "workflow-canvas"
     );
-  });
-
-  it("mounts the canvas on a phone once the escape hatch is used", () => {
-    stubViewport(PHONE_VIEWPORT);
-    act(() => {
-      requestEditorOnNarrowViewport();
-    });
-    expect(render(<PersistentCanvas />).innerHTML).toContain("workflow-canvas");
   });
 });
