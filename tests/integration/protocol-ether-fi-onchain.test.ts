@@ -16,13 +16,19 @@
  * blocked by missing env vars. CI uses the paid staging endpoints via
  * CHAIN_RPC_CONFIG.
  *
- * Assertion model. Reads decode a real return value. The three writes are
- * simulated with provider.call from a zero-balance address: the contract may
- * either revert at the business layer (deposit with no value reverts
- * InvalidAmount, wrap and unwrap revert without a balance or approval) or
- * return data, and both prove the deployed bytecode parsed our calldata. What
- * is rejected is a calldata-level ethers error (INVALID_ARGUMENT, BAD_DATA,
- * BUFFER_OVERRUN), which is the ABI mismatch this file exists to catch.
+ * Assertion model. Reads decode a real return value. The four writes are
+ * simulated with provider.call from a zero-balance address. A write passes
+ * only when the deployed bytecode dispatched the selector: either the call
+ * returned data (approve does) or it reverted carrying revert data, which is
+ * the contract refusing on its own terms (deposit with no value reverts
+ * InvalidAmount; wrap and unwrap revert without a balance or approval).
+ *
+ * A bare revert is not enough. An unknown selector hits the fallback and
+ * reverts with no returndata, so accepting any CALL_EXCEPTION would pass for a
+ * function the contract does not have. What is rejected: a CALL_EXCEPTION with
+ * no revert data, plus the calldata-level ethers errors (INVALID_ARGUMENT,
+ * BAD_DATA, BUFFER_OVERRUN) that are the ABI mismatch this file exists to
+ * catch.
  */
 
 import { ethers } from "ethers";
@@ -50,6 +56,9 @@ const TEST_ADDRESS = "0x0000000000000000000000000000000000000001";
 const TX_RESULT_HEX_PREFIX = /^0x/;
 const ONE_ETH_WEI = "1000000000000000000";
 const ONE_ETH = BigInt(ONE_ETH_WEI);
+// Spender for the approve simulation. Read off the definition so it cannot
+// drift from the address the wrap action encodes against.
+const WEETH_ADDRESS = etherFiDef.contracts.weeth.addresses[CHAIN_ID];
 
 const rpcConfig = parseRpcConfig(process.env.CHAIN_RPC_CONFIG);
 const resolveRpcUrl = createRpcUrlResolver(rpcConfig);
@@ -279,6 +288,23 @@ describe("ether.fi on-chain integration", () => {
     "deposit: deployed bytecode accepts the calldata",
     async () => {
       await expect(simulateBytecodeCall("stake")).resolves.toBeUndefined();
+    },
+    15_000
+  );
+
+  itOnchain(
+    "approve: deployed bytecode accepts the calldata",
+    async () => {
+      // The weETH contract is the spender a wrap needs, read off the same
+      // definition the action encodes against rather than hardcoded here. A
+      // plain ERC20 approve returns data instead of reverting, so this write
+      // takes the returned-hex branch of the helper.
+      await expect(
+        simulateBytecodeCall("approve-eeth", {
+          spender: WEETH_ADDRESS,
+          amount: ONE_ETH_WEI,
+        })
+      ).resolves.toBeUndefined();
     },
     15_000
   );

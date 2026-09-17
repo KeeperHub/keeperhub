@@ -56,12 +56,11 @@ const TEST_DATA: ProtocolTestData = {
       stake: { ethValue: "0.02" },
     },
     skipped: {
-      // approve needs a spender address and amount. The weETH contract address
-      // is the natural spender for wrapping, but testing approve in isolation
-      // without a following wrap provides no coverage of the wrap path itself.
-      // Testing approve plus wrap together is the integration tier's job.
-      "approve-eeth":
-        "needs a spender address; covered by wrap integration tests",
+      // approve needs a spender address and amount. Simulating it on a fork
+      // without a following wrap adds nothing over the calldata golden. The
+      // wrap fixture that would give it meaning is itself skipped below, so
+      // the eETH dispatch is checked in the integration tier instead.
+      "approve-eeth": "needs a spender address and amount",
       // wrap and unwrap need an eETH (resp. weETH) balance and an ERC20
       // approval to the weETH contract. On a fresh fork the wallet holds
       // neither until the stake fixture runs, and wrap additionally needs an
