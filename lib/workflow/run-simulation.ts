@@ -704,38 +704,73 @@ function outcomeFromResult(
 }
 
 /**
- * The order the engine would run the nodes in, following edges from the
- * trigger, rather than the order they were stored in. Nodes the edges do not
- * reach keep their array position at the end so nothing is dropped; with no
- * edges at all the array order is the only order there is.
+ * The edges between nodes that exist, with the counts the run logic needs.
+ * An edge whose endpoint was deleted is dropped here once, so the walk and
+ * the run bounds see the same graph.
  */
-function executionOrder(
+type Graph = {
+  out: Map<string, string[]>;
+  inDegree: Map<string, number>;
+  outDegree: Map<string, number>;
+  has: (source: string, target: string) => boolean;
+};
+
+function graphOf(
   nodes: WorkflowSimulationNode[],
   edges: WorkflowSimulationEdge[] | undefined
-): WorkflowSimulationNode[] {
-  if (!edges?.length) {
-    return nodes;
-  }
-  const byId = new Map(nodes.map((node) => [node.id, node] as const));
+): Graph {
+  const ids = new Set(nodes.map((node) => node.id));
   const out = new Map<string, string[]>();
   const inDegree = new Map<string, number>();
-  for (const edge of edges) {
+  const outDegree = new Map<string, number>();
+  const pairs = new Set<string>();
+  for (const edge of edges ?? []) {
     if (typeof edge.source !== "string" || typeof edge.target !== "string") {
       continue;
     }
-    if (!(byId.has(edge.source) && byId.has(edge.target))) {
+    if (!(ids.has(edge.source) && ids.has(edge.target))) {
       continue;
     }
     out.set(edge.source, [...(out.get(edge.source) ?? []), edge.target]);
     inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1);
+    outDegree.set(edge.source, (outDegree.get(edge.source) ?? 0) + 1);
+    pairs.add(`${edge.source}->${edge.target}`);
   }
+  return {
+    out,
+    inDegree,
+    outDegree,
+    has: (source, target) => pairs.has(`${source}->${target}`),
+  };
+}
+
+/**
+ * The order the engine would run the nodes in, following edges from the
+ * trigger, rather than the order they were stored in. The walk is depth
+ * first, so a path stays contiguous: after a Condition, one arm is walked to
+ * its end before the other starts, which is what lets consecutive writes on
+ * either arm form a run. A node with several parents waits for all of them.
+ * Nodes the edges do not reach keep their array position at the end so
+ * nothing is dropped; with no edges at all the array order is the only order
+ * there is.
+ */
+function executionOrder(
+  nodes: WorkflowSimulationNode[],
+  graph: Graph
+): WorkflowSimulationNode[] {
+  if (graph.inDegree.size === 0) {
+    return nodes;
+  }
+  const byId = new Map(nodes.map((node) => [node.id, node] as const));
   const ordered: WorkflowSimulationNode[] = [];
   const seen = new Set<string>();
-  const queue = nodes
-    .filter((node) => (inDegree.get(node.id) ?? 0) === 0)
-    .map((node) => node.id);
-  const remaining = new Map(inDegree);
-  for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+  const remaining = new Map(graph.inDegree);
+  // Roots in array order; reversed so the stack pops the first one first.
+  const stack = nodes
+    .filter((node) => (graph.inDegree.get(node.id) ?? 0) === 0)
+    .map((node) => node.id)
+    .reverse();
+  for (let id = stack.pop(); id !== undefined; id = stack.pop()) {
     if (seen.has(id)) {
       continue;
     }
@@ -744,12 +779,17 @@ function executionOrder(
     if (node !== undefined) {
       ordered.push(node);
     }
-    for (const next of out.get(id) ?? []) {
+    const released: string[] = [];
+    for (const next of graph.out.get(id) ?? []) {
       const left = (remaining.get(next) ?? 1) - 1;
       remaining.set(next, left);
       if (left <= 0) {
-        queue.push(next);
+        released.push(next);
       }
+    }
+    // First edge first: the last pushed is the next popped.
+    for (const next of released.reverse()) {
+      stack.push(next);
     }
   }
   for (const node of nodes) {
@@ -760,33 +800,35 @@ function executionOrder(
   return ordered;
 }
 
-type EdgeCounts = {
-  inDegree: Map<string, number>;
-  outDegree: Map<string, number>;
+/** A node prepared and ready to simulate, waiting to see whether it joins a run. */
+type ReadyNode = {
+  context: NodeSimulationContext;
+  chainId: number;
+  /**
+   * Carries native value. Kept on the single-call path: only that path can
+   * attribute a native shortfall to the funding account with the amount, and
+   * the sequence simulator deliberately does not check value.
+   */
+  payable: boolean;
 };
 
-function edgeCounts(edges: WorkflowSimulationEdge[] | undefined): EdgeCounts {
-  const inDegree = new Map<string, number>();
-  const outDegree = new Map<string, number>();
-  for (const edge of edges ?? []) {
-    if (typeof edge.source !== "string" || typeof edge.target !== "string") {
-      continue;
-    }
-    outDegree.set(edge.source, (outDegree.get(edge.source) ?? 0) + 1);
-    inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1);
+function carriesNativeValue(config: Record<string, unknown>): boolean {
+  const value = optionalStringValue(config.ethValue);
+  if (value === undefined || value.trim() === "") {
+    return false;
   }
-  return { inDegree, outDegree };
+  const parsed = Number(value);
+  return !(Number.isFinite(parsed) && parsed === 0);
 }
-
-/** A node prepared and ready to simulate, waiting to see whether it joins a run. */
-type ReadyNode = { context: NodeSimulationContext; chainId: number };
 
 /**
  * A run is a maximal stretch of consecutive `web3/write-contract` nodes on
  * one chain along one linear path: each hands the next its state, so they
- * are simulated as one sequence. Anything that breaks that shape - a fork, a
- * chain change, a transfer node, a node the edges do not connect - ends the
- * run, and that node starts over.
+ * are simulated as one sequence. Anything that breaks that shape - a node
+ * with more than one parent, a chain change, a transfer node, a node the
+ * edges do not connect, a write carrying native value - ends the run, and
+ * that node starts over. A write that also feeds a second branch still
+ * chains into the branch the walk takes next; the other branch starts over.
  *
  * A run is also capped at what the sequence simulator accepts. The node after
  * the cap starts a new run and keeps the earlier-step hedge, which is right
@@ -795,8 +837,7 @@ type ReadyNode = { context: NodeSimulationContext; chainId: number };
 function extendsRun(
   run: ReadyNode[],
   candidate: ReadyNode,
-  counts: EdgeCounts,
-  edgeFrom: (source: string, target: string) => boolean
+  graph: Graph
 ): boolean {
   const previous = run.at(-1);
   if (previous === undefined) {
@@ -806,10 +847,10 @@ function extendsRun(
     run.length < MAX_SEQUENCE_CALLS &&
     previous.context.actionType === "web3/write-contract" &&
     candidate.context.actionType === "web3/write-contract" &&
+    !(previous.payable || candidate.payable) &&
     previous.chainId === candidate.chainId &&
-    (counts.outDegree.get(previous.context.node.id) ?? 0) === 1 &&
-    (counts.inDegree.get(candidate.context.node.id) ?? 0) === 1 &&
-    edgeFrom(previous.context.node.id, candidate.context.node.id)
+    (graph.inDegree.get(candidate.context.node.id) ?? 0) === 1 &&
+    graph.has(previous.context.node.id, candidate.context.node.id)
   );
 }
 
@@ -859,13 +900,17 @@ async function simulateRun(
       outcomes.push(await simulateSingle(context, deadlineAt));
       continue;
     }
-    // Only a node whose earlier steps were actually applied loses the hedge.
-    // The first of a run has none applied.
-    outcomes.push(
-      outcomeFromResult({ ...context, chained: index > 0 }, result)
-    );
+    const chained = chainedInRun(run, index);
+    // Only a node whose earlier steps were all applied loses the hedge. The
+    // sequence starts from latest state and applies the run alone, so that
+    // holds for a later node only when nothing reachable ran before the run.
+    outcomes.push(outcomeFromResult({ ...context, chained }, result));
   }
   return outcomes;
+}
+
+function chainedInRun(run: ReadyNode[], index: number): boolean {
+  return index > 0 && !run[0].context.hasEarlierReachableWrite;
 }
 
 /** Per-node simulation for a run the sequence could not answer. */
@@ -937,16 +982,7 @@ export async function runWorkflowSimulation({
   let skippedNodeCount = 0;
   let reachableWriteCount = 0;
   const reachable = reachableNodeIds(nodes, edges);
-  const counts = edgeCounts(edges);
-  const edgeSet = new Set(
-    (edges ?? [])
-      .filter(
-        (e) => typeof e.source === "string" && typeof e.target === "string"
-      )
-      .map((e) => `${e.source as string}->${e.target as string}`)
-  );
-  const edgeFrom = (source: string, target: string): boolean =>
-    edgeSet.has(`${source}->${target}`);
+  const graph = graphOf(nodes, edges);
   const indexById = new Map(
     nodes.map((node, index) => [node.id, index] as const)
   );
@@ -980,7 +1016,7 @@ export async function runWorkflowSimulation({
     run = [];
   };
 
-  for (const node of executionOrder(nodes, edges)) {
+  for (const node of executionOrder(nodes, graph)) {
     const remaining = remainingDeadlineMs(deadlineAt);
     if (remaining !== null && remaining <= 0) {
       throw new WorkflowSimulationDeadlineError();
@@ -1019,8 +1055,12 @@ export async function runWorkflowSimulation({
       continue;
     }
 
-    const ready: ReadyNode = { context, chainId: prepared.chainId };
-    if (!extendsRun(run, ready, counts, edgeFrom)) {
+    const ready: ReadyNode = {
+      context,
+      chainId: prepared.chainId,
+      payable: carriesNativeValue(config),
+    };
+    if (!extendsRun(run, ready, graph)) {
       await flush();
     }
     run.push(ready);

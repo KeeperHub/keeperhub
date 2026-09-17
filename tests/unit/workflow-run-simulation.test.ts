@@ -967,8 +967,46 @@ describe("runWorkflowSimulation", () => {
       ]);
     });
 
-    it("ends a run at a fork and simulates the branches on their own", async () => {
-      await runWorkflowSimulation({
+    it("points a warning at the stored index even when the walk reordered the node", async () => {
+      spies.simulateCallSequence.mockResolvedValueOnce({
+        success: false,
+        status: "simulated",
+        from: "0xaa0000000000000000000000000000000000aa00",
+        atomic: false,
+        mechanism: "eth_simulateV1",
+        wouldRevert: true,
+        results: [SUCCESS_RESULT, REVERT_RESULT],
+      });
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          writeNode("deposit", "deposit"),
+          triggerNode(),
+          writeNode("approve", "approve"),
+        ],
+        edges: linear,
+      });
+
+      expect(result.warnings[0]).toMatchObject({
+        nodeId: "deposit",
+        parameterPath: "nodes[0].data.config.abiFunction",
+      });
+    });
+
+    it("chains into the first branch of a fan-out and starts the other branch over", async () => {
+      spies.simulateCallSequence.mockResolvedValueOnce({
+        success: true,
+        status: "simulated",
+        from: "0xaa0000000000000000000000000000000000aa00",
+        atomic: false,
+        mechanism: "eth_simulateV1",
+        wouldRevert: false,
+        results: [SUCCESS_RESULT, SUCCESS_RESULT],
+      });
+      spies.simulateContractCall.mockResolvedValueOnce(REVERT_RESULT);
+
+      const result = await runWorkflowSimulation({
         organizationId: "org_test",
         nodes: [
           triggerNode(),
@@ -983,8 +1021,142 @@ describe("runWorkflowSimulation", () => {
         ],
       });
 
+      expect(spies.simulateCallSequence).toHaveBeenCalledTimes(1);
+      const input = spies.simulateCallSequence.mock.calls[0][0] as {
+        calls: { functionName: string }[];
+      };
+      expect(input.calls).toHaveLength(2);
+      // The second branch did not have the approve applied, so it is
+      // simulated on its own and keeps the hedge.
+      expect(spies.simulateContractCall).toHaveBeenCalledTimes(1);
+      expect(result.warnings[0]).toMatchObject({ nodeId: "deposit-b" });
+      expect(result.warnings[0]?.message).toContain(
+        "may depend on an earlier step"
+      );
+    });
+
+    it("chains two-deep branches on both arms of a condition", async () => {
+      const nodes = [
+        triggerNode(),
+        actionNode("cond", "condition"),
+        writeNode("x1", "approve"),
+        writeNode("x2", "deposit"),
+        writeNode("y1", "approve"),
+        writeNode("y2", "deposit"),
+      ];
+      const edges = [
+        { source: "trigger-1", target: "cond" },
+        { source: "cond", target: "x1" },
+        { source: "x1", target: "x2" },
+        { source: "cond", target: "y1" },
+        { source: "y1", target: "y2" },
+      ];
+
+      await runWorkflowSimulation({ organizationId: "org_test", nodes, edges });
+
+      expect(spies.simulateCallSequence).toHaveBeenCalledTimes(2);
+      expect(spies.simulateContractCall).not.toHaveBeenCalled();
+      const runs = spies.simulateCallSequence.mock.calls.map((call) =>
+        (call[0] as { calls: { functionName: string }[] }).calls.map(
+          (c) => c.functionName
+        )
+      );
+      expect(runs).toEqual([
+        ["approve", "deposit"],
+        ["approve", "deposit"],
+      ]);
+    });
+
+    it("keeps chaining when a write also feeds a non-write node", async () => {
+      await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve"),
+          actionNode("notify", "discord/send-message"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: [
+          { source: "trigger-1", target: "approve" },
+          { source: "approve", target: "notify" },
+          { source: "approve", target: "deposit" },
+        ],
+      });
+
+      expect(spies.simulateCallSequence).toHaveBeenCalledTimes(1);
+      expect(spies.simulateContractCall).not.toHaveBeenCalled();
+    });
+
+    it("keeps the hedge on a run that starts after an earlier reachable write", async () => {
+      spies.simulateCallSequence.mockResolvedValueOnce({
+        success: false,
+        status: "simulated",
+        from: "0xaa0000000000000000000000000000000000aa00",
+        atomic: false,
+        mechanism: "eth_simulateV1",
+        wouldRevert: true,
+        results: [SUCCESS_RESULT, REVERT_RESULT],
+      });
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          actionNode("fund", "web3/transfer-token", {
+            amount: "5",
+            recipientAddress: "0xbb0000000000000000000000000000000000bb00",
+            tokenAddress: "0xcc0000000000000000000000000000000000cc00",
+          }),
+          writeNode("approve", "approve"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: [
+          { source: "trigger-1", target: "fund" },
+          { source: "fund", target: "approve" },
+          { source: "approve", target: "deposit" },
+        ],
+      });
+
+      // The token transfer that funds the deposit was not applied by the
+      // sequence, so the deposit's revert is still hedged.
+      expect(spies.simulateCallSequence).toHaveBeenCalledTimes(1);
+      expect(result.warnings[0]).toMatchObject({ nodeId: "deposit" });
+      expect(result.warnings[0]?.message).toContain(
+        "may depend on an earlier step"
+      );
+    });
+
+    it("keeps a write that carries native value on the single-call path", async () => {
+      await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("wrap", "deposit", { ethValue: "0.1" }),
+          writeNode("approve", "approve"),
+        ],
+        edges: [
+          { source: "trigger-1", target: "wrap" },
+          { source: "wrap", target: "approve" },
+        ],
+      });
+
       expect(spies.simulateCallSequence).not.toHaveBeenCalled();
-      expect(spies.simulateContractCall).toHaveBeenCalledTimes(3);
+      expect(spies.simulateContractCall).toHaveBeenCalledTimes(2);
+    });
+
+    it("ignores an edge to a node that no longer exists", async () => {
+      await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: [...linear, { source: "approve", target: "deleted-node" }],
+      });
+
+      expect(spies.simulateCallSequence).toHaveBeenCalledTimes(1);
+      expect(spies.simulateContractCall).not.toHaveBeenCalled();
     });
 
     it("ends a run when the chain changes", async () => {
