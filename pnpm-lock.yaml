@@ -27,7 +27,8 @@ overrides:
   brace-expansion: ^5.0.9
   nanoid@>=4.0.0 <5.1.16: ^5.1.16
   qs: ^6.16.0
-  js-yaml: ^4.3.1
+  js-yaml: ^4.3.2
+  smol-toml: ^1.7.1
   ws: ^8.21.3
   '@opentelemetry/core': ^2.8.0
   lodash: ^4.17.23
@@ -53,6 +54,11 @@ overrides:
   '@babel/core': ^7.29.6
   mysql2: ^3.23.1
   deepmerge-ts: ^8.0.0
+
+patchedDependencies:
+  stream-json@1.9.1:
+    hash: df945ad72a6470fbcdd2fd7938387eb946d5b5283750e89f5130c32420e49487
+    path: patches/stream-json@1.9.1.patch
 
 importers:
 
@@ -6565,10 +6571,6 @@ packages:
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
 
-  js-yaml@4.3.1:
-    resolution: {integrity: sha512-CY6crGq313MX8GkwvB7tzgp99vjQxY1++5y10/BKN/GUfHqWaOGQMNZkBvqSzsZKWk/ijwHlWzzkLulsGHhjWQ==}
-    hasBin: true
-
   js-yaml@4.3.2:
     resolution: {integrity: sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA==}
     hasBin: true
@@ -7948,8 +7950,8 @@ packages:
     resolution: {integrity: sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg==}
     engines: {node: '>= 6.0.0', npm: '>= 3.0.0'}
 
-  smol-toml@1.6.1:
-    resolution: {integrity: sha512-dWUG8F5sIIARXih1DTaQAX4SsiTXhInKf1buxdY9DIg4ZYPZK5nGM1VRIYmEbDbsHt7USo99xSLFu5Q1IqTmsg==}
+  smol-toml@1.8.0:
+    resolution: {integrity: sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ==}
     engines: {node: '>= 18'}
 
   socks-proxy-agent@8.0.5:
@@ -10124,7 +10126,7 @@ snapshots:
       form-data: 4.0.6
       hpagent: 1.2.0
       isomorphic-ws: 5.0.0(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@6.0.6))
-      js-yaml: 4.3.1
+      js-yaml: 4.3.2
       jsonpath-plus: 10.3.0
       node-fetch: 2.7.0
       openid-client: 6.8.1
@@ -15661,7 +15663,7 @@ snapshots:
       eyes: 0.1.8
       isomorphic-ws: 4.0.1(ws@8.21.3(bufferutil@4.1.0)(utf-8-validate@6.0.6))
       json-stringify-safe: 5.0.1
-      stream-json: 1.9.1
+      stream-json: 1.9.1(patch_hash=df945ad72a6470fbcdd2fd7938387eb946d5b5283750e89f5130c32420e49487)
       uuid: 11.1.1
       ws: 8.21.3(bufferutil@4.1.0)(utf-8-validate@6.0.6)
     transitivePeerDependencies:
@@ -15694,10 +15696,6 @@ snapshots:
   js-tokens@10.0.0: {}
 
   js-tokens@4.0.0: {}
-
-  js-yaml@4.3.1:
-    dependencies:
-      argparse: 2.0.1
 
   js-yaml@4.3.2:
     dependencies:
@@ -15797,7 +15795,7 @@ snapshots:
       oxc-resolver: 11.19.1
       picocolors: 1.1.1
       picomatch: 4.0.4
-      smol-toml: 1.6.1
+      smol-toml: 1.8.0
       strip-json-comments: 5.0.3
       typescript: 5.9.3
       unbash: 2.2.0
@@ -17097,7 +17095,7 @@ snapshots:
 
   smart-buffer@4.2.0: {}
 
-  smol-toml@1.6.1: {}
+  smol-toml@1.8.0: {}
 
   socks-proxy-agent@8.0.5:
     dependencies:
@@ -17180,7 +17178,7 @@ snapshots:
 
   stream-chain@2.2.5: {}
 
-  stream-json@1.9.1:
+  stream-json@1.9.1(patch_hash=df945ad72a6470fbcdd2fd7938387eb946d5b5283750e89f5130c32420e49487):
     dependencies:
       stream-chain: 2.2.5
 

@@ -2157,7 +2157,12 @@ export function registerTools(
         .describe("Token symbol or address config"),
       amount: z.string().describe("Human-readable token amount"),
       recipientAddress: z.string().describe("Recipient address"),
-      memo: z.string().optional().describe("Optional memo (max 32 bytes)"),
+      memo: z
+        .string()
+        .optional()
+        .describe(
+          "Attached on-chain as an indexed bytes32 topic. Plain text (<= 31 bytes) is utf8-encoded; a 0x + 64-hex value is used verbatim (e.g. a receipt hash)."
+        ),
       broadcastMode: z
         .enum(["manual", "schedule"])
         .optional()

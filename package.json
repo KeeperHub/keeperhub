@@ -2,6 +2,7 @@
   "name": "ai-workflow-builder-template",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.34.5",
   "license": "Apache-2.0",
   "description": "A template for building your own AI-driven workflow automation platform",
   "scripts": {
@@ -199,6 +200,9 @@
     "neverBuiltDependencies": [
       "prisma"
     ],
+    "patchedDependencies": {
+      "stream-json@1.9.1": "patches/stream-json@1.9.1.patch"
+    },
     "overrides_better_auth_comment": "Pinned to 1.7.2. better-auth 1.7.3 restored the 1.6 account core schema and no longer writes accounts.issuer, which KEEP-1311 (drizzle/0148) added as NOT NULL - so every credential signup fails on the insert. Unpin only together with the 1.7 upgrade-guide cleanup.",
     "overrides": {
       "better-auth": "1.7.2",
@@ -223,7 +227,8 @@
       "brace-expansion": "^5.0.9",
       "nanoid@>=4.0.0 <5.1.16": "^5.1.16",
       "qs": "^6.16.0",
-      "js-yaml": "^4.3.1",
+      "js-yaml": "^4.3.2",
+      "smol-toml": "^1.7.1",
       "ws": "^8.21.3",
       "@opentelemetry/core": "^2.8.0",
       "lodash": "^4.17.23",

@@ -1,15 +1,17 @@
 FROM node:24-alpine AS base
-RUN npm install -g pnpm@9
+RUN npm install -g pnpm@10
 WORKDIR /app
 
 FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches/ ./patches/
 COPY sandbox/package.json ./sandbox/
 RUN --mount=type=cache,id=pnpm-sandbox,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile --filter @keeperhub/sandbox
 
 FROM base AS build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches/ ./patches/
 COPY sandbox/package.json sandbox/tsconfig.json ./sandbox/
 COPY sandbox/src ./sandbox/src
 # Shared grandchild source, imported by sandbox/src/run-code.ts via
