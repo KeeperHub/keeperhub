@@ -1053,7 +1053,7 @@ describe("runWorkflowSimulation", () => {
       expect(spies.simulateContractCall).toHaveBeenCalledTimes(1);
     });
 
-    it("marks every node of a run unavailable when the sequence cannot answer", async () => {
+    it("falls back to per-node simulation when the sequence cannot answer", async () => {
       spies.simulateCallSequence.mockResolvedValueOnce({
         success: false,
         status: "simulated",
@@ -1062,20 +1062,75 @@ describe("runWorkflowSimulation", () => {
         mechanism: null,
         wouldRevert: false,
         error: "Simulation unavailable: node down",
+        results: [],
+      });
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: linear,
+      });
+
+      // Each node keeps the per-node result it would have had on its own.
+      expect(spies.simulateContractCall).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({
+        warnings: [],
+        simulatedNodeCount: 2,
+        skippedNodeCount: 0,
+      });
+    });
+
+    it("keeps the earlier-step hedge on a per-node fallback", async () => {
+      spies.simulateCallSequence.mockResolvedValueOnce({
+        success: false,
+        status: "simulated",
+        from: "",
+        atomic: false,
+        mechanism: null,
+        wouldRevert: false,
+        error: "No RPC configuration for chain ID 1",
+        results: [],
+      });
+      spies.simulateContractCall
+        .mockResolvedValueOnce(SUCCESS_RESULT)
+        .mockResolvedValueOnce(REVERT_RESULT);
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: linear,
+      });
+
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]?.message).toContain(
+        "may depend on an earlier step"
+      );
+    });
+
+    it("simulates a call the sequence could not run on its own", async () => {
+      spies.simulateCallSequence.mockResolvedValueOnce({
+        success: false,
+        status: "simulated",
+        from: "0xaa0000000000000000000000000000000000aa00",
+        atomic: false,
+        mechanism: "eth_simulateV1",
+        wouldRevert: false,
         results: [
+          SUCCESS_RESULT,
           {
             ...SUCCESS_RESULT,
             success: false,
             failureKind: "unavailable",
             wouldRevert: false,
-            error: "down",
-          },
-          {
-            ...SUCCESS_RESULT,
-            success: false,
-            failureKind: "unavailable",
-            wouldRevert: false,
-            error: "down",
+            error: "the node returned no result for this call",
           },
         ],
       });
@@ -1090,11 +1145,52 @@ describe("runWorkflowSimulation", () => {
         edges: linear,
       });
 
-      expect(result.skippedNodeCount).toBe(2);
-      expect(result.warnings.map((w) => w.code)).toEqual([
-        "SIMULATION_UNAVAILABLE",
-        "SIMULATION_UNAVAILABLE",
-      ]);
+      expect(spies.simulateContractCall).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        warnings: [],
+        simulatedNodeCount: 2,
+        skippedNodeCount: 0,
+      });
+    });
+
+    it("caps a run at the sequence limit and starts a new run after it", async () => {
+      const ids = Array.from({ length: 11 }, (_, i) => `write-${i + 1}`);
+      const edges = ids.map((id, i) => ({
+        source: i === 0 ? "trigger-1" : ids[i - 1],
+        target: id,
+      }));
+      spies.simulateCallSequence.mockResolvedValueOnce({
+        success: true,
+        status: "simulated",
+        from: "0xaa0000000000000000000000000000000000aa00",
+        atomic: false,
+        mechanism: "eth_simulateV1",
+        wouldRevert: false,
+        results: Array.from({ length: 10 }, () => SUCCESS_RESULT),
+      });
+      spies.simulateContractCall.mockResolvedValueOnce(REVERT_RESULT);
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [triggerNode(), ...ids.map((id) => writeNode(id, "approve"))],
+        edges,
+      });
+
+      expect(spies.simulateCallSequence).toHaveBeenCalledTimes(1);
+      const input = spies.simulateCallSequence.mock.calls[0][0] as {
+        calls: unknown[];
+      };
+      expect(input.calls).toHaveLength(10);
+      // The eleventh is a run of one, simulated on its own, and it keeps the
+      // hedge: not all of its earlier steps were applied.
+      expect(spies.simulateContractCall).toHaveBeenCalledTimes(1);
+      expect(result.simulatedNodeCount).toBe(10);
+      expect(result.skippedNodeCount).toBe(0);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]?.nodeId).toBe("write-11");
+      expect(result.warnings[0]?.message).toContain(
+        "may depend on an earlier step"
+      );
     });
 
     it("keeps a single write on the single-call path", async () => {

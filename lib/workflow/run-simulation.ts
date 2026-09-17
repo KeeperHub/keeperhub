@@ -7,6 +7,7 @@ import {
   simulateTokenTransfer,
 } from "@/lib/execute/simulate";
 import { simulateCallSequence } from "@/lib/execute/simulate-sequence";
+import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { isSolanaChain } from "@/lib/rpc/provider-factory";
 import {
@@ -786,6 +787,10 @@ type ReadyNode = { context: NodeSimulationContext; chainId: number };
  * are simulated as one sequence. Anything that breaks that shape - a fork, a
  * chain change, a transfer node, a node the edges do not connect - ends the
  * run, and that node starts over.
+ *
+ * A run is also capped at what the sequence simulator accepts. The node after
+ * the cap starts a new run and keeps the earlier-step hedge, which is right
+ * for it: not all of its earlier steps were applied.
  */
 function extendsRun(
   run: ReadyNode[],
@@ -798,6 +803,7 @@ function extendsRun(
     return true;
   }
   return (
+    run.length < MAX_SEQUENCE_CALLS &&
     previous.context.actionType === "web3/write-contract" &&
     candidate.context.actionType === "web3/write-contract" &&
     previous.chainId === candidate.chainId &&
@@ -838,18 +844,40 @@ async function simulateRun(
     if (error instanceof WorkflowSimulationDeadlineError) {
       throw error;
     }
-    return run.map(({ context }) => unavailableOutcome(context));
+    return simulateEach(run, deadlineAt);
   }
-  return run.map(({ context }, index) => {
+  // A sequence that did not run - no mechanism on this chain, an unresolved
+  // RPC, a call that failed validation before anything was sent - must not
+  // cost the nodes the per-node result they would have had on their own.
+  if (sequence.mechanism === null) {
+    return simulateEach(run, deadlineAt);
+  }
+  const outcomes: NodeSimulationOutcome[] = [];
+  for (const [index, { context }] of run.entries()) {
     const result = sequence.results[index];
-    if (!result) {
-      return unavailableOutcome(context);
+    if (!result || (!result.success && result.failureKind === "unavailable")) {
+      outcomes.push(await simulateSingle(context, deadlineAt));
+      continue;
     }
     // Only a node whose earlier steps were actually applied loses the hedge.
-    // The first of a run has none applied; a result the sequence could not
-    // chain (unavailable) is already reported as such by outcomeFromResult.
-    return outcomeFromResult({ ...context, chained: index > 0 }, result);
-  });
+    // The first of a run has none applied.
+    outcomes.push(
+      outcomeFromResult({ ...context, chained: index > 0 }, result)
+    );
+  }
+  return outcomes;
+}
+
+/** Per-node simulation for a run the sequence could not answer. */
+async function simulateEach(
+  run: ReadyNode[],
+  deadlineAt?: number
+): Promise<NodeSimulationOutcome[]> {
+  const outcomes: NodeSimulationOutcome[] = [];
+  for (const { context } of run) {
+    outcomes.push(await simulateSingle(context, deadlineAt));
+  }
+  return outcomes;
 }
 
 function unavailableOutcome(
