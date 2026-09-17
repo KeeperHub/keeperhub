@@ -18,12 +18,24 @@ import { MAX_PAGE_SIZE } from "@/lib/pagination";
  * then concatenated and sorted in Node before an empty window is sliced out of
  * them - O(all runs) of work to return nothing.
  *
- * Bounding the page at MAX_PAGE_SIZE caps fetchLimit at 20101 rows. The UI
- * does page past it - the table sizes its pager off the real total - so the
- * bound clamps rather than rejects, and the response echoes the clamped page
- * so the pager and the rows describe the same window.
+ * With `limit` bounded at the same figure the query honours, the worst case is
+ * `199 * 100 + 100 + 1` = 20001 rows. The UI does page past the ceiling - the
+ * table sizes its pager off the real total - so the bound clamps rather than
+ * rejects, and the response echoes the clamped page so the pager and the rows
+ * describe the same window.
  */
 const MAX_PAGE = MAX_PAGE_SIZE;
+
+/**
+ * Ceiling for `limit`, matching the `Math.min(limit, 100)` in
+ * lib/analytics/queries.ts:1449 that decides the page size.
+ *
+ * Validating against a larger figure accepts a value the query then halves:
+ * `?limit=150` was admitted and served 100. Nothing downstream was incoherent
+ * - `pageSize` echoes the honoured value - but the two ceilings disagreeing is
+ * what made the fetchLimit figure above wrong, so they are pinned together.
+ */
+const MAX_LIMIT = 100;
 
 /**
  * Parse a bounded positive-integer pagination parameter, falling back to
@@ -88,9 +100,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     const cursor = params.get("cursor") ?? undefined;
 
     const page = parsePaginationParam(params.get("page"), MAX_PAGE);
-    // getUnifiedRuns caps the page size at 100 of its own accord; bounding it
-    // here too keeps a rejected value from reading as an accepted one.
-    const limit = parsePaginationParam(params.get("limit"), MAX_PAGE_SIZE);
+    const limit = parsePaginationParam(params.get("limit"), MAX_LIMIT);
 
     const projectId = params.get("projectId") ?? undefined;
 

@@ -221,10 +221,26 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     expect(options?.page).toBe(200);
   });
 
-  it("clamps a limit past the ceiling", async () => {
-    const options = await optionsFor({ limit: "100000" });
+  it("clamps a limit to the figure the query actually honours", async () => {
+    // getUnifiedRuns computes pageLimit as Math.min(limit, 100), so validating
+    // against anything larger admits a value it then halves: ?limit=150 was
+    // accepted and served 100.
+    for (const limit of ["100000", "150", "200"]) {
+      vi.mocked(getUnifiedRuns).mockClear();
+      const options = await optionsFor({ limit });
+      expect(options?.limit, `limit=${limit}`).toBe(100);
+    }
+  });
 
-    expect(options?.limit).toBe(200);
+  it("keeps the worst-case fetchLimit at the figure the comment claims", async () => {
+    // fetchLimit = (page - 1) * pageLimit + pageLimit + 1, with pageLimit
+    // capped at 100 by the query. The ceilings only agree when limit is bound
+    // at 100 too; bound at 200 the arithmetic in the comment was wrong.
+    const options = await optionsFor({ page: "999999", limit: "250" });
+    const page = options?.page as number;
+    const pageLimit = Math.min((options?.limit as number) ?? 50, 100);
+
+    expect((page - 1) * pageLimit + pageLimit + 1).toBe(20_001);
   });
 
   it("drops a page below the first one instead of clamping silently", async () => {
