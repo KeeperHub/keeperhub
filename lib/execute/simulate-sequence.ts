@@ -260,10 +260,13 @@ async function runWithStateOverrides(
             tx,
             "latest",
             { tracer: "prestateTracer", tracerConfig: { diffMode: true } },
-          ]) as Promise<{ post?: Record<string, Record<string, unknown>> }>,
+          ]) as Promise<{
+            pre?: Record<string, Record<string, unknown>>;
+            post?: Record<string, Record<string, unknown>>;
+          }>,
         "preflight"
       );
-      mergeDiffIntoOverrides(overrides, diff?.post ?? {});
+      mergeDiffIntoOverrides(overrides, diff?.pre ?? {}, diff?.post ?? {});
     } catch {
       // Without the diff the next call sees state as if this one never ran,
       // which is the behaviour this whole path exists to avoid. Stop rather
@@ -307,9 +310,15 @@ function extractDataFromError(err: unknown): string | undefined {
  * prestateTracer in diffMode reports post-state as `storage`; `eth_call`
  * overrides take the same values under `stateDiff`. Balances and nonces carry
  * across unchanged.
+ *
+ * geth omits slots cleared to zero from `post.storage` (see prestate.go
+ * processDiffState). Those keys still appear in `pre.storage` for accounts
+ * that `post` reports as modified, so we write the zero hash into stateDiff
+ * or the accumulator would keep a stale non-zero value.
  */
 function mergeDiffIntoOverrides(
   overrides: Record<string, Record<string, unknown>>,
+  pre: Record<string, Record<string, unknown>>,
   post: Record<string, Record<string, unknown>>
 ): void {
   for (const [address, state] of Object.entries(post)) {
@@ -328,14 +337,36 @@ function mergeDiffIntoOverrides(
       entry.code = state.code;
     }
     const storage = state.storage as Record<string, string> | undefined;
-    if (storage) {
+    const preAccount = pre[address] ?? pre[key];
+    const preStorage = preAccount?.storage as
+      | Record<string, string>
+      | undefined;
+    const cleared: Record<string, string> = {};
+    if (preStorage) {
+      for (const slot of Object.keys(preStorage)) {
+        if (!storage || !(slot in storage)) {
+          cleared[slot] = ethers.ZeroHash;
+        }
+      }
+    }
+    if (storage || Object.keys(cleared).length > 0) {
       entry.stateDiff = {
         ...((entry.stateDiff as Record<string, string>) ?? {}),
-        ...storage,
+        ...cleared,
+        ...(storage ?? {}),
       };
     }
     overrides[key] = entry;
   }
+}
+
+/** Exported for tests: same merge the state-overrides path uses. */
+export function mergeDiffIntoOverridesForTests(
+  overrides: Record<string, Record<string, unknown>>,
+  pre: Record<string, Record<string, unknown>>,
+  post: Record<string, Record<string, unknown>>
+): void {
+  mergeDiffIntoOverrides(overrides, pre, post);
 }
 
 export async function simulateCallSequence(

@@ -68,6 +68,7 @@ vi.mock("@/lib/db/schema", () => ({
 }));
 
 import {
+  mergeDiffIntoOverridesForTests,
   resetSequenceMechanismCache,
   simulateCallSequence,
 } from "@/lib/execute/simulate-sequence";
@@ -297,6 +298,70 @@ describe("simulateCallSequence on a node without eth_simulateV1", () => {
     });
   });
 
+  it("carries a slot cleared to zero so a later call does not see the stale value", async () => {
+    const SLOT =
+      "0x1111111111111111111111111111111111111111111111111111111111111111";
+    const NON_ZERO =
+      "0x00000000000000000000000000000000000000000000000000000000000003e8";
+    const ZERO =
+      "0x0000000000000000000000000000000000000000000000000000000000000000";
+    let traceN = 0;
+    spies.send.mockImplementation((method: string, params: unknown[]) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(
+          new Error("the method eth_simulateV1 does not exist")
+        );
+      }
+      if (method === "eth_call") {
+        return Promise.resolve(TRUE);
+      }
+      if (method === "eth_estimateGas") {
+        return Promise.resolve("0x5208");
+      }
+      if (method === "debug_traceCall") {
+        traceN += 1;
+        if (traceN === 1) {
+          // approve: write non-zero allowance into the accumulator
+          return Promise.resolve({
+            pre: { [TOKEN]: { storage: {} } },
+            post: {
+              [TOKEN]: { storage: { [SLOT]: NON_ZERO }, nonce: 3 },
+            },
+          });
+        }
+        // deposit: geth omits the zeroed slot from post.storage
+        return Promise.resolve({
+          pre: { [TOKEN]: { storage: { [SLOT]: NON_ZERO } } },
+          post: { [TOKEN]: { storage: {}, nonce: 4 } },
+        });
+      }
+      return Promise.reject(
+        new Error(`unexpected ${method} ${String(params)}`)
+      );
+    });
+
+    const three = [
+      ...APPROVE_THEN_DEPOSIT,
+      {
+        contractAddress: VAULT,
+        abi: VAULT_ABI,
+        functionName: "deposit",
+        functionArgs: JSON.stringify(["1000", FROM]),
+      },
+    ];
+    const result = await run(three);
+
+    expect(result.mechanism).toBe("state-overrides");
+    expect(result.success).toBe(true);
+
+    const calls = spies.send.mock.calls.filter(([m]) => m === "eth_call");
+    expect(calls).toHaveLength(3);
+    // Third call must see the cleared allowance, not the approve-era value.
+    expect(calls[2][1][2]).toEqual({
+      [TOKEN]: { stateDiff: { [SLOT]: ZERO }, nonce: "0x4" },
+    });
+  });
+
   it("does not retry eth_simulateV1 for that chain again", async () => {
     fallbackNode();
 
@@ -352,6 +417,89 @@ describe("simulateCallSequence on a node without eth_simulateV1", () => {
     expect(
       spies.send.mock.calls.filter(([m]) => m === "eth_call")
     ).toHaveLength(0);
+  });
+});
+
+describe("mergeDiffIntoOverrides cleared storage slots", () => {
+  const ZERO =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+  const SLOT =
+    "0x1111111111111111111111111111111111111111111111111111111111111111";
+  const OTHER =
+    "0x2222222222222222222222222222222222222222222222222222222222222222";
+  const NON_ZERO =
+    "0x00000000000000000000000000000000000000000000000000000000000003e8";
+  const LATER =
+    "0x0000000000000000000000000000000000000000000000000000000000000007";
+
+  it("writes the zero hash for a slot present in pre and omitted from post", () => {
+    const overrides: Record<string, Record<string, unknown>> = {};
+    // Accumulators often already hold the non-zero value from an earlier call
+    // (e.g. approve wrote allowance, deposit then cleared it).
+    overrides[TOKEN.toLowerCase()] = {
+      stateDiff: { [SLOT]: NON_ZERO },
+    };
+
+    mergeDiffIntoOverridesForTests(
+      overrides,
+      {
+        [TOKEN]: { storage: { [SLOT]: NON_ZERO } },
+      },
+      {
+        // geth marks the account modified but omits the zeroed slot from post.
+        [TOKEN]: { storage: {}, nonce: 4 },
+      }
+    );
+
+    expect(overrides[TOKEN.toLowerCase()].stateDiff).toEqual({
+      [SLOT]: ZERO,
+    });
+    expect(overrides[TOKEN.toLowerCase()].nonce).toBe("0x4");
+  });
+
+  it("still applies later non-zero writes after a clear", () => {
+    const overrides: Record<string, Record<string, unknown>> = {};
+
+    mergeDiffIntoOverridesForTests(
+      overrides,
+      {
+        [TOKEN]: { storage: { [SLOT]: NON_ZERO } },
+      },
+      {
+        [TOKEN]: { storage: {} },
+      }
+    );
+    mergeDiffIntoOverridesForTests(
+      overrides,
+      {
+        [TOKEN]: { storage: { [SLOT]: ZERO, [OTHER]: ZERO } },
+      },
+      {
+        [TOKEN]: { storage: { [OTHER]: LATER } },
+      }
+    );
+
+    expect(overrides[TOKEN.toLowerCase()].stateDiff).toEqual({
+      [SLOT]: ZERO,
+      [OTHER]: LATER,
+    });
+  });
+
+  it("does not invent clears when pre has no storage for the account", () => {
+    const overrides: Record<string, Record<string, unknown>> = {};
+
+    mergeDiffIntoOverridesForTests(
+      overrides,
+      {},
+      {
+        [TOKEN]: { storage: { [SLOT]: NON_ZERO }, nonce: 3 },
+      }
+    );
+
+    expect(overrides[TOKEN.toLowerCase()]).toEqual({
+      stateDiff: { [SLOT]: NON_ZERO },
+      nonce: "0x3",
+    });
   });
 });
 
