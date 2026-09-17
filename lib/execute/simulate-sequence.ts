@@ -1,1 +1,1 @@
-PLACEHOLDER
+__LOAD_FROM_FILE__/tmp/seq-inline.ts
