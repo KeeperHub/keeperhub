@@ -115,6 +115,8 @@ The workflow runs once for each call to the watched contract that matches every 
 
 A malformed function selector stops the trigger from registering, rather than being accepted and then matching nothing. Other filter values are not validated yet, so check a caller address before saving.
 
+One busy block can hold more matches than a workflow should fire on, so the tracker dispatches at most 25 matching call frames per block and drops the rest. Nothing in the product marks a truncated block, and a dropped frame is indistinguishable from one that never matched, so narrow the filter if a block can plausibly hold more than 25 matches.
+
 Each run receives `transactionHash`, `blockNumber`, `from`, `to`, `value` (wei, as a decimal string), `selector`, `input`, `callType`, `reverted`, `depth`, `frameIndex` and `transactionIndex`. For example, `{{@trigger:Trigger.from}}` is the address that made the call.
 
 > **Network support:** Trace triggers need an RPC endpoint that serves `debug_traceBlockByNumber`. Plasma and Tempo serve it today. On a network whose endpoint does not, the trigger registers but never fires.

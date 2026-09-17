@@ -158,6 +158,24 @@ describe("normalizeTraceTriggerConfig", () => {
     expect(config.traceSelector).toBe("0x8456cb59");
   });
 
+  it("upper-cases the call types it validated case-insensitively", () => {
+    // The tracker upper-cases each entry before testing membership, so a
+    // lowercase value from an MCP author is one it would accept. Refusing it
+    // here, or forwarding it unchanged, both end in a workflow that shows as
+    // enabled and never fires.
+    const config: Record<string, unknown> = {
+      triggerType: "Trace",
+      traceCallTypes: '["call","DelegateCall"]',
+    };
+    expect(isValidTraceCallTypes(config.traceCallTypes)).toBe(true);
+    normalizeTraceTriggerConfig(config);
+    expect(config.traceCallTypes).toEqual(["CALL", "DELEGATECALL"]);
+  });
+
+  it("still refuses a frame type the matcher has no case for", () => {
+    expect(isValidTraceCallTypes('["jump"]')).toBe(false);
+  });
+
   it("does not add a call-type field that was never set", () => {
     const config: Record<string, unknown> = { triggerType: "Trace" };
     normalizeTraceTriggerConfig(config);

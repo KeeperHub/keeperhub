@@ -50,7 +50,14 @@ export function isValidTraceSelector(raw: unknown): boolean {
   return typeof raw === "string" && TRACE_SELECTOR_PATTERN.test(raw.trim());
 }
 
-/** Frame types the tracker accepts in `traceCallTypes`. */
+/**
+ * Frame types the tracker accepts in `traceCallTypes`.
+ *
+ * Compared case-insensitively on both sides: the tracker upper-cases each
+ * entry before testing membership, so refusing a lowercase one here would
+ * drop a workflow it would have accepted, and an MCP author writing
+ * `["call"]` would see an enabled workflow that never fires.
+ */
 export const TRACE_CALL_TYPES = [
   "CALL",
   "STATICCALL",
@@ -103,6 +110,13 @@ export function normalizeTraceTriggerConfig(
   if (typeof config.traceSelector === "string") {
     config.traceSelector = config.traceSelector.trim();
   }
+  // Same reasoning for the call types, which are validated case-insensitively:
+  // the shape that leaves here is the upper-case one the tracker compares.
+  if (Array.isArray(config.traceCallTypes)) {
+    config.traceCallTypes = config.traceCallTypes.map((entry) =>
+      typeof entry === "string" ? entry.trim().toUpperCase() : entry
+    );
+  }
 }
 
 /**
@@ -126,6 +140,8 @@ export function isValidTraceCallTypes(raw: unknown): boolean {
   return parsed.every(
     (entry) =>
       typeof entry === "string" &&
-      (TRACE_CALL_TYPES as readonly string[]).includes(entry)
+      (TRACE_CALL_TYPES as readonly string[]).includes(
+        entry.trim().toUpperCase()
+      )
   );
 }

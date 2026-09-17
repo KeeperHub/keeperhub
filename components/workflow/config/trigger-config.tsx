@@ -354,8 +354,13 @@ function TraceTriggerFields({
 }: TraceTriggerFieldsProps): React.ReactElement {
   const selectedCallTypes = useMemo(() => {
     const parsed = parseTraceCallTypes(config.traceCallTypes);
+    // Upper-cased for display too: a config written through the API may hold
+    // ["call"], which the tracker accepts, and the boxes have to show it as
+    // checked or the first toggle silently overwrites the stored filter.
     return Array.isArray(parsed)
-      ? parsed.filter((type): type is string => typeof type === "string")
+      ? parsed
+          .filter((type): type is string => typeof type === "string")
+          .map((type) => type.trim().toUpperCase())
       : [];
   }, [config.traceCallTypes]);
 
