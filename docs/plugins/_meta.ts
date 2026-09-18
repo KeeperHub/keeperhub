@@ -35,6 +35,7 @@ export default {
   discord: "Discord",
   slack: "Slack",
   telegram: "Telegram",
+  pagerduty: "PagerDuty",
   sendgrid: "SendGrid",
   webhook: "Webhook",
   hyperliquid: "Hyperliquid",
