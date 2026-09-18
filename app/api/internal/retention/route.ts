@@ -6,7 +6,11 @@ import {
   recordRetentionRun,
   recordRetentionWindow,
 } from "@/lib/metrics/collectors/prometheus";
-import { runRetentionPurge } from "@/lib/retention/purge-executions";
+import {
+  RetentionPurgeIncompleteError,
+  type RetentionRunResult,
+  runRetentionPurge,
+} from "@/lib/retention/purge-executions";
 
 export const dynamic = "force-dynamic";
 
@@ -43,21 +47,19 @@ export async function GET(request: Request): Promise<NextResponse> {
     const result = await runRetentionPurge();
 
     if (result.enabled && !result.dryRun) {
-      for (const pass of result.passes) {
-        recordRetentionRowsPurged(pass.pass, pass.rows);
-        for (const window of pass.windows ?? []) {
-          recordRetentionWindow(
-            window.retentionDays,
-            window.organizationCount,
-            window.rows
-          );
-        }
-      }
+      recordPurgedRows(result);
       recordRetentionRun("success");
     }
 
     return NextResponse.json(result);
   } catch (error) {
+    // An incomplete run still deleted rows before it failed. Count them and
+    // return what it did, so neither the metrics nor the job log lose them.
+    const partial =
+      error instanceof RetentionPurgeIncompleteError ? error.result : null;
+    if (partial && !partial.dryRun) {
+      recordPurgedRows(partial);
+    }
     recordRetentionRun("failure");
     logSystemError(
       ErrorCategory.DATABASE,
@@ -71,8 +73,22 @@ export async function GET(request: Request): Promise<NextResponse> {
           error instanceof Error
             ? error.message
             : "Failed to purge expired execution data",
+        ...(partial ? { result: partial } : {}),
       },
       { status: 500 }
     );
+  }
+}
+
+function recordPurgedRows(result: RetentionRunResult): void {
+  for (const pass of result.passes) {
+    recordRetentionRowsPurged(pass.pass, pass.rows);
+    for (const window of pass.windows ?? []) {
+      recordRetentionWindow(
+        window.retentionDays,
+        window.organizationCount,
+        window.rows
+      );
+    }
   }
 }

@@ -161,6 +161,15 @@ jobs:
           fi
           echo "All workflows structurally valid."
 
+  security-patches:
+    name: Security Patch Integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify declared pnpm patches are applied
+        run: ./scripts/check-security-patches.sh
+
   hadolint:
     name: Dockerfile Lint
     needs: changes

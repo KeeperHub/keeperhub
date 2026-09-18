@@ -7,7 +7,7 @@ const dataPlugin: IntegrationPlugin = {
   egress: "none",
   label: "Data",
   description:
-    "Reshape workflow data without writing a script: encode and decode strings, convert numbers between decimal and hex, pull named fields out of upstream node output, flatten monitoring results into a findings list, and hold static configuration on the canvas.",
+    "Reshape workflow data without writing a script: encode and decode strings, convert numbers between decimal and hex, hash a value with keccak256 or SHA-2, pull named fields out of upstream node output, flatten monitoring results into a findings list, and hold static configuration on the canvas.",
   icon: DataIcon,
   requiresCredentials: false,
   formFields: [],
@@ -289,6 +289,133 @@ const dataPlugin: IntegrationPlugin = {
           defaultValue: "100",
           helpTip:
             "Cap on the findings array so a runaway source cannot blow up the alert payload. count still reports the true total.",
+        },
+      ],
+    },
+    {
+      slug: "hash",
+      label: "Hash",
+      description:
+        "Hash a value (or a JSON array of values) with keccak256, SHA-2, SHA3-256, RIPEMD-160 or BLAKE2b. One-way, unlike Encode / Decode. Optionally truncate and right-pad the digest to produce a function selector or an event topic.",
+      category: "Data",
+      stepFunction: "hashStep",
+      stepImportPath: "hash",
+      requiresCredentials: false,
+      outputFields: [
+        { field: "success", description: "Whether hashing succeeded" },
+        {
+          field: "result",
+          description:
+            "The digest: a string for a single input, an array for an array input",
+        },
+        {
+          field: "map",
+          description: "Object keyed by each original value, holding its digest",
+        },
+        { field: "count", description: "Number of values hashed" },
+        { field: "algorithm", description: "The algorithm used" },
+        {
+          field: "digestBytes",
+          description:
+            "Width of each digest in bytes, after any truncation and padding",
+        },
+        { field: "error", description: "Error message if hashing failed" },
+      ],
+      configFields: [
+        {
+          key: "algorithm",
+          label: "Algorithm",
+          type: "select",
+          required: true,
+          // Ordered alphabetically by label, case-insensitive, plain code-unit
+          // comparison. "SHA-256" and "SHA-512" sort before "SHA3-256" because
+          // "-" (0x2D) precedes "3" (0x33). tests/unit/data-hash-definition.test.ts
+          // asserts this ordering so it cannot drift as algorithms are added.
+          //
+          // keccak256 is no longer first, but remains the default: the form opens
+          // on it regardless of where it sits in the list.
+          options: [
+            { value: "blake2b-256", label: "BLAKE2b-256" },
+            { value: "keccak256", label: "keccak256 (Ethereum)" },
+            { value: "ripemd160", label: "RIPEMD-160" },
+            { value: "sha256", label: "SHA-256" },
+            { value: "sha512", label: "SHA-512" },
+            { value: "sha3-256", label: "SHA3-256 (NIST - not Ethereum)" },
+          ],
+          defaultValue: "keccak256",
+          helpTip:
+            "keccak256 is the hash the EVM uses: function selectors and event topics, including the topic that carries an indexed string or bytes argument.\n\nSHA3-256 is NOT the same thing. Ethereum adopted Keccak before NIST changed the padding, so the two give completely different results for the same input. Pick SHA3-256 only if a non-EVM protocol asked for it by that name.",
+          example: "keccak256",
+        },
+        {
+          key: "value",
+          label: "Value",
+          type: "template-textarea",
+          required: true,
+          rows: 3,
+          placeholder:
+            'frob(bytes32,address,address,address,int256,int256)\nor ["Transfer(address,address,uint256)", "Approval(address,address,uint256)"]\nor {{@node1:Label.result}}',
+          helpTip:
+            "A single value, or a JSON array of values to hash in one step.\n\nFor an array, result is an array and map is keyed by each original value.\n\nA single value is trimmed, so a stray trailing newline cannot change the digest. Array elements are not, so [\"  a  \"] hashes the spaces too.\n\nAn empty value is hashed rather than refused: keccak256 of nothing is c5d24601... , the EXTCODEHASH of an account with no code.",
+          example: "frob(bytes32,address,address,address,int256,int256)",
+        },
+        {
+          key: "inputEncoding",
+          label: "Input encoding",
+          type: "select",
+          required: true,
+          options: [
+            { value: "utf8", label: "Text (hash the characters)" },
+            { value: "hex", label: "Hex bytes (hash the bytes)" },
+            { value: "base64", label: "Base64 (decode, then hash the bytes)" },
+          ],
+          defaultValue: "utf8",
+          helpTip:
+            "How the value is read before hashing, and the easiest thing to get wrong.\n\nGiven 0x1234, Text hashes the six characters 0 x 1 2 3 4, while Hex bytes hashes the two bytes 0x12 0x34. Both succeed and give different answers.\n\nFunction and event signatures are Text. A raw byte payload from an upstream node is Hex bytes. Base64 is for a payload that arrived encoded - a webhook body, a signed blob - where decoding it to text first would corrupt any byte that is not valid UTF-8.\n\nBase64 accepts either alphabet, standard or URL-safe, with or without padding, but not a mixture of the two.",
+          example: "utf8",
+        },
+        // Both widths carry `defaultValue: ""` and deliberately no `example`.
+        //
+        // generateAIActionPrompts reads example, then defaultValue, then a type
+        // default of 10, and the JSON it builds is the canonical config for this
+        // action in the workflow-generation prompt. An example of 4 and 32 there
+        // seeds every generated Hash node to truncate to a selector, so "sha256
+        // the webhook body" would return a 4-byte value and raise nothing. A
+        // blank default emits "outputBytes":"" instead, which reads as "leave
+        // blank" and matches the helpTip. The form is unaffected: it already
+        // opens blank.
+        {
+          key: "outputBytes",
+          label: "Output bytes",
+          type: "number",
+          min: 1,
+          placeholder: "32",
+          defaultValue: "",
+          helpTip:
+            "Keep only the first N bytes of the digest. Leave blank for the full digest.\n\nSet 4 to turn a function signature into its selector:\nfrob(bytes32,address,address,address,int256,int256) -> 0x76088703\n\nA truncated digest is not the shorter standard hash of the same family. SHA-512 cut to 32 bytes is not SHA-512/256, and BLAKE2b-256 is not BLAKE2b-512 cut down: both mix the output length into their initial state. Truncate for a selector, not to derive a shorter named hash.",
+        },
+        {
+          key: "padTo",
+          label: "Pad to",
+          type: "number",
+          min: 1,
+          placeholder: "32",
+          defaultValue: "",
+          helpTip:
+            "Right-pad the result with zero bytes to this width. Leave blank for no padding.\n\nWith Output bytes 4 and Pad to 32 you get the 32-byte topic that filters an anonymous LogNote event:\n0x7608870300000000000000000000000000000000000000000000000000000000\n\nPadding is on the right because that is where the EVM puts it - the selector sits left-aligned in the topic word.",
+        },
+        {
+          key: "outputFormat",
+          label: "Output format",
+          type: "select",
+          options: [
+            { value: "hex", label: "hex (0x-prefixed)" },
+            { value: "base64", label: "base64" },
+            { value: "base64url", label: "base64url (URL-safe, unpadded)" },
+          ],
+          defaultValue: "hex",
+          helpTip:
+            "hex is what every on-chain use wants: a topic or a bytes32 argument.\n\nbase64url swaps + and / for - and _ and drops the padding, so the digest can go into a URL, a filename or a header without further escaping.\n\nFor a digest as a decimal number, feed hex into Encode / Decode with Hex to decimal, which stays exact above 2^53.",
         },
       ],
     },

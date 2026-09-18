@@ -402,6 +402,15 @@ export interface ChainHealth {
    */
   traceUnsupported: boolean;
   /**
+   * Active state-threshold subscribers, the counterpart to `subscriberCount`
+   * on the log path. Reported separately because a chain can hold subscribers
+   * of one kind and none of the other. `checkBlockStaleness` treats either
+   * kind as reason to reconnect, so a state-only chain being torn down and
+   * rebuilt shows `reconnecting: true` with `subscriberCount: 0`. Without this
+   * field that row reads as the idle provider the staleness check skips.
+   */
+  stateSubscriberCount: number;
+  /**
    * Smoothed inter-block interval in milliseconds, or null before the
    * current connection has observed enough intervals to estimate one.
    * Per connection, like the estimate that drives batching.
@@ -1201,6 +1210,7 @@ export class ChainProviderManager {
       subscriberCount: entry.subscribers.size,
       traceSubscriberCount: entry.traceSubscribers.size,
       traceUnsupported: entry.traceUnsupported,
+      stateSubscriberCount: entry.stateSubscribers.size,
       blockIntervalMs: entry.blockIntervalEwmaMs,
       blocksBehindHead:
         entry.headBlock !== null && entry.lastProcessedBlock !== null
