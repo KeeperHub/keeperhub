@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { OrgSwitcher } from "@/components/organization/org-switcher";
 import { MobileNavSheet } from "@/components/navigation/mobile-nav-sheet";
+import { useEditorAvailability } from "@/hooks/use-editor-availability";
 import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
 import { Switch } from "@/components/ui/switch";
@@ -1418,6 +1419,7 @@ function ToolbarActions({
   state: ReturnType<typeof useWorkflowState>;
   actions: ReturnType<typeof useWorkflowActions>;
 }) {
+  const editorAvailable = useEditorAvailability() === "available";
   const { open: openOverlay, push } = useOverlay();
   const [selectedNodeId] = useAtom(selectedNodeAtom);
   const [selectedEdgeId] = useAtom(selectedEdgeAtom);
@@ -1440,6 +1442,16 @@ function ToolbarActions({
   if (workflowId && isPreviewContext) {
     return null;
   }
+
+  // A phone gets no authoring controls and no manual run, because the canvas is
+  // not mounted there either: Save would have nothing to save and Run would start
+  // a workflow the user cannot watch. This is applied per control rather than to
+  // the whole group, because the group also holds Download, which is read-only and
+  // is how someone on a phone takes a workflow away with them.
+  //
+  // `editorAvailable` is false until the gate has measured, which is deliberate:
+  // the first client render must not paint a Run button for a frame and then tear
+  // it down.
 
   if (!workflowId) {
     return null;
@@ -1536,54 +1548,66 @@ function ToolbarActions({
 
   return (
     <>
-      {/* Properties - Mobile Vertical (always visible) */}
-      <ButtonGroup className="flex lg:hidden" orientation="vertical">
-        <Button
-          className="border hover:bg-black/5 dark:hover:bg-white/5"
-          onClick={() => openOverlay(ConfigurationOverlay, {})}
-          size="icon"
-          title="Configuration"
-          variant="secondary"
-        >
-          <Settings2 className="size-4" />
-        </Button>
-        {/* Delete - Show when node or edge is selected */}
-        {hasSelection && (
+      {/* Properties - Mobile Vertical. Authoring only: the configuration
+          overlay and delete are not offered where the editor is not. */}
+      {editorAvailable && (
+        <ButtonGroup className="flex lg:hidden" orientation="vertical">
           <Button
             className="border hover:bg-black/5 dark:hover:bg-white/5"
-            onClick={handleDeleteConfirm}
+            onClick={() => openOverlay(ConfigurationOverlay, {})}
             size="icon"
-            title="Delete"
+            title="Configuration"
             variant="secondary"
           >
-            <Trash2 className="size-4" />
+            <Settings2 className="size-4" />
           </Button>
-        )}
-      </ButtonGroup>
+          {/* Delete - Show when node or edge is selected */}
+          {hasSelection && (
+            <Button
+              className="border hover:bg-black/5 dark:hover:bg-white/5"
+              onClick={handleDeleteConfirm}
+              size="icon"
+              title="Delete"
+              variant="secondary"
+            >
+              <Trash2 className="size-4" />
+            </Button>
+          )}
+        </ButtonGroup>
+      )}
 
-      {/* Save/Download - Mobile Vertical */}
+      {/* Save/Download - Mobile Vertical. Download stays at every width: it is
+          read-only, and it is how someone on a phone takes a workflow away. */}
       <div className="flex flex-col gap-1 lg:hidden">
-        <SaveButton handleSave={actions.handleSave} state={state} />
+        {editorAvailable && (
+          <SaveButton handleSave={actions.handleSave} state={state} />
+        )}
         <DownloadButton actions={actions} state={state} />
       </div>
 
       {/* Save/Download - Desktop Horizontal */}
       <div className="hidden items-center gap-2 lg:flex">
-        {state.isSaving && !isAnonymousUser(state.session?.user) && (
-          <span className="flex items-center gap-1 text-muted-foreground text-xs">
-            <Loader2 className="size-3 animate-spin" />
-            Saving...
-          </span>
+        {editorAvailable &&
+          state.isSaving &&
+          !isAnonymousUser(state.session?.user) && (
+            <span className="flex items-center gap-1 text-muted-foreground text-xs">
+              <Loader2 className="size-3 animate-spin" />
+              Saving...
+            </span>
+          )}
+        {editorAvailable && (
+          <SaveButton handleSave={actions.handleSave} state={state} />
         )}
-        <SaveButton handleSave={actions.handleSave} state={state} />
         <DownloadButton actions={actions} state={state} />
       </div>
 
-      {/* Visibility Toggle */}
-      <VisibilityButton actions={actions} state={state} />
+      {/* Visibility and listing both write to the workflow, so they go where the
+          editor goes. */}
+      {editorAvailable && (
+        <VisibilityButton actions={actions} state={state} />
+      )}
 
-      {/* Listing Button */}
-      <ListingButton actions={actions} state={state} />
+      {editorAvailable && <ListingButton actions={actions} state={state} />}
 
       {shouldDisplayEnableWorkflowSwitch && (
         <button
@@ -1629,7 +1653,15 @@ function ToolbarActions({
         </button>
       )}
 
-      <RunButtonGroup actions={actions} state={state} />
+      {/* The group is the Stop control as well as the Run control (`:1854`
+          returns "Stop Execution" while a run is in flight), so gating it on the
+          editor alone would let a viewport crossing take the cancel away: a phone
+          in landscape starts a run at 932px and rotating to portrait, or a laptop
+          zooming to 200% mid-run, would leave it unstoppable. Withholding the
+          start is the rule; withholding the stop was never part of it. */}
+      {(editorAvailable || state.isExecuting) && (
+        <RunButtonGroup actions={actions} state={state} />
+      )}
     </>
   );
 }

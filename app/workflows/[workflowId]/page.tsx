@@ -14,7 +14,9 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { MobileEditorNotice } from "@/components/workflow/mobile-editor-notice";
 import { NodeConfigPanel } from "@/components/workflow/node-config-panel";
+import { useEditorAvailability } from "@/hooks/use-editor-availability";
 import { useGatedWorkflowWarning } from "@/hooks/use-features";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
@@ -29,6 +31,7 @@ import {
   integrationsVersionAtom,
 } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
+import { editorSurface } from "@/lib/workflow/editor/editor-surface";
 import {
   currentExecutionIdAtom,
   currentWorkflowDescriptionAtom,
@@ -143,6 +146,12 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   const searchParams = useSearchParams();
   const router = useRouter();
   const isMobile = useIsMobile();
+  // The editor half of the same gate the shell uses, so the panel and the notice
+  // cannot disagree about whether this device gets an editor.
+  const editorAvailability = useEditorAvailability();
+  // One predicate for the three surfaces below and for the width effect that
+  // reserves the overlay's column, so they cannot drift apart.
+  const surface = editorSurface(editorAvailability, isMobile);
   const [isGenerating, setIsGenerating] = useAtom(isGeneratingAtom);
   const [_isSaving, setIsSaving] = useAtom(isSavingAtom);
   const [nodes] = useAtom(nodesAtom);
@@ -342,7 +351,11 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   // Set right panel width for AI prompt positioning
   // Only set it after the panel is visible (animated in) to coordinate the animation
   useEffect(() => {
-    if (!isMobile && panelVisible && !panelCollapsed) {
+    // The same condition the panel itself renders under: it is the desktop
+    // overlay only at md and up, so below that the width stays null and the
+    // canvas keeps the full width rather than reserving a column for a panel
+    // that is not there.
+    if (surface === "desktop" && panelVisible && !panelCollapsed) {
       setRightPanelWidth(`${panelWidth}%`);
     } else {
       // During initial render or when collapsed, set to null so prompt is centered
@@ -351,7 +364,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     return () => {
       setRightPanelWidth(null);
     };
-  }, [isMobile, setRightPanelWidth, panelWidth, panelVisible, panelCollapsed]);
+  }, [surface, setRightPanelWidth, panelWidth, panelVisible, panelCollapsed]);
 
   // Handle panel resize
   const handleResizeStart = useCallback(
@@ -1119,22 +1132,25 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       )}
 
       {/* Expand button when panel is collapsed - only show if trigger exists */}
-      {!isMobile && hasTriggerNode && panelCollapsed && (
-        <button
-          className="pointer-events-auto absolute top-[calc(60px+0.75rem)] right-0 z-20 flex size-6 items-center justify-center rounded-l-full border border-r-0 bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
-          onClick={() => {
-            setIsPanelAnimating(true);
-            setPanelCollapsed(false);
-            setTimeout(() => setIsPanelAnimating(false), 350);
-          }}
-          type="button"
-        >
-          <ChevronLeft className="size-4" />
-        </button>
-      )}
+      {editorAvailability === "available" &&
+        !isMobile &&
+        hasTriggerNode &&
+        panelCollapsed && (
+          <button
+            className="pointer-events-auto absolute top-[calc(60px+0.75rem)] right-0 z-20 flex size-6 items-center justify-center rounded-l-full border border-r-0 bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+            onClick={() => {
+              setIsPanelAnimating(true);
+              setPanelCollapsed(false);
+              setTimeout(() => setIsPanelAnimating(false), 350);
+            }}
+            type="button"
+          >
+            <ChevronLeft className="size-4" />
+          </button>
+        )}
 
       {/* Right panel overlay (desktop only) - only show if trigger exists */}
-      {!isMobile && hasTriggerNode && (
+      {surface === "desktop" && hasTriggerNode && (
         <div
           className="pointer-events-auto absolute top-[calc(6rem+var(--app-banner-height,0px))] right-0 bottom-0 z-20 border-l bg-background transition-transform duration-300 ease-out lg:top-[calc(60px+var(--app-banner-height,0px))]"
           style={{
@@ -1176,8 +1192,16 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
         </div>
       )}
 
-      {/* Mobile: NodeConfigPanel renders the overlay trigger button - only show if trigger exists */}
-      {isMobile && hasTriggerNode && <NodeConfigPanel />}
+      {/* Mobile: the editor is not offered at this width, so the node
+          configuration panel is replaced by the notice that says where the
+          surface does exist. The canvas and the toolbar's run controls are
+          withheld by the shell for the same reason. */}
+      {/* Below md on a desktop-shaped session, the panel is the same one a phone
+          would get: the overlay above is `md:flex` at the content level, so
+          rendering it narrower paints an opaque empty strip over the canvas. */}
+      {surface === "narrow" && hasTriggerNode && <NodeConfigPanel />}
+
+      {surface === "notice" && <MobileEditorNotice />}
     </div>
   );
 };
