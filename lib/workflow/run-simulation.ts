@@ -6,6 +6,8 @@ import {
   simulateNativeTransfer,
   simulateTokenTransfer,
 } from "@/lib/execute/simulate";
+import { simulateCallSequence } from "@/lib/execute/simulate-sequence";
+import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { isSolanaChain } from "@/lib/rpc/provider-factory";
 import {
@@ -85,6 +87,12 @@ type NodeSimulationContext = {
   actionType: SupportedActionType;
   config: Record<string, unknown>;
   hasEarlierReachableWrite: boolean;
+  /**
+   * True when the node was simulated against the state its earlier steps
+   * produced, so a revert is what the workflow would actually do and the
+   * "may depend on an earlier step" hedge no longer applies.
+   */
+  chained?: boolean;
 };
 
 type NodeSimulationOutcome =
@@ -280,7 +288,7 @@ function simulationRevertMessage(
   label: string,
   reason: string | null
 ): string {
-  if (context.hasEarlierReachableWrite) {
+  if (context.hasEarlierReachableWrite && !context.chained) {
     if (reason) {
       return `${label} may revert: ${reason}. This may depend on an earlier step in this workflow.`;
     }
@@ -314,7 +322,7 @@ function simulationPreflightMessage(
 ): string {
   const sentence = reason.endsWith(".") ? reason : `${reason}.`;
 
-  if (!context.hasEarlierReachableWrite) {
+  if (!context.hasEarlierReachableWrite || context.chained) {
     return `${label} cannot run: ${sentence}`;
   }
 
@@ -553,89 +561,84 @@ function runSimulator(context: NodeSimulationContext): Promise<SimulateResult> {
   });
 }
 
-async function simulateNode(
+type PreparedNode =
+  | { kind: "ready"; chainId: number }
+  | { kind: "outcome"; outcome: NodeSimulationOutcome };
+
+/** Everything that decides whether a node can be simulated at all, before any chain call. */
+async function prepareNode(
   context: NodeSimulationContext,
   deadlineAt?: number
-): Promise<NodeSimulationOutcome> {
+): Promise<PreparedNode> {
   const dynamicField = findDynamicField(context.actionType, context.config);
-
   if (dynamicField) {
     return {
-      status: "skipped",
-      warning: makeIssue(context, {
-        code: "SIMULATION_DYNAMIC_INPUT",
-        fieldKey: dynamicField,
-        message: `${nodeLabel(
-          context.node,
-          context.actionType
-        )} uses a runtime template in ${dynamicField}, so it cannot be simulated before upstream steps run.`,
-      }),
+      kind: "outcome",
+      outcome: {
+        status: "skipped",
+        warning: makeIssue(context, {
+          code: "SIMULATION_DYNAMIC_INPUT",
+          fieldKey: dynamicField,
+          message: `${nodeLabel(
+            context.node,
+            context.actionType
+          )} uses a runtime template in ${dynamicField}, so it cannot be simulated before upstream steps run.`,
+        }),
+      },
     };
   }
 
   const network = stringValue(context.config.network);
-
   let chainId: number;
-
   try {
     chainId = getChainIdFromNetwork(network);
   } catch (error) {
     return {
-      status: "failed",
-      issue: makeIssue(context, {
-        code: "SIMULATION_INVALID_NETWORK",
-        fieldKey: "network",
-        message:
-          error instanceof Error
-            ? error.message
-            : "The selected network is invalid.",
-      }),
+      kind: "outcome",
+      outcome: {
+        status: "failed",
+        issue: makeIssue(context, {
+          code: "SIMULATION_INVALID_NETWORK",
+          fieldKey: "network",
+          message:
+            error instanceof Error
+              ? error.message
+              : "The selected network is invalid.",
+        }),
+      },
     };
   }
 
   if (isSolanaChain(chainId)) {
     // Preflight is EVM-only by design; Solana writes are skipped without a
     // warning so valid Solana workflows do not surface issues in the editor.
-    return { status: "skipped" };
+    return { kind: "outcome", outcome: { status: "skipped" } };
   }
 
   const signerEligibility = await withSimulationDeadline(
     resolveEoaEligibility(context, chainId),
     deadlineAt
   );
-
   if (!signerEligibility.eligible) {
     if ("error" in signerEligibility) {
-      return { status: "failed", issue: signerEligibility.error };
-    }
-
-    return {
-      status: "skipped",
-      warning: signerEligibility.warning,
-    };
-  }
-
-  let result: SimulateResult;
-
-  try {
-    result = await withSimulationDeadline(runSimulator(context), deadlineAt);
-  } catch (error) {
-    if (error instanceof WorkflowSimulationDeadlineError) {
-      throw error;
+      return {
+        kind: "outcome",
+        outcome: { status: "failed", issue: signerEligibility.error },
+      };
     }
     return {
-      status: "skipped",
-      warning: makeIssue(context, {
-        code: "SIMULATION_UNAVAILABLE",
-        fieldKey: "network",
-        message: `${nodeLabel(
-          context.node,
-          context.actionType
-        )} could not be simulated because the simulation service was unavailable. You can still run the workflow.`,
-      }),
+      kind: "outcome",
+      outcome: { status: "skipped", warning: signerEligibility.warning },
     };
   }
+  return { kind: "ready", chainId };
+}
 
+/** The per-node outcome for one simulator answer, chained or not. */
+function outcomeFromResult(
+  context: NodeSimulationContext,
+  result: SimulateResult
+): NodeSimulationOutcome {
   if (result.success) {
     return { status: "simulated" };
   }
@@ -701,7 +704,265 @@ async function simulateNode(
 }
 
 /**
+ * The edges between nodes that exist, with the counts the run logic needs.
+ * An edge whose endpoint was deleted is dropped here once, so the walk and
+ * the run bounds see the same graph.
+ */
+type Graph = {
+  out: Map<string, string[]>;
+  inDegree: Map<string, number>;
+  has: (source: string, target: string) => boolean;
+};
+
+function graphOf(
+  nodes: WorkflowSimulationNode[],
+  edges: WorkflowSimulationEdge[] | undefined
+): Graph {
+  const ids = new Set(nodes.map((node) => node.id));
+  const out = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+  const pairs = new Set<string>();
+  for (const edge of edges ?? []) {
+    if (typeof edge.source !== "string" || typeof edge.target !== "string") {
+      continue;
+    }
+    if (!(ids.has(edge.source) && ids.has(edge.target))) {
+      continue;
+    }
+    out.set(edge.source, [...(out.get(edge.source) ?? []), edge.target]);
+    inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1);
+    pairs.add(`${edge.source}->${edge.target}`);
+  }
+  return {
+    out,
+    inDegree,
+    has: (source, target) => pairs.has(`${source}->${target}`),
+  };
+}
+
+/**
+ * The order the engine would run the nodes in, following edges from the
+ * trigger, rather than the order they were stored in. The walk is depth
+ * first, so a path stays contiguous: after a Condition, one arm is walked to
+ * its end before the other starts, which is what lets consecutive writes on
+ * either arm form a run. A node with several parents waits for all of them.
+ * Nodes the edges do not reach keep their array position at the end so
+ * nothing is dropped; with no edges at all the array order is the only order
+ * there is.
+ */
+function executionOrder(
+  nodes: WorkflowSimulationNode[],
+  graph: Graph
+): WorkflowSimulationNode[] {
+  if (graph.inDegree.size === 0) {
+    return nodes;
+  }
+  const byId = new Map(nodes.map((node) => [node.id, node] as const));
+  const ordered: WorkflowSimulationNode[] = [];
+  const seen = new Set<string>();
+  const remaining = new Map(graph.inDegree);
+  // Roots in array order; reversed so the stack pops the first one first.
+  const stack = nodes
+    .filter((node) => (graph.inDegree.get(node.id) ?? 0) === 0)
+    .map((node) => node.id)
+    .reverse();
+  for (let id = stack.pop(); id !== undefined; id = stack.pop()) {
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    const node = byId.get(id);
+    if (node !== undefined) {
+      ordered.push(node);
+    }
+    const released: string[] = [];
+    for (const next of graph.out.get(id) ?? []) {
+      const left = (remaining.get(next) ?? 1) - 1;
+      remaining.set(next, left);
+      if (left <= 0) {
+        released.push(next);
+      }
+    }
+    // First edge first: the last pushed is the next popped.
+    for (const next of released.reverse()) {
+      stack.push(next);
+    }
+  }
+  for (const node of nodes) {
+    if (!seen.has(node.id)) {
+      ordered.push(node);
+    }
+  }
+  return ordered;
+}
+
+/** A node prepared and ready to simulate, waiting to see whether it joins a run. */
+type ReadyNode = {
+  context: NodeSimulationContext;
+  chainId: number;
+  /**
+   * Carries native value. Kept on the single-call path: only that path can
+   * attribute a native shortfall to the funding account with the amount, and
+   * the sequence simulator deliberately does not check value.
+   */
+  payable: boolean;
+};
+
+function carriesNativeValue(config: Record<string, unknown>): boolean {
+  const value = optionalStringValue(config.ethValue);
+  if (value === undefined || value.trim() === "") {
+    return false;
+  }
+  const parsed = Number(value);
+  return !(Number.isFinite(parsed) && parsed === 0);
+}
+
+/**
+ * A run is a maximal stretch of consecutive `web3/write-contract` nodes on
+ * one chain along one linear path: each hands the next its state, so they
+ * are simulated as one sequence. Anything that breaks that shape - a node
+ * with more than one parent, a chain change, a transfer node, a node the
+ * edges do not connect, a write carrying native value - ends the run, and
+ * that node starts over. A write that also feeds a second branch still
+ * chains into the branch the walk takes next; the other branch starts over.
+ *
+ * A run is also capped at what the sequence simulator accepts. The node after
+ * the cap starts a new run and keeps the earlier-step hedge, which is right
+ * for it: not all of its earlier steps were applied.
+ */
+function extendsRun(
+  run: ReadyNode[],
+  candidate: ReadyNode,
+  graph: Graph
+): boolean {
+  const previous = run.at(-1);
+  if (previous === undefined) {
+    return true;
+  }
+  return (
+    run.length < MAX_SEQUENCE_CALLS &&
+    previous.context.actionType === "web3/write-contract" &&
+    candidate.context.actionType === "web3/write-contract" &&
+    !(previous.payable || candidate.payable) &&
+    previous.chainId === candidate.chainId &&
+    (graph.inDegree.get(candidate.context.node.id) ?? 0) === 1 &&
+    graph.has(previous.context.node.id, candidate.context.node.id)
+  );
+}
+
+async function simulateRun(
+  run: ReadyNode[],
+  deadlineAt?: number
+): Promise<NodeSimulationOutcome[]> {
+  if (run.length === 1) {
+    const only = run[0];
+    return [await simulateSingle(only.context, deadlineAt)];
+  }
+  const { organizationId } = run[0].context;
+  let sequence: Awaited<ReturnType<typeof simulateCallSequence>>;
+  try {
+    sequence = await withSimulationDeadline(
+      simulateCallSequence({
+        organizationId,
+        network: stringValue(run[0].context.config.network),
+        calls: run.map(({ context }) => ({
+          contractAddress: stringValue(context.config.contractAddress),
+          abi: jsonStringValue(context.config.abi),
+          functionName:
+            optionalStringValue(context.config.abiFunction) ??
+            stringValue(context.config.functionName),
+          functionArgs: optionalJsonStringValue(context.config.functionArgs),
+          value: optionalStringValue(context.config.ethValue),
+        })),
+      }),
+      deadlineAt
+    );
+  } catch (error) {
+    if (error instanceof WorkflowSimulationDeadlineError) {
+      throw error;
+    }
+    return simulateEach(run, deadlineAt);
+  }
+  // A sequence that did not run - no mechanism on this chain, an unresolved
+  // RPC, a call that failed validation before anything was sent - must not
+  // cost the nodes the per-node result they would have had on their own.
+  if (sequence.mechanism === null) {
+    return simulateEach(run, deadlineAt);
+  }
+  const outcomes: NodeSimulationOutcome[] = [];
+  for (const [index, { context }] of run.entries()) {
+    const result = sequence.results[index];
+    if (!result || (!result.success && result.failureKind === "unavailable")) {
+      outcomes.push(await simulateSingle(context, deadlineAt));
+      continue;
+    }
+    const chained = chainedInRun(run, index);
+    // Only a node whose earlier steps were all applied loses the hedge. The
+    // sequence starts from latest state and applies the run alone, so that
+    // holds for a later node only when nothing reachable ran before the run.
+    outcomes.push(outcomeFromResult({ ...context, chained }, result));
+  }
+  return outcomes;
+}
+
+function chainedInRun(run: ReadyNode[], index: number): boolean {
+  return index > 0 && !run[0].context.hasEarlierReachableWrite;
+}
+
+/** Per-node simulation for a run the sequence could not answer. */
+async function simulateEach(
+  run: ReadyNode[],
+  deadlineAt?: number
+): Promise<NodeSimulationOutcome[]> {
+  const outcomes: NodeSimulationOutcome[] = [];
+  for (const { context } of run) {
+    outcomes.push(await simulateSingle(context, deadlineAt));
+  }
+  return outcomes;
+}
+
+function unavailableOutcome(
+  context: NodeSimulationContext
+): NodeSimulationOutcome {
+  return {
+    status: "skipped",
+    warning: makeIssue(context, {
+      code: "SIMULATION_UNAVAILABLE",
+      fieldKey: "network",
+      message: `${nodeLabel(
+        context.node,
+        context.actionType
+      )} could not be simulated because the simulation service was unavailable. You can still run the workflow.`,
+    }),
+  };
+}
+
+/** One node on its own, after prepareNode said it is ready. */
+async function simulateSingle(
+  context: NodeSimulationContext,
+  deadlineAt?: number
+): Promise<NodeSimulationOutcome> {
+  let result: SimulateResult;
+  try {
+    result = await withSimulationDeadline(runSimulator(context), deadlineAt);
+  } catch (error) {
+    if (error instanceof WorkflowSimulationDeadlineError) {
+      throw error;
+    }
+    return unavailableOutcome(context);
+  }
+  return outcomeFromResult(context, result);
+}
+
+/**
  * Simulate eligible static EVM write nodes before an interactive workflow run.
+ *
+ * Consecutive write-contract nodes on one chain along one path are simulated
+ * as a sequence, each against the state the one before it produced, so the
+ * second call of an approve-then-deposit pair no longer warns on allowance
+ * every time. Nodes that cannot be placed in such a run - after a fork, on
+ * another chain, behind a template - are simulated on their own against
+ * latest state, exactly as before.
  *
  * This function never signs, broadcasts, creates execution records, reserves
  * spending limits or performs billing operations.
@@ -717,8 +978,41 @@ export async function runWorkflowSimulation({
   let skippedNodeCount = 0;
   let reachableWriteCount = 0;
   const reachable = reachableNodeIds(nodes, edges);
+  const graph = graphOf(nodes, edges);
+  const indexById = new Map(
+    nodes.map((node, index) => [node.id, index] as const)
+  );
 
-  for (const [nodeIndex, node] of nodes.entries()) {
+  const record = (outcome: NodeSimulationOutcome): void => {
+    if (outcome.status === "simulated") {
+      simulatedNodeCount += 1;
+      return;
+    }
+    // A determined failure still only warns: the editor keeps Run Anyway
+    // available for every simulation outcome.
+    if (outcome.status === "failed") {
+      warnings.push(outcome.issue);
+      return;
+    }
+    skippedNodeCount += 1;
+    if (outcome.warning) {
+      warnings.push(outcome.warning);
+    }
+  };
+
+  let run: ReadyNode[] = [];
+  const flush = async (): Promise<void> => {
+    if (run.length === 0) {
+      return;
+    }
+    const outcomes = await simulateRun(run, deadlineAt);
+    for (const outcome of outcomes) {
+      record(outcome);
+    }
+    run = [];
+  };
+
+  for (const node of executionOrder(nodes, graph)) {
     const remaining = remainingDeadlineMs(deadlineAt);
     if (remaining !== null && remaining <= 0) {
       throw new WorkflowSimulationDeadlineError();
@@ -730,48 +1024,44 @@ export async function runWorkflowSimulation({
     if (node.data?.enabled === false) {
       continue;
     }
-
     if (node.type !== "action" && node.data?.type !== "action") {
       continue;
     }
 
     const config = node.data?.config;
     const actionType = config?.actionType ?? node.data?.actionType;
-
     if (!(config && isSupportedActionType(actionType))) {
       continue;
     }
 
-    const outcome = await simulateNode(
-      {
-        node,
-        nodeIndex,
-        organizationId,
-        actionType,
-        config,
-        hasEarlierReachableWrite: reachableWriteCount > 0,
-      },
-      deadlineAt
-    );
+    const context: NodeSimulationContext = {
+      node,
+      nodeIndex: indexById.get(node.id) ?? 0,
+      organizationId,
+      actionType,
+      config,
+      hasEarlierReachableWrite: reachableWriteCount > 0,
+    };
     reachableWriteCount += 1;
 
-    if (outcome.status === "simulated") {
-      simulatedNodeCount += 1;
+    const prepared = await prepareNode(context, deadlineAt);
+    if (prepared.kind === "outcome") {
+      await flush();
+      record(prepared.outcome);
       continue;
     }
 
-    // A determined failure still only warns: the editor keeps Run Anyway
-    // available for every simulation outcome.
-    if (outcome.status === "failed") {
-      warnings.push(outcome.issue);
-      continue;
+    const ready: ReadyNode = {
+      context,
+      chainId: prepared.chainId,
+      payable: carriesNativeValue(config),
+    };
+    if (!extendsRun(run, ready, graph)) {
+      await flush();
     }
-
-    skippedNodeCount += 1;
-    if (outcome.warning) {
-      warnings.push(outcome.warning);
-    }
+    run.push(ready);
   }
+  await flush();
 
   return {
     warnings,

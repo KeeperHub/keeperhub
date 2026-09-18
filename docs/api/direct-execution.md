@@ -1104,8 +1104,12 @@ The simulation is advisory and never blocks execution. Reverts, funding shortfal
 
 Only write nodes reachable from a trigger are simulated. Disconnected write nodes are ignored.
 
-Each write is simulated independently against the current chain state. A later write may appear to revert when it depends on an earlier workflow step whose state change has not yet been applied. Later-write warnings therefore state that the result may depend on an earlier step in the workflow.
+Consecutive Write Contract nodes on one chain along one path are simulated as a sequence, each against the state the node before it produced, so an approve followed by a deposit is judged as it will actually run rather than warning on allowance because the approve has not landed. The nodes are taken in the order the edges connect them, not the order they were saved. The state is carried by `eth_simulateV1` where the chain's node offers it and by trace-derived `eth_call` overrides where it does not. If the sequence cannot be answered at all, because the chain's node offers neither mechanism or the RPC is unavailable, each node of the run is simulated on its own against current chain state instead, so no node loses the result it would have had before sequencing existed. A run holds at most ten nodes, the same limit as `calls` on the direct-execution sequence endpoint; an eleventh consecutive write starts a new run.
 
-The endpoint is protected by rate limiting, a maximum of 50 workflow nodes, and a 15-second simulation deadline.
+A node that cannot join such a run is simulated on its own against current chain state: a write with more than one incoming connection, the second branch of a fan-out (the first branch continues the run), a write on a different chain from the one before it, a write whose inputs use runtime templates, a write that sends native value (only the single-call path can report a funding shortfall with the amount), the first write past the ten-node limit, and native and token transfers. A warning on such a node may depend on an earlier workflow step whose state change has not been applied, and says so. A warning on a node simulated within a sequence drops that hedge only when nothing else reachable ran before the sequence started; a run that begins after a transfer or another earlier write keeps it, because the sequence applied the run alone.
+
+Warnings are returned in the order the nodes would run, following the connections from the trigger, rather than in the order the nodes are stored. Each warning still carries the node id and a `parameterPath` into the stored `nodes` array.
+
+The endpoint is protected by rate limiting, a maximum of 50 workflow nodes, a 15-second simulation deadline, and a ten-call bound on each simulated sequence.
 
 The preflight does not sign or broadcast transactions, create execution records, reserve spending limits, or perform billing operations.
