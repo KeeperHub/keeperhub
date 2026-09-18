@@ -10,7 +10,7 @@ End state: the chain is seeded in `chains` + `explorer_configs`, has at least on
 </objective>
 
 <context>
-Chain seed data: @scripts/seed/seed-chain-data.ts
+Chain seed script: @scripts/seed/seed-chains.ts
 Stablecoin seed script: @scripts/seed/seed-tokens.ts
 RPC config (chain ID to RPC URL mapping): @lib/rpc/rpc-config.ts
 Wallet modal (consumes supported_tokens via /api/supported-tokens): @components/overlays/wallet-overlay.tsx
@@ -40,7 +40,7 @@ Needed facts (ask the user for anything missing):
 Idempotency matters. For the target chain ID, check:
 
 - `lib/rpc/rpc-config.ts`: does `CHAIN_CONFIG[<id>]` exist? Does `PUBLIC_RPCS` have entries?
-- `scripts/seed/seed-chain-data.ts`: is there an entry in `DEFAULT_CHAINS`? An entry in `EXPLORER_CONFIG_TEMPLATES`? An entry in `chainToDefaultIdMap`?
+- `scripts/seed/seed-chains.ts`: is there an entry in `DEFAULT_CHAINS`? An entry in `EXPLORER_CONFIG_TEMPLATES`? An entry in `chainToDefaultIdMap`?
 - `scripts/seed/seed-tokens.ts`: any `TOKEN_CONFIGS` rows?
 - Database (dev): `SELECT chain_id, name FROM chains WHERE chain_id = <id>`; `SELECT COUNT(*) FROM supported_tokens WHERE chain_id = <id>`.
 
@@ -54,7 +54,7 @@ Edit [lib/rpc/rpc-config.ts](lib/rpc/rpc-config.ts):
 
 ### 4. Wire up chain seed (if missing)
 
-Edit [scripts/seed/seed-chain-data.ts](scripts/seed/seed-chain-data.ts):
+Edit [scripts/seed/seed-chains.ts](scripts/seed/seed-chains.ts):
 - Append a `NewChain` entry to `DEFAULT_CHAINS` following the existing pattern (use `getChainConfigValue`, `getRpcUrlByChainId`, `getWssUrl`, `getUsePrivateMempoolRpc`, `getPrivateRpcUrl`).
 - Add the chain to `chainToDefaultIdMap` (name to default chainId).
 - Add an entry to `EXPLORER_CONFIG_TEMPLATES` keyed by chain ID. Etherscan V2 chains use `explorerApiUrl: "https://api.etherscan.io/v2/api"`; Blockscout chains use their own endpoint.
@@ -131,7 +131,7 @@ If the chain requires env vars (private RPC, API keys), coordinate the Helm/Para
 
 <success_criteria>
 - `lib/rpc/rpc-config.ts` has `CHAIN_CONFIG[<id>]` and public RPC entries.
-- `scripts/seed/seed-chain-data.ts` has the chain in `DEFAULT_CHAINS`, `chainToDefaultIdMap`, and `EXPLORER_CONFIG_TEMPLATES`.
+- `scripts/seed/seed-chains.ts` has the chain in `DEFAULT_CHAINS`, `chainToDefaultIdMap`, and `EXPLORER_CONFIG_TEMPLATES`.
 - `scripts/seed/seed-tokens.ts` has at least one `TOKEN_CONFIGS` row per tracked stablecoin, all addresses lowercase and verified on-chain by `scripts/verify-token.ts`.
 - Local seed runs complete without errors; `/api/supported-tokens?chainId=<id>` returns the expected payload; wallet modal renders the new chain card.
 - `pnpm check`, `pnpm type-check` and `pnpm fix` pass.

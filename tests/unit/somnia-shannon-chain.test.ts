@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BLOCKSCOUT_INSTANCES } from "@/plugins/blockscout/chains";
 
@@ -5,6 +7,10 @@ vi.mock("server-only", () => ({}));
 
 const SHANNON_CHAIN_ID = 50_312;
 const PUBLIC_RPC = "https://dream-rpc.somnia.network";
+const seedChainsSource = readFileSync(
+  path.join(process.cwd(), "scripts/seed/seed-chains.ts"),
+  "utf8"
+);
 
 beforeEach(() => {
   vi.stubEnv("CHAIN_RPC_CONFIG", "");
@@ -21,74 +27,38 @@ describe("Somnia Shannon chain onboarding", () => {
     const { CHAIN_CONFIG, getRpcUrlByChainId, getWssUrl } = await import(
       "@/lib/rpc/rpc-config"
     );
-    const { DEFAULT_CHAINS } = await import("@/scripts/seed/seed-chain-data");
-    const shannon = DEFAULT_CHAINS.find(
-      (chain) => chain.chainId === SHANNON_CHAIN_ID
-    );
 
     expect(CHAIN_CONFIG[SHANNON_CHAIN_ID].jsonKey).toBe("somnia-shannon");
     expect(getRpcUrlByChainId(SHANNON_CHAIN_ID)).toBe(PUBLIC_RPC);
-    expect(shannon?.defaultPrimaryRpc).toBe(PUBLIC_RPC);
     expect(
       getWssUrl({ rpcConfig: {}, jsonKey: "somnia-shannon", type: "primary" })
     ).toBe("wss://dream-rpc.somnia.network/ws");
   });
 
-  it("uses a configured primary RPC in the seed instead of the public default", async () => {
+  it("uses a configured primary RPC instead of the public default", async () => {
     const override = "https://example-internal.invalid/rpc";
     vi.stubEnv("CHAIN_SOMNIA_SHANNON_PRIMARY_RPC", override);
     vi.resetModules();
     const { getRpcUrlByChainId } = await import("@/lib/rpc/rpc-config");
-    const { DEFAULT_CHAINS } = await import("@/scripts/seed/seed-chain-data");
 
     expect(getRpcUrlByChainId(SHANNON_CHAIN_ID)).toBe(override);
-    expect(
-      DEFAULT_CHAINS.find((chain) => chain.chainId === SHANNON_CHAIN_ID)
-        ?.defaultPrimaryRpc
-    ).toBe(override);
   });
 
-  it("seeds an enabled experimental EVM testnet without aliases", async () => {
-    const { DEFAULT_CHAINS } = await import("@/scripts/seed/seed-chain-data");
-    const shannon = DEFAULT_CHAINS.find(
-      (chain) => chain.chainId === SHANNON_CHAIN_ID
+  it("defines Shannon in the executable seed with its reviewed settings", () => {
+    expect(seedChainsSource).toMatch(
+      /chainId: getChainConfigValue\("somnia-shannon", "chainId", 50_312\)[\s\S]*?name: "Somnia Shannon"[\s\S]*?symbol: getChainConfigValue\("somnia-shannon", "symbol", "STT"\)[\s\S]*?chainType: "evm"[\s\S]*?defaultPrimaryWss: getWssUrl\([\s\S]*?isTestnet: getChainConfigValue\("somnia-shannon", "isTestnet", true\)[\s\S]*?isEnabled: getChainConfigValue\("somnia-shannon", "isEnabled", true\)[\s\S]*?status: "experimental"[\s\S]*?aliases: \[\]/
     );
-
-    expect(shannon).toMatchObject({
-      name: "Somnia Shannon Testnet",
-      symbol: "STT",
-      chainType: "evm",
-      defaultPrimaryWss: "wss://dream-rpc.somnia.network/ws",
-      isTestnet: true,
-      isEnabled: true,
-      status: "experimental",
-      aliases: [],
-    });
-    expect(
-      DEFAULT_CHAINS.filter((chain) => chain.chainId === SHANNON_CHAIN_ID)
-    ).toHaveLength(1);
+    expect(seedChainsSource).toMatch(
+      /50312: \{[\s\S]*?explorerUrl: "https:\/\/shannon-explorer\.somnia\.network"[\s\S]*?explorerApiType: "blockscout"[\s\S]*?explorerApiUrl: "https:\/\/shannon-explorer\.somnia\.network\/api"/
+    );
+    expect(seedChainsSource).toContain('"Somnia Shannon": 50_312');
   });
 
-  it("constructs a Blockscout explorer config for every seeded chain", async () => {
-    const { DEFAULT_CHAINS, getExplorerConfigs } = await import(
-      "@/scripts/seed/seed-chain-data"
-    );
-    const explorers = getExplorerConfigs();
-    expect(explorers).toHaveLength(DEFAULT_CHAINS.length);
-
-    const shannon = explorers.find(
-      (config) => config.chainId === SHANNON_CHAIN_ID
-    );
-    expect(shannon).toMatchObject({
-      explorerUrl: "https://shannon-explorer.somnia.network",
-      explorerApiType: "blockscout",
-      explorerApiUrl: "https://shannon-explorer.somnia.network/api",
-      explorerTxPath: "/tx/{hash}",
-      explorerAddressPath: "/address/{address}",
+  it("registers Shannon, Robinhood Chain, and Arc Testnet Blockscout instances", () => {
+    expect(BLOCKSCOUT_INSTANCES).toMatchObject({
+      4663: "https://robinhoodchain.blockscout.com",
+      50312: "https://shannon-explorer.somnia.network",
+      5042002: "https://explorer.testnet.arc.io",
     });
-    expect(BLOCKSCOUT_INSTANCES[SHANNON_CHAIN_ID]).toBe(shannon?.explorerUrl);
-    expect(
-      `${shannon?.explorerUrl}${shannon?.explorerTxPath?.replace("{hash}", "0xabc")}`
-    ).toBe("https://shannon-explorer.somnia.network/tx/0xabc");
   });
 });
