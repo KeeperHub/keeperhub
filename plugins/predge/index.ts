@@ -49,7 +49,7 @@ const predgePlugin: IntegrationPlugin = {
       configKey: "PREDGE_SIGNER_KEY_ID",
       envVar: "PREDGE_SIGNER_KEY_ID",
       helpText:
-        "Optional. Overrides Predge's published signing key with your own deployment's key. Leave blank to verify against Predge's published key. The key the response carries is never trusted on its own.",
+        "Optional. Overrides Predge's published signing key with your own deployment's key. Leave blank to verify against Predge's published key. The key the response carries is never trusted on its own. If steps start failing with \"signer is not the pinned Predge key\", Predge has rotated its key: put the new published key here to keep running until a plugin version ships with it.",
     },
     {
       id: "maxSignalAgeSeconds",
