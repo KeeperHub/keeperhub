@@ -286,6 +286,7 @@ const VALID_ABI = JSON.stringify([
 
 const MOCK_EXECUTED_CALL = {
   contractAddress: "0x1234567890123456789012345678901234567890",
+  from: "0x00000000000000000000000000000000000000d1",
   functionName: "transfer",
   functionSignature: "transfer(address,uint256)",
   args: { to: "0xrecipient", amount: "1000" },

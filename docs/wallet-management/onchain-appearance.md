@@ -33,7 +33,7 @@ inside it.
 
 | Field | What you see | Why |
 |-------|--------------|-----|
-| From | An address you do not recognise | The relayer that submitted and paid for the transaction |
+| From | An address you do not recognise | The relayer that submitted and paid for the transaction. The wallet whose call actually ran is in `result.executedCall.from` on the [execution status](/api/direct-execution#who-acted) response |
 | To | A contract you do not recognise | The contract that executes the call on your wallet's behalf |
 | Value | `0` | No native token is attached to the outer call |
 | Status | Success | The transaction did what your workflow asked |

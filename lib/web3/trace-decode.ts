@@ -59,6 +59,8 @@ export type DecodedCall = FlatCall & {
 export type ExecutedCall = {
   /** The contract the decoded call actually hit. */
   contractAddress: string;
+  /** The matched frame's `from`: msg.sender, except on a DELEGATECALL frame where it is the delegator. */
+  from: string;
   functionName: string;
   functionSignature: string;
   args: Record<string, string>;
@@ -297,6 +299,7 @@ export async function resolveExecutedCall(
   const topLevelTo = (root.to ?? "").toLowerCase();
   return {
     contractAddress: decoded.to,
+    from: decoded.from,
     functionName: decoded.functionName,
     functionSignature: decoded.functionSignature,
     args: decoded.args,
