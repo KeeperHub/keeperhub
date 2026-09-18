@@ -374,6 +374,83 @@ describe("protocolWriteStep", () => {
       });
     });
 
+    it("preserves JSON array inputs for write ABI encoding", async () => {
+      const queueMeta: ProtocolMeta = {
+        protocolSlug: "compound",
+        contractKey: "comet",
+        functionName: "claimMany",
+        actionType: "write",
+      };
+      const protocolWithArray = {
+        ...COMPOUND_PROTOCOL,
+        actions: [
+          {
+            slug: "claim-many",
+            label: "Claim Many",
+            type: "write" as const,
+            contract: "comet",
+            function: "claimMany",
+            inputs: [
+              {
+                name: "requestIds",
+                type: "uint256[]",
+                label: "Request IDs",
+                default: '["12","34"]',
+              },
+            ],
+          },
+        ],
+      };
+
+      mockResolveProtocolMeta.mockReturnValue(queueMeta);
+      mockGetProtocol.mockReturnValue(protocolWithArray);
+      mockResolveAbi.mockResolvedValue({ abi: "[]" });
+      mockWriteContractCore.mockResolvedValue({ success: true });
+
+      await protocolWriteStep(makeInput({ requestIds: '["12","34"]' }));
+
+      const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+      expect(JSON.parse(coreCall.functionArgs)).toEqual([["12", "34"]]);
+    });
+
+    it("normalizes JSON array defaults before write ABI encoding", async () => {
+      const queueMeta: ProtocolMeta = {
+        protocolSlug: "compound",
+        contractKey: "comet",
+        functionName: "claimMany",
+        actionType: "write",
+      };
+      const protocolWithArrayDefault = {
+        ...COMPOUND_PROTOCOL,
+        actions: [
+          {
+            slug: "claim-many",
+            label: "Claim Many",
+            type: "write" as const,
+            contract: "comet",
+            function: "claimMany",
+            inputs: [
+              {
+                name: "requestIds",
+                type: "uint256[]",
+                label: "Request IDs",
+                default: '["12","34"]',
+              },
+            ],
+          },
+        ],
+      };
+      mockResolveProtocolMeta.mockReturnValue(queueMeta);
+      mockGetProtocol.mockReturnValue(protocolWithArrayDefault);
+      mockResolveAbi.mockResolvedValue({ abi: "[]" });
+      mockWriteContractCore.mockResolvedValue({ success: true });
+
+      await protocolWriteStep(makeInput({ requestIds: undefined }));
+
+      const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+      expect(JSON.parse(coreCall.functionArgs)).toEqual([["12", "34"]]);
+    });
+
     it("propagates writeContractCore failure result", async () => {
       mockResolveProtocolMeta.mockReturnValue(COMPOUND_SUPPLY_META);
       mockGetProtocol.mockReturnValue(COMPOUND_PROTOCOL);

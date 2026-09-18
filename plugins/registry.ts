@@ -61,6 +61,7 @@ export type ActionConfigFieldBase = {
     | "protocol-bool" // Boolean select (true/false) with template variable support
     | "protocol-bytes" // Hex input with 0x-prefix validation
     | "protocol-eth-value" // Decimal ETH value input (e.g. 0.1, 1.5)
+    | "protocol-array" // Structured scalar array (e.g. uint256[])
     | "protocol-tuple-array"; // Structured array of tuple items (e.g. tokenAmounts)
 
   // For chain-select: filter by chain type - one ("evm") or several (["evm", "solana"])
