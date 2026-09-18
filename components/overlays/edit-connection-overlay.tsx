@@ -14,16 +14,13 @@ import {
   type DatabaseTab,
 } from "@/components/database-connection-form";
 import { getSecretConfigKeys } from "@/lib/integrations/secret-fields";
+import { SYSTEM_INTEGRATION_LABELS } from "@/lib/integrations/system";
 import { getCustomIntegrationFormHandler } from "@/lib/workflow/editor/extension-registry";
 import type { IntegrationConfig } from "@/lib/types/integration";
 import { getIntegration, getIntegrationLabels } from "@/plugins/registry";
 import { ConfirmOverlay } from "./confirm-overlay";
 import { Overlay } from "./overlay";
 import { useOverlay } from "./overlay-provider";
-
-const SYSTEM_INTEGRATION_LABELS: Record<string, string> = {
-  database: "Database",
-};
 
 const getLabel = (type: string): string => {
   const labels = getIntegrationLabels() as Record<string, string>;

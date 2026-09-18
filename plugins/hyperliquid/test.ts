@@ -1,5 +1,6 @@
+import { ZERO_ADDRESS } from "@/lib/web3/address";
+
 const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 export async function testHyperliquid(
   _credentials: Record<string, string>

@@ -20,6 +20,11 @@ import {
 } from "@/components/database-connection-form";
 import { getCustomIntegrationFormHandler } from "@/lib/workflow/editor/extension-registry";
 import { integrationsAtom } from "@/lib/integrations-store";
+import {
+  SYSTEM_INTEGRATION_DESCRIPTIONS,
+  SYSTEM_INTEGRATION_LABELS,
+  SYSTEM_INTEGRATION_TYPES,
+} from "@/lib/integrations/system";
 import type { IntegrationType } from "@/lib/types/integration";
 import {
   getIntegration,
@@ -31,15 +36,6 @@ import { ConfirmOverlay } from "./confirm-overlay";
 import { Overlay } from "./overlay";
 import { OverlayFooter } from "./overlay-footer";
 import { useOverlay } from "./overlay-provider";
-
-// System integrations that don't have plugins
-const SYSTEM_INTEGRATION_TYPES: IntegrationType[] = ["database"];
-const SYSTEM_INTEGRATION_LABELS: Record<string, string> = {
-  database: "Database",
-};
-const SYSTEM_INTEGRATION_DESCRIPTIONS: Record<string, string> = {
-  database: "Connect to PostgreSQL databases",
-};
 
 // Get all integration types (plugins + system)
 const getIntegrationTypes = (): IntegrationType[] => [

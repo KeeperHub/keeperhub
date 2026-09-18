@@ -7,8 +7,8 @@ import {
 } from "@/lib/workflow/executor/step-handler";
 import type { EvmChainCredentials } from "../credentials";
 import { callEvmRpc, isHexResult } from "./evm-rpc-core";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
-const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const HEX_PREFIX_RE = /^0x/;
 const BALANCE_OF_SELECTOR = "0x70a08231";
 
@@ -32,13 +32,13 @@ async function stepHandler(
   input: Erc20BalanceCoreInput,
   credentials: EvmChainCredentials
 ): Promise<Erc20BalanceResult> {
-  if (!ADDRESS_RE.test(input.token)) {
+  if (!EVM_ADDRESS_RE.test(input.token)) {
     return {
       success: false,
       error: "token must be a 20-byte hex address (0x... 40 hex chars)",
     };
   }
-  if (!ADDRESS_RE.test(input.holder)) {
+  if (!EVM_ADDRESS_RE.test(input.holder)) {
     return {
       success: false,
       error: "holder must be a 20-byte hex address (0x... 40 hex chars)",

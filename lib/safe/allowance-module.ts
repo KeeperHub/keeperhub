@@ -9,7 +9,7 @@
  */
 
 import { ethers } from "ethers";
-import { ZERO_ADDRESS } from "@/lib/safe/address";
+import { ZERO_ADDRESS } from "@/lib/web3/address";
 
 /**
  * Safe v1.4.1 interface (only the functions we need to build calldata for

@@ -1,4 +1,5 @@
 import { ADDRESS_BOOK_SELECTION_KEY } from "@/lib/address-book-selection";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST } from "@/lib/workflow/executor/system-action-types";
 import {
@@ -27,7 +28,6 @@ const RESERVED_CONFIG_KEYS = new Set([
 ]);
 
 const TEMPLATE_VALUE_PATTERN = /\{\{[^}]+}}/;
-const ETH_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const HEX_BYTES_PATTERN = /^0x(?:[0-9a-fA-F]{2})*$/;
 const INTEGER_PATTERN = /^-?\d+$/;
 const UNSIGNED_INTEGER_PATTERN = /^\d+$/;
@@ -390,7 +390,7 @@ function validateFieldValue(
       return { valid: true };
     case "protocol-address":
       return typeof value === "string" &&
-        (valueContainsTemplate(value) || ETH_ADDRESS_PATTERN.test(value))
+        (valueContainsTemplate(value) || EVM_ADDRESS_RE.test(value))
         ? { valid: true }
         : { valid: false, expected: "address", received: value };
     case "protocol-uint":
@@ -459,7 +459,7 @@ function validateFieldValue(
     default:
       if (field.isAddressField) {
         return typeof value === "string" &&
-          (valueContainsTemplate(value) || ETH_ADDRESS_PATTERN.test(value))
+          (valueContainsTemplate(value) || EVM_ADDRESS_RE.test(value))
           ? { valid: true }
           : { valid: false, expected: "address", received: value };
       }

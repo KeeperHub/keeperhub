@@ -14,6 +14,7 @@ import { useStartBuilding } from "@/lib/hooks/use-start-building";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import type { SuggestionDescriptor } from "@/lib/scan/suggestions/types";
 import type { ScanResponse } from "@/lib/scan/types";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
   getAppName,
   getCustomLogo,
@@ -27,14 +28,13 @@ type ScanState =
   | "rate-limited"
   | "error";
 
-const ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
 // Name-shaped query (mirrors ENS_NAME_REGEX on the server): at least one dot,
 // no whitespace, not an 0x address. The server resolves it via ENS.
 const ENS_QUERY_REGEX = /^(?!0x)[^\s.]+(?:\.[^\s.]+)+$/i;
 
 /** A query is scannable if it is a raw EVM address or a name we can resolve. */
 function isScannableQuery(query: string): boolean {
-  return ADDRESS_REGEX.test(query) || ENS_QUERY_REGEX.test(query);
+  return EVM_ADDRESS_RE.test(query) || ENS_QUERY_REGEX.test(query);
 }
 
 // Short display labels keep the chip row on a single line.

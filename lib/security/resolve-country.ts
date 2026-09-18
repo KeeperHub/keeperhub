@@ -23,6 +23,7 @@
  * Concurrent lookups for the same IP coalesce onto one chain walk.
  */
 
+import { DAY_MS } from "@/lib/utils/duration";
 import { GEOIP_PROVIDERS } from "./geoip/providers";
 import {
   isUsableLocation,
@@ -40,7 +41,7 @@ const CACHE = new Map<
 // resolveLocationFromIp calls for the same IP coalesce onto one chain
 // walk instead of double-charging each provider's rate limit.
 const IN_FLIGHT = new Map<string, Promise<ResolvedLocation>>();
-const TTL_MS = 24 * 60 * 60 * 1000;
+const TTL_MS = DAY_MS;
 // +/- 10% jitter on every cache write so a burst of distinct IPs
 // resolved in the same minute doesn't all expire together a day
 // later and trigger a thundering-herd refetch. RandomInt-like with

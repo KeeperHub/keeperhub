@@ -16,12 +16,12 @@ import postgres from "postgres";
 import { getDatabaseUrl } from "../../lib/db/connection-utils";
 import { member, users, workflows } from "../../lib/db/schema";
 import { generateId } from "../../lib/utils/id";
+import { SEED_EMAIL } from "@/scripts/lib/dev-seed";
 
 const connectionString = getDatabaseUrl();
 const client = postgres(connectionString, { max: 1 });
 const db = drizzle(client);
 
-const DEV_EMAIL = process.env.SEED_EMAIL ?? "dev@keeperhub.local";
 
 function loadWorkflow(filename: string): { nodes: unknown[]; edges: unknown[] } {
   const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -39,18 +39,18 @@ async function seed(): Promise<void> {
   const existingUser = await db
     .select({ id: users.id })
     .from(users)
-    .where(eq(users.email, DEV_EMAIL))
+    .where(eq(users.email, SEED_EMAIL))
     .limit(1);
 
   if (!existingUser[0]) {
     console.error(
-      `User "${DEV_EMAIL}" not found. Run seed-user.ts first, or set SEED_EMAIL.`
+      `User "${SEED_EMAIL}" not found. Run seed-user.ts first, or set SEED_EMAIL.`
     );
     process.exit(1);
   }
 
   const userId = existingUser[0].id;
-  console.log(`  + User: ${DEV_EMAIL} (${userId})`);
+  console.log(`  + User: ${SEED_EMAIL} (${userId})`);
 
   const existingMember = await db
     .select({ organizationId: member.organizationId })
@@ -60,7 +60,7 @@ async function seed(): Promise<void> {
 
   if (!existingMember[0]) {
     console.error(
-      `User "${DEV_EMAIL}" has no organization. Sign in via the UI first.`
+      `User "${SEED_EMAIL}" has no organization. Sign in via the UI first.`
     );
     process.exit(1);
   }

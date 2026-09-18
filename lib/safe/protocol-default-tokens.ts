@@ -13,6 +13,12 @@
  * Ethereum) it just gets skipped -- no broken row.
  */
 
+import {
+  ARBITRUM_ONE_CHAIN_ID as ARB,
+  BASE_CHAIN_ID as BASE,
+  ETHEREUM_MAINNET_CHAIN_ID as ETH,
+  OPTIMISM_CHAIN_ID as OPT,
+} from "@/lib/chains/ids";
 import type { ProtocolSlug } from "@/lib/safe/protocol-registry";
 
 export type DefaultToken = {
@@ -20,11 +26,6 @@ export type DefaultToken = {
   address: string;
   decimals: number;
 };
-
-const ETH = 1;
-const OPT = 10;
-const BASE = 8453;
-const ARB = 42_161;
 
 /**
  * Canonical token addresses per chain. Sourced from each chain's official

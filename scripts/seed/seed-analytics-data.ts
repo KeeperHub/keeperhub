@@ -21,8 +21,8 @@ expand(dotenv.config());
 
 import postgres from "postgres";
 import { getDatabaseUrl } from "../../lib/db/connection-utils";
+import { SEED_EMAIL } from "@/scripts/lib/dev-seed";
 
-const TEST_USER_EMAIL = process.env.SEED_EMAIL ?? "dev@keeperhub.local";
 const SEED_PREFIX = "[Analytics Seed]";
 const FORCE_MODE = process.argv.includes("--force");
 
@@ -80,11 +80,11 @@ type Db = ReturnType<typeof postgres>;
 
 async function lookupTestUser(sql: Db): Promise<{ userId: string; orgId: string }> {
   const userResult = await sql`
-    SELECT id FROM users WHERE email = ${TEST_USER_EMAIL}
+    SELECT id FROM users WHERE email = ${SEED_EMAIL}
   `;
   if (userResult.length === 0) {
     throw new Error(
-      `Test user "${TEST_USER_EMAIL}" not found. ` +
+      `Test user "${SEED_EMAIL}" not found. ` +
         "Create it first (sign up via the UI or seed-test-wallet.ts pattern)."
     );
   }
@@ -95,7 +95,7 @@ async function lookupTestUser(sql: Db): Promise<{ userId: string; orgId: string 
   `;
   if (orgResult.length === 0) {
     throw new Error(
-      `Test user "${TEST_USER_EMAIL}" has no organization membership.`
+      `Test user "${SEED_EMAIL}" has no organization membership.`
     );
   }
   const orgId = orgResult[0].organization_id as string;
@@ -620,7 +620,7 @@ async function seedAnalyticsData(): Promise<void> {
     await createSpendCap(sql, orgId);
 
     console.log("\nAnalytics seed data ready.");
-    console.log(`  User:  ${TEST_USER_EMAIL}`);
+    console.log(`  User:  ${SEED_EMAIL}`);
     console.log(`  Org:   ${orgId}`);
     console.log(`  Visit: http://localhost:3000/analytics`);
   } finally {

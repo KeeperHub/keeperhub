@@ -4,16 +4,15 @@ import { db } from "@/lib/db";
 import { workflows } from "@/lib/db/schema";
 import { sanitizeDescription } from "@/lib/sanitize-description";
 import { docsUrl } from "@/lib/site/identity";
+import { stripTrailingSlashes } from "@/lib/utils/url";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 
 export const dynamic = "force-dynamic";
 
-const TRAILING_SLASH = /\/$/;
-
 function deriveBaseUrl(request: Request): string {
   const envUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL;
   if (envUrl) {
-    return envUrl.replace(TRAILING_SLASH, "");
+    return stripTrailingSlashes(envUrl);
   }
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;

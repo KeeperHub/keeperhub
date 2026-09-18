@@ -53,8 +53,12 @@ const PLUGIN_ALLOWLIST_FILE = join(
 const PLUGINS_MARKER_REGEX =
   /<!-- PLUGINS:START[^>]*-->[\s\S]*?<!-- PLUGINS:END -->/;
 
-// System integrations that don't have plugins
-const SYSTEM_INTEGRATION_TYPES = ["database"] as const;
+// System integrations that don't have plugins. The labels, descriptions and
+// action mapping for these live in lib/integrations/system.ts; this list is
+// kept here rather than imported so the generator stays free of app imports
+// and can run before anything is built. tests/unit/system-integrations.test.ts
+// fails if the two drift apart.
+export const SYSTEM_INTEGRATION_TYPES = ["database"] as const;
 
 // Protocol slugs registered during this run, used by generateStepRegistry()
 let registeredProtocolSlugs: string[] = [];
