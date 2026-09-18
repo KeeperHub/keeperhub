@@ -7,6 +7,7 @@ import {
   classifyRevert,
   decodeRevertReason,
   formatContractError,
+  getRemediationForRevert,
 } from "@/lib/web3/decode-revert-error";
 
 /**
@@ -321,3 +322,176 @@ describe("formatContractError: ABI output mismatch", () => {
     expect(message).toContain("code=CALL_EXCEPTION");
   });
 });
+
+describe("classifyRevert: Solidity Panic codes", () => {
+  it("classifies Panic(0x12) as division by zero", () => {
+    // 0x4e487b71 = Panic(uint256) selector
+    const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
+      ["uint256"],
+      [0x12]
+    );
+    const panicData = `0x4e487b71${encoded.slice(2)}`;
+    const result = classifyRevert({ data: panicData });
+    expect(result).toEqual({
+      kind: "panic",
+      code: 18,
+      name: "DivisionByZero",
+      description: "Division or modulo by zero",
+    });
+  });
+
+  it("classifies Panic(0x11) as arithmetic overflow/underflow", () => {
+    const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
+      ["uint256"],
+      [0x11]
+    );
+    const panicData = `0x4e487b71${encoded.slice(2)}`;
+    const result = classifyRevert({ data: panicData });
+    expect(result).toEqual({
+      kind: "panic",
+      code: 17,
+      name: "ArithmeticOverflowUnderflow",
+      description:
+        "Arithmetic operation underflowed or overflowed outside an unchecked block",
+    });
+  });
+});
+
+describe("getRemediationForRevert: actionable agent remediation", () => {
+  it("provides actionable remediation for insufficient allowance", () => {
+    const remediation = getRemediationForRevert(
+      {
+        kind: "erc20-insufficient-allowance",
+        spender: "0xspender00000000000000000000000000000001",
+        allowance: "0",
+        needed: "1000000000000000000",
+      },
+      { target: "0xtoken00000000000000000000000000000002" }
+    );
+    expect(remediation).not.toBeNull();
+    expect(remediation?.reasonCode).toBe("insufficient_allowance");
+    expect(remediation?.remediation).toContain("Call approve()");
+    expect(remediation?.remediation).toContain(
+      "0xspender00000000000000000000000000000001"
+    );
+    expect(remediation?.remediation).toContain("1000000000000000000");
+    expect(remediation?.remediation).not.toContain(
+      "0xtoken00000000000000000000000000000002"
+    );
+  });
+
+  it("provides actionable remediation for paused contracts", () => {
+    const remediation = getRemediationForRevert(
+      { kind: "paused" },
+      { target: "0xcontract" }
+    );
+    expect(remediation).not.toBeNull();
+    expect(remediation?.reasonCode).toBe("contract_paused");
+    expect(remediation?.remediation).toContain("unpause");
+  });
+
+  it("provides actionable remediation for panics", () => {
+    const remediation = getRemediationForRevert({
+      kind: "panic",
+      code: 0x12,
+      name: "DivisionByZero",
+      description: "Division or modulo by zero",
+    });
+    expect(remediation).not.toBeNull();
+    expect(remediation?.reasonCode).toBe("panic_divisionbyzero");
+    expect(remediation?.remediation).toContain("divide by zero");
+  });
+
+  it("provides actionable remediation for classic string reverts", () => {
+    const allowanceRem = getRemediationForRevert(
+      { kind: "string-revert", reason: "ERC20: transfer amount exceeds allowance" },
+      { target: "0xtoken" }
+    );
+    expect(allowanceRem).not.toBeNull();
+    expect(allowanceRem?.reasonCode).toBe("insufficient_allowance");
+    expect(allowanceRem?.remediation).toContain("Call approve()");
+
+    const balanceRem = getRemediationForRevert({
+      kind: "string-revert",
+      reason: "ERC20: transfer amount exceeds balance",
+    });
+    expect(balanceRem).not.toBeNull();
+    expect(balanceRem?.reasonCode).toBe("insufficient_token_balance");
+
+    const pausedRem = getRemediationForRevert({
+      kind: "string-revert",
+      reason: "Pausable: paused",
+    });
+    expect(pausedRem).not.toBeNull();
+    expect(pausedRem?.reasonCode).toBe("contract_paused");
+
+    const ownerRem = getRemediationForRevert({
+      kind: "string-revert",
+      reason: "Ownable: caller is not the owner",
+    });
+    expect(ownerRem).not.toBeNull();
+    expect(ownerRem?.reasonCode).toBe("unauthorized");
+
+    const reentrantRem = getRemediationForRevert({
+      kind: "string-revert",
+      reason: "ReentrancyGuard: reentrant call",
+    });
+    expect(reentrantRem).not.toBeNull();
+    expect(reentrantRem?.reasonCode).toBe("reentrancy_blocked");
+  });
+});
+
+describe("classifyRevert with contractInterface (built-ins vs custom errors)", () => {
+  const DUMMY_ABI = [
+    "function transfer(address,uint256) returns (bool)",
+    "error CustomContractError(uint256 code)",
+  ];
+  const dummyInterface = new ethers.Interface(DUMMY_ABI);
+
+  it("decodes Panic(0x11) even when an interface is passed", () => {
+    const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
+      ["uint256"],
+      [0x11]
+    );
+    const panicData = `0x4e487b71${encoded.slice(2)}`;
+    const result = classifyRevert({ data: panicData }, dummyInterface);
+    expect(result.kind).toBe("panic");
+    if (result.kind === "panic") {
+      expect(result.code).toBe(17);
+      expect(result.name).toBe("ArithmeticOverflowUnderflow");
+    }
+  });
+
+  it("decodes Error(string) even when an interface is passed", () => {
+    const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
+      ["string"],
+      ["ERC20: transfer amount exceeds allowance"]
+    );
+    const errorData = `0x08c379a0${encoded.slice(2)}`;
+    const result = classifyRevert({ data: errorData }, dummyInterface);
+    expect(result.kind).toBe("string-revert");
+    if (result.kind === "string-revert") {
+      expect(result.reason).toBe("ERC20: transfer amount exceeds allowance");
+    }
+  });
+
+  it("decodes Safe GS codes inside Error(string) when an interface is passed", () => {
+    const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
+      ["string"],
+      ["GS013"]
+    );
+    const errorData = `0x08c379a0${encoded.slice(2)}`;
+    const result = classifyRevert({ data: errorData }, dummyInterface);
+    expect(result.kind).toBe("safe-signature-invalid");
+  });
+
+  it("falls through to contract-custom for non-builtin ABI errors", () => {
+    const customData = dummyInterface.encodeErrorResult("CustomContractError", [42]);
+    const result = classifyRevert({ data: customData }, dummyInterface);
+    expect(result).toEqual({
+      kind: "contract-custom",
+      name: "CustomContractError",
+    });
+  });
+});
+
