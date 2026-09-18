@@ -1,4 +1,10 @@
 import { ADDRESS_BOOK_SELECTION_KEY } from "@/lib/address-book-selection";
+import {
+  ETH_ADDRESS_PATTERN,
+  HEX_BYTES_PATTERN,
+  INTEGER_PATTERN,
+  UNSIGNED_INTEGER_PATTERN,
+} from "@/lib/web3/solidity-values";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST } from "@/lib/workflow/executor/system-action-types";
 import {
@@ -27,10 +33,6 @@ const RESERVED_CONFIG_KEYS = new Set([
 ]);
 
 const TEMPLATE_VALUE_PATTERN = /\{\{[^}]+}}/;
-const ETH_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
-const HEX_BYTES_PATTERN = /^0x(?:[0-9a-fA-F]{2})*$/;
-const INTEGER_PATTERN = /^-?\d+$/;
-const UNSIGNED_INTEGER_PATTERN = /^\d+$/;
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/;
 
 // Maximum characters for a node label rendered into the top-level message.
@@ -448,6 +450,7 @@ function validateFieldValue(
     case "json-editor":
     case "schema-builder":
     case "abi-function-args":
+    case "abi-event-args":
     case "call-list-builder":
     case "args-list-builder":
       return isRecord(value) ||

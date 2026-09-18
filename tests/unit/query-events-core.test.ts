@@ -186,6 +186,31 @@ describe("queryBatchWithRetry", () => {
       "latest"
     );
   });
+
+  it("passes a compiled topic filter straight through instead of the ABI event filter", async () => {
+    const topics = ["0xtopic0", "0xsender"];
+    mockQueryFilter.mockResolvedValue([{ blockNumber: 50 }]);
+    const executeWithFailover = vi.fn((operation) => operation(fakeProvider()));
+
+    const promise = queryBatchWithRetry(
+      mockRpc(executeWithFailover),
+      "0xabc",
+      [],
+      "Lift",
+      0,
+      100,
+      false,
+      topics
+    );
+    const expectation = expect(promise).resolves.toEqual({
+      events: [{ blockNumber: 50 }],
+      actualEnd: 100,
+    });
+    await vi.runAllTimersAsync();
+    await expectation;
+
+    expect(mockQueryFilter).toHaveBeenCalledWith(topics, 0, 100);
+  });
 });
 
 describe("cross-replica head divergence (regression coverage)", () => {

@@ -45,10 +45,18 @@ export function isNearHeadBatch(
   return toBlockIsLatest && toBlock - batchEnd < TIP_SAFETY_MARGIN_BLOCKS;
 }
 
+// The topic array an argument filter compiles to, or null for "every
+// occurrence of this event" -- see event-arg-filter-core.ts.
+export type EventTopicFilter = (string | null)[] | null;
+
 function resolveEventFilter(
   contract: ethers.Contract,
-  eventName: string
-): ethers.DeferredTopicFilter {
+  eventName: string,
+  topics: EventTopicFilter
+): ethers.DeferredTopicFilter | (string | null)[] {
+  if (topics) {
+    return topics;
+  }
   const eventFilter = contract.filters[eventName]?.();
   if (eventFilter === undefined || eventFilter === null) {
     throw new Error(`Could not create filter for event '${eventName}'`);
@@ -62,10 +70,11 @@ async function fetchFixedBatch(
   parsedAbi: AbiEntry[],
   eventName: string,
   start: number,
-  end: number
+  end: number,
+  topics: EventTopicFilter
 ): Promise<BatchQueryResult> {
   const contract = new ethers.Contract(contractAddress, parsedAbi, provider);
-  const eventFilter = resolveEventFilter(contract, eventName);
+  const eventFilter = resolveEventFilter(contract, eventName, topics);
   const events = await contract.queryFilter(eventFilter, start, end);
   return { events, actualEnd: end };
 }
@@ -93,10 +102,11 @@ async function fetchTipBatch(
   contractAddress: string,
   parsedAbi: AbiEntry[],
   eventName: string,
-  start: number
+  start: number,
+  topics: EventTopicFilter
 ): Promise<BatchQueryResult> {
   const contract = new ethers.Contract(contractAddress, parsedAbi, provider);
-  const eventFilter = resolveEventFilter(contract, eventName);
+  const eventFilter = resolveEventFilter(contract, eventName, topics);
   const events = await contract.queryFilter(eventFilter, start, "latest");
 
   const actualEnd = events.reduce(
@@ -124,7 +134,8 @@ export async function queryBatchWithRetry(
   eventName: string,
   start: number,
   end: number,
-  isTipBatch: boolean
+  isTipBatch: boolean,
+  topics: EventTopicFilter = null
 ): Promise<BatchQueryResult> {
   let lastError: unknown;
 
@@ -132,14 +143,22 @@ export async function queryBatchWithRetry(
     try {
       return await rpcManager.executeWithFailover((provider) =>
         isTipBatch
-          ? fetchTipBatch(provider, contractAddress, parsedAbi, eventName, start)
+          ? fetchTipBatch(
+              provider,
+              contractAddress,
+              parsedAbi,
+              eventName,
+              start,
+              topics
+            )
           : fetchFixedBatch(
               provider,
               contractAddress,
               parsedAbi,
               eventName,
               start,
-              end
+              end,
+              topics
             )
       );
     } catch (error) {

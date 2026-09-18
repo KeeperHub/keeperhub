@@ -107,6 +107,8 @@ function mapFieldType(field: ActionConfigFieldBase): string {
       return "string (JSON ABI - auto-fetched for verified contracts)";
     case "abi-event-select":
       return "string (event name from ABI)";
+    case "abi-event-args":
+      return 'string (JSON object of indexed event parameter name to value, e.g. {"from":"0x..."}) - omit a parameter to match any value for it; only indexed parameters can be filtered';
     case "select":
       return `string (${field.options?.map((o) => `"${o.value}"`).join(" | ") || "select"})`;
     case "fail-on-error-switch":
