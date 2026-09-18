@@ -7,7 +7,6 @@ import { apiError } from "@/lib/api-error";
 import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
-import { MAX_PAGE_SIZE } from "@/lib/pagination";
 
 /**
  * Ceiling for `page`. getUnifiedRuns turns the page into
@@ -23,8 +22,13 @@ import { MAX_PAGE_SIZE } from "@/lib/pagination";
  * table sizes its pager off the real total - so the bound clamps rather than
  * rejects, and the response echoes the clamped page so the pager and the rows
  * describe the same window.
+ *
+ * Its own figure rather than MAX_PAGE_SIZE from lib/pagination.ts: that
+ * constant is the ceiling on a page *size*, and raising it for the list
+ * endpoints it governs would move this ceiling and the 20001 figure above with
+ * it, silently.
  */
-const MAX_PAGE = MAX_PAGE_SIZE;
+const MAX_PAGE = 200;
 
 /**
  * Ceiling for `limit`, matching the `Math.min(limit, 100)` in
@@ -38,9 +42,18 @@ const MAX_PAGE = MAX_PAGE_SIZE;
 const MAX_LIMIT = 100;
 
 /**
- * Parse a bounded positive-integer pagination parameter, falling back to
- * `undefined` so a value this route will not honour behaves exactly as an
- * absent one and getUnifiedRuns applies its own default.
+ * Floor for `limit`. Zero is legal and deliberate: with a page size of 0 the
+ * query's offset is 0 and its `fetchLimit` is 1, so `?limit=0` reads one row
+ * and returns an empty page beside an accurate total - a cheap count, and the
+ * behaviour on `staging` today. A floor of 1 would drop it and serve those
+ * callers a full 50-row page instead.
+ */
+const MIN_LIMIT = 0;
+
+/**
+ * Parse a bounded integer pagination parameter, falling back to `undefined` so
+ * a value this route will not honour behaves exactly as an absent one and
+ * getUnifiedRuns applies its own default.
  *
  * `Number.parseInt` with an exact round-trip, matching parseBoundedInt in
  * app/api/workflows/route.ts and parsePageLimit in lib/pagination.ts. `Number`
@@ -55,7 +68,7 @@ const MAX_LIMIT = 100;
  */
 function parsePaginationParam(
   raw: string | null,
-  max: number
+  { min, max }: { min: number; max: number }
 ): number | undefined {
   if (raw === null) {
     return undefined;
@@ -63,7 +76,7 @@ function parsePaginationParam(
   const value = Number.parseInt(raw, 10);
   // parseInt("12abc") is 12 and parseInt(" 5") is 5, so the string must
   // round-trip exactly or the value is not the one the caller wrote.
-  if (Number.isNaN(value) || String(value) !== raw || value < 1) {
+  if (Number.isNaN(value) || String(value) !== raw || value < min) {
     return undefined;
   }
   // Clamp rather than drop. A dropped value is indistinguishable from an
@@ -99,8 +112,14 @@ export async function GET(req: NextRequest): Promise<Response> {
     const customEnd = params.get("customEnd") ?? undefined;
     const cursor = params.get("cursor") ?? undefined;
 
-    const page = parsePaginationParam(params.get("page"), MAX_PAGE);
-    const limit = parsePaginationParam(params.get("limit"), MAX_LIMIT);
+    const page = parsePaginationParam(params.get("page"), {
+      min: 1,
+      max: MAX_PAGE,
+    });
+    const limit = parsePaginationParam(params.get("limit"), {
+      min: MIN_LIMIT,
+      max: MAX_LIMIT,
+    });
 
     const projectId = params.get("projectId") ?? undefined;
 

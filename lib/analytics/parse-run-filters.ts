@@ -25,7 +25,10 @@ const VALID_GAS = new Set<GasSpend>(["sponsored", "wallet", "free"]);
 const MAX_SEARCH_LENGTH = 128;
 
 function parseNonNegativeInt(raw: string | null): number | undefined {
-  if (raw === null) {
+  // A blank value is absent, not zero. Number("") and Number("   ") are both
+  // 0, so `?durationMax=` read as durationMaxMs 0 and filtered on
+  // `duration < 0`, which matches nothing.
+  if (raw === null || raw.trim() === "") {
     return undefined;
   }
   const value = Number(raw);

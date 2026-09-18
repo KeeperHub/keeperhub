@@ -130,10 +130,16 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     } as unknown as NextRequest;
   }
 
+  // An assertion that page is undefined also passes when getUnifiedRuns was
+  // never called, since mock.calls[0] is then absent and options reads as
+  // undefined. Falling back to the default and refusing the request is the
+  // distinction under test, so the helper asserts the query ran.
   async function optionsFor(
     query: Record<string, string>
   ): Promise<Record<string, unknown> | undefined> {
+    vi.mocked(getUnifiedRuns).mockClear();
     await GET(paginationRequest(query));
+    expect(getUnifiedRuns, JSON.stringify(query)).toHaveBeenCalledTimes(1);
     const [, , options] = vi.mocked(getUnifiedRuns).mock.calls[0] ?? [];
     return options as Record<string, unknown> | undefined;
   }
@@ -177,7 +183,6 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     // Number() reads these as 16, 3 and 1e+302. None is what a caller writing
     // a page number meant, and 1e302 reaches Postgres as a bigint cast error.
     for (const page of ["0x10", " 3 ", "1e302", "12abc"]) {
-      vi.mocked(getUnifiedRuns).mockClear();
       const options = await optionsFor({ page });
       expect(options?.page, `page=${page}`).toBeUndefined();
     }
@@ -189,7 +194,6 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     // LIMIT on both source queries. page=999999999 asks for 49999999951 rows -
     // every run in range - then slices an empty window out of them.
     for (const page of ["999999999", "201"]) {
-      vi.mocked(getUnifiedRuns).mockClear();
       const options = await optionsFor({ page });
       expect(options?.page, `page=${page}`).toBe(200);
     }
@@ -226,7 +230,6 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     // against anything larger admits a value it then halves: ?limit=150 was
     // accepted and served 100.
     for (const limit of ["100000", "150", "200"]) {
-      vi.mocked(getUnifiedRuns).mockClear();
       const options = await optionsFor({ limit });
       expect(options?.limit, `limit=${limit}`).toBe(100);
     }
@@ -248,14 +251,22 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     // and Math.max carried it to 1. Both now read as absent, so the query
     // applies its own default.
     for (const page of ["0", "-3"]) {
-      vi.mocked(getUnifiedRuns).mockClear();
       const options = await optionsFor({ page });
       expect(options?.page).toBeUndefined();
     }
   });
 
-  it("drops a limit of zero, which would otherwise request an empty page", async () => {
+  it("keeps a limit of zero, which is a count probe rather than a typo", async () => {
+    // pageLimit 0 makes offset 0 and fetchLimit 1, so ?limit=0 reads one row
+    // and returns an empty page beside an accurate total. Dropping it would
+    // fall back to the default and serve a full 50-row page.
     const options = await optionsFor({ limit: "0" });
+
+    expect(options?.limit).toBe(0);
+  });
+
+  it("drops a limit below zero", async () => {
+    const options = await optionsFor({ limit: "-5" });
 
     expect(options?.limit).toBeUndefined();
   });
