@@ -637,7 +637,7 @@ describe("ChainProviderManager trace matching", () => {
     );
 
     expect(received).toHaveLength(1);
-    expect(received[0].callType).toBe("DELEGATECALL");
+    expect(received[0].type).toBe("DELEGATECALL");
   });
 
   describe("the shared high-water mark", () => {
@@ -803,6 +803,173 @@ describe("ChainProviderManager trace matching", () => {
         manager.getAllHealth().find((h) => h.chainId === CHAIN_ID)
           ?.traceUnsupported,
       ).toBe(false);
+    });
+  });
+
+  describe("the vendored matcher's guards, which the local copy had lost", () => {
+    it("does not let a CREATE frame satisfy a selector filter", async () => {
+      // A CREATE frame carries init code in `input`. Its first four bytes are
+      // constructor bytecode, not a function selector. The local copy read
+      // them as one, so a subscription with a selector and no `callTypes`
+      // fired on a contract deployment whose init code happened to start with
+      // those bytes.
+      const received = await runBlock(
+        [
+          {
+            txHash: "0xdeploy",
+            result: {
+              type: "CREATE",
+              from: CALLER,
+              to: WATCHED,
+              value: "0x0",
+              input: `${PAUSE_SELECTOR}60806040523480`,
+            },
+          },
+        ],
+        { selector: PAUSE_SELECTOR },
+      );
+
+      expect(received).toEqual([]);
+    });
+
+    it("reports no selector on a CREATE frame it does dispatch", async () => {
+      // The guard is on the frame, not only on the filter, so the dispatched
+      // payload does not advertise constructor bytecode as a selector either.
+      const received = await runBlock([
+        {
+          txHash: "0xdeploy",
+          result: {
+            type: "CREATE",
+            from: CALLER,
+            to: WATCHED,
+            value: "0x0",
+            input: `${PAUSE_SELECTOR}60806040523480`,
+          },
+        },
+      ]);
+
+      expect(received).toHaveLength(1);
+      expect(received[0].selector).toBe("0x");
+    });
+
+    it("keeps a frame whose value cannot be priced rather than dropping it", async () => {
+      // "0x" is what some upstreams return for a zero-value frame and BigInt
+      // refuses it. The local copy answered `catch { return false }`, so a
+      // frame a value filter cannot price failed the threshold silently. On a
+      // security trigger that is the unsafe direction: the frame nothing can
+      // price is the one worth looking at.
+      const received = await runBlock(
+        [{ txHash: "0xodd", result: { ...pauseCall(), value: "0x" } }],
+        { minValueWei: "1000000000000000000" },
+      );
+
+      expect(received).toHaveLength(1);
+      expect(received[0].value).toBe("0x");
+    });
+
+    it("still applies the threshold to a value it can price", async () => {
+      // The control on the case above: keeping unpriceable frames must not
+      // turn the filter off for the frames it can read.
+      const received = await runBlock(
+        [
+          { txHash: "0xsmall", result: { ...pauseCall(), value: "0x1" } },
+          {
+            txHash: "0xbig",
+            result: { ...pauseCall(), value: "0xde0b6b3a7640000" },
+          },
+        ],
+        { minValueWei: "1000000000000000000" },
+      );
+
+      expect(received).toHaveLength(1);
+      expect(received[0].transactionHash).toBe("0xbig");
+    });
+  });
+
+  describe("the watchdog and the catch-up on a trace-only chain", () => {
+    /** A manager with a short staleness ceiling. Destroyed by the caller. */
+    function staleManager(timeoutMs: number): {
+      mgr: ChainProviderManager;
+      made: MockProvider[];
+    } {
+      const f = makeFactory();
+      const mgr = new ChainProviderManager({
+        factory: f.factory,
+        onPermanentFailure: () => undefined,
+        blockStalenessTimeoutMs: timeoutMs,
+      });
+      return { mgr, made: f.created };
+    }
+
+    it("reconnects a trace-only chain that answers the ping but stops delivering blocks", async () => {
+      const { mgr, made } = staleManager(60_000);
+      await mgr.subscribeToTrace({
+        chainId: CHAIN_ID,
+        wssUrl: WSS_URL,
+        contractAddress: WATCHED,
+        handler: async () => undefined,
+      });
+      const reasons: string[] = [];
+      mgr.onDisconnect(CHAIN_ID, (ev) => {
+        reasons.push(ev.reason);
+      });
+
+      // One block, then silence while eth_blockNumber keeps answering. The
+      // watchdog tested the log set alone, so on a trace-only chain it
+      // returned immediately and this connection was never replaced: the
+      // subscription kept reporting healthy while matching nothing.
+      await made[0].emitBlock(1000);
+      await vi.advanceTimersByTimeAsync(92_100);
+
+      expect(reasons).toContain("block_staleness");
+      expect(made.length).toBeGreaterThanOrEqual(2);
+      await mgr.destroy();
+    });
+
+    it("leaves a provider with no subscriber of any kind alone", async () => {
+      const { mgr, made } = staleManager(60_000);
+      await mgr.getOrCreateProvider(CHAIN_ID, WSS_URL);
+      const reasons: string[] = [];
+      mgr.onDisconnect(CHAIN_ID, (ev) => {
+        reasons.push(ev.reason);
+      });
+
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      expect(reasons).toEqual([]);
+      expect(made).toHaveLength(1);
+      await mgr.destroy();
+    });
+
+    it("drains the range owed from an outage without waiting for the next block", async () => {
+      await manager.subscribeToTrace({
+        chainId: CHAIN_ID,
+        wssUrl: WSS_URL,
+        contractAddress: WATCHED,
+        handler: async () => undefined,
+      });
+
+      // Block 1000 serves and takes the rate-limit slot. 1001 to 1005 then
+      // arrive inside GETLOGS_MIN_INTERVAL_MS, so that drain arms the catch-up
+      // and returns with the mark still at 1000.
+      await created[0].emitBlock(1000);
+      await created[0].emitBlock(1005);
+      created[0].sendCalls.length = 0;
+
+      // The reconnect disarms that timer on purpose. Re-arming it is
+      // `reconnectLoop`'s job, and it tested the log set alone, so a
+      // trace-only chain sat on the owed range until the next block.
+      created[0].emitError(new Error("wss dropped"));
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(created).toHaveLength(2);
+      // No block was emitted on the replacement.
+      const traced = callsTo(created[1], "debug_traceBlockByNumber").map((c) =>
+        String(c.params[0]),
+      );
+      expect(traced).toEqual(["0x3e9", "0x3ea", "0x3eb", "0x3ec", "0x3ed"]);
+      const health = manager.getAllHealth().find((h) => h.chainId === CHAIN_ID);
+      expect(health?.blocksBehindHead).toBe(0);
     });
   });
 

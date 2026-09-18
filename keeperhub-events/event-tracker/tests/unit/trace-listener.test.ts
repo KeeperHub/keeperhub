@@ -46,7 +46,7 @@ function makeFrame(overrides: Partial<TraceCallFrame> = {}): TraceCallFrame {
     transactionHash: "0xabc",
     transactionIndex: 0,
     frameIndex: 0,
-    callType: "CALL",
+    type: "CALL",
     from: CALLER,
     to: WATCHED,
     value: "0x0",
@@ -146,7 +146,7 @@ describe("TraceListener dispatch payload", () => {
 
   it("carries the rest of the frame through unchanged", async () => {
     const data = await dispatch(
-      makeFrame({ callType: "DELEGATECALL", reverted: true, depth: 2 }),
+      makeFrame({ type: "DELEGATECALL", reverted: true, depth: 2 }),
     );
     expect(data).toMatchObject({
       triggerType: "Trace",

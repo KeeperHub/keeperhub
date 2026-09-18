@@ -2,6 +2,13 @@ import { ethers } from "ethers";
 import { WebSocket } from "ws";
 import { logger } from "../../lib/utils/logger";
 import {
+  type FlatCall,
+  type RawCallFrame,
+  callSelector,
+  flattenCallTree,
+  frameMatches,
+} from "../../lib/web3/trace-decode";
+import {
   type Aggregate3Result,
   MULTICALL3_ADDRESS,
   chunkCalls,
@@ -505,39 +512,30 @@ type TraceCallHandler = (matches: TraceCallFrame[]) => Promise<void>;
 /**
  * One matched call frame, as handed to a trace subscriber.
  *
+ * `FlatCall` plus the block and transaction coordinates the dispatch key is
+ * built from. The frame surface itself (`type`, `from`, `to`, `value`,
+ * `input`, `depth`, `reverted`) is the vendored matcher's, so the filter can
+ * be applied to a frame with no adapter in between and the two cannot
+ * disagree about what a frame is.
+ *
  * Exported and used everywhere this shape appears. It was previously
  * redeclared inline in three places across two files. `noExplicitAny` is off
  * in this workspace, so a field-name typo between the matcher and the
  * listener would not have been caught by anything.
  */
-export interface TraceCallFrame {
+export type TraceCallFrame = FlatCall & {
   blockNumber: number;
   transactionHash: string;
   transactionIndex: number;
   frameIndex: number;
-  callType: string;
-  from: string;
-  to: string;
-  value: string;
+  /**
+   * `callSelector(frame)`, carried on the frame because the dispatched
+   * payload reports it. Derived through the vendored rule rather than read
+   * off `input` directly, so a CREATE frame reports "0x" here as well as
+   * failing a `selector` filter.
+   */
   selector: string;
-  input: string;
-  depth: number;
-  reverted: boolean;
-}
-
-/**
- * A node of a `callTracer` result, as the upstream returns it. Only the
- * fields the matcher reads are named; anything else is ignored.
- */
-interface RawCallTraceNode {
-  type?: string;
-  from?: string;
-  to?: string;
-  value?: string;
-  input?: string;
-  error?: string;
-  calls?: RawCallTraceNode[];
-}
+};
 
 /**
  * Refusals that will not change if the same connection is asked again, so
@@ -1942,9 +1940,21 @@ export class ChainProviderManager {
     if (this.isDestroyed || entry.isReconnecting || !entry.provider) {
       return;
     }
-    // Blocks are only expected while a subscriber (and thus a block
-    // listener) is attached; an idle provider is legitimately silent.
-    if (entry.subscribers.size === 0) {
+    // Blocks are only expected while a subscriber of some kind is attached,
+    // because all three kinds attach the block listener and all three are
+    // served off it: logs and traces from the drain the block triggers, state
+    // from the sample at the end of that drain. An idle provider with no
+    // subscriber at all is legitimately silent. Testing the log set alone made
+    // the watchdog a no-op on a state-only or trace-only chain: the heartbeat
+    // ran, this returned immediately, and a connection that answered the ping
+    // but had stopped delivering blocks was never replaced, so the trigger
+    // stopped permanently. Same three sets as `detachIfIdle`, the drain guard
+    // and `reconnect()`.
+    if (
+      entry.subscribers.size === 0 &&
+      entry.stateSubscribers.size === 0 &&
+      entry.traceSubscribers.size === 0
+    ) {
       return;
     }
     // Measure from the most recent of the last delivered block and the
@@ -2081,7 +2091,20 @@ export class ChainProviderManager {
       // still set. Scheduled rather than awaited: a drain dispatches to
       // handlers that may each sleep seconds of jitter, and awaiting it would
       // hold the chain reconnecting long after the socket was healthy.
-      if (!this.isDestroyed && entry.provider && entry.subscribers.size > 0) {
+      // Two sets here, not three. A trace subscription owns part of the range
+      // the drain serves: `processTraces` runs inside the drain and folds into
+      // the same high-water mark, so a range owed from the outage is served by
+      // this catch-up and nothing else. Without the trace set a trace-only
+      // chain sat on that range until the next block arrived. State is
+      // deliberately not included: a state subscription has no range to serve,
+      // it is sampled at the head at the end of a drain, so arming a catch-up
+      // for it alone would spin the drain at the rate limit on a gap nothing
+      // owes.
+      if (
+        !this.isDestroyed &&
+        entry.provider &&
+        (entry.subscribers.size > 0 || entry.traceSubscribers.size > 0)
+      ) {
         this.armCatchUp(entry, GETLOGS_MIN_INTERVAL_MS);
       }
     }
@@ -2349,7 +2372,7 @@ export class ChainProviderManager {
           "debug_traceBlockByNumber",
           [blockHex, { tracer: "callTracer", timeout: "15s" }],
           30000,
-        )) as Array<{ result?: RawCallTraceNode; txHash?: string }> | null;
+        )) as Array<{ result?: RawCallFrame; txHash?: string }> | null;
 
         if (!Array.isArray(traces)) {
           // A well-formed answer carrying nothing to dispatch. Logged rather
@@ -2460,7 +2483,7 @@ export class ChainProviderManager {
    * against each subscriber's criteria.
    */
   private extractTraceMatches(
-    call: RawCallTraceNode,
+    call: RawCallFrame,
     blockNumber: number,
     txHash: string,
     txIndex: number,
@@ -2486,139 +2509,59 @@ export class ChainProviderManager {
   /**
    * Flatten a nested call trace into a list of frames with metadata.
    *
-   * `parentReverted` is threaded top-down because geth's `callTracer` sets
-   * `error` only on the frame that threw, never on its descendants, even
-   * though the EVM rolls all of them back. The repo's own matcher documents
-   * this and handles it the same way (`lib/web3/trace-decode.ts`,
-   * `flattenCallTree`). Per-frame `error` alone was wrong in both
-   * directions: an inner call that completed before an ancestor reverted
-   * read as `reverted: false`, matched the default `status: "success"` and
-   * fired a workflow on a call with no on-chain effect, while
-   * `status: "reverted"` - the drain-attempt signal this trigger exists for
-   * - saw only the throwing frame and missed every frame rolled back with
-   * it.
+   * The walk itself is `flattenCallTree` from the vendored matcher, so the
+   * revert semantics are defined once. `parentReverted` is threaded top-down
+   * there because geth's `callTracer` sets `error` only on the frame that
+   * threw, never on its descendants, even though the EVM rolls all of them
+   * back. Per-frame `error` alone was wrong in both directions: an inner call
+   * that completed before an ancestor reverted read as `reverted: false`,
+   * matched the default `status: "success"` and fired a workflow on a call
+   * with no on-chain effect, while `status: "reverted"` - the drain-attempt
+   * signal this trigger exists for - saw only the throwing frame and missed
+   * every frame rolled back with it.
    *
    * `reverted` therefore means rolled back, which is what the accepted
    * amendment assumes when it adds `selfReverted` on top of it.
+   *
+   * All this adds is the coordinates a dispatch key needs. `frameIndex` is the
+   * position in the flattened list, which is the depth-first pre-order the
+   * walk emits, so it is stable for a given trace.
    */
   private flattenCallTrace(
-    call: RawCallTraceNode,
+    call: RawCallFrame,
     blockNumber: number,
     txHash: string,
     txIndex: number,
-    depth = 0,
-    frameIndex = { value: 0 },
-    parentReverted = false,
   ): TraceCallFrame[] {
-    const frames: TraceCallFrame[] = [];
-    const currentIndex = frameIndex.value++;
-    const reverted = parentReverted || call.error !== undefined;
-
-    const frame: TraceCallFrame = {
+    return flattenCallTree(call).map((frame, frameIndex) => ({
+      ...frame,
       blockNumber,
       transactionHash: txHash,
       transactionIndex: txIndex,
-      frameIndex: currentIndex,
-      // Upper-cased here rather than at each comparison. `callTracer`
-      // capitalisation is not guaranteed, `frameMatchesSubscriber` upper-cases
-      // only the subscriber side, and `trace-decode.ts` normalises the frame
-      // the same way - so an upstream answering `delegatecall` made the
-      // `callTypes` filter match nothing, silently.
-      callType: (call.type ?? "CALL").toUpperCase(),
-      from: (call.from ?? "").toLowerCase(),
-      to: (call.to ?? "").toLowerCase(),
-      value: call.value ?? "0x0",
-      selector: this.extractSelector(call.input),
-      input: call.input ?? "0x",
-      depth,
-      reverted,
-    };
-
-    frames.push(frame);
-
-    // Recurse into subcalls
-    if (Array.isArray(call.calls)) {
-      for (const subcall of call.calls) {
-        frames.push(
-          ...this.flattenCallTrace(
-            subcall,
-            blockNumber,
-            txHash,
-            txIndex,
-            depth + 1,
-            frameIndex,
-            reverted,
-          ),
-        );
-      }
-    }
-
-    return frames;
-  }
-
-  /**
-   * Extract 4-byte selector from calldata, or "0x" if not present.
-   */
-  private extractSelector(input: string | undefined): string {
-    if (!input || input.length < 10) {
-      return "0x";
-    }
-    return input.slice(0, 10).toLowerCase();
+      frameIndex,
+      selector: callSelector(frame),
+    }));
   }
 
   /**
    * Check if a frame matches a subscriber's filters.
+   *
+   * The whole predicate is the vendored `frameMatches`; this only names the
+   * subscription's fields in the filter's vocabulary. The contract address is
+   * the one required field, so it goes in as `callee`.
    */
   private frameMatchesSubscriber(
     frame: TraceCallFrame,
     sub: TraceSubscriber,
   ): boolean {
-    // Contract address (callee) is required
-    if (frame.to !== sub.contractAddress.toLowerCase()) {
-      return false;
-    }
-
-    // Caller filter
-    if (sub.caller && frame.from !== sub.caller.toLowerCase()) {
-      return false;
-    }
-
-    // Selector filter
-    if (sub.selector && frame.selector !== sub.selector.toLowerCase()) {
-      return false;
-    }
-
-    // Call type filter
-    if (
-      sub.callTypes &&
-      sub.callTypes.length > 0 &&
-      !sub.callTypes.some((t) => t.toUpperCase() === frame.callType)
-    ) {
-      return false;
-    }
-
-    // Value filter
-    if (sub.minValueWei !== undefined) {
-      try {
-        const frameValue = BigInt(frame.value);
-        if (frameValue < sub.minValueWei) {
-          return false;
-        }
-      } catch {
-        return false;
-      }
-    }
-
-    // Status filter
-    const status = sub.status ?? "success";
-    if (status === "success" && frame.reverted) {
-      return false;
-    }
-    if (status === "reverted" && !frame.reverted) {
-      return false;
-    }
-
-    return true;
+    return frameMatches(frame, {
+      callee: sub.contractAddress,
+      caller: sub.caller,
+      selector: sub.selector,
+      callTypes: sub.callTypes,
+      minValue: sub.minValueWei,
+      status: sub.status,
+    });
   }
 
   /**

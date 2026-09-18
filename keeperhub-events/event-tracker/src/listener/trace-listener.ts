@@ -147,7 +147,9 @@ export class TraceListener {
         transactionHash: match.transactionHash,
         transactionIndex: match.transactionIndex,
         frameIndex: match.frameIndex,
-        callType: match.callType,
+        // The payload field keeps its name. The frame carries the matcher's
+        // own `type`, which is the same value upper-cased the same way.
+        callType: match.type,
         from: match.from,
         to: match.to,
         value: toDecimalWei(match.value),
