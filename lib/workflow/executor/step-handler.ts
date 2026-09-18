@@ -16,6 +16,12 @@ import {
   type WorkflowErrorContext,
 } from "@/lib/workflow/executor/error-context";
 import {
+  acquireStepClaim,
+  releaseStepClaim,
+  type StepClaimScope,
+  stepClaimScope,
+} from "@/lib/workflow/executor/step-claim";
+import {
   recordStepSuccess,
   recordTransactionHashIfPresent,
 } from "@/lib/workflow/executor/step-success-tracker";
@@ -303,6 +309,35 @@ async function withStepLoggingInner<TInput extends StepInput, TOutput>(
   context: StepContextWithWorkflow | undefined,
   stepLogic: () => Promise<TOutput>
 ): Promise<TOutput> {
+  // Every replica that picks up a step replays the whole workflow body to
+  // reach it, so this function is entered many times per step per run. Claim
+  // the step before doing anything observable: without it, two replays that
+  // arrive before either has finished both log a row and both run the step.
+  // stepClaimScope returns undefined for the steps that must stay unguarded.
+  const claim = context ? stepClaimScope(context) : undefined;
+  // Set only when this caller actually holds the claim. A caller that ran
+  // without one must not release, or it frees the live owner's claim and lets
+  // a third replay onto the same step.
+  let ownedClaim: StepClaimScope | undefined;
+  if (claim && context) {
+    const decision = await acquireStepClaim(claim);
+    if (decision.outcome === "run" && decision.owns) {
+      ownedClaim = claim;
+    }
+    if (decision.outcome === "reuse") {
+      // The winner's row already carries this step; writing another would be
+      // the duplicate being removed. The tracker still has to learn about it:
+      // resolveTransactionHashesForSuccess only scans the logs when the
+      // tracker is entirely empty, so a pod that ran one web3 write and
+      // reused another would otherwise drop the reused hash from the run's
+      // transactionHashes and from receipt verification.
+      const reused = decision.output as TOutput;
+      recordStepSuccess(claim.executionId, claim.nodeId, reused);
+      recordTransactionHashIfPresent(context, reused);
+      return reused;
+    }
+  }
+
   // Update progress: mark this step as currently running
   if (context?.executionId && context.nodeId) {
     try {
@@ -351,6 +386,12 @@ async function withStepLoggingInner<TInput extends StepInput, TOutput>(
         errorResult.error || "Step execution failed",
         context?.executionId
       );
+
+      // Hand the step back so a later attempt can run it. Keeping the claim
+      // after a failure would make this failure final for the whole run.
+      if (ownedClaim) {
+        await releaseStepClaim(ownedClaim);
+      }
 
       recordStepMetrics({
         executionId: context?.executionId,
@@ -444,6 +485,10 @@ async function withStepLoggingInner<TInput extends StepInput, TOutput>(
       errorMessage,
       context?.executionId
     );
+
+    if (ownedClaim) {
+      await releaseStepClaim(ownedClaim);
+    }
 
     recordStepMetrics({
       executionId: context?.executionId,

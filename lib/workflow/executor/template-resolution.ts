@@ -24,6 +24,17 @@ export type UnresolvedRef = {
   token: string;
   reason: UnresolvedReason;
   detail?: string;
+  /**
+   * Where in the rendered config the token was found, as a dotted path with
+   * bracket indices, for example `group.rules[0].leftOperand`. Present for
+   * leftover literals, which are the case where the token's own spelling is
+   * often correct and the field holding it is the actual fault.
+   *
+   * One path only. `dedupeByToken` keys on token and reason and keeps the
+   * first, so a token repeated at several paths is reported at the first one
+   * found rather than all of them.
+   */
+  path?: string;
 };
 
 export type TemplateResolutionTracker = {
@@ -63,7 +74,8 @@ export function recordUnresolved(
 export function scanForLeftoverLiterals(
   value: unknown,
   out: UnresolvedRef[],
-  depth = 0
+  depth = 0,
+  path = ""
 ): void {
   if (depth > 10 || out.length > 50) {
     return;
@@ -74,6 +86,7 @@ export function scanForLeftoverLiterals(
         token: match[0],
         reason: "literal-leftover",
         detail: "Reference left in rendered config; resolver did not match.",
+        path: path || undefined,
       });
       if (out.length > 50) {
         return;
@@ -82,16 +95,75 @@ export function scanForLeftoverLiterals(
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) {
-      scanForLeftoverLiterals(item, out, depth + 1);
+    for (const [index, item] of value.entries()) {
+      scanForLeftoverLiterals(item, out, depth + 1, `${path}[${index}]`);
     }
     return;
   }
   if (value && typeof value === "object") {
-    for (const item of Object.values(value as Record<string, unknown>)) {
-      scanForLeftoverLiterals(item, out, depth + 1);
+    for (const [key, item] of Object.entries(
+      value as Record<string, unknown>
+    )) {
+      scanForLeftoverLiterals(
+        item,
+        out,
+        depth + 1,
+        path ? `${path}.${key}` : key
+      );
     }
   }
+}
+
+/**
+ * The two keys a Condition node resolves for itself.
+ *
+ * `condition` and `conditionConfig` carry their own template tokens and are
+ * rendered by `evaluateConditionExpression`, which has its own leftover-token
+ * gate. The action-level scan must not see them: otherwise every Condition
+ * node downstream of a For Each or a Code step reports a correct reference as
+ * an unresolved literal and the body cannot run.
+ */
+const CONDITION_OWNED_KEYS = ["condition", "conditionConfig"] as const;
+
+/**
+ * Split a node config into the part the action-level scan reads and the
+ * Condition-owned part it must not.
+ *
+ * Both keys are set to undefined on the returned config whether or not they
+ * were present, which is what the scan walks; only the ones that were present
+ * come back in `lifted`, so `restoreConditionFields` puts back exactly what
+ * was there and adds nothing.
+ *
+ * This is exported so the executor and the tests covering it lift the same
+ * two keys. A test that re-implements the lift asserts against its own copy
+ * and says nothing about the executor.
+ */
+export function liftConditionFields(config: Record<string, unknown>): {
+  rest: Record<string, unknown>;
+  lifted: Record<string, unknown>;
+} {
+  const rest: Record<string, unknown> = { ...config };
+  const lifted: Record<string, unknown> = {};
+  for (const key of CONDITION_OWNED_KEYS) {
+    if (config[key] !== undefined) {
+      lifted[key] = config[key];
+    }
+    rest[key] = undefined;
+  }
+  return { rest, lifted };
+}
+
+/** Re-attach what `liftConditionFields` took, after the scan has run. */
+export function restoreConditionFields(
+  processed: Record<string, unknown>,
+  lifted: Record<string, unknown>
+): Record<string, unknown> {
+  for (const key of CONDITION_OWNED_KEYS) {
+    if (lifted[key] !== undefined) {
+      processed[key] = lifted[key];
+    }
+  }
+  return processed;
 }
 
 /**
@@ -129,7 +201,13 @@ function dedupeByToken(refs: UnresolvedRef[]): UnresolvedRef[] {
 
 function formatErrorMessage(unresolved: UnresolvedRef[]): string {
   const summaries = unresolved.slice(0, 5).map((ref) => {
-    return ref.detail ? `${ref.token} (${ref.detail})` : ref.token;
+    // Naming the field matters when the token itself is spelled correctly and the
+    // key holding it is the one the renderer never reached. Without it the message
+    // sends the reader to rewrite a reference that was never wrong.
+    const where = ref.path ? ` at ${ref.path}` : "";
+    return ref.detail
+      ? `${ref.token}${where} (${ref.detail})`
+      : `${ref.token}${where}`;
   });
   const more =
     unresolved.length > summaries.length

@@ -110,13 +110,13 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | Operator | Label | Type | Description |
 | -------- | ----- | ---- | ----------- |
 | `==` | soft equals | Comparison | Loose equality (type coercion) |
-| `===` | equals | Comparison | Strict equality (no type coercion) |
+| `===` | equals | Comparison | Same value; plain decimals by magnitude ("1.0" equals 1) |
 | `!=` | soft not equals | Comparison | Loose inequality |
-| `!==` | not equals | Comparison | Strict inequality |
-| `>` | greater than | Comparison | Numeric greater than |
-| `>=` | greater than or equal | Comparison | Numeric greater than or equal |
-| `<` | less than | Comparison | Numeric less than |
-| `<=` | less than or equal | Comparison | Numeric less than or equal |
+| `!==` | not equals | Comparison | Different value; plain decimals by magnitude ("1.0" equals 1) |
+| `>` | greater than | Comparison | Greater than; plain decimals by magnitude |
+| `>=` | greater than or equal | Comparison | Greater than or equal; plain decimals by magnitude |
+| `<` | less than | Comparison | Less than; plain decimals by magnitude |
+| `<=` | less than or equal | Comparison | Less than or equal; plain decimals by magnitude |
 | `contains` | contains | String | Left operand contains right operand |
 | `startsWith` | starts with | String | Left operand starts with right operand |
 | `endsWith` | ends with | String | Left operand ends with right operand |
@@ -130,13 +130,59 @@ Combine multiple rules with **AND** / **OR** logic toggles, and nest groups for 
 | `isUndefined` | is undefined | Existence | Value is strictly undefined (null does not match) |
 | `isNotUndefined` | is not undefined | Existence | Value is anything except undefined (null still matches) |
 
-**`matchesRegex` patterns:** the pattern is a quoted string literal rather than a field reference, so it can be checked before the run instead of when it arrives. Two shapes are refused, because conditions are evaluated with no timeout and either can backtrack without bound: a quantifier applied to a group that contains a quantifier or an alternation (`(a+)+$`), and two quantifiers in a row over the same characters (`a+a+`, `\w+\d+`). `^0x[0-9a-fA-F]{40}$` is accepted, and so is `[a-z]+[0-9]+`, whose two atoms cannot match the same character. Patterns are capped at 512 characters and the matched value at 4096, and both caps throw rather than returning false: a value over the cap fails the step, so a long revert payload or stack trace hard-fails the workflow instead of matching nothing. The operator takes exactly two arguments, so a third (`matchesRegex(value, "a", "i")`) is refused rather than having its flag silently ignored.
+**`matchesRegex` patterns:** the pattern is a quoted string literal rather than a field reference, so it can be checked before the run instead of when it arrives. Two shapes are refused, because conditions are evaluated with no timeout and either can backtrack without bound: a quantifier applied to a group that contains a quantifier or an alternation (`(a+)+$`), and two quantifiers in a row over the same characters (`a+a+`, `\w+\d+`). `^0x[0-9a-fA-F]{40}$` is accepted, and so is `[a-z]+[0-9]+`, whose two atoms cannot match the same character. Patterns are capped at 512 characters and the matched value at 4096, and both caps throw rather than returning false: a value over the cap fails the step, so a long revert payload or stack trace hard-fails the workflow instead of matching nothing. The operator takes exactly two arguments, so a third (`matchesRegex(value, "a", "i")`) is refused rather than having its flag silently ignored, and so is a call with only one, which used to read the missing pattern as the text `undefined`. A pattern is also bounded in shape: more than eight levels of nested groups, or more than sixteen groups in total, is refused, because the checker that decides all of this walks that nesting itself. Only a quantifier that can repeat in more than one way counts for the first rule, so `^\d+(\.\d+)?$` and `^(0x)?[0-9a-fA-F]{40}$` are accepted.
+
+**What counts as a number:** an operand is compared by magnitude only when it is a
+plain decimal - an optional sign, digits, and at most one point, such as `42`, `-0.50` or
+`1000000000000000000`. A JavaScript number is read through the shortest decimal that prints it
+back, so one large or small enough to print in exponent form is not one. Hex and exponent form are
+outside the grammar, and the visual builder agrees: it quotes such a value rather than emitting a
+bare number. Whitespace is outside the grammar too, but the builder trims what you type before it
+decides, so `  42  ` still emits a bare `42`. An operand that keeps its spaces reaches a comparison
+through template resolution or a hand-written expression, not through the builder.
+
+**Outside that grammar the comparison is JavaScript's own, which is not numeric.** Two strings are
+then ordered character by character. For text meant to be read that way - a word, an ISO date -
+that is the answer you want. For a number written in a form the grammar does not cover it is an
+answer about spelling, which can disagree with magnitude, and it still runs a branch. A pair of
+different types usually produces no answer at all: `<`, `===` and `>` are false at once, so a
+Condition branching on all three takes no branch.
+
+```
+"0x10" vs "16"                        <  true    ===  false    >  false
+"1e18" vs "1000000000000000000"       <  false   ===  false    >  true
+"0x10" vs 16                          <  false   ===  false    >  false
+1e21   vs "1000000000000000000000"    <  false   ===  false    >  false
+" 1"   vs 1                           <  false   ===  false    >  false
+""     vs 0                           <  false   ===  false    >  false
+```
+
+`"0x10" < "16"` is true because `"0"` sorts before `"1"`, and `"1e18" > "1000000000000000000"` is
+true because `"e"` sorts after `"0"`. Write the value as a plain decimal and both go away.
+
+The last row is the one to watch, because a template that resolves to blank produces it without
+anyone writing an odd literal. `""` is not a decimal, so the pair falls to JavaScript, which reads
+a blank string as `0`: against `0` that is the all-false case, and against any other number the
+comparison answers as though the field held zero. Guard the field with `isNotEmpty` in an earlier
+clause rather than letting the comparison decide - `exists` will not catch it, since a blank string
+is neither null nor undefined.
+
+**A digit field is read as a quantity, not as a spelling.** `===` and `!==` ask the same question
+the ordering operators ask, so two spellings of one number are one value: `007` equals `7`, `1.50`
+equals `1.5`, `+5` equals `5`. For a quantity that is the answer you want, and it is what stops a
+formatter's `1.0` against an author's `1` leaving `<`, `===` and `>` false at once. For an
+identifier that happens to be digits - a zero-padded order number, an invoice reference, a token id
+- it is not: two references that spell the same number compare equal, and no comparison operator
+reads the spelling. Nor did one before: the builder emits a value that looks like a number bare, so
+a rule reading `id === 00123` never matched a stored `"00123"` either, whatever the id was. If a
+rule has to tell `007` from `7`, keep the field in a form the grammar does not read as a number - a
+prefix is enough - since the string operators read text but none of them is an exact match.
 
 **When to use `doesNotExist` vs `isNull` / `isUndefined`:** `exists` and `doesNotExist` treat null and undefined the same, which is the right choice for most checks (for example, a node output field that may or may not be present). Reach for `isNull`, `isNotNull`, `isUndefined`, or `isNotUndefined` only when you need to tell null and undefined apart, since these match one but not the other.
 
 **Referencing a field that may be absent:** the existence operators are also the only ones that accept a field path that is not present on the upstream output at all. Every other operator fails the run when the path is missing, so that a mistyped reference is caught rather than quietly satisfying a comparison. Put an existence operator in the first clause of an AND group to guard the clauses after it. See [Runtime resolution](/workflows/templating#runtime-resolution) in the templating reference for the full rules.
 
-**When to use soft vs strict equality:** Use `==` (soft equals) when comparing values that may differ in type, such as a string `"0"` against a number `0`. Use `===` (equals) when you need exact type matching. Most blockchain data arrives as strings, so soft equality is the default for new conditions.
+**When to use soft vs strict equality:** `===` does not mean type-strict. Two plain decimals compare by magnitude under both operators, so `"1.0"`, `"1"` and `1` are one value either way, and a string `"0"` against a number `0` matches under both. They part company only where one side is not a number: `"0"` against `false` matches under `==` and does not under `===`. Most blockchain data arrives as strings, so soft equality is the default for new conditions.
 
 #### Expression Mode
 

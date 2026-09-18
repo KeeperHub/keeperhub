@@ -472,14 +472,21 @@ export default defineAbiProtocol({
     // chain 1's reference token is USDT, so the declaration has to cover
     // both shapes.
     //
-    // The mismatch is not inert on the write path, which is what a bool
-    // declaration would assume. Before broadcasting,
-    // EvmChainAdapter.executeContractCall runs a preflight `staticCall`
-    // (lib/web3/chain-adapter/evm.ts), and ethers decodes that call's return
-    // data against the declared outputs. Against USDT it decodes "0x" as a
-    // bool and throws BAD_DATA, so the approve fails before it is sent, with
-    // "Contract returned no data, but the ABI you supplied declares 1 output
-    // (bool)". It is a decode error reported as a contract failure.
+    // The mismatch is not inert, which is what a bool declaration would
+    // assume. On the EOA path, EvmChainAdapter.executeContractCall runs a
+    // preflight `staticCall` before broadcasting (lib/web3/chain-adapter/
+    // evm.ts), and ethers decodes that call's return data against the
+    // declared outputs. Against USDT it decodes "0x" as a bool and throws
+    // BAD_DATA, so the approve fails before it is sent, with "Contract
+    // returned no data, but the ABI you supplied declares 1 output (bool)".
+    // It is a decode error reported as a contract failure.
+    //
+    // Only that path decodes. Safe, Safe-role and Turnkey-sponsored sends
+    // encode the call and estimate gas without a staticCall
+    // (lib/safe/execute-as-safe.ts, lib/web3/sponsored-transaction-manager.ts),
+    // so a bool declaration survives them. Stating this precisely matters:
+    // the same node, ABI and token fails for an EOA connection and succeeds
+    // for a Safe one, so a repro that omits the signer mode proves nothing.
     //
     // An empty `outputs` decodes both shapes: ethers reads nothing and
     // ignores the 32 bytes a conforming token returns. Nothing downstream

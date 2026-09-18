@@ -100,6 +100,11 @@ describe("execution retention purge (real database)", () => {
   let queryClient: ReturnType<typeof postgres>;
   let db: ReturnType<typeof drizzle>;
   let runRetentionPurge: Purge["runRetentionPurge"];
+  let planWindowExecutionIdsQuery: Purge["planWindowExecutionIdsQuery"];
+  let planWindowLogIdsQuery: Purge["planWindowLogIdsQuery"];
+  let planWindowLogCountQuery: Purge["planWindowLogCountQuery"];
+  let workflowChunk: Purge["PLAN_WINDOW_WORKFLOW_CHUNK"];
+  let runsPerRead: Purge["PLAN_WINDOW_RUNS_PER_READ"];
   let getOrgLogRetentionCutoff: Progress["getOrgLogRetentionCutoff"];
 
   async function cleanup(): Promise<void> {
@@ -279,7 +284,14 @@ describe("execution retention purge (real database)", () => {
     }
     queryClient = postgres(DATABASE_URL);
     db = drizzle(queryClient);
-    ({ runRetentionPurge } = await import("@/lib/retention/purge-executions"));
+    ({
+      runRetentionPurge,
+      planWindowExecutionIdsQuery,
+      planWindowLogIdsQuery,
+      planWindowLogCountQuery,
+      PLAN_WINDOW_WORKFLOW_CHUNK: workflowChunk,
+      PLAN_WINDOW_RUNS_PER_READ: runsPerRead,
+    } = await import("@/lib/retention/purge-executions"));
     ({ getOrgLogRetentionCutoff } = await import("@/lib/retention/progress"));
   });
 
@@ -474,6 +486,189 @@ describe("execution retention purge (real database)", () => {
     }
   });
 
+  it("drains an organization whose workflows span more than one chunk", async () => {
+    // The pass reads runs a chunk of workflows at a time. A workflow past the
+    // first chunk must not be left behind, and the watermark must wait for it.
+    const orgWide = `${PREFIX}org_wide`;
+    const total = workflowChunk + 1;
+    const workflowId = (index: number) =>
+      `${orgWide}_wf_${String(index).padStart(4, "0")}`;
+    await db.insert(organization).values({
+      id: orgWide,
+      name: orgWide,
+      slug: orgWide,
+      createdAt: daysAgo(600),
+    });
+    await db.insert(workflows).values(
+      Array.from({ length: total }, (_, index) => ({
+        id: workflowId(index),
+        name: `wide workflow ${index}`,
+        userId: USER,
+        organizationId: orgWide,
+        nodes: [],
+        edges: [],
+        createdAt: daysAgo(600),
+        updatedAt: daysAgo(600),
+      }))
+    );
+    await db.insert(workflowExecutions).values([
+      ...Array.from({ length: total }, (_, index) => ({
+        id: `${orgWide}_run_old_${index}`,
+        workflowId: workflowId(index),
+        organizationId: orgWide,
+        userId: USER,
+        status: "success" as const,
+        startedAt: daysAgo(40),
+      })),
+      {
+        id: `${orgWide}_run_fresh`,
+        workflowId: workflowId(total - 1),
+        organizationId: orgWide,
+        userId: USER,
+        status: "success" as const,
+        startedAt: daysAgo(3),
+      },
+    ]);
+    await db.insert(workflowExecutionLogs).values([
+      ...Array.from({ length: total }, (_, index) => ({
+        id: `${orgWide}_log_old_${index}`,
+        executionId: `${orgWide}_run_old_${index}`,
+        nodeId: "action-1",
+        nodeName: "HTTP Request",
+        nodeType: "action",
+        status: "success" as const,
+        startedAt: daysAgo(40),
+        timestamp: daysAgo(40),
+      })),
+      {
+        id: `${orgWide}_log_fresh`,
+        executionId: `${orgWide}_run_fresh`,
+        nodeId: "action-1",
+        nodeName: "HTTP Request",
+        nodeType: "action",
+        status: "success" as const,
+        startedAt: daysAgo(3),
+        timestamp: daysAgo(3),
+      },
+    ]);
+
+    await runRetentionPurge(config(), NOW);
+
+    const rows =
+      await queryClient`SELECT count(*)::int AS n FROM workflow_execution_logs WHERE id LIKE ${`${orgWide}_log_old_%`}`;
+    expect(rows[0].n).toBe(0);
+    expect(await logExists(`${orgWide}_log_fresh`)).toBe(true);
+    expect(await watermarkOf(orgWide)).toEqual(daysAgo(7));
+  });
+
+  it("answers the chunk reads from the indexes", async () => {
+    // Keyed by explicit ids and run with sequential scans priced out, as the
+    // pass runs them. With enable_seqscan off the planner only falls back to a
+    // sequential scan when no index can answer, so a plan without one proves
+    // neither read needs the full-table scan that broke the pass. Which index
+    // wins depends on table statistics: on a large table the runs read uses
+    // (workflow_id, started_at), on this near-empty one it may pick another.
+    const explain = async (query: { sql: string; params: unknown[] }) =>
+      JSON.stringify(
+        await queryClient.begin(async (tx) => {
+          await tx`SET LOCAL enable_seqscan = off`;
+          return await tx.unsafe(
+            `EXPLAIN (FORMAT JSON) ${query.sql}`,
+            query.params as never[]
+          );
+        })
+      );
+
+    const runsPlan = await explain(
+      planWindowExecutionIdsQuery(
+        [`${ORG_NONE}_wf`],
+        daysAgo(400),
+        daysAgo(7),
+        runsPerRead + 1
+      ).toSQL()
+    );
+    const logsPlan = await explain(
+      planWindowLogIdsQuery([runId(ORG_NONE, "old")], 1000).toSQL()
+    );
+    const countPlan = await explain(
+      planWindowLogCountQuery([runId(ORG_NONE, "old")]).toSQL()
+    );
+
+    expect(runsPlan).not.toContain('"Node Type":"Seq Scan"');
+    expect(runsPlan).toContain('"Index Name"');
+    expect(logsPlan).not.toContain('"Node Type":"Seq Scan"');
+    expect(logsPlan).toContain("idx_exec_logs_execution_id");
+    expect(countPlan).not.toContain('"Node Type":"Seq Scan"');
+    expect(countPlan).toContain("idx_exec_logs_execution_id");
+  });
+
+  it("drains a workflow with more runs than one read holds, a slice at a time", async () => {
+    // One busy workflow is one chunk. Its runs no longer fit one read, so the
+    // pass has to shrink the slice until they do and still reach every run.
+    const orgDense = `${PREFIX}org_dense`;
+    const workflowId = `${orgDense}_wf`;
+    const total = runsPerRead + 1;
+    await db.insert(organization).values({
+      id: orgDense,
+      name: orgDense,
+      slug: orgDense,
+      createdAt: daysAgo(600),
+    });
+    await db.insert(workflows).values({
+      id: workflowId,
+      name: "dense workflow",
+      userId: USER,
+      organizationId: orgDense,
+      nodes: [],
+      edges: [],
+      createdAt: daysAgo(600),
+      updatedAt: daysAgo(600),
+    });
+    // One run a second, so a slice can split them.
+    const startedAt = (index: number) =>
+      new Date(daysAgo(40).getTime() + index * 1000);
+    await db.insert(workflowExecutions).values(
+      Array.from({ length: total }, (_, index) => ({
+        id: `${orgDense}_run_${index}`,
+        workflowId,
+        organizationId: orgDense,
+        userId: USER,
+        status: "success" as const,
+        startedAt: startedAt(index),
+      }))
+    );
+    await db.insert(workflowExecutionLogs).values(
+      Array.from({ length: total }, (_, index) => ({
+        id: `${orgDense}_log_${index}`,
+        executionId: `${orgDense}_run_${index}`,
+        nodeId: "action-1",
+        nodeName: "HTTP Request",
+        nodeType: "action",
+        status: "success" as const,
+        startedAt: startedAt(index),
+        timestamp: startedAt(index),
+      }))
+    );
+
+    await runRetentionPurge(config(), NOW);
+
+    const rows =
+      await queryClient`SELECT count(*)::int AS n FROM workflow_execution_logs WHERE id LIKE ${`${orgDense}_log_%`}`;
+    expect(rows[0].n).toBe(0);
+    expect(await watermarkOf(orgDense)).toEqual(daysAgo(7));
+  });
+
+  it("counts in a dry run exactly the step logs a real run then deletes", async () => {
+    const planRows = (result: Awaited<ReturnType<typeof runRetentionPurge>>) =>
+      result.passes.find((pass) => pass.pass === "logs_plan_window")?.rows;
+
+    const dry = await runRetentionPurge(config({ dryRun: true }), NOW);
+    const real = await runRetentionPurge(config(), NOW);
+
+    expect(planRows(dry)).toBeGreaterThan(0);
+    expect(planRows(dry)).toBe(planRows(real));
+  });
+
   describe("run rows", () => {
     beforeEach(async () => {
       // A run past the flat window that somebody paid for, and one calldata-only
@@ -550,16 +745,25 @@ describe("execution retention purge (real database)", () => {
 
     it("still knows every table that references a run row", async () => {
       // The pass deletes workflow_execution_logs and feedback before the parent
-      // because nothing cascades. A third child added later would fail on a
-      // 500-day-old row in production; it fails here instead.
+      // because neither cascades. A further non-cascading child added later
+      // would fail on a 500-day-old row in production; it fails here instead.
+      // workflow_step_claims is listed but needs no pass: it cascades, which
+      // the second assertion below is what actually holds it to.
       const rows = await queryClient`
-        SELECT conrelid::regclass::text AS child FROM pg_constraint
+        SELECT conrelid::regclass::text AS child, confdeltype AS on_delete
+          FROM pg_constraint
          WHERE contype = 'f' AND confrelid = 'workflow_executions'::regclass
          ORDER BY 1`;
       expect(rows.map((r) => r.child)).toEqual([
         "feedback",
         "workflow_execution_logs",
+        "workflow_step_claims",
       ]);
+      // 'c' is cascade, 'a' is no action. A child the purge does not delete
+      // itself has to cascade, or an aged parent delete fails.
+      expect(
+        rows.find((r) => r.child === "workflow_step_claims")?.on_delete
+      ).toBe("c");
     });
   });
 });

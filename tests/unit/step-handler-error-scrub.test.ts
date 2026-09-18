@@ -8,6 +8,13 @@ vi.mock("@/lib/logging", () => ({
 vi.mock("@/lib/metrics/instrumentation/workflow", () => ({
   recordStepMetrics: vi.fn(),
 }));
+// The claim guard is covered in step-claim.test.ts; stub it so this file
+// stays about error scrubbing and does not reach Redis or the database.
+vi.mock("@/lib/workflow/executor/step-claim", () => ({
+  acquireStepClaim: vi.fn(() => Promise.resolve({ outcome: "run" })),
+  releaseStepClaim: vi.fn(() => Promise.resolve()),
+  stepClaimScope: vi.fn((scope: unknown) => scope),
+}));
 vi.mock("@/lib/workflow/executor/logging", () => ({
   incrementCompletedSteps: vi.fn(),
   logStepCompleteDb: vi.fn(),

@@ -10,6 +10,7 @@ import {
   lt,
   min,
   notInArray,
+  sql,
 } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
@@ -21,6 +22,7 @@ import { paygPayments } from "@/lib/db/schema-extensions";
 import { feedback } from "@/lib/db/schema-feedback";
 import { workflowPayments } from "@/lib/db/schema-payments";
 import type { WorkflowExecutionStatus } from "@/lib/errors/execution-status";
+import { logWarn } from "@/lib/logging";
 import {
   daysBefore,
   getRetentionConfig,
@@ -72,6 +74,30 @@ function executionBatchSize(config: RetentionConfig): number {
   return Math.max(50, Math.floor(config.batchSize / 10));
 }
 
+/**
+ * Workflow ids per statement in the plan-window drain. Small enough that the
+ * planner keeps the (workflow_id, started_at) index for one chunk's runs.
+ */
+export const PLAN_WINDOW_WORKFLOW_CHUNK = 100;
+
+/** Run ids per statement when the plan-window drain reads their step logs. */
+export const PLAN_WINDOW_EXECUTION_CHUNK = 500;
+
+/**
+ * Most runs one read of a workflow chunk may return. A read that finds more
+ * halves the time slice instead, so no single statement or array holds an
+ * organization's whole backlog.
+ */
+export const PLAN_WINDOW_RUNS_PER_READ = 5000;
+
+/**
+ * Shortest time slice the plan-window drain will halve down to. More runs than
+ * one read holds starting inside one second of one chunk is not a shape the
+ * product produces, so reaching it fails the organization rather than reading
+ * an unbounded set.
+ */
+export const PLAN_WINDOW_MIN_SLICE_MS = 1000;
+
 export type RetentionPassName =
   | "logs_floor"
   | "logs_plan_window"
@@ -99,6 +125,12 @@ export type RetentionPassResult = {
    * subscription changed inside the grace period.
    */
   deferredOrganizations?: number;
+  /**
+   * Organizations the plan-window pass could not drain because a statement
+   * failed. Each keeps the watermark of its last drained slice, and the run
+   * fails once every other organization and pass has had its turn.
+   */
+  failedOrganizationIds?: string[];
   /** Present when a pass did nothing because its switch is off. */
   skipped?: "disabled";
 };
@@ -113,6 +145,25 @@ export type RetentionRunResult = {
   passes: RetentionPassResult[];
   totalRows: number;
 };
+
+/**
+ * Thrown after a run that did all the work it could but could not drain every
+ * organization. The route turns it into a 500, so the scheduled job still
+ * reports the failure; `result` carries what the run did get done.
+ */
+export class RetentionPurgeIncompleteError extends Error {
+  readonly result: RetentionRunResult;
+  readonly failedOrganizationIds: string[];
+
+  constructor(result: RetentionRunResult, failedOrganizationIds: string[]) {
+    super(
+      `Retention purge could not drain ${failedOrganizationIds.length} organization(s) in the plan-window pass: ${failedOrganizationIds.join(", ")}`
+    );
+    this.name = "RetentionPurgeIncompleteError";
+    this.result = result;
+    this.failedOrganizationIds = failedOrganizationIds;
+  }
+}
 
 /** Wall-clock budget shared by every pass in one run. */
 class RunBudget {
@@ -132,7 +183,9 @@ class RunBudget {
  *
  * Five passes, deliberately ordered child-before-parent because every foreign
  * key into `workflow_executions` is ON DELETE NO ACTION -- nothing cascades, so
- * a parent delete with a surviving child simply fails.
+ * a parent delete with a surviving child simply fails. The one exception is
+ * `workflow_step_claims`, which is ephemeral coordination state rather than
+ * history and cascades on delete, so no pass here has to know about it.
  *
  * None of the passes bounds its scan from below by a fixed lookback. An earlier
  * version did, and it meant each run only ever saw rows that had crossed their
@@ -205,7 +258,7 @@ export async function runRetentionPurge(
   passes.push(await purgeSoftDeletedLogs(config, now, budget));
   passes.push(await purgeExecutionsPastFlatWindow(config, now, budget));
 
-  return {
+  const result: RetentionRunResult = {
     enabled: true,
     executionsEnabled: config.executionsEnabled,
     dryRun: config.dryRun,
@@ -214,6 +267,14 @@ export async function runRetentionPurge(
     passes,
     totalRows: passes.reduce((sum, pass) => sum + pass.rows, 0),
   };
+
+  const failedOrganizationIds = passes.flatMap(
+    (pass) => pass.failedOrganizationIds ?? []
+  );
+  if (failedOrganizationIds.length > 0) {
+    throw new RetentionPurgeIncompleteError(result, failedOrganizationIds);
+  }
+  return result;
 }
 
 /**
@@ -260,12 +321,28 @@ function purgeLogsPastFloor(
  * sells (7 free, 30 pro, 90 business, or a per-org override). Organizations on
  * the longest window are not here -- pass 1 owns them.
  *
- * Each organization is walked from its watermark up to its cutoff and the
- * watermark advances only when that range is empty, so an interrupted run
- * resumes rather than skipping. Rows are matched by their execution's
- * `started_at`, not their own, so a whole run's step logs retire together, and
- * a run that can still resume is skipped for the same reason the output_raw
- * pass skips it.
+ * Each organization is walked from its watermark up to its cutoff in time
+ * slices, and the watermark advances after every slice that has drained, so an
+ * interrupted run resumes from its last whole slice rather than starting the
+ * organization over. Rows are matched by their execution's `started_at`, not
+ * their own, so a whole run's step logs retire together, and a run that can
+ * still resume is skipped for the same reason the output_raw pass skips it.
+ *
+ * An organization is drained through its own workflows, never through one join
+ * with a LIMIT. The planner prices `workflow_id` at the table-wide average runs
+ * per workflow, so for an organization with a very large number of mostly idle
+ * workflows it expects matches everywhere and answers that join with a
+ * sequential scan of the whole step-log table, which outlives the statement
+ * timeout and failed every run that reached the organization. So the drain
+ * loads the organization's workflow ids, reads eligible runs for a small chunk
+ * of them within one time slice, and reads step logs for a bounded list of
+ * those runs. Every statement is keyed by explicit ids on an indexed column and
+ * runs with sequential scans priced out (see withIndexPlans), so the planner
+ * falls back to a sequential scan only when no index can answer.
+ *
+ * An organization that still fails is skipped from the slice it failed in, the
+ * rest of the run carries on, and runRetentionPurge fails the run at the end so
+ * the scheduled job still reports it.
  */
 async function purgeLogsPastPlanWindow(
   config: RetentionConfig,
@@ -275,6 +352,7 @@ async function purgeLogsPastPlanWindow(
   deferred: Set<string>
 ): Promise<RetentionPassResult> {
   const windows: RetentionWindowReport[] = [];
+  const failedOrganizationIds: string[] = [];
   let rows = 0;
   let budgetExhausted = false;
   let deferredOrganizations = 0;
@@ -300,75 +378,34 @@ async function purgeLogsPastPlanWindow(
         continue;
       }
 
-      const eligible = and(
-        eq(workflows.organizationId, organizationId),
-        gte(workflowExecutions.startedAt, from),
-        lt(workflowExecutions.startedAt, cutoff),
-        notInArray(workflowExecutions.status, [...RESUMABLE_EXECUTION_STATUSES])
-      );
-
-      const result = await runBatched({
-        pass: "logs_plan_window",
-        config,
-        budget,
-        selectIds: (limit) =>
-          db
-            .select({ id: workflowExecutionLogs.id })
-            .from(workflowExecutionLogs)
-            .innerJoin(
-              workflowExecutions,
-              eq(workflowExecutions.id, workflowExecutionLogs.executionId)
-            )
-            .innerJoin(
-              workflows,
-              eq(workflows.id, workflowExecutions.workflowId)
-            )
-            .where(eligible)
-            .limit(limit),
-        countEligible: async () =>
-          (
-            await db
-              .select({ n: count() })
-              .from(workflowExecutionLogs)
-              .innerJoin(
-                workflowExecutions,
-                eq(workflowExecutions.id, workflowExecutionLogs.executionId)
-              )
-              .innerJoin(
-                workflows,
-                eq(workflows.id, workflowExecutions.workflowId)
-              )
-              .where(eligible)
-          )[0].n,
-        apply: (ids) =>
-          db
-            .delete(workflowExecutionLogs)
-            .where(inArray(workflowExecutionLogs.id, ids)),
-      });
-
-      groupRows += result.rows;
-      if (result.budgetExhausted) {
-        budgetExhausted = true;
-        break;
-      }
-      // Drained -- but "drained" means the SELECT came back empty, and that
-      // SELECT excludes runs that can still resume. Advancing to the cutoff
-      // would move the lower bound past those rows, and since the bound is
-      // inclusive-below they would never be selected again: a run that is
-      // phantom today and succeeds tomorrow would keep its step logs until the
-      // floor pass, hundreds of days past the window its plan sells. So the
-      // watermark stops at the oldest run this pass had to skip. A dry run must
-      // not claim anything at all, since it deleted nothing.
-      if (!config.dryRun) {
-        const skipped = await earliestResumableStartedAt(
+      // Counted as rows are removed, so a statement that fails after earlier
+      // deletes have committed still reports them.
+      const progress: DrainProgress = { rows: 0 };
+      try {
+        const drained = await drainPlanWindow(
           organizationId,
           from,
-          cutoff
+          cutoff,
+          config,
+          budget,
+          progress
         );
-        await setPurgeWatermark(
-          organizationId,
-          skipped && skipped < cutoff ? skipped : cutoff
+        if (drained.budgetExhausted) {
+          budgetExhausted = true;
+        }
+      } catch (error) {
+        // One organization must not stall every organization behind it. It
+        // keeps the watermark of its last drained slice, so the next run
+        // starts it from there.
+        failedOrganizationIds.push(organizationId);
+        logWarn(
+          "[Retention] Skipping an organization the plan-window pass could not drain",
+          { organization_id: organizationId, error: describeError(error) }
         );
+      }
+      groupRows += progress.rows;
+      if (budgetExhausted) {
+        break;
       }
     }
 
@@ -389,7 +426,259 @@ async function purgeLogsPastPlanWindow(
     budgetExhausted,
     windows,
     deferredOrganizations,
+    ...(failedOrganizationIds.length > 0 ? { failedOrganizationIds } : {}),
   };
+}
+
+type Querier = Pick<typeof db, "select">;
+
+type DrainProgress = { rows: number };
+
+/**
+ * Eligible runs of one chunk of an organization's workflows inside one time
+ * slice, at most `limit` of them. Exported so a test can EXPLAIN the SQL the
+ * pass really sends.
+ */
+export function planWindowExecutionIdsQuery(
+  workflowIds: string[],
+  from: Date,
+  to: Date,
+  limit: number,
+  querier: Querier = db
+) {
+  return querier
+    .select({ id: workflowExecutions.id })
+    .from(workflowExecutions)
+    .where(
+      and(
+        inArray(workflowExecutions.workflowId, workflowIds),
+        gte(workflowExecutions.startedAt, from),
+        lt(workflowExecutions.startedAt, to),
+        notInArray(workflowExecutions.status, [...RESUMABLE_EXECUTION_STATUSES])
+      )
+    )
+    .limit(limit);
+}
+
+/**
+ * Step logs of a bounded list of runs. Exported so a test can EXPLAIN the SQL
+ * the pass really sends.
+ */
+export function planWindowLogIdsQuery(
+  executionIds: string[],
+  limit: number,
+  querier: Querier = db
+) {
+  return querier
+    .select({ id: workflowExecutionLogs.id })
+    .from(workflowExecutionLogs)
+    .where(inArray(workflowExecutionLogs.executionId, executionIds))
+    .limit(limit);
+}
+
+/**
+ * How many step logs a bounded list of runs carries: the dry run's figure for
+ * what planWindowLogIdsQuery would page through. Exported so a test can
+ * EXPLAIN the SQL the pass really sends.
+ */
+export function planWindowLogCountQuery(
+  executionIds: string[],
+  querier: Querier = db
+) {
+  return querier
+    .select({ n: count() })
+    .from(workflowExecutionLogs)
+    .where(inArray(workflowExecutionLogs.executionId, executionIds));
+}
+
+/**
+ * Run one read with sequential scans priced out, for statements keyed by
+ * explicit ids on an indexed column. `SET LOCAL` ends with the transaction, so
+ * nothing leaks to the next query that borrows the pooled connection. Each read
+ * touches a single table, so the setting reaches no other relation.
+ */
+function withIndexPlans<T>(query: (tx: Querier) => PromiseLike<T>): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+    return await query(tx);
+  });
+}
+
+/**
+ * One organization's drain, in time slices of its runs' `started_at`.
+ *
+ * A slice starts as the whole remaining range. When a workflow chunk has more
+ * eligible runs in it than one read may return, the slice is halved and the walk
+ * resumes at that chunk: the chunks before it were read in full over the larger
+ * range, so they are already done for the smaller one. After a slice drains,
+ * the watermark moves to its end -- or to the oldest run that can still resume,
+ * if one sits below it -- and the next slice doubles again. A run cut off by the
+ * budget therefore gives up at most the slice it was in.
+ *
+ * A dry run walks the same slices and counts instead of deleting. It writes no
+ * watermark, so every dry run walks from the same place.
+ */
+async function drainPlanWindow(
+  organizationId: string,
+  from: Date,
+  cutoff: Date,
+  config: RetentionConfig,
+  budget: RunBudget,
+  progress: DrainProgress
+): Promise<{ budgetExhausted: boolean }> {
+  const workflowIds = (
+    await db
+      .select({ id: workflows.id })
+      .from(workflows)
+      .where(eq(workflows.organizationId, organizationId))
+  ).map((row) => row.id);
+
+  const end = cutoff.getTime();
+  const widest = end - from.getTime();
+  let sliceStart = from.getTime();
+  let span = widest;
+  let firstChunk = 0;
+
+  while (sliceStart < end) {
+    const sliceEnd = Math.min(sliceStart + span, end);
+    let overflowAt: number | null = null;
+
+    for (
+      let i = firstChunk;
+      i < workflowIds.length;
+      i += PLAN_WINDOW_WORKFLOW_CHUNK
+    ) {
+      if (budget.exhausted) {
+        return { budgetExhausted: true };
+      }
+      const workflowChunk = workflowIds.slice(
+        i,
+        i + PLAN_WINDOW_WORKFLOW_CHUNK
+      );
+      const executionIds = (
+        await withIndexPlans((tx) =>
+          planWindowExecutionIdsQuery(
+            workflowChunk,
+            new Date(sliceStart),
+            new Date(sliceEnd),
+            PLAN_WINDOW_RUNS_PER_READ + 1,
+            tx
+          )
+        )
+      ).map((row) => row.id);
+
+      if (executionIds.length > PLAN_WINDOW_RUNS_PER_READ) {
+        overflowAt = i;
+        break;
+      }
+
+      const drained = await drainLogsOfExecutions(
+        executionIds,
+        config,
+        budget,
+        progress
+      );
+      if (drained.budgetExhausted) {
+        return { budgetExhausted: true };
+      }
+    }
+
+    if (overflowAt !== null) {
+      if (span <= PLAN_WINDOW_MIN_SLICE_MS) {
+        throw new Error(
+          `More than ${PLAN_WINDOW_RUNS_PER_READ} eligible runs start within ${PLAN_WINDOW_MIN_SLICE_MS} ms in one chunk of this organization's workflows`
+        );
+      }
+      span = Math.max(Math.floor(span / 2), PLAN_WINDOW_MIN_SLICE_MS);
+      firstChunk = overflowAt;
+      continue;
+    }
+
+    // Drained -- but "drained" means every read came back without the runs
+    // that can still resume. Advancing past one would move the lower bound
+    // beyond it, and since the bound is inclusive-below it would never be
+    // selected again: a run that is phantom today and succeeds tomorrow would
+    // keep its step logs until the floor pass, hundreds of days past the window
+    // its plan sells. So the watermark stops at the oldest run this pass had to
+    // skip. A dry run must not claim anything at all, since it deleted nothing.
+    if (!config.dryRun) {
+      const skipped = await earliestResumableStartedAt(
+        organizationId,
+        from,
+        new Date(sliceEnd)
+      );
+      await setPurgeWatermark(
+        organizationId,
+        skipped && skipped.getTime() < sliceEnd ? skipped : new Date(sliceEnd)
+      );
+    }
+
+    sliceStart = sliceEnd;
+    span = Math.min(span * 2, widest);
+    firstChunk = 0;
+  }
+
+  return { budgetExhausted: false };
+}
+
+/**
+ * Delete the step logs of `executionIds`, a bounded list of runs at a time, or
+ * count them in a dry run.
+ */
+async function drainLogsOfExecutions(
+  executionIds: string[],
+  config: RetentionConfig,
+  budget: RunBudget,
+  progress: DrainProgress
+): Promise<{ budgetExhausted: boolean }> {
+  for (let i = 0; i < executionIds.length; i += PLAN_WINDOW_EXECUTION_CHUNK) {
+    const executionChunk = executionIds.slice(
+      i,
+      i + PLAN_WINDOW_EXECUTION_CHUNK
+    );
+    if (config.dryRun) {
+      if (budget.exhausted) {
+        return { budgetExhausted: true };
+      }
+      const [{ n }] = await withIndexPlans((tx) =>
+        planWindowLogCountQuery(executionChunk, tx)
+      );
+      progress.rows += n;
+      continue;
+    }
+    for (;;) {
+      if (budget.exhausted) {
+        return { budgetExhausted: true };
+      }
+      const victims = await withIndexPlans((tx) =>
+        planWindowLogIdsQuery(executionChunk, config.batchSize, tx)
+      );
+      if (victims.length === 0) {
+        break;
+      }
+      await db.delete(workflowExecutionLogs).where(
+        inArray(
+          workflowExecutionLogs.id,
+          victims.map((victim) => victim.id)
+        )
+      );
+      progress.rows += victims.length;
+    }
+  }
+  return { budgetExhausted: false };
+}
+
+/** A one-line reason for a skipped organization, without bound parameters. */
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  const cause = (error as { cause?: { code?: unknown; message?: unknown } })
+    .cause;
+  const reason =
+    typeof cause?.message === "string" ? cause.message : error.message;
+  const code = typeof cause?.code === "string" ? ` (${cause.code})` : "";
+  return `${reason.split("\n")[0].slice(0, 200)}${code}`;
 }
 
 /**

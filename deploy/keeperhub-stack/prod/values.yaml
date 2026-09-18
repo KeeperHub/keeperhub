@@ -42,7 +42,7 @@ app:
     # keep their code defaults (7, 7 and 30).
     EXECUTION_RETENTION_ENABLED:
       type: kv
-      value: "true"
+      value: "false"
     # Second switch, for run rows only. Every billing count reads
     # workflow_executions by started_at with no floor and the invoices page
     # recounts it per period on every load, so deleting a run row rewrites what
@@ -1019,8 +1019,13 @@ app:
         concurrencyPolicy: Forbid
         successfulJobsHistoryLimit: 3
         failedJobsHistoryLimit: 3
-        restartPolicy: OnFailure
-        backoffLimit: 2
+        # No retries. A failed run already did its whole budget of work, and
+        # the next scheduled run resumes from the watermarks, so a retry only
+        # repeats that load on a day something is already wrong. Quoted on
+        # purpose: the chart renders `backoffLimit | default "6"`, and `default`
+        # treats a numeric 0 as empty, so an unquoted 0 would deploy as 6.
+        restartPolicy: Never
+        backoffLimit: "0"
 
 executor:
   enabled: true

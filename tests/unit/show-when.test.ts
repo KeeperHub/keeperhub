@@ -72,6 +72,61 @@ describe("evaluateShowWhen", () => {
     });
   });
 
+  describe("all variant", () => {
+    const predicate = {
+      all: [
+        { field: "operation", oneOf: ["encode", "decode"] },
+        { field: "format", oneOf: ["bytes32", "bytes16", "bytes8"] },
+      ],
+    };
+
+    it("returns true when every predicate holds", () => {
+      expect(
+        evaluateShowWhen(predicate, { operation: "encode", format: "bytes32" })
+      ).toBe(true);
+    });
+
+    it("returns false when one predicate fails", () => {
+      expect(
+        evaluateShowWhen(predicate, { operation: "encode", format: "hex" })
+      ).toBe(false);
+    });
+
+    it("keeps a field hidden when its sibling is hidden but still stored", () => {
+      // The format field is hidden for a numeric operation, yet its stored
+      // value survives. Gating on the operation too keeps padding hidden.
+      expect(
+        evaluateShowWhen(predicate, {
+          operation: "decimal-to-hex",
+          format: "bytes32",
+        })
+      ).toBe(false);
+    });
+
+    it("returns true for an empty list", () => {
+      expect(evaluateShowWhen({ all: [] }, {})).toBe(true);
+    });
+
+    it("nests with the computed variant", () => {
+      expect(
+        evaluateShowWhen(
+          {
+            all: [
+              { field: "mode", equals: "advanced" },
+              {
+                computed: "abiFunctionMutability",
+                abiField: "abi",
+                functionField: "abiFunction",
+                equals: "payable",
+              },
+            ],
+          },
+          { mode: "advanced", abi: PAYABLE_ABI, abiFunction: "deposit" }
+        )
+      ).toBe(true);
+    });
+  });
+
   describe("computed: abiFunctionMutability", () => {
     const predicate = {
       computed: "abiFunctionMutability" as const,

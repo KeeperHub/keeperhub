@@ -9,6 +9,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+// The purge logs an organization it has to skip. The real module pulls in
+// Sentry and the metrics collector, neither of which this suite is about.
+vi.mock("@/lib/logging", () => ({ logWarn: vi.fn() }));
 
 // Operators become inert markers: the builder stub ignores them, and mocking
 // them keeps a sub-select stub from being fed into real drizzle internals.
@@ -59,10 +62,14 @@ vi.mock("@/lib/billing/plans", () => ({
 // load time, which happens before any top-level statement in this file runs.
 const { state, dbStub } = vi.hoisted(() => {
   const hoistedState = {
-    /** Rows returned by successive awaited id selects, in call order. */
-    selectPages: [] as unknown[][],
+    /**
+     * Rows returned by successive awaited id selects, in call order. An Error
+     * in the queue stands for a statement the database refused; a function is
+     * called when its read happens, for a test that must act at that moment.
+     */
+    selectPages: [] as Array<unknown[] | Error | (() => unknown[])>,
     selectCalls: 0,
-    /** Counts returned to a dry run's countEligible, in call order. */
+    /** Counts returned to a dry run's count selects, in call order. */
     counts: [] as number[],
     countCalls: 0,
     /** Oldest still-resumable run per drained organization, in call order. */
@@ -125,8 +132,12 @@ const { state, dbStub } = vi.hoisted(() => {
         if (aggregate) {
           return Promise.resolve(resolve(aggregate()));
         }
-        const page = hoistedState.selectPages[hoistedState.selectCalls] ?? [];
+        const entry = hoistedState.selectPages[hoistedState.selectCalls] ?? [];
         hoistedState.selectCalls += 1;
+        if (entry instanceof Error) {
+          throw entry;
+        }
+        const page = typeof entry === "function" ? entry() : entry;
         return Promise.resolve(resolve(page));
       } catch (error) {
         return reject ? Promise.resolve(reject(error)) : Promise.reject(error);
@@ -175,9 +186,24 @@ const { state, dbStub } = vi.hoisted(() => {
 vi.mock("@/lib/db", () => ({ db: dbStub }));
 
 import { getRetentionConfig } from "@/lib/retention/config";
-import { runRetentionPurge } from "@/lib/retention/purge-executions";
+import {
+  PLAN_WINDOW_MIN_SLICE_MS,
+  PLAN_WINDOW_RUNS_PER_READ,
+  PLAN_WINDOW_WORKFLOW_CHUNK,
+  RetentionPurgeIncompleteError,
+  runRetentionPurge,
+} from "@/lib/retention/purge-executions";
 
 const NOW = new Date("2026-09-07T12:00:00.000Z");
+
+/** The 7-day group's cutoff at NOW. */
+const FREE_CUTOFF = new Date("2026-08-31T12:00:00.000Z");
+
+/** More eligible runs than one read of a workflow chunk may return. */
+const OVERFLOW = Array.from(
+  { length: PLAN_WINDOW_RUNS_PER_READ + 1 },
+  (_, index) => ({ id: `exec-${index}` })
+);
 
 /** Two organizations on two windows, as resolveOrgRetentionWindows sees them. */
 const ORG_ROWS = [
@@ -195,6 +221,7 @@ function enabledConfig(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  vi.useRealTimers();
   state.selectPages = [];
   state.selectCalls = 0;
   state.counts = [];
@@ -207,6 +234,17 @@ beforeEach(() => {
   state.wheres = [];
   state.transactions = 0;
 });
+
+/** The workflow-id list of every chunk read, in call order. */
+function workflowChunkReads(): string[][] {
+  return state.wheres
+    .flatMap((where) => findMarkers(where, "inArray"))
+    .map((marker) => marker.args[1])
+    .filter(
+      (ids): ids is string[] =>
+        Array.isArray(ids) && String(ids[0]).startsWith("wf-")
+    );
+}
 
 /** Depth-first search for an operator marker of `kind` in a predicate tree. */
 function findMarkers(node: unknown, kind: string): Array<{ args: unknown[] }> {
@@ -292,8 +330,16 @@ describe("runRetentionPurge", () => {
   });
 
   it("reports the organization count and rows for each window", async () => {
-    // orgs, floor pass, watermarks, then the free group's first page.
-    state.selectPages = [ORG_ROWS, [], [], [{ id: "log-1" }]];
+    // orgs, floor pass, watermarks, then the free organization's workflows,
+    // their runs, and a page of those runs' step logs.
+    state.selectPages = [
+      ORG_ROWS,
+      [],
+      [],
+      [{ id: "wf-1" }],
+      [{ id: "exec-1" }],
+      [{ id: "log-1" }],
+    ];
 
     const result = await runRetentionPurge(enabledConfig(), NOW);
     const planPass = result.passes.find(
@@ -308,7 +354,14 @@ describe("runRetentionPurge", () => {
   });
 
   it("advances the watermark once an organization has drained", async () => {
-    state.selectPages = [ORG_ROWS, [], [], [{ id: "log-1" }]];
+    state.selectPages = [
+      ORG_ROWS,
+      [],
+      [],
+      [{ id: "wf-1" }],
+      [{ id: "exec-1" }],
+      [{ id: "log-1" }],
+    ];
 
     await runRetentionPurge(enabledConfig(), NOW);
 
@@ -445,8 +498,9 @@ describe("runRetentionPurge", () => {
   it("skips a run that can still resume in both short-window passes", async () => {
     // The plan window can be as short as 7 days, and a resumable run's step
     // logs carry the output_raw the executor reads to pick it back up. The
-    // floor and run-row passes deliberately carry no such guard.
-    state.selectPages = [ORG_ROWS];
+    // floor and run-row passes deliberately carry no such guard. One workflow,
+    // so the plan-window pass reads its runs and applies the guard there.
+    state.selectPages = [ORG_ROWS, [], [], [{ id: "wf-1" }]];
 
     await runRetentionPurge(enabledConfig(), NOW);
 
@@ -465,5 +519,240 @@ describe("runRetentionPurge", () => {
       "phantom",
       "unconfirmed",
     ]);
+  });
+
+  it("reads an organization's runs a small chunk of its workflows at a time", async () => {
+    // One join with a LIMIT is what the planner turned into a scan of the whole
+    // step-log table for an organization with a very large number of workflows.
+    const workflowRows = Array.from(
+      { length: PLAN_WINDOW_WORKFLOW_CHUNK + 1 },
+      (_, index) => ({ id: `wf-${index}` })
+    );
+    state.selectPages = [ORG_ROWS, [], [], workflowRows];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    expect(workflowChunkReads().map((ids) => ids.length)).toEqual([
+      PLAN_WINDOW_WORKFLOW_CHUNK,
+      1,
+    ]);
+  });
+
+  it("prices sequential scans out of every chunk read", async () => {
+    state.selectPages = [
+      ORG_ROWS,
+      [],
+      [],
+      [{ id: "wf-1" }],
+      [{ id: "exec-1" }],
+      [{ id: "log-1" }],
+    ];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    const settings = state.writes
+      .filter((write) => write.op === "execute")
+      .map((write) => JSON.stringify(write.table))
+      .filter((statement) => statement.includes("enable_seqscan = off"));
+
+    // The runs of the one workflow chunk, the page of step logs, and the empty
+    // page that ends the drain, each in a short transaction of its own.
+    expect(settings).toHaveLength(3);
+    expect(state.transactions).toBe(3);
+  });
+
+  it("carries on past an organization that fails, then fails the run", async () => {
+    // The first organization's read is refused. The second still drains and
+    // every later pass still runs before the run reports the failure.
+    state.selectPages = [
+      [
+        {
+          organizationId: "org-a",
+          plan: "free",
+          tier: null,
+          planOverrides: null,
+        },
+        {
+          organizationId: "org-b",
+          plan: "free",
+          tier: null,
+          planOverrides: null,
+        },
+        {
+          organizationId: "org-ent",
+          plan: "enterprise",
+          tier: null,
+          planOverrides: null,
+        },
+      ],
+      [], // floor pass
+      [], // watermarks
+      new Error("canceling statement due to statement timeout"), // org-a workflows
+      [], // org-b workflows
+      [{ id: "log-9" }], // output_raw pass
+    ];
+
+    const error = await runRetentionPurge(enabledConfig(), NOW).catch(
+      (caught: unknown) => caught
+    );
+
+    expect(error).toBeInstanceOf(RetentionPurgeIncompleteError);
+    const incomplete = error as RetentionPurgeIncompleteError;
+    expect(incomplete.failedOrganizationIds).toEqual(["org-a"]);
+    expect(incomplete.message).toContain("org-a");
+    // org-b drained and claimed its cutoff; org-a claimed nothing at all.
+    expect(state.watermarks).toEqual([FREE_CUTOFF]);
+    expect(
+      incomplete.result.passes.find((pass) => pass.pass === "output_raw")?.rows
+    ).toBe(1);
+  });
+
+  it("halves the slice when one read finds too many runs, and resumes at that chunk", async () => {
+    // A single unbounded read of a busy workflow held a whole year of runs in
+    // one statement. The slice shrinks instead, and the chunks already read in
+    // full over the wider slice are not read again for the narrower one.
+    const workflowRows = Array.from(
+      { length: PLAN_WINDOW_WORKFLOW_CHUNK + 1 },
+      (_, index) => ({ id: `wf-${index}` })
+    );
+    state.selectPages = [
+      ORG_ROWS,
+      [], // floor pass
+      [], // watermarks: none, so the walk starts at the epoch
+      workflowRows,
+      [], // slice 1, first chunk
+      OVERFLOW, // slice 1, second chunk: too many
+      [], // halved slice, second chunk only
+      [], // next slice, first chunk
+      [], // next slice, second chunk
+    ];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    expect(workflowChunkReads().map((ids) => ids.length)).toEqual([
+      PLAN_WINDOW_WORKFLOW_CHUNK,
+      1,
+      1,
+      PLAN_WINDOW_WORKFLOW_CHUNK,
+      1,
+    ]);
+    const middle = new Date(Math.floor(FREE_CUTOFF.getTime() / 2));
+    expect(state.watermarks).toEqual([middle, FREE_CUTOFF]);
+    // The runs of the read that overflowed were never acted on.
+    expect(state.writes.filter((write) => write.op === "delete")).toEqual([]);
+  });
+
+  it("keeps the watermark of the last drained slice when the budget runs out", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-07T03:48:00.000Z"));
+    state.selectPages = [
+      ORG_ROWS,
+      [], // floor pass
+      [], // watermarks
+      [{ id: "wf-1" }],
+      OVERFLOW, // whole range: too many
+      [], // first half drains
+      () => {
+        // The second half finds work just as the budget runs out.
+        vi.setSystemTime(new Date("2026-09-07T04:00:00.000Z"));
+        return [{ id: "exec-1" }];
+      },
+    ];
+
+    const result = await runRetentionPurge(
+      enabledConfig({ maxRuntimeMs: 60_000 }),
+      NOW
+    );
+    const planPass = result.passes.find(
+      (pass) => pass.pass === "logs_plan_window"
+    );
+
+    expect(planPass?.budgetExhausted).toBe(true);
+    expect(state.watermarks).toEqual([
+      new Date(Math.floor(FREE_CUTOFF.getTime() / 2)),
+    ]);
+  });
+
+  it("counts the rows an organization deleted before it failed", async () => {
+    state.selectPages = [
+      ORG_ROWS,
+      [], // floor pass
+      [], // watermarks
+      [{ id: "wf-1" }],
+      [{ id: "exec-1" }],
+      [{ id: "log-1" }, { id: "log-2" }], // deleted
+      new Error("canceling statement due to statement timeout"),
+    ];
+
+    const error = await runRetentionPurge(enabledConfig(), NOW).catch(
+      (caught: unknown) => caught
+    );
+
+    expect(error).toBeInstanceOf(RetentionPurgeIncompleteError);
+    const planPass = (
+      error as RetentionPurgeIncompleteError
+    ).result.passes.find((pass) => pass.pass === "logs_plan_window");
+    expect(planPass?.rows).toBe(2);
+    expect(planPass?.windows).toEqual([
+      { retentionDays: 7, organizationCount: 1, rows: 2 },
+    ]);
+    // No slice finished, so nothing is claimed.
+    expect(state.watermarks).toEqual([]);
+  });
+
+  it("fails an organization whose runs still overflow the shortest slice", async () => {
+    // Halving has a floor. Past it the drain refuses rather than reading an
+    // unbounded set.
+    state.selectPages = [
+      ORG_ROWS,
+      [], // floor pass
+      [
+        {
+          organizationId: "org-free",
+          executionsPurgedThrough: new Date(
+            FREE_CUTOFF.getTime() - PLAN_WINDOW_MIN_SLICE_MS * 1.5
+          ),
+        },
+      ],
+      [{ id: "wf-1" }],
+      OVERFLOW, // one and a half seconds
+      OVERFLOW, // the shortest slice
+    ];
+
+    const error = await runRetentionPurge(enabledConfig(), NOW).catch(
+      (caught: unknown) => caught
+    );
+
+    expect(error).toBeInstanceOf(RetentionPurgeIncompleteError);
+    expect(
+      (error as RetentionPurgeIncompleteError).failedOrganizationIds
+    ).toEqual(["org-free"]);
+    expect(state.watermarks).toEqual([]);
+  });
+
+  it("walks the same bounded reads in a dry run and counts instead of deleting", async () => {
+    // The dry run used to count with one join per organization, the query
+    // shape that cannot finish on a production-sized table.
+    state.selectPages = [
+      ORG_ROWS,
+      [], // watermarks (a dry run's floor pass counts, it does not page)
+      [{ id: "wf-1" }],
+      [{ id: "exec-1" }, { id: "exec-2" }],
+    ];
+    state.counts = [0, 7]; // floor pass, then the step logs of those two runs
+
+    const result = await runRetentionPurge(
+      enabledConfig({ dryRun: true }),
+      NOW
+    );
+    const planPass = result.passes.find(
+      (pass) => pass.pass === "logs_plan_window"
+    );
+
+    expect(planPass?.rows).toBe(7);
+    expect(state.watermarks).toEqual([]);
+    // Only the planner settings of the two reads; nothing deleted or claimed.
+    expect(state.writes.every((write) => write.op === "execute")).toBe(true);
+    expect(state.transactions).toBe(2);
   });
 });

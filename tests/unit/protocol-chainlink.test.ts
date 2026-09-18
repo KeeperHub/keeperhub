@@ -1,5 +1,7 @@
+import { ethers } from "ethers";
 import { describe, expect, it } from "vitest";
 import { getProtocol, registerProtocol } from "@/lib/protocol-registry";
+import ccipErc20Abi from "@/protocols/abis/ccip-erc20.json";
 import chainlinkDef from "@/protocols/chainlink";
 
 const KEBAB_CASE_REGEX = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
@@ -285,6 +287,20 @@ describe("Chainlink Protocol Definition", () => {
     expect(action?.type).toBe("write");
     expect(action?.contract).toBe("ccipBnM");
     expect(action?.inputs).toHaveLength(1);
+  });
+
+  // USDT is a CCIP-supported bridge and fee token and returns no data from
+  // approve. Both CCIP token contracts take a user-supplied address, so the
+  // ABI has to cover that shape: the EOA write path decodes the preflight
+  // staticCall's return against these outputs (lib/web3/chain-adapter/evm.ts),
+  // and a bool declaration throws BAD_DATA before the approve is broadcast.
+  // The coverage suite cannot catch this - its reference tokens all return
+  // bool, and both approve actions are skipped there.
+  it("declares approve with no outputs so a no-data return decodes", () => {
+    const iface = new ethers.Interface(ccipErc20Abi);
+
+    expect(iface.getFunction("approve")?.outputs).toHaveLength(0);
+    expect(() => iface.decodeFunctionResult("approve", "0x")).not.toThrow();
   });
 
   it("registers in the protocol registry and is retrievable", () => {
