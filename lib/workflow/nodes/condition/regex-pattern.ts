@@ -20,28 +20,11 @@ export const MAX_REGEX_PATTERN_LENGTH = 512;
  *  long string. */
 export const MAX_REGEX_VALUE_LENGTH = 4096;
 
-const QUANTIFIER_BRACE_PATTERN = /^\{\d*,?\d*\}/;
 const BODY_QUANTIFIER_BRACE_PATTERN = /^\{\d*,?\d*\}$/;
 const HEX_TWO_PATTERN = /^[0-9a-fA-F]{2}$/;
 const HEX_FOUR_PATTERN = /^[0-9a-fA-F]{4}$/;
 const HEX_ANY_PATTERN = /^[0-9a-fA-F]+$/;
 const QUANTIFIER_BOUNDS_PATTERN = /^(\d+)(?:,(\d*))?$/;
-
-/** True when the character at `index` quantifies whatever precedes it. */
-function isQuantifierAt(source: string, index: number): boolean {
-  const char = source[index];
-  if (char === "*" || char === "+" || char === "?") {
-    return true;
-  }
-  if (char === "{") {
-    const close = source.indexOf("}", index);
-    if (close === -1) {
-      return false;
-    }
-    return QUANTIFIER_BRACE_PATTERN.test(source.slice(index, close + 1));
-  }
-  return false;
-}
 
 /**
  * Where a group's own pattern starts, past its type prefix.
@@ -172,7 +155,11 @@ export function hasNestedQuantifier(source: string): boolean {
   }
 
   for (const group of groups) {
-    if (!isQuantifierAt(source, group.end + 1)) {
+    // A quantifier that cannot repeat the group in more than one way cannot
+    // backtrack, so it does not trigger this rule. Reading `?` as one refused
+    // `^(0x)?[0-9a-f]{40}$` and `^\d+(\.\d+)?$`, which are the first two patterns
+    // an author reaches for, and a fixed count is no different.
+    if (!isAmbiguous(quantifierAt(source, group.end + 1))) {
       continue;
     }
     if (
@@ -692,9 +679,82 @@ export function hasAdjacentQuantifiedAtoms(source: string): boolean {
 }
 
 /** The reason a pattern is refused, or null when it is admitted. */
+/**
+ * Bounds on the shape, checked in one pass before either heuristic walks the
+ * pattern.
+ *
+ * Both heuristics are syntactic, so both recurse through the nesting they are
+ * examining: `atomAt` on a group calls `groupSet` and `groupBodyEdges` over the
+ * body, and `hasAdjacentQuantifiedAtoms` walks it a third time, which doubles the
+ * cost per level. A pattern of nothing but nested parentheses around one literal,
+ * with no quantifier anywhere, costs 4.9 seconds at depth 24 and is admitted at
+ * every layer, so the guard was itself the denial of service it exists to prevent.
+ * The number of groups bounds the other family: `^(?:a|a)(?:a|a)...$` needs no
+ * nested quantifier and no adjacency, and its cost is 2^n in the group count, so
+ * 26 groups is 2.3 seconds and the 512-character cap admits around 73.
+ *
+ * Both are interim bounds rather than properties of the language, and they are
+ * stated as such: the shapes they refuse are refused for what they cost this
+ * checker, not for being unsafe in the engine. The fix they stand in for is a
+ * non-backtracking engine or evaluation off the event loop, which is the decision
+ * this branch escalates rather than settles.
+ */
+const MAX_NESTING_DEPTH = 8;
+const MAX_GROUP_COUNT = 16;
+
+/** The shape bounds, or `null` when the pattern is within them. */
+function complexityProblem(source: string): string | null {
+  let depth = 0;
+  let deepest = 0;
+  let groups = 0;
+  let inClass = false;
+  // A while loop rather than a for: the scan skips the character after a
+  // backslash, which `for...of` cannot express and which the linter reads as an
+  // index-only for loop over the string.
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index];
+    index += 1;
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (inClass) {
+      if (char === "]") {
+        inClass = false;
+      }
+      continue;
+    }
+    if (char === "[") {
+      inClass = true;
+      continue;
+    }
+    if (char === "(") {
+      groups += 1;
+      depth += 1;
+      deepest = Math.max(deepest, depth);
+      continue;
+    }
+    if (char === ")" && depth > 0) {
+      depth -= 1;
+    }
+  }
+  if (deepest > MAX_NESTING_DEPTH) {
+    return `Regex pattern nests groups more than ${MAX_NESTING_DEPTH} deep, which the checker refuses because it walks that nesting. Rewrite it with fewer levels, for example flatten the groups or use a character class`;
+  }
+  if (groups > MAX_GROUP_COUNT) {
+    return `Regex pattern uses more than ${MAX_GROUP_COUNT} groups. Split it into separate conditions, or simplify it: each group multiplies the work the checker does on the ones inside it`;
+  }
+  return null;
+}
+
 export function regexPatternProblem(source: string): string | null {
   if (source.length > MAX_REGEX_PATTERN_LENGTH) {
     return `Regex pattern is longer than ${MAX_REGEX_PATTERN_LENGTH} characters`;
+  }
+  const complexity = complexityProblem(source);
+  if (complexity !== null) {
+    return complexity;
   }
   if (hasNestedQuantifier(source)) {
     return "Regex pattern applies a quantifier to a group containing a quantifier or an alternation, which can backtrack without bound. Rewrite it without the nesting, for example ^0x[0-9a-fA-F]{40}$";

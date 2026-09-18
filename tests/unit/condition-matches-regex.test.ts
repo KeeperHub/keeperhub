@@ -9,6 +9,7 @@ import {
   expressionToConditionGroup,
   visualConditionToExpression,
 } from "@/lib/workflow/nodes/condition/builder-utils";
+import { regexPatternProblem } from "@/lib/workflow/nodes/condition/regex-pattern";
 import {
   isSafeConditionExpression,
   safeEvaluateCondition,
@@ -533,6 +534,20 @@ describe("matchesRegex call parsing", () => {
     }
   });
 
+  it("refuses a call that does not have both arguments", () => {
+    // Skipped before, which left the call valid while the evaluator read the
+    // missing pattern as the string "undefined": `matchesRegex()` matched any
+    // value at all and `matchesRegex(String(__v0))` matched any value containing
+    // "undefined", which is what an unresolved node output stringifies to.
+    for (const expr of ["matchesRegex()", "matchesRegex(String(__v0))"]) {
+      const result = validateConditionExpression(expr);
+      expect(result.valid, expr).toBe(false);
+      if (!result.valid) {
+        expect(result.error, expr).toContain("exactly two arguments");
+      }
+    }
+  });
+
   it("reports a third argument as an arity error, not as a bad pattern", () => {
     const result = validateConditionExpression('matchesRegex(__v0, "a", "i")');
     if (result.valid) {
@@ -589,6 +604,82 @@ describe("matchesRegex call parsing", () => {
         'matchesRegex(String({{@n:N.thing}}), "^[a-c]+$")'
       )
     ).toEqual({ valid: true });
+  });
+});
+
+describe("the guard's own cost", () => {
+  // The two families the round-10 review measured, both admitted before these
+  // bounds existed, because the guard recurses through the nesting it examines:
+  // `atomAt` on a group calls `groupSet` and `groupBodyEdges` over the body, and
+  // `hasAdjacentQuantifiedAtoms` walks it a third time.
+  const nested = (depth: number) =>
+    `^${"(".repeat(depth)}a${")".repeat(depth)}$`;
+  const alternated = (n: number) => `^(?:a|a)${"(?:a|a)".repeat(n)}$`;
+
+  it("refuses nesting deeper than the bound, and quickly", () => {
+    for (const depth of [16, 24, 40]) {
+      const started = performance.now();
+      const problem = regexPatternProblem(nested(depth));
+      const elapsed = performance.now() - started;
+      expect(problem, `depth ${depth}`).not.toBeNull();
+      // 4.9 seconds at depth 24 before the bound. The refusal has to be cheap
+      // enough that it is not itself the stall, which is the whole finding.
+      expect(elapsed, `depth ${depth}`).toBeLessThan(50);
+    }
+  });
+
+  it("refuses more groups than the bound", () => {
+    // 2^n in the group count, needing neither a nested quantifier nor two
+    // adjacent atoms: 26 groups was 2.3 seconds and the character cap admitted
+    // around 73 of them.
+    expect(regexPatternProblem(alternated(26))).not.toBeNull();
+  });
+
+  it("admits the shapes it is for, within a budget", () => {
+    // The case the review asked for. Nothing pinned that an admitted pattern
+    // stays fast, which is how both families above shipped with the suite green.
+    const admitted = [
+      "^0x[0-9a-fA-F]{40}$",
+      "^\\d+(\\.\\d+)?$",
+      "^v\\d+\\.\\d+(\\.\\d+)?$",
+      "^(0x)?[0-9a-fA-F]{40}$",
+      "^(?:cat|dog)$",
+      "^0x[a-f0-9]{64}$",
+    ];
+    const started = performance.now();
+    for (const pattern of admitted) {
+      expect(regexPatternProblem(pattern), pattern).toBeNull();
+    }
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+});
+
+describe("quantifiers that cannot repeat", () => {
+  it("admits a group whose only quantifier is optional", () => {
+    // `?` matches at most once and cannot backtrack. Reading it as a quantifier
+    // refused `^\d+(\.\d+)?$` and `^v\d+\.\d+(\.\d+)?$`, which are the first
+    // two patterns an author reaches for, and `(0x)?` beside them.
+    for (const pattern of [
+      "^\\d+(\\.\\d+)?$",
+      "^v\\d+\\.\\d+(\\.\\d+)?$",
+      "^(0x)?[0-9a-fA-F]{40}$",
+    ]) {
+      expect(regexPatternProblem(pattern), pattern).toBeNull();
+    }
+  });
+
+  it("still refuses one that can", () => {
+    for (const pattern of [
+      "^(a+)+$",
+      "^(a*)*$",
+      "^(?:a|b)+$",
+      // A slug is the ordinary shape this rule is for rather than an edge: the
+      // inner `[a-z]+` inside a `*` group can be split with the hyphens, so it is
+      // refused, and it was refused before this round too.
+      "^[a-z]+(?:-[a-z]+)*$",
+    ]) {
+      expect(regexPatternProblem(pattern), pattern).not.toBeNull();
+    }
   });
 });
 

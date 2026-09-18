@@ -68,12 +68,18 @@ const ALLOWED_GLOBALS: Record<string, (...args: unknown[]) => unknown> = {
   // visible: `matchesRegex(v, "a", "i")` used to be accepted with the flag
   // silently dropped, which reads as a case-insensitive match that is not one.
   matchesRegex: (...args) => {
-    if (args.length > 2) {
+    if (args.length !== 2) {
       throw new Error(
         'matchesRegex takes exactly two arguments (value, pattern); flags such as "i" are not supported'
       );
     }
     const [value, pattern] = args;
+    // A call with one argument used to reach here: `matchesRegex(String(__v0))`
+    // built `/undefined/` and returned true for any value containing that
+    // substring, and `matchesRegex()` did the same for any value at all. The
+    // arity guard is what stops both, and `checkRegexPatterns` refuses them
+    // earlier so the author sees it as a validation error rather than a throw
+    // inside the executor.
     const source = String(pattern);
     if (source.length > MAX_REGEX_PATTERN_LENGTH) {
       throw new Error(

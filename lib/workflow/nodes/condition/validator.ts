@@ -145,8 +145,12 @@ const MATCHES_REGEX_CALL_PATTERN = /matchesRegex\s*\(/g;
 function regexPatternOperands(
   expression: string,
   scanned: string = expression
-): { pattern: string; extraArguments: boolean }[] {
-  const operands: { pattern: string; extraArguments: boolean }[] = [];
+): { pattern: string; extraArguments: boolean; tooFewArguments: boolean }[] {
+  const operands: {
+    pattern: string;
+    extraArguments: boolean;
+    tooFewArguments: boolean;
+  }[] = [];
   const callPattern = new RegExp(MATCHES_REGEX_CALL_PATTERN.source, "g");
   let call: RegExpExecArray | null = null;
   // The call is found in `scanned`, the masked copy, and the operands are sliced
@@ -203,6 +207,15 @@ function regexPatternOperands(
       }
     }
     if (commaIndex === -1 || endIndex === -1) {
+      // Not a two-argument call: report it rather than skipping it. Skipping was
+      // how `matchesRegex()` and `matchesRegex(String(__v0))` passed validation
+      // while the evaluator read a missing pattern as the string "undefined" and
+      // matched everything containing it.
+      operands.push({
+        extraArguments: false,
+        pattern: "",
+        tooFewArguments: true,
+      });
       continue;
     }
     // The operand ends at the next top-level comma, not at the closing paren: a
@@ -211,6 +224,7 @@ function regexPatternOperands(
     // with `matchesRegex(x, "a", "i")` actually saw.
     operands.push({
       extraArguments: secondCommaIndex !== -1,
+      tooFewArguments: false,
       pattern: expression
         .slice(
           commaIndex + 1,
@@ -240,6 +254,13 @@ function checkRegexPatterns(
   scanned: string
 ): ValidationResult {
   for (const operand of regexPatternOperands(expression, scanned)) {
+    if (operand.tooFewArguments) {
+      return {
+        valid: false,
+        error:
+          "matchesRegex takes exactly two arguments: a value and a quoted pattern, and this call does not have both",
+      };
+    }
     if (operand.extraArguments) {
       return {
         valid: false,
