@@ -163,11 +163,33 @@ function normalizeConditionConfig(
     | Record<string, unknown>[]
     | undefined;
 
-  if (!nestedConditionConfig && rootGroup === undefined) {
+  // Check the nested config's own `group` field, not just whether the
+  // wrapper object exists - a nested `conditionConfig` that is `{}` or
+  // `{ logicalOperator: "OR" }` with no usable group is truthy but has
+  // nothing to normalize, and should fall through to a root-level group
+  // the same way a fully-absent conditionConfig does.
+  const nestedGroup = nestedConditionConfig?.group as
+    | Record<string, unknown>
+    | Record<string, unknown>[]
+    | undefined;
+
+  if (nestedGroup === undefined && rootGroup === undefined) {
     return config;
   }
 
-  const conditionConfig = nestedConditionConfig ?? { group: rootGroup };
+  const conditionConfig: Record<string, unknown> =
+    nestedGroup === undefined
+      ? {
+          group: rootGroup,
+          // The array-shaped root-group producer emits `logicalOperator` as
+          // a sibling of `group` at the config root, not nested - carry it
+          // through instead of silently defaulting to "AND" below.
+          logicalOperator:
+            nestedConditionConfig?.logicalOperator ?? config.logicalOperator,
+        }
+      : // nestedGroup came from nestedConditionConfig?.group, so
+        // nestedConditionConfig must be defined here.
+        (nestedConditionConfig as Record<string, unknown>);
   let group = conditionConfig.group as
     | Record<string, unknown>
     | Record<string, unknown>[];
@@ -187,9 +209,13 @@ function normalizeConditionConfig(
     return config;
   }
 
-  // Drop a stray root-level `group` once it's been folded into
-  // conditionConfig, so the two copies can't drift out of sync.
-  const { group: _rootGroup, ...rest } = config;
+  // Drop a stray root-level `group`/`logicalOperator` once folded into
+  // conditionConfig, so the copies can't drift out of sync.
+  const {
+    group: _rootGroup,
+    logicalOperator: _rootLogicalOperator,
+    ...rest
+  } = config;
 
   return {
     ...rest,
