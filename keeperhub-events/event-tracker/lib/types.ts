@@ -55,6 +55,27 @@ export interface RawWorkflowNodeConfig {
   hysteresis?: string | number;
   /** Optional floor on blocks between two dispatches. */
   minBlocksBetweenFires?: number;
+  // Trace trigger (issue #2464). Present only when
+  // `triggerType === "Trace"`. `contractAddress` and `network` are shared
+  // with the branches above; everything below is the frame filter.
+  /** Optional caller filter, matched case-insensitively against `from`. */
+  traceCaller?: string;
+  /** Raw 4-byte function selector. Empty or absent means any function. */
+  traceSelector?: string;
+  /**
+   * Frame types to match. The editor stores it as a JSON array string and the
+   * events endpoint parses it back before sending, so it arrives here as an
+   * array. Empty or absent means any type.
+   */
+  traceCallTypes?: unknown;
+  /**
+   * Minimum wei moved by the frame, as a decimal string. This is the field
+   * that registers; `traceMinValue` beside it is the same number in native
+   * token units and exists only so the editor can show what was typed.
+   */
+  traceMinValueWei?: string;
+  /** "success" (default) | "reverted" | "any". Validated in the mapper. */
+  traceStatus?: string;
 }
 
 export interface RawWorkflowNode {

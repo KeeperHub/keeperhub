@@ -2,6 +2,13 @@ import { ethers } from "ethers";
 import { WebSocket } from "ws";
 import { logger } from "../../lib/utils/logger";
 import {
+  type FlatCall,
+  type RawCallFrame,
+  callSelector,
+  flattenCallTree,
+  frameMatches,
+} from "../../lib/web3/trace-decode";
+import {
   type Aggregate3Result,
   MULTICALL3_ADDRESS,
   chunkCalls,
@@ -132,6 +139,30 @@ export const GETLOGS_MAX_BLOCK_SPAN = 25;
  * rather than silent.
  */
 export const GETLOGS_MAX_CATCHUP_BLOCKS = 5_000;
+/**
+ * Ceiling on the block span a single trace pass will walk.
+ *
+ * A trace pass fetches one `debug_traceBlockByNumber` per block and those
+ * responses are large - the survey in
+ * `.planning/issue-2247-trace-upstream-survey.md` measured 62 kB for a 5-tx
+ * block and 1.91 MB for a 185-tx one. Walking a whole `GETLOGS_MAX_BLOCK_SPAN`
+ * catch-up range sequentially can therefore hold one pass open for minutes,
+ * which is what the in-flight guard would then be refusing behind. Bounding
+ * the span keeps each pass short enough that the next drain finds the guard
+ * clear, and the remainder is still owed because the high-water mark only
+ * advances once its traces are served too.
+ */
+export const TRACE_MAX_BLOCK_SPAN = 10;
+/**
+ * Ceiling on frames dispatched to one subscription for one block.
+ *
+ * Per (subscription, block), not per (subscription, transaction): each
+ * dispatch takes a pacer token and a phantom-create round trip, so a block
+ * with many matching transactions would otherwise multiply the cap by the
+ * transaction count. Accumulated across the block's transactions and applied
+ * once, which is the bound the accepted plan specified.
+ */
+export const TRACE_DISPATCH_CAP_PER_BLOCK = 25;
 /**
  * How far back the mark may be rewound when a height is delivered a second
  * time.
@@ -345,7 +376,31 @@ export interface ChainHealth {
   connected: boolean;
   reconnecting: boolean;
   lastBlockAt: number | null;
+  /**
+   * Log subscribers only, which is what this field has always counted.
+   * Reported alongside `traceSubscriberCount` rather than folded into it, so
+   * an existing consumer reading this keeps the number it has always read.
+   */
   subscriberCount: number;
+  /**
+   * Trace subscribers on this chain. Without it a trace-only chain reports
+   * zero subscribers while issuing a `debug_traceBlockByNumber` per block,
+   * so an operator looking at health sees an idle chain doing steady work
+   * and has nothing to attribute the calls to.
+   */
+  traceSubscriberCount: number;
+  /**
+   * Whether trace matching is paused on the live connection because it
+   * answered with a refusal that will not change on retry.
+   *
+   * Without it a chain that has stopped trace matching reports
+   * `connected: true` with N trace subscribers and no other signal, which
+   * reads as healthy. Every chain currently configured refuses the method in
+   * the survey in `.planning/issue-2247-trace-upstream-survey.md`, so this
+   * is the expected state rather than a rare one. Cleared on reconnect,
+   * because the verdict belongs to the connection that produced it.
+   */
+  traceUnsupported: boolean;
   /**
    * Active state-threshold subscribers, the counterpart to `subscriberCount`
    * on the log path. Reported separately because a chain can hold subscribers
@@ -409,6 +464,25 @@ export interface SubscribeStateOptions {
   handler: StateCallHandler;
 }
 
+export interface SubscribeTraceOptions {
+  chainId: number;
+  wssUrl: string;
+  fallbackWssUrl?: string;
+  /** Contract address to watch (callee). */
+  contractAddress: string;
+  /** Optional caller filter. */
+  caller?: string;
+  /** Optional 4-byte function selector. */
+  selector?: string;
+  /** Optional call types to match (e.g. ["DELEGATECALL"]). */
+  callTypes?: string[];
+  /** Minimum wei value as decimal string. */
+  minValueWei?: string;
+  /** Which revert states to include. */
+  status?: "success" | "reverted" | "any";
+  handler: TraceCallHandler;
+}
+
 export interface ChainProviderManagerOptions {
   factory?: ProviderFactory;
   onPermanentFailure?: (chainId: number) => void;
@@ -430,6 +504,132 @@ interface StateSubscriber {
   contractAddress: string;
   callData: string;
   handler: StateCallHandler;
+}
+
+interface TraceSubscriber {
+  contractAddress: string;
+  caller?: string;
+  selector?: string;
+  callTypes?: string[];
+  minValueWei?: bigint;
+  status?: "success" | "reverted" | "any";
+  handler: TraceCallHandler;
+}
+
+type TraceCallHandler = (matches: TraceCallFrame[]) => Promise<void>;
+
+/**
+ * One matched call frame, as handed to a trace subscriber.
+ *
+ * `FlatCall` plus the block and transaction coordinates the dispatch key is
+ * built from. The frame surface itself (`type`, `from`, `to`, `value`,
+ * `input`, `depth`, `reverted`) is the vendored matcher's, so the filter can
+ * be applied to a frame with no adapter in between and the two cannot
+ * disagree about what a frame is.
+ *
+ * Exported and used everywhere this shape appears. It was previously
+ * redeclared inline in three places across two files. `noExplicitAny` is off
+ * in this workspace, so a field-name typo between the matcher and the
+ * listener would not have been caught by anything.
+ */
+export type TraceCallFrame = FlatCall & {
+  blockNumber: number;
+  transactionHash: string;
+  transactionIndex: number;
+  frameIndex: number;
+  /**
+   * `callSelector(frame)`, carried on the frame because the dispatched
+   * payload reports it. Derived through the vendored rule rather than read
+   * off `input` directly, so a CREATE frame reports "0x" here as well as
+   * failing a `selector` filter.
+   */
+  selector: string;
+};
+
+/**
+ * Refusals that will not change if the same connection is asked again, so
+ * asking again is a warn line per block forever rather than a recovery.
+ *
+ * The vocabulary and the precedence come from the repo's own trace-method
+ * probe, which is the tested version of this judgement. Rate limiting is
+ * tested before plan gating because free tiers throttle using the plan
+ * vocabulary. Calling a throttle a permanent absence is the expensive
+ * direction to be wrong in. A rate limit or a timeout is retryable, so
+ * neither sets the flag.
+ *
+ * `is not available` is the wording the survey in
+ * `.planning/issue-2247-trace-upstream-survey.md` records for the two
+ * upstreams that refuse without using geth's phrasing: BSC dataseed answers
+ * `-32002` "the resource debug_traceBlockByNumber ... is not available", and
+ * dRPC answers code 35 "method is not available on free plan". Neither
+ * carries `does not exist`, and neither reaches `TRACE_BLOCK_UNAVAILABLE`
+ * below, because that pattern needs a word-boundary `block` and the only
+ * `block` in those messages is inside the method name. Without this
+ * alternative both were re-asked on every block forever, which is the
+ * behaviour the flag exists to stop.
+ */
+const TRACE_TIER_GATED =
+  /api[ -]?key|upgrade|\bpaid\b|\bplan\b|\btier\b|subscription|not authori[sz]ed|unauthori[sz]ed|forbidden|access denied/;
+const TRACE_NOT_SUPPORTED =
+  /does not exist|is not available|unsupported|not supported|disabled|not enabled|not allowed|not permitted/;
+const TRACE_RATE_LIMITED = /rate.?limit|too many|\b429\b|quota|throttl/;
+/**
+ * The BLOCK is missing rather than the method. Retryable. Tested before the
+ * not-supported patterns above because "block does not
+ * exist" would otherwise match `/does not exist/` and read as a capability
+ * verdict. `\bblock\b` never a bare /block/, since method names contain the
+ * word.
+ */
+const TRACE_BLOCK_UNAVAILABLE =
+  /\bblock\b.{0,24}(not found|not available|unavailable|does not exist)|header not found|missing trie node|state (is )?not available/;
+
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
+}
+
+/**
+ * The upstream's numeric JSON-RPC error code, wherever ethers left it.
+ *
+ * `provider.send()` rejects with the result of `makeError`, which puts an
+ * ethers `ErrorCode` *string* on `.code` and keeps the upstream's numeric
+ * code nested under `.error`. Reading `.code` alone therefore returned
+ * undefined for every error a live provider produces, which left every
+ * numeric branch in `recordTraceRefusal` unreachable outside a test that
+ * hand-assigned the field. Verified against the pinned ethers 6.17.0: a
+ * `-32002` response arrives as `code: "UNKNOWN_ERROR"` with
+ * `error.code === -32002`.
+ *
+ * A number directly on `.code` is still preferred, since a transport that
+ * rejects with the raw payload puts it there.
+ *
+ * Two refusals are unrecoverable here by construction: ethers collapses a
+ * message matching `the method .* does not exist` and an
+ * `Unauthorized method:` detail into its own `UNSUPPORTED_OPERATION` and
+ * discards the nested error. Both are already classified by the message
+ * patterns above (`does not exist` and `unauthori[sz]ed` respectively), so
+ * they need no code. Reading the string code as a third signal would also
+ * catch ethers' `provider destroyed; cancelled request`, which is a
+ * shutdown, not a capability verdict.
+ */
+function errorCode(err: unknown): number | undefined {
+  if (typeof err !== "object" || err === null) {
+    return undefined;
+  }
+  const direct = (err as { code?: unknown }).code;
+  if (typeof direct === "number") {
+    return direct;
+  }
+  const nested = (err as { error?: unknown }).error;
+  if (typeof nested === "object" && nested !== null) {
+    const nestedCode = (nested as { code?: unknown }).code;
+    if (typeof nestedCode === "number") {
+      return nestedCode;
+    }
+  }
+  return undefined;
 }
 
 interface ChainEntry {
@@ -470,6 +670,26 @@ interface ChainEntry {
    * workflow count the log path gets from ranged `eth_getLogs`.
    */
   stateSubscribers: Set<StateSubscriber>;
+  /**
+   * Trace subscriptions on this chain (issue #2464). Batched into one
+   * debug_traceBlockByNumber per block, so their cost is one call per chain
+   * per block rather than one per subscription. Follows the same shared-fetch
+   * pattern as state subscriptions and eth_getLogs.
+   */
+  traceSubscribers: Set<TraceSubscriber>;
+  /**
+   * Learned capability: this connection has answered a trace request with a
+   * refusal that will not change on retry, meaning an absent method or one
+   * gated behind a plan. Set once, logged once, then cleared in `reconnect()` so a
+   * replacement connection re-learns rather than inheriting a verdict about
+   * an endpoint it may not even be talking to, since failover can land on a
+   * different upstream.
+   *
+   * The subscriptions themselves are left alone. Dropping them would take the
+   * chain's triggers away with no path back. The unsubscribe closures would
+   * then be deleting from a set that no longer holds them.
+   */
+  traceUnsupported: boolean;
   /** Cached Multicall3 deployment status for this chain. */
   multicall3: Multicall3Status;
   blockListener: ((blockNumber: number) => Promise<void>) | null;
@@ -835,13 +1055,52 @@ export class ChainProviderManager {
     };
   }
 
+  async subscribeToTrace(opts: SubscribeTraceOptions): Promise<Unsubscribe> {
+    const entry = this.ensureEntry(
+      opts.chainId,
+      opts.wssUrl,
+      opts.fallbackWssUrl,
+    );
+    await this.getOrCreateProvider(
+      opts.chainId,
+      opts.wssUrl,
+      opts.fallbackWssUrl,
+    );
+
+    const subscriber: TraceSubscriber = {
+      contractAddress: opts.contractAddress,
+      caller: opts.caller,
+      selector: opts.selector,
+      callTypes: opts.callTypes,
+      minValueWei: opts.minValueWei ? BigInt(opts.minValueWei) : undefined,
+      status: opts.status,
+      handler: opts.handler,
+    };
+    entry.traceSubscribers.add(subscriber);
+
+    // Same lifecycle rule as subscribeToLogs and subscribeToState
+    if (!entry.blockListener) {
+      this.attachBlockListener(entry);
+      this.startHeartbeat(entry);
+    }
+
+    return () => {
+      entry.traceSubscribers.delete(subscriber);
+      this.detachIfIdle(entry);
+    };
+  }
+
   /**
    * Tear down the block listener and heartbeat once a chain has no subscriber
    * of either kind left. Both subscriber sets are checked because either one
    * alone is reason enough to keep the block subscription alive.
    */
   private detachIfIdle(entry: ChainEntry): void {
-    if (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0) {
+    if (
+      entry.subscribers.size === 0 &&
+      entry.stateSubscribers.size === 0 &&
+      entry.traceSubscribers.size === 0
+    ) {
       this.detachBlockListener(entry);
       this.stopHeartbeat(entry);
     }
@@ -894,6 +1153,15 @@ export class ChainProviderManager {
   }
 
   /**
+   * Number of active trace subscribers for `chainId`. Returns 0 for an
+   * unknown chain. Same purpose as the two counters above: assert that trace
+   * subscriptions multiplex through the one ChainEntry.
+   */
+  traceSubscriberCount(chainId: number): number {
+    return this.chains.get(chainId)?.traceSubscribers.size ?? 0;
+  }
+
+  /**
    * Returns true iff the manager has an active provider for `chainId`
    * and is not currently reconnecting. Deliberately asymmetric with the
    * `/healthz` endpoint's "no chains registered = 200 OK" rule: per-chain
@@ -940,6 +1208,8 @@ export class ChainProviderManager {
       reconnecting: entry.isReconnecting,
       lastBlockAt: entry.lastBlockAt,
       subscriberCount: entry.subscribers.size,
+      traceSubscriberCount: entry.traceSubscribers.size,
+      traceUnsupported: entry.traceUnsupported,
       stateSubscriberCount: entry.stateSubscribers.size,
       blockIntervalMs: entry.blockIntervalEwmaMs,
       blocksBehindHead:
@@ -1022,6 +1292,8 @@ export class ChainProviderManager {
       reconnectPromise: null,
       subscribers: new Set(),
       stateSubscribers: new Set(),
+      traceSubscribers: new Set(),
+      traceUnsupported: false,
       multicall3: "unknown",
       blockListener: null,
       errorListener: null,
@@ -1356,7 +1628,9 @@ export class ChainProviderManager {
       entry.isReconnecting ||
       this.isDestroyed ||
       !entry.provider ||
-      (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0) ||
+      (entry.subscribers.size === 0 &&
+        entry.stateSubscribers.size === 0 &&
+        entry.traceSubscribers.size === 0) ||
       entry.headBlock === null
     ) {
       return;
@@ -1406,7 +1680,19 @@ export class ChainProviderManager {
     }
 
     const from = entry.lastProcessedBlock + 1;
-    const to = Math.min(entry.headBlock, from + GETLOGS_MAX_BLOCK_SPAN - 1);
+    // A trace-carrying chain takes a tighter span. Logs cost one ranged
+    // `eth_getLogs` for the whole range; traces cost one
+    // `debug_traceBlockByNumber` per block, and those responses are large -
+    // the survey in `.planning/issue-2247-trace-upstream-survey.md` measures
+    // 62 kB for a 5-tx block and 1.91 MB for a 185-tx one. Tracing a full
+    // `GETLOGS_MAX_BLOCK_SPAN` catch-up range sequentially is what would hold
+    // the drain long enough to matter. The remainder is not lost: the mark
+    // stays where it was and the next drain takes the next span.
+    const maxSpan =
+      entry.traceSubscribers.size > 0
+        ? Math.min(GETLOGS_MAX_BLOCK_SPAN, TRACE_MAX_BLOCK_SPAN)
+        : GETLOGS_MAX_BLOCK_SPAN;
+    const to = Math.min(entry.headBlock, from + maxSpan - 1);
 
     // `draining` is held for the whole drain, dispatch included, and is
     // released only here. Nothing else clears it - a reconnect must not,
@@ -1423,17 +1709,30 @@ export class ChainProviderManager {
     entry.drainingTo = to;
     try {
       entry.lastRequestAt = Date.now();
-      // The mark advances only on success. A failed range stays owed, so the
-      // next drain re-queries it instead of losing every event in it.
+      // The mark advances only when the range is served in full, which on a
+      // chain carrying trace subscriptions means its logs AND its traces. A
+      // failed range stays owed, so the next drain re-queries it instead of
+      // losing every event in it.
       //
       // A chain carrying only state subscriptions has no range to serve, and
       // must still advance the mark: leaving it behind would arm the catch-up
       // timer on a gap nothing will ever close and spin the drain at the rate
       // limit forever.
-      const served =
+      const logsServed =
         entry.subscribers.size === 0
           ? true
           : await this.processBlockRange(entry, from, to);
+      // Traces share the log path's mark rather than carrying one of their
+      // own. Run inside the drain, and inside the same `served` decision,
+      // because a result fetched after the mark was committed cannot be
+      // folded into it - a transient trace failure would then be lost
+      // instead of re-owed. The span is bounded above so this cannot hold
+      // the drain the way a full catch-up range would.
+      const tracesServed =
+        entry.traceSubscribers.size === 0
+          ? true
+          : await this.processTraces(entry, from, to);
+      const served = logsServed && tracesServed;
       if (served) {
         entry.lastProcessedBlock = to;
       }
@@ -1651,9 +1950,21 @@ export class ChainProviderManager {
     if (this.isDestroyed || entry.isReconnecting || !entry.provider) {
       return;
     }
-    // Blocks are only expected while a subscriber (and thus a block
-    // listener) is attached; an idle provider is legitimately silent.
-    if (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0) {
+    // Blocks are only expected while a subscriber of some kind is attached,
+    // because all three kinds attach the block listener and all three are
+    // served off it: logs and traces from the drain the block triggers, state
+    // from the sample at the end of that drain. An idle provider with no
+    // subscriber at all is legitimately silent. Testing the log set alone made
+    // the watchdog a no-op on a state-only or trace-only chain: the heartbeat
+    // ran, this returned immediately, and a connection that answered the ping
+    // but had stopped delivering blocks was never replaced, so the trigger
+    // stopped permanently. Same three sets as `detachIfIdle`, the drain guard
+    // and `reconnect()`.
+    if (
+      entry.subscribers.size === 0 &&
+      entry.stateSubscribers.size === 0 &&
+      entry.traceSubscribers.size === 0
+    ) {
       return;
     }
     // Measure from the most recent of the last delivered block and the
@@ -1790,18 +2101,20 @@ export class ChainProviderManager {
       // still set. Scheduled rather than awaited: a drain dispatches to
       // handlers that may each sleep seconds of jitter, and awaiting it would
       // hold the chain reconnecting long after the socket was healthy.
-      //
-      // Log-scoped on purpose, unlike the guards in `detachIfIdle` and
-      // `reconnect`. Only the log path accrues an owed range: it is
-      // `lastProcessedBlock` that survives the drop and has to be caught up.
-      // A state-only chain owes nothing - its mark advances unconditionally
-      // in `drain` (`served` is `true` for it), and the only rewind runs off
-      // a re-announced block, which cannot fire while the socket is down. So
-      // by the time this timer would arm, such a chain has `behind === 0`;
-      // arming it buys a timer and a `drain` that returns at the `behind <= 0`
-      // check before it reads any logs or samples any state. Nothing to gain,
-      // so it stays log-scoped.
-      if (!this.isDestroyed && entry.provider && entry.subscribers.size > 0) {
+      // Two sets here, not three. A trace subscription owns part of the range
+      // the drain serves: `processTraces` runs inside the drain and folds into
+      // the same high-water mark, so a range owed from the outage is served by
+      // this catch-up and nothing else. Without the trace set a trace-only
+      // chain sat on that range until the next block arrived. State is
+      // deliberately not included: a state subscription has no range to serve,
+      // it is sampled at the head at the end of a drain, so arming a catch-up
+      // for it alone would spin the drain at the rate limit on a gap nothing
+      // owes.
+      if (
+        !this.isDestroyed &&
+        entry.provider &&
+        (entry.subscribers.size > 0 || entry.traceSubscribers.size > 0)
+      ) {
         this.armCatchUp(entry, GETLOGS_MIN_INTERVAL_MS);
       }
     }
@@ -1832,6 +2145,10 @@ export class ChainProviderManager {
     entry.provider = null;
     entry.activeWssUrl = null;
     entry.readyPromise = null;
+    // The trace verdict was learned from the connection being replaced, and
+    // the walk below tries primary before fallback, so the replacement may
+    // not even be the same upstream. Clear it and re-learn.
+    entry.traceUnsupported = false;
 
     if (this.isDestroyed) {
       return;
@@ -1868,11 +2185,21 @@ export class ChainProviderManager {
     entry.lastCreateError = null;
 
     this.attachErrorListener(entry);
-    // Block listener and heartbeat only if this chain has subscribers.
-    // Both listeners are subscriber-scoped; if every subscriber of either
-    // kind unsubscribed during the reconnect, the new provider stays quiet
-    // until someone subscribes again.
-    if (entry.subscribers.size > 0 || entry.stateSubscribers.size > 0) {
+    // Block listener and heartbeat only if this chain has subscribers, of
+    // any of the three kinds. All three attach the block listener when they
+    // subscribe and all three are served off it: logs and traces from the
+    // drain it triggers, state from the sample at the end of that drain. This
+    // now matches `detachIfIdle`, which tears the pair down only when all
+    // three sets are empty. Testing the log set alone brought a state-only or
+    // trace-only chain back from any reconnect with no block listener, so no
+    // drain ever ran again on it and the trigger stopped permanently. That is
+    // reachable without the staleness watchdog: `triggerReconnect` is called
+    // from the provider error listener and from the heartbeat as well.
+    if (
+      entry.subscribers.size > 0 ||
+      entry.stateSubscribers.size > 0 ||
+      entry.traceSubscribers.size > 0
+    ) {
       this.attachBlockListener(entry);
       this.startHeartbeat(entry);
       // The catch-up for anything owed from before the drop is armed by
@@ -1949,6 +2276,302 @@ export class ChainProviderManager {
         }
       }),
     );
+  }
+
+  /**
+   * Record a trace refusal against the connection that produced it.
+   *
+   * Returns true when the refusal is permanent for this connection, which is
+   * the caller's signal to stop asking. The flag is per entry and is cleared
+   * in `reconnect()`, so the verdict never outlives the connection it was
+   * learned from. Logged once at the transition rather than per block: an
+   * upstream that answers -32601 is otherwise re-asked on every block of
+   * every drain, up to the dispatch cap, each with its own warn line.
+   */
+  private recordTraceRefusal(entry: ChainEntry, err: unknown): boolean {
+    if (entry.traceUnsupported) {
+      return true;
+    }
+    const message = describeError(err).toLowerCase();
+    const code = errorCode(err);
+
+    // Retryable, in precedence order. A throttle answers in the plan
+    // vocabulary. A missing block answers in the not-supported vocabulary.
+    // Both are settled before either verdict is reachable.
+    if (code === -32005 || TRACE_RATE_LIMITED.test(message)) {
+      return false;
+    }
+    if (TRACE_BLOCK_UNAVAILABLE.test(message)) {
+      return false;
+    }
+
+    const gated = TRACE_TIER_GATED.test(message);
+    const absent = code === -32601 || TRACE_NOT_SUPPORTED.test(message);
+    if (!(gated || absent)) {
+      return false;
+    }
+
+    entry.traceUnsupported = true;
+    logger.warn(
+      `[ChainProviderManager] chain=${entry.chainId} debug_traceBlockByNumber refused (${gated ? "tier-gated" : "method absent"}), trace matching paused on this connection until it reconnects: ${describeError(err)}`,
+    );
+    return true;
+  }
+
+  /**
+   * Fetch and dispatch trace matches for the block range [from, to].
+   * Each block with transactions is traced via debug_traceBlockByNumber,
+   * and matched frames are dispatched to their subscribers.
+   *
+   * Returns whether the range was served, which the caller folds into the
+   * same `served` decision the log path uses. Traces share the log path's
+   * high-water mark rather than carrying one of their own, so the three
+   * outcomes have to be distinguished:
+   *
+   * - every block traced: served, the mark advances.
+   * - a transient failure (timeout, rate limit, a missing block): not served,
+   *   so the range stays owed and the next drain re-traces it.
+   * - a permanent refusal for this connection: served. An upstream that will
+   *   never answer must not pin the mark, which would stall the log path
+   *   behind a capability the chain does not have. The refusal is recorded
+   *   and logged once by `recordTraceRefusal`, and cleared on reconnect.
+   */
+  private async processTraces(
+    entry: ChainEntry,
+    from: number,
+    to: number,
+  ): Promise<boolean> {
+    const subscribers = [...entry.traceSubscribers];
+    const provider = entry.provider;
+    if (subscribers.length === 0 || !provider) {
+      return true;
+    }
+    if (entry.traceUnsupported) {
+      return true;
+    }
+
+    let served = true;
+
+    // Process each block in the range sequentially
+    for (let blockNumber = from; blockNumber <= to; blockNumber++) {
+      // Check if provider is still valid after each block
+      if (entry.provider !== provider) {
+        // The connection was replaced part way through. What is left of the
+        // range was not served, so it stays owed for the next drain.
+        return false;
+      }
+
+      try {
+        const blockHex = `0x${blockNumber.toString(16)}`;
+        // No eth_getBlockByNumber. Each element of the callTracer result
+        // carries its own txHash, so the block was only ever being fetched to
+        // index into `block.transactions[txIndex]`, which assumed the trace
+        // array and the block's transaction list have the same length and
+        // order. Nothing guarantees that. A chain whose trace array includes
+        // system transactions breaks it. So does a reorg landing between the
+        // two calls. Either way it
+        // yields the wrong hash or `undefined`. The dispatch key is built from
+        // it, so `undefined` produced `<wf>:<chain>:undefined:<frameIndex>`,
+        // and the unique index then made every later match at that frame
+        // index look like a duplicate, killing the trigger permanently behind
+        // a debug line. Reading the hash the tracer already returns removes
+        // the assumption and halves the RPC cost. An empty block returns an
+        // empty array, so it needs no separate check.
+        const traces = (await this.sendWithTimeout(
+          provider,
+          "debug_traceBlockByNumber",
+          [blockHex, { tracer: "callTracer", timeout: "15s" }],
+          30000,
+        )) as Array<{ result?: RawCallFrame; txHash?: string }> | null;
+
+        if (!Array.isArray(traces)) {
+          // A well-formed answer carrying nothing to dispatch. Logged rather
+          // than passed over silently, but counted as served: an upstream
+          // that cannot answer throws, and treating a null answer as owed
+          // would stall the shared mark on a block that will never trace.
+          logger.warn(
+            `[ChainProviderManager] chain=${entry.chainId} block=${blockNumber} debug_traceBlockByNumber returned no trace array`,
+          );
+          continue;
+        }
+
+        // Process each transaction's trace, accumulating matches for the
+        // whole block rather than dispatching per transaction, so the cap
+        // below is per (subscription, block).
+        const perSubscriber = new Map<TraceSubscriber, TraceCallFrame[]>();
+
+        for (let txIndex = 0; txIndex < traces.length; txIndex++) {
+          const trace = traces[txIndex];
+          if (!trace?.result) {
+            continue;
+          }
+
+          // Skip rather than guess. A frame with no hash cannot be deduped,
+          // and a fabricated key is worse than a missed match.
+          const txHash = trace.txHash;
+          if (!txHash) {
+            logger.warn(
+              `[ChainProviderManager] chain=${entry.chainId} block=${blockNumber} trace entry ${txIndex} carried no txHash, skipping`,
+            );
+            continue;
+          }
+
+          const matches = this.extractTraceMatches(
+            trace.result,
+            blockNumber,
+            txHash,
+            txIndex,
+            subscribers,
+          );
+          for (const { subscriber, frames } of matches) {
+            const accumulated = perSubscriber.get(subscriber);
+            if (accumulated) {
+              accumulated.push(...frames);
+            } else {
+              perSubscriber.set(subscriber, [...frames]);
+            }
+          }
+        }
+
+        await this.dispatchTraceMatches(entry, blockNumber, perSubscriber);
+      } catch (err: unknown) {
+        if (this.recordTraceRefusal(entry, err)) {
+          // Permanent for this connection. Reported as served so the shared
+          // mark keeps moving; the flag stops any further asking until the
+          // next reconnect clears it.
+          return true;
+        }
+        logger.warn(
+          `[ChainProviderManager] chain=${entry.chainId} trace fetch failed for block ${blockNumber}: ${describeError(err)}`,
+        );
+        // Retryable, so the range stays owed and is re-traced next drain.
+        served = false;
+      }
+    }
+
+    return served;
+  }
+
+  /**
+   * Dispatch one block's accumulated matches, capped per subscription.
+   *
+   * The cap is applied to the block's whole set rather than to each
+   * transaction's, so a block carrying many matching transactions costs one
+   * subscription at most `TRACE_DISPATCH_CAP_PER_BLOCK` pacer tokens and
+   * phantom-create round trips. The warn reports the real total, so a
+   * subscription that is being truncated says by how much.
+   */
+  private async dispatchTraceMatches(
+    entry: ChainEntry,
+    blockNumber: number,
+    perSubscriber: Map<TraceSubscriber, TraceCallFrame[]>,
+  ): Promise<void> {
+    const tasks: Array<() => Promise<void>> = [];
+    for (const [subscriber, frames] of perSubscriber) {
+      if (frames.length > TRACE_DISPATCH_CAP_PER_BLOCK) {
+        logger.warn(
+          `[ChainProviderManager] chain=${entry.chainId} block=${blockNumber} capping trace dispatch from ${frames.length} to ${TRACE_DISPATCH_CAP_PER_BLOCK} for one subscription`,
+        );
+      }
+      for (const frame of frames.slice(0, TRACE_DISPATCH_CAP_PER_BLOCK)) {
+        tasks.push(async () => {
+          try {
+            await subscriber.handler([frame]);
+          } catch (err) {
+            logger.warn(
+              `[ChainProviderManager] chain=${entry.chainId} trace subscriber handler threw: ${String(err)}`,
+            );
+          }
+        });
+      }
+    }
+    await Promise.all(tasks.map((task) => task()));
+  }
+
+  /**
+   * Extract matched frames from a call trace tree, flattening and filtering
+   * against each subscriber's criteria.
+   */
+  private extractTraceMatches(
+    call: RawCallFrame,
+    blockNumber: number,
+    txHash: string,
+    txIndex: number,
+    subscribers: TraceSubscriber[],
+  ): Array<{ subscriber: TraceSubscriber; frames: TraceCallFrame[] }> {
+    const flatFrames = this.flattenCallTrace(
+      call,
+      blockNumber,
+      txHash,
+      txIndex,
+    );
+
+    return subscribers
+      .map((sub) => {
+        const matched = flatFrames.filter((frame) =>
+          this.frameMatchesSubscriber(frame, sub),
+        );
+        return { subscriber: sub, frames: matched };
+      })
+      .filter((m) => m.frames.length > 0);
+  }
+
+  /**
+   * Flatten a nested call trace into a list of frames with metadata.
+   *
+   * The walk itself is `flattenCallTree` from the vendored matcher, so the
+   * revert semantics are defined once. `parentReverted` is threaded top-down
+   * there because geth's `callTracer` sets `error` only on the frame that
+   * threw, never on its descendants, even though the EVM rolls all of them
+   * back. Per-frame `error` alone was wrong in both directions: an inner call
+   * that completed before an ancestor reverted read as `reverted: false`,
+   * matched the default `status: "success"` and fired a workflow on a call
+   * with no on-chain effect, while `status: "reverted"` - the drain-attempt
+   * signal this trigger exists for - saw only the throwing frame and missed
+   * every frame rolled back with it.
+   *
+   * `reverted` therefore means rolled back, which is what the accepted
+   * amendment assumes when it adds `selfReverted` on top of it.
+   *
+   * All this adds is the coordinates a dispatch key needs. `frameIndex` is the
+   * position in the flattened list, which is the depth-first pre-order the
+   * walk emits, so it is stable for a given trace.
+   */
+  private flattenCallTrace(
+    call: RawCallFrame,
+    blockNumber: number,
+    txHash: string,
+    txIndex: number,
+  ): TraceCallFrame[] {
+    return flattenCallTree(call).map((frame, frameIndex) => ({
+      ...frame,
+      blockNumber,
+      transactionHash: txHash,
+      transactionIndex: txIndex,
+      frameIndex,
+      selector: callSelector(frame),
+    }));
+  }
+
+  /**
+   * Check if a frame matches a subscriber's filters.
+   *
+   * The whole predicate is the vendored `frameMatches`; this only names the
+   * subscription's fields in the filter's vocabulary. The contract address is
+   * the one required field, so it goes in as `callee`.
+   */
+  private frameMatchesSubscriber(
+    frame: TraceCallFrame,
+    sub: TraceSubscriber,
+  ): boolean {
+    return frameMatches(frame, {
+      callee: sub.contractAddress,
+      caller: sub.caller,
+      selector: sub.selector,
+      callTypes: sub.callTypes,
+      minValue: sub.minValueWei,
+      status: sub.status,
+    });
   }
 
   /**

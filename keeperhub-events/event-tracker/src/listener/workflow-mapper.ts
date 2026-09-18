@@ -11,12 +11,14 @@ import { redactRpcUrl } from "../chains/provider-manager";
 import type { AbiEvent } from "../chains/validation";
 import type {
   StateThresholdRegistration,
+  TraceRegistration,
   WorkflowRegistration,
 } from "./registry";
 import type {
   StateThresholdSubscription,
   ThresholdComparator,
 } from "./state-threshold";
+import type { TraceSubscription } from "./trace-subscription";
 
 /**
  * Maps the KeeperHub API workflow response shape into a WorkflowRegistration
@@ -34,7 +36,11 @@ import type {
 export function buildRegistration(
   workflow: RawWorkflow,
   networks: NetworksMap,
-): WorkflowRegistration | StateThresholdRegistration | null {
+):
+  | WorkflowRegistration
+  | StateThresholdRegistration
+  | TraceRegistration
+  | null {
   const workflowId = typeof workflow.id === "string" ? workflow.id : null;
   if (!workflowId) {
     logger.warn("[workflow-mapper] workflow missing id; skipping");
@@ -125,6 +131,20 @@ export function buildRegistration(
   // fields because it shares every one of them and nothing below.
   if (config.triggerType === "stateThreshold") {
     return buildStateThresholdRegistration(workflow, workflowId, config, {
+      chainId,
+      wssUrl,
+      fallbackWssUrl,
+      contractAddress,
+    });
+  }
+
+  // Trace trigger (issue #2464). Same reason for branching here: it shares
+  // the connection fields and the watched address, and nothing below. Without
+  // this branch a saved, enabled Trace workflow was admitted by the API and
+  // then dropped at `missing eventName` below, so the user saw a live
+  // workflow that never fired and one warn line nobody was reading.
+  if (config.triggerType === TRACE_TRIGGER_TYPE) {
+    return buildTraceRegistration(workflow, workflowId, config, {
       chainId,
       wssUrl,
       fallbackWssUrl,
@@ -498,4 +518,231 @@ export function hashStateRegistration(parts: {
   userId: string;
 }): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+}
+
+/**
+ * `WorkflowTriggerEnum.TRACE` as the API serialises it. Redeclared rather
+ * than imported: the tracker is its own package and shares no module with the
+ * app, which is the same reason `"stateThreshold"` is a literal above.
+ */
+const TRACE_TRIGGER_TYPE = "Trace";
+
+/**
+ * Frame types the matcher can be asked for, in the casing it compares.
+ *
+ * Mirrors `TRACE_CALL_TYPES` in the app's `lib/workflow/trace-trigger-config`.
+ * A type outside this set can never match a `callTracer` frame, so a filter
+ * containing one would register and silently match nothing.
+ */
+const TRACE_CALL_TYPES: readonly string[] = [
+  "CALL",
+  "STATICCALL",
+  "DELEGATECALL",
+  "CALLCODE",
+  "CREATE",
+  "CREATE2",
+  "SELFDESTRUCT",
+];
+
+const TRACE_STATUSES: readonly string[] = ["success", "reverted", "any"];
+
+/** A raw 4-byte selector, which is what the matcher compares against. */
+const TRACE_SELECTOR_PATTERN = /^0x[0-9a-fA-F]{8}$/;
+
+const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * Map a `Trace` trigger node into a registration.
+ *
+ * Every filter is re-validated here rather than trusted from the API. The
+ * endpoint checks the selector and the call types on the way out, but a
+ * filter the matcher cannot read produces a trigger that registers, never
+ * fires and reports nothing anywhere, which is the most expensive failure
+ * shape this trigger has. Refusing with one log line is the cheaper half of
+ * that trade, and it is the contract the app's own module documents.
+ *
+ * An absent filter is not an error: every field except the watched address is
+ * optional and absent means "any". Only a field that is present and
+ * unreadable refuses the workflow.
+ */
+function buildTraceRegistration(
+  workflow: RawWorkflow,
+  workflowId: string,
+  config: RawWorkflowNodeConfig,
+  connection: {
+    chainId: number;
+    wssUrl: string;
+    fallbackWssUrl?: string;
+    contractAddress: string;
+  },
+): TraceRegistration | null {
+  if (!ADDRESS_PATTERN.test(connection.contractAddress.trim())) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} trace trigger contractAddress "${connection.contractAddress}" is not a 20-byte address; skipping`,
+    );
+    return null;
+  }
+  const contractAddress = connection.contractAddress.trim().toLowerCase();
+
+  let caller: string | undefined;
+  if (isPresent(config.traceCaller)) {
+    const raw = String(config.traceCaller).trim();
+    if (!ADDRESS_PATTERN.test(raw)) {
+      logger.warn(
+        `[workflow-mapper] workflow ${workflowId} trace caller "${raw}" is not a 20-byte address; skipping`,
+      );
+      return null;
+    }
+    caller = raw.toLowerCase();
+  }
+
+  let selector: string | undefined;
+  if (isPresent(config.traceSelector)) {
+    const raw = String(config.traceSelector).trim();
+    // A selector the matcher can never equal is refused rather than dropped.
+    // Dropping it would widen the filter to every function on the contract,
+    // which fires a workflow the user never asked for.
+    if (!TRACE_SELECTOR_PATTERN.test(raw)) {
+      logger.warn(
+        `[workflow-mapper] workflow ${workflowId} trace selector "${raw}" is not a 4-byte selector; skipping`,
+      );
+      return null;
+    }
+    selector = raw.toLowerCase();
+  }
+
+  let callTypes: string[] | undefined;
+  if (isPresent(config.traceCallTypes)) {
+    // The endpoint parses the editor's JSON-array string before sending. A
+    // value that is still a string got past it unparsed, and `.some` on a
+    // string inside the per-block matcher is not something to discover at
+    // runtime.
+    const raw = config.traceCallTypes;
+    if (!Array.isArray(raw)) {
+      logger.warn(
+        `[workflow-mapper] workflow ${workflowId} trace callTypes is not an array; skipping`,
+      );
+      return null;
+    }
+    const normalised: string[] = [];
+    for (const entry of raw) {
+      if (typeof entry !== "string") {
+        logger.warn(
+          `[workflow-mapper] workflow ${workflowId} trace callTypes contains a non-string entry; skipping`,
+        );
+        return null;
+      }
+      const upper = entry.trim().toUpperCase();
+      if (!TRACE_CALL_TYPES.includes(upper)) {
+        logger.warn(
+          `[workflow-mapper] workflow ${workflowId} trace callType "${entry}" is not one of ${TRACE_CALL_TYPES.join(", ")}; skipping`,
+        );
+        return null;
+      }
+      normalised.push(upper);
+    }
+    // An empty list is the wildcard the matcher already treats it as, so it
+    // is carried as absent rather than as an empty array that hashes
+    // differently from the same filter saved before any box was ticked.
+    callTypes = normalised.length > 0 ? normalised : undefined;
+  }
+
+  let minValueWei: string | undefined;
+  if (isPresent(config.traceMinValueWei)) {
+    const raw = String(config.traceMinValueWei).trim();
+    let parsed: bigint;
+    try {
+      parsed = BigInt(raw);
+    } catch {
+      logger.warn(
+        `[workflow-mapper] workflow ${workflowId} trace minValueWei "${raw}" is not an integer; skipping`,
+      );
+      return null;
+    }
+    if (parsed < 0n) {
+      logger.warn(
+        `[workflow-mapper] workflow ${workflowId} trace minValueWei "${raw}" is negative; skipping`,
+      );
+      return null;
+    }
+    // Normalised through BigInt so "0x16345785d8a0000" and a padded decimal
+    // both reach the matcher as the same canonical string, and so two configs
+    // that mean the same floor hash the same.
+    minValueWei = parsed.toString(10);
+  }
+
+  let status: TraceSubscription["status"];
+  if (isPresent(config.traceStatus)) {
+    const raw = String(config.traceStatus).trim();
+    if (!TRACE_STATUSES.includes(raw)) {
+      logger.warn(
+        `[workflow-mapper] workflow ${workflowId} trace status "${raw}" is not one of ${TRACE_STATUSES.join(", ")}; skipping`,
+      );
+      return null;
+    }
+    status = raw as TraceSubscription["status"];
+  }
+
+  const subscription: TraceSubscription = {
+    contractAddress,
+    caller,
+    selector,
+    callTypes,
+    minValueWei,
+    status,
+  };
+
+  const userId = typeof workflow.userId === "string" ? workflow.userId : "";
+  const workflowName = typeof workflow.name === "string" ? workflow.name : "";
+
+  return {
+    kind: "trace",
+    workflowId,
+    userId,
+    workflowName,
+    chainId: connection.chainId,
+    wssUrl: connection.wssUrl,
+    fallbackWssUrl: connection.fallbackWssUrl,
+    subscription,
+    configHash: hashTraceRegistration({
+      subscription,
+      wssUrl: connection.wssUrl,
+      fallbackWssUrl: connection.fallbackWssUrl ?? null,
+      userId,
+    }),
+  };
+}
+
+/** Absent, null and empty string all mean "not configured" here. */
+function isPresent(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== "";
+}
+
+/**
+ * Content hash over everything that should restart a trace listener: the
+ * whole filter plus the connection it is served over. Counterpart to
+ * `hashRegistration` and `hashStateRegistration`.
+ *
+ * Every field is listed explicitly and defaulted to null rather than hashing
+ * the subscription object directly, so an undefined optional and an absent
+ * key cannot produce two hashes for one filter.
+ */
+export function hashTraceRegistration(parts: {
+  subscription: TraceSubscription;
+  wssUrl: string;
+  fallbackWssUrl: string | null;
+  userId: string;
+}): string {
+  const canonical = JSON.stringify({
+    contractAddress: parts.subscription.contractAddress,
+    caller: parts.subscription.caller ?? null,
+    selector: parts.subscription.selector ?? null,
+    callTypes: parts.subscription.callTypes ?? null,
+    minValueWei: parts.subscription.minValueWei ?? null,
+    status: parts.subscription.status ?? null,
+    wssUrl: parts.wssUrl,
+    fallbackWssUrl: parts.fallbackWssUrl,
+    userId: parts.userId,
+  });
+  return createHash("sha256").update(canonical).digest("hex");
 }
