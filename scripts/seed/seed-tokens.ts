@@ -88,6 +88,24 @@ const TOKEN_CONFIGS: TokenConfig[] = [
   // Note: USDS not yet deployed on Sepolia
 
   // ==========================================================================
+  // Ethereum Hoodi Testnet (chainId: 560048)
+  // ==========================================================================
+  {
+    chainId: 560_048,
+    tokenAddress: "0x3508a952176b3c15387c97be809eaffb1982176a", // Lido stETH
+    logoUrl: null,
+    isStablecoin: false,
+    sortOrder: 1,
+  },
+  {
+    chainId: 560_048,
+    tokenAddress: "0x7e99ee3c66636de415d2d7c880938f2f40f94de4", // Lido wstETH
+    logoUrl: null,
+    isStablecoin: false,
+    sortOrder: 2,
+  },
+
+  // ==========================================================================
   // Base Mainnet (chainId: 8453)
   // ==========================================================================
   {

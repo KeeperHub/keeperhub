@@ -58,6 +58,10 @@ export const LIDO_TOKENS: Record<number, LidoChainTokens> = {
     stETH: "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84", // [VERIFIED docs.lido.fi/deployed-contracts 2026-06-16]
     wstETH: "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0", // [VERIFIED docs.lido.fi/deployed-contracts 2026-06-16]
   },
+  560048: {
+    stETH: "0x3508A952176b3c15387C97BE809eaffB1982176a", // [VERIFIED docs.lido.fi/deployed-contracts/hoodi 2026-09-13]
+    wstETH: "0x7E99eE3C66636DE415D2d7C880938F2f40f94De4", // [VERIFIED docs.lido.fi/deployed-contracts/hoodi 2026-09-13]
+  },
   42161: {
     wstETH: "0x5979D7b546E38E414F7E9822514be443A4800529", // [VERIFIED docs.lido.fi/deployed-contracts 2026-06-16] WstETH ERC20Bridged proxy
   },
