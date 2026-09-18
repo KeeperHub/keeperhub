@@ -77,6 +77,12 @@ export function validateRetryConfig(
  * rather than cancelling, so an attempt that times out can still broadcast
  * while the next signs at the following nonce, putting two transactions on
  * chain. Setting maxRetries to 0 keeps the long timeout and one attempt.
+ *
+ * The message itself stays path-neutral. This check runs in validateRequest,
+ * before the action is resolved, so a caller refused here may be running a
+ * step that sends no transaction at all; what holds on both the transaction
+ * and the generic retry path is that a timed-out attempt is abandoned rather
+ * than cancelled, and can still complete.
  */
 function retryBudgetError(
   r: Record<string, unknown>,
@@ -96,7 +102,7 @@ function retryBudgetError(
     `so up to ${attempts} attempts of ${perAttempt}ms may run ` +
     `(${attempts * perAttempt}ms), over the ${MAX_RETRY_BUDGET_MS}ms limit. ` +
     "To keep a long timeout, set retry.maxRetries to 0 for a single attempt. " +
-    "Lowering timeoutMs instead is not a safe substitute for a write: an " +
-    "attempt that times out can still be broadcast while the next one is sent."
+    "Lowering timeoutMs instead is not a safe substitute: a timed-out " +
+    "attempt is abandoned, not cancelled, and can still complete."
   );
 }

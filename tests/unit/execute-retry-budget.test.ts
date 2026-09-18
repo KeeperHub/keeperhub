@@ -52,6 +52,12 @@ describe("direct-execution retry budget", () => {
       throw new Error("expected a rejection");
     }
     expect(result.error).toContain("set retry.maxRetries to 0");
+    // Checked before the action is resolved, so the reason has to hold for a
+    // step that sends no transaction as well as for a write.
+    expect(result.error).toContain(
+      "a timed-out attempt is abandoned, not cancelled, and can still complete"
+    );
+    expect(result.error).not.toContain("broadcast");
     expect(
       validateRetryConfig({ maxRetries: 0, timeoutMs: 600_000 }).valid
     ).toBe(true);
