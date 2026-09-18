@@ -51,6 +51,11 @@ export function getChainIdFromNetwork(network: string | number): number {
     "tempo-testnet": SUPPORTED_CHAIN_IDS.TEMPO_TESTNET,
     tempo: SUPPORTED_CHAIN_IDS.TEMPO_MAINNET,
     "tempo-mainnet": SUPPORTED_CHAIN_IDS.TEMPO_MAINNET,
+    // HyperEVM. Not aliased as "hyperliquid": that name also covers
+    // HyperCore, the non-EVM L1 the Hyperliquid plugin reads, and a network
+    // alias should not guess which of the two a user meant.
+    hyperevm: SUPPORTED_CHAIN_IDS.HYPEREVM_MAINNET,
+    "hyperevm-mainnet": SUPPORTED_CHAIN_IDS.HYPEREVM_MAINNET,
     // Solana
     solana: SUPPORTED_CHAIN_IDS.SOLANA_MAINNET,
     "solana-mainnet": SUPPORTED_CHAIN_IDS.SOLANA_MAINNET,
@@ -80,6 +85,7 @@ export function getNetworkName(chainId: number): string {
     [SUPPORTED_CHAIN_IDS.BASE_SEPOLIA]: "Base Sepolia",
     [SUPPORTED_CHAIN_IDS.TEMPO_TESTNET]: "Tempo Testnet",
     [SUPPORTED_CHAIN_IDS.TEMPO_MAINNET]: "Tempo",
+    [SUPPORTED_CHAIN_IDS.HYPEREVM_MAINNET]: "HyperEVM",
     [SUPPORTED_CHAIN_IDS.SOLANA_MAINNET]: "Solana",
     [SUPPORTED_CHAIN_IDS.SOLANA_DEVNET]: "Solana Devnet",
   };

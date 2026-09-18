@@ -92,9 +92,28 @@ export const PUBLIC_RPCS = {
   // No publicWssDefault for either chain, deliberately. Robinhood publishes
   // wss://feed.mainnet.chain.robinhood.com, but it is not a JSON-RPC socket --
   // it streams raw Arbitrum sequencer-feed messages and cannot serve
-  // eth_subscribe -- and dRPC's free tier rejects eth_subscribe outright. There
+  // eth_subscribe -- and dRPC's socket for THIS chain rejects eth_subscribe.
+  // That is a per-chain observation rather than a property of the free tier:
+  // dRPC's HyperEVM socket does serve it (see CHAIN_CONFIG[999]), so a new
+  // chain needs its own check rather than inheriting this conclusion. There
   // is no public WSS endpoint for this chain to fall back to, so event and
   // block triggers depend on the WSS URLs in CHAIN_RPC_CONFIG.
+  // HyperEVM (Hyperliquid's EVM). The official endpoint is HTTP only: it answers
+  // a WebSocket upgrade with 405. dRPC's socket is the public WSS default, and
+  // unlike Robinhood's dRPC endpoint above it does serve eth_subscribe. The
+  // difference is per-chain rather than per-tier, so it was measured over a
+  // window long enough to mean something: on 2026-09-16 the socket held open
+  // for 10 minutes delivered 415 newHeads notifications with no gap longer
+  // than 8 seconds, and served eth_getLogs and eth_call alongside them.
+  //
+  // No publicWssFallback: on the same day the other four public candidates
+  // refused the upgrade outright (rpc.hyperliquid.xyz/evm and
+  // rpc.hypurrscan.io answered 405, stakely and thirdweb 302). So a deployed
+  // environment that cannot tolerate a single public socket should set a
+  // keyed WSS URL through CHAIN_RPC_CONFIG, which takes priority over this.
+  HYPEREVM_MAINNET: "https://rpc.hyperliquid.xyz/evm",
+  HYPEREVM_MAINNET_FALLBACK: "https://hyperliquid.drpc.org",
+  HYPEREVM_MAINNET_WSS: "wss://hyperliquid.drpc.org",
   SOLANA_MAINNET: "https://api.mainnet-beta.solana.com",
   SOLANA_DEVNET: "https://api.devnet.solana.com",
   // Arc Testnet (Circle). USDC is the native gas token here, not ETH.
@@ -302,6 +321,15 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     fallbackEnvKey: "CHAIN_ROBINHOOD_TESTNET_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.ROBINHOOD_TESTNET,
     publicFallback: PUBLIC_RPCS.ROBINHOOD_TESTNET_FALLBACK,
+  },
+  // HyperEVM Mainnet
+  999: {
+    jsonKey: "hyperevm-mainnet",
+    envKey: "CHAIN_HYPEREVM_MAINNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_HYPEREVM_MAINNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.HYPEREVM_MAINNET,
+    publicFallback: PUBLIC_RPCS.HYPEREVM_MAINNET_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.HYPEREVM_MAINNET_WSS,
   },
   // Solana Mainnet
   101: {

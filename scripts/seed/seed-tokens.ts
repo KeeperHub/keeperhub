@@ -308,6 +308,28 @@ const TOKEN_CONFIGS: TokenConfig[] = [
   },
 
   // ==========================================================================
+  // HyperEVM Mainnet (chainId: 999)
+  // ==========================================================================
+  // The chain's two largest dollar stablecoins, verified over the official RPC
+  // on 2026-09-15: USDC ("USDC", 6 decimals, ~6.36B supply) and USDT0 ("USD₮0",
+  // 6 decimals, ~85.6M supply). USDe, USDHL and feUSD also exist on HyperEVM
+  // and can be added here later.
+  {
+    chainId: 999,
+    tokenAddress: "0xb88339cb7199b77e23db6e890353e22632ba630f", // USDC
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 999,
+    tokenAddress: "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb", // USDT0 (Tether omnichain via LayerZero)
+    logoUrl: LOGOS.USDT,
+    isStablecoin: true,
+    sortOrder: 2,
+  },
+
+  // ==========================================================================
   // Arc Mainnet (chainId: 5042)
   // ==========================================================================
   // Same fixed precompile address as the testnet, and it reports the same

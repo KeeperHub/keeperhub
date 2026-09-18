@@ -579,6 +579,32 @@ const DEFAULT_CHAINS: NewChain[] = [
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "robinhood-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "robinhood-testnet" }),
   },
+  // HyperEVM (Hyperliquid's EVM). Mainnet only: the testnet (998) has a working
+  // RPC but no explorer API to back ABI auto-fetch and links.
+  {
+    chainId: getChainConfigValue("hyperevm-mainnet", "chainId", 999),
+    name: "HyperEVM",
+    symbol: getChainConfigValue("hyperevm-mainnet", "symbol", "HYPE"),
+    chainType: "evm",
+    defaultPrimaryRpc: getRpcUrlByChainId(999, "primary"),
+    defaultFallbackRpc: getRpcUrlByChainId(999, "fallback"),
+    defaultPrimaryWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[999].jsonKey,
+      type: "primary",
+    }),
+    defaultFallbackWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[999].jsonKey,
+      type: "fallback",
+    }),
+    isTestnet: getChainConfigValue("hyperevm-mainnet", "isTestnet", false),
+    isEnabled: getChainConfigValue("hyperevm-mainnet", "isEnabled", true),
+    status: "experimental",
+    usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "hyperevm-mainnet" }),
+    defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "hyperevm-mainnet" }),
+    aliases: ["hyperevm"],
+  },
   // Solana chains (non-EVM - uses SolanaProviderManager)
   {
     chainId: getChainConfigValue("solana-mainnet", "chainId", 101),
@@ -919,6 +945,17 @@ const EXPLORER_CONFIG_TEMPLATES: Record<
     explorerAddressPath: "/address/{address}",
     explorerContractPath: "/address/{address}?tab=contract",
   },
+  // HyperEVM Mainnet - Etherscan V2 (HyperEVMScan). Listed in Etherscan's V2
+  // chainlist as chainid 999, status 1, on 2026-09-15.
+  999: {
+    chainType: "evm",
+    explorerUrl: "https://hyperevmscan.io",
+    explorerApiType: "etherscan",
+    explorerApiUrl: "https://api.etherscan.io/v2/api",
+    explorerTxPath: "/tx/{hash}",
+    explorerAddressPath: "/address/{address}",
+    explorerContractPath: "/address/{address}#code",
+  },
   // Solana Mainnet - Solscan
   101: {
     chainType: "solana",
@@ -1069,6 +1106,7 @@ async function seedChains() {
     "0G Galileo": 16_602,
     "Robinhood Chain": 4663,
     "Robinhood Chain Testnet": 46_630,
+    HyperEVM: 999,
     Solana: 101,
     "Solana Devnet": 103,
     "Arc Testnet": 5_042_002,

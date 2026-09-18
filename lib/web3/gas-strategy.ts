@@ -580,6 +580,20 @@ export class AdaptiveGasStrategy {
         minPriorityFeeGwei: 0,
         maxPriorityFeeGwei: 1,
       },
+      // HyperEVM. Regular blocks carry a 3,000,000 gas limit (measured across
+      // 40 consecutive blocks on 2026-09-16, every one at 3,000,000), and the
+      // node rejects a transaction above it at submission with
+      // -32000 "exceeds block gas limit" before it checks the balance. The
+      // larger 30,000,000 blocks require the sender to opt in on HyperCore,
+      // which KeeperHub does not do. The 2.0 default would therefore make any
+      // estimate above 1,500,000 gas unsendable, so the multiplier drops to
+      // 1.5, covering estimates up to 2,000,000. Above that, set an absolute
+      // gas limit on the action. Priority fees keep the defaults: unlike
+      // Robinhood Chain, eth_feeHistory here returns non-zero rewards
+      // (0 to 0.55 gwei), so the 0.1 gwei floor prices real competition.
+      999: {
+        gasLimitMultiplier: 1.5,
+      },
       // 0G Galileo testnet. The mempool admits tips at 2 gwei (matching the
       // node's "needed 2 gwei" floor) but validators only include txs paying
       // >= ~4 gwei. Validated 2026-05-01: sampled 10k recent blocks (400 txs);

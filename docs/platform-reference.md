@@ -168,6 +168,15 @@ address a wallet user signed in with - see
 | 0G Galileo (testnet) | `16602` | - | experimental |
 | Arc (Circle) | `5042` | `0x3600000000000000000000000000000000000000` | experimental |
 | Arc Testnet (Circle) | `5042002` | `0x3600000000000000000000000000000000000000` | experimental |
+| HyperEVM | `999` | `0xb88339cb7199b77e23db6e890353e22632ba630f` | experimental |
+
+HyperEVM's regular blocks cap at 3,000,000 gas, and the node rejects a
+transaction above that before it is sent, so KeeperHub sizes gas limits with a
+1.5x multiplier there rather than the default 2x. A transaction that genuinely
+needs more than 3,000,000 gas cannot be sent from KeeperHub today: larger blocks
+on HyperEVM require an opt-in made on HyperCore. HyperEVM also carries USDT0 at
+`0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`. Mainnet only; the testnet has no
+working explorer API.
 
 Arc's USDC is also its native gas token. The address above is the fixed
 ERC-20-interface precompile Circle documents for programmatic balance and

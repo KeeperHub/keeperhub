@@ -67,7 +67,9 @@ export function parseGasLimitConfig(
   return { mode: "multiplier", value: raw };
 }
 
-const CHAIN_GAS_DEFAULTS: Record<number, ChainGasDefaults> = {
+// Exported so the parity test can iterate every chain listed here rather than
+// a hand-kept copy of the ids, which would reintroduce the hand-sync it guards.
+export const CHAIN_GAS_DEFAULTS: Readonly<Record<number, ChainGasDefaults>> = {
   // Ethereum mainnet
   1: { multiplier: 2.0 },
   // Sepolia testnet
@@ -88,6 +90,8 @@ const CHAIN_GAS_DEFAULTS: Record<number, ChainGasDefaults> = {
   4663: { multiplier: 1.5 },
   // Robinhood Chain testnet
   46630: { multiplier: 1.5 },
+  // HyperEVM (3,000,000 block gas limit)
+  999: { multiplier: 1.5 },
   // 0G Galileo testnet
   16602: { multiplier: 2.0 },
   // 0G Mainnet

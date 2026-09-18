@@ -8,6 +8,7 @@ import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logSystemError } from "@/lib/logging";
 import {
+  CHAIN_CONFIG,
   getConfigValue,
   getPrivateRpcUrl,
   getRpcUrl,
@@ -333,6 +334,7 @@ describe("RPC Config Resolution", () => {
       { json: "base-testnet", public: PUBLIC_RPCS.BASE_SEPOLIA },
       { json: "tempo-testnet", public: PUBLIC_RPCS.TEMPO_TESTNET },
       { json: "tempo-mainnet", public: PUBLIC_RPCS.TEMPO_MAINNET },
+      { json: "hyperevm-mainnet", public: PUBLIC_RPCS.HYPEREVM_MAINNET },
       { json: "solana-mainnet", public: PUBLIC_RPCS.SOLANA_MAINNET },
       { json: "solana-devnet", public: PUBLIC_RPCS.SOLANA_DEVNET },
     ];
@@ -863,6 +865,35 @@ describe("RPC Config Resolution", () => {
       });
 
       expect(result).toBeUndefined();
+    });
+
+    it("should fall back to HyperEVM's public WSS default, since its official RPC is HTTP only", () => {
+      expect(
+        getWssUrl({
+          rpcConfig: {},
+          jsonKey: "hyperevm-mainnet",
+          type: "primary",
+        })
+      ).toBe(PUBLIC_RPCS.HYPEREVM_MAINNET_WSS);
+      // A configured socket still wins over the public default.
+      expect(
+        getWssUrl({
+          rpcConfig: {
+            "hyperevm-mainnet": { primaryWssUrl: "wss://keyed.example.com" },
+          },
+          jsonKey: "hyperevm-mainnet",
+          type: "primary",
+        })
+      ).toBe("wss://keyed.example.com");
+    });
+
+    it("should resolve HyperEVM chain 999 to its official RPC with the dRPC fallback", () => {
+      expect(CHAIN_CONFIG[999]).toMatchObject({
+        jsonKey: "hyperevm-mainnet",
+        publicDefault: "https://rpc.hyperliquid.xyz/evm",
+        publicFallback: "https://hyperliquid.drpc.org",
+        publicWssDefault: "wss://hyperliquid.drpc.org",
+      });
     });
   });
 

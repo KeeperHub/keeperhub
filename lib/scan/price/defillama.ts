@@ -32,6 +32,12 @@ export const DEFILLAMA_CHAIN_SLUGS: Record<number, string> = {
   42161: "arbitrum",
   4217: "tempo",
   5042: "arc",
+  // DefiLlama lists HyperEVM as "Hyperliquid L1", keyed `hyperliquid`. Checked
+  // against coins.llama.fi on 2026-09-18: `hyperliquid:<addr>` prices USDC and
+  // WHYPE on chain 999, and `hyperevm` resolves too but only as an alias. This
+  // is DefiLlama's key, not a KeeperHub network alias - the network resolver
+  // deliberately refuses `hyperliquid`, which also names the non-EVM HyperCore.
+  999: "hyperliquid",
 };
 
 type DefillamaCoinsResponse = {
