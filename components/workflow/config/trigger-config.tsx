@@ -8,11 +8,14 @@ import {
   Copy,
   ExternalLink,
   Play,
+  ScanSearch,
   Webhook,
 } from "lucide-react";
+import { parseEther } from "ethers";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { CodeEditor } from "@/components/ui/code-editor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,10 +30,22 @@ import {
 import { TimezoneSelect } from "@/components/ui/timezone-select";
 import { parseIntervalSeconds } from "@/lib/cron-utils";
 import { parseSchemaFields } from "@/lib/schema-fields";
+import {
+  isValidTraceSelector,
+  parseTraceCallTypes,
+  TRACE_CALL_TYPES,
+  TRACE_SEED_CHAIN_IDS,
+  TRACE_STATUS_OPTIONS,
+} from "@/lib/workflow/trace-trigger-config";
 import type { ActionConfigField } from "@/plugins/registry";
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { CronScheduleBuilder } from "./cron-schedule-builder";
 import { SchemaBuilder } from "./schema-builder";
+
+// Built once rather than spread inline in the field list: ChainSelectField
+// refetches whenever this prop's identity changes, so a new array on every
+// render leaves it fetching forever and the picker empty.
+const TRACE_NETWORK_IDS: string[] = [...TRACE_SEED_CHAIN_IDS];
 
 type TriggerConfigProps = {
   config: Record<string, unknown>;
@@ -117,6 +132,12 @@ export function TriggerConfig({
               <div className="flex items-center gap-2">
                 <ArrowDownToLine className="h-4 w-4" />
                 Transfer
+              </div>
+            </SelectItem>
+            <SelectItem value="Trace">
+              <div className="flex items-center gap-2">
+                <ScanSearch className="h-4 w-4" />
+                Trace
               </div>
             </SelectItem>
           </SelectContent>
@@ -295,6 +316,268 @@ export function TriggerConfig({
           onUpdateConfig={handleConfigValue}
         />
       )}
+      {/* Trace fields */}
+      {config?.triggerType === "Trace" && (
+        <TraceTriggerFields
+          config={config}
+          disabled={disabled}
+          onUpdateConfig={handleConfigValue}
+        />
+      )}
+    </>
+  );
+}
+
+type TraceTriggerFieldsProps = {
+  config: Record<string, unknown>;
+  disabled: boolean;
+  onUpdateConfig: (key: string, value: unknown) => void;
+};
+
+/** Native-unit amount to a decimal wei string, or null when it does not parse. */
+function toWeiString(amount: string): string | null {
+  try {
+    const wei = parseEther(amount.trim());
+    return wei < BigInt(0) ? null : wei.toString();
+  } catch {
+    return null;
+  }
+}
+
+// Trace trigger config. Fires once per call frame on the watched contract that
+// matches the filter, read from block call traces rather than event logs, so
+// it sees reverted calls, internal transfers and unlogged function calls.
+function TraceTriggerFields({
+  config,
+  disabled,
+  onUpdateConfig,
+}: TraceTriggerFieldsProps): React.ReactElement {
+  const selectedCallTypes = useMemo(() => {
+    const parsed = parseTraceCallTypes(config.traceCallTypes);
+    // Upper-cased for display too: a config written through the API may hold
+    // ["call"], which the tracker accepts, and the boxes have to show it as
+    // checked or the first toggle silently overwrites the stored filter.
+    return Array.isArray(parsed)
+      ? parsed
+          .filter((type): type is string => typeof type === "string")
+          .map((type) => type.trim().toUpperCase())
+      : [];
+  }, [config.traceCallTypes]);
+
+  // `defaultValue` on the select is display-only: the renderer shows it and
+  // never writes it back, so a user who never opens the dropdown saves a
+  // config with no traceStatus at all. Persisting it on first render keeps
+  // what the panel shows and what the tracker receives in step, rather than
+  // relying on both sides defaulting to the same value.
+  //
+  // Skipped when the panel is read-only: a viewer who cannot edit must not
+  // dirty the canvas and trigger an autosave the server will refuse.
+  useEffect(() => {
+    if (disabled) {
+      return;
+    }
+    if (config.traceStatus === undefined || config.traceStatus === "") {
+      onUpdateConfig("traceStatus", "success");
+    }
+  }, [config.traceStatus, disabled, onUpdateConfig]);
+
+  const selector = (config.traceSelector as string) || "";
+  const selectorInvalid = !isValidTraceSelector(selector);
+  const minValue = (config.traceMinValue as string) || "";
+  const minValueInvalid = minValue.trim() !== "" && toWeiString(minValue) === null;
+
+  const targetFields: ActionConfigField[] = [
+    {
+      key: "network",
+      label: "Network",
+      type: "chain-select",
+      chainTypeFilter: "evm",
+      // The networks whose RPC endpoints are known to serve the block call
+      // traces this trigger reads. A trigger offered on a network that does
+      // not serve them never fires and reports nothing, which is the worst
+      // failure a trigger can have, so the list is a floor rather than every
+      // EVM chain.
+      //
+      // Stated here rather than derived from what the tracker can actually
+      // do: the tracker learns a capability per connection, relearns it on
+      // reconnect and runs a single replica, so a derived list would be empty
+      // after every restart until a drain runs. When capability reporting
+      // exists it unions with this seed instead of replacing it.
+      allowedChainIds: TRACE_NETWORK_IDS,
+      placeholder: "Select network",
+      required: true,
+    },
+    {
+      key: "contractAddress",
+      label: "Watched Contract",
+      type: "template-input",
+      placeholder: "0x... calls made to this contract are matched",
+      required: true,
+      isAddressField: true,
+    },
+    {
+      key: "traceStatus",
+      label: "Call Outcome",
+      type: "select",
+      defaultValue: "success",
+      options: TRACE_STATUS_OPTIONS.map((option) => ({ ...option })),
+      helpTip:
+        "Reverted calls are the signal events cannot give you: a failed drain or a rejected privileged call emits no log.",
+    },
+  ];
+
+  const functionFields: ActionConfigField[] = [
+    {
+      key: "contractABI",
+      label: "Contract ABI (Optional)",
+      type: "abi-with-auto-fetch",
+      contractAddressField: "contractAddress",
+      networkField: "network",
+      rows: 4,
+    },
+    {
+      key: "abiFunction",
+      label: "Function (Optional)",
+      type: "abi-function-select",
+      abiField: "contractABI",
+      // State-changing functions are what a trace trigger watches for: a
+      // withdrawal, a pause, an ownership change. A view function can still be
+      // matched by its raw selector below.
+      functionFilter: "write",
+      placeholder: "Any function",
+    },
+  ];
+
+  const selectorFields: ActionConfigField[] = [
+    {
+      key: "traceCaller",
+      label: "Caller (Optional)",
+      type: "template-input",
+      placeholder: "0x... only match calls from this address",
+      isAddressField: true,
+    },
+  ];
+
+  function toggleCallType(type: string, checked: boolean): void {
+    const next = checked
+      ? [...selectedCallTypes, type]
+      : selectedCallTypes.filter((selected) => selected !== type);
+    onUpdateConfig("traceCallTypes", next);
+  }
+
+  function handleMinValueChange(value: string): void {
+    onUpdateConfig("traceMinValue", value);
+    if (value.trim() === "") {
+      onUpdateConfig("traceMinValueWei", "");
+      return;
+    }
+    const wei = toWeiString(value);
+    // Clearing on a parse failure matters as much as setting on success.
+    // traceMinValueWei is what registers; traceMinValue is only what the box
+    // shows. Leaving a stale wei value behind after the text stops parsing
+    // means the panel reads "0.5x" while the trigger still filters at 0.5,
+    // and nothing blocks saving it.
+    onUpdateConfig("traceMinValueWei", wei ?? "");
+  }
+
+  return (
+    <>
+      <ActionConfigRenderer
+        config={config}
+        disabled={disabled}
+        fields={targetFields}
+        onUpdateConfig={onUpdateConfig}
+      />
+      <ActionConfigRenderer
+        config={config}
+        disabled={disabled}
+        fields={functionFields}
+        onUpdateConfig={onUpdateConfig}
+      />
+      {typeof config.abiFunction === "string" && config.abiFunction !== "" && (
+        <Button
+          className="-mt-2 h-auto px-1 py-0 text-xs"
+          disabled={disabled}
+          onClick={() => onUpdateConfig("abiFunction", "")}
+          type="button"
+          variant="link"
+        >
+          Match any function
+        </Button>
+      )}
+      <ActionConfigRenderer
+        config={config}
+        disabled={disabled}
+        fields={selectorFields}
+        onUpdateConfig={onUpdateConfig}
+      />
+      <div className="space-y-2">
+        <Label className="ml-1">Call Types (Optional)</Label>
+        <div className="grid grid-cols-2 gap-2">
+          {TRACE_CALL_TYPES.map((type) => (
+            <div className="flex items-center gap-2" key={type}>
+              <Checkbox
+                checked={selectedCallTypes.includes(type)}
+                disabled={disabled}
+                id={`trace-call-type-${type}`}
+                onCheckedChange={(checked) =>
+                  toggleCallType(type, checked === true)
+                }
+              />
+              <Label
+                className="font-mono text-xs"
+                htmlFor={`trace-call-type-${type}`}
+              >
+                {type}
+              </Label>
+            </div>
+          ))}
+        </div>
+        <p className="text-muted-foreground text-xs">
+          Leave all unchecked to match every call type.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <Label className="ml-1" htmlFor="traceSelector">
+          Function Selector (Optional)
+        </Label>
+        <Input
+          aria-invalid={selectorInvalid}
+          disabled={disabled}
+          id="traceSelector"
+          onChange={(e) => onUpdateConfig("traceSelector", e.target.value)}
+          placeholder="0x8456cb59"
+          value={selector}
+        />
+        <p className="text-muted-foreground text-xs">
+          {selectorInvalid
+            ? "A selector is 0x followed by exactly 8 hex characters, for example 0x8456cb59. A value in any other shape matches nothing, so the trigger would register and never fire."
+            : "A raw 4-byte selector, which is what narrows the trigger to one function. Choosing a function above does not fill this in yet, so without a selector every function matches."}
+        </p>
+      </div>
+      <div className="space-y-2">
+        <Label className="ml-1" htmlFor="traceMinValue">
+          Minimum Value (Optional)
+        </Label>
+        <Input
+          aria-invalid={minValueInvalid}
+          disabled={disabled}
+          id="traceMinValue"
+          inputMode="decimal"
+          onChange={(e) => handleMinValueChange(e.target.value)}
+          placeholder="0.5"
+          value={minValue}
+        />
+        <p className="text-muted-foreground text-xs">
+          {minValueInvalid
+            ? "Enter a non-negative amount in the network's native token."
+            : "Only match calls moving at least this much of the network's native token."}
+        </p>
+      </div>
+      <p className="text-muted-foreground text-xs">
+        Trace triggers read block call traces, so the networks listed are the
+        ones whose RPC endpoints serve them.
+      </p>
     </>
   );
 }

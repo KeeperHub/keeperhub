@@ -188,6 +188,65 @@ export function getTempoPaymentOutputFields(): OutputField[] {
 }
 
 /**
+ * Get output fields for the Trace trigger. One run fires per matching call
+ * frame; the fields mirror the payload the event tracker's trace listener
+ * sends from its dispatch path. The tracker side is a separate change, so
+ * this list is written against the agreed payload rather than against code
+ * that exists here -- if the two drift, this is the half to correct.
+ */
+export function getTraceTriggerOutputFields(): OutputField[] {
+  return [
+    {
+      field: "transactionHash",
+      description: "Hash of the transaction the matching call ran in",
+    },
+    {
+      field: "blockNumber",
+      description: "Block height the transaction landed in",
+    },
+    {
+      field: "chainId",
+      description: "Numeric chain ID the call ran on",
+    },
+    { field: "from", description: "Address that made the call" },
+    {
+      field: "to",
+      description: "Address that was called (the watched contract)",
+    },
+    {
+      field: "value",
+      description: "Native value moved by the call, in wei (decimal string)",
+    },
+    {
+      field: "selector",
+      description: "4-byte function selector of the call, or 0x when none",
+    },
+    { field: "input", description: "Full calldata of the call" },
+    {
+      field: "callType",
+      description: "CALL, DELEGATECALL, STATICCALL, CREATE, SELFDESTRUCT, ...",
+    },
+    {
+      field: "reverted",
+      description: "Whether the call reverted (true for a failed attempt)",
+    },
+    {
+      field: "depth",
+      description: "Call depth inside the transaction (0 = top-level call)",
+    },
+    {
+      field: "frameIndex",
+      description: "Position of the call in the transaction's execution order",
+    },
+    {
+      field: "transactionIndex",
+      description: "Index of the transaction in the block",
+    },
+    TRIGGERED_AT_FIELD,
+  ];
+}
+
+/**
  * Get output fields for a trigger node based on its configuration
  */
 export function getTriggerOutputFields(
@@ -200,6 +259,10 @@ export function getTriggerOutputFields(
 
   if (triggerType === "Transfer") {
     return getTempoPaymentOutputFields();
+  }
+
+  if (triggerType === "Trace") {
+    return getTraceTriggerOutputFields();
   }
 
   if (triggerType === "Event") {

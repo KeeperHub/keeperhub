@@ -184,7 +184,7 @@ Every node follows this shape (`status` and `description` are optional):
 ```
 
 Use the capitalized canonical value: `"Manual"`, `"Schedule"`,
-`"Webhook"`, `"Event"`, `"Block"`, `"Transfer"`.
+`"Webhook"`, `"Event"`, `"Block"`, `"Transfer"`, `"Trace"`.
 
 ---
 

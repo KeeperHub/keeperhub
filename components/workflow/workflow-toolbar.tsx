@@ -1920,7 +1920,8 @@ function RunButtonGroup({
   const isNonManualTrigger =
     triggerType === WorkflowTriggerEnum.EVENT ||
     triggerType === WorkflowTriggerEnum.BLOCK ||
-    triggerType === WorkflowTriggerEnum.TEMPO_PAYMENT;
+    triggerType === WorkflowTriggerEnum.TEMPO_PAYMENT ||
+    triggerType === WorkflowTriggerEnum.TRACE;
 
   const disabled =
     state.isExecuting ||
