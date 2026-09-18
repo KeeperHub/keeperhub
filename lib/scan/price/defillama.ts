@@ -31,6 +31,7 @@ export const DEFILLAMA_CHAIN_SLUGS: Record<number, string> = {
   8453: "base",
   42161: "arbitrum",
   4217: "tempo",
+  5042: "arc",
 };
 
 type DefillamaCoinsResponse = {

@@ -151,7 +151,13 @@ export function transformPluginAction(
   const optionalFields: Record<string, string> = {};
 
   for (const field of flatFields) {
-    const fieldDesc = `${mapFieldType(field)}${field.placeholder ? ` - ${field.placeholder}` : ""}`;
+    // The label is where an author states the unit - "Amount (wei)" - and
+    // protocol inputs carry no placeholder, so without it an agent sees
+    // "string" for a value that is wei on one action and whole tokens on the
+    // next. The type prefix and placeholder keep their positions.
+    const fieldDesc = [mapFieldType(field), field.label, field.placeholder]
+      .filter(Boolean)
+      .join(" - ");
     if (field.required) {
       requiredFields[field.key] = fieldDesc;
     } else {

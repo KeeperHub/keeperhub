@@ -97,6 +97,20 @@ export const PUBLIC_RPCS = {
   // block triggers depend on the WSS URLs in CHAIN_RPC_CONFIG.
   SOLANA_MAINNET: "https://api.mainnet-beta.solana.com",
   SOLANA_DEVNET: "https://api.devnet.solana.com",
+  // Arc Testnet (Circle). USDC is the native gas token here, not ETH.
+  ARC_TESTNET: "https://rpc.testnet.arc.io",
+  ARC_TESTNET_FALLBACK: "https://rpc.drpc.testnet.arc.io",
+  ARC_TESTNET_WSS: "wss://rpc.testnet.arc.io",
+  // Arc Mainnet (Circle). Same USDC-as-gas model as the testnet. Public
+  // mainnet opened 2026-09-16; rpc.mainnet.arc.io is Circle's own primary and
+  // answers eth_chainId publicly (0x13b2 = 5042), so it replaces the
+  // arc-scan.org placeholder used before launch. dRPC's mainnet host now
+  // resolves too, unlike pre-launch, so it serves as publicFallback.
+  ARC_MAINNET: "https://rpc.mainnet.arc.io",
+  ARC_MAINNET_FALLBACK: "https://rpc.drpc.mainnet.arc.io",
+  // Blockdaemon's endpoint completes the WSS upgrade handshake with no API
+  // key required, unlike the Alchemy/QuickNode mirrors docs.arc.io lists.
+  ARC_MAINNET_WSS: "wss://rpc.blockdaemon.mainnet.arc.io/websocket",
 } as const;
 
 /**
@@ -302,6 +316,26 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     envKey: "CHAIN_SOLANA_DEVNET_PRIMARY_RPC",
     fallbackEnvKey: "CHAIN_SOLANA_DEVNET_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.SOLANA_DEVNET,
+  },
+  // Arc Testnet (Circle)
+  5042002: {
+    jsonKey: "arc-testnet",
+    envKey: "CHAIN_ARC_TESTNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_ARC_TESTNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.ARC_TESTNET,
+    publicFallback: PUBLIC_RPCS.ARC_TESTNET_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.ARC_TESTNET_WSS,
+  },
+  // Arc Mainnet (Circle). Public mainnet opened 2026-09-16 with a working
+  // WSS endpoint (see PUBLIC_RPCS.ARC_MAINNET_WSS), unlike the pre-launch
+  // state where no mainnet WSS host existed at all.
+  5042: {
+    jsonKey: "arc-mainnet",
+    envKey: "CHAIN_ARC_MAINNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_ARC_MAINNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.ARC_MAINNET,
+    publicFallback: PUBLIC_RPCS.ARC_MAINNET_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.ARC_MAINNET_WSS,
   },
 };
 
