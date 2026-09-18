@@ -436,6 +436,24 @@ describe("POST /api/execute/node reserved-field gating", () => {
 
     expect([200, 202]).toContain(response.status);
   });
+
+  it("accepts an empty retry object at both of the executor's defaults", async () => {
+    // The only request shape where maxRetries and timeoutMs are both
+    // defaulted, and the pair only became load-bearing here: 4 x 120000 =
+    // 480000 now fills most of the 600000ms lock where the single-attempt
+    // reading left it at 120000. Every other case above pins timeoutMs
+    // explicitly, so raising DEFAULT_TIMEOUT_MS past 150000 would start
+    // rejecting every caller that sends `retry: {}` with nothing to catch it.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: {},
+      })
+    );
+
+    expect([200, 202]).toContain(response.status);
+  });
 });
 
 describe("POST /api/execute/node broadcast hash on a failed step", () => {
