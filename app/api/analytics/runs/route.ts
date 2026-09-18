@@ -1,19 +1,18 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import {
-  parseBoundedInt,
-  parseRunFilters,
-} from "@/lib/analytics/parse-run-filters";
+import { parseRunFilters } from "@/lib/analytics/parse-run-filters";
 import { getUnifiedRuns } from "@/lib/analytics/queries";
 import { parseTimeRange } from "@/lib/analytics/time-range";
+import { MAX_RUNS_PAGE_SIZE } from "@/lib/analytics/types";
 import { apiError } from "@/lib/api-error";
 import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
-import { MAX_PAGE_SIZE } from "@/lib/pagination";
+import { parseBoundedIntOrUndefined } from "@/lib/pagination";
 
 // The highest page this endpoint serves. getUnifiedRuns caps the page size at
-// 100, so fetchLimit = (page - 1) * pageSize + pageSize + 1 stays at or below
+// MAX_RUNS_PAGE_SIZE (100), so
+// fetchLimit = (page - 1) * pageSize + pageSize + 1 stays at or below
 // 20,001 rows per source here, where an unbounded page reads every run the
 // organization holds. 200 pages is 20,000 runs of history at the largest page
 // size, past what a numbered pager is used for.
@@ -53,13 +52,13 @@ export async function GET(req: NextRequest): Promise<Response> {
     // limit keeps 0 legal. ?limit=0 fetches a single row and returns an empty
     // page with an accurate total, which callers use as a cheap count, and
     // dropping it would turn that into a full default-sized page.
-    const page = parseBoundedInt(params.get("page"), {
+    const page = parseBoundedIntOrUndefined(params.get("page"), {
       min: 1,
       max: MAX_RUNS_PAGE,
     });
-    const limit = parseBoundedInt(params.get("limit"), {
+    const limit = parseBoundedIntOrUndefined(params.get("limit"), {
       min: 0,
-      max: MAX_PAGE_SIZE,
+      max: MAX_RUNS_PAGE_SIZE,
     });
 
     const projectId = params.get("projectId") ?? undefined;

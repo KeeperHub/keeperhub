@@ -66,6 +66,7 @@ import type {
   TimeSeriesResponse,
   UnifiedRun,
 } from "./types";
+import { MAX_RUNS_PAGE_SIZE } from "./types";
 
 /**
  * Normalize workflow execution status to a unified status.
@@ -1446,7 +1447,7 @@ export async function getUnifiedRuns(
   } = options;
   const rangeStart = getTimeRangeStart(range, customStart);
   const rangeEnd = getTimeRangeEnd(customEnd);
-  const pageLimit = Math.min(limit, 100);
+  const pageLimit = Math.min(limit, MAX_RUNS_PAGE_SIZE);
   const wanted = resolveSources(filters.sources, projectId);
   const offset = cursor ? 0 : (page - 1) * pageLimit;
 

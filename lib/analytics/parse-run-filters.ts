@@ -30,6 +30,10 @@ const MAX_SEARCH_LENGTH = 128;
  * A blank value is absent rather than zero. Number("") and Number("   ") are
  * both 0, so without this `?durationMax=` became durationMaxMs: 0 and filtered
  * on duration < 0, matching nothing.
+ *
+ * Deliberately looser than the page parser in lib/pagination.ts: Number()
+ * reads 1e3 and 0x10 as numbers, which is harmless for a duration bound, where
+ * the value is compared rather than used to size a query.
  */
 function parseNonNegativeInt(raw: string | null): number | undefined {
   if (raw === null || raw.trim() === "") {
@@ -37,35 +41,6 @@ function parseNonNegativeInt(raw: string | null): number | undefined {
   }
   const value = Number(raw);
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
-}
-
-/**
- * A pagination integer within bounds, or undefined to fall back to the
- * query's own default.
- *
- * Parsed with Number.parseInt and required to round-trip exactly, the house
- * rule for page numbers (app/api/workflows/route.ts): Number() accepts
- * `0x10` as 16, `1e2` as 100 and " 3" as 3, none of which a caller meant as a
- * page number, and parseInt alone accepts "12abc" as 12.
- *
- * The upper bound is the point. Rejecting NaN is not enough: a large readable
- * page such as 999999999 is finite, and it reaches
- * offset = (page - 1) * pageLimit and fetchLimit = offset + pageLimit + 1,
- * which becomes the SQL LIMIT on both run sources. That reads every run the
- * organization holds into Node, sorts them, and slices an empty window.
- */
-export function parseBoundedInt(
-  raw: string | null,
-  { min, max }: { min: number; max: number }
-): number | undefined {
-  if (raw === null) {
-    return undefined;
-  }
-  const value = Number.parseInt(raw, 10);
-  if (Number.isNaN(value) || String(value) !== raw) {
-    return undefined;
-  }
-  return value >= min && value <= max ? value : undefined;
 }
 
 /**

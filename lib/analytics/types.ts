@@ -8,6 +8,15 @@
 import type { TransactionHashEntry } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
+/**
+ * The most runs one page of getUnifiedRuns returns. Kept here rather than beside the query so it is importable without the
+ * query module, which route tests replace wholesale. Exported so the route
+ * bounds `?limit=` with the same number the query caps it at, rather than a
+ * larger generic maximum that would make ?limit=200 return 100 rows while
+ * ?limit=201 fell back to the default.
+ */
+export const MAX_RUNS_PAGE_SIZE = 100;
+
 export type { TransactionHashEntry } from "@/lib/db/schema";
 
 export type TimeRange = "1h" | "24h" | "7d" | "30d" | "custom";

@@ -39,6 +39,36 @@ export type PageRequest = {
   offset: number;
 };
 
+/**
+ * A pagination integer within bounds, or undefined so the caller falls back
+ * to its own default.
+ *
+ * Named for what it does on bad input. app/api/workflows/route.ts has a local
+ * parseBoundedInt that throws a RangeError into a 400; this one never throws,
+ * so it carries a different name rather than reading like the same contract.
+ *
+ * Parsed with Number.parseInt and required to round-trip exactly: Number()
+ * accepts `0x10` as 16, `1e2` as 100 and " 3" as 3, none of which a caller
+ * meant as a page number, and parseInt alone accepts "12abc" as 12.
+ *
+ * The upper bound is the point for a page. Rejecting NaN is not enough: a
+ * large readable page such as 999999999 is finite, and on an endpoint whose
+ * fetch size grows with the page it reads every row the table holds.
+ */
+export function parseBoundedIntOrUndefined(
+  raw: string | null,
+  { min, max }: { min: number; max: number }
+): number | undefined {
+  if (raw === null) {
+    return undefined;
+  }
+  const value = Number.parseInt(raw, 10);
+  if (Number.isNaN(value) || String(value) !== raw) {
+    return undefined;
+  }
+  return value >= min && value <= max ? value : undefined;
+}
+
 /** Clamp a raw `?limit=` value into [1, max], falling back when absent/invalid. */
 export function parsePageLimit(
   raw: string | null,

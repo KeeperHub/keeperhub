@@ -221,7 +221,9 @@ describe("GET /api/analytics/runs pagination parsing", () => {
   });
 
   it("falls back for an unreadable or out-of-range limit", async () => {
-    for (const limit of ["abc", "", "-5", "201", "0x20"]) {
+    // 101, not 201: the bound is the query's own cap, so a limit the query
+    // would silently shrink is refused instead of half-honoured.
+    for (const limit of ["abc", "", "-5", "101", "201", "0x20"]) {
       expect(
         (await optionsFor({ limit })).limit,
         `limit=${limit}`
@@ -233,6 +235,7 @@ describe("GET /api/analytics/runs pagination parsing", () => {
     // ?limit=0 fetches one row and returns an empty page with an accurate
     // total, which is a cheap count. Dropping it would cost a full page.
     expect((await optionsFor({ limit: "25" })).limit).toBe(25);
+    expect((await optionsFor({ limit: "100" })).limit).toBe(100);
     expect((await optionsFor({ limit: "0" })).limit).toBe(0);
   });
 });
