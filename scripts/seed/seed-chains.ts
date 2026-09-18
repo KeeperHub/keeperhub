@@ -673,6 +673,31 @@ const DEFAULT_CHAINS: NewChain[] = [
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "arc-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "arc-testnet" }),
   },
+  // Somnia Mainnet
+  {
+    chainId: getChainConfigValue("somnia-mainnet", "chainId", 5031),
+    name: "Somnia",
+    symbol: getChainConfigValue("somnia-mainnet", "symbol", "STT"),
+    chainType: "evm",
+    defaultPrimaryRpc: getRpcUrlByChainId(5031, "primary"),
+    defaultFallbackRpc: getRpcUrlByChainId(5031, "fallback"),
+    defaultPrimaryWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[5031].jsonKey,
+      type: "primary",
+    }),
+    defaultFallbackWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[5031].jsonKey,
+      type: "fallback",
+    }),
+    isTestnet: getChainConfigValue("somnia-mainnet", "isTestnet", false),
+    isEnabled: getChainConfigValue("somnia-mainnet", "isEnabled", true),
+    status: "experimental",
+    usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "somnia-mainnet" }),
+    defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "somnia-mainnet" }),
+    aliases: ["somnia"],
+  },
 ];
 
 // Explorer configuration template for each chain (KEEP-1154)
@@ -952,6 +977,16 @@ const EXPLORER_CONFIG_TEMPLATES: Record<
     explorerAddressPath: "/address/{address}",
     explorerContractPath: "/address/{address}?tab=contract",
   },
+  // Somnia Mainnet - Blockscout
+  5031: {
+    chainType: "evm",
+    explorerUrl: "https://explorer.somnia.network",
+    explorerApiType: "blockscout",
+    explorerApiUrl: "https://explorer.somnia.network/api",
+    explorerTxPath: "/tx/{hash}",
+    explorerAddressPath: "/address/{address}",
+    explorerContractPath: "/address/{address}#code",
+  },
 };
 
 async function seedChains() {
@@ -1073,6 +1108,7 @@ async function seedChains() {
     "Solana Devnet": 103,
     "Arc Testnet": 5_042_002,
     Arc: 5042,
+    Somnia: 5031,
   };
 
   const EXPLORER_CONFIGS: NewExplorerConfig[] = DEFAULT_CHAINS.map((chain) => {

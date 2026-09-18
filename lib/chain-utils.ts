@@ -11,6 +11,7 @@ const CHAIN_NAMES: Record<string, string> = {
   "4217": "Tempo",
   "101": "Solana",
   "103": "Solana Devnet",
+  "5031": "Somnia",
 };
 
 const EXPLORER_URLS: Record<string, string> = {
@@ -19,6 +20,7 @@ const EXPLORER_URLS: Record<string, string> = {
   "8453": "https://basescan.org/address/",
   "42161": "https://arbiscan.io/address/",
   "11155111": "https://sepolia.etherscan.io/address/",
+  "5031": "https://explorer.somnia.network/address/",
 };
 
 export function getChainName(chainId: string): string {

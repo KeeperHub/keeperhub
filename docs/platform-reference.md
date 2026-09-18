@@ -168,6 +168,7 @@ address a wallet user signed in with - see
 | 0G Galileo (testnet) | `16602` | - | experimental |
 | Arc (Circle) | `5042` | `0x3600000000000000000000000000000000000000` | experimental |
 | Arc Testnet (Circle) | `5042002` | `0x3600000000000000000000000000000000000000` | experimental |
+| Somnia | `5031` | - | experimental |
 
 Arc's USDC is also its native gas token. The address above is the fixed
 ERC-20-interface precompile Circle documents for programmatic balance and
