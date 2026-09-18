@@ -312,3 +312,13 @@ registerEncodeTransform(
   padAddressToBytes,
   "padAddressToBytes"
 );
+// executable() takes the source OApp as bytes32. A pasted EVM address is
+// padded; a full bytes32 (a non-EVM sender) is already 64 hex digits and
+// passes through unchanged.
+registerEncodeTransform(
+  "layerzero",
+  "endpoint-view-executable",
+  "sender",
+  padAddressToBytes,
+  "padAddressToBytes"
+);

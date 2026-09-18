@@ -3,11 +3,13 @@
  *
  * Proves that the ABI-driven LayerZero protocol definition produces
  * calldata the deployed contracts accept on Ethereum mainnet, and - for
- * the eleven reads - that what comes back decodes into the shapes the
- * runtime expects. The twelfth action is a write and is simulated only:
- * USDT's approve returns no data, so there is nothing to decode and that
- * test asserts acceptance rather than a return value. Three
- * deployments answer: the USDT0 OFT Adapter, the USDT token it locks,
+ * eleven of the twelve reads - that what comes back decodes into the shapes
+ * the runtime expects. The twelfth read, Endpoint Message Executable, has
+ * its own suite at the end of this file, run against every chain in its
+ * view map. The one write is simulated only: USDT's approve returns no
+ * data, so there is nothing to decode and that test asserts acceptance
+ * rather than a return value. In the mainnet suite three deployments
+ * answer: the USDT0 OFT Adapter, the USDT token it locks,
  * and the LayerZero EndpointV2. Every action goes through the shared
  * calldata builder, so the test exercises the definition itself - its
  * flattened SendParam tuple, the padAddressToBytes transform on the
@@ -578,28 +580,46 @@ describe("LayerZero reference map completeness", () => {
 // fourth endpoint action in front of users to serve a test, so the address
 // map - which is the thing under test here - is checked directly instead.
 // Values read over eth_call on 2026-09-09; all seven match LAYERZERO_EIDS.
+//
+// The loop follows the endpoint address map rather than LAYERZERO_EIDS,
+// which now publishes an endpoint ID for every chain KeeperHub runs so the
+// view read below can reach them. Only chains with an endpoint address have
+// something to call here.
 const EID_ABI = ["function eid() view returns (uint32)"];
 
+/** Failover-aware manager for a chain in one of the LayerZero address maps. */
+async function managerForChain(
+  chainId: string,
+  label: string
+): Promise<RpcProviderManager> {
+  const cfg = getChainConfig(Number(chainId));
+  if (!cfg) {
+    throw new Error(
+      `chain ${chainId} is in a LayerZero address map but not in CHAIN_CONFIG, so no RPC can be resolved for it`
+    );
+  }
+  return await getRpcProviderFromUrls(
+    resolveRpcUrl(cfg.jsonKey, cfg.envKey, cfg.publicDefault, "primary"),
+    resolveRpcUrl(
+      cfg.jsonKey,
+      cfg.fallbackEnvKey,
+      cfg.publicFallback ?? cfg.publicDefault,
+      "fallback"
+    ),
+    Number(chainId),
+    label
+  );
+}
+
 describe("LayerZero EndpointV2 deployments identify their own chain", () => {
-  for (const chainId of Object.keys(LAYERZERO_EIDS)) {
+  for (const chainId of Object.keys(
+    layerzeroDef.contracts.endpointV2.addresses
+  )) {
     itOnchain(
       `chain ${chainId} endpoint reports EID ${LAYERZERO_EIDS[chainId]}`,
       async () => {
-        const cfg = getChainConfig(Number(chainId));
-        if (!cfg) {
-          throw new Error(
-            `chain ${chainId} is in LAYERZERO_EIDS but not in CHAIN_CONFIG, so no RPC can be resolved for it`
-          );
-        }
-        const manager = await getRpcProviderFromUrls(
-          resolveRpcUrl(cfg.jsonKey, cfg.envKey, cfg.publicDefault, "primary"),
-          resolveRpcUrl(
-            cfg.jsonKey,
-            cfg.fallbackEnvKey,
-            cfg.publicFallback ?? cfg.publicDefault,
-            "fallback"
-          ),
-          Number(chainId),
+        const manager = await managerForChain(
+          chainId,
           `layerzero-endpoint-eid-${chainId}`
         );
         const iface = new ethers.Interface(EID_ABI);
@@ -609,6 +629,99 @@ describe("LayerZero EndpointV2 deployments identify their own chain", () => {
         );
         const [eid] = iface.decodeFunctionResult("eid", result);
         expect(Number(eid)).toBe(LAYERZERO_EIDS[chainId]);
+      },
+      30_000
+    );
+  }
+});
+
+// The view map is the one thing standing between a user and a wrong answer
+// on the executable read: the action calls whatever address is listed for
+// the destination chain, and a wrong address either reverts or, worse,
+// answers from some unrelated contract. Every entry is exercised here.
+//
+// executable() on a nonce that was never sent returns NotExecutable (0)
+// rather than reverting, so the assertion is that the call decodes to a
+// value in range. It is encoded and decoded through the ABI the definition
+// ships, so a drift in that file fails here rather than only in a golden
+// generated from it.
+const SHIPPED_VIEW_ABI = new ethers.Interface(
+  JSON.parse(layerzeroDef.contracts.endpointV2View.abi as string)
+);
+// endpoint() is not an action, so it is not in the shipped ABI.
+const VIEW_ENDPOINT_ABI = ["function endpoint() view returns (address)"];
+// The size of the proxy every mapped view sits behind. Two views behind the
+// same proxy admin have identical code, so this pins the contract's shape
+// only; the endpoint()/eid() round-trip below is the one identity check.
+const VIEW_PROXY_CODE_BYTES = 2304;
+const UNUSED_ORIGIN = {
+  srcEid: 30_101,
+  sender: ethers.zeroPadValue("0x000000000000000000000000000000000000dEaD", 32),
+  nonce: 1,
+};
+
+describe("LayerZero EndpointV2View deployments answer executable()", () => {
+  for (const chainId of Object.keys(
+    layerzeroDef.contracts.endpointV2View.addresses
+  )) {
+    itOnchain(
+      `chain ${chainId} view returns an execution state`,
+      async () => {
+        const manager = await managerForChain(
+          chainId,
+          `layerzero-endpoint-view-${chainId}`
+        );
+        const iface = SHIPPED_VIEW_ABI;
+        const view = layerzeroDef.contracts.endpointV2View.addresses[chainId];
+        const result = await manager.executeWithFailover((p) =>
+          p.call({
+            to: view,
+            data: iface.encodeFunctionData("executable", [
+              UNUSED_ORIGIN,
+              "0x000000000000000000000000000000000000dEaD",
+            ]),
+          })
+        );
+        const [state] = iface.decodeFunctionResult("executable", result);
+        expect(Number(state)).toBeGreaterThanOrEqual(0);
+        expect(Number(state)).toBeLessThanOrEqual(3);
+
+        // `0 <= state <= 3` alone is satisfied by any contract whose
+        // fallback returns 32 zero bytes. The code size rules out an empty
+        // account or a contract of another shape, but not another view
+        // behind the same proxy, so it is a shape check only.
+        const code = await manager.executeWithFailover((p) => p.getCode(view));
+        expect((code.length - 2) / 2, `code size on ${chainId}`).toBe(
+          VIEW_PROXY_CODE_BYTES
+        );
+
+        // The identity check: ask the view which endpoint it serves, then
+        // ask that endpoint which chain it is on. A transcription error onto
+        // another chain's view fails here, and it is also what pins the 15
+        // endpoint IDs that no other on-chain assertion reaches -- the unit
+        // tests can only compare the constant against itself.
+        const endpointIface = new ethers.Interface(VIEW_ENDPOINT_ABI);
+        const endpointResult = await manager.executeWithFailover((p) =>
+          p.call({
+            to: view,
+            data: endpointIface.encodeFunctionData("endpoint"),
+          })
+        );
+        const [endpointAddress] = endpointIface.decodeFunctionResult(
+          "endpoint",
+          endpointResult
+        );
+        const eidIface = new ethers.Interface(EID_ABI);
+        const eidResult = await manager.executeWithFailover((p) =>
+          p.call({
+            to: endpointAddress as string,
+            data: eidIface.encodeFunctionData("eid"),
+          })
+        );
+        const [eid] = eidIface.decodeFunctionResult("eid", eidResult);
+        expect(Number(eid), `eid reported on chain ${chainId}`).toBe(
+          LAYERZERO_EIDS[chainId]
+        );
       },
       30_000
     );
