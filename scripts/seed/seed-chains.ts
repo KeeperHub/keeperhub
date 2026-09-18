@@ -579,9 +579,12 @@ const DEFAULT_CHAINS: NewChain[] = [
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "robinhood-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "robinhood-testnet" }),
   },
-  // Arc chains (Circle) - native gas token is USDC, not ETH. Onboarded
-  // testnet-first, same as Robinhood Chain / Plasma / 0G above. Chain IDs
-  // verified directly on-chain via eth_chainId, not just against docs.
+  // Arc chains (Circle) - native gas token is USDC, not ETH. Both ship
+  // together and enabled (mainnet went live mid-development, after the
+  // testnet-only issue was filed); mainnet is marked "experimental" below,
+  // the same convention this file uses for other very-recently-launched
+  // chains (Robinhood, 0G). Chain IDs verified directly on-chain via
+  // eth_chainId, not just against docs.
   {
     chainId: getChainConfigValue("arc-mainnet", "chainId", 5042),
     name: "Arc",
@@ -906,14 +909,17 @@ const EXPLORER_CONFIG_TEMPLATES: Record<
   },
   // Arc Mainnet - Blockscout, but the API sits behind a Cloudflare
   // challenge (Circle's docs call mainnet explorer access "permissioned").
-  // Direct browser links resolve fine; automated API polling against this
-  // host may 403 until Circle opens it up. Verified: curl against
-  // explorer.arc.io/api returns a Cloudflare challenge page, not JSON.
+  // Verified: curl against explorer.arc.io/api returns a Cloudflare
+  // challenge page (403 HTML), not JSON. explorerApiUrl is deliberately
+  // left unset rather than pointed at a host that 403s: lib/explorer's
+  // Blockscout client calls response.json() with no response.ok check, so
+  // a configured-but-403ing API turns into "Unexpected token '<' ... is
+  // not valid JSON" instead of a clean message. Leaving it unset routes
+  // through lib/explorer/index.ts's "Explorer API not configured for this
+  // chain" path instead. Browser links via explorerUrl still work.
   5042: {
     chainType: "evm",
     explorerUrl: "https://explorer.arc.io",
-    explorerApiType: "blockscout",
-    explorerApiUrl: "https://explorer.arc.io/api",
     explorerTxPath: "/tx/{hash}",
     explorerAddressPath: "/address/{address}",
     explorerContractPath: "/address/{address}?tab=contract",
