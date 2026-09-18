@@ -19,19 +19,19 @@ No credentials or setup required -- this is a pure computation node.
 
 ## Aggregate
 
-Reduces multiple numeric values into a single result. Automatically detects large integers (e.g., raw token balances in wei) and uses BigInt arithmetic to preserve precision.
+Reduces multiple numeric values into a single result. When any input is a large integer (e.g., a raw token balance in wei) the whole set is computed in fixed-point arithmetic, so a fractional value next to it keeps its digits.
 
 ### Aggregation Operations
 
-| Operation | Description                          | Empty Input | BigInt Support  |
-| --------- | ------------------------------------ | ----------- | --------------- |
-| sum       | Add all values together              | Returns `0` | Yes             |
-| count     | Number of values in the set          | Returns `0` | Yes             |
-| average   | Arithmetic mean (sum / count)        | Error       | Yes (truncated) |
-| median    | Middle value (or mean of two middle) | Error       | Yes (truncated) |
-| min       | Smallest value                       | Error       | Yes             |
-| max       | Largest value                        | Error       | Yes             |
-| product   | Multiply all values together         | Returns `1` | Yes             |
+| Operation | Description                          | Empty Input | Fixed-point           |
+| --------- | ------------------------------------ | ----------- | --------------------- |
+| sum       | Add all values together              | Returns `0` | Exact                 |
+| count     | Number of values in the set          | Returns `0` | Exact                 |
+| average   | Arithmetic mean (sum / count)        | Error       | Up to 18 decimals     |
+| median    | Middle value (or mean of two middle) | Error       | Exact                 |
+| min       | Smallest value                       | Error       | Exact                 |
+| max       | Largest value                        | Error       | Exact                 |
+| product   | Multiply all values together         | Returns `1` | Exact                 |
 
 ### Post-Aggregation Operations
 
@@ -93,19 +93,28 @@ Applied to the aggregated result. Useful for unit conversions, thresholds, and f
 
 | Output     | Description                                                         |
 | ---------- | ------------------------------------------------------------------- |
-| result     | The aggregation result as a string (preserves precision for BigInt) |
-| resultType | `"number"` for standard values or `"bigint"` for large integers    |
+| result     | The aggregation result as a string (exact on the fixed-point path)  |
+| resultType | `"bigint"` for a whole number computed in fixed point, `"number"` otherwise |
 | operation  | Description of operations performed (e.g., `"sum then divide"`)    |
 | inputCount | Number of values that were aggregated                               |
+| divisionByZero | `true` on a failed result when divide or modulo had a zero operand (see below) |
 | error      | Error message if the aggregation failed                             |
 
-### BigInt Handling
+### Large Values and Fractions
 
-When any input value is an integer that exceeds JavaScript's `Number.MAX_SAFE_INTEGER` (2^53 - 1), the node automatically switches to BigInt arithmetic. This prevents silent precision loss when working with raw token balances in their smallest denomination (e.g., wei).
+When any input value is an integer that exceeds JavaScript's `Number.MAX_SAFE_INTEGER` (2^53 - 1), the whole set is computed in fixed-point arithmetic: every value is carried as an integer plus a decimal scale, so a wei balance and a fractional rate can be aggregated together without either losing digits. Decimal strings keep their exact digits (`0.1` stays `0.1`); numbers written in exponent form (`1e18`, `2.5e-3`) are expanded first.
 
-- The `resultType` output indicates which mode was used
-- BigInt average and median use integer division (truncated, not rounded)
-- Post-operations always use Number arithmetic. If you need full BigInt precision through a post-operation, chain two Aggregate nodes
+- Sum, product, min, max, median and the add, subtract, multiply, modulo, abs, round, floor, ceil and round-decimals post-operations are exact
+- Average and the divide post-operation keep at least 18 decimal places and at least 18 significant digits, whichever needs more, and truncate beyond that, so a dust amount divided by a raw supply keeps its digits rather than becoming zero
+- Power is exact for a whole-number exponent from 0 to 256 when the result stays under 4,096 digits; any other exponent, or a larger result, is computed in floating point
+- `resultType` is `"bigint"` when the result is a whole number and `"number"` when it carries a fraction; the `result` string is exact either way
+- Values are carried to at most 256 decimal places; fractional digits beyond that are dropped, on inputs and on every intermediate. Inputs that only the JavaScript number parser understands (`0x...` hex, `5.`) are carried as the number's own digits
+
+When every input fits in the safe-integer range the node uses standard floating-point arithmetic.
+
+### Division by Zero
+
+A zero operand on the divide or modulo post-operation fails the step, as any other invalid operation does, so a downstream amount bound to the result never receives a non-number. The failure carries `divisionByZero: true` alongside the error, so a workflow that treats a zero denominator as a legitimate state (a ratio whose denominator is a rate of consumption that is currently zero) can tell it apart from any other failure. A divisor that is not zero as written but rounds to zero at the 256-decimal-place bound fails with a precision message instead and does not set the flag.
 
 ### String-Encoded Numbers
 
