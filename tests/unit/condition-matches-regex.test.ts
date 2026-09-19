@@ -651,6 +651,56 @@ describe("the guard's own cost", () => {
       expect(regexPatternProblem(pattern), pattern).toBeNull();
     }
     expect(performance.now() - started).toBeLessThan(100);
+
+    // And the evaluation of an admitted pattern stays cheap at the enforced
+    // value cap. Refusing the dangerous families is only half the guarantee:
+    // nothing admitted may be able to stall the engine afterwards. Every
+    // anchored shape here fails on its first characters or is linear.
+    const value = `${"a".repeat(4096)}!`;
+    for (const pattern of admitted) {
+      const started = performance.now();
+      new RegExp(pattern).test(value);
+      expect(performance.now() - started, pattern).toBeLessThan(2000);
+    }
+  });
+});
+
+describe("the round-11 families", () => {
+  // Every family in this block was admitted before this round, and each ran
+  // for tens of seconds when evaluated directly at the enforced caps:
+  // `^(a*|a)` x12 took 71,756 ms, `[\x30-\x39]+[4-8]+` x6 took 67,008 ms and
+  // `[\u0100-\u2000]+` x10 took 19,665 ms.
+  const families = [
+    `^${"(a*|a)".repeat(12)}$`,
+    `${"[\\x30-\\x39]+[4-8]+".repeat(6)}$`,
+    `${"[\\u0100-\\u2000]+".repeat(10)}$`,
+  ];
+
+  it("refuses each one, and the refusal costs under 50 ms", () => {
+    for (const pattern of families) {
+      const started = performance.now();
+      const problem = regexPatternProblem(pattern);
+      const elapsed = performance.now() - started;
+      expect(problem, pattern.slice(0, 44)).not.toBeNull();
+      // The refusal is the cheap path: the point of admitting nothing here is
+      // that the engine never sees the pattern.
+      expect(elapsed, pattern.slice(0, 44)).toBeLessThan(50);
+    }
+  });
+
+  it("admits the clean shapes beside them", () => {
+    // Exact-count quantifiers are exactly one way to match, and a fully
+    // spelled escaped range is a bounded class: both were refused before the
+    // `{n}` and escaped-endpoint fixes.
+    for (const pattern of [
+      "^a{2}a{2}$",
+      "^\\d{3}\\d{3}$",
+      "^[0-9a-f]{40}[0-9a-f]{4}$",
+      "^[\\x30-\\x39]+$",
+      "^(?:cat|dog)$",
+    ]) {
+      expect(regexPatternProblem(pattern), pattern).toBeNull();
+    }
   });
 });
 

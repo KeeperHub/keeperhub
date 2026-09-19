@@ -377,11 +377,19 @@ function atomAt(source: string, index: number): Atom {
  * it replace it, because such an atom can disappear and leave the atom before it
  * touching the `)`.
  */
-function groupBodyEdges(
-  source: string,
-  bodyStart: number,
-  end: number
-): AtomEdges {
+/** The previous atom's contribution to an edge, or none when it matches only
+ *  empty input. Empty alternation branches and zero-width atoms are the two
+ *  ways that happens, and both must leave the trailing edge able to give
+ *  characters back rather than pinning it. */
+type EdgeScan = {
+  leading: AtomSet;
+  leadingAmbiguous: boolean;
+  trailing: AtomSet;
+  trailingAmbiguous: boolean;
+};
+
+/** Scan one alternation branch and return its edges. */
+function scanBranch(source: string, bodyStart: number, end: number): EdgeScan {
   let leading: AtomSet = "none";
   let leadingAmbiguous = false;
   let trailing: AtomSet = "none";
@@ -407,6 +415,8 @@ function groupBodyEdges(
         sawAtom = true;
       }
       if (quantifier !== null && quantifier.min === 0) {
+        // Can vanish, so it does not end the boundary: fold it into the
+        // trailing edge rather than replacing what came before it.
         trailing = unionSets(trailing, edges.trailing);
         trailingAmbiguous = trailingAmbiguous || ambiguous;
       } else {
@@ -421,8 +431,12 @@ function groupBodyEdges(
   return { leading, leadingAmbiguous, trailing, trailingAmbiguous };
 }
 
-/** The union of the sets of the atoms inside a group's body. */
-function groupSet(source: string, bodyStart: number, end: number): AtomSet {
+/** The union of the atoms in one alternation branch, or `"any"`. */
+function scanBranchSet(
+  source: string,
+  bodyStart: number,
+  end: number
+): AtomSet {
   const union = new Set<string>();
   let index = bodyStart;
   while (index < end) {
@@ -439,6 +453,110 @@ function groupSet(source: string, bodyStart: number, end: number): AtomSet {
     index = quantifier === null ? atom.next : quantifier.next;
   }
   return union.size === 0 ? "none" : union;
+}
+
+/**
+ * Split a group body on its top-level `|` characters, returning the [start,
+ * end) offset pairs of each branch. A `|` inside a nested group or inside a
+ * character class is a character of the pattern, not a separator.
+ */
+function alternationRanges(
+  source: string,
+  bodyStart: number,
+  end: number
+): [number, number][] {
+  const branches: [number, number][] = [];
+  let branchStart = bodyStart;
+  let depth = 0;
+  let inClass = false;
+  let index = bodyStart;
+  while (index < end) {
+    const char = source[index];
+    if (char === "\\") {
+      index += 2;
+      continue;
+    }
+    if (inClass) {
+      if (char === "]") {
+        inClass = false;
+      }
+      index += 1;
+      continue;
+    }
+    if (char === "[") {
+      inClass = true;
+      index += 1;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (char === ")") {
+      depth -= 1;
+      index += 1;
+      continue;
+    }
+    if (char === "|" && depth === 0) {
+      branches.push([branchStart, index]);
+      branchStart = index + 1;
+    }
+    index += 1;
+  }
+  branches.push([branchStart, end]);
+  return branches;
+}
+
+/**
+ * The edges of a group's body, unioned across every alternation branch.
+ *
+ * This is what lets an unquantified group be compared against its neighbours.
+ * `(a*)` repeated is the case: the group as a whole carries no quantifier, so
+ * `isAmbiguous` says nothing about it, and the body's trailing `a*` is the only
+ * thing that shows characters can be given back across the `)`. The same holds
+ * the other way for `a+(a+)$`, where the ambiguity the group presents is
+ * whatever leads its body.
+ *
+ * Each branch yields its own edges, then the branch results are combined by
+ * union: any branch may be the one that runs, so a clean last branch must not
+ * overwrite an ambiguous earlier one. `(a*|a)` repeated 12 times was measured
+ * at 71,756 ms because the alternation's last branch cleared the ambiguity the
+ * first branch carried; with the union it is refused.
+ */
+function groupBodyEdges(
+  source: string,
+  bodyStart: number,
+  end: number
+): AtomEdges {
+  let leading: AtomSet = "none";
+  let leadingAmbiguous = false;
+  let trailing: AtomSet = "none";
+  let trailingAmbiguous = false;
+  for (const [branchStart, branchEnd] of alternationRanges(
+    source,
+    bodyStart,
+    end
+  )) {
+    const edges = scanBranch(source, branchStart, branchEnd);
+    leading = unionSets(leading, edges.leading);
+    leadingAmbiguous = leadingAmbiguous || edges.leadingAmbiguous;
+    trailing = unionSets(trailing, edges.trailing);
+    trailingAmbiguous = trailingAmbiguous || edges.trailingAmbiguous;
+  }
+  return { leading, leadingAmbiguous, trailing, trailingAmbiguous };
+}
+
+/** The union of the characters a group's body admits, across every branch. */
+function groupSet(source: string, bodyStart: number, end: number): AtomSet {
+  let union: AtomSet = "none";
+  for (const [start, finish] of alternationRanges(source, bodyStart, end)) {
+    union = unionSets(union, scanBranchSet(source, start, finish));
+    if (union === "any") {
+      return "any";
+    }
+  }
+  return union;
 }
 
 /** The set of characters a class (`[...]`) admits, or `"any"` when negated. */
@@ -476,7 +594,29 @@ function classSet(
           if (escaped.set === "any") {
             return "any";
           }
-          for (const value of escaped.set as Set<string>) {
+          const escapedChars = escaped.set as Set<string>;
+          // An escaped endpoint can still open a range: `[\x30-\x39]` names
+          // ten digits, and reading only the endpoint and dropping the `-`
+          // made the class `{"0", "-", "9"}`, which overlaps nothing and
+          // admitted `[\x30-\x39]+[4-8]+` (67,008 ms measured at the caps).
+          if (source[escaped.next] === "-" && escaped.next + 2 < closeIndex) {
+            const from = Array.from(escapedChars)[0].codePointAt(0) ?? 0;
+            const to = source[escaped.next + 2].codePointAt(0) ?? 0;
+            if (to >= from && to - from <= 4096) {
+              for (let code = from; code <= to; code += 1) {
+                union.add(String.fromCodePoint(code));
+              }
+            } else {
+              // Out of order (the engine will not compile it) or wider than
+              // the span. Both must read as "any": a dropped range comes back
+              // as an empty class, which overlaps nothing and admits anything
+              // beside it.
+              return "any";
+            }
+            index = escaped.next + 3;
+            continue;
+          }
+          for (const value of escapedChars) {
             union.add(value);
           }
           index = escaped.next;
@@ -494,6 +634,12 @@ function classSet(
         for (let code = from; code <= to; code += 1) {
           union.add(String.fromCodePoint(code));
         }
+      } else {
+        // Same rule as the escaped endpoint above: a range wider than the
+        // span must not be dropped, because the empty set that is left behind
+        // overlaps nothing and lets the pattern through. `[Ā- ]+` repeated ten
+        // times ran 19,665 ms while read as an empty class.
+        return "any";
       }
       index += 3;
       continue;
@@ -531,10 +677,16 @@ function quantifierAt(source: string, index: number): Quantifier | null {
       return null;
     }
     const min = Number.parseInt(bounds[1], 10);
-    const max =
-      bounds[2] === undefined || bounds[2] === ""
-        ? Number.POSITIVE_INFINITY
-        : Number.parseInt(bounds[2], 10);
+    // `{n}` is exact: an absent second bound is not an empty one. Only
+    // `{n,}` leaves the empty string behind, and only that means Infinity.
+    let max: number;
+    if (bounds[2] === undefined) {
+      max = min;
+    } else if (bounds[2] === "") {
+      max = Number.POSITIVE_INFINITY;
+    } else {
+      max = Number.parseInt(bounds[2], 10);
+    }
     return { min, max, next: lazy(close + 1) };
   }
   return null;

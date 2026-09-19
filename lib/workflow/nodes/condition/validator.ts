@@ -117,8 +117,11 @@ function maskBracketBearingStrings(expression: string): string {
 }
 
 // Unanchored string-literal matcher (the module's STRING_LITERAL_PATTERN is
-// anchored with ^, so it only ever matches at an offset).
-const ANY_STRING_LITERAL_PATTERN = /(['"])(?:\\.|(?!\1).)*\1/g;
+// anchored with ^, so it only ever matches at an offset). `scanString` in
+// safe-eval accepts a real newline inside a literal, and `.` does not match
+// one, so both halves of the alternation admit any character including a
+// newline: without it, the mask mis-pairs quotes and shifts by one literal.
+const ANY_STRING_LITERAL_PATTERN = /(['"])(?:\\[\s\S]|(?!\1)[\s\S])*\1/g;
 
 /**
  * Blank the interior of every string literal, keeping the quotes and the length
