@@ -137,15 +137,59 @@ function normalizeConditionGroup(
 /**
  * Normalize conditionConfig inside a Condition node's config.
  * Fixes: missing ids, wrong operator formats, field name aliases, array-shaped groups.
+ *
+ * KEEP-2305: some producers (certain MCP/import/AI-generated paths) emit
+ * `group` at the config root - matching the `ConditionConfig` type's own
+ * literal `{ group }` shape - instead of nested under `conditionConfig`,
+ * which is what the resolver (resolveConditionExpression) actually reads.
+ * The previous guard required `config.conditionConfig` to already exist
+ * before normalizing anything, so a root-level `group` was silently never
+ * migrated in and the condition resolved to `undefined` with no signal
+ * pointing at the real cause. Treat a root-level `group` as an alternate
+ * input to the same normalization instead of a separate, unhandled shape.
  */
 function normalizeConditionConfig(
   config: Record<string, unknown>
 ): Record<string, unknown> {
-  if (config.actionType !== "Condition" || !config.conditionConfig) {
+  if (config.actionType !== "Condition") {
     return config;
   }
 
-  const conditionConfig = config.conditionConfig as Record<string, unknown>;
+  const nestedConditionConfig = config.conditionConfig as
+    | Record<string, unknown>
+    | undefined;
+  const rootGroup = config.group as
+    | Record<string, unknown>
+    | Record<string, unknown>[]
+    | undefined;
+
+  // Check the nested config's own `group` field, not just whether the
+  // wrapper object exists - a nested `conditionConfig` that is `{}` or
+  // `{ logicalOperator: "OR" }` with no usable group is truthy but has
+  // nothing to normalize, and should fall through to a root-level group
+  // the same way a fully-absent conditionConfig does.
+  const nestedGroup = nestedConditionConfig?.group as
+    | Record<string, unknown>
+    | Record<string, unknown>[]
+    | undefined;
+
+  if (nestedGroup === undefined && rootGroup === undefined) {
+    return config;
+  }
+
+  const conditionConfig: Record<string, unknown> =
+    nestedGroup === undefined
+      ? {
+          group: rootGroup,
+          // The array-shaped root-group producer emits `logicalOperator` as
+          // a sibling of `group` at the config root, not nested - carry it
+          // through instead of silently defaulting to "AND" below.
+          logicalOperator:
+            nestedConditionConfig?.logicalOperator ?? config.logicalOperator,
+        }
+      : // nestedGroup came from nestedConditionConfig?.group, so
+        // nestedConditionConfig must be defined here.
+        (nestedConditionConfig as Record<string, unknown>);
   let group = conditionConfig.group as
     | Record<string, unknown>
     | Record<string, unknown>[];
@@ -165,8 +209,16 @@ function normalizeConditionConfig(
     return config;
   }
 
+  // Drop a stray root-level `group`/`logicalOperator` once folded into
+  // conditionConfig, so the copies can't drift out of sync.
+  const {
+    group: _rootGroup,
+    logicalOperator: _rootLogicalOperator,
+    ...rest
+  } = config;
+
   return {
-    ...config,
+    ...rest,
     conditionConfig: {
       group: normalizeConditionGroup(group),
     },
