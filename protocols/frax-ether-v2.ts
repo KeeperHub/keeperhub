@@ -113,8 +113,12 @@ export default defineAbiProtocol({
             "Read whether minting is currently paused on the Frax Ether Minter V2. Useful as a gate in workflows to skip mint actions when the contract is paused.",
           docUrl: FRAX_ETHER_DOCS,
           outputs: {
-            result: {
-              name: "paused",
+            // Keyed by the ABI's output name, per the rule in
+            // lib/abi/protocol-derive.ts: override keys are the raw ABI param
+            // names, and `result` is only the synthesised key for a param the
+            // ABI leaves unnamed. The ABI names this one, so no rename is
+            // needed and only the label is overridden.
+            paused: {
               label: "Mint Paused",
             },
           },
