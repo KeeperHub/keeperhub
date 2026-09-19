@@ -29,6 +29,11 @@ describe("parseRunFilters", () => {
   it("ignores a negative or non-numeric duration bound", () => {
     expect(parse("durationMin=-5").durationMinMs).toBeUndefined();
     expect(parse("durationMax=soon").durationMaxMs).toBeUndefined();
+    // A blank value is absent, not zero. Number("") is 0, which made
+    // `?durationMax=` filter on duration < 0 and match nothing.
+    expect(parse("durationMax=").durationMaxMs).toBeUndefined();
+    expect(parse("durationMax=%20%20").durationMaxMs).toBeUndefined();
+    expect(parse("durationMin=").durationMinMs).toBeUndefined();
     expect(parse("durationMin=30000").durationMinMs).toBe(30_000);
   });
 

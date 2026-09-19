@@ -8,6 +8,88 @@ import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
 
+/**
+ * Ceiling for `page`. getUnifiedRuns turns the page into
+ * `fetchLimit = (page - 1) * pageLimit + pageLimit + 1`, and that value becomes
+ * the SQL LIMIT on both source queries, so an unbounded page removes the
+ * limit's effect entirely: `?page=999999999` asks Postgres for 49999999951
+ * rows, which is every run in range for the organization. Both sources are
+ * then concatenated and sorted in Node before an empty window is sliced out of
+ * them - O(all runs) of work to return nothing.
+ *
+ * With `limit` bounded at the same figure the query honours, the worst case is
+ * `199 * 100 + 100 + 1` = 20001 rows. The UI does page past the ceiling - the
+ * table sizes its pager off the real total - so the bound clamps rather than
+ * rejects, and the response echoes the clamped page so the pager and the rows
+ * describe the same window.
+ *
+ * Its own figure rather than MAX_PAGE_SIZE from lib/pagination.ts: that
+ * constant is the ceiling on a page *size*, and raising it for the list
+ * endpoints it governs would move this ceiling and the 20001 figure above with
+ * it, silently.
+ */
+const MAX_PAGE = 200;
+
+/**
+ * Ceiling for `limit`, matching the `Math.min(limit, 100)` in
+ * lib/analytics/queries.ts:1449 that decides the page size.
+ *
+ * Validating against a larger figure accepts a value the query then halves:
+ * `?limit=150` was admitted and served 100. Nothing downstream was incoherent
+ * - `pageSize` echoes the honoured value - but the two ceilings disagreeing is
+ * what made the fetchLimit figure above wrong, so they are pinned together.
+ */
+const MAX_LIMIT = 100;
+
+/**
+ * Floor for `limit`. Zero is legal and deliberate: with a page size of 0 the
+ * query's offset is 0 and its `fetchLimit` is 1, so `?limit=0` reads one row
+ * and returns an empty page beside an accurate total - a cheap count, and the
+ * behaviour on `staging` today. A floor of 1 would drop it and serve those
+ * callers a full 50-row page instead.
+ */
+const MIN_LIMIT = 0;
+
+/**
+ * Parse a bounded integer pagination parameter, falling back to `undefined` so
+ * a value this route will not honour behaves exactly as an absent one and
+ * getUnifiedRuns applies its own default.
+ *
+ * `Number.parseInt` with an exact round-trip, matching parseBoundedInt in
+ * app/api/workflows/route.ts and parsePageLimit in lib/pagination.ts. `Number`
+ * also reads `0x10` as 16, `1e302` as 1e+302 and `" 3 "` as 3, none of which a
+ * caller writing a page number meant, and the round-trip is what rejects them
+ * rather than silently accepting a value the caller did not type.
+ *
+ * The original bug was narrower: `Number("abc")` is NaN and NaN survives both
+ * `Math.max(1, ...)` and `Math.min(..., 100)`, so it reached the query, the
+ * offset became NaN, `slice(NaN, NaN)` returned nothing, and the echoed
+ * parameter serialized as `null` - zero runs beside a non-zero total.
+ */
+function parsePaginationParam(
+  raw: string | null,
+  { min, max }: { min: number; max: number }
+): number | undefined {
+  if (raw === null) {
+    return undefined;
+  }
+  const value = Number.parseInt(raw, 10);
+  // parseInt("12abc") is 12 and parseInt(" 5") is 5, so the string must
+  // round-trip exactly or the value is not the one the caller wrote.
+  if (Number.isNaN(value) || String(value) !== raw || value < min) {
+    return undefined;
+  }
+  // Clamp rather than drop. A dropped value is indistinguishable from an
+  // absent one, so getUnifiedRuns would fall back to page 1 and echo it: the
+  // caller asks for page 201 and silently receives the first page. The table
+  // computes totalPages from the real total and keeps Next enabled past the
+  // ceiling, so an organization with more than MAX_PAGE * 50 runs in range
+  // would page forwards into the first rows with the pager still reading 201.
+  // Clamping keeps the echoed page and the returned rows describing the same
+  // window.
+  return Math.min(value, max);
+}
+
 export async function GET(req: NextRequest): Promise<Response> {
   const authCtx = await resolveOrganizationId(req);
   if ("error" in authCtx) {
@@ -30,11 +112,14 @@ export async function GET(req: NextRequest): Promise<Response> {
     const customEnd = params.get("customEnd") ?? undefined;
     const cursor = params.get("cursor") ?? undefined;
 
-    const pageParam = params.get("page");
-    const page = pageParam ? Math.max(1, Number(pageParam)) : undefined;
-
-    const limitParam = params.get("limit");
-    const limit = limitParam ? Number(limitParam) : undefined;
+    const page = parsePaginationParam(params.get("page"), {
+      min: 1,
+      max: MAX_PAGE,
+    });
+    const limit = parsePaginationParam(params.get("limit"), {
+      min: MIN_LIMIT,
+      max: MAX_LIMIT,
+    });
 
     const projectId = params.get("projectId") ?? undefined;
 
