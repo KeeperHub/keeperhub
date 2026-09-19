@@ -70,3 +70,12 @@ export function resolveProtocolMeta(input: {
 
   return undefined;
 }
+
+/**
+ * Whether an action type is handled by the direct protocol execution route.
+ * Keep this derived from the same registry lookup used by that route so
+ * discovery cannot advertise a capability that execution does not recognise.
+ */
+export function isDirectExecutionSupported(actionType: string): boolean {
+  return resolveProtocolMeta({ _actionType: actionType }) !== undefined;
+}
