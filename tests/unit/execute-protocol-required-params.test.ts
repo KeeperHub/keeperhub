@@ -292,6 +292,50 @@ describe("buildProtocolFunctionArgs", () => {
     });
   });
 
+  // The fake protocol above proves the mechanism; these two run the real
+  // Uniswap definition through it, so the slippage and deadline fields added
+  // for the position lifecycle cannot quietly gain a default later.
+  it("rejects blank slippage and deadline on the real uniswap actions", async () => {
+    const { default: uniswapDef } = await import("@/protocols/uniswap-v3");
+    getProtocolMock.mockReturnValue(uniswapDef);
+    const { buildProtocolFunctionArgs } = await import(
+      "../../app/api/execute/_lib/protocol-function-args"
+    );
+
+    const decrease = buildProtocolFunctionArgs(
+      {
+        tokenId: "1",
+        liquidity: "1000",
+        amount1Min: "0",
+        deadline: "4102444800",
+      },
+      "uniswap",
+      "positionManager",
+      "decreaseLiquidity"
+    );
+    expect(decrease.ok).toBe(false);
+    if (!decrease.ok) {
+      expect(decrease.field).toBe("amount0Min");
+    }
+
+    const increase = buildProtocolFunctionArgs(
+      {
+        tokenId: "1",
+        amount0Desired: "1",
+        amount1Desired: "1",
+        amount0Min: "0",
+        amount1Min: "0",
+      },
+      "uniswap",
+      "positionManager",
+      "increaseLiquidity"
+    );
+    expect(increase.ok).toBe(false);
+    if (!increase.ok) {
+      expect(increase.field).toBe("deadline");
+    }
+  });
+
   it("returns undefined functionArgs when the action has no inputs", async () => {
     getProtocolMock.mockReturnValue({
       contracts: { pool: { addresses: { "8453": "0xPool" } } },

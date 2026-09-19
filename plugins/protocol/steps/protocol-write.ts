@@ -10,6 +10,8 @@ import {
 import { resolveAbi } from "@/lib/abi/cache";
 import { type AbiItem, findAbiFunction } from "@/lib/abi/utils";
 import { withStepValueCap } from "@/lib/execute/value-ledger";
+import { checkProtocolInputGuards } from "@/lib/protocol-input-guards";
+import { checkProtocolOnchainGuards } from "@/lib/protocol-input-guards-onchain";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import {
   getProtocol,
@@ -332,6 +334,19 @@ export async function protocolWriteStep(
       return { success: false, error: preflight.error };
     }
 
+    // Value-level guards the ABI cannot express (a shape-valid address that
+    // redirects funds). Shared with the direct-execute route so both paths
+    // refuse the same values.
+    const guard = checkProtocolInputGuards(
+      meta.protocolSlug,
+      meta.functionName,
+      input as Record<string, unknown>,
+      { network: input.network }
+    );
+    if (!guard.ok) {
+      return { success: false, error: guard.error };
+    }
+
     // 4. Resolve ABI (from definition or auto-fetch from explorer)
     let resolvedAbi: string;
     try {
@@ -346,6 +361,20 @@ export async function protocolWriteStep(
         success: false,
         error: `Failed to resolve ABI for contract "${meta.contractKey}" in protocol "${meta.protocolSlug}": ${error instanceof Error ? error.message : String(error)}`,
       };
+    }
+
+    // Guards that need a round trip run here, after ABI resolution, so the
+    // cheap ones above fail first and cost nothing.
+    const onchainGuard = await checkProtocolOnchainGuards({
+      protocolSlug: meta.protocolSlug,
+      functionName: meta.functionName,
+      inputs: input as Record<string, unknown>,
+      network: input.network,
+      organizationId: input._context?.organizationId,
+      web3Connection: input.web3Connection as string | undefined,
+    });
+    if (!onchainGuard.ok) {
+      return { success: false, error: onchainGuard.error };
     }
 
     // 5. Build function arguments from named inputs ordered by action definition
