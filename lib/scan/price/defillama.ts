@@ -32,6 +32,7 @@ export const DEFILLAMA_CHAIN_SLUGS: Record<number, string> = {
   42161: "arbitrum",
   4217: "tempo",
   5042: "arc",
+  130: "unichain",
 };
 
 type DefillamaCoinsResponse = {

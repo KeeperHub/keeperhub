@@ -124,6 +124,28 @@ const TOKEN_CONFIGS: TokenConfig[] = [
   },
 
   // ==========================================================================
+  // Unichain Mainnet (chainId: 130)
+  // ==========================================================================
+  {
+    chainId: 130,
+    tokenAddress: "0x078d782b760474a361dda0af3839290b0ef57ad6", // USDC (native, Circle)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Unichain Sepolia (chainId: 1301)
+  // ==========================================================================
+  {
+    chainId: 1301,
+    tokenAddress: "0x31d0220469e10c4e71834a79b1f276d740d3768f", // USDC (Circle's official Unichain Sepolia)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
   // Tempo Testnet (chainId: 42431)
   // ==========================================================================
   {

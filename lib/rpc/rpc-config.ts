@@ -111,6 +111,17 @@ export const PUBLIC_RPCS = {
   // Blockdaemon's endpoint completes the WSS upgrade handshake with no API
   // key required, unlike the Alchemy/QuickNode mirrors docs.arc.io lists.
   ARC_MAINNET_WSS: "wss://rpc.blockdaemon.mainnet.arc.io/websocket",
+  // Unichain (Uniswap Labs' OP Stack L2, native gas is ETH). Chain IDs
+  // confirmed via eth_chainId against the official RPCs: mainnet returns
+  // 0x82 (130), Sepolia testnet returns 0x515 (1301). publicnode's WSS
+  // mirrors were verified live with a real eth_subscribe-capable connection
+  // on both networks, unlike Robinhood which has no public WSS.
+  UNICHAIN_MAINNET: "https://mainnet.unichain.org",
+  UNICHAIN_MAINNET_FALLBACK: "https://unichain.drpc.org",
+  UNICHAIN_MAINNET_WSS: "wss://unichain-rpc.publicnode.com",
+  UNICHAIN_SEPOLIA: "https://sepolia.unichain.org",
+  UNICHAIN_SEPOLIA_FALLBACK: "https://unichain-sepolia.drpc.org",
+  UNICHAIN_SEPOLIA_WSS: "wss://unichain-sepolia-rpc.publicnode.com",
 } as const;
 
 /**
@@ -158,6 +169,24 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     envKey: "CHAIN_BASE_SEPOLIA_PRIMARY_RPC",
     fallbackEnvKey: "CHAIN_BASE_SEPOLIA_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.BASE_SEPOLIA,
+  },
+  // Unichain Mainnet (Uniswap Labs' OP Stack L2)
+  130: {
+    jsonKey: "unichain-mainnet",
+    envKey: "CHAIN_UNICHAIN_MAINNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_UNICHAIN_MAINNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.UNICHAIN_MAINNET,
+    publicFallback: PUBLIC_RPCS.UNICHAIN_MAINNET_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.UNICHAIN_MAINNET_WSS,
+  },
+  // Unichain Sepolia
+  1301: {
+    jsonKey: "unichain-testnet",
+    envKey: "CHAIN_UNICHAIN_SEPOLIA_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_UNICHAIN_SEPOLIA_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.UNICHAIN_SEPOLIA,
+    publicFallback: PUBLIC_RPCS.UNICHAIN_SEPOLIA_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.UNICHAIN_SEPOLIA_WSS,
   },
   // Tempo Testnet
   42431: {

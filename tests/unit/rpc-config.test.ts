@@ -8,6 +8,7 @@ import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logSystemError } from "@/lib/logging";
 import {
+  CHAIN_CONFIG,
   getConfigValue,
   getPrivateRpcUrl,
   getRpcUrl,
@@ -799,6 +800,33 @@ describe("RPC Config Resolution", () => {
         })
       ).toBe("https://chain.techops.live/eth-sepolia");
     });
+  });
+
+  describe("Unichain CHAIN_CONFIG wiring", () => {
+    it.each([
+      {
+        chainId: 130,
+        jsonKey: "unichain-mainnet",
+        wss: PUBLIC_RPCS.UNICHAIN_MAINNET_WSS,
+      },
+      {
+        chainId: 1301,
+        jsonKey: "unichain-testnet",
+        wss: PUBLIC_RPCS.UNICHAIN_SEPOLIA_WSS,
+      },
+    ])(
+      "should wire chain $chainId to $jsonKey with the publicnode WSS default",
+      ({ chainId, jsonKey, wss }) => {
+        expect(CHAIN_CONFIG[chainId].jsonKey).toBe(jsonKey);
+        expect(
+          getWssUrl({
+            rpcConfig: {},
+            jsonKey: CHAIN_CONFIG[chainId].jsonKey,
+            type: "primary",
+          })
+        ).toBe(wss);
+      }
+    );
   });
 
   describe("getWssUrl", () => {
