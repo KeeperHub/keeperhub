@@ -72,7 +72,7 @@ const COVERAGE_OUT = join(REPO_ROOT, "specs/api-coverage.json");
  * regeneration on Linux -- so a raw `relative()` result would make the same
  * tree produce a different artifact on Windows and fail the drift check.
  */
-function repoRelative(absPath: string): string {
+export function repoRelative(absPath: string): string {
   return relative(REPO_ROOT, absPath).replace(/\\/gu, "/");
 }
 
