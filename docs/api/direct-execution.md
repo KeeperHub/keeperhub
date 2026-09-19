@@ -800,7 +800,7 @@ over the ceiling would fail at send and must not dry-run clean.
   not the transfer recipient
 - `value`: native value in wei sent with the call
 - `gasEstimate`: estimated gas units required by the call, as a decimal string
-- `simulatedReturnValue`: the decoded return value of the call (e.g. `true` for ERC-20 `transfer`, the read value for view functions, `null` for native transfers to an EOA recipient)
+- `simulatedReturnValue`: the decoded return value of the call (e.g. `true` for ERC-20 `transfer`, the read value for view functions, `null` for native transfers to an EOA recipient). A non-standard token that returns no data on `transfer` (the USDT pattern) also simulates successfully with `simulatedReturnValue: null` — the simulator treats an empty return the same as a native transfer to an EOA, not as a failure.
 - `wouldRevert`: always `false` on this path
 
 ### Response — would-revert
