@@ -84,6 +84,10 @@ export function validateWorkflow(
   // allowance-consuming method with no check-allowance node in the workflow.
   runAllowancePreflightCheck(workflow, warnings);
 
+  // Signer-routing hint: a signed write names an integration with a key the
+  // runtime does not read for routing.
+  runSignerRoutingCheck(workflow, warnings);
+
   // VALID-05: chain ID existence — only when caller pre-fetched chainIds.
   // Per-node check mitigates Pitfall 12 (multi-chain WETH false positives).
   if (opts.chainIds !== undefined) {
@@ -355,6 +359,8 @@ type NodeActionConfig = {
   actionType: unknown;
   abiFunction: unknown;
   calls: unknown;
+  web3Connection: unknown;
+  integrationId: unknown;
 };
 
 function readNodeActionConfig(node: unknown): NodeActionConfig | null {
@@ -372,7 +378,13 @@ function readNodeActionConfig(node: unknown): NodeActionConfig | null {
   const cfg = config as Record<string, unknown>;
   const actionType =
     cfg.actionType ?? (data as Record<string, unknown>).actionType;
-  return { actionType, abiFunction: cfg.abiFunction, calls: cfg.calls };
+  return {
+    actionType,
+    abiFunction: cfg.abiFunction,
+    calls: cfg.calls,
+    web3Connection: cfg.web3Connection,
+    integrationId: cfg.integrationId,
+  };
 }
 
 function bareMethodName(abiFunction: unknown): string | null {
@@ -573,6 +585,74 @@ function isAllowanceGated(gate: AllowanceGate, node: unknown): boolean {
     }
   }
   return false;
+}
+
+// `integrationId` is read by no web3 step — zero references under
+// `plugins/web3/` — and the editor never writes it on a web3-credential
+// action, because `action-config.tsx:1123-1137` renders that slot as either
+// the Web3 Connection selector or the integration selector, never both. The
+// key is inert by construction on a `web3/*` node and only reachable from the
+// API or MCP surface, which is where an agent composing config lands.
+//
+// The rule deliberately does NOT test whether `web3Connection` is absent.
+// `parseWeb3Connection` maps missing, empty and `"default"` to one branch
+// (`lib/safe/signer-resolver.ts:361`), so those three states resolve to the
+// same signer; a rule that fired only when the key were absent could be
+// silenced by writing `"default"`, which changes nothing.
+//
+// Absence is also the safer state, not a broken one:
+// `plugins/web3/steps/write-contract-core.ts:88-90` routes a missing value to
+// the org-policy resolver, and `/api/execute/node` strips the field from
+// caller config on purpose so a write honours the org Safe and its active
+// Zodiac Role. The message therefore never describes routing as "unset" and
+// never suggests `"eoa"`, which is the branch that bypasses that policy.
+//
+// Scoped to the action types `isWriteActionType` covers plus the three below.
+// No seed workflow sets `integrationId`, so this rule starts at zero against
+// the 43 workflows under `scripts/seed/workflows`.
+//
+// `lib/mcp/action-type.ts:33-46` keeps these three out of `isWriteActionType`
+// on purpose - their config carries no raw ABI, so the calldata-handoff route
+// cannot serve them and widening that helper would let them validate as
+// `workflowType: "write"` and then fail every MCP call. They resolve a signer
+// from `web3Connection` all the same - `approve-token-core.ts:262`,
+// `transfer-funds-core.ts:261`, `transfer-token-core.ts:388` - so
+// `integrationId` is inert on them for the same reason it is on a write.
+const SIGNER_ROUTED_ACTION_TYPES = new Set([
+  "web3/approve-token",
+  "web3/transfer-funds",
+  "web3/transfer-token",
+]);
+
+function isSignerRoutedActionType(actionType: unknown): boolean {
+  return (
+    isWriteActionType(actionType) ||
+    (typeof actionType === "string" &&
+      SIGNER_ROUTED_ACTION_TYPES.has(actionType))
+  );
+}
+
+function runSignerRoutingCheck(
+  workflow: ValidatorWorkflow,
+  warnings: ValidationIssue[]
+): void {
+  if (!Array.isArray(workflow.nodes)) {
+    return;
+  }
+  for (const [idx, node] of workflow.nodes.entries()) {
+    const cfg = readNodeActionConfig(node);
+    if (cfg === null || !isSignerRoutedActionType(cfg.actionType)) {
+      continue;
+    }
+    if (typeof cfg.integrationId !== "string" || cfg.integrationId === "") {
+      continue;
+    }
+    warnings.push({
+      code: VALIDATION_WARNING_CODES.SIGNER_ROUTING_KEY_IGNORED,
+      message: `nodes[${idx}].config sets "integrationId", which no web3 step reads. The signer for a signed write is resolved from "web3Connection" only, so this value has no effect and the node signs from organization policy either way — remove it. Set "web3Connection" only to deliberately override that policy for this node; leaving it absent keeps the organization's configured wallet and its active role.`,
+      parameterPath: `nodes[${idx}].config.integrationId`,
+    });
+  }
 }
 
 function runAllowancePreflightCheck(

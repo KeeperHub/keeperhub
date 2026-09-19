@@ -414,6 +414,23 @@ Conditions reference previous node outputs using template syntax: `{{@nodeId:Lab
 
 The `network` field accepts chain IDs as strings: `"1"` (Ethereum mainnet), `"11155111"` (Sepolia), `"8453"` (Base), `"42161"` (Arbitrum), `"137"` (Polygon).
 
+### `web3Connection` field
+
+Write actions take an optional `web3Connection` that selects which of the
+organization's signers the transaction is sent from:
+
+| Value | Signer |
+|-------|--------|
+| omitted, `""`, or `"default"` | Organization policy — the configured Safe and its active role. All three are the same branch. |
+| `"eoa"` | The Turnkey EOA directly, bypassing the organization's Safe policy. |
+| `"safe:<safeWalletId>"` | A specific Safe belonging to the organization. |
+
+Leave it unset unless you intend to override organization policy for that
+node. There is no other per-node signer field: `integrationId` is a database
+integration id and is **not** read by any web3 step, so setting it on a
+`web3/*` node has no effect on which wallet signs. `validate_workflow` warns
+when it is present on a write node.
+
 ### `abiFunction` field
 
 For `web3/read-contract` and `web3/write-contract`, the `abiFunction` field is the function as it appears in the contract's ABI. Pass the plain name for unique functions (`"balanceOf"`) or the full signature for overloaded ones (`"transfer(address,uint256)"`).

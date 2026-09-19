@@ -24,6 +24,9 @@ export const VALIDATION_WARNING_CODES = {
   // Configure-time hint: write-contract uses an allowance-consuming method
   // (transferFrom / redeem / withdrawFrom) with no check-allowance node.
   MISSING_ALLOWANCE_PREFLIGHT: "missing-allowance-preflight",
+  // Configure-time hint: a signer-routed node sets `integrationId`, which the
+  // runtime does not read. Sender routing comes from `web3Connection`.
+  SIGNER_ROUTING_KEY_IGNORED: "signer-routing-key-ignored",
 } as const;
 
 export type ValidationErrorCode =
