@@ -36,6 +36,7 @@ import {
 import { checkRateLimit } from "../_lib/rate-limit";
 import { parseNodeNativeValueWei } from "../_lib/reserved-value";
 import {
+  DEFAULT_MAX_RETRIES,
   DEFAULT_TIMEOUT_MS as DEFAULT_RETRY_TIMEOUT_MS,
   executeWithRetry,
   genericRetryOptions,
@@ -80,13 +81,33 @@ function validateRetryConfig(
     };
   }
 
-  const attempts = ((r.maxRetries as number | undefined) ?? 0) + 1;
+  // Both defaults must match what resolveConfig will apply, or the budget is
+  // measured against a run that never happens: an absent maxRetries executes
+  // as DEFAULT_MAX_RETRIES, so defaulting it to 0 here admitted four times the
+  // ceiling this check exists to enforce.
+  const attempts =
+    ((r.maxRetries as number | undefined) ?? DEFAULT_MAX_RETRIES) + 1;
   const perAttempt =
     (r.timeoutMs as number | undefined) ?? DEFAULT_RETRY_TIMEOUT_MS;
   if (attempts * perAttempt > MAX_RETRY_BUDGET_MS) {
+    // State the effective attempt count, and say where it came from when the
+    // caller did not set it - otherwise the arithmetic reads as
+    // self-contradicting to someone who sent no maxRetries.
+    //
+    // Naming maxRetries: 0 matters more than the arithmetic. The apparent
+    // remedy is to lower timeoutMs, and that is the one change that can turn
+    // a slow web3 write into several: withTimeout races a setTimeout rather
+    // than cancelling, so a timed-out attempt keeps running and can still
+    // broadcast while the next attempt signs at the next nonce.
+    const defaulted =
+      r.maxRetries === undefined
+        ? ` (maxRetries defaults to ${DEFAULT_MAX_RETRIES})`
+        : "";
     return {
       valid: false,
-      error: `retry budget (timeoutMs x (maxRetries + 1)) must not exceed ${MAX_RETRY_BUDGET_MS}ms`,
+      error:
+        `retry budget exceeded: timeoutMs ${perAttempt} x ${attempts} attempts${defaulted} = ${attempts * perAttempt}ms, limit ${MAX_RETRY_BUDGET_MS}ms. ` +
+        "Use maxRetries: 0 to keep one long attempt.",
     };
   }
 

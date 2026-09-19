@@ -991,6 +991,17 @@ Check the status of a direct execution.
   timeout: it is abandoned rather than cancelled, so nothing comes back to
   carry a hash, and a per-attempt timeout shorter than the chain's confirmation
   latency can leave two transactions confirmed.
+
+  That endpoint's `retry` object takes `maxRetries` (0 to 10) and `timeoutMs`
+  (1000 to 600000). **`maxRetries` defaults to 3, so an omitted value is four
+  attempts, not one**, and the worst-case budget - `timeoutMs` times attempts -
+  may not exceed 600000ms, the idempotency processing-lock TTL. A request that
+  exceeds it is rejected with a 400 naming the arithmetic that was applied.
+  Omitting `maxRetries` therefore admits a `timeoutMs` up to 150000; past that,
+  send `maxRetries: 0` to keep a single long attempt. Lowering `timeoutMs` is
+  the wrong way to fit the budget for a write: per the paragraph above, a
+  per-attempt timeout under the chain's confirmation latency is what produces
+  two confirmed transactions.
 - `gasPriceWei`: the effective gas price, as a decimal string. On EVM chains
   this is in wei. On Solana it is the micro-lamports-per-compute-unit price of
   the priority component, as described in
