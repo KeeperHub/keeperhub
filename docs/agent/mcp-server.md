@@ -389,6 +389,8 @@ Condition nodes have dual output paths with `true` and `false` source handles. C
 
 Conditions support these operators: `==` (soft equals), `===` (equals), `!=` (soft not equals), `!==` (not equals), `>`, `>=`, `<`, `<=`, `contains`, `startsWith`, `endsWith`, `matchesRegex`, `isEmpty`, `isNotEmpty`, `exists`, `doesNotExist`, `isNull`, `isNotNull`, `isUndefined`, `isNotUndefined`.
 
+`matchesRegex` takes its pattern as a quoted string literal rather than a reference, and refuses a pattern that applies a quantifier to a group containing a quantifier or an alternation (`(a+)+$`), and one that applies two quantifiers in a row to the same characters (`a+a+`). Patterns are capped at 512 characters and the matched value at 4096.
+
 Conditions reference previous node outputs using template syntax: `{{@nodeId:Label.field}}`.
 
 ## Web3 Action Reference

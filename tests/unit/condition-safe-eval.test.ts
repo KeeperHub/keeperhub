@@ -8,6 +8,28 @@ import {
 const FAILS_RE =
   /not allowed|Unknown identifier|parse error|Property access|Unsupported|callable|Computed member/;
 
+describe("safeEvaluateCondition - matchesRegex arity", () => {
+  it("refuses a call that does not have both arguments", () => {
+    // The guard was `args.length > 2`, so one argument passed through and the
+    // missing pattern became the string "undefined": the first call matched any
+    // value at all and the second matched any value containing "undefined".
+    expect(() => safeEvaluateCondition("matchesRegex()", {})).toThrow(
+      /exactly two arguments/
+    );
+    expect(() =>
+      safeEvaluateCondition("matchesRegex(String(__v0))", { __v0: "0xabc" })
+    ).toThrow(/exactly two arguments/);
+  });
+
+  it("still accepts exactly two", () => {
+    expect(
+      safeEvaluateCondition('matchesRegex(String(__v0), "^0x[a-f0-9]{6}$")', {
+        __v0: "0xabcdef",
+      })
+    ).toBe(true);
+  });
+});
+
 describe("safeEvaluateCondition - semantics", () => {
   describe("equality and comparison", () => {
     it("evaluates strict equality on context values", () => {

@@ -31,6 +31,11 @@ import {
   type MissingReference,
   missingReferenceError,
 } from "./missing-reference";
+import {
+  MAX_REGEX_PATTERN_LENGTH,
+  MAX_REGEX_VALUE_LENGTH,
+  regexPatternProblem,
+} from "./regex-pattern";
 
 const HEX_RE = /^[0-9a-fA-F]+$/;
 const WHITESPACE_RE = /\s/;
@@ -51,6 +56,52 @@ const BLOCKED_PROPS = new Set(["constructor", "__proto__", "prototype"]);
 
 const ALLOWED_GLOBALS: Record<string, (...args: unknown[]) => unknown> = {
   String: (...args) => String(args[0]),
+  // Constructs the RegExp here, in trusted code rather than in the interpreted
+  // expression: the grammar stays closed (no `new`, no `test`) and the pattern
+  // is still a config value the author typed. Bounded because a pathological
+  // pattern is a ReDoS, and this runs inside the executor.
+  // Both sides are bounded. The pattern because the builder is not the only
+  // writer of a stored condition, and the value because it can arrive from a
+  // webhook: the executor evaluates this with no timeout, so an unbounded match
+  // stalls the run and no timer interrupts it.
+  // Declared with rest args rather than two parameters so a third argument is
+  // visible: `matchesRegex(v, "a", "i")` used to be accepted with the flag
+  // silently dropped, which reads as a case-insensitive match that is not one.
+  matchesRegex: (...args) => {
+    if (args.length !== 2) {
+      throw new Error(
+        'matchesRegex takes exactly two arguments (value, pattern); flags such as "i" are not supported'
+      );
+    }
+    const [value, pattern] = args;
+    // A call with one argument used to reach here: `matchesRegex(String(__v0))`
+    // built `/undefined/` and returned true for any value containing that
+    // substring, and `matchesRegex()` did the same for any value at all. The
+    // arity guard is what stops both, and `checkRegexPatterns` refuses them
+    // earlier so the author sees it as a validation error rather than a throw
+    // inside the executor.
+    const source = String(pattern);
+    if (source.length > MAX_REGEX_PATTERN_LENGTH) {
+      throw new Error(
+        `Regex pattern is longer than ${MAX_REGEX_PATTERN_LENGTH} characters`
+      );
+    }
+    const text = String(value);
+    if (text.length > MAX_REGEX_VALUE_LENGTH) {
+      throw new Error(
+        `Regex value is longer than ${MAX_REGEX_VALUE_LENGTH} characters`
+      );
+    }
+    // The same guard the validator applies, at the point of use. The builder is
+    // not the only writer of a stored condition, and the length caps above do
+    // not stop a seven character `(a+)+$`, so a pattern that reaches here
+    // without having been through validation is refused rather than run.
+    const problem = regexPatternProblem(source);
+    if (problem !== null) {
+      throw new Error(problem);
+    }
+    return new RegExp(source).test(text);
+  },
 };
 
 const ALLOWED_STATIC: Record<string, (...args: unknown[]) => unknown> = {
@@ -268,6 +319,27 @@ function scanString(
     i += 1;
   }
   throw new Error("Unterminated string literal");
+}
+
+/**
+ * The string a quoted literal's body evaluates to, decoded exactly as the
+ * evaluator decodes it: `\x2b` is a `+`, `\u002a` is a `*`.
+ *
+ * The condition validator scans this rather than the raw body because the two
+ * are not the same string. `"(a\x2b)\x2b$"` carries no `+` for a scanner to
+ * find, and decodes to `(a+)+$`, which is the pattern `matchesRegex` compiles -
+ * so a guard reading the raw body inspects one string while the engine runs
+ * another.
+ *
+ * Returns null when the body cannot be decoded, which the caller reports as a
+ * refusal: the evaluator throws on the same input.
+ */
+export function decodeLiteralBody(body: string, quote: string): string | null {
+  try {
+    return scanString(quote + body + quote, 0).value;
+  } catch {
+    return null;
+  }
 }
 
 function scanNumber(

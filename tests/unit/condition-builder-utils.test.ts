@@ -203,7 +203,7 @@ describe("condition-builder-utils", () => {
       it("should generate matchesRegex expression", () => {
         const g = group("AND", [rule("email", "matchesRegex", "^[a-z]+@")]);
         expect(visualConditionToExpression(g)).toBe(
-          'new RegExp("^[a-z]+@").test(String("email"))'
+          'matchesRegex(String("email"), "^[a-z]+@")'
         );
       });
 
@@ -212,8 +212,21 @@ describe("condition-builder-utils", () => {
           rule("phone", "matchesRegex", "\\d{3}-\\d{4}"),
         ]);
         const expr = visualConditionToExpression(g);
-        expect(expr).toContain("new RegExp");
-        expect(expr).toContain(".test(");
+        // wrapOperand escapes backslashes, so the emitted literal carries `\\d`.
+        expect(expr).toBe('matchesRegex(String("phone"), "\\\\d{3}-\\\\d{4}")');
+      });
+
+      it("should not emit the constructs the validator rejects", () => {
+        // The regression this pins: the emitted form used to contain `new` and
+        // `.test(`, which the validator's DANGEROUS_PATTERNS and the
+        // interpreter's ALLOWED_METHODS both refuse, so the operator could
+        // neither validate nor evaluate.
+        const g = group("AND", [
+          rule("email", "matchesRegex", "^0x[0-9a-fA-F]{40}$"),
+        ]);
+        const expr = visualConditionToExpression(g);
+        expect(expr).not.toContain("new RegExp");
+        expect(expr).not.toContain(".test(");
       });
     });
 
