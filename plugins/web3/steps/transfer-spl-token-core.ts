@@ -80,6 +80,7 @@ export type TransferSplTokenResult =
   | {
       success: true;
       transactionHash: string;
+      chainId: number;
       transactionLink: string;
       gasUsed: string;
       gasUsedUnits: string;
@@ -514,6 +515,7 @@ async function executeTransfer(
     return {
       success: true,
       transactionHash: receipt.hash,
+      chainId,
       transactionLink,
       gasUsed: lamportFee.toString(),
       gasUsedUnits: receipt.gasUsed.toString(),
