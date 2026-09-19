@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import "@/protocols";
 import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
+import { getChainName } from "@/lib/chain-utils";
 import { getEncodeTransform } from "@/lib/protocol-encode-transforms";
 import { getRegisteredProtocols } from "@/lib/protocol-registry";
 import {
@@ -122,6 +123,88 @@ describe("protocol calldata: registry address consistency", () => {
       }
       it(`${protocol.slug}/${key} has at least one chain address`, () => {
         expect(Object.keys(contract.addresses).length).toBeGreaterThan(0);
+      });
+    }
+  }
+});
+
+describe("protocol calldata: skips that claim a contract is absent", () => {
+  // A skip reason saying "<contract> contract not on <chain>" is a factual
+  // claim about the registry. The fixture planner takes it on trust: a slug
+  // listed in `skipped` never runs on that chain. When the contract does have
+  // an address there the claim is false and the action is suppressed for no
+  // reason, which is the mirror of advertising a function the chain does not
+  // implement. Skips for a missing prerequisite (a balance the fork does not
+  // provision) use different wording and are not checked here.
+  for (const protocol of getRegisteredProtocols()) {
+    for (const [chainId, chainData] of Object.entries(
+      protocol.testData ?? {}
+    )) {
+      const claims = Object.entries(chainData.skipped ?? {}).filter((entry) =>
+        entry[1].includes("not on ")
+      );
+      if (claims.length === 0) {
+        continue;
+      }
+      it(`${protocol.slug} on ${chainId}: every absence claim matches the registry`, () => {
+        for (const [slug, reason] of claims) {
+          const action = protocol.actions.find((a) => a.slug === slug);
+          expect(
+            action,
+            `skip "${slug}" names no registered action`
+          ).toBeDefined();
+          const contractKey = action?.contract ?? "";
+          const address = protocol.contracts[contractKey]?.addresses?.[chainId];
+          expect(
+            address,
+            `${protocol.slug}/${slug} is skipped as "${reason}" but ${contractKey} resolves ${address} on chain ${chainId}`
+          ).toBeUndefined();
+        }
+      });
+    }
+  }
+});
+
+describe("protocol calldata: skips that name where a contract does live", () => {
+  // The inverted form of the check above, and the one that actually shipped
+  // wrong here: "<contract> contract only on Base/Arbitrum" against a
+  // registry carrying Base alone. The "not on" check cannot see it, because
+  // naming a chain the contract never had is a false claim in the opposite
+  // direction. Compare the named chains against the registry as a set, so a
+  // reason goes stale the moment an address is added or removed.
+  for (const protocol of getRegisteredProtocols()) {
+    for (const [chainId, chainData] of Object.entries(
+      protocol.testData ?? {}
+    )) {
+      const claims = Object.entries(chainData.skipped ?? {}).filter((entry) =>
+        entry[1].includes("only on ")
+      );
+      if (claims.length === 0) {
+        continue;
+      }
+      it(`${protocol.slug} on ${chainId}: every "only on" claim matches the registry`, () => {
+        for (const [slug, reason] of claims) {
+          const action = protocol.actions.find((a) => a.slug === slug);
+          expect(
+            action,
+            `skip "${slug}" names no registered action`
+          ).toBeDefined();
+          const contractKey = action?.contract ?? "";
+          const addresses = protocol.contracts[contractKey]?.addresses ?? {};
+          expect(
+            addresses[chainId],
+            `${protocol.slug}/${slug} is skipped on chain ${chainId} as "${reason}", but ${contractKey} resolves there`
+          ).toBeUndefined();
+          const named = (reason.split("only on ").pop() ?? "")
+            .split("/")
+            .map((part) => part.trim())
+            .sort();
+          const actual = Object.keys(addresses).map(getChainName).sort();
+          expect(
+            named,
+            `${protocol.slug}/${slug} is skipped as "${reason}" but ${contractKey} resolves on ${actual.join("/")}; the reason must end with "only on ${Object.keys(addresses).map(getChainName).join("/")}"`
+          ).toEqual(actual);
+        }
       });
     }
   }
