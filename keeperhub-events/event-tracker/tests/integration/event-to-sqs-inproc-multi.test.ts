@@ -26,6 +26,7 @@ import {
   getAnvilWssUrl,
   waitForAnvil,
 } from "./helpers/anvil-helpers";
+import { emitWithNonceRetry } from "./helpers/emit-with-retry";
 import {
   type DeployedFixture,
   deployEventEmitter,
@@ -206,7 +207,7 @@ describe.skipIf(SKIP_INFRA_TESTS)(
         if (seen.size === 2) {
           break;
         }
-        const tx = await emitEvent(EMITTED_VALUE);
+        const tx = await emitWithNonceRetry(() => emitEvent(EMITTED_VALUE));
         await tx.wait();
         while (seen.size < 2) {
           const msg = await pollForMessage(sqsClient, queueUrl, PER_ATTEMPT_MS);
