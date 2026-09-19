@@ -45,6 +45,92 @@ function resolveConfig(config?: RetryConfig): Required<RetryConfig> {
   };
 }
 
+/**
+ * The retry budget a step's own declaration allows.
+ *
+ * A step function can carry `maxRetries` on itself, and `plugins/CLAUDE.md` asks
+ * security-critical steps to set it to 0. The workflow runtime honours that
+ * declaration. The direct-execution route did not read it at all: it branched on
+ * the caller's `retry` config and on `isWeb3` alone, so a step that declared it
+ * must never be retried was retried whenever the caller asked for retries and the
+ * failure text looked retryable.
+ *
+ * This was first read out of the x402 paid-resource case: the step delivers its
+ * `X-PAYMENT` header, the server settles the payment, the connection resets, and
+ * `ECONNRESET` matches RETRYABLE_PATTERNS below. The text half of that reading
+ * does not hold for this step, and the test below pins the correction: a paid
+ * HTTP step carries no `network`, so it takes the generic branch, whose
+ * `getError` returns undefined and which treats any returned value as success -
+ * so its error text is never matched and no re-run is triggered by it. What does
+ * re-fire the step is the timeout half, where `withTimeout` abandons an
+ * in-flight request without cancelling it and the retry is issued while the first
+ * one is still running. The declaration closes that path. The text half is real
+ * for the web3 steps, which do carry a network.
+ *
+ * The declaration is a ceiling, not a default. A caller may ask for fewer
+ * retries than a step allows and can never ask for more; a step that declares
+ * nothing leaves the caller's config exactly as it was; and a config of
+ * `undefined` stays `undefined`, because this route only retries when the caller
+ * asked for retries at all.
+ *
+ * A declaration that was written but cannot be read FAILS CLOSED: the step is
+ * treated as having asked for no retries. The value crosses a dynamic import
+ * unvalidated (`route.ts` casts `any`), so a JS step that sets
+ * `maxRetries = "0"` type-checks, ships, and would otherwise be retried exactly
+ * when its author believed they had opted out. Discarding a declaration is the
+ * one direction that reintroduces the bug this function exists to close.
+ *
+ * `declared` is typed `unknown` rather than `number | undefined` on purpose:
+ * the type is a claim about the step, and this function exists because that
+ * claim is not checked anywhere.
+ */
+export function capRetriesByDeclaration(
+  config: RetryConfig | undefined,
+  declared: unknown
+): RetryConfig | undefined {
+  if (config === undefined) {
+    return undefined;
+  }
+  if (declared === undefined) {
+    return config;
+  }
+  if (typeof declared !== "number" || Number.isNaN(declared) || declared < 0) {
+    return { ...config, maxRetries: 0 };
+  }
+  // A fractional declaration is floored rather than discarded, and the reason is
+  // the classification rather than the count: `attempt` is an integer, so a
+  // ceiling of 2.5 admits the same three attempts as 2. What flooring changes is
+  // which branch ends the loop - at 2.5 the `attempt >= resolved.maxRetries`
+  // guard below never coincides, so the loop falls through to `exhausted` and the
+  // caller is told "Max retries exceeded" in place of the step's own error.
+  //
+  // An unbounded declaration needs no branch of its own: Math.floor(Infinity) is
+  // Infinity and Math.min(x, Infinity) is x, so this already returns the caller's
+  // own number.
+  return {
+    ...config,
+    maxRetries: Math.min(
+      config.maxRetries ?? DEFAULT_MAX_RETRIES,
+      Math.floor(declared)
+    ),
+  };
+}
+
+/**
+ * The budget a resolved config actually applies.
+ *
+ * `RetryConfig.maxRetries` is optional and `resolveConfig` fills it with
+ * `DEFAULT_MAX_RETRIES`, so a config that survived `capRetriesByDeclaration` by
+ * identity still has no number on it. Reported back to the caller, that difference
+ * matters: the direct-execution route replies with the budget it held a step to, and
+ * `undefined` there would read as "no budget was in force" rather than "the
+ * default". Kept here rather than exporting the constant so the resolution has one
+ * definition, next to the config resolution itself.
+ */
+export function effectiveMaxRetries(config: RetryConfig): number {
+  return config.maxRetries ?? DEFAULT_MAX_RETRIES;
+}
+
 function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number
