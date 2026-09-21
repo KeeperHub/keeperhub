@@ -76,8 +76,8 @@ describe("Sky Protocol Definition", () => {
     }
   });
 
-  it("has exactly 44 actions", () => {
-    expect(skyDef.actions).toHaveLength(44);
+  it("has exactly 46 actions", () => {
+    expect(skyDef.actions).toHaveLength(46);
   });
 
   it("registers in the protocol registry and is retrievable", () => {
@@ -88,22 +88,26 @@ describe("Sky Protocol Definition", () => {
     expect(retrieved?.name).toBe("Sky");
   });
 
-  it("has 31 read actions and 13 write actions", () => {
+  it("has 33 read actions and 13 write actions", () => {
     const readActions = skyDef.actions.filter((a) => a.type === "read");
     const writeActions = skyDef.actions.filter((a) => a.type === "write");
-    expect(readActions).toHaveLength(31);
+    expect(readActions).toHaveLength(33);
     expect(writeActions).toHaveLength(13);
   });
 
-  it("has 7 contracts", () => {
-    expect(Object.keys(skyDef.contracts)).toHaveLength(7);
+  it("has 8 contracts", () => {
+    expect(Object.keys(skyDef.contracts)).toHaveLength(8);
   });
 
-  it("sUsds contract is available on 3 chains", () => {
-    expect(Object.keys(skyDef.contracts.sUsds.addresses)).toHaveLength(3);
+  it("sUsds contract is available on mainnet only", () => {
+    expect(Object.keys(skyDef.contracts.sUsds.addresses)).toHaveLength(1);
     expect(skyDef.contracts.sUsds.addresses["1"]).toBeDefined();
-    expect(skyDef.contracts.sUsds.addresses["8453"]).toBeDefined();
-    expect(skyDef.contracts.sUsds.addresses["42161"]).toBeDefined();
+  });
+
+  it("sUsdsL2 contract is available on Base and Arbitrum", () => {
+    expect(Object.keys(skyDef.contracts.sUsdsL2.addresses)).toHaveLength(2);
+    expect(skyDef.contracts.sUsdsL2.addresses["8453"]).toBeDefined();
+    expect(skyDef.contracts.sUsdsL2.addresses["42161"]).toBeDefined();
   });
 
   it("stUsds contract is Ethereum-only", () => {
@@ -120,5 +124,26 @@ describe("Sky Protocol Definition", () => {
       const chains = Object.keys(skyDef.contracts[key].addresses);
       expect(chains).toEqual(["1"]);
     }
+  });
+
+  it("sky contract exposes only balanceOf (no totalSupply)", () => {
+    const skyActions = skyDef.actions.filter((a) => a.contract === "sky");
+    const skyActionSlugs = skyActions.map((a) => a.slug);
+    expect(skyActionSlugs).toEqual(["get-sky-balance"]);
+  });
+
+  it("sUsdsL2 exposes only the two read-only ERC-20 actions", () => {
+    // Pins the contract's own action set the way the sky case above does.
+    // A fourth function added to the shared L2 ABI would otherwise be caught
+    // only by the total count. The last round showed a count assertion can
+    // stay green through a wrong change. In particular this fails if
+    // totalAssets comes back, which is ERC-4626 and reverts on both L2s.
+    const slugs = skyDef.actions
+      .filter((a) => a.contract === "sUsdsL2")
+      .map((a) => a.slug);
+    expect(slugs).toEqual([
+      "get-susds-balance-l2",
+      "get-susds-total-supply-l2",
+    ]);
   });
 });

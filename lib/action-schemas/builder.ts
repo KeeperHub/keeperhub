@@ -14,6 +14,7 @@ import {
   BUILTIN_NODE_ID,
   BUILTIN_NODE_LABEL,
 } from "@/lib/workflow/editor/builtin-variables";
+import { isDirectExecutionSupported } from "@/plugins/protocol/steps/resolve-protocol-meta";
 import {
   type ActionConfigFieldBase,
   computeActionId,
@@ -72,6 +73,11 @@ export type ActionSchema = {
    * cannot express.
    */
   featureEnabled: boolean;
+  /**
+   * True when the action is routable through execute_protocol_action.
+   * Other actions may still be executable through a sibling tool or workflow.
+   */
+  protocolDirectExecution: boolean;
 };
 
 export type BuildActionSchemasOptions = {
@@ -198,6 +204,7 @@ export function transformPluginAction(
       action.requiresCredentials ?? plugin.requiresCredentials ?? false,
     requiredPlan: gate.requiredPlan,
     featureEnabled: gate.featureEnabled,
+    protocolDirectExecution: isDirectExecutionSupported(actionType),
     requiredFields,
     optionalFields,
     outputFields,
@@ -323,6 +330,7 @@ export async function buildActionSchemasResponse(
       ...(action as Record<string, unknown>),
       requiredPlan: gate.requiredPlan,
       featureEnabled: gate.featureEnabled,
+      protocolDirectExecution: false,
     };
   }
 

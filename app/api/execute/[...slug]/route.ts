@@ -52,8 +52,12 @@ async function executeProtocolAction(
   apiKeyId: string,
   idem: IdempotencyOutcome | null
 ): Promise<NextResponse> {
-  const meta = resolveProtocolMeta({ _actionType: actionType });
-  if (!meta) {
+  // Resolved without a chain, so the chain-scoped L2 slug aliases in
+  // resolveProtocolMeta cannot apply yet. This establishes only that the
+  // action type names a registered protocol action; the meta actually used
+  // for execution is re-resolved below, once the chain is normalized.
+  const initialMeta = resolveProtocolMeta({ _actionType: actionType });
+  if (!initialMeta) {
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
@@ -66,25 +70,14 @@ async function executeProtocolAction(
     );
   }
 
-  const protocol = getProtocol(meta.protocolSlug);
+  const protocol = getProtocol(initialMeta.protocolSlug);
   if (!protocol) {
-    return recordIdempotentResponse(
-      idem,
-      NextResponse.json(
-        { success: false, error: `Unknown protocol: ${meta.protocolSlug}` },
-        { status: HttpStatus.BAD_REQUEST }
-      )
-    );
-  }
-
-  const contract = protocol.contracts[meta.contractKey];
-  if (!contract) {
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
         {
           success: false,
-          error: `Unknown contract key "${meta.contractKey}" in protocol "${meta.protocolSlug}"`,
+          error: `Unknown protocol: ${initialMeta.protocolSlug}`,
         },
         { status: HttpStatus.BAD_REQUEST }
       )
@@ -127,6 +120,28 @@ async function executeProtocolAction(
     );
   }
   const network = String(resolvedChainId);
+
+  // The L2 slug aliases are chain-scoped, so they can only be applied now
+  // that the chain is a numeric ID. An integration still calling a slug the
+  // wstETH/sUSDS L2 split renamed binds the L2 contract key here, matching
+  // what the workflow read/write steps do. Falls back to the chain-free
+  // resolution, which is what every non-aliased action type returns anyway.
+  const meta =
+    resolveProtocolMeta({ _actionType: actionType, network }) ?? initialMeta;
+
+  const contract = protocol.contracts[meta.contractKey];
+  if (!contract) {
+    return recordIdempotentResponse(
+      idem,
+      NextResponse.json(
+        {
+          success: false,
+          error: `Unknown contract key "${meta.contractKey}" in protocol "${meta.protocolSlug}"`,
+        },
+        { status: HttpStatus.BAD_REQUEST }
+      )
+    );
+  }
 
   const contractAddress = resolveContractAddress(
     contract,

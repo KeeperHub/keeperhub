@@ -1,0 +1,9 @@
+[
+  {
+    "type": "function",
+    "name": "depositPaused",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [{ "name": "depositPaused", "type": "bool" }]
+  }
+]

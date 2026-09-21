@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import "@/protocols";
 import {
   describeCron,
   IntervalTooSmallError,
@@ -1700,14 +1701,28 @@ export function registerTools(
           "",
           "DIRECT EXECUTION (EVM WRITES)",
           "1. Call execute_transfer, execute_contract_call, or execute_check_and_execute with simulate=true",
-          "2. Continue only after success=true and wouldRevert=false; any tool error is a hard stop",
+          "2. Continue only after success=true, and wouldRevert=false when that field is present; any tool error is a hard stop",
           "3. Repeat the same arguments with simulate omitted and a unique idempotency_key",
           "4. Poll get_direct_execution_status with bounded backoff until completed or failed",
           "5. Save the terminal transactionLink as the onchain proof",
           "- status unconfirmed means the transaction was broadcast but the chain has not confirmed it yet; it is NOT a failure. Keep polling. Never re-send an unconfirmed execution: the transaction may still land and re-sending moves the funds twice",
           "- simulate must be a JSON boolean, not a string",
           "- simulation is EVM-only; Solana chain IDs 101/103 and their aliases are rejected before the API call",
-          "- view/pure calls and unmet conditions return their normal read/no-action result",
+          "- view/pure calls executed through execute_contract_call return their normal read/no-action result",
+          "",
+          "DIRECT EXECUTION: SIMULATE RESPONSE SHAPE",
+          "A successful dry run on execute_transfer or execute_contract_call arrives as data, the tool result content, with this shape:",
+          '- {success: true, status: "simulated", from, to, value, gasEstimate, simulatedReturnValue, wouldRevert: false}',
+          "Exception: a view/pure function called through execute_contract_call with simulate: true never reaches the simulator at all -- it dispatches straight to the normal read path and returns {result: ...} at HTTP 200, with no success, status, or wouldRevert field.",
+          "A failed dry run does NOT arrive as data. The underlying API returns a non-2xx status -- including 400 (deterministic validation/revert), 422 (WALLET_NOT_CONFIGURED -- no wallet set up for the org, checked before simulation and often the first failure on a fresh org; fix it once, do not retry), 503 (simulator/RPC unavailable), and 429 (rate limited) -- and any non-2xx makes the tool call fail: isError: true, with a text message, not a parseable object -- there is no success or wouldRevert field to branch on. Always branch on isError, never on parsing the failure text as JSON. Exception: a 403 scope denial never reaches the API at all -- withScopeCheck short-circuits to a structured result with isError: true whose text is the one failure body that IS parseable JSON:",
+          "- A revert, or a 400 with a machine-readable code (currently only insufficient_balance), gets its text enriched with an appended Reason / Next step block after the original 'API call failed: 400 ... - {...}' line, with a Reason code line added only when the failure carries a code (validation failures only -- a revert has no code field)",
+          "- An uncoded validation 400, the 422 wallet-not-configured case, and every 503 (simulator itself failed -- RPC/infra, not a signal the call would succeed), get NO enrichment: the bare 'API call failed: <status> ... - {...}' string, with the failure JSON surviving only as a fragment of that error text",
+          '- For reference, the failure JSON embedded in that text has shape {success: false, status: "simulated", from, to, value, error, failureKind, wouldRevert, revertReason?, code?, balanceWei?, requiredWei?, shortfallWei?, nativeSymbol?, originalError?, undecodedRevertData?}; failureKind is "validation", "revert", or "unavailable" -- when failureKind is "unavailable" (a 503), wouldRevert is false but is not the signal to read: the simulator itself failed, not the call, so branch on success and failureKind rather than wouldRevert to tell it apart from a real revert',
+          "execute_check_and_execute's simulate response has three distinct branches, not one shared shape:",
+          "- Condition not met: {success, status, executed: false, conditionResult} -- no gasEstimate, no wouldRevert (no call was made); arrives as data",
+          "- Condition met, action is view/pure: {success, status, executed: true, conditionResult, result} -- no gasEstimate, no wouldRevert; arrives as data",
+          "- Condition met, action is a write: follows the execute_transfer/execute_contract_call rule above -- a successful dry run arrives as data (the full simulate shape plus executed and conditionResult); a failed one is isError text embedding the same failure JSON, not data, plus executed and conditionResult when the failure came from the simulator itself (400/503) -- the 422 wallet-not-configured case is checked before the condition is evaluated, so it carries neither field",
+          "Full field-by-field docs: https://docs.keeperhub.com/api/direct-execution#dry-run-simulation",
           "",
           "PROTOCOL WRITES",
           "1. Call execute_protocol_action with a unique idempotency_key. There is no simulate / dry-run mode; a write signs and broadcasts immediately",
@@ -1740,7 +1755,7 @@ export function registerTools(
 
   server.tool(
     "execute_transfer",
-    "Transfer native tokens (ETH, MATIC) or ERC20 tokens from your wallet to a recipient address. Requires a wallet integration.",
+    "Transfer native tokens (ETH, MATIC) or ERC20 tokens from your wallet to a recipient address. Requires a wallet integration. Full simulate response shape (success/failure fields, failureKind values): https://docs.keeperhub.com/api/direct-execution#dry-run-simulation",
     {
       chain_id: looseString(
         "Chain ID (e.g., '1' for Ethereum, '8453' for Base, or '103' for Solana Devnet). Solana transfers can broadcast, but simulate is currently EVM-only."
@@ -1795,7 +1810,7 @@ export function registerTools(
 
   server.tool(
     "execute_contract_call",
-    'Call a smart contract function. For view/pure functions, returns the result directly. For state-changing functions, submits a transaction and returns the execution ID. Requires a wallet integration for write calls. Full example: {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "chain_id": "11155111", "function_name": "transfer", "function_args": "[\\"0xRecipient...\\", \\"1000\\"]"} - note that function_args is a JSON array encoded as a string.',
+    'Call a smart contract function. For view/pure functions, returns the result directly. For state-changing functions, submits a transaction and returns the execution ID. Requires a wallet integration for write calls. Full example: {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "chain_id": "11155111", "function_name": "transfer", "function_args": "[\\"0xRecipient...\\", \\"1000\\"]"} - note that function_args is a JSON array encoded as a string. Full simulate response shape (success/failure fields, failureKind values): https://docs.keeperhub.com/api/direct-execution#dry-run-simulation',
     {
       contract_address: z.string().describe("Contract address (0x...)"),
       chain_id: looseString("Chain ID (e.g., '1' for Ethereum)"),
@@ -1855,7 +1870,7 @@ export function registerTools(
 
   server.tool(
     "execute_check_and_execute",
-    'Read one supported scalar from a contract and execute an action if its condition is met. A single Solidity integer output supports every operator; a single address or bytes1 through bytes32 output supports eq and neq only. Empty, multiple, compound, and other scalar outputs are rejected before the RPC read. Useful for conditional on-chain operations (e.g., \'if balance > 1000, then transfer\'). Requires a wallet integration. Full example: {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "chain_id": "11155111", "function_name": "balanceOf", "function_args": "[\\"0xHolder...\\"]", "condition": {"operator": "gt", "value": "1000"}, "action": {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "function_name": "transfer", "function_args": "[\\"0xRecipient...\\", \\"1000\\"]"}} - note that function_args is a JSON array encoded as a string, on both the check and the action.',
+    'Read one supported scalar from a contract and execute an action if its condition is met. A single Solidity integer output supports every operator; a single address or bytes1 through bytes32 output supports eq and neq only. Empty, multiple, compound, and other scalar outputs are rejected before the RPC read. Useful for conditional on-chain operations (e.g., \'if balance > 1000, then transfer\'). Requires a wallet integration. Full example: {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "chain_id": "11155111", "function_name": "balanceOf", "function_args": "[\\"0xHolder...\\"]", "condition": {"operator": "gt", "value": "1000"}, "action": {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "function_name": "transfer", "function_args": "[\\"0xRecipient...\\", \\"1000\\"]"}} - note that function_args is a JSON array encoded as a string, on both the check and the action. The simulate response does NOT always carry gasEstimate/wouldRevert: a condition that is not met, or a view/pure action, never made a call to estimate, so those fields are absent on those two branches. Only a write action returns the full simulate shape (plus executed and conditionResult). Full response shapes for all three branches: https://docs.keeperhub.com/api/direct-execution#check-and-execute-specifics',
     {
       contract_address: z
         .string()
@@ -2334,7 +2349,7 @@ export function registerMetaTools(
   // Meta-tool 1: Search and discover available protocol actions
   server.tool(
     "search_protocol_actions",
-    "Search for available protocol actions across all supported DeFi protocols (Aave, Morpho, Chronicle, Chainlink, Uniswap, Compound, Lido, etc.). Call this first to discover what actions are available and what parameters they require, then use execute_protocol_action to run them.",
+    "Search for available protocol actions across all supported DeFi protocols (Aave, Morpho, Chronicle, Chainlink, Uniswap, Compound, Lido, etc.). Call this first to discover what actions are available and what parameters they require, then use execute_protocol_action only when protocolDirectExecution is true; otherwise use the action-specific sibling tool (such as execute_transfer or execute_contract_call) or workflow execution.",
     {
       query: z
         .string()
@@ -2380,6 +2395,7 @@ export function registerMetaTools(
             requiresCredentials?: boolean;
             requiredPlan?: string | null;
             featureEnabled?: boolean;
+            protocolDirectExecution?: boolean;
           }
         >;
 
@@ -2410,6 +2426,7 @@ export function registerMetaTools(
           requiresCredentials: a.requiresCredentials,
           requiredPlan: a.requiredPlan ?? null,
           featureEnabled: a.featureEnabled ?? true,
+          protocolDirectExecution: a.protocolDirectExecution ?? false,
         }));
 
         return {
