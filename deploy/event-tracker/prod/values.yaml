@@ -89,6 +89,14 @@ env:
   AWS_REGION:
     type: kv
     value: "us-east-2"
+  # Which chains the Trace trigger will register on. Empty means the surveyed
+  # default set in `event-tracker/src/chains/trace-capability.ts` applies;
+  # see `keeperhub-events/README.md` for the accepted values. Present and
+  # empty rather than absent so changing it is a value edit here rather than
+  # a chart edit.
+  TRACE_CAPABLE_CHAIN_IDS:
+    type: kv
+    value: ""
 
 externalSecrets:
   clusterSecretStoreName: techops-prod

@@ -132,12 +132,46 @@ namespace, state the chains:
 
 | Variable | Meaning |
 | --- | --- |
-| `TRACE_CAPABLE_CHAIN_IDS` unset | the surveyed default set applies |
+| `TRACE_CAPABLE_CHAIN_IDS` unset or empty | the surveyed default set applies |
 | `TRACE_CAPABLE_CHAIN_IDS=1,8453,42161` | replaces the default set with exactly these chain IDs |
 | `TRACE_CAPABLE_CHAIN_IDS=*` | trusts every chain to answer the method |
+| `TRACE_CAPABLE_CHAIN_IDS=none` | trusts no chain; refuses every Trace registration |
 
 It replaces rather than extends, so a chain in the default set that this
 deployment's upstream does not serve can be removed.
+
+Two parsing rules are worth stating, because the obvious guesses are wrong:
+
+- An entry that is not a positive integer is dropped with a warn naming it, and
+  the rest of the list still applies, so one typo does not widen the set to `*`
+  or narrow it to nothing. `0` is one of those entries: EIP-155 chain IDs start
+  at 1.
+- A value that names **no** usable chain at all -- every entry a typo -- falls
+  back to the surveyed default set and says so in a warn. It is not read as
+  "none": the operator set the variable in order to enable chains, and reading a
+  typo as the opposite instruction would turn off every Trace trigger in the
+  deployment. `none` is the only way to say none.
+
+In-cluster this is a chart value, not a runtime knob. It is declared empty in
+`deploy/event-tracker/staging/values.yaml` and
+`deploy/event-tracker/prod/values.yaml`, so setting it is an edit to the `env:`
+map in those files plus a redeploy; there is no way to change it on a running
+pod.
+
+### Exercising it locally against Anvil
+
+Anvil serves `debug_traceBlockByNumber`, but `31337` is not in the surveyed set,
+because the survey probed the configured public upstreams rather than local
+nodes. A Trace registration on a local Anvil is therefore refused by default.
+Name the chain to run one:
+
+```bash
+cd event-tracker
+TRACE_CAPABLE_CHAIN_IDS=31337 pnpm dev
+```
+
+Add it to the list rather than using `*` if other chains are also configured,
+since the override replaces the default set rather than extending it.
 
 If an upstream that passed this gate refuses the method at runtime, trace
 matching is paused on that connection until it reconnects and

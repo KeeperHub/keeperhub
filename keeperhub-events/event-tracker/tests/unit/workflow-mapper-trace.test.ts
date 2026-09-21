@@ -1,17 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NetworkConfig, NetworksMap, RawWorkflow } from "../../lib/types";
 import { logger } from "../../lib/utils/logger";
-import { TRACE_CAPABILITY_ENV_VAR } from "../../src/chains/trace-capability";
+import {
+  TRACE_CAPABILITY_ENV_VAR,
+  resetTraceCapabilityCache,
+} from "../../src/chains/trace-capability";
 import { isTraceRegistration } from "../../src/listener/registry";
 import { buildRegistration } from "../../src/listener/workflow-mapper";
 
 /**
  * Mapping of a `Trace` trigger node (issue #2464).
  *
- * Nothing built a `TraceRegistration` before this branch existed, so a saved
- * and enabled Trace workflow was admitted by the API and then fell through to
- * `missing eventName` here. The user saw a live workflow that never fired,
- * and the only record of it was one warn line.
+ * Nothing built a `TraceRegistration` before this branch existed, so a Trace
+ * config reaching `buildRegistration` fell through to `missing eventName` and
+ * was skipped. Nothing upstream produces one against `staging` yet either:
+ * `app/api/workflows/events/route.ts` admits only `WorkflowTriggerEnum.EVENT`
+ * and `.TEMPO_PAYMENT`, and `WorkflowTriggerEnum` has no `Trace` member. This
+ * suite is therefore the only current caller of the branch, which is why the
+ * payloads below are hand-built rather than fixtures captured from the API.
  *
  * The filter is re-validated here rather than trusted from the endpoint. A
  * filter the matcher cannot read produces a trigger that registers, never
@@ -37,6 +43,13 @@ const CHAIN_ID = 9745;
  */
 const UNTRACEABLE_CHAIN_ID = 1;
 
+/**
+ * A second one, so a case can show the refusal latch keying on the
+ * workflow+chain pair rather than on the workflow. Polygon, which the same
+ * survey also recorded refusing the debug namespace on its public default.
+ */
+const SECOND_UNTRACEABLE_CHAIN_ID = 137;
+
 const NETWORK: NetworkConfig = {
   id: "plasma-mainnet",
   chainId: CHAIN_ID,
@@ -61,14 +74,30 @@ const UNTRACEABLE_NETWORK: NetworkConfig = {
   symbol: "ETH",
 };
 
+const SECOND_UNTRACEABLE_NETWORK: NetworkConfig = {
+  ...NETWORK,
+  id: "polygon-mainnet",
+  chainId: SECOND_UNTRACEABLE_CHAIN_ID,
+  name: "Polygon",
+  symbol: "POL",
+};
+
 const NETWORKS: NetworksMap = {
   [CHAIN_ID]: NETWORK,
   [UNTRACEABLE_CHAIN_ID]: UNTRACEABLE_NETWORK,
+  [SECOND_UNTRACEABLE_CHAIN_ID]: SECOND_UNTRACEABLE_NETWORK,
 };
 
 const WATCHED = "0x1111111111111111111111111111111111111111";
 const CALLER = "0x2222222222222222222222222222222222222222";
 const PAUSE_SELECTOR = "0x8456cb59";
+
+/**
+ * The documented spelling for "no chain here traces". A literal rather than an
+ * import of the module constant, because it is the operator-facing contract the
+ * README states: renaming the constant must fail this suite.
+ */
+const NONE_SENTINEL = "none";
 
 function makeWorkflow(
   configOverrides: Record<string, unknown> = {},
@@ -296,9 +325,28 @@ describe("buildRegistration - Trace", () => {
       return reg !== null && isTraceRegistration(reg) ? reg : null;
     }
 
+    beforeEach(() => {
+      // The parse warns once per distinct variable value and a refusal warns
+      // once per workflow+chain, both for the life of the process. Without
+      // this a case asserting that a line was emitted reads a latch set by an
+      // earlier case that used the same value or the same pair.
+      resetTraceCapabilityCache();
+    });
+
     afterEach(() => {
       delete process.env[TRACE_CAPABILITY_ENV_VAR];
+      resetTraceCapabilityCache();
     });
+
+    /** Every warn line matching `needle`, in emission order. */
+    function warnLines(needle: string): string[] {
+      return warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes(needle));
+    }
+
+    const REFUSAL = "is not known to answer";
+    const FELL_BACK = "named no usable chain ID";
 
     it("refuses a chain the survey found refusing the method", () => {
       expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
@@ -378,6 +426,164 @@ describe("buildRegistration - Trace", () => {
           String(c[0]).includes('entry "nonsense" is not a chain ID'),
         ),
       ).toBe(true);
+    });
+
+    describe("an override that names no usable chain falls back", () => {
+      /**
+       * The blocker. `traceCapableChainIds()` was
+       * `configuredOverride() ?? new Set(SURVEYED...)`, and an override whose
+       * every token was dropped returned an empty `Set`. An empty Set is not
+       * nullish, so the surveyed default never applied and
+       * `isTraceCapableChain` was false for every chain:
+       * `TRACE_CAPABLE_CHAIN_IDS=mainnet` silently turned off every Trace
+       * trigger in the deployment. That is the outcome dropping a bad token
+       * exists to avoid.
+       */
+      it("keeps the surveyed set when every token was dropped", () => {
+        process.env[TRACE_CAPABILITY_ENV_VAR] = "mainnet";
+        expect(buildOn(CHAIN_ID)).not.toBeNull();
+      });
+
+      it("falls back to the surveyed set, not to the wildcard", () => {
+        // The other half: falling back must not admit a chain the survey
+        // found refusing, or a typo becomes `*`.
+        process.env[TRACE_CAPABILITY_ENV_VAR] = "mainnet";
+        expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+      });
+
+      it("says that it fell back, and how to mean it", () => {
+        // An operator who mistyped every token must not silently get a
+        // different policy than the one they think they set.
+        process.env[TRACE_CAPABILITY_ENV_VAR] = "mainnet";
+        buildOn(CHAIN_ID);
+        const line = warnLines(FELL_BACK)[0];
+        expect(line).toContain('"mainnet"');
+        expect(line).toContain("falling back to the surveyed default set");
+        expect(line).toContain(`${TRACE_CAPABILITY_ENV_VAR}=none`);
+      });
+
+      it("blames the surveyed default in the refusal, not the override", () => {
+        // `describeTraceCapableChains` used to decide provenance by re-reading
+        // the variable, which is non-empty here, so it credited the override
+        // for a set the override did not produce.
+        process.env[TRACE_CAPABILITY_ENV_VAR] = "mainnet";
+        buildOn(UNTRACEABLE_CHAIN_ID);
+        const line = warnLines(REFUSAL)[0];
+        expect(line).toContain("surveyed default");
+        expect(line).not.toContain(`(${TRACE_CAPABILITY_ENV_VAR})`);
+      });
+
+      it("treats 0 as a typo, so =0 is not a silent one-element set", () => {
+        // The docstring offered `=0` as the way to say "no chain here traces",
+        // but `Number("0")` is a valid integer, so it produced `{0}`: every
+        // real chain refused, for a reason no operator could read out of the
+        // log line. 0 is not an EIP-155 chain ID.
+        process.env[TRACE_CAPABILITY_ENV_VAR] = "0";
+        expect(buildOn(CHAIN_ID)).not.toBeNull();
+        expect(
+          warn.mock.calls.some((c) =>
+            String(c[0]).includes('entry "0" is not a chain ID'),
+          ),
+        ).toBe(true);
+      });
+    });
+
+    describe("none is the way to say no chain traces", () => {
+      it("refuses a surveyed-capable chain", () => {
+        process.env[TRACE_CAPABILITY_ENV_VAR] = NONE_SENTINEL;
+        expect(buildOn(CHAIN_ID)).toBeNull();
+      });
+
+      it("refuses a non-capable chain too", () => {
+        process.env[TRACE_CAPABILITY_ENV_VAR] = NONE_SENTINEL;
+        expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+      });
+
+      it("names itself as the reason, so the refusal is actionable", () => {
+        process.env[TRACE_CAPABILITY_ENV_VAR] = NONE_SENTINEL;
+        buildOn(CHAIN_ID);
+        const line = warnLines(REFUSAL)[0];
+        expect(line).toContain("no chain is configured as trace-capable");
+        expect(line).toContain(`${TRACE_CAPABILITY_ENV_VAR}=${NONE_SENTINEL}`);
+      });
+
+      it("is not read as an override that failed to parse", () => {
+        // It must not take the fallback path, which would restore the
+        // surveyed set and make `none` mean its opposite.
+        process.env[TRACE_CAPABILITY_ENV_VAR] = NONE_SENTINEL;
+        buildOn(CHAIN_ID);
+        expect(warnLines(FELL_BACK)).toHaveLength(0);
+        expect(
+          warn.mock.calls.some((c) =>
+            String(c[0]).includes("is not a chain ID"),
+          ),
+        ).toBe(false);
+      });
+
+      it("is case-insensitive, since it is prose rather than an ID", () => {
+        process.env[TRACE_CAPABILITY_ENV_VAR] = "NONE";
+        expect(buildOn(CHAIN_ID)).toBeNull();
+        expect(warnLines(FELL_BACK)).toHaveLength(0);
+      });
+    });
+
+    describe("the refusal does not repeat on every reconcile", () => {
+      it("reports one refusal across repeated reconciles", () => {
+        // `synchronizeData` runs on a 30 second interval and re-maps every
+        // workflow, so an unlatched refusal is one line per refused workflow
+        // every 30 seconds for the life of the pod, which buries the first.
+        for (let i = 0; i < 3; i += 1) {
+          expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+        }
+        expect(warnLines(REFUSAL)).toHaveLength(1);
+      });
+
+      it("reports a different chain separately", () => {
+        // Latched on the pair, not the workflow: moving a workflow to another
+        // non-capable chain is a new fact.
+        buildOn(UNTRACEABLE_CHAIN_ID);
+        buildOn(SECOND_UNTRACEABLE_CHAIN_ID);
+        expect(warnLines(REFUSAL)).toHaveLength(2);
+      });
+
+      it("reports again after the pair registered in between", () => {
+        // A transition latch, not a permanent gag. The mirror of `reconnect()`
+        // clearing `traceUnsupported` so the runtime verdict is re-learned.
+        process.env[TRACE_CAPABILITY_ENV_VAR] = NONE_SENTINEL;
+        expect(buildOn(CHAIN_ID)).toBeNull();
+        delete process.env[TRACE_CAPABILITY_ENV_VAR];
+        expect(buildOn(CHAIN_ID)).not.toBeNull();
+        process.env[TRACE_CAPABILITY_ENV_VAR] = NONE_SENTINEL;
+        expect(buildOn(CHAIN_ID)).toBeNull();
+        expect(warnLines(REFUSAL)).toHaveLength(2);
+      });
+
+      it("parses a bad token once per refusal, not once per lookup", () => {
+        // The refusal path asks twice, through `isTraceCapableChain` and
+        // through `describeTraceCapableChains`. Re-reading and re-parsing the
+        // variable on each call emitted the dropped-token warn twice.
+        process.env[TRACE_CAPABILITY_ENV_VAR] = `nonsense,${CHAIN_ID}`;
+        expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+        expect(warnLines('entry "nonsense" is not a chain ID')).toHaveLength(1);
+      });
+
+      it("parses a bad token once across repeated reconciles", () => {
+        process.env[TRACE_CAPABILITY_ENV_VAR] = `nonsense,${CHAIN_ID}`;
+        for (let i = 0; i < 3; i += 1) {
+          expect(buildOn(CHAIN_ID)).not.toBeNull();
+        }
+        expect(warnLines('entry "nonsense" is not a chain ID')).toHaveLength(1);
+      });
+
+      it("re-resolves when the value actually changes", () => {
+        // Memoised on the value, not resolved once at module load: the
+        // override stays live-readable, which is what lets these cases set it
+        // without a module-registry reset.
+        process.env[TRACE_CAPABILITY_ENV_VAR] = String(UNTRACEABLE_CHAIN_ID);
+        expect(buildOn(UNTRACEABLE_CHAIN_ID)).not.toBeNull();
+        process.env[TRACE_CAPABILITY_ENV_VAR] = String(CHAIN_ID);
+        expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+      });
     });
   });
 

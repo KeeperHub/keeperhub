@@ -10,7 +10,9 @@ import { buildEventAbi } from "../chains/event-serializer";
 import { redactRpcUrl } from "../chains/provider-manager";
 import {
   describeTraceCapableChains,
+  forgetTraceRefusal,
   isTraceCapableChain,
+  shouldReportTraceRefusal,
 } from "../chains/trace-capability";
 import type { AbiEvent } from "../chains/validation";
 import type {
@@ -143,10 +145,17 @@ export function buildRegistration(
   }
 
   // Trace trigger (issue #2464). Same reason for branching here: it shares
-  // the connection fields and the watched address, and nothing below. Without
-  // this branch a saved, enabled Trace workflow was admitted by the API and
-  // then dropped at `missing eventName` below, so the user saw a live
-  // workflow that never fired and one warn line nobody was reading.
+  // the connection fields and the watched address, and nothing below.
+  //
+  // Nothing upstream produces one of these against `staging` yet.
+  // `app/api/workflows/events/route.ts` admits only `WorkflowTriggerEnum.EVENT`
+  // and `.TEMPO_PAYMENT` and drops every other trigger node, and
+  // `WorkflowTriggerEnum` has no `Trace` member, so the endpoint this mapper
+  // reads cannot currently hand it a Trace workflow. This branch is the
+  // matcher half landing ahead of the API and editor half; until those admit
+  // the trigger it is reached only by the tests and by a hand-written payload.
+  // Without it a Trace config would fall through to the `missing eventName`
+  // check below and be skipped.
   if (config.triggerType === TRACE_TRIGGER_TYPE) {
     return buildTraceRegistration(workflow, workflowId, config, {
       chainId,
@@ -594,12 +603,22 @@ function buildTraceRegistration(
   // `trace-capability.ts` holds the set, where it came from, and the
   // `TRACE_CAPABLE_CHAIN_IDS` override for a deployment whose upstreams do
   // serve the method.
+  //
+  // Latched per workflow+chain. `synchronizeData` re-maps every workflow every
+  // 30 seconds, so reporting this on each pass is one line per refused
+  // workflow per 30 seconds for the life of the pod, which buries the first
+  // one. `describeTraceCapableChains()` is called only inside the latch for
+  // the same reason.
   if (!isTraceCapableChain(connection.chainId)) {
-    logger.warn(
-      `[workflow-mapper] workflow ${workflowId} trace trigger is on chain ${connection.chainId}, which is not known to answer debug_traceBlockByNumber; ${describeTraceCapableChains()}; skipping`,
-    );
+    if (shouldReportTraceRefusal(workflowId, connection.chainId)) {
+      logger.warn(
+        `[workflow-mapper] workflow ${workflowId} trace trigger is on chain ${connection.chainId}, which is not known to answer debug_traceBlockByNumber; ${describeTraceCapableChains()}; skipping`,
+      );
+    }
     return null;
   }
+  // Capable now, so a future refusal for this pair is a new fact.
+  forgetTraceRefusal(workflowId, connection.chainId);
 
   if (!ADDRESS_PATTERN.test(connection.contractAddress.trim())) {
     logger.warn(
