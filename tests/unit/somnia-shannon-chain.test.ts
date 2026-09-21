@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BLOCKSCOUT_INSTANCES } from "@/plugins/blockscout/chains";
 
+const { seededValues } = vi.hoisted(() => ({
+  seededValues: [] as Record<string, unknown>[],
+}));
+
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/db/connection-utils", () => ({
   getDatabaseUrl: () => "postgres://unused",
@@ -15,16 +19,21 @@ vi.mock("drizzle-orm/postgres-js", () => ({
         where: () => ({ limit: async () => [] }),
       }),
     }),
-    insert: () => ({ values: async () => undefined }),
+    insert: () => ({
+      values: async (value: Record<string, unknown>) => {
+        seededValues.push(value);
+      },
+    }),
   }),
 }));
 
 const SHANNON_CHAIN_ID = 50_312;
 const PRIMARY_RPC = "https://dream-rpc.somnia.network";
-const FALLBACK_RPC = "https://api.infra.testnet.somnia.network";
+const FALLBACK_RPC = "https://rpc.ankr.com/somnia_testnet";
 const PRIMARY_WSS = "wss://dream-rpc.somnia.network/ws";
 
 beforeEach(() => {
+  seededValues.length = 0;
   vi.stubEnv("CHAIN_RPC_CONFIG", "");
   vi.stubEnv("CHAIN_SOMNIA_SHANNON_PRIMARY_RPC", "");
   vi.stubEnv("CHAIN_SOMNIA_SHANNON_FALLBACK_RPC", "");
@@ -88,6 +97,18 @@ describe("Somnia Shannon chain onboarding", () => {
       });
       expect(shannon?.defaultPrimaryRpc).not.toBe(shannon?.defaultFallbackRpc);
       await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+      expect(seededValues).toContainEqual(
+        expect.objectContaining({
+          chainId: SHANNON_CHAIN_ID,
+          chainType: "evm",
+          explorerUrl: "https://shannon-explorer.somnia.network",
+          explorerApiType: "blockscout",
+          explorerApiUrl: "https://shannon-explorer.somnia.network/api",
+          explorerTxPath: "/tx/{hash}",
+          explorerAddressPath: "/address/{address}",
+          explorerContractPath: "/address/{address}?tab=contract",
+        })
+      );
     } finally {
       exit.mockRestore();
     }

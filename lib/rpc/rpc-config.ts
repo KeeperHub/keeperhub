@@ -73,7 +73,7 @@ export const PUBLIC_RPCS = {
   AVAX_FUJI: "https://api.avax-test.network/ext/bc/C/rpc",
   AVAX_FUJI_FALLBACK: "https://avalanche-fuji-c-chain-rpc.publicnode.com",
   SOMNIA_SHANNON: "https://dream-rpc.somnia.network",
-  SOMNIA_SHANNON_FALLBACK: "https://api.infra.testnet.somnia.network",
+  SOMNIA_SHANNON_FALLBACK: "https://rpc.ankr.com/somnia_testnet",
   SOMNIA_SHANNON_WSS: "wss://dream-rpc.somnia.network/ws",
   PLASMA_MAINNET: "https://rpc.plasma.to",
   PLASMA_MAINNET_FALLBACK: "https://plasma.drpc.org",
