@@ -9,10 +9,18 @@ import type { WorkflowNode } from "@/lib/workflow/store";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 import {
-  isValidTraceCallTypes,
-  isValidTraceSelector,
-  normalizeTraceTriggerConfig,
+  prepareTraceTriggerConfig,
+  type TraceConfigCheck,
 } from "@/lib/workflow/trace-trigger-config";
+
+const TRACE_REFUSAL_REASONS: Record<
+  Extract<TraceConfigCheck, { ok: false }>["reason"],
+  string
+> = {
+  "contract-address": "missing or malformed watched contract address",
+  "call-types": "unreadable call types",
+  selector: "malformed function selector",
+};
 
 // The Transfer trigger always watches the fixed TIP-20
 // TransferWithMemo event. The event-tracker's mapper needs an ABI + event name
@@ -122,31 +130,22 @@ export async function GET(request: Request) {
           const config = triggerNode.data?.config;
 
           if (isTraceTrigger && config) {
-            // A selector the matcher can never match produces a trigger that
-            // registers and never fires, reporting nothing -- so it is
-            // refused here rather than handed to the tracker. The editor
-            // marks the field invalid, but nothing validates trigger nodes
-            // on save (action-config validation covers action nodes only),
-            // so the editor's check cannot be the only one.
-            if (!isValidTraceCallTypes(config.traceCallTypes)) {
+            // Refused here rather than handed to the tracker: a missing
+            // watched contract fires on every call frame on the chain, and a
+            // selector or call-type list the matcher cannot read registers and
+            // never fires. Nothing validates trigger nodes on save
+            // (action-config validation covers action nodes only), so the
+            // editor's own checks cannot be the only ones.
+            const check = prepareTraceTriggerConfig(config);
+            if (!check.ok) {
               logUserError(
                 ErrorCategory.VALIDATION,
-                "[Workflow Events] Trace trigger has unreadable call types",
+                `[Workflow Events] Trace trigger refused: ${TRACE_REFUSAL_REASONS[check.reason]}`,
                 undefined,
-                { workflow_id: workflow.id }
+                { workflow_id: workflow.id, reason: check.reason }
               );
               return null;
             }
-            if (!isValidTraceSelector(config.traceSelector)) {
-              logUserError(
-                ErrorCategory.VALIDATION,
-                "[Workflow Events] Trace trigger has a malformed function selector",
-                undefined,
-                { workflow_id: workflow.id }
-              );
-              return null;
-            }
-            normalizeTraceTriggerConfig(config);
           }
 
           // Inject the fixed TransferWithMemo ABI + event name for the Tempo

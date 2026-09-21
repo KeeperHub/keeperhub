@@ -5,8 +5,8 @@ import { getTriggerOutputFields } from "@/lib/workflow/editor/trigger-output-fie
 import {
   isValidTraceCallTypes,
   isValidTraceSelector,
-  normalizeTraceTriggerConfig,
   parseTraceCallTypes,
+  prepareTraceTriggerConfig,
 } from "@/lib/workflow/trace-trigger-config";
 
 // The Trace trigger's payload and config are produced and read by the event
@@ -131,16 +131,20 @@ describe("parseTraceCallTypes", () => {
   });
 });
 
-describe("normalizeTraceTriggerConfig", () => {
+const WATCHED = "0x1111111111111111111111111111111111111111";
+
+describe("prepareTraceTriggerConfig", () => {
   it("turns a stored call-type string into the list the tracker expects", () => {
     const config: Record<string, unknown> = {
       triggerType: "Trace",
+      contractAddress: WATCHED,
       traceCallTypes: '["CALL"]',
       traceStatus: "reverted",
     };
-    normalizeTraceTriggerConfig(config);
+    expect(prepareTraceTriggerConfig(config)).toEqual({ ok: true });
     expect(config).toEqual({
       triggerType: "Trace",
+      contractAddress: WATCHED,
       traceCallTypes: ["CALL"],
       traceStatus: "reverted",
     });
@@ -151,10 +155,10 @@ describe("normalizeTraceTriggerConfig", () => {
     // the selector as-is, so an untrimmed value would register and never fire.
     const config: Record<string, unknown> = {
       triggerType: "Trace",
+      contractAddress: WATCHED,
       traceSelector: "  0x8456cb59  ",
     };
-    expect(isValidTraceSelector(config.traceSelector)).toBe(true);
-    normalizeTraceTriggerConfig(config);
+    expect(prepareTraceTriggerConfig(config).ok).toBe(true);
     expect(config.traceSelector).toBe("0x8456cb59");
   });
 
@@ -165,10 +169,10 @@ describe("normalizeTraceTriggerConfig", () => {
     // enabled and never fires.
     const config: Record<string, unknown> = {
       triggerType: "Trace",
+      contractAddress: WATCHED,
       traceCallTypes: '["call","DelegateCall"]',
     };
-    expect(isValidTraceCallTypes(config.traceCallTypes)).toBe(true);
-    normalizeTraceTriggerConfig(config);
+    expect(prepareTraceTriggerConfig(config).ok).toBe(true);
     expect(config.traceCallTypes).toEqual(["CALL", "DELEGATECALL"]);
   });
 
@@ -177,8 +181,68 @@ describe("normalizeTraceTriggerConfig", () => {
   });
 
   it("does not add a call-type field that was never set", () => {
-    const config: Record<string, unknown> = { triggerType: "Trace" };
-    normalizeTraceTriggerConfig(config);
+    const config: Record<string, unknown> = {
+      triggerType: "Trace",
+      contractAddress: WATCHED,
+    };
+    prepareTraceTriggerConfig(config);
     expect(config).not.toHaveProperty("traceCallTypes");
+  });
+
+  it("refuses a trigger with no watched contract, which would match every frame", () => {
+    // Every optional filter is wildcard-on-empty, so this config would fire
+    // on every call frame on the chain. `required` in the panel blocks no
+    // save, so this check is the only thing that stops it.
+    for (const contractAddress of [
+      undefined,
+      "",
+      "   ",
+      "0x1234",
+      "{{Lookup.address}}",
+    ]) {
+      const config: Record<string, unknown> = {
+        triggerType: "Trace",
+        network: "9745",
+        contractAddress,
+      };
+      expect(
+        prepareTraceTriggerConfig(config),
+        String(contractAddress)
+      ).toEqual({ ok: false, reason: "contract-address" });
+    }
+  });
+
+  it("trims the watched contract it accepted", () => {
+    const config: Record<string, unknown> = {
+      triggerType: "Trace",
+      contractAddress: `  ${WATCHED}  `,
+    };
+    expect(prepareTraceTriggerConfig(config).ok).toBe(true);
+    expect(config.contractAddress).toBe(WATCHED);
+  });
+
+  it("leaves a refused config untouched rather than half-normalized", () => {
+    // Normalizing without validating would forward a bare string to a
+    // matcher that calls .some on it; refusing must not normalize either.
+    const config: Record<string, unknown> = {
+      triggerType: "Trace",
+      contractAddress: WATCHED,
+      traceCallTypes: "garbage",
+    };
+    expect(prepareTraceTriggerConfig(config)).toEqual({
+      ok: false,
+      reason: "call-types",
+    });
+    expect(config.traceCallTypes).toBe("garbage");
+    expect(config).not.toHaveProperty("traceStatus");
+  });
+
+  it("defaults the call outcome to success, which is what the panel shows", () => {
+    const config: Record<string, unknown> = {
+      triggerType: "Trace",
+      contractAddress: WATCHED,
+    };
+    expect(prepareTraceTriggerConfig(config).ok).toBe(true);
+    expect(config.traceStatus).toBe("success");
   });
 });

@@ -108,10 +108,10 @@ The workflow runs once for each call to the watched contract that matches every 
 | Setting | Config key | Matches |
 |---------|------------|---------|
 | Call Outcome | `traceStatus` | `"success"` (default), `"reverted"`, or `"any"` |
-| Function | `traceSelector` | Calls to one function, given as its raw 4-byte selector. Choosing a function from the ABI in the editor stores `abiFunction`, which nothing reads yet, so the filter narrows to one function only when `traceSelector` is set |
+| Function | `traceSelector` | Calls to one function, given as its raw 4-byte selector. Choosing a function from the ABI in the editor fills this in. The tracker reads `traceSelector` only, so a workflow written through the API or MCP has to send it: `abiFunction` on its own narrows nothing |
 | Caller | `traceCaller` | Calls made from one address |
 | Call Types | `traceCallTypes` | Any of `CALL`, `STATICCALL`, `DELEGATECALL`, `CALLCODE`, `CREATE`, `CREATE2`, `SELFDESTRUCT`. Empty matches all |
-| Minimum Value | `traceMinValueWei` | Calls moving at least this much native token, in wei. Set `traceMinValue` to the same amount in native token units as well: the editor displays that key, and clearing its box removes the filter |
+| Minimum Value | `traceMinValueWei` | Calls moving at least this much native token, in wei. `traceMinValue` may carry the same amount in native token units for display; without it the editor shows the wei value converted. Clearing the box removes the filter |
 
 A malformed function selector stops the trigger from registering, rather than being accepted and then matching nothing. Other filter values are not validated yet, so check a caller address before saving.
 

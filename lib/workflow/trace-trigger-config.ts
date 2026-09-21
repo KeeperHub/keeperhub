@@ -97,10 +97,67 @@ export function parseTraceCallTypes(raw: unknown): unknown {
   }
 }
 
-/** Normalize a Trace trigger node's config in place for the event tracker. */
-export function normalizeTraceTriggerConfig(
+/** A 20-byte hex address, as the Watched Contract field has to hold. */
+export const TRACE_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * Whether a stored `contractAddress` is usable.
+ *
+ * Unlike every other Trace filter, this one is required. Each optional filter
+ * matches everything when it is absent, so a Trace trigger saved with a
+ * network and nothing else would fire on every call frame on the chain: the
+ * fires-on-everything direction, with a firing-rate and billing cost the
+ * never-fires direction does not have. The field's `required` flag only draws
+ * an asterisk and blocks no save, so the check has to live here.
+ *
+ * A template is refused too: a trigger runs before any node, so there is
+ * nothing for `{{Node.address}}` to resolve against.
+ */
+export function isValidTraceContractAddress(raw: unknown): boolean {
+  return typeof raw === "string" && TRACE_ADDRESS_PATTERN.test(raw.trim());
+}
+
+export type TraceConfigCheck =
+  | { ok: true }
+  | { ok: false; reason: "contract-address" | "call-types" | "selector" };
+
+/**
+ * Validate a Trace trigger node's config and, only if it passes, normalize it
+ * in place into the shape the event tracker compares.
+ *
+ * One function rather than a validator and a normalizer the caller has to run
+ * in the right order: normalizing an unvalidated config would forward
+ * `traceCallTypes: "garbage"` verbatim to a matcher that calls `.some` on it.
+ * On a failure the config is left untouched.
+ */
+export function prepareTraceTriggerConfig(
   config: Record<string, unknown>
-): void {
+): TraceConfigCheck {
+  if (!isValidTraceContractAddress(config.contractAddress)) {
+    return { ok: false, reason: "contract-address" };
+  }
+  if (!isValidTraceCallTypes(config.traceCallTypes)) {
+    return { ok: false, reason: "call-types" };
+  }
+  if (!isValidTraceSelector(config.traceSelector)) {
+    return { ok: false, reason: "selector" };
+  }
+  normalizeTraceTriggerConfig(config);
+  return { ok: true };
+}
+
+/** Normalize an already validated Trace trigger config in place. */
+function normalizeTraceTriggerConfig(config: Record<string, unknown>): void {
+  if (typeof config.contractAddress === "string") {
+    config.contractAddress = config.contractAddress.trim();
+  }
+  // The panel shows "Successful calls" for a config that never set the
+  // outcome. Defaulting it here, on the way to the tracker, keeps what the
+  // panel shows and what registers in step without the panel having to
+  // write the value on first render and dirty the canvas.
+  if (config.traceStatus === undefined || config.traceStatus === "") {
+    config.traceStatus = "success";
+  }
   if (config.traceCallTypes !== undefined) {
     config.traceCallTypes = parseTraceCallTypes(config.traceCallTypes);
   }

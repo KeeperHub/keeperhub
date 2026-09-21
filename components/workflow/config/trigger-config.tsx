@@ -11,7 +11,7 @@ import {
   ScanSearch,
   Webhook,
 } from "lucide-react";
-import { parseEther } from "ethers";
+import { formatEther, parseEther } from "ethers";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TimezoneSelect } from "@/components/ui/timezone-select";
+import {
+  type AbiItem,
+  computeSelector,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import { parseIntervalSeconds } from "@/lib/cron-utils";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import {
@@ -344,6 +349,60 @@ function toWeiString(amount: string): string | null {
   }
 }
 
+/**
+ * What the Minimum Value box shows: the typed amount when there is one,
+ * otherwise the wei threshold that registers, converted back to native units.
+ */
+function displayMinValue(typed: unknown, wei: unknown): string {
+  if (typeof typed === "string" && typed !== "") {
+    return typed;
+  }
+  if (typeof wei !== "string" || wei.trim() === "") {
+    return "";
+  }
+  try {
+    return formatEther(BigInt(wei.trim()));
+  } catch {
+    // Not a decimal wei string. Shown raw so the value in force is visible
+    // and fails the box's own check, rather than disappearing.
+    return wei;
+  }
+}
+
+/**
+ * The selector for the function a stored ABI key names, or null when the ABI
+ * does not parse or the key does not resolve to exactly one function.
+ */
+export function selectorForFunction(
+  abiRaw: unknown,
+  key: unknown
+): string | null {
+  if (typeof abiRaw !== "string" || typeof key !== "string" || key === "") {
+    return null;
+  }
+  let abi: unknown;
+  try {
+    abi = JSON.parse(abiRaw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(abi)) {
+    return null;
+  }
+  const resolution = resolveAbiFunction(abi as AbiItem[], key);
+  if (resolution.status !== "found") {
+    return null;
+  }
+  try {
+    return computeSelector(
+      resolution.entry.name,
+      resolution.entry.inputs ?? []
+    ).toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 // Trace trigger config. Fires once per call frame on the watched contract that
 // matches the filter, read from block call traces rather than event logs, so
 // it sees reverted calls, internal transfers and unlogged function calls.
@@ -364,26 +423,19 @@ function TraceTriggerFields({
       : [];
   }, [config.traceCallTypes]);
 
-  // `defaultValue` on the select is display-only: the renderer shows it and
-  // never writes it back, so a user who never opens the dropdown saves a
-  // config with no traceStatus at all. Persisting it on first render keeps
-  // what the panel shows and what the tracker receives in step, rather than
-  // relying on both sides defaulting to the same value.
-  //
-  // Skipped when the panel is read-only: a viewer who cannot edit must not
-  // dirty the canvas and trigger an autosave the server will refuse.
-  useEffect(() => {
-    if (disabled) {
-      return;
-    }
-    if (config.traceStatus === undefined || config.traceStatus === "") {
-      onUpdateConfig("traceStatus", "success");
-    }
-  }, [config.traceStatus, disabled, onUpdateConfig]);
+  // `defaultValue` on the select is display-only, so a config that never set
+  // the outcome is stored without traceStatus. The events endpoint defaults it
+  // to "success" on the way to the tracker (prepareTraceTriggerConfig), which
+  // is what the select shows, so nothing is written here on first render and
+  // opening the panel does not dirty the canvas.
 
   const selector = (config.traceSelector as string) || "";
   const selectorInvalid = !isValidTraceSelector(selector);
-  const minValue = (config.traceMinValue as string) || "";
+  // traceMinValueWei is what registers; traceMinValue is only what the box
+  // shows. A config written through the API or MCP may carry the wei value
+  // alone, and the box must show the threshold that is in force rather than
+  // an empty field while it filters.
+  const minValue = displayMinValue(config.traceMinValue, config.traceMinValueWei);
   const minValueInvalid = minValue.trim() !== "" && toWeiString(minValue) === null;
 
   const targetFields: ActionConfigField[] = [
@@ -465,6 +517,29 @@ function TraceTriggerFields({
     onUpdateConfig("traceCallTypes", next);
   }
 
+  // Choosing a function fills in its selector, since the selector is the only
+  // thing the tracker matches on: the ABI dropdown on its own would narrow
+  // nothing. Clearing the function clears the selector only when it is still
+  // the one the function produced, so a selector typed by hand survives.
+  function updateFunctionConfig(key: string, value: unknown): void {
+    onUpdateConfig(key, value);
+    if (key !== "abiFunction") {
+      return;
+    }
+    const next = selectorForFunction(config.contractABI, value);
+    if (next !== null) {
+      onUpdateConfig("traceSelector", next);
+    }
+  }
+
+  function clearFunction(): void {
+    const derived = selectorForFunction(config.contractABI, config.abiFunction);
+    onUpdateConfig("abiFunction", "");
+    if (derived !== null && selector.trim().toLowerCase() === derived) {
+      onUpdateConfig("traceSelector", "");
+    }
+  }
+
   function handleMinValueChange(value: string): void {
     onUpdateConfig("traceMinValue", value);
     if (value.trim() === "") {
@@ -492,13 +567,13 @@ function TraceTriggerFields({
         config={config}
         disabled={disabled}
         fields={functionFields}
-        onUpdateConfig={onUpdateConfig}
+        onUpdateConfig={updateFunctionConfig}
       />
       {typeof config.abiFunction === "string" && config.abiFunction !== "" && (
         <Button
           className="-mt-2 h-auto px-1 py-0 text-xs"
           disabled={disabled}
-          onClick={() => onUpdateConfig("abiFunction", "")}
+          onClick={clearFunction}
           type="button"
           variant="link"
         >
@@ -549,10 +624,16 @@ function TraceTriggerFields({
           placeholder="0x8456cb59"
           value={selector}
         />
-        <p className="text-muted-foreground text-xs">
+        <p
+          className={
+            selectorInvalid
+              ? "text-destructive text-xs"
+              : "text-muted-foreground text-xs"
+          }
+        >
           {selectorInvalid
             ? "A selector is 0x followed by exactly 8 hex characters, for example 0x8456cb59. A value in any other shape matches nothing, so the trigger would register and never fire."
-            : "A raw 4-byte selector, which is what narrows the trigger to one function. Choosing a function above does not fill this in yet, so without a selector every function matches."}
+            : "The 4-byte selector the trigger matches on. Choosing a function above fills it in, or type one directly, for example to match a view function. Empty matches every function."}
         </p>
       </div>
       <div className="space-y-2">
@@ -568,7 +649,13 @@ function TraceTriggerFields({
           placeholder="0.5"
           value={minValue}
         />
-        <p className="text-muted-foreground text-xs">
+        <p
+          className={
+            minValueInvalid
+              ? "text-destructive text-xs"
+              : "text-muted-foreground text-xs"
+          }
+        >
           {minValueInvalid
             ? "Enter a non-negative amount in the network's native token."
             : "Only match calls moving at least this much of the network's native token."}
