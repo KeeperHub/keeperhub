@@ -1,4 +1,5 @@
 import "server-only";
+import { telegramSendMessageUrl } from "@/lib/notifications/messaging-endpoints";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { fetchCredentials } from "@/lib/credential-fetcher";
@@ -205,7 +206,7 @@ async function stepHandler(
     };
   }
 
-  const apiUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
+  const apiUrl = telegramSendMessageUrl(botToken);
 
   // Build request body as URLSearchParams
   const params = new URLSearchParams({
