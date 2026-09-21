@@ -12,7 +12,12 @@ import { HederaIcon } from "./icon";
  */
 const hederaPlugin: IntegrationPlugin = {
   type: "hedera",
-  egress: "user-destination",
+  // Both mirror hosts are compile-time constants and this plugin declares no
+  // formFields, so nothing user-supplied can choose the origin: "fixed-host",
+  // which stays free. "user-destination" would plan-gate this read-only
+  // action behind action.external-request via the catch-all in
+  // lib/features/action-egress.ts.
+  egress: "fixed-host",
   label: "Hedera",
   description:
     "Verify messages on Hedera Consensus Service via the public mirror node",
@@ -43,7 +48,7 @@ const hederaPlugin: IntegrationPlugin = {
       outputFields: [
         { field: "success", description: "Whether the verification query completed" },
         { field: "found", description: "Whether the mirror holds a message at this sequence (empty payloads count as found)" },
-        { field: "verified", description: "Whether the payload matches the expected message exactly (when one is provided)" },
+        { field: "verified", description: "Whether the payload matches the expected message (surrounding whitespace ignored; only asserted when one is provided)" },
         { field: "message", description: "The decoded anchored payload" },
         { field: "consensusTimestamp", description: "Network-assigned consensus timestamp" },
         { field: "sequenceNumber", description: "The verified sequence number" },
@@ -74,7 +79,7 @@ const hederaPlugin: IntegrationPlugin = {
           type: "template-input",
           required: false,
           helpTip:
-            "When set, verification succeeds only if the anchored payload matches exactly. Leave empty to just read the payload.",
+            "When set, verification succeeds only if the anchored payload matches (surrounding whitespace is ignored on both sides). Leave empty to just read the payload.",
         },
         {
           key: "network",

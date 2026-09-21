@@ -40,6 +40,11 @@ export type VerifyMessageInput = StepInput & VerifyMessageCoreInput;
 
 const MIRROR_TIMEOUT_MS = 30_000;
 
+// One step run issues at most two requests — the message query and, only on a
+// 404, the topic probe below — each with its own 30s timeout, so worst-case
+// wall time for this step is ~60s rather than the ~30s a single request
+// suggests.
+
 // HCS fragments an oversized submission into one message per sequence number;
 // the mirror then returns chunk_info on each fragment instead of the full
 // payload. Verify the un-fragmented case only.
@@ -51,6 +56,28 @@ type MirrorMessage = {
   chunk_info?: { total?: number };
 };
 
+// The mirror normalises numeric ids on the way out: it echoes topic
+// 0.0.010590142 as "0.0.10590142" and sequence "01" as 1. Compare normalised
+// forms so a zero-padded id (a template output, a spreadsheet cell) is not
+// reported as the mirror answering about a different topic — that would
+// fault the network for a formatting difference.
+function stripLeadingZeros(value: string): string {
+  return value.replace(/^0+(?=\d)/, "");
+}
+
+function normalizeTopicId(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .split(".")
+    .map(stripLeadingZeros)
+    .join(".");
+}
+
+function normalizeSequenceNumber(value: unknown): string {
+  const text = String(value ?? "").trim();
+  return /^\d+$/.test(text) ? stripLeadingZeros(text) : text;
+}
+
 // On a message 404, one GET of the topic itself tells a mistyped topic id
 // (USER error) apart from a real "nothing anchored at this sequence yet"
 // (found=false) — the mirror returns the same 404 body for both.
@@ -59,13 +86,20 @@ async function probeTopicExists(
   network: HederaNetwork
 ): Promise<boolean> {
   const url = `${HEDERA_MIRROR_API[network]}/api/v1/topics/${encodeURIComponent(topicId)}`;
+  // Same always-on guard as the main query: safeFetch alone only logs under
+  // SAFE_FETCH_SHADOW, so the probe is checked explicitly too.
+  await assertUrlIsPublic(url);
   const res = await safeFetch(url, {
     plugin: "hedera",
     method: "GET",
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(MIRROR_TIMEOUT_MS),
   });
-  return res.ok;
+  // Only a 404 means "no such topic". A 429 or a 5xx is the mirror failing,
+  // not a bad topic id, and reporting it as one blames the user's config for
+  // the network's problem — so anything else counts as "topic exists" and the
+  // caller falls through to found=false.
+  return res.status !== 404;
 }
 
 async function stepHandler(
@@ -193,13 +227,12 @@ async function stepHandler(
   // cache serving a different sequence) could satisfy the lookup. found and
   // verified only mean anything if the mirror confirms it is describing the
   // topic and sequence that were requested.
-  const payloadTopic =
-    typeof payload.topic_id === "string"
-      ? payload.topic_id.trim()
-      : String(payload.topic_id ?? "").trim();
-  const payloadSequence =
-    payload.sequence_number != null ? String(payload.sequence_number) : "";
-  if (payloadTopic !== topicId || payloadSequence !== sequenceNumber) {
+  const payloadTopic = normalizeTopicId(payload.topic_id);
+  const payloadSequence = normalizeSequenceNumber(payload.sequence_number);
+  if (
+    payloadTopic !== normalizeTopicId(topicId) ||
+    payloadSequence !== normalizeSequenceNumber(sequenceNumber)
+  ) {
     return {
       success: false,
       error: `Mirror response describes topic "${payloadTopic}" sequence "${payloadSequence}", but the step requested topic "${topicId}" sequence "${sequenceNumber}".`,

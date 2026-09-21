@@ -21,7 +21,6 @@ export default {
   ethena: "Ethena",
   "euler-v2": "Euler V2",
   "frax-ether-v2": "Frax Ether V2",
-  hedera: "Hedera",
   layerzero: "LayerZero",
   lido: "Lido",
   morpho: "Morpho",
@@ -42,4 +41,5 @@ export default {
   webhook: "Webhook",
   hyperliquid: "Hyperliquid",
   robinhood: "Robinhood",
+  hedera: "Hedera",
 };

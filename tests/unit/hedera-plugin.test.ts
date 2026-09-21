@@ -322,12 +322,24 @@ describe("hedera plugin — verify-message", () => {
 
   it("passes the plugin attribution and a 30s timeout to safeFetch", async () => {
     safeFetchMock.mockResolvedValue(
-      mirrorOk(withTopicEcho({ message: b64("x"), consensus_timestamp: "1.0" }))
+      mirrorOk(
+        withTopicEcho({
+          message: b64("x"),
+          consensus_timestamp: "1.0",
+          sequence_number: 18,
+        })
+      )
     );
     const { verifyMessageStep } = await import(
       "@/plugins/hedera/steps/verify-message"
     );
-    await verifyMessageStep({ topicId: TOPIC, sequenceNumber: "18" });
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "18",
+    });
+    // Without sequence_number this fixture trips the echo-bind check and the
+    // test silently exercises the failure path; assert the happy path too.
+    expect(result.success).toBe(true);
     expect(safeFetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = safeFetchMock.mock.calls[0];
     expect(String(url)).toContain(
@@ -343,18 +355,66 @@ describe("hedera plugin — verify-message", () => {
         topic_id: TOPIC,
         message: b64("x"),
         consensus_timestamp: "1.0",
+        sequence_number: 18,
       })
     );
     const { verifyMessageStep } = await import(
       "@/plugins/hedera/steps/verify-message"
     );
-    await verifyMessageStep({
+    const result = await verifyMessageStep({
       topicId: TOPIC,
       sequenceNumber: "18",
       network: "mainnet",
     });
+    expect(result.success).toBe(true);
     const [url] = safeFetchMock.mock.calls[0];
     expect(String(url)).toContain("mainnet.mirrornode.hedera.com");
+  });
+
+  it("binds a zero-padded topic id and sequence to the mirror's normalised echo", async () => {
+    safeFetchMock.mockResolvedValue(
+      mirrorOk({
+        topic_id: "0.0.10590142",
+        message: b64("expected"),
+        consensus_timestamp: "1.0",
+        sequence_number: 1,
+      })
+    );
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const result = await verifyMessageStep({
+      topicId: "0.0.010590142",
+      sequenceNumber: "01",
+      expectedMessage: "expected",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.found).toBe(true);
+      expect(result.verified).toBe(true);
+      expect(result.sequenceNumber).toBe("1");
+    }
+  });
+
+  it("does not report a mirror error on the topic probe as a bad topic id", async () => {
+    safeFetchMock.mockImplementation(async (url: string | URL) => {
+      if (String(url).endsWith(`/topics/${encodeURIComponent(TOPIC)}`)) {
+        return { ok: false, status: 503, text: async () => "unavailable" };
+      }
+      return mirror404();
+    });
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "999",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.found).toBe(false);
+    }
+    expect(safeFetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("rejects an unknown network", async () => {
