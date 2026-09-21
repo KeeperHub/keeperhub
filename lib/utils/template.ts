@@ -51,6 +51,68 @@ export function remapTemplateRefsInString(
   });
 }
 
+/**
+ * Rewrite every node reference in a node's config after duplication.
+ *
+ * Two shapes travel in a config. Most references are `{{@nodeId:...}}`
+ * templates embedded in a string, and those are rewritten wherever they
+ * appear. Some fields store the id on its own instead, because they point at a
+ * node whose output they deliberately do not read - the PagerDuty resolve
+ * action names the trigger node whose alert it closes, precisely so it still
+ * works on the branch where that trigger never ran. A bare id used to survive
+ * duplication unchanged and go on naming a node in the workflow it was copied
+ * from, which for that action meant the copy resolving an alert that does not
+ * exist: PagerDuty accepts it with a 202, drops it, and the incident stays
+ * open with every run reporting success.
+ *
+ * A bare id is only rewritten under a key in `nodeRefKeys`, which the caller
+ * derives from the action's own field types. Rewriting any value that happened
+ * to equal a node id would be nearly safe, since ids are nanoids - but only
+ * nearly: an imported workflow keeps whatever ids its JSON carried, and those
+ * can be as short as `n-1`. Matching on the declared field instead means no
+ * plugin's config can be rewritten by coincidence.
+ */
+export function remapNodeReferencesInConfig(
+  config: Record<string, unknown> | undefined,
+  idMap: Map<string, string>,
+  nodeRefKeys: ReadonlySet<string> = new Set()
+): Record<string, unknown> | undefined {
+  if (!config || typeof config !== "object") {
+    return config;
+  }
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    result[key] =
+      typeof value === "string" && nodeRefKeys.has(key)
+        ? (idMap.get(value) ?? value)
+        : remapNodeReferencesInValue(value, idMap, nodeRefKeys);
+  }
+  return result;
+}
+
+function remapNodeReferencesInValue(
+  value: unknown,
+  idMap: Map<string, string>,
+  nodeRefKeys: ReadonlySet<string>
+): unknown {
+  if (typeof value === "string") {
+    return remapTemplateRefsInString(value, idMap);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      remapNodeReferencesInValue(item, idMap, nodeRefKeys)
+    );
+  }
+  if (typeof value === "object" && value !== null) {
+    return remapNodeReferencesInConfig(
+      value as Record<string, unknown>,
+      idMap,
+      nodeRefKeys
+    );
+  }
+  return value;
+}
+
 export type NodeOutputs = {
   [nodeId: string]: {
     label: string;

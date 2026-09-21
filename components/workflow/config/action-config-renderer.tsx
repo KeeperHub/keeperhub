@@ -39,6 +39,7 @@ import {
   computeSelector,
   resolveAbiFunction,
 } from "@/lib/abi/utils";
+import { summariseGroup } from "@/lib/workflow/editor/group-summary";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { parseAddressBookSelection } from "@/lib/address-book-selection";
 import { toChecksumAddress } from "@/lib/address-utils";
@@ -913,6 +914,9 @@ function renderField(
         onUpdateConfig={onUpdateConfig}
         value={value}
       />
+      {field.helpText && (
+        <p className="text-muted-foreground text-xs">{field.helpText}</p>
+      )}
     </div>
   );
 }
@@ -938,21 +942,44 @@ function FieldGroup({
   nodeId?: string;
 }) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  // Only worth computing for the collapsed state: expanded, the fields speak
+  // for themselves.
+  const summary = isExpanded ? null : summariseGroup(fields, config);
 
   return (
     <div className="space-y-2">
-      <button
-        className="ml-1 flex items-center gap-1 text-left"
-        onClick={() => setIsExpanded(!isExpanded)}
-        type="button"
-      >
-        <span className="font-medium text-sm">{label}</span>
-        <ChevronDown
-          className={`h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 ${
-            isExpanded ? "" : "-rotate-90"
-          }`}
-        />
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          className="ml-1 flex items-center gap-1 text-left"
+          onClick={() => setIsExpanded(!isExpanded)}
+          type="button"
+        >
+          <span className="font-medium text-sm">{label}</span>
+          <ChevronDown
+            className={`h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 ${
+              isExpanded ? "" : "-rotate-90"
+            }`}
+          />
+        </button>
+        {summary && summary.count > 0 && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                aria-label={`${summary.count} set: ${summary.labels.join(", ")}`}
+                className="ml-0.5 rounded-full bg-primary/15 px-1.5 py-0.5 font-medium text-[0.625rem] text-primary leading-none"
+                // A span cannot take focus on its own, and these names are
+                // the only place the group's contents appear while it is shut.
+                tabIndex={0}
+              >
+                {summary.count} set
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs" side="top">
+              <p>{summary.labels.join(", ")}</p>
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </div>
       {isExpanded && (
         <div className="ml-1 space-y-4 border-primary/50 border-l-2 py-2 pl-3">
           {fields.map((field) =>

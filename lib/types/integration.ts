@@ -9,7 +9,7 @@
  * 2. Add a system integration to SYSTEM_INTEGRATION_TYPES in discover-plugins.ts
  * 3. Run: pnpm discover-plugins
  *
- * Generated types: aave-v3, aave-v4, aerodrome, ajna, blockscout, chainlink, chronicle, clerk, code, coinbase-cbeth, compound, cowswap, curve, data, database, discord, elizaos, ethena, ether-fi, euler-v2, evm-chain, frax-ether-v2, hyperliquid, layerzero, lido, linear, math, morpho, pendle, protocol, pyth, resend, robinhood, rocket-pool, safe, sendgrid, sky, slack, spark, superfluid, telegram, tempo, uniswap, v0, web3, webflow, webhook, wrapped, yearn
+ * Generated types: aave-v3, aave-v4, aerodrome, ajna, blockscout, chainlink, chronicle, clerk, code, coinbase-cbeth, compound, cowswap, curve, data, database, discord, elizaos, ethena, ether-fi, euler-v2, evm-chain, frax-ether-v2, hyperliquid, layerzero, lido, linear, math, morpho, pagerduty, pendle, protocol, pyth, resend, robinhood, rocket-pool, safe, sendgrid, sky, slack, spark, superfluid, telegram, tempo, uniswap, v0, web3, webflow, webhook, wrapped, yearn
  */
 
 // Integration type union - plugins + system integrations
@@ -42,6 +42,7 @@ export type IntegrationType =
   | "linear"
   | "math"
   | "morpho"
+  | "pagerduty"
   | "pendle"
   | "protocol"
   | "pyth"

@@ -14,7 +14,7 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [Web3](/plugins/web3) | Blockchain | Balance checks, contract reads/writes, transfers, calldata decoding, risk assessment | Wallet (for writes) |
 | [Code](/plugins/code) | Code | Execute custom JavaScript in a sandboxed VM | None |
 | [Math](/plugins/math) | Math | Aggregation operations (sum, count, average, median, min, max, product), tolerance comparison, number formatting | None |
-| [Data](/plugins/data) | Data | Encode/decode strings, extract named fields, flatten findings, static config | None |
+| [Data](/plugins/data) | Data | Encode/decode strings, hash values (keccak256, SHA-2, SHA3, RIPEMD-160, BLAKE2b), extract named fields, flatten findings, static config | None |
 | [Safe](/plugins/safe) | Protocol | Safe multisig owners, threshold, nonce, module status, pending transactions | API key (for pending txs) |
 | [Aave V3](/plugins/aave-v3) | Protocol | Supply, borrow, repay, collateral management, health factor monitoring | Wallet (for writes) |
 | [Aave V4](/plugins/aave-v4) | Protocol | Hub-and-Spoke supply, borrow, repay, collateral management via the Lido Spoke | Wallet (for writes) |
@@ -45,6 +45,7 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [Slack](/plugins/slack) | Notifications | Send messages to channels | Bot token |
 | [Telegram](/plugins/telegram) | Notifications | Send messages to chats | Bot token |
 | [SendGrid](/plugins/sendgrid) | Notifications | Send emails | API key |
+| [PagerDuty](/plugins/pagerduty) | Notifications | Trigger, acknowledge and resolve incidents on a service picked from your account | Read-only API token, or scoped OAuth |
 | [Webhook](/plugins/webhook) | Integrations | Send HTTP requests to external services | None |
 | [Hyperliquid](/plugins/hyperliquid) | Data | Read-only Info API queries: clearinghouse state, vault details, validators, funding history, spot deploy state, referrals, sub-accounts, active asset data | None |
 | [Blockscout](/plugins/blockscout) | Data | Read-only block explorer queries: address balance, transaction details, token info | None (optional instance URL/API key) |
@@ -77,7 +78,7 @@ Security-focused actions for transaction analysis, risk assessment, and Safe mul
 
 ### Notifications
 
-Send alerts and messages through Discord, Slack, Telegram, email, and webhooks. Typically used as the final step in monitoring workflows to notify your team when conditions are met.
+Send alerts and messages through Discord, Slack, Telegram, email, PagerDuty and webhooks. Typically used as the final step in monitoring workflows to notify your team when conditions are met. PagerDuty differs from the rest: it opens an incident that someone is paged for and that the workflow can resolve again, rather than posting a message.
 
 ### Integrations
 

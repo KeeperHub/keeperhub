@@ -1,0 +1,19 @@
+-- Declares an index that already exists, so drizzle's snapshot and
+-- lib/db/schema.ts stop disagreeing about it.
+--
+-- idx_workflow_executions_workflow_started was created by
+-- 0024_analytics-indexes.sql and never declared in the schema, which left it
+-- invisible to anyone reading that file and absent from any database
+-- bootstrapped with db:push. It is what the PagerDuty consecutive-runs guard
+-- and the analytics queries both walk.
+--
+-- IF NOT EXISTS is what makes this safe rather than merely idempotent: every
+-- database that has run migrations has this index from 0024, so the statement
+-- short-circuits before taking any lock, so no operator pre-step and no
+-- db-prepped label are needed. Without it the statement would fail outright
+-- on staging and production, where the index is already there.
+--
+-- 0024 wrote `started_at DESC`, which is NULLS FIRST, and drizzle declares
+-- DESC NULLS LAST. started_at is NOT NULL, so the two describe the same index
+-- and the same plans; nothing is rebuilt either way.
+CREATE INDEX IF NOT EXISTS "idx_workflow_executions_workflow_started" ON "workflow_executions" USING btree ("workflow_id","started_at" DESC NULLS LAST);

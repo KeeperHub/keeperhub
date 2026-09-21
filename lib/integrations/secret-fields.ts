@@ -101,3 +101,62 @@ export function mergeSecretConfig(
   }
   return merged;
 }
+
+/**
+ * Remove the keys a caller explicitly asked to clear.
+ *
+ * `mergeSecretConfig` above cannot express this: a blank secret means
+ * "unchanged" there, because the stored value is never sent to the browser
+ * and so cannot be sent back. Removing one therefore has to be asked for.
+ *
+ * A key that also carries a new value in the same request is left alone, so
+ * clearing and re-entering in one go keeps what was typed.
+ */
+export function removeClearedKeys(
+  config: IntegrationConfig,
+  clearedKeys: readonly string[],
+  incomingConfig: IntegrationConfig = {}
+): IntegrationConfig {
+  if (clearedKeys.length === 0) {
+    return config;
+  }
+  const result: IntegrationConfig = { ...config };
+  for (const key of clearedKeys) {
+    const replacement = incomingConfig[key];
+    // Any value supplied in the same request wins, not only a non-empty
+    // string: a checkbox sends a boolean, and deleting a key the caller had
+    // just set would be the opposite of what they asked for. An empty string
+    // is not a value - it is what an untouched field sends.
+    const supplied =
+      replacement !== undefined && replacement !== null && replacement !== "";
+    if (supplied) {
+      continue;
+    }
+    delete result[key];
+  }
+  return result;
+}
+
+/**
+ * Which secret keys this connection actually holds, without their values.
+ *
+ * Withholding the values is right; withholding "is there one" left the form
+ * unable to say which alternative is in use, hold the unused one shut, or
+ * warn when both are filled. The key names leak nothing a caller could not
+ * infer by trying the connection.
+ */
+export function storedSecretKeys(
+  config: IntegrationConfig,
+  integrationType: IntegrationType | string
+): string[] {
+  const secretKeys = getSecretConfigKeys(integrationType);
+  if (secretKeys === null) {
+    return [];
+  }
+  return Object.keys(config).filter(
+    (key) =>
+      secretKeys.has(key) &&
+      typeof config[key] === "string" &&
+      (config[key] as string).length > 0
+  );
+}

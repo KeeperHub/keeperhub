@@ -100,6 +100,16 @@ describe("execution retention purge (real database)", () => {
   let queryClient: ReturnType<typeof postgres>;
   let db: ReturnType<typeof drizzle>;
   let runRetentionPurge: Purge["runRetentionPurge"];
+  let planWindowExecutionIdsQuery: Purge["planWindowExecutionIdsQuery"];
+  let planWindowLogIdsQuery: Purge["planWindowLogIdsQuery"];
+  let planWindowLogCountQuery: Purge["planWindowLogCountQuery"];
+  let floorPageQuery: Purge["floorPageQuery"];
+  let softDeletedPageQuery: Purge["softDeletedPageQuery"];
+  let outputRawPageQuery: Purge["outputRawPageQuery"];
+  let floorCountQuery: Purge["floorCountQuery"];
+  let softDeletedCountQuery: Purge["softDeletedCountQuery"];
+  let workflowChunk: Purge["PLAN_WINDOW_WORKFLOW_CHUNK"];
+  let runsPerRead: Purge["PLAN_WINDOW_RUNS_PER_READ"];
   let getOrgLogRetentionCutoff: Progress["getOrgLogRetentionCutoff"];
 
   async function cleanup(): Promise<void> {
@@ -257,6 +267,28 @@ describe("execution retention purge (real database)", () => {
     return rows[0]?.output_raw ?? null;
   }
 
+  /**
+   * The plan of a query the pass builds, with sequential scans priced out as
+   * the plan-window pass runs its reads. With enable_seqscan off the planner
+   * only falls back to a sequential scan when no index can answer, so a plan
+   * without one proves the read does not need a full-table scan. Which index
+   * wins depends on table statistics, and this table is near empty.
+   */
+  async function explainWithIndexPlans(query: {
+    sql: string;
+    params: unknown[];
+  }): Promise<string> {
+    return JSON.stringify(
+      await queryClient.begin(async (tx) => {
+        await tx`SET LOCAL enable_seqscan = off`;
+        return await tx.unsafe(
+          `EXPLAIN (FORMAT JSON) ${query.sql}`,
+          query.params as never[]
+        );
+      })
+    );
+  }
+
   // Read through drizzle, not the raw client: the column is `timestamp without
   // time zone` and comes back as a string otherwise.
   async function watermarkOf(org: string): Promise<Date | null> {
@@ -279,7 +311,19 @@ describe("execution retention purge (real database)", () => {
     }
     queryClient = postgres(DATABASE_URL);
     db = drizzle(queryClient);
-    ({ runRetentionPurge } = await import("@/lib/retention/purge-executions"));
+    ({
+      runRetentionPurge,
+      planWindowExecutionIdsQuery,
+      planWindowLogIdsQuery,
+      planWindowLogCountQuery,
+      floorPageQuery,
+      softDeletedPageQuery,
+      outputRawPageQuery,
+      floorCountQuery,
+      softDeletedCountQuery,
+      PLAN_WINDOW_WORKFLOW_CHUNK: workflowChunk,
+      PLAN_WINDOW_RUNS_PER_READ: runsPerRead,
+    } = await import("@/lib/retention/purge-executions"));
     ({ getOrgLogRetentionCutoff } = await import("@/lib/retention/progress"));
   });
 
@@ -474,6 +518,386 @@ describe("execution retention purge (real database)", () => {
     }
   });
 
+  it("drains an organization whose workflows span more than one chunk", async () => {
+    // The pass reads runs a chunk of workflows at a time. A workflow past the
+    // first chunk must not be left behind, and the watermark must wait for it.
+    const orgWide = `${PREFIX}org_wide`;
+    const total = workflowChunk + 1;
+    const workflowId = (index: number) =>
+      `${orgWide}_wf_${String(index).padStart(4, "0")}`;
+    await db.insert(organization).values({
+      id: orgWide,
+      name: orgWide,
+      slug: orgWide,
+      createdAt: daysAgo(600),
+    });
+    await db.insert(workflows).values(
+      Array.from({ length: total }, (_, index) => ({
+        id: workflowId(index),
+        name: `wide workflow ${index}`,
+        userId: USER,
+        organizationId: orgWide,
+        nodes: [],
+        edges: [],
+        createdAt: daysAgo(600),
+        updatedAt: daysAgo(600),
+      }))
+    );
+    await db.insert(workflowExecutions).values([
+      ...Array.from({ length: total }, (_, index) => ({
+        id: `${orgWide}_run_old_${index}`,
+        workflowId: workflowId(index),
+        organizationId: orgWide,
+        userId: USER,
+        status: "success" as const,
+        startedAt: daysAgo(40),
+      })),
+      {
+        id: `${orgWide}_run_fresh`,
+        workflowId: workflowId(total - 1),
+        organizationId: orgWide,
+        userId: USER,
+        status: "success" as const,
+        startedAt: daysAgo(3),
+      },
+    ]);
+    await db.insert(workflowExecutionLogs).values([
+      ...Array.from({ length: total }, (_, index) => ({
+        id: `${orgWide}_log_old_${index}`,
+        executionId: `${orgWide}_run_old_${index}`,
+        nodeId: "action-1",
+        nodeName: "HTTP Request",
+        nodeType: "action",
+        status: "success" as const,
+        startedAt: daysAgo(40),
+        timestamp: daysAgo(40),
+      })),
+      {
+        id: `${orgWide}_log_fresh`,
+        executionId: `${orgWide}_run_fresh`,
+        nodeId: "action-1",
+        nodeName: "HTTP Request",
+        nodeType: "action",
+        status: "success" as const,
+        startedAt: daysAgo(3),
+        timestamp: daysAgo(3),
+      },
+    ]);
+
+    await runRetentionPurge(config(), NOW);
+
+    const rows =
+      await queryClient`SELECT count(*)::int AS n FROM workflow_execution_logs WHERE id LIKE ${`${orgWide}_log_old_%`}`;
+    expect(rows[0].n).toBe(0);
+    expect(await logExists(`${orgWide}_log_fresh`)).toBe(true);
+    expect(await watermarkOf(orgWide)).toEqual(daysAgo(7));
+  });
+
+  it("answers the chunk reads from the indexes", async () => {
+    // Keyed by explicit ids and run with sequential scans priced out, as the
+    // pass runs them, so neither read needs the full-table scan that broke the
+    // pass. On a large table the runs read uses (workflow_id, started_at), on
+    // this near-empty one it may pick another index.
+    const explain = explainWithIndexPlans;
+
+    const runsPlan = await explain(
+      planWindowExecutionIdsQuery(
+        [`${ORG_NONE}_wf`],
+        daysAgo(400),
+        daysAgo(7),
+        runsPerRead + 1
+      ).toSQL()
+    );
+    const logsPlan = await explain(
+      planWindowLogIdsQuery([runId(ORG_NONE, "old")], 1000).toSQL()
+    );
+    const countPlan = await explain(
+      planWindowLogCountQuery([runId(ORG_NONE, "old")]).toSQL()
+    );
+
+    expect(runsPlan).not.toContain('"Node Type":"Seq Scan"');
+    expect(runsPlan).toContain('"Index Name"');
+    expect(logsPlan).not.toContain('"Node Type":"Seq Scan"');
+    expect(logsPlan).toContain("idx_exec_logs_execution_id");
+    expect(countPlan).not.toContain('"Node Type":"Seq Scan"');
+    expect(countPlan).toContain("idx_exec_logs_execution_id");
+  });
+
+  it("drains a workflow with more runs than one read holds, a slice at a time", async () => {
+    // One busy workflow is one chunk. Its runs no longer fit one read, so the
+    // pass has to shrink the slice until they do and still reach every run.
+    const orgDense = `${PREFIX}org_dense`;
+    const workflowId = `${orgDense}_wf`;
+    const total = runsPerRead + 1;
+    await db.insert(organization).values({
+      id: orgDense,
+      name: orgDense,
+      slug: orgDense,
+      createdAt: daysAgo(600),
+    });
+    await db.insert(workflows).values({
+      id: workflowId,
+      name: "dense workflow",
+      userId: USER,
+      organizationId: orgDense,
+      nodes: [],
+      edges: [],
+      createdAt: daysAgo(600),
+      updatedAt: daysAgo(600),
+    });
+    // One run a second, so a slice can split them.
+    const startedAt = (index: number) =>
+      new Date(daysAgo(40).getTime() + index * 1000);
+    await db.insert(workflowExecutions).values(
+      Array.from({ length: total }, (_, index) => ({
+        id: `${orgDense}_run_${index}`,
+        workflowId,
+        organizationId: orgDense,
+        userId: USER,
+        status: "success" as const,
+        startedAt: startedAt(index),
+      }))
+    );
+    await db.insert(workflowExecutionLogs).values(
+      Array.from({ length: total }, (_, index) => ({
+        id: `${orgDense}_log_${index}`,
+        executionId: `${orgDense}_run_${index}`,
+        nodeId: "action-1",
+        nodeName: "HTTP Request",
+        nodeType: "action",
+        status: "success" as const,
+        startedAt: startedAt(index),
+        timestamp: startedAt(index),
+      }))
+    );
+
+    await runRetentionPurge(config(), NOW);
+
+    const rows =
+      await queryClient`SELECT count(*)::int AS n FROM workflow_execution_logs WHERE id LIKE ${`${orgDense}_log_%`}`;
+    expect(rows[0].n).toBe(0);
+    expect(await watermarkOf(orgDense)).toEqual(daysAgo(7));
+  });
+
+  it("counts in a dry run exactly the step logs a real run then deletes", async () => {
+    const planRows = (result: Awaited<ReturnType<typeof runRetentionPurge>>) =>
+      result.passes.find((pass) => pass.pass === "logs_plan_window")?.rows;
+
+    const dry = await runRetentionPurge(config({ dryRun: true }), NOW);
+    const real = await runRetentionPurge(config(), NOW);
+
+    expect(planRows(dry)).toBeGreaterThan(0);
+    expect(planRows(dry)).toBe(planRows(real));
+  });
+
+  it("moves past rows whose timestamps carry microseconds", async () => {
+    // Postgres keeps microseconds and a JS Date keeps milliseconds. A cursor
+    // rounded to the millisecond sits before its own row, so with one row per
+    // page the same row came back forever and only the budget ended the pass.
+    // The seed writes whole milliseconds, so give every step log a
+    // sub-millisecond part the way now() does.
+    await queryClient`
+      UPDATE workflow_execution_logs
+         SET started_at = started_at + interval '123456 microseconds',
+             deleted_at = deleted_at + interval '123456 microseconds'
+       WHERE id LIKE ${`${PREFIX}%`}`;
+    const unfinished = (
+      result: Awaited<ReturnType<typeof runRetentionPurge>>
+    ): string[] =>
+      result.passes.filter((pass) => pass.budgetExhausted).map((p) => p.pass);
+
+    const dry = await runRetentionPurge(
+      config({ dryRun: true, batchSize: 1, maxRuntimeMs: 5000 }),
+      NOW
+    );
+    expect(unfinished(dry)).toEqual([]);
+
+    const real = await runRetentionPurge(
+      config({ batchSize: 1, maxRuntimeMs: 5000 }),
+      NOW
+    );
+    expect(unfinished(real)).toEqual([]);
+    expect(await logExists(logId(ORG_ENT, "past_floor"))).toBe(false);
+    expect(await logExists(`${PREFIX}softdel_past_grace`)).toBe(false);
+    expect(await outputRawOf(logId(ORG_ENT, "inside"))).toBeNull();
+  });
+
+  it("pages through step logs that share one timestamp", async () => {
+    // A run can write several step logs in the same instant. With one row per
+    // page only the id tie-break moves the cursor from one to the next.
+    const sameInstant = daysAgo(50);
+    const suffixes = ["a", "b", "c"];
+    await db.insert(workflowExecutionLogs).values(
+      suffixes.map((suffix) => ({
+        id: `${PREFIX}tie_${suffix}`,
+        executionId: runId(ORG_ENT, "inside"),
+        nodeId: `tie-${suffix}`,
+        nodeName: "HTTP Request",
+        nodeType: "action",
+        status: "success" as const,
+        outputRaw: { secret: "hunter2" },
+        startedAt: sameInstant,
+        timestamp: sameInstant,
+      }))
+    );
+
+    const result = await runRetentionPurge(
+      config({ batchSize: 1, maxRuntimeMs: 5000 }),
+      NOW
+    );
+
+    expect(
+      result.passes.find((pass) => pass.pass === "output_raw")?.budgetExhausted
+    ).toBe(false);
+    for (const suffix of suffixes) {
+      expect(await outputRawOf(`${PREFIX}tie_${suffix}`)).toBeNull();
+    }
+  });
+
+  it("walks past a run that can still resume, and nulls it on a later run", async () => {
+    // Its step log sits between two that are due, in the order the pass walks.
+    // The page leaves it out and the cursor moves on to the next one. Every run
+    // starts again at the front of the index, so the step log is reached again
+    // once its run has finished. ORG_ENT keeps step logs for a year, so only
+    // the output_raw pass acts on these rows.
+    const steps: [string, number, string][] = [
+      ["due_before", 52, "success"],
+      ["resumable", 51, "phantom"],
+      ["due_after", 50, "success"],
+    ];
+    await db.insert(workflowExecutions).values(
+      steps.map(([suffix, age, status]) => ({
+        id: runId(ORG_ENT, suffix),
+        workflowId: `${ORG_ENT}_wf`,
+        organizationId: ORG_ENT,
+        userId: USER,
+        status: status as "success",
+        startedAt: daysAgo(age),
+      }))
+    );
+    await db.insert(workflowExecutionLogs).values(
+      steps.map(([suffix, age]) => ({
+        id: logId(ORG_ENT, suffix),
+        executionId: runId(ORG_ENT, suffix),
+        nodeId: "action-1",
+        nodeName: "HTTP Request",
+        nodeType: "action",
+        status: "success" as const,
+        outputRaw: { secret: "hunter2" },
+        startedAt: daysAgo(age),
+        timestamp: daysAgo(age),
+      }))
+    );
+
+    await runRetentionPurge(config({ batchSize: 1 }), NOW);
+
+    expect(await outputRawOf(logId(ORG_ENT, "due_before"))).toBeNull();
+    expect(await outputRawOf(logId(ORG_ENT, "resumable"))).not.toBeNull();
+    expect(await outputRawOf(logId(ORG_ENT, "due_after"))).toBeNull();
+
+    await queryClient`UPDATE workflow_executions SET status = 'success' WHERE id = ${runId(ORG_ENT, "resumable")}`;
+    await runRetentionPurge(config({ batchSize: 1 }), NOW);
+
+    expect(await outputRawOf(logId(ORG_ENT, "resumable"))).toBeNull();
+  });
+
+  it("counts in a dry run exactly the output_raw a real run then nulls", async () => {
+    // Drain every other pass first. A real run deletes step logs ahead of the
+    // output_raw pass that a dry run, which deletes nothing, still counts.
+    await runRetentionPurge(config({ outputRawRetentionDays: 400 }), NOW);
+    const nulled = (result: Awaited<ReturnType<typeof runRetentionPurge>>) =>
+      result.passes.find((pass) => pass.pass === "output_raw")?.rows;
+
+    const dry = await runRetentionPurge(
+      config({ dryRun: true, batchSize: 1 }),
+      NOW
+    );
+    expect(await outputRawOf(logId(ORG_ENT, "inside"))).not.toBeNull();
+    const real = await runRetentionPurge(config({ batchSize: 1 }), NOW);
+
+    expect(nulled(dry)).toBeGreaterThan(0);
+    expect(nulled(dry)).toBe(nulled(real));
+  });
+
+  it("reports every pass of a dry run the budget stops, and writes nothing", async () => {
+    // A dry run that runs out of time still returns every pass, and says which
+    // ones it did not finish.
+    const result = await runRetentionPurge(
+      config({ dryRun: true, maxRuntimeMs: 0 }),
+      NOW
+    );
+
+    expect(
+      result.passes.map((pass) => [pass.pass, pass.budgetExhausted])
+    ).toEqual([
+      ["logs_floor", true],
+      ["logs_plan_window", true],
+      ["logs_soft_deleted", true],
+      ["executions_flat_window", false],
+      ["output_raw", true],
+    ]);
+    expect(await logExists(logId(ORG_ENT, "past_floor"))).toBe(true);
+    expect(await logExists(`${PREFIX}softdel_past_grace`)).toBe(true);
+    expect(await outputRawOf(logId(ORG_ENT, "inside"))).not.toBeNull();
+  });
+
+  it("counts in a dry run exactly the floor and soft-deleted logs a real run deletes", async () => {
+    // Both passes answer a dry run with one count rather than a page walk, so
+    // the passes behind them keep their budget. The figure must still be the
+    // one a real run then acts on.
+    const rowsOf = (
+      result: Awaited<ReturnType<typeof runRetentionPurge>>,
+      name: string
+    ) => result.passes.find((pass) => pass.pass === name)?.rows;
+
+    const dry = await runRetentionPurge(
+      config({ dryRun: true, batchSize: 1 }),
+      NOW
+    );
+    expect(await logExists(logId(ORG_ENT, "past_floor"))).toBe(true);
+    expect(await logExists(`${PREFIX}softdel_past_grace`)).toBe(true);
+    const real = await runRetentionPurge(config({ batchSize: 1 }), NOW);
+
+    expect(rowsOf(dry, "logs_floor")).toBe(2);
+    expect(rowsOf(dry, "logs_floor")).toBe(rowsOf(real, "logs_floor"));
+    expect(rowsOf(dry, "logs_soft_deleted")).toBe(1);
+    expect(rowsOf(dry, "logs_soft_deleted")).toBe(
+      rowsOf(real, "logs_soft_deleted")
+    );
+  });
+
+  it("answers the dry-run counts from an index", async () => {
+    for (const query of [
+      floorCountQuery(daysAgo(365)),
+      softDeletedCountQuery(daysAgo(30)),
+    ]) {
+      const plan = await explainWithIndexPlans(query.toSQL());
+      expect(plan).not.toContain('"Node Type":"Seq Scan"');
+      expect(plan).toContain('"Index Name"');
+    }
+  });
+
+  it("answers every batch pass page from an index", async () => {
+    // The first page of a pass and a page after a cursor, as the passes send
+    // them. The output_raw page used to be a join with a LIMIT and no order,
+    // which the planner answered with a sequential scan of the step-log table.
+    const cursor = {
+      at: "2026-01-01 00:00:00.123456",
+      id: `${PREFIX}cursor`,
+    };
+    const pages = [floorPageQuery, softDeletedPageQuery, outputRawPageQuery];
+
+    for (const page of pages) {
+      for (const after of [null, cursor]) {
+        const plan = await explainWithIndexPlans(
+          page(daysAgo(7), after, 1000).toSQL()
+        );
+        expect(plan).not.toContain('"Node Type":"Seq Scan"');
+        expect(plan).toContain('"Index Name"');
+      }
+    }
+  });
+
   describe("run rows", () => {
     beforeEach(async () => {
       // A run past the flat window that somebody paid for, and one calldata-only
@@ -550,16 +974,25 @@ describe("execution retention purge (real database)", () => {
 
     it("still knows every table that references a run row", async () => {
       // The pass deletes workflow_execution_logs and feedback before the parent
-      // because nothing cascades. A third child added later would fail on a
-      // 500-day-old row in production; it fails here instead.
+      // because neither cascades. A further non-cascading child added later
+      // would fail on a 500-day-old row in production; it fails here instead.
+      // workflow_step_claims is listed but needs no pass: it cascades, which
+      // the second assertion below is what actually holds it to.
       const rows = await queryClient`
-        SELECT conrelid::regclass::text AS child FROM pg_constraint
+        SELECT conrelid::regclass::text AS child, confdeltype AS on_delete
+          FROM pg_constraint
          WHERE contype = 'f' AND confrelid = 'workflow_executions'::regclass
          ORDER BY 1`;
       expect(rows.map((r) => r.child)).toEqual([
         "feedback",
         "workflow_execution_logs",
+        "workflow_step_claims",
       ]);
+      // 'c' is cascade, 'a' is no action. A child the purge does not delete
+      // itself has to cascade, or an aged parent delete fails.
+      expect(
+        rows.find((r) => r.child === "workflow_step_claims")?.on_delete
+      ).toBe("c");
     });
   });
 });

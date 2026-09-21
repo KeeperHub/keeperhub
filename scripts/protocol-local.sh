@@ -73,7 +73,7 @@ run_node() {
     ${TURNKEY_API_PRIVATE_KEY:+-e TURNKEY_API_PRIVATE_KEY} \
     ${TURNKEY_ORGANIZATION_ID:+-e TURNKEY_ORGANIZATION_ID} \
     ${TESTNET_FUNDER_PK:+-e TESTNET_FUNDER_PK} \
-    "$NODE_IMAGE" bash -c "set -o pipefail && corepack enable >/dev/null 2>&1 && corepack prepare pnpm@9 --activate >/dev/null 2>&1 && $*"
+    "$NODE_IMAGE" bash -c "set -o pipefail && corepack enable >/dev/null 2>&1 && corepack prepare pnpm@10 --activate >/dev/null 2>&1 && $*"
 }
 
 db_container() {
@@ -334,7 +334,7 @@ cmd_up() {
     ${TURNKEY_API_PUBLIC_KEY:+-e TURNKEY_API_PUBLIC_KEY} \
     ${TURNKEY_API_PRIVATE_KEY:+-e TURNKEY_API_PRIVATE_KEY} \
     ${TURNKEY_ORGANIZATION_ID:+-e TURNKEY_ORGANIZATION_ID} \
-    "$NODE_IMAGE" bash -c "corepack enable >/dev/null 2>&1 && corepack prepare pnpm@9 --activate >/dev/null 2>&1 && pnpm start" >/dev/null
+    "$NODE_IMAGE" bash -c "corepack enable >/dev/null 2>&1 && corepack prepare pnpm@10 --activate >/dev/null 2>&1 && pnpm start" >/dev/null
 
   local retries=0
   until curl -sf -m 3 "http://localhost:${APP_PORT}" >/dev/null 2>&1; do

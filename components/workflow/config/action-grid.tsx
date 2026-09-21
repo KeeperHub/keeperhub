@@ -232,6 +232,7 @@ type SuperCategory = (typeof SUPER_CATEGORY_ORDER)[number];
 const MESSAGING_CATEGORIES: ReadonlySet<string> = new Set([
   "Discord",
   "Email",
+  "PagerDuty",
   "Slack",
   "Telegram",
 ]);

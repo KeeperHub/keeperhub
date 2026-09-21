@@ -29,8 +29,11 @@ import {
 import {
   assertResolved,
   createTracker,
+  liftConditionFields,
+  restoreConditionFields,
   TemplateResolutionError,
 } from "@/lib/workflow/executor/template-resolution";
+import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 
 const UNRESOLVED_REF_MESSAGE = /Unresolved template reference/;
 
@@ -887,5 +890,237 @@ describe("processTemplates renders tokens inside arrays (#2359)", () => {
       ]);
       expect(() => assertResolved(tracker, processed, {})).not.toThrow();
     });
+  });
+});
+
+describe("leftover literals name the field that carried them", () => {
+  // Issue #2305: a config key the renderer never reaches keeps its tokens, and the
+  // scan then reports the reference as unresolved. The reference is usually spelled
+  // correctly and the key above it is the fault, so the message has to say where.
+  const conditionConfigWithStaleGroup = {
+    actionType: "Condition",
+    condition: "resolved by its own path",
+    group: {
+      id: "group-1",
+      logic: "AND",
+      rules: [
+        {
+          id: "rule-1",
+          leftOperand: "{{@step-1:Get Aave Health Factor.healthFactor}}",
+          operator: "<",
+          rightOperand: "1500000000000000000",
+        },
+      ],
+    },
+  };
+
+  it("names the path through an array-valued key", () => {
+    const tracker = createTracker();
+    let message = "";
+    try {
+      assertResolved(tracker, conditionConfigWithStaleGroup, {
+        nodeId: "step-2",
+        nodeLabel: "Condition",
+        actionType: "Condition",
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(UNRESOLVED_REF_MESSAGE);
+    expect(message).toContain("group.rules[0].leftOperand");
+    expect(message).toContain(
+      "{{@step-1:Get Aave Health Factor.healthFactor}}"
+    );
+  });
+
+  it("records the path on the ref itself", () => {
+    const tracker = createTracker();
+    let thrown: TemplateResolutionError | undefined;
+    try {
+      assertResolved(tracker, conditionConfigWithStaleGroup, {});
+    } catch (error) {
+      thrown = error as TemplateResolutionError;
+    }
+    // Without this the case passes when nothing throws at all.
+    expect(thrown).toBeInstanceOf(TemplateResolutionError);
+    expect(thrown?.unresolved[0]?.path).toBe("group.rules[0].leftOperand");
+    expect(thrown?.unresolved[0]?.reason).toBe("literal-leftover");
+  });
+
+  it("omits the path clause when the token sits at the root", () => {
+    const tracker = createTracker();
+    let thrown: TemplateResolutionError | undefined;
+    try {
+      assertResolved(tracker, "{{@step-1:Node.field}}", {});
+    } catch (error) {
+      thrown = error as TemplateResolutionError;
+    }
+    expect(thrown).toBeInstanceOf(TemplateResolutionError);
+    // The path clause, when there is one, follows the token directly. Pinning
+    // that spot rather than the absence of " at " anywhere in the message keeps
+    // the assertion off the trailing prose, which can be reworded freely.
+    expect(thrown?.message).toContain("{{@step-1:Node.field}}");
+    expect(thrown?.message).not.toContain("{{@step-1:Node.field}} at ");
+    expect(thrown?.unresolved[0]?.path).toBeUndefined();
+  });
+});
+
+describe("liftConditionFields keeps the Condition-owned keys out of the scan", () => {
+  // processActionConfig calls this, and so does the block below. These are the
+  // assertions that make the sharing mean something: one per key, each failing
+  // if that key stops being lifted, and a control that fails if the scan is not
+  // running at all.
+  const outputs = {
+    "step-1": { label: "Present", data: { field: "ok" } },
+  };
+  const UNRESOLVABLE = "{{@step-9:Missing.field}}";
+
+  const scan = (config: Record<string, unknown>): void => {
+    const { rest } = liftConditionFields(config);
+    const tracker = createTracker();
+    const processed = processTemplates(rest, outputs, tracker);
+    assertResolved(tracker, processed, { actionType: "Condition" });
+  };
+
+  it("does not report a token in condition that cannot resolve", () => {
+    expect(() =>
+      scan({ actionType: "Condition", condition: `${UNRESOLVABLE} < 1` })
+    ).not.toThrow();
+  });
+
+  it("does not report a token in conditionConfig that cannot resolve", () => {
+    expect(() =>
+      scan({
+        actionType: "Condition",
+        conditionConfig: {
+          group: {
+            id: "g",
+            logic: "AND",
+            rules: [{ leftOperand: UNRESOLVABLE }],
+          },
+        },
+      })
+    ).not.toThrow();
+  });
+
+  it("reports the same token under any other key, so the scan is live", () => {
+    expect(() =>
+      scan({ actionType: "Condition", headers: { auth: UNRESOLVABLE } })
+    ).toThrow(UNRESOLVED_REF_MESSAGE);
+  });
+
+  it("puts back what it took, and nothing that was not there", () => {
+    const { rest, lifted } = liftConditionFields({
+      actionType: "Condition",
+      condition: "a < 1",
+      conditionConfig: { group: { id: "g" } },
+    });
+    expect(rest.condition).toBeUndefined();
+    expect(rest.conditionConfig).toBeUndefined();
+
+    const restored = restoreConditionFields({ ...rest }, lifted);
+    expect(restored.condition).toBe("a < 1");
+    expect(restored.conditionConfig).toEqual({ group: { id: "g" } });
+
+    // restoreConditionFields adds back only what it lifted, so a config that
+    // carried neither key gets neither from it. That is a claim about restore
+    // alone. On the executor path the two keys do reach the step as undefined:
+    // liftConditionFields sets them on `rest` unconditionally and
+    // processTemplates copies every key of its input. The code before the
+    // refactor did the same, so this is not a change in behaviour.
+    const bare = liftConditionFields({ actionType: "Condition" });
+    const untouched = restoreConditionFields(
+      { actionType: "Condition" },
+      bare.lifted
+    );
+    expect(Object.keys(untouched)).toEqual(["actionType"]);
+  });
+});
+
+describe("a rule group under conditionConfig is not scanned", () => {
+  // processActionConfig (executor.workflow.ts) is a closure, so this walks its
+  // three steps with the same exported pieces it uses: lift `condition` and
+  // `conditionConfig` out of the copy, render the rest with processTemplates,
+  // then assertResolved on the result. The fixture's group carries the same
+  // unrendered token as the stale-group case above; the only difference
+  // between the two cases is which key holds it.
+  const group = {
+    id: "group-1",
+    logic: "AND",
+    rules: [
+      {
+        id: "rule-1",
+        leftOperand: "{{@step-1:Get Aave Health Factor.healthFactor}}",
+        operator: "<",
+        rightOperand: "1500000000000000000",
+      },
+    ],
+  };
+  const outputs = {
+    "step-1": {
+      label: "Get Aave Health Factor",
+      data: { healthFactor: "1200000000000000000" },
+    },
+  };
+  // The lift is the executor's own, imported rather than rebuilt, so a
+  // change to which keys it takes moves this test too.
+  const liftAndScan = (config: Record<string, unknown>): void => {
+    const { rest } = liftConditionFields(config);
+    const tracker = createTracker();
+    const processed = processTemplates(rest, outputs, tracker);
+    assertResolved(tracker, processed, {
+      nodeId: "step-2",
+      nodeLabel: "Condition",
+      actionType: "Condition",
+    });
+  };
+
+  it("passes the repaired shape through to the node", () => {
+    expect(() =>
+      liftAndScan({
+        actionType: "Condition",
+        condition:
+          "{{@step-1:Get Aave Health Factor.healthFactor}} < 1500000000000000000",
+        conditionConfig: { group },
+      })
+    ).not.toThrow();
+  });
+
+  // This used to abort, and that abort is what made the misplaced group
+  // visible. #2359 changed it: renderTemplateValue walks into arrays and
+  // objects now, so the token inside `group.rules[0].leftOperand` renders and
+  // the scan has nothing to report.
+  //
+  // Nothing about the fault itself changed. resolveConditionExpression reads
+  // `conditionConfig.group` or `condition`, never a top-level `group`, so the
+  // rules in it are still not the rules that run. What changed is that the
+  // node no longer says so. A loud failure became a quiet one, which is why
+  // the migration matters more after #2359 than before it, not less.
+  it("no longer aborts on the shape the builder used to emit", () => {
+    expect(() =>
+      liftAndScan({
+        actionType: "Condition",
+        condition:
+          "{{@step-1:Get Aave Health Factor.healthFactor}} < 1500000000000000000",
+        group,
+      })
+    ).not.toThrow();
+  });
+
+  it("renders the group's token rather than reporting it", () => {
+    // Same shape with no expression beside it. The group renders, the scan is
+    // clean, and resolveConditionExpression still returns undefined for this
+    // config, so the node evaluates with no rules at all.
+    const tracker = createTracker();
+    const { rest } = liftConditionFields({
+      actionType: "Condition",
+      group,
+    });
+    const processed = processTemplates(rest, outputs, tracker) as {
+      group: { rules: Array<{ leftOperand: string }> };
+    };
+    expect(processed.group.rules[0].leftOperand).toBe("1200000000000000000");
+    expect(tracker.unresolved).toHaveLength(0);
+    expect(resolveConditionExpression(processed)).toBeUndefined();
   });
 });

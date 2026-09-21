@@ -10,9 +10,14 @@ runs:
         node-version: "22"
 
     - name: Setup pnpm
+      # Version comes from the packageManager field in this package's own
+      # package.json, not the repo root: this project pins a different pnpm
+      # than the main app. pnpm hashes patched dependencies differently across
+      # majors and validates the hash on a frozen install, so CI, the Docker
+      # images and local installs all have to agree.
       uses: pnpm/action-setup@v4
       with:
-        version: 9
+        package_json_file: keeperhub-scheduler/package.json
 
     - name: Get pnpm store directory
       shell: bash

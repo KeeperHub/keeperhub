@@ -991,9 +991,21 @@ export function ActionConfig({
     <>
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-2">
-          <Label className="ml-1" htmlFor="actionCategory">
-            Service
-          </Label>
+          <div className="flex items-center justify-between gap-2">
+            <Label className="ml-1" htmlFor="actionCategory">
+              Service
+            </Label>
+            {pluginAction?.docUrl && (
+              <a
+                className="mr-1 inline-flex items-center text-muted-foreground text-xs hover:text-primary"
+                href={pluginAction.docUrl}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                Docs &#x2197;
+              </a>
+            )}
+          </div>
           <Select
             disabled={disabled}
             onValueChange={handleCategoryChange}
@@ -1062,16 +1074,6 @@ export function ActionConfig({
                 })}
             </SelectContent>
           </Select>
-          {pluginAction?.docUrl && (
-            <a
-              className="ml-1 inline-flex items-center text-muted-foreground text-xs hover:text-primary"
-              href={pluginAction.docUrl}
-              rel="noopener noreferrer"
-              target="_blank"
-            >
-              Docs &#x2197;
-            </a>
-          )}
         </div>
       </div>
 

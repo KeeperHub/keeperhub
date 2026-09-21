@@ -7,6 +7,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -832,6 +833,19 @@ export const workflowExecutions = pgTable(
     deletedAt: timestamp("deleted_at"),
   },
   (table) => [
+    /**
+     * Created by migration 0024 and, until now, declared nowhere: invisible to
+     * anyone reading this file and absent from a database bootstrapped with
+     * `db:push`, which builds only from here.
+     *
+     * It is the index the PagerDuty consecutive-runs guard leans on - one
+     * lookup per paging run of "the finished runs of this workflow before this
+     * one, newest first" - and the same shape the analytics queries use.
+     */
+    index("idx_workflow_executions_workflow_started").on(
+      table.workflowId,
+      table.startedAt.desc()
+    ),
     index("idx_workflow_executions_status").on(table.status),
     index("idx_workflow_executions_user_id").on(table.userId),
     // Backs the FK to organization: without it the RI check on an organization
@@ -922,6 +936,43 @@ export const workflowExecutionLogs = pgTable(
     index("idx_exec_logs_sponsored_execution")
       .on(table.executionId)
       .where(sql`${table.output} ->> 'sponsored' = 'true'`),
+  ]
+);
+
+/**
+ * One row per step a pod has taken responsibility for running.
+ *
+ * The durability layer replays the whole workflow body on whichever replica
+ * picks up the next step, so a single node is walked dozens of times per run
+ * across every pod. Completed steps are normally read back from the event log,
+ * but two replays that reach the same unfinished step at the same moment both
+ * see "not done" and both run it. That is what produced duplicate step rows
+ * (and duplicate side effects) for the same node in one execution.
+ *
+ * Winning the insert is what grants the right to run. Redis holds the same
+ * claim and answers first; this table is the fallback for when Redis is
+ * unreachable, so the guarantee does not disappear with it.
+ *
+ * Keyed on the node alone. Steps inside a For Each body are not claimed at
+ * all: the executor names only the innermost loop of an iteration, so a node
+ * in a nested body would carry the same key under every outer iteration and
+ * the second one would reuse the first one's output. Claiming loop bodies
+ * needs the executor to carry the full nesting path first.
+ */
+export const workflowStepClaims = pgTable(
+  "workflow_step_claims",
+  {
+    executionId: text("execution_id")
+      .notNull()
+      .references(() => workflowExecutions.id, { onDelete: "cascade" }),
+    nodeId: text("node_id").notNull(),
+    claimedAt: timestamp("claimed_at").notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: "workflow_step_claims_pk",
+      columns: [table.executionId, table.nodeId],
+    }),
   ]
 );
 

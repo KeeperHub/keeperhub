@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
+import { findActionById, flattenConfigFields } from "@/plugins/registry";
 
 // SEC: Webhook URLs must use https only. Rejects http://, file://, javascript:, etc.
 const HTTPS_URL_REGEX = /^https:\/\//;
@@ -118,6 +119,33 @@ export type WorkflowExportIntegrationBinding = z.infer<
 
 const STRIPPED_CONFIG_KEYS = ["integrationId", "integrationConfig"] as const;
 
+/**
+ * Config keys on this action that hold a connection id of their own.
+ *
+ * `integrationId` is the one every action has and is stripped by name above.
+ * A field can hold a second one: the PagerDuty trigger names the Discord,
+ * Slack or Telegram connection to fall back to when a page cannot be
+ * delivered. That is an id belonging to the exporting organisation, and an
+ * export is a file people pass around - so it goes the same way as the first,
+ * leaving the importer to pick their own rather than inheriting a reference
+ * that resolves to nothing in their organisation.
+ *
+ * Derived from the field type rather than named here, so the next plugin with
+ * a second connection is covered without touching this file.
+ */
+function connectionConfigKeys(actionType: unknown): string[] {
+  if (typeof actionType !== "string") {
+    return [];
+  }
+  const action = findActionById(actionType);
+  if (!action?.configFields) {
+    return [];
+  }
+  return flattenConfigFields(action.configFields)
+    .filter((field) => field.type?.endsWith("-connection-select"))
+    .map((field) => field.key);
+}
+
 function stripIntegrationFromConfig(
   config: Record<string, unknown> | undefined
 ): {
@@ -133,9 +161,13 @@ function stripIntegrationFromConfig(
       ? config.integrationType
       : undefined;
 
+  const connectionKeys = connectionConfigKeys(config.actionType);
   const stripped: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(config)) {
     if ((STRIPPED_CONFIG_KEYS as readonly string[]).includes(key)) {
+      continue;
+    }
+    if (connectionKeys.includes(key)) {
       continue;
     }
     stripped[key] = value;
