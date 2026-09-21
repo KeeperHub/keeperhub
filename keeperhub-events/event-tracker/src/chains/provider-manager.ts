@@ -161,6 +161,19 @@ export const TRACE_MAX_BLOCK_SPAN = 10;
  * with many matching transactions would otherwise multiply the cap by the
  * transaction count. Accumulated across the block's transactions and applied
  * once, which is the bound the accepted plan specified.
+ *
+ * It is also the billing bound, and that is worth stating because the frame
+ * count is not obviously related to the transaction count. Matching is per
+ * call frame, and `reverted` propagates from an ancestor to every descendant
+ * because the EVM rolls those descendants back. So one reverted transaction
+ * whose call tree enters the watched contract repeatedly produces one match -
+ * and bills one execution - per rolled-back descendant, not one for the
+ * transaction. Correct EVM semantics and intended (a reverted drain attempt is
+ * the signal this trigger exists for, and collapsing the tree would lose which
+ * frame was the attempt), but it means a single failed transaction can bill up
+ * to this many executions for one subscription. `selector`, `caller` and
+ * `callTypes` are how a subscription narrows below the cap; see the `status`
+ * field in `listener/trace-subscription.ts`.
  */
 export const TRACE_DISPATCH_CAP_PER_BLOCK = 25;
 /**
@@ -468,7 +481,11 @@ export interface SubscribeTraceOptions {
   chainId: number;
   wssUrl: string;
   fallbackWssUrl?: string;
-  /** Contract address to watch (callee). */
+  /**
+   * Contract address to watch (callee). Required and must be non-empty:
+   * `subscribeToTrace` throws otherwise, because the matcher reads a falsy
+   * callee as a wildcard rather than as an error.
+   */
   contractAddress: string;
   /** Optional caller filter. */
   caller?: string;
@@ -1056,6 +1073,29 @@ export class ChainProviderManager {
   }
 
   async subscribeToTrace(opts: SubscribeTraceOptions): Promise<Unsubscribe> {
+    // The watched address is the one required field of a trace subscription,
+    // and it has to be enforced here because the matcher treats its absence as
+    // a wildcard rather than as an error: `frameMatches` skips the callee test
+    // when `filter.callee` is falsy, so `""` is not "matches nothing" but
+    // "every frame in every block that passes the remaining filters", capped
+    // only by TRACE_DISPATCH_CAP_PER_BLOCK billed executions per block per
+    // subscription.
+    //
+    // The hand-rolled predicate this replaced compared `frame.to` against the
+    // address unconditionally, so it could not be widened this way and the
+    // seam never had to state the rule. The vendored matcher can, which is
+    // what moves the obligation here. `workflow-mapper.ts` refuses anything
+    // failing ADDRESS_PATTERN, so today this is the second line of defence
+    // rather than the only one -- but a second caller of this method is
+    // exactly what a shared provider manager exists to allow, and the next one
+    // will not come through the mapper.
+    const contractAddress = opts.contractAddress?.trim();
+    if (!contractAddress) {
+      throw new Error(
+        "subscribeToTrace: contractAddress is required and must be non-empty; an empty value would match every frame on the chain rather than none",
+      );
+    }
+
     const entry = this.ensureEntry(
       opts.chainId,
       opts.wssUrl,
@@ -1068,7 +1108,7 @@ export class ChainProviderManager {
     );
 
     const subscriber: TraceSubscriber = {
-      contractAddress: opts.contractAddress,
+      contractAddress,
       caller: opts.caller,
       selector: opts.selector,
       callTypes: opts.callTypes,

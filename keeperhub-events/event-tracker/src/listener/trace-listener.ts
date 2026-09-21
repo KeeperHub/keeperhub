@@ -112,6 +112,22 @@ export class TraceListener {
     // Dedup key includes frame index to distinguish multiple matches in one tx
     const dispatchKey = `${this.opts.workflowId}:${this.opts.chainId}:${match.transactionHash}:${match.frameIndex}`;
 
+    // NOTE: this is the inverse of EventListener, which parks on the pacer
+    // first and only then creates the phantom. The order is deliberate and it
+    // is the only place in this feature that departs from that pattern, so:
+    //
+    // EventListener owns a DedupStore, so it knows a repeat before it spends
+    // anything and can park safely. A trace subscription has no dedup store -
+    // there is nothing to key one on until the block is traced - and the
+    // phantom's own `alreadyExisted` is the dedup. Taking a token first would
+    // mean parking up to TRACE_DISPATCH_CAP_PER_BLOCK frames at the bucket's
+    // drain rate before discovering that most of them are re-traced duplicates
+    // from a range that stayed owed, which is the case this ordering exists to
+    // make cheap.
+    //
+    // What it costs: a phantom-create round trip per matched frame, unpaced,
+    // over up to the per-block cap in one Promise.all. The cap is the bound.
+    // If this ever needs to become pacer-first, it needs a dedup store first.
     const { executionId, alreadyExisted, refused } =
       await createPhantomExecution(
         this.opts.workflowId,

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NetworkConfig, NetworksMap, RawWorkflow } from "../../lib/types";
 import { logger } from "../../lib/utils/logger";
+import { TRACE_CAPABILITY_ENV_VAR } from "../../src/chains/trace-capability";
 import { isTraceRegistration } from "../../src/listener/registry";
 import { buildRegistration } from "../../src/listener/workflow-mapper";
 
@@ -18,25 +19,52 @@ import { buildRegistration } from "../../src/listener/workflow-mapper";
  * shape this trigger has.
  */
 
-const CHAIN_ID = 31_337;
+/**
+ * A chain the upstream survey found serving `debug_traceBlockByNumber`.
+ *
+ * Plasma mainnet: `.planning/issue-2247-trace-upstream-survey.md` records the
+ * official `https://rpc.plasma.to` answering `callTracer` unauthenticated.
+ * This is not incidental to the fixture - `buildTraceRegistration` refuses a
+ * Trace trigger on a chain that is not known to answer the method, so a
+ * mapping test has to sit on one that is. See `UNTRACEABLE_CHAIN_ID` below.
+ */
+const CHAIN_ID = 9745;
+
+/**
+ * A chain the same survey found refusing it: Ethereum mainnet, where the
+ * configured primary answers `-32601` for the debug namespace and the
+ * fallback is quota-gated.
+ */
+const UNTRACEABLE_CHAIN_ID = 1;
 
 const NETWORK: NetworkConfig = {
-  id: "local",
+  id: "plasma-mainnet",
   chainId: CHAIN_ID,
-  name: "Anvil",
-  symbol: "ETH",
+  name: "Plasma",
+  symbol: "XPL",
   chainType: "evm",
   defaultPrimaryRpc: "http://localhost:8546",
   defaultFallbackRpc: "http://localhost:8546",
   defaultPrimaryWss: "ws://localhost:8546",
   defaultFallbackWss: "ws://localhost:8546",
-  isTestnet: true,
+  isTestnet: false,
   isEnabled: true,
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-01T00:00:00Z",
 };
 
-const NETWORKS: NetworksMap = { [CHAIN_ID]: NETWORK };
+const UNTRACEABLE_NETWORK: NetworkConfig = {
+  ...NETWORK,
+  id: "eth-mainnet",
+  chainId: UNTRACEABLE_CHAIN_ID,
+  name: "Ethereum",
+  symbol: "ETH",
+};
+
+const NETWORKS: NetworksMap = {
+  [CHAIN_ID]: NETWORK,
+  [UNTRACEABLE_CHAIN_ID]: UNTRACEABLE_NETWORK,
+};
 
 const WATCHED = "0x1111111111111111111111111111111111111111";
 const CALLER = "0x2222222222222222222222222222222222222222";
@@ -44,6 +72,7 @@ const PAUSE_SELECTOR = "0x8456cb59";
 
 function makeWorkflow(
   configOverrides: Record<string, unknown> = {},
+  chainId: number = CHAIN_ID,
 ): RawWorkflow {
   return {
     id: "wf-trace-1",
@@ -53,7 +82,7 @@ function makeWorkflow(
       {
         data: {
           config: {
-            network: String(CHAIN_ID),
+            network: String(chainId),
             // The value WorkflowTriggerEnum.TRACE serialises to.
             triggerType: "Trace",
             contractAddress: WATCHED,
@@ -75,6 +104,10 @@ describe("buildRegistration - Trace", () => {
 
   beforeEach(() => {
     warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    // `vi.spyOn` on an already-spied method hands back the same spy, so its
+    // recorded calls otherwise survive into the next case and an assertion
+    // about which line was emitted reads a line from an earlier one.
+    warn.mockClear();
   });
 
   it("builds a trace registration at all", () => {
@@ -139,12 +172,11 @@ describe("buildRegistration - Trace", () => {
       contractAddress: WATCHED.toUpperCase().replace("0X", "0x"),
       traceCaller: CALLER.toUpperCase().replace("0X", "0x"),
     });
-    // `frameMatchesSubscriber` compares `frame.to` against
-    // `sub.contractAddress.toLowerCase()`, and the frame side is already
-    // lower-cased, so a mixed-case config that reached the matcher unchanged
-    // would still match. Normalising here keeps the config hash stable
-    // instead, so re-saving with different casing does not restart the
-    // listener.
+    // `frameMatches` compares `call.to` against `filter.callee.toLowerCase()`,
+    // and the frame side is already lower-cased, so a mixed-case config that
+    // reached the matcher unchanged would still match. Normalising here keeps
+    // the config hash stable instead, so re-saving with different casing does
+    // not restart the listener.
     expect(reg?.subscription.contractAddress).toBe(WATCHED);
     expect(reg?.subscription.caller).toBe(CALLER);
   });
@@ -238,6 +270,114 @@ describe("buildRegistration - Trace", () => {
 
     it("a status outside the three the matcher understands", () => {
       refused({ traceStatus: "failed" }, "is not one of");
+    });
+  });
+
+  describe("the chain has to be able to answer the method", () => {
+    /**
+     * On the upstream survey's own evidence, silently never firing was the
+     * default outcome rather than an edge case.
+     *
+     * `debug_traceBlockByNumber` is unavailable on the tree-configured public
+     * defaults for Ethereum, Base, Arbitrum, Polygon, BNB, OP and Avalanche.
+     * A registration there used to be accepted, refuse once at the first
+     * drain, set `traceUnsupported`, report the range served so the shared
+     * high-water mark kept advancing, and stop asking until reconnect. The
+     * user was left with an enabled workflow that never fired.
+     */
+    function buildOn(
+      chainId: number,
+      configOverrides: Record<string, unknown> = {},
+    ) {
+      const reg = buildRegistration(
+        makeWorkflow(configOverrides, chainId),
+        NETWORKS,
+      );
+      return reg !== null && isTraceRegistration(reg) ? reg : null;
+    }
+
+    afterEach(() => {
+      delete process.env[TRACE_CAPABILITY_ENV_VAR];
+    });
+
+    it("refuses a chain the survey found refusing the method", () => {
+      expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+      expect(
+        warn.mock.calls.some((c) =>
+          String(c[0]).includes(
+            "is not known to answer debug_traceBlockByNumber",
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    it("names the chain and the allowed set in the refusal", () => {
+      // The operator reading this line has to be able to act on it without
+      // reading the source, so it carries both the chain that was refused and
+      // what would have been accepted.
+      buildOn(UNTRACEABLE_CHAIN_ID);
+      const line = warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((c) => c.includes("is not known to answer"));
+      expect(line).toContain(`chain ${UNTRACEABLE_CHAIN_ID}`);
+      expect(line).toContain("trace-capable chains:");
+      expect(line).toContain(String(CHAIN_ID));
+      expect(line).toContain("surveyed default");
+    });
+
+    it("accepts a chain the survey found serving it", () => {
+      // The other half. Without this the case above passes against a mapper
+      // that refuses every Trace registration.
+      expect(buildOn(CHAIN_ID)).not.toBeNull();
+    });
+
+    it("refuses before the filter, so the chain is the reported reason", () => {
+      // A workflow that is wrong twice over reports the chain, not the
+      // selector: the chain is the condition the user cannot fix by editing
+      // the filter.
+      expect(
+        buildOn(UNTRACEABLE_CHAIN_ID, { traceSelector: "not-a-selector" }),
+      ).toBeNull();
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.includes("is not known to answer"))).toBe(
+        true,
+      );
+      expect(lines.some((l) => l.includes("is not a 4-byte selector"))).toBe(
+        false,
+      );
+    });
+
+    it("honours an operator override naming the chain", () => {
+      // The survey measured the public defaults and records that nobody has
+      // checked what production resolves to. A deployment on a keyed plan
+      // that does serve the method must not be refused.
+      process.env[TRACE_CAPABILITY_ENV_VAR] = String(UNTRACEABLE_CHAIN_ID);
+      expect(buildOn(UNTRACEABLE_CHAIN_ID)).not.toBeNull();
+    });
+
+    it("lets an override replace the default rather than extend it", () => {
+      // An operator whose upstream does not serve Plasma has to be able to
+      // remove it, so the override is not a union with the surveyed set.
+      process.env[TRACE_CAPABILITY_ENV_VAR] = String(UNTRACEABLE_CHAIN_ID);
+      expect(buildOn(CHAIN_ID)).toBeNull();
+    });
+
+    it("trusts every chain on the wildcard", () => {
+      process.env[TRACE_CAPABILITY_ENV_VAR] = "*";
+      expect(buildOn(UNTRACEABLE_CHAIN_ID)).not.toBeNull();
+    });
+
+    it("drops an unparseable override entry without widening the set", () => {
+      // A typo must not become a wildcard. The good entry still applies and
+      // the bad one is named.
+      process.env[TRACE_CAPABILITY_ENV_VAR] = `nonsense,${CHAIN_ID}`;
+      expect(buildOn(CHAIN_ID)).not.toBeNull();
+      expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+      expect(
+        warn.mock.calls.some((c) =>
+          String(c[0]).includes('entry "nonsense" is not a chain ID'),
+        ),
+      ).toBe(true);
     });
   });
 

@@ -30,10 +30,19 @@
  *    commas in multi-line parameter lists, so a byte-identical copy does not
  *    pass `pnpm lint` here.
  *
- * `tests/unit/trace-decode-vendored.test.ts` compares every copied block
- * against the original with comments and formatting normalised away, so a
- * change to one side that is not made to the other fails CI rather than
- * drifting quietly.
+ * `tests/unit/trace-decode-vendored.test.ts` at the REPOSITORY ROOT compares
+ * every copied block against the original with comments and formatting
+ * normalised away, so a change to one side that is not made to the other
+ * fails CI rather than drifting quietly.
+ *
+ * It lives at the root on purpose, and this is the only reason it is not in
+ * this workspace's own suite. `.github/workflows/pr-checks-events.yml` is
+ * path-filtered to `keeperhub-events/**`, and no other workflow runs the
+ * tracker's unit tests, so a drift test here would never run on a pull request
+ * that edited only the app's copy - which is one of the two directions it
+ * exists to catch. `.github/workflows/pr-checks.yml` declares
+ * `on: pull_request: branches: ['**']` with no `paths` filter, so its
+ * `test-unit` job runs on every pull request and sees an edit to either file.
  */
 
 // --- copied from lib/web3/trace-decode.ts ---
@@ -79,6 +88,15 @@ export function flattenCallTree(root: RawCallFrame | null): FlatCall[] {
   // `error` on the frame that reverted — not on its children. We propagate the
   // flag top-down so child frames that completed before their parent reverted
   // are correctly marked reverted too.
+  //
+  // A frame counts as reverted on `Boolean(node.error)`, so `error: ""` and
+  // `error: null` both read as NOT reverted. `error` is an optional field and
+  // an upstream is free to normalise an absent one to either, so testing
+  // `error !== undefined` instead would mark every frame of every block
+  // reverted on such an upstream - and the default `status: "success"` filter
+  // would then match nothing at all, for every subscription, silently.
+  // Requiring a non-empty error fails towards the trigger still firing on the
+  // calls it was asked about rather than towards silence.
   const walk = (
     node: RawCallFrame | undefined,
     depth: number,

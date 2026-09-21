@@ -1,12 +1,14 @@
 import { ethers, type ethers as ethersTypes } from "ethers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logger } from "../../lib/utils/logger";
+import { type FlatCall, frameMatches } from "../../lib/web3/trace-decode";
 import {
   ChainProviderManager,
   type ProviderFactory,
   TRACE_MAX_BLOCK_SPAN,
   type TraceCallFrame,
 } from "../../src/chains/provider-manager";
+import { buildHealthResponse } from "../../src/health/health-server";
 
 /**
  * Trace matching on the shared block subscription (issue #2464).
@@ -543,6 +545,137 @@ describe("ChainProviderManager trace matching", () => {
     expect(after?.traceSubscriberCount).toBe(1);
   });
 
+  describe("the watched address is required, not optional", () => {
+    /**
+     * The vendored matcher reads a falsy `callee` as a wildcard.
+     *
+     * `frameMatches` skips the callee test when `filter.callee` is falsy, so an
+     * empty `contractAddress` is not "matches nothing" but "every frame in
+     * every block that passes the remaining filters", billed up to
+     * TRACE_DISPATCH_CAP_PER_BLOCK executions per block per subscription. The
+     * hand-rolled predicate this replaced compared the address
+     * unconditionally and could not be widened that way, so the seam never had
+     * to state the rule. It does now.
+     */
+    async function subscribeWith(contractAddress: string): Promise<void> {
+      await manager.subscribeToTrace({
+        chainId: CHAIN_ID,
+        wssUrl: WSS_URL,
+        contractAddress,
+        handler: async () => undefined,
+      });
+    }
+
+    it("refuses an empty contractAddress instead of matching every frame", async () => {
+      await expect(subscribeWith("")).rejects.toThrow(
+        /contractAddress is required/,
+      );
+    });
+
+    it("refuses a whitespace-only contractAddress too", async () => {
+      // `" "` is truthy, so it does not become a wildcard - it matches
+      // nothing at all, for the life of the workflow, silently. Same class of
+      // defect, opposite direction, so it is refused at the same boundary.
+      await expect(subscribeWith("   ")).rejects.toThrow(
+        /contractAddress is required/,
+      );
+    });
+
+    it("registers no subscriber when it refuses", async () => {
+      // A half-registered chain would keep the block listener and the
+      // heartbeat alive with nothing to serve.
+      await expect(subscribeWith("")).rejects.toThrow();
+      expect(manager.traceSubscriberCount(CHAIN_ID)).toBe(0);
+    });
+
+    it("is the wildcard the matcher would otherwise apply", () => {
+      // The premise, asserted directly rather than inferred. This is why the
+      // check above has to exist: `frameMatches` does not treat an empty
+      // callee as "matches nothing", it skips the callee test altogether, so
+      // a frame into a completely unrelated contract passes. Nothing about
+      // this is wrong in the matcher - an absent filter field is a wildcard
+      // throughout it - which is exactly why the subscription boundary is
+      // where the required field has to be enforced.
+      const unrelatedFrame: FlatCall = {
+        type: "CALL",
+        from: OTHER.toLowerCase(),
+        to: OTHER.toLowerCase(),
+        value: "0x0",
+        input: PAUSE_SELECTOR,
+        depth: 0,
+        reverted: false,
+      };
+
+      expect(frameMatches(unrelatedFrame, { callee: "" })).toBe(true);
+      // And with the address actually set, the same frame is rejected. That
+      // is the behaviour a subscription is asking for and the behaviour an
+      // empty value silently loses.
+      expect(frameMatches(unrelatedFrame, { callee: WATCHED })).toBe(false);
+    });
+
+    it("still accepts a real address", async () => {
+      // Without this the four cases above pass against a method that refuses
+      // everything.
+      await subscribeWith(WATCHED);
+      expect(manager.traceSubscriberCount(CHAIN_ID)).toBe(1);
+    });
+  });
+
+  describe("an upstream that refuses the method after passing the gate", () => {
+    it("does not report a fully green pod while trace matching is paused", async () => {
+      // `recordTraceRefusal` pauses matching for the life of the connection:
+      // one warn line, the range counted as served so the shared mark keeps
+      // advancing, and no further asking. `allHealthy` was computed from
+      // `connected` alone, so /healthz stayed 200 with no signal anywhere that
+      // the trigger had stopped.
+      await manager.subscribeToTrace({
+        chainId: CHAIN_ID,
+        wssUrl: WSS_URL,
+        contractAddress: WATCHED,
+        handler: async () => undefined,
+      });
+
+      // Healthy first, so the case cannot pass by always being degraded.
+      expect(buildHealthResponse(manager).status).toBe(200);
+
+      created[0].traceFailure = Object.assign(new Error("method not found"), {
+        code: -32601,
+      });
+      await created[0].emitBlock(1000);
+      await vi.advanceTimersByTimeAsync(2000);
+
+      const health = buildHealthResponse(manager);
+      expect(health.body.chains[0].traceUnsupported).toBe(true);
+      expect(health.body.chains[0].connected).toBe(true);
+      expect(health.status).toBe(503);
+      expect(health.body.status).toBe("degraded");
+    });
+
+    it("leaves a chain with no trace subscribers alone", async () => {
+      // The flag outlives the last unsubscribe. A chain with no trace work
+      // left is not degraded by a capability it no longer needs, so the gate
+      // is on the subscriber count as well as the flag.
+      const unsubscribe = await manager.subscribeToTrace({
+        chainId: CHAIN_ID,
+        wssUrl: WSS_URL,
+        contractAddress: WATCHED,
+        handler: async () => undefined,
+      });
+      created[0].traceFailure = Object.assign(new Error("method not found"), {
+        code: -32601,
+      });
+      await created[0].emitBlock(1000);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(buildHealthResponse(manager).status).toBe(503);
+
+      unsubscribe();
+
+      const health = buildHealthResponse(manager);
+      expect(health.body.chains[0].traceUnsupported).toBe(true);
+      expect(health.status).toBe(200);
+    });
+  });
+
   describe("revert propagation", () => {
     /** A watched-contract call nested inside an outer frame that reverted. */
     function revertedParentWithInnerCall() {
@@ -619,6 +752,74 @@ describe("ChainProviderManager trace matching", () => {
 
       expect(received).toHaveLength(2);
       expect(received.map((f) => f.reverted)).toEqual([true, false]);
+    });
+
+    /**
+     * An empty or null `error` reads as NOT reverted.
+     *
+     * This is a behaviour change from the hand-rolled predicate, which tested
+     * `call.error !== undefined` and so read both shapes as reverted. The
+     * vendored matcher tests `Boolean(node.error)`.
+     *
+     * The new direction is the safe one and these cases pin it. `error` is an
+     * optional field, and an upstream that normalises absent fields to `""` or
+     * `null` would, under the old rule, have marked every frame of every block
+     * reverted - at which point the default `status: "success"` filter matches
+     * nothing at all, for every subscription on that chain, with no error and
+     * no log line. Requiring a non-empty error fails towards the trigger still
+     * firing on the calls it was asked about.
+     */
+    describe("an error field that is present but empty", () => {
+      it("reads an empty-string error as not reverted", async () => {
+        const received = await runBlock([
+          { txHash: "0xempty", result: { ...pauseCall(), error: "" } },
+        ]);
+
+        // Default status is "success", so a match here is the assertion that
+        // the frame was not treated as reverted.
+        expect(received).toHaveLength(1);
+        expect(received[0].reverted).toBe(false);
+      });
+
+      it("reads a null error as not reverted", async () => {
+        const received = await runBlock([
+          { txHash: "0xnull", result: { ...pauseCall(), error: null } },
+        ]);
+
+        expect(received).toHaveLength(1);
+        expect(received[0].reverted).toBe(false);
+      });
+
+      it("does not offer either shape to a reverted-filtered trigger", async () => {
+        // The counterpart. If `""` or `null` were still reverting the frame,
+        // a status: "reverted" subscription would fire on every ordinary call.
+        const received = await runBlock(
+          [
+            { txHash: "0xempty", result: { ...pauseCall(), error: "" } },
+            { txHash: "0xnull", result: { ...pauseCall(), error: null } },
+          ],
+          { status: "reverted" },
+        );
+
+        expect(received).toHaveLength(0);
+      });
+
+      it("still treats a non-empty error as reverted", async () => {
+        // Without this the three cases above pass against a matcher that
+        // never marks anything reverted.
+        const received = await runBlock(
+          [
+            {
+              txHash: "0xreal",
+              result: { ...pauseCall(), error: "execution reverted" },
+            },
+          ],
+          { status: "reverted" },
+        );
+
+        expect(received).toHaveLength(1);
+        expect(received[0].reverted).toBe(true);
+      });
     });
   });
 

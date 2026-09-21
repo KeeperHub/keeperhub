@@ -100,6 +100,67 @@ The system is designed to run in multiple deployment modes: local development, D
 
 See [`.env.docker`](.env.docker) for a complete list of configurable environment variables.
 
+## The Trace trigger
+
+The Trace trigger matches raw call frames out of `debug_traceBlockByNumber`
+(`callTracer`), which is what lets a workflow see the things `eth_getLogs`
+cannot: reverted drain attempts, internal ETH transfers, `delegatecall` into an
+unlogged implementation, and unlogged privileged calls. Two operational
+properties of it do not follow from the trigger's configuration and are worth
+knowing before enabling it.
+
+### Not every chain can serve it
+
+`debug_traceBlockByNumber` is a debug-namespace method. The in-repo survey at
+`.planning/issue-2247-trace-upstream-survey.md` probed it against every chain in
+the app's `CHAIN_CONFIG` / `PUBLIC_RPCS` and found it **unavailable** on the
+public defaults for Ethereum, Base, Arbitrum, Polygon, BNB, OP and Avalanche,
+and **available** on Plasma and Tempo. Every surveyed commercial free tier
+(Alchemy, Infura, QuickNode, Ankr, dRPC) excludes the debug and trace APIs;
+they are a paid-plan feature.
+
+A Trace registration on a chain that is not known to answer the method is
+**refused at map time** with one warn line naming the chain, rather than
+accepted and then quietly abandoned on the first refusal. The default allowed
+set is derived from that survey and lives in
+`event-tracker/src/chains/trace-capability.ts`.
+
+The survey measured the tree-configured public defaults, and it records that
+nobody has confirmed what the production `CHAIN_RPC_CONFIG` resolves to. If
+this deployment's upstreams are keyed and on a plan that includes the debug
+namespace, state the chains:
+
+| Variable | Meaning |
+| --- | --- |
+| `TRACE_CAPABLE_CHAIN_IDS` unset | the surveyed default set applies |
+| `TRACE_CAPABLE_CHAIN_IDS=1,8453,42161` | replaces the default set with exactly these chain IDs |
+| `TRACE_CAPABLE_CHAIN_IDS=*` | trusts every chain to answer the method |
+
+It replaces rather than extends, so a chain in the default set that this
+deployment's upstream does not serve can be removed.
+
+If an upstream that passed this gate refuses the method at runtime, trace
+matching is paused on that connection until it reconnects and
+`GET /healthz` reports **503 `degraded`** with `traceUnsupported: true` on the
+affected chain. That is a monitoring signal only: the deployed liveness and
+readiness probes are `pgrep` exec probes, so it does not restart the pod.
+
+### It bills per call frame, not per transaction
+
+Matching is per call frame, and `reverted` propagates from an ancestor frame to
+every descendant, because the EVM rolls those descendants back. One reverted
+transaction whose call tree enters the watched contract repeatedly therefore
+produces one match - and **bills one workflow execution** - per rolled-back
+descendant, not one for the transaction.
+
+This is intended: a reverted drain attempt is the signal the trigger exists to
+catch, and collapsing a call tree into a single execution would lose which
+frame was the attempt. But it means a single failed transaction against a
+contract that is called in a loop can bill up to 25 executions for one
+subscription (`TRACE_DISPATCH_CAP_PER_BLOCK`, the per-subscription per-block
+ceiling). A `status` of `reverted` or `any` is the configuration where this
+shows up. Narrow with `selector`, `caller` or `callTypes` to stay below it.
+
 ## Project Structure
 
 ```

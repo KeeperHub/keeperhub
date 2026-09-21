@@ -36,10 +36,10 @@ export interface TraceSubscription {
    * Minimum wei value moved by the frame (decimal string).
    *
    * Scoped to frames where the watched contract is the callee, because
-   * `frameMatchesSubscriber` requires `frame.to === contractAddress` before
-   * any other filter runs. A CREATE carrying an endowment names the new
-   * contract in `to`, a SELFDESTRUCT names the beneficiary, so neither
-   * matches a subscription on the contract that performed it.
+   * `frameMatches` requires `call.to === filter.callee` before the value
+   * threshold runs. A CREATE carrying an endowment names the new contract in
+   * `to`, a SELFDESTRUCT names the beneficiary, so neither matches a
+   * subscription on the contract that performed it.
    * Making the address test direction-aware would change matching for every
    * filter, not just this one, so it is left for its own change.
    */
@@ -50,6 +50,23 @@ export interface TraceSubscription {
    *   "success" - only frames that did not revert (default)
    *   "reverted" - only reverted frames
    *   "any" - both
+   *
+   * COST. Matching is per call frame, not per transaction, and `reverted`
+   * propagates from an ancestor to every descendant because that is what the
+   * EVM does - a frame rolled back by a failure above it did not take effect.
+   * So one reverted transaction whose call tree enters the watched contract
+   * repeatedly matches once per rolled-back descendant, and each match bills
+   * one workflow execution. A `status: "reverted"` or `"any"` subscription on
+   * a contract that is called in a loop is the shape where that adds up: a
+   * single failed transaction can bill up to
+   * `TRACE_DISPATCH_CAP_PER_BLOCK` executions.
+   *
+   * This is intended, not a defect to file. The whole point of the trigger is
+   * that a reverted drain attempt is the highest-value security signal
+   * available and `eth_getLogs` cannot see it, and collapsing a tree to one
+   * execution would lose which frame was the attempt. The cap is the bound;
+   * `selector`, `caller` and `callTypes` are how a subscription narrows below
+   * it.
    */
   status?: "success" | "reverted" | "any";
 }

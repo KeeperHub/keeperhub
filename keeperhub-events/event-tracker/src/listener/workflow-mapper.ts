@@ -8,6 +8,10 @@ import type {
 import { logger } from "../../lib/utils/logger";
 import { buildEventAbi } from "../chains/event-serializer";
 import { redactRpcUrl } from "../chains/provider-manager";
+import {
+  describeTraceCapableChains,
+  isTraceCapableChain,
+} from "../chains/trace-capability";
 import type { AbiEvent } from "../chains/validation";
 import type {
   StateThresholdRegistration,
@@ -576,6 +580,27 @@ function buildTraceRegistration(
     contractAddress: string;
   },
 ): TraceRegistration | null {
+  // The Trace trigger is the one trigger whose upstream method is not
+  // universally served, so the chain is checked before the filter is.
+  //
+  // A chain that refuses `debug_traceBlockByNumber` used to register happily
+  // and then go quiet: `recordTraceRefusal` sets `traceUnsupported`, logs
+  // once, reports the range served so the shared mark keeps advancing, and
+  // stops asking until reconnect. The user is left with an enabled workflow
+  // that never fires. That is the same failure shape every check below exists
+  // to prevent, and on the survey's evidence it is the default outcome on most
+  // mainnets rather than an edge case, so it is refused the same way.
+  //
+  // `trace-capability.ts` holds the set, where it came from, and the
+  // `TRACE_CAPABLE_CHAIN_IDS` override for a deployment whose upstreams do
+  // serve the method.
+  if (!isTraceCapableChain(connection.chainId)) {
+    logger.warn(
+      `[workflow-mapper] workflow ${workflowId} trace trigger is on chain ${connection.chainId}, which is not known to answer debug_traceBlockByNumber; ${describeTraceCapableChains()}; skipping`,
+    );
+    return null;
+  }
+
   if (!ADDRESS_PATTERN.test(connection.contractAddress.trim())) {
     logger.warn(
       `[workflow-mapper] workflow ${workflowId} trace trigger contractAddress "${connection.contractAddress}" is not a 20-byte address; skipping`,

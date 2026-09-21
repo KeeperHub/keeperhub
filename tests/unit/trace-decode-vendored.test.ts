@@ -4,15 +4,29 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * The vendored matcher must not drift from the app's own copy.
+ * The vendored trace matcher must not drift from this app's own copy.
  *
  * `keeperhub-events/event-tracker/lib/web3/trace-decode.ts` is a copy of
- * `lib/web3/trace-decode.ts`, because the tracker is a separate workspace
- * whose Docker build context does not contain the app's `lib/`. A copy with
- * nothing holding it in place is how the two versions diverged before: one
- * side grew the `DECODABLE_CALL_TYPES` guard on `callSelector` and the
- * "surface an unparseable value" decision, the other did not, and a
- * `selector` filter fired on a contract deployment as a result.
+ * `lib/web3/trace-decode.ts`, because the tracker is a separate pnpm
+ * workspace whose Docker build context is `keeperhub-events/` and therefore
+ * does not contain the app's `lib/` at all. A copy with nothing holding it in
+ * place is how the two versions diverged before: one side grew the
+ * `DECODABLE_CALL_TYPES` guard on `callSelector` and the "surface an
+ * unparseable value" decision, the other did not, and a `selector` filter
+ * fired on a contract deployment as a result.
+ *
+ * WHY THIS TEST IS AT THE ROOT AND NOT IN THE TRACKER'S OWN SUITE.
+ *
+ * It was in the tracker's suite, and that made the guard one-way.
+ * `.github/workflows/pr-checks-events.yml` is path-filtered to
+ * `keeperhub-events/**`, and no other workflow runs the tracker's unit tests,
+ * so a pull request editing only the file in THIS directory never ran it -
+ * exactly half of what it exists to catch.
+ * `.github/workflows/pr-checks.yml` declares `on: pull_request:
+ * branches: ['**']` with no `paths` filter, so its `test-unit` job runs on
+ * every pull request and an edit to either copy reaches this assertion.
+ *
+ * Keep it here. Moving it under `keeperhub-events/` restores the hole.
  *
  * Each block the copy took is marked in the vendored file. This reads both
  * files and checks every marked block still appears in the original, with
@@ -22,8 +36,11 @@ import { describe, expect, it } from "vitest";
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const VENDORED = resolve(HERE, "../../lib/web3/trace-decode.ts");
-const ORIGINAL = resolve(HERE, "../../../../lib/web3/trace-decode.ts");
+const ORIGINAL = resolve(HERE, "../../lib/web3/trace-decode.ts");
+const VENDORED = resolve(
+  HERE,
+  "../../keeperhub-events/event-tracker/lib/web3/trace-decode.ts"
+);
 const MARKER = "// --- copied from lib/web3/trace-decode.ts ---";
 
 /**
@@ -58,7 +75,7 @@ describe("the vendored trace matcher", () => {
     "keeps copied block %i identical to lib/web3/trace-decode.ts",
     (index) => {
       expect(original).toContain(blocks[index]);
-    },
+    }
   );
 
   it("names every declaration the tracker imports", () => {

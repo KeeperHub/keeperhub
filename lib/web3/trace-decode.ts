@@ -119,6 +119,15 @@ export function flattenCallTree(root: RawCallFrame | null): FlatCall[] {
   // `error` on the frame that reverted — not on its children. We propagate the
   // flag top-down so child frames that completed before their parent reverted
   // are correctly marked reverted too.
+  //
+  // A frame counts as reverted on `Boolean(node.error)`, so `error: ""` and
+  // `error: null` both read as NOT reverted. `error` is an optional field and
+  // an upstream is free to normalise an absent one to either, so testing
+  // `error !== undefined` instead would mark every frame of every block
+  // reverted on such an upstream - and the default `status: "success"` filter
+  // would then match nothing at all, for every subscription, silently.
+  // Requiring a non-empty error fails towards the trigger still firing on the
+  // calls it was asked about rather than towards silence.
   const walk = (
     node: RawCallFrame | undefined,
     depth: number,
