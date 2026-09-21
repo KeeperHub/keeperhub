@@ -29,7 +29,7 @@ The last row is the one that does not announce itself. The other failures are lo
 
 Supported chains for the OFT and endpoint configuration actions: Ethereum, Base, Arbitrum One, Optimism, Polygon, Ethereum Sepolia, Base Sepolia.
 
-Endpoint Message Executable runs on a wider set, because it needs no token deployment to point at: every chain KeeperHub supports where LayerZero deploys its endpoint view. On top of the seven above, that is BNB Chain, Avalanche, Plasma, 0G, Tempo and Robinhood Chain, plus the testnets Arbitrum Sepolia, Optimism Sepolia, Polygon Amoy, BNB Chain Testnet, Avalanche Fuji, Plasma Testnet, 0G Galileo, Tempo Testnet and Robinhood Chain Testnet: twenty-two in all.
+Endpoint Message Executable runs on a wider set, because it needs no token deployment to point at: every chain KeeperHub supports where LayerZero deploys its endpoint view. On top of the seven above, that is BNB Chain, Avalanche, Plasma, 0G, Tempo, Robinhood Chain and Arc, plus the testnets Arbitrum Sepolia, Optimism Sepolia, Polygon Amoy, BNB Chain Testnet, Avalanche Fuji, Plasma Testnet, 0G Galileo, Tempo Testnet, Robinhood Chain Testnet and Arc Testnet: twenty-four in all.
 
 The OFT actions and the underlying-token actions take the contract address as an input, because there is no single OFT address the way there is a single lending pool: every omnichain token is its own deployment. The EndpointV2 actions do not, because LayerZero's endpoint has one known address per chain (`0x1a44076050125825900e736c501f859c50fE728c` on the mainnets listed above, `0x6EDCE65403992e310A62460808c4b910D972f10f` on both testnets), which is resolved from the chain you select. Endpoint Message Executable reads LayerZero's EndpointV2View the same way; its address differs on almost every chain and is also resolved for you.
 
@@ -54,6 +54,7 @@ LayerZero addresses chains by its own identifier, the endpoint ID (EID). It is n
 | 0G | 16661 | 30388 |
 | Tempo | 4217 | 30410 |
 | Robinhood Chain | 4663 | 30416 |
+| Arc | 5042 | 30417 |
 | Ethereum Sepolia | 11155111 | 40161 |
 | Base Sepolia | 84532 | 40245 |
 | Arbitrum Sepolia | 421614 | 40231 |
@@ -65,6 +66,7 @@ LayerZero addresses chains by its own identifier, the endpoint ID (EID). It is n
 | 0G Galileo | 16602 | 40428 |
 | Tempo Testnet | 42431 | 40444 |
 | Robinhood Chain Testnet | 46630 | 40451 |
+| Arc Testnet | 5042002 | 40434 |
 
 Mainnet endpoint IDs start at 30000 and testnet endpoint IDs at 40000. A destination outside this table still works as long as the endpoint supports it; check it with Endpoint Is Supported EID and look the identifier up on the [LayerZero deployed contracts page](https://docs.layerzero.network/v2/deployments/deployed-contracts).
 
@@ -433,16 +435,18 @@ Where an inbound message stands on the destination chain. Select the destination
 
 | `state` | Meaning |
 |---------|---------|
-| 0 | Not verified. The verifier set has not yet delivered the payload to this endpoint |
+| 0 | Not executable. The verifier set has not delivered the payload yet, or the nonce was nilified, or the identifiers name no message at all |
 | 1 | Verified, but an earlier nonce on the same path is still outstanding, so this one cannot run yet |
 | 2 | Executable. Verified and next in line, waiting on the executor |
 | 3 | Executed, or the path has already moved past this nonce |
 
-Three limits are worth stating plainly, because each can make a workflow act on a transfer that has not finished.
+Four limits are worth stating plainly, because each can make a workflow act on a transfer that has not finished, or wait for one that never will.
+
+A `0` is not only "still waiting". `nilify()` is how an OApp owner permanently blocks a stuck inbound nonce, and a nilified message carries the NIL payload hash, which matches none of the executable branches and so reports `0` as well. A message that is terminally dead therefore reads exactly like one the verifiers have not reached yet. A workflow polling for `2` or `3` on a schedule will poll forever, so bound the wait rather than treating `0` as a state that must eventually change.
 
 A `3` means the endpoint no longer holds the payload. That is the state after the receiving app ran the message, and it is equally the state after the app dropped the message without running it, with `clear()`, `skip()` or `burn()`. Read it as "executed or cleared" rather than as proof of delivery.
 
-A `3` is also returned for every nonce the path has already moved past, whether or not a message with that nonce is the one you mean. A mistyped or guessed nonce below the path's latest executed nonce reads as `3`, so a `3` confirms the path is past that nonce, not that this message arrived. Take the nonce from the send's `PacketSent` event rather than typing it. A wrong source endpoint ID, sender or receiver behaves differently: each names a path with no history, so it returns `0` indefinitely.
+A `3` is also returned for every nonce the path has already moved past, whether or not a message with that nonce is the one you mean. A mistyped or guessed nonce below the path's latest executed nonce reads as `3`, so a `3` confirms the path is past that nonce, not that this message arrived. Take the nonce from the send's `PacketSent` event rather than typing it. A wrong source endpoint ID, sender or receiver behaves differently, and how it behaves depends on whether the wrong identifiers happen to name a real path. Identifiers with no history return `0` indefinitely. A wrong-but-real combination that does carry traffic returns that path's state for the nonce, which can be a `3`.
 
 Finally, a `3` covers `lzReceive` only. An app that composes further work runs `lzCompose` as a separate call afterwards, which can fail on its own. If your workflow acts on funds arriving, confirm the balance rather than the state alone.
 

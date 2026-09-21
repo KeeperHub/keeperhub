@@ -133,8 +133,8 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     // The view address differs per chain on the long-standing chains, so a
     // duplicate there is the likely transcription error. It is NOT unique
     // everywhere: the newer chains are deployed from shared factories, so
-    // Plasma and Robinhood Chain genuinely share one mainnet address and four
-    // testnets share another. Both were confirmed by calling each chain's own
+    // Plasma, Robinhood Chain and Arc genuinely share one mainnet address
+    // and four testnets share another. Both were confirmed by calling each chain's own
     // deployment, so pin the sharing rather than asserting uniqueness.
     const byAddress = new Map<string, string[]>();
     for (const [chain, addr] of Object.entries(
@@ -151,7 +151,7 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
         "0x6Ac7bdc07A0583A362F1497252872AE6c0A5F5B8",
         ["16602", "46630", "9746"],
       ],
-      ["0xAaB5A48CFC03Efa9cC34A2C1aAcCCB84b4b770e4", ["4663", "9745"]],
+      ["0xAaB5A48CFC03Efa9cC34A2C1aAcCCB84b4b770e4", ["4663", "5042", "9745"]],
     ]);
   });
 
@@ -169,7 +169,10 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     // The read returns the raw enum ordinal, so the four states and the two
     // caveats a cleared message and lzCompose carry have to reach the user
     // through the action's own text.
-    expect(exe.description).toContain("0 not yet verified");
+    expect(exe.description).toContain("0 not executable");
+    // A nilified nonce is terminally dead and also reports 0, so the text
+    // must not present 0 as a state that eventually resolves.
+    expect(exe.description).toContain("nilified");
     expect(exe.description).toContain("3 executed");
     expect(exe.description).toContain("cleared");
     expect(exe.description).toContain("lzCompose");
@@ -394,6 +397,7 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
       "16661": "0G",
       "4217": "Tempo",
       "4663": "Robinhood Chain",
+      "5042": "Arc",
       "11155111": "Ethereum Sepolia",
       "84532": "Base Sepolia",
       "421614": "Arbitrum Sepolia",
@@ -405,6 +409,7 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
       "16602": "0G Galileo",
       "42431": "Tempo Testnet",
       "46630": "Robinhood Chain Testnet",
+      "5042002": "Arc Testnet",
     };
     const tip = action("oft-quote-send").inputs.find(
       (i) => i.name === "dstEid"

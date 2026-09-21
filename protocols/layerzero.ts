@@ -57,6 +57,7 @@ export const LAYERZERO_EIDS: Record<string, number> = {
   "16661": 30_388,
   "4217": 30_410,
   "4663": 30_416,
+  "5042": 30_417,
   "11155111": 40_161,
   "84532": 40_245,
   "421614": 40_231,
@@ -68,6 +69,7 @@ export const LAYERZERO_EIDS: Record<string, number> = {
   "16602": 40_428,
   "42431": 40_444,
   "46630": 40_451,
+  "5042002": 40_434,
 };
 
 // Type 3 options: executor lzReceive gas of 200,000 and no native drop.
@@ -102,6 +104,7 @@ const EID_CHAIN_NAMES: readonly (readonly [string, string])[] = [
   ["16661", "0G"],
   ["4217", "Tempo"],
   ["4663", "Robinhood Chain"],
+  ["5042", "Arc"],
   ["11155111", "Ethereum Sepolia"],
   ["84532", "Base Sepolia"],
   ["421614", "Arbitrum Sepolia"],
@@ -113,6 +116,7 @@ const EID_CHAIN_NAMES: readonly (readonly [string, string])[] = [
   ["16602", "0G Galileo"],
   ["42431", "Tempo Testnet"],
   ["46630", "Robinhood Chain Testnet"],
+  ["5042002", "Arc Testnet"],
 ];
 
 // Built from LAYERZERO_EIDS rather than typed out beside it, so a corrected
@@ -173,6 +177,17 @@ const ENDPOINT_V2_ADDRESSES: Record<string, string> = {
 // below the path's lazy inbound nonce, whether or not it is the message the
 // caller meant. It says nothing about lzCompose, which runs as a separate
 // call afterwards.
+//
+// Not executable (0) is just as ambiguous in the other direction: it covers
+// a message the verifiers have not delivered yet, a nonce the OApp owner
+// nilified (the NIL payload hash matches none of the executable branches,
+// so a permanently dead message reports 0), and identifiers that name no
+// message at all.
+//
+// Arc (5042) and Arc Testnet (5042002) were added on 2026-09-21 and checked
+// the same way: each view's endpoint() reports an endpoint whose eid() is
+// 30417 and 40434 respectively. Arc shares its mainnet view address with
+// Plasma and Robinhood Chain.
 const ENDPOINT_V2_VIEW_ADDRESSES: Record<string, string> = {
   "1": "0x8FAFC84cAeA1Cef8475cb5CB344658D160c9CE0b",
   "8453": "0x5e2A88c385B86f00eb8F4d9f861649a6feB93F24",
@@ -185,6 +200,7 @@ const ENDPOINT_V2_VIEW_ADDRESSES: Record<string, string> = {
   "16661": "0x4514FC667a944752ee8A29F544c1B20b1A315f25",
   "4217": "0x6903A4a6F09f8837886928b9494C0635Cf3091ED",
   "4663": "0xAaB5A48CFC03Efa9cC34A2C1aAcCCB84b4b770e4",
+  "5042": "0xAaB5A48CFC03Efa9cC34A2C1aAcCCB84b4b770e4",
   "11155111": "0x982Ca8b3532236C5e77Ff215791dD454e07E21F7",
   "84532": "0xF49d162484290EAeAd7bb8C2c7E3a6f8f52e32d6",
   "421614": "0x91282bEf7b549732c6acE92778167E952F864A5e",
@@ -196,6 +212,7 @@ const ENDPOINT_V2_VIEW_ADDRESSES: Record<string, string> = {
   "16602": "0x6Ac7bdc07A0583A362F1497252872AE6c0A5F5B8",
   "42431": "0x9BDD19d8cF1cAB4972802bCA09f72d8c8325dBfB",
   "46630": "0x6Ac7bdc07A0583A362F1497252872AE6c0A5F5B8",
+  "5042002": "0x145C041566B21Bec558B2A37F1a5Ff261aB55998",
 };
 
 // Reference OFT deployments. The runtime address always comes from the
@@ -761,7 +778,7 @@ export default defineAbiProtocol({
           slug: "endpoint-view-executable",
           label: "Endpoint Message Executable",
           description:
-            "Where an inbound message stands on this (the destination) chain: 0 not yet verified, 1 verified but waiting on an earlier nonce, 2 ready to execute, 3 executed. 3 is also returned when the receiving app cleared, skipped or burned the message, and for any nonce the path has already moved past, so it confirms the path is past that nonce rather than that this message arrived. It does not cover lzCompose.",
+            "Where an inbound message stands on this (the destination) chain: 0 not executable, 1 verified but waiting on an earlier nonce, 2 ready to execute, 3 executed. 0 covers a message the verifiers have not delivered yet, a nonce the receiving app nilified (permanently dead), and identifiers that name no message, so it is not a state that must eventually change. 3 is also returned when the receiving app cleared, skipped or burned the message, and for any nonce the path has already moved past, so it confirms the path is past that nonce rather than that this message arrived. It does not cover lzCompose.",
           docUrl: LAYERZERO_PROTOCOL_DOCS,
           inputs: {
             srcEid: {
@@ -799,9 +816,15 @@ export default defineAbiProtocol({
             // single output as { [name]: value } only when the ABI names it,
             // so a renamed output would advertise a path that resolves to
             // nothing.
+            //
+            // The deployed contract leaves that output unnamed, so the name
+            // in layerzero-endpoint-v2-view.json is ours. Regenerating that
+            // file from chain would drop it, turn the result back into a
+            // bare scalar and break saved workflows reading result.state;
+            // the unit test beside this one is what catches that.
             state: {
               label:
-                "Execution State (0 not executable, 1 verified but not executable, 2 executable, 3 executed)",
+                "Execution State (0 not executable: undelivered, nilified or unknown; 1 verified but not executable, 2 executable, 3 executed)",
             },
           },
         },
