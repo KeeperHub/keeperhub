@@ -29,12 +29,14 @@ Read-only and credential-free: the action queries the public mirror node over HT
 | Output | Description |
 |--------|-------------|
 | `found` | True when the mirror holds a message at that sequence (an anchored empty message counts as found) |
-| `verified` | True when `found` and the payload matches the expected message exactly |
+| `verified` | True when `found` and the payload matches the expected message (surrounding whitespace on either side is ignored) |
 | `message` | The decoded payload |
 | `consensusTimestamp` | The network-assigned consensus timestamp |
 | `sequenceNumber` | The verified sequence number |
 
-A `404` from the mirror surfaces as `found: false` with `success: true` when the topic exists, so workflows can branch on "not yet anchored" without treating it as a failure. A `404` for a topic that does not exist is a configuration error and fails the step, so a polling workflow cannot loop forever on a mistyped topic id.
+A `404` from the mirror surfaces as `found: false` with `success: true` when the topic exists, so workflows can branch on "not yet anchored" without treating it as a failure. A `404` for a topic that does not exist is a configuration error and fails the step, so a polling workflow cannot loop forever on a mistyped topic id. Only a `404` means "no such topic" — a `429` or a `5xx` from the mirror is reported as a mirror failure, never as a bad topic id.
+
+Disambiguating those two `404`s costs a second request (a probe of the topic itself), and each request carries a 30-second timeout, so a single run of this step can take up to roughly 60 seconds when nothing is anchored at the requested sequence yet.
 
 Messages larger than the HCS single-transaction payload are split into one chunk per sequence number by the network; a chunked message fails this step with a clear error rather than reporting a content mismatch, because the fragment alone is not the anchored payload.
 

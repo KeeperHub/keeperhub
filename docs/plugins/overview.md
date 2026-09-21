@@ -50,6 +50,7 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [Hyperliquid](/plugins/hyperliquid) | Data | Read-only Info API queries: clearinghouse state, vault details, validators, funding history, spot deploy state, referrals, sub-accounts, active asset data | None |
 | [Blockscout](/plugins/blockscout) | Data | Read-only block explorer queries: address balance, transaction details, token info | None (optional instance URL/API key) |
 | [Robinhood](/plugins/robinhood) | Data | Read-only stock-token reads on Robinhood Chain: price, holder position in share terms, market/trading status | None |
+| [Hedera](/plugins/hedera) | Data | Read-only reads of Hedera Consensus Service topic messages from the public mirror node, with optional expected-payload verification | None |
 
 ## How Plugins Work
 
