@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { getAddress } from "ethers";
 import { describe, expect, it } from "vitest";
 import { getProtocol, registerProtocol } from "@/lib/protocol-registry";
@@ -5,6 +8,13 @@ import etherFiDef from "@/protocols/ether-fi";
 
 const KEBAB_CASE_REGEX = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 const HEX_ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
+
+/** The eight-byte PNG signature, then the IHDR width and height offsets. */
+const PNG_SIGNATURE = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+const PNG_IHDR_WIDTH_OFFSET = 16;
+const PNG_IHDR_HEIGHT_OFFSET = 20;
 
 describe("ether.fi Protocol Definition (ABI-driven)", () => {
   it("imports without throwing", () => {
@@ -282,5 +292,42 @@ describe("ether.fi Protocol Definition (ABI-driven)", () => {
     expect(retrieved).toBeDefined();
     expect(retrieved?.slug).toBe("ether-fi");
     expect(retrieved?.name).toBe("ether.fi");
+  });
+
+  // The icon was replaced once on this branch after review rejected the first
+  // one, and nothing in the repo gated the file either before or after, so the
+  // swap was invisible to CI. Mirrors the dimension pin the sibling Renzo PR
+  // ships (tests/unit/protocol-renzo.test.ts).
+  //
+  // What the dimension assertion catches: the declared path drifting away from
+  // the file on disk, the file being deleted, the file not being a PNG at all,
+  // and a re-export at a different size - which is the drift that happened on
+  // the Renzo branch (a 200x201 crop). It does NOT establish that the image is
+  // the right image: any 256x256 PNG passes it. There is also no repo-wide
+  // 256x256 convention to appeal to - rocket-pool.png is 231x231,
+  // frax-ether.png 250x250, ethena.png 64x64 - so this pins what THIS file is,
+  // not a house rule.
+  //
+  // The digest assertion is what closes that gap, and it is the reason this
+  // test goes further than Renzo's: it fails on any change to the bytes,
+  // including a different image at the same size. Updating it is the deliberate
+  // act of changing the icon. Neither assertion can judge whether the artwork
+  // is ether.fi's correct brand mark; that is a human call, and the digest only
+  // makes it a call someone has to make again on purpose.
+  it("ships the declared icon as a 256x256 PNG with pinned bytes", () => {
+    expect(etherFiDef.icon).toBe("/protocols/ether-fi.png");
+    const iconPath = join(process.cwd(), "public", "protocols", "ether-fi.png");
+    const bytes = readFileSync(iconPath);
+    expect(
+      bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE),
+      `${iconPath} does not start with the PNG signature`
+    ).toBe(true);
+    expect({
+      width: bytes.readUInt32BE(PNG_IHDR_WIDTH_OFFSET),
+      height: bytes.readUInt32BE(PNG_IHDR_HEIGHT_OFFSET),
+    }).toEqual({ width: 256, height: 256 });
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+      "32da1770bdfee86e1894cb47f0e8c8f374dda57f5d19214195e122737afd3d76"
+    );
   });
 });

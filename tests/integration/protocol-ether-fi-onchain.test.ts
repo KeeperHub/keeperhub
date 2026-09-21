@@ -25,10 +25,11 @@
  *
  * A bare revert is not enough. An unknown selector hits the fallback and
  * reverts with no returndata, so accepting any CALL_EXCEPTION would pass for a
- * function the contract does not have. What is rejected: a CALL_EXCEPTION with
- * no revert data, plus the calldata-level ethers errors (INVALID_ARGUMENT,
- * BAD_DATA, BUFFER_OVERRUN) that are the ABI mismatch this file exists to
- * catch.
+ * function the contract does not have. What is rejected: a CALL_EXCEPTION whose
+ * revert data is absent or empty (`null` on some endpoints, `"0x"` on others),
+ * a call that succeeds with empty returndata, and the calldata-level ethers
+ * errors (INVALID_ARGUMENT, BAD_DATA, BUFFER_OVERRUN) that are the ABI mismatch
+ * this file exists to catch.
  */
 
 import { ethers } from "ethers";
@@ -54,6 +55,10 @@ const CHAIN_ID = "1";
 const MAINNET_CHAIN_ID = 1;
 const TEST_ADDRESS = "0x0000000000000000000000000000000000000001";
 const TX_RESULT_HEX_PREFIX = /^0x/;
+// Empty returndata. `/^0x/` accepts it and ethers reports it as `data` on some
+// endpoints where others report null, so both branches of the dispatch helper
+// have to name it explicitly.
+const EMPTY_RETURNDATA = "0x";
 const ONE_ETH_WEI = "1000000000000000000";
 const ONE_ETH = BigInt(ONE_ETH_WEI);
 // Spender for the approve simulation. Read off the definition so it cannot
@@ -124,8 +129,12 @@ describe("ether.fi on-chain integration", () => {
    *   weETH 0xdeadbeef -> CALL_EXCEPTION, data null
    *   weETH wrap(1)    -> CALL_EXCEPTION, data 0x8d6f21e1
    *
-   * Requiring non-null data is what proves the dispatcher matched a real
-   * selector and the body ran far enough to revert on its own terms.
+   * Requiring non-empty data is what proves the dispatcher matched a real
+   * selector and the body ran far enough to revert on its own terms. Absent
+   * and empty are the same fact reported two ways: this endpoint gives `null`
+   * for the unknown selector above, others surface the same revert as `"0x"`,
+   * and `"0x"` would slip past a null-only check. The success branch is
+   * checked the same way for the same reason.
    *
    * Throws instead of asserting so the helper holds no expect() outside an
    * it() block. Call sites use
@@ -150,6 +159,11 @@ describe("ether.fi on-chain integration", () => {
           `Expected hex-prefixed return from eth_call, got: ${result}`
         );
       }
+      if (result === EMPTY_RETURNDATA) {
+        throw new Error(
+          `${actionSlug}: the call succeeded but returned no data. Every action simulated here declares a return value, so empty returndata means the body did not run - a silent fallback, not this function.`
+        );
+      }
     } catch (err: unknown) {
       if (
         typeof err === "object" &&
@@ -158,9 +172,9 @@ describe("ether.fi on-chain integration", () => {
         err.code === "CALL_EXCEPTION"
       ) {
         const revertData = (err as { data?: unknown }).data;
-        if (revertData == null) {
+        if (revertData == null || revertData === EMPTY_RETURNDATA) {
           throw new Error(
-            `${actionSlug}: reverted with no return data, which is what an unknown selector does. The deployed bytecode did not dispatch this call.`
+            `${actionSlug}: reverted with no return data (${String(revertData)}), which is what an unknown selector does. The deployed bytecode did not dispatch this call.`
           );
         }
         return;
