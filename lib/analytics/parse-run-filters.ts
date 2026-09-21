@@ -5,7 +5,26 @@ import type {
   RunSource,
 } from "./types";
 
-const VALID_STATUSES = new Set<NormalizedStatus>([
+/**
+ * The page size a run listing returns when the caller does not ask for one, and
+ * the ceiling on what it may ask for.
+ *
+ * Both are named rather than left as literals at the two places that apply them,
+ * because they are also what the `list_executions` MCP tool description tells an
+ * agent to expect. A description is a contract the handler does not enforce, so
+ * the test for that tool reads these and the description together rather than
+ * restating the numbers - the same drift the description had when it said 20.
+ */
+export const DEFAULT_RUN_PAGE_SIZE = 50;
+export const MAX_RUN_PAGE_SIZE = 100;
+
+/**
+ * The statuses a run listing accepts. Exported because the MCP tool description
+ * lists them to agents, and `tests/unit/mcp-agent-tools.test.ts` holds the two
+ * together: this set is what the parser filters on, so it is the one that decides
+ * whether a value an agent was told about actually selects rows.
+ */
+export const VALID_STATUSES = new Set<NormalizedStatus>([
   "pending",
   "running",
   "success",

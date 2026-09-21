@@ -13,6 +13,10 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
+import {
+  DEFAULT_RUN_PAGE_SIZE,
+  MAX_RUN_PAGE_SIZE,
+} from "@/lib/analytics/parse-run-filters";
 import { db } from "@/lib/db";
 import { logInputField, logOutputField } from "@/lib/db/execution-log-fields";
 import type { TransactionHashEntry } from "@/lib/db/schema";
@@ -1438,7 +1442,7 @@ export async function getUnifiedRuns(
   const {
     cursor,
     page = 1,
-    limit = 50,
+    limit = DEFAULT_RUN_PAGE_SIZE,
     customStart,
     customEnd,
     projectId,
@@ -1446,7 +1450,7 @@ export async function getUnifiedRuns(
   } = options;
   const rangeStart = getTimeRangeStart(range, customStart);
   const rangeEnd = getTimeRangeEnd(customEnd);
-  const pageLimit = Math.min(limit, 100);
+  const pageLimit = Math.min(limit, MAX_RUN_PAGE_SIZE);
   const wanted = resolveSources(filters.sources, projectId);
   const offset = cursor ? 0 : (page - 1) * pageLimit;
 

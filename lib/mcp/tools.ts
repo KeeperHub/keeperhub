@@ -2,6 +2,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import "@/protocols";
 import {
+  DEFAULT_RUN_PAGE_SIZE,
+  MAX_RUN_PAGE_SIZE,
+  VALID_STATUSES,
+} from "@/lib/analytics/parse-run-filters";
+import {
   describeCron,
   IntervalTooSmallError,
   parseIntervalSeconds,
@@ -2055,15 +2060,15 @@ export function registerTools(
         .number()
         .int()
         .min(1)
-        .max(100)
+        .max(MAX_RUN_PAGE_SIZE)
         .optional()
-        .describe("Page size (default 20, max 100)"),
+        .describe(
+          `Page size (default ${DEFAULT_RUN_PAGE_SIZE}, max ${MAX_RUN_PAGE_SIZE})`
+        ),
       status: z
         .string()
         .optional()
-        .describe(
-          "Filter by status: pending, running, success, error, system_error, external_error, cancelled"
-        ),
+        .describe(`Filter by status: ${[...VALID_STATUSES].join(", ")}`),
       source: z
         .enum(["workflow", "direct"])
         .optional()
