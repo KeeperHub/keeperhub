@@ -82,7 +82,11 @@ this entry crashes the seed, and the seed runs on every deploy.
    `<explorer>/api` and `explorerApiType: "blockscout"`. The path fields
    (`explorerTxPath`, `explorerAddressPath`, `explorerContractPath`) differ by
    explorer software; open a transaction and a verified contract on the
-   explorer and copy what you see.
+   explorer and copy what you see. If the explorer has no usable API yet,
+   leave `explorerApiUrl` and `explorerApiType` out rather than pointing them
+   at something that does not answer: transaction and address links still
+   work, ABI auto-fetch stays off for the chain, and the seed and its test
+   accept the entry (Arc mainnet is in that state today).
 
 ### 3. WebSocket endpoint, or Event triggers do not work
 
