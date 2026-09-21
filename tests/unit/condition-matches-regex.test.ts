@@ -232,6 +232,15 @@ describe("matchesRegex pattern rule", () => {
     ["a lone group trailing an unbounded atom", "(a*)$"],
     ["two such groups over disjoint sets", "(a*)(b*)$"],
     ["an unbounded group preceded by a disjoint atom", "[0-9]+(a*)$"],
+    // An escaped range endpoint decodes as the span it names. `[\x41-\x43]` is
+    // A to C, which does not overlap a lowercase class; read with the endpoint
+    // two indexes ahead it became U+0041 to the `x` of the second escape, which
+    // does, so this case fails when the endpoint is off by one.
+    [
+      "an escaped range whose span is disjoint from the class after it",
+      "^[\\x41-\\x43]+[a-z]+$",
+    ],
+    ["an escaped range on its own", "^[\\x30-\\x39]+$"],
   ])("admits %s", (_label, pattern) => {
     expect(admit(pattern as string)).toEqual({ valid: true });
   });
@@ -249,8 +258,27 @@ describe("matchesRegex pattern rule", () => {
     ["a quantified class repetition followed by a literal", "(\\d+)*x"],
     ["a quantified bounded repetition", "(a{2,})+"],
     ["an anchored quantified whitespace group", "^(\\s*\\w+)+$"],
+    // An exact count is a repeat, not a range: `(a*){12}` over an ambiguous body
+    // splits between repetitions, and measured 88 seconds on a 29-character
+    // input with the length cap at 4096. Reading `{n}` as "max > min is false, so
+    // there is nothing to split" is what re-admitted all five of these.
+    ["an exact count over a quantified group", "^(a+){25}$"],
+    ["an exact count over a star group", "^(a*){12}$"],
+    ["an exact count over an alternation", "^(a|aa){25}$"],
+    ["an exact count over a class repetition", "^(\\d+){25}$"],
+    ["an exact count over a bounded class", "^([a-z]+){20}$"],
   ])("refuses %s", (_label, pattern) => {
     expect(rejects(pattern as string)).toContain("backtrack");
+  });
+
+  it("reads a mixed-spelling range as one span", () => {
+    // An escaped start and a bare end are one range, so this class overlaps the
+    // one after it and the adjacent-quantifier rule refuses the pair. Reading the
+    // `-` as two indexes ahead dropped the range instead, left `{"0", "-", "9"}`,
+    // which overlaps nothing - and admitted the pattern at 3,755 ms for thirty
+    // characters. So the assertion is which rule fires, not just that one did.
+    const error = rejects("[\\x30-9]+[4-8]+");
+    expect(error).toContain("two quantifiers in a row");
   });
 
   it("refuses a pattern that is not a quoted literal", () => {

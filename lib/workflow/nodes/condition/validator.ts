@@ -121,7 +121,17 @@ function maskBracketBearingStrings(expression: string): string {
 // safe-eval accepts a real newline inside a literal, and `.` does not match
 // one, so both halves of the alternation admit any character including a
 // newline: without it, the mask mis-pairs quotes and shifts by one literal.
-const ANY_STRING_LITERAL_PATTERN = /(['"])(?:\\[\s\S]|(?!\1)[\s\S])*\1/g;
+//
+// The two halves must be disjoint, and the backslash is what makes them so: the
+// first consumes an escape pair, the second refuses to start with a backslash.
+// With `[\s\S]` in both, an unterminated literal followed by a run of
+// backslashes had two ways to consume each one, so the regex engine backtracked
+// exponentially - 18 ms at thirty backslashes, doubling every two - and this mask
+// is now the first thing that runs on every condition evaluation, ahead of every
+// length and shape check. The second half stays a negated class rather than
+// `[^'"]` so a literal may still contain the other quote character, which is
+// behaviour the mask already had.
+const ANY_STRING_LITERAL_PATTERN = /(['"])(?:\\[\s\S]|(?!\1)[^\\])*\1/g;
 
 /**
  * Blank the interior of every string literal, keeping the quotes and the length

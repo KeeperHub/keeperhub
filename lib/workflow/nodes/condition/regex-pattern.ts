@@ -155,11 +155,18 @@ export function hasNestedQuantifier(source: string): boolean {
   }
 
   for (const group of groups) {
-    // A quantifier that cannot repeat the group in more than one way cannot
-    // backtrack, so it does not trigger this rule. Reading `?` as one refused
+    // A quantifier that cannot repeat the group at least twice cannot split it,
+    // so it does not trigger this rule: reading `?` as one refused
     // `^(0x)?[0-9a-f]{40}$` and `^\d+(\.\d+)?$`, which are the first two patterns
-    // an author reaches for, and a fixed count is no different.
-    if (!isAmbiguous(quantifierAt(source, group.end + 1))) {
+    // an author reaches for.
+    //
+    // An exact count is a different case, and reading `{n}` as "no range, so no
+    // ambiguity" is how `^(a+){25}$` and `^(a*){12}$` were re-admitted. The count
+    // is what makes those split: `(a*){12}` repeats an ambiguous body twelve
+    // times, and the twenty-one way splits between repetitions are the blowup -
+    // measured at 88 seconds on a 29-character input. So the test here is whether
+    // the group can be repeated at all, not whether its bounds differ.
+    if (!canRepeat(quantifierAt(source, group.end + 1))) {
       continue;
     }
     if (
@@ -376,20 +383,13 @@ function atomAt(source: string, index: number): Atom {
  * quantifier permits zero occurrences into the trailing edge rather than letting
  * it replace it, because such an atom can disappear and leave the atom before it
  * touching the `)`.
+ *
+ * An atom that matches only empty input contributes nothing to an edge: an empty
+ * alternation branch and a zero-width atom are the two ways that happens, and
+ * both leave the trailing edge as whatever the atom before them made it, which
+ * is the state the group has to be compared in.
  */
-/** The previous atom's contribution to an edge, or none when it matches only
- *  empty input. Empty alternation branches and zero-width atoms are the two
- *  ways that happens, and both must leave the trailing edge able to give
- *  characters back rather than pinning it. */
-type EdgeScan = {
-  leading: AtomSet;
-  leadingAmbiguous: boolean;
-  trailing: AtomSet;
-  trailingAmbiguous: boolean;
-};
-
-/** Scan one alternation branch and return its edges. */
-function scanBranch(source: string, bodyStart: number, end: number): EdgeScan {
+function scanBranch(source: string, bodyStart: number, end: number): AtomEdges {
   let leading: AtomSet = "none";
   let leadingAmbiguous = false;
   let trailing: AtomSet = "none";
@@ -599,22 +599,40 @@ function classSet(
           // ten digits, and reading only the endpoint and dropping the `-`
           // made the class `{"0", "-", "9"}`, which overlaps nothing and
           // admitted `[\x30-\x39]+[4-8]+` (67,008 ms measured at the caps).
-          if (source[escaped.next] === "-" && escaped.next + 2 < closeIndex) {
+          //
+          // `escaped.next` is the index of the `-` itself, so the end character
+          // sits one index later, not two. Off by one there left the mixed
+          // spelling `[\x30-9]` decoding as the same empty-overlap class, and
+          // made `[\x41-\x43]` read as U+0041 to the `x` of the second escape.
+          // The endpoint can be an escape as well, so it is read through the
+          // same helper that read the start rather than taken as a raw character.
+          if (source[escaped.next] === "-" && escaped.next + 1 < closeIndex) {
             const from = Array.from(escapedChars)[0].codePointAt(0) ?? 0;
-            const to = source[escaped.next + 2].codePointAt(0) ?? 0;
-            if (to >= from && to - from <= 4096) {
+            const endIndex = escaped.next + 1;
+            let to: number | null = null;
+            let after = endIndex + 1;
+            if (source[endIndex] === "\\") {
+              const endEscape = escapedChar(source, endIndex);
+              const endSet = endEscape?.set;
+              if (endSet instanceof Set && endSet.size === 1) {
+                to = Array.from(endSet)[0].codePointAt(0) ?? null;
+                after = endEscape?.next ?? endIndex + 1;
+              }
+            } else {
+              to = source[endIndex].codePointAt(0) ?? null;
+            }
+            if (to !== null && to >= from && to - from <= 4096) {
               for (let code = from; code <= to; code += 1) {
                 union.add(String.fromCodePoint(code));
               }
-            } else {
-              // Out of order (the engine will not compile it) or wider than
-              // the span. Both must read as "any": a dropped range comes back
-              // as an empty class, which overlaps nothing and admits anything
-              // beside it.
-              return "any";
+              index = after;
+              continue;
             }
-            index = escaped.next + 3;
-            continue;
+            // Out of order (the engine will not compile it), wider than the
+            // span, or an endpoint that names a set rather than a character.
+            // All of them must read as "any": a dropped range comes back as an
+            // empty class, which overlaps nothing and admits anything beside it.
+            return "any";
           }
           for (const value of escapedChars) {
             union.add(value);
@@ -690,6 +708,20 @@ function quantifierAt(source: string, index: number): Quantifier | null {
     return { min, max, next: lazy(close + 1) };
   }
   return null;
+}
+
+/** True when a quantifier can repeat its atom at least twice.
+ *
+ *  This is the test the nested-quantifier rule needs, and it is not the same
+ *  question `isAmbiguous` answers: applied to a group, two or more repetitions of
+ *  an ambiguous body split regardless of whether the count is fixed (`(a+){25}`)
+ *  or open (`(a+)+`). `max > min` is the wrong test for that, because an exact
+ *  count has no range to be wide in and still repeats. */
+function canRepeat(quantifier: Quantifier | null): boolean {
+  return (
+    quantifier !== null &&
+    (quantifier.max === Number.POSITIVE_INFINITY || quantifier.max >= 2)
+  );
 }
 
 /** True when a quantifier lets the atom repeat in more than one way, which is
