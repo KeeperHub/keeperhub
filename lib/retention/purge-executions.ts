@@ -23,6 +23,7 @@ import {
 import { paygPayments } from "@/lib/db/schema-extensions";
 import { feedback } from "@/lib/db/schema-feedback";
 import { workflowPayments } from "@/lib/db/schema-payments";
+import { isStatementTimeout } from "@/lib/db/statement-timeout";
 import type { WorkflowExecutionStatus } from "@/lib/errors/execution-status";
 import { logWarn } from "@/lib/logging";
 import {
@@ -99,6 +100,31 @@ export const PLAN_WINDOW_RUNS_PER_READ = 5000;
  * an unbounded set.
  */
 export const PLAN_WINDOW_MIN_SLICE_MS = 1000;
+
+/**
+ * Widest time slice the plan-window drain starts an organization on, and the
+ * width the doubling is allowed back up to until a read proves a wider one
+ * works.
+ *
+ * KEEP-1360: the slice used to start at the whole remaining range and double
+ * back up to it, and over a range an organization's runs are sparse in, the
+ * planner stops using (workflow_id, started_at) and answers the read from the
+ * global started_at index instead -- walking every organization's runs to fill
+ * one page. A day is the width measured on prod at 1.3 s for a full page; the
+ * same read over a year did not return in 60 s on an idle database.
+ */
+export const PLAN_WINDOW_INITIAL_SLICE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long one runs read of a workflow chunk may take before the drain treats
+ * its time slice as too wide.
+ *
+ * Well under the pool's 30 s statement_timeout, because this bound is not there
+ * to protect the database -- it is the signal that the planner has left the
+ * per-workflow index. A read that stays on it returns a full page in seconds
+ * even over a wide slice.
+ */
+export const PLAN_WINDOW_READ_TIMEOUT_MS = 5000;
 
 export type RetentionPassName =
   | "logs_floor"
@@ -534,13 +560,26 @@ export function planWindowLogCountQuery(
 
 /**
  * Run one read with sequential scans priced out, for statements keyed by
- * explicit ids on an indexed column. `SET LOCAL` ends with the transaction, so
- * nothing leaks to the next query that borrows the pooled connection. Each read
- * touches a single table, so the setting reaches no other relation.
+ * explicit ids on an indexed column, optionally under a tighter
+ * statement_timeout than the pool's. Both settings are local to the
+ * transaction, so nothing leaks to the next query that borrows the pooled
+ * connection. Each read touches a single table, so enable_seqscan reaches no
+ * other relation.
+ *
+ * `set_config(..., true)` rather than two `SET LOCAL` statements: it is the
+ * same local scope in one round trip, and the plan-window pass issues one of
+ * these per workflow chunk per slice.
  */
-function withIndexPlans<T>(query: (tx: Querier) => PromiseLike<T>): Promise<T> {
+function withIndexPlans<T>(
+  query: (tx: Querier) => PromiseLike<T>,
+  timeoutMs?: number
+): Promise<T> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+    await tx.execute(
+      timeoutMs === undefined
+        ? sql`SET LOCAL enable_seqscan = off`
+        : sql`SELECT set_config('enable_seqscan', 'off', true), set_config('statement_timeout', ${String(timeoutMs)}, true)`
+    );
     return await query(tx);
   });
 }
@@ -548,13 +587,21 @@ function withIndexPlans<T>(query: (tx: Querier) => PromiseLike<T>): Promise<T> {
 /**
  * One organization's drain, in time slices of its runs' `started_at`.
  *
- * A slice starts as the whole remaining range. When a workflow chunk has more
- * eligible runs in it than one read may return, the slice is halved and the walk
- * resumes at that chunk: the chunks before it were read in full over the larger
- * range, so they are already done for the smaller one. After a slice drains,
- * the watermark moves to its end -- or to the oldest run that can still resume,
- * if one sits below it -- and the next slice doubles again. A run cut off by the
- * budget therefore gives up at most the slice it was in.
+ * A slice starts at PLAN_WINDOW_INITIAL_SLICE_MS, or at the whole remaining
+ * range when that is narrower. Two things make it narrower still, and both
+ * resume the walk at the chunk that hit them -- the chunks before it were read
+ * in full over the larger range, so they are already done for the smaller one:
+ *
+ * - a workflow chunk with more eligible runs in it than one read may return;
+ * - a read the tighter statement_timeout cancels, which is how a slice too wide
+ *   for the planner to answer from (workflow_id, started_at) announces itself
+ *   (KEEP-1360). That one also latches a ceiling, so the doubling below cannot
+ *   walk back into the width that was just cancelled.
+ *
+ * After a slice drains, the watermark moves to its end -- or to the oldest run
+ * that can still resume, if one sits below it -- and the next slice doubles up
+ * to the ceiling. A run cut off by the budget therefore gives up at most the
+ * slice it was in.
  *
  * A dry run walks the same slices and counts instead of deleting. It writes no
  * watermark, so every dry run walks from the same place.
@@ -577,12 +624,26 @@ async function drainPlanWindow(
   const end = cutoff.getTime();
   const widest = end - from.getTime();
   let sliceStart = from.getTime();
-  let span = widest;
+  // Widest slice still believed to be answerable from the per-workflow index.
+  // Only a cancelled read lowers it, and it never rises again within this
+  // organization's drain.
+  let spanCeiling = widest;
+  let span = Math.min(widest, PLAN_WINDOW_INITIAL_SLICE_MS);
   let firstChunk = 0;
+
+  // Resolved once for the whole range rather than once per slice. The answer
+  // for [from, sliceEnd) only ever changes the watermark when it falls below
+  // sliceEnd, and the earliest skipped run of the whole range is the earliest
+  // of every prefix of it that contains one, so one read is equivalent -- and
+  // this pass now takes more slices per organization than it used to.
+  const skipped = config.dryRun
+    ? null
+    : await earliestResumableStartedAt(organizationId, from, cutoff);
 
   while (sliceStart < end) {
     const sliceEnd = Math.min(sliceStart + span, end);
     let overflowAt: number | null = null;
+    let cancelledAt: number | null = null;
 
     for (
       let i = firstChunk;
@@ -596,17 +657,28 @@ async function drainPlanWindow(
         i,
         i + PLAN_WINDOW_WORKFLOW_CHUNK
       );
-      const executionIds = (
-        await withIndexPlans((tx) =>
-          planWindowExecutionIdsQuery(
-            workflowChunk,
-            new Date(sliceStart),
-            new Date(sliceEnd),
-            PLAN_WINDOW_RUNS_PER_READ + 1,
-            tx
+      let executionIds: string[];
+      try {
+        executionIds = (
+          await withIndexPlans(
+            (tx) =>
+              planWindowExecutionIdsQuery(
+                workflowChunk,
+                new Date(sliceStart),
+                new Date(sliceEnd),
+                PLAN_WINDOW_RUNS_PER_READ + 1,
+                tx
+              ),
+            PLAN_WINDOW_READ_TIMEOUT_MS
           )
-        )
-      ).map((row) => row.id);
+        ).map((row) => row.id);
+      } catch (error) {
+        if (!isStatementTimeout(error)) {
+          throw error;
+        }
+        cancelledAt = i;
+        break;
+      }
 
       if (executionIds.length > PLAN_WINDOW_RUNS_PER_READ) {
         overflowAt = i;
@@ -622,6 +694,25 @@ async function drainPlanWindow(
       if (drained.budgetExhausted) {
         return { budgetExhausted: true };
       }
+    }
+
+    if (cancelledAt !== null) {
+      if (span <= PLAN_WINDOW_MIN_SLICE_MS) {
+        throw new Error(
+          `Reading the eligible runs of one chunk of this organization's workflows took longer than ${PLAN_WINDOW_READ_TIMEOUT_MS} ms over a ${PLAN_WINDOW_MIN_SLICE_MS} ms slice`
+        );
+      }
+      // Latched, not just applied: the doubling after a drained slice would
+      // otherwise walk straight back into the width that was cancelled, and
+      // spend the timeout again on every sparse stretch of the range.
+      spanCeiling = Math.max(Math.floor(span / 2), PLAN_WINDOW_MIN_SLICE_MS);
+      span = spanCeiling;
+      logWarn("[Retention] Narrowing a plan-window slice a read timed out on", {
+        organization_id: organizationId,
+        slice_ms: String(spanCeiling),
+      });
+      firstChunk = cancelledAt;
+      continue;
     }
 
     if (overflowAt !== null) {
@@ -643,11 +734,6 @@ async function drainPlanWindow(
     // its plan sells. So the watermark stops at the oldest run this pass had to
     // skip. A dry run must not claim anything at all, since it deleted nothing.
     if (!config.dryRun) {
-      const skipped = await earliestResumableStartedAt(
-        organizationId,
-        from,
-        new Date(sliceEnd)
-      );
       await setPurgeWatermark(
         organizationId,
         skipped && skipped.getTime() < sliceEnd ? skipped : new Date(sliceEnd)
@@ -655,7 +741,7 @@ async function drainPlanWindow(
     }
 
     sliceStart = sliceEnd;
-    span = Math.min(span * 2, widest);
+    span = Math.min(span * 2, spanCeiling);
     firstChunk = 0;
   }
 

@@ -110,6 +110,7 @@ describe("execution retention purge (real database)", () => {
   let softDeletedCountQuery: Purge["softDeletedCountQuery"];
   let workflowChunk: Purge["PLAN_WINDOW_WORKFLOW_CHUNK"];
   let runsPerRead: Purge["PLAN_WINDOW_RUNS_PER_READ"];
+  let initialSlice: Purge["PLAN_WINDOW_INITIAL_SLICE_MS"];
   let getOrgLogRetentionCutoff: Progress["getOrgLogRetentionCutoff"];
 
   async function cleanup(): Promise<void> {
@@ -323,6 +324,7 @@ describe("execution retention purge (real database)", () => {
       softDeletedCountQuery,
       PLAN_WINDOW_WORKFLOW_CHUNK: workflowChunk,
       PLAN_WINDOW_RUNS_PER_READ: runsPerRead,
+      PLAN_WINDOW_INITIAL_SLICE_MS: initialSlice,
     } = await import("@/lib/retention/purge-executions"));
     ({ getOrgLogRetentionCutoff } = await import("@/lib/retention/progress"));
   });
@@ -593,6 +595,89 @@ describe("execution retention purge (real database)", () => {
     expect(await watermarkOf(orgWide)).toEqual(daysAgo(7));
   });
 
+  it("drains an organization whose runs are sparse across a wide range", async () => {
+    // KEEP-1360. The floor pass leaves every organization's watermark at the
+    // floor cutoff, so the plan-window walk of a 7-day organization starts a
+    // year back. That whole year used to be one slice, and for an organization
+    // whose runs are spread thinly across it the planner answered the read
+    // from the global started_at index and the statement timed out. The slice
+    // now starts capped and doubles, and this is the test that the ramp still
+    // reaches every run in between.
+    const orgSparse = `${PREFIX}org_sparse`;
+    const workflowId = (index: number) => `${orgSparse}_wf_${index}`;
+    // One run every 20 days from 350 days back to 10, so runs land in slices
+    // of every width the doubling passes through, with empty slices between.
+    const ages = Array.from({ length: 18 }, (_, index) => 350 - index * 20);
+    await db.insert(organization).values({
+      id: orgSparse,
+      name: orgSparse,
+      slug: orgSparse,
+      createdAt: daysAgo(600),
+    });
+    await db.insert(workflows).values(
+      Array.from({ length: 3 }, (_, index) => ({
+        id: workflowId(index),
+        name: `sparse workflow ${index}`,
+        userId: USER,
+        organizationId: orgSparse,
+        nodes: [],
+        edges: [],
+        createdAt: daysAgo(600),
+        updatedAt: daysAgo(600),
+      }))
+    );
+    await db.insert(workflowExecutions).values([
+      ...ages.map((age, index) => ({
+        id: `${orgSparse}_run_${age}`,
+        workflowId: workflowId(index % 3),
+        organizationId: orgSparse,
+        userId: USER,
+        status: "success" as const,
+        startedAt: daysAgo(age),
+      })),
+      {
+        id: `${orgSparse}_run_fresh`,
+        workflowId: workflowId(0),
+        organizationId: orgSparse,
+        userId: USER,
+        status: "success" as const,
+        startedAt: daysAgo(3),
+      },
+    ]);
+    await db.insert(workflowExecutionLogs).values([
+      ...ages.map((age) => ({
+        id: `${orgSparse}_log_${age}`,
+        executionId: `${orgSparse}_run_${age}`,
+        nodeId: "action-1",
+        nodeName: "HTTP Request",
+        nodeType: "action",
+        status: "success" as const,
+        startedAt: daysAgo(age),
+        timestamp: daysAgo(age),
+      })),
+      {
+        id: `${orgSparse}_log_fresh`,
+        executionId: `${orgSparse}_run_fresh`,
+        nodeId: "action-1",
+        nodeName: "HTTP Request",
+        nodeType: "action",
+        status: "success" as const,
+        startedAt: daysAgo(3),
+        timestamp: daysAgo(3),
+      },
+    ]);
+
+    await runRetentionPurge(config(), NOW);
+
+    const rows =
+      await queryClient`SELECT count(*)::int AS n FROM workflow_execution_logs WHERE id LIKE ${`${orgSparse}_log_%`} AND id <> ${`${orgSparse}_log_fresh`}`;
+    // Nothing stranded between the slices, and nothing taken from inside the
+    // window the organization pays for.
+    expect(rows[0].n).toBe(0);
+    expect(await logExists(`${orgSparse}_log_fresh`)).toBe(true);
+    expect(await watermarkOf(orgSparse)).toEqual(daysAgo(7));
+  });
+
   it("answers the chunk reads from the indexes", async () => {
     // Keyed by explicit ids and run with sequential scans priced out, as the
     // pass runs them, so neither read needs the full-table scan that broke the
@@ -608,6 +693,16 @@ describe("execution retention purge (real database)", () => {
         runsPerRead + 1
       ).toSQL()
     );
+    // The width a slice actually starts at since KEEP-1360, which is the one
+    // that has to stay off the global started_at index on a full table.
+    const cappedPlan = await explain(
+      planWindowExecutionIdsQuery(
+        [`${ORG_NONE}_wf`],
+        daysAgo(400),
+        new Date(daysAgo(400).getTime() + initialSlice),
+        runsPerRead + 1
+      ).toSQL()
+    );
     const logsPlan = await explain(
       planWindowLogIdsQuery([runId(ORG_NONE, "old")], 1000).toSQL()
     );
@@ -617,6 +712,8 @@ describe("execution retention purge (real database)", () => {
 
     expect(runsPlan).not.toContain('"Node Type":"Seq Scan"');
     expect(runsPlan).toContain('"Index Name"');
+    expect(cappedPlan).not.toContain('"Node Type":"Seq Scan"');
+    expect(cappedPlan).toContain('"Index Name"');
     expect(logsPlan).not.toContain('"Node Type":"Seq Scan"');
     expect(logsPlan).toContain("idx_exec_logs_execution_id");
     expect(countPlan).not.toContain('"Node Type":"Seq Scan"');
