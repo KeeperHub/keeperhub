@@ -218,6 +218,14 @@ export const MetricNames = {
   //  - idless_insert:    legacy id-less message, insert-fresh + run (cannot be
   //                      deduped; a rise signals upstream phantom-create failures).
   SQS_CONSUME_CLAIM: "sqs.consume.claim.total",
+
+  // Chain-scoped protocol action-slug redirects (lib/protocol-action-aliases.ts).
+  // One increment per node execution that entered on an old slug and was
+  // resolved onto its `-l2` replacement, labelled by action_type and chain_id.
+  // The alias table exists only to keep already-saved workflows running, so
+  // this is the evidence for retiring an entry: a series that has been flat at
+  // zero across a full schedule cycle means nothing is entering on that slug.
+  PROTOCOL_ALIAS_REDIRECT: "protocol.alias.redirect.total",
 } as const;
 
 /**

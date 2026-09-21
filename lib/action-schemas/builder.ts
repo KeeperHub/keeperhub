@@ -14,12 +14,14 @@ import {
   BUILTIN_NODE_ID,
   BUILTIN_NODE_LABEL,
 } from "@/lib/workflow/editor/builtin-variables";
+import { isDirectExecutionSupported } from "@/plugins/protocol/steps/resolve-protocol-meta";
 import {
   type ActionConfigFieldBase,
   computeActionId,
   flattenConfigFields,
   getAllIntegrations,
   type IntegrationPlugin,
+  isDisplayOnlyField,
   type PluginAction,
 } from "@/plugins/registry";
 
@@ -71,6 +73,11 @@ export type ActionSchema = {
    * cannot express.
    */
   featureEnabled: boolean;
+  /**
+   * True when the action is routable through execute_protocol_action.
+   * Other actions may still be executable through a sibling tool or workflow.
+   */
+  protocolDirectExecution: boolean;
 };
 
 export type BuildActionSchemasOptions = {
@@ -107,8 +114,15 @@ function mapFieldType(field: ActionConfigFieldBase): string {
       return "string (JSON ABI - auto-fetched for verified contracts)";
     case "abi-event-select":
       return "string (event name from ABI)";
-    case "select":
-      return `string (${field.options?.map((o) => `"${o.value}"`).join(" | ") || "select"})`;
+    case "select": {
+      const options =
+        field.options?.map((o) => `"${o.value}"`).join(" | ") || "select";
+      // A field that takes a template says so, or an agent reads a closed
+      // enum and never offers the capability the field's help text does.
+      return field.allowTemplate
+        ? `string (${options}, or a {{@nodeId:Label.field}} template)`
+        : `string (${options})`;
+    }
     case "fail-on-error-switch":
       return "boolean";
     case "template-input":
@@ -151,7 +165,18 @@ export function transformPluginAction(
   const optionalFields: Record<string, string> = {};
 
   for (const field of flatFields) {
-    const fieldDesc = `${mapFieldType(field)}${field.placeholder ? ` - ${field.placeholder}` : ""}`;
+    // A field that renders rather than collects has no value to publish, and
+    // the pin schema rejects a key set against one.
+    if (isDisplayOnlyField(field.type)) {
+      continue;
+    }
+    // The label is where an author states the unit - "Amount (wei)" - and
+    // protocol inputs carry no placeholder, so without it an agent sees
+    // "string" for a value that is wei on one action and whole tokens on the
+    // next. The type prefix and placeholder keep their positions.
+    const fieldDesc = [mapFieldType(field), field.label, field.placeholder]
+      .filter(Boolean)
+      .join(" - ");
     if (field.required) {
       requiredFields[field.key] = fieldDesc;
     } else {
@@ -179,6 +204,7 @@ export function transformPluginAction(
       action.requiresCredentials ?? plugin.requiresCredentials ?? false,
     requiredPlan: gate.requiredPlan,
     featureEnabled: gate.featureEnabled,
+    protocolDirectExecution: isDirectExecutionSupported(actionType),
     requiredFields,
     optionalFields,
     outputFields,
@@ -304,6 +330,7 @@ export async function buildActionSchemasResponse(
       ...(action as Record<string, unknown>),
       requiredPlan: gate.requiredPlan,
       featureEnabled: gate.featureEnabled,
+      protocolDirectExecution: false,
     };
   }
 

@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getIntegration as getIntegrationFromDb } from "@/lib/db/integrations";
 import { handleDatabaseTest, handlePluginTest } from "@/lib/db/test-connection";
-import { mergeSecretConfig } from "@/lib/integrations/secret-fields";
+import {
+  mergeSecretConfig,
+  removeClearedKeys,
+} from "@/lib/integrations/secret-fields";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
@@ -9,7 +12,16 @@ import type { IntegrationConfig } from "@/lib/types/integration";
 
 export type { TestConnectionResult } from "@/lib/db/test-connection";
 
-type TestRequestBody = { configOverrides?: IntegrationConfig };
+type TestRequestBody = {
+  configOverrides?: IntegrationConfig;
+  /**
+   * Keys the caller is about to remove. The merge below fills every key the
+   * caller did not send from what is stored, so without this the test
+   * authenticated with the very credential the save was about to delete and
+   * reported a healthy connection.
+   */
+  clearedConfigKeys?: string[];
+};
 
 async function parseJsonBody(
   request: Request
@@ -85,13 +97,23 @@ export async function POST(
     }
     const body = bodyOrError;
 
-    const testConfig = body.configOverrides
+    const clearedConfigKeys = Array.isArray(body.clearedConfigKeys)
+      ? body.clearedConfigKeys.filter(
+          (key): key is string => typeof key === "string" && key.length > 0
+        )
+      : [];
+    const merged = body.configOverrides
       ? mergeSecretConfig(
           integration.config,
           body.configOverrides,
           integration.type
         )
       : integration.config;
+    const testConfig = removeClearedKeys(
+      merged,
+      clearedConfigKeys,
+      body.configOverrides ?? {}
+    );
 
     if (integration.type === "database") {
       const result = await handleDatabaseTest(testConfig);

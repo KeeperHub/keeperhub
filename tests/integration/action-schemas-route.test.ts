@@ -76,6 +76,13 @@ vi.mock("@/plugins/registry", () => ({
   computeActionId: (pluginType: string, slug: string) =>
     `${pluginType}.${slug}`,
   flattenConfigFields: (fields: unknown[]) => fields,
+  // The builder drops fields that render rather than collect, so the mock has
+  // to answer the same question the real registry does.
+  isDisplayOnlyField: (type: string | undefined) =>
+    type !== undefined &&
+    ["-preview", "-test-node", "-notice"].some((suffix) =>
+      type.endsWith(suffix)
+    ),
   // The builder resolves each action's plan gate through
   // lib/features/action-egress, which reads the live registry by action id
   // and plugin type (the egress-derived catch-all). The mock plugins carry no

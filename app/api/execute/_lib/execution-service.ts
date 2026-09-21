@@ -278,27 +278,55 @@ export function redactInput(
 }
 
 /**
+ * Records caller-supplied config keys the route did not honor.
+ *
+ * A rejected field still belongs in the audit log -- a smuggled
+ * `web3Connection: "eoa"` is a bypass attempt worth seeing -- but it must not
+ * sit at the top level where a reader could mistake it for a value that took
+ * effect. This moves each named key out of `auditBase` and records it under
+ * `_rejectedConfig` instead, keying off the caller's original request so it
+ * works whether or not `auditBase` has already been stripped. Keys the caller
+ * did not send are not recorded, so `_rejectedConfig` is absent on a clean
+ * request. Merges into an existing `_rejectedConfig` so the helper can be
+ * applied more than once.
+ */
+export function withRejectedConfig(
+  auditBase: Record<string, unknown>,
+  callerConfig: Record<string, unknown>,
+  keys: readonly string[]
+): Record<string, unknown> {
+  const rejected: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (key in callerConfig) {
+      rejected[key] = callerConfig[key];
+    }
+  }
+  if (Object.keys(rejected).length === 0) {
+    return auditBase;
+  }
+  const base = Object.fromEntries(
+    Object.entries(auditBase).filter(([key]) => !keys.includes(key))
+  );
+  const existing = base._rejectedConfig;
+  return {
+    ...base,
+    _rejectedConfig: {
+      ...(typeof existing === "object" && existing !== null ? existing : {}),
+      ...rejected,
+    },
+  };
+}
+
+/**
  * Records a signer override the caller supplied but the route did not honor.
  *
  * Org-custodied direct executions always resolve the signer via org policy, so
  * a caller-supplied `web3Connection` (the per-node signer-mode selector) never
- * influences the write. We still want it in the audit log -- a smuggled
- * `web3Connection: "eoa"` is a bypass attempt worth seeing -- but it must not
- * sit at the top level where a reader could mistake it for a value that took
- * effect. This moves any top-level `web3Connection` out of `auditBase` and
- * records it under `_rejectedConfig` instead, keying off the caller's original
- * request so it works whether or not `auditBase` has already been stripped.
+ * influences the write.
  */
 export function withRejectedSignerOverride(
   auditBase: Record<string, unknown>,
   callerConfig: Record<string, unknown>
 ): Record<string, unknown> {
-  if (!("web3Connection" in callerConfig)) {
-    return auditBase;
-  }
-  const { web3Connection: _omit, ...base } = auditBase;
-  return {
-    ...base,
-    _rejectedConfig: { web3Connection: callerConfig.web3Connection },
-  };
+  return withRejectedConfig(auditBase, callerConfig, ["web3Connection"]);
 }

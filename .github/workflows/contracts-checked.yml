@@ -50,10 +50,10 @@ name: Contracts Checked
 # arrives - a `pull_request` run on a fork waits for per-run maintainer
 # approval, leaving the gate silent exactly where it is needed. The job
 # therefore runs with the base repository's token and MUST NOT execute
-# pull request code. It checks out the BASE commit only; the head is
+# pull request code. It checks out the BASE BRANCH TIP only; the head is
 # fetched as git objects and never checked out, so no file from the pull
 # request is ever placed in the working tree, and the scanner it runs is
-# the base branch's copy, not the contributor's. Do not add a checkout
+# a trusted branch's copy, not the contributor's. Do not add a checkout
 # of the head ref to this file, and do not add an install or build step.
 
 on:
@@ -78,11 +78,49 @@ jobs:
       - name: Checkout base
         uses: actions/checkout@v7
         with:
-          # The base commit, never the pull request head. fetch-depth 0 is
-          # needed for the three-dot diff and for the base-branch lookup
-          # that suppresses addresses which already exist.
-          ref: ${{ github.event.pull_request.base.sha }}
+          # The TIP of the base branch, never the pull request head and
+          # never the payload's base.sha. base.sha is the base commit the
+          # pull request was last synced against, which for an open pull
+          # request is usually months old - it predates this workflow and
+          # the scanner it runs, so checking it out gives MODULE_NOT_FOUND.
+          # The branch tip is also the correct security property: it is the
+          # newest trusted copy of the scanner, not whatever version was
+          # current when the contributor branched.
+          ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
+
+      - name: Take the scanner from the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          # The checkout above is the base branch tip. For a pull request
+          # into staging that is also the newest copy of the scanner. For
+          # one into prod it is not: prod receives code only through a
+          # staging -> prod release, so its copy always lags staging's by a
+          # release, and before the release that first carries this gate
+          # there is no copy at all -
+          #
+          #   Error: Cannot find module '.../scan-contract-addresses.mjs'
+          #
+          # which is a deadlock rather than a stale checkout, because the
+          # only thing that could put a scanner on prod is a release pull
+          # request this job gates. #2501 fixed the same error arising from
+          # base.sha; this is the case it could not reach.
+          #
+          # The default branch is by construction the newest trusted copy,
+          # and it is not pull request code, so the SAFETY note above still
+          # holds. Only the scanner is taken. The diff base is unchanged: it
+          # stays the base branch tip, so the scan still reports what this
+          # pull request would add to the branch it targets.
+          if [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+            echo "Base is the default branch; its own scanner is the newest."
+            exit 0
+          fi
+          git fetch --no-tags --quiet origin "$DEFAULT_BRANCH"
+          git checkout FETCH_HEAD -- scripts/scan-contract-addresses.mjs
+          echo "Scanner taken from origin/$DEFAULT_BRANCH; base $BASE_REF may lag it."
 
       - name: Fetch pull request head as objects
         env:
@@ -97,10 +135,16 @@ jobs:
       - name: Scan added lines for contract addresses
         id: scan
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+
+          # The tip of the base branch, from the checkout above. The diff
+          # is three-dot, so this resolves to the merge base with the head
+          # and the scan still sees only the contributor's own changes,
+          # however far the branch has drifted.
+          BASE_SHA=$(git rev-parse HEAD)
+          echo "base=$BASE_SHA head=$HEAD_SHA"
 
           # A force-push between the event firing and the fetch above can
           # leave the event's head commit unreachable. Fall back to what

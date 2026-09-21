@@ -162,10 +162,25 @@ address a wallet user signed in with - see
 
 ### Experimental
 
-| Network | chainId | Status |
-|---|---|---|
-| 0G | `16661` | experimental |
-| 0G Galileo (testnet) | `16602` | experimental |
+| Network | chainId | USDC | Status |
+|---|---|---|---|
+| 0G | `16661` | - | experimental |
+| 0G Galileo (testnet) | `16602` | - | experimental |
+| Arc (Circle) | `5042` | `0x3600000000000000000000000000000000000000` | experimental |
+| Arc Testnet (Circle) | `5042002` | `0x3600000000000000000000000000000000000000` | experimental |
+
+Arc's USDC is also its native gas token. The address above is the fixed
+ERC-20-interface precompile Circle documents for programmatic balance and
+transfer access; it reports balances at 6 decimals, distinct from the
+18-decimal native currency accounting used for gas. The same precompile is at
+the same address on both Arc networks.
+
+Arc mainnet has one limitation the testnet does not: contract ABIs cannot be
+fetched automatically, so supply the ABI directly when configuring a contract
+action. Transaction and address links work normally - Circle's mainnet
+explorer went live at explorer.arc.io, but its API is still gated, which is
+what ABI auto-fetch depends on. Event and block triggers work normally on
+both networks.
 
 The live source of truth for chains is `GET /api/chains`; agents can read the
 same list (including per-chain `status`) from the `list_action_schemas` MCP

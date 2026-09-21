@@ -423,6 +423,8 @@ export type Integration = {
 };
 
 export type IntegrationWithConfig = Integration & {
+  /** Secret keys holding a value, never the values. */
+  storedSecretKeys?: string[];
   config: IntegrationConfig;
 };
 
@@ -453,7 +455,14 @@ export const integrationApi = {
     }),
 
   // Update integration
-  update: (id: string, data: { name?: string; config?: IntegrationConfig }) =>
+  update: (
+    id: string,
+    data: {
+      name?: string;
+      config?: IntegrationConfig;
+      clearedConfigKeys?: string[];
+    }
+  ) =>
     apiCall<IntegrationWithConfig>(`/api/integrations/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
@@ -469,14 +478,20 @@ export const integrationApi = {
   // that are merged server-side with stored secrets before testing
   testConnection: (
     integrationId: string,
-    configOverrides?: IntegrationConfig
+    configOverrides?: IntegrationConfig,
+    clearedConfigKeys?: string[]
   ) =>
     apiCall<{ status: "success" | "error"; message: string }>(
       `/api/integrations/${integrationId}/test`,
       {
         method: "POST",
-        ...(configOverrides
-          ? { body: JSON.stringify({ configOverrides }) }
+        ...(configOverrides || clearedConfigKeys?.length
+          ? {
+              body: JSON.stringify({
+                ...(configOverrides ? { configOverrides } : {}),
+                ...(clearedConfigKeys?.length ? { clearedConfigKeys } : {}),
+              }),
+            }
           : {}),
       }
     ),

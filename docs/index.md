@@ -41,7 +41,7 @@ Triggers define when a workflow runs:
 Actions are the operations your workflow performs:
 
 - **Web3** -- check balances, read and write smart contracts, transfer native tokens and ERC-20s, query event logs, and decode calldata
-- **Notifications** -- send messages via Discord, Slack, Telegram, and SendGrid email
+- **Notifications** -- send messages via Discord, Slack, Telegram, and SendGrid email, or page on-call through PagerDuty
 - **System** -- HTTP requests, conditional branching, loops (For Each), aggregation (Collect), and template rendering
 - **Math** -- compute aggregations over numeric data: sum, count, average, median, min, max, and product
 

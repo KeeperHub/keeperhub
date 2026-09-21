@@ -285,6 +285,40 @@ describe("POST /api/execute/node reserved-field gating", () => {
     expect(auditInput._rejectedConfig).toEqual({ web3Connection: "eoa" });
   });
 
+  it("keeps a smuggled _actionType and _protocolMeta out of the audit input's top level", async () => {
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: {
+          network: "1",
+          contractAddress: "0xabc",
+          // Both are route-owned: the route injects _actionType from the
+          // resolved action, and _protocolMeta is a builder-persisted snapshot
+          // of the same thing that a derivable _actionType always beats.
+          _actionType: "sky/vault-deposit",
+          _protocolMeta: '{"protocolSlug":"sky","contractKey":"sUsds"}',
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    // Neither may sit beside contractAddress, which did take effect.
+    const auditInput = mocks.checkAndReserveExecution.mock.calls[0]?.[0]
+      ?.input as Record<string, unknown>;
+    expect(auditInput).toBeDefined();
+    expect("_actionType" in auditInput).toBe(false);
+    expect("_protocolMeta" in auditInput).toBe(false);
+    expect(auditInput.contractAddress).toBe("0xabc");
+    expect(auditInput._rejectedConfig).toEqual({
+      _actionType: "sky/vault-deposit",
+      _protocolMeta: '{"protocolSlug":"sky","contractKey":"sUsds"}',
+    });
+    // The step sees the route's action type and no stale snapshot at all.
+    expect(mocks.capturedInput?._actionType).toBe("web3/write-contract");
+    expect("_protocolMeta" in (mocks.capturedInput ?? {})).toBe(false);
+    expect("_rejectedConfig" in (mocks.capturedInput ?? {})).toBe(false);
+  });
+
   it("omits _rejectedConfig from the audit input when no override was sent", async () => {
     const response = await nodePOST(
       postRequest({
@@ -375,6 +409,65 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
     // transport layer, same as its verified-success branch; only the body
     // distinguishes them.
     expect(response.status).toBe(422);
+  });
+
+  it("forwards the request's action type to the step as _actionType", async () => {
+    // The protocol steps only apply the chain-scoped L2 slug aliases on the
+    // _actionType branch of resolveProtocolMeta. Without this field a node
+    // executed here resolves from whatever _protocolMeta the caller carried,
+    // so an old slug on an L2 fails while the same node succeeds through the
+    // workflow executor.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "sky/vault-balance",
+        network: "8453",
+        config: { account: "0xabc" },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.capturedInput?._actionType).toBe("sky/vault-balance");
+  });
+
+  it("forwards the canonical action type when the request named the action by label", async () => {
+    // resolveAction accepts a legacy id or an exact label and hands back the
+    // canonical `<protocol>/<slug>` id. The raw request string derives nothing
+    // in resolveProtocolMeta, so forwarding it would run the right step and
+    // then leave it resolving from whatever _protocolMeta the caller carried -
+    // the hole the _actionType forward exists to close.
+    mocks.resolveAction.mockImplementation(() => ({
+      actionType: "sky/vault-balance",
+      label: "Sky: Vault Share Balance",
+      importer: {
+        importer: () => Promise.resolve({ step: mocks.stepFn }),
+        stepFunction: "step",
+      },
+      isPluginAction: true,
+    }));
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "Sky: Vault Share Balance",
+        network: "8453",
+        config: { account: "0xabc" },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.capturedInput?._actionType).toBe("sky/vault-balance");
+  });
+
+  it("overrides an _actionType smuggled inside config", async () => {
+    const response = await nodePOST(
+      postRequest({
+        actionType: "sky/vault-balance",
+        network: "8453",
+        config: { account: "0xabc", _actionType: "sky/vault-deposit" },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.capturedInput?._actionType).toBe("sky/vault-balance");
   });
 
   it("still reports a pre-broadcast failure as terminal with no hash", async () => {

@@ -833,6 +833,19 @@ export const workflowExecutions = pgTable(
     deletedAt: timestamp("deleted_at"),
   },
   (table) => [
+    /**
+     * Created by migration 0024 and, until now, declared nowhere: invisible to
+     * anyone reading this file and absent from a database bootstrapped with
+     * `db:push`, which builds only from here.
+     *
+     * It is the index the PagerDuty consecutive-runs guard leans on - one
+     * lookup per paging run of "the finished runs of this workflow before this
+     * one, newest first" - and the same shape the analytics queries use.
+     */
+    index("idx_workflow_executions_workflow_started").on(
+      table.workflowId,
+      table.startedAt.desc()
+    ),
     index("idx_workflow_executions_status").on(table.status),
     index("idx_workflow_executions_user_id").on(table.userId),
     // Backs the FK to organization: without it the RI check on an organization

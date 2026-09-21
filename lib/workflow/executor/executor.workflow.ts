@@ -76,7 +76,9 @@ import type { SystemActionType } from "@/lib/workflow/executor/system-action-typ
 import {
   assertResolved,
   createTracker,
+  liftConditionFields,
   recordUnresolved,
+  restoreConditionFields,
   TemplateResolutionError,
   type TemplateResolutionTracker,
 } from "@/lib/workflow/executor/template-resolution";
@@ -2587,11 +2589,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     currentOutputs: NodeOutputs,
     assertContext?: { nodeId?: string; nodeLabel?: string }
   ): Record<string, unknown> {
-    const configWithoutSpecial = { ...config };
-    const originalCondition = config.condition;
-    configWithoutSpecial.condition = undefined;
-    const originalConditionConfig = config.conditionConfig;
-    configWithoutSpecial.conditionConfig = undefined;
+    const { rest: configWithoutSpecial, lifted: conditionFields } =
+      liftConditionFields(config);
     const originalDbQuery = config.dbQuery;
     if (actionType === "Database Query") {
       configWithoutSpecial.dbQuery = undefined;
@@ -2662,12 +2661,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     if (renderedCode !== undefined) {
       processedConfig.code = renderedCode;
     }
-    if (originalCondition !== undefined) {
-      processedConfig.condition = originalCondition;
-    }
-    if (originalConditionConfig !== undefined) {
-      processedConfig.conditionConfig = originalConditionConfig;
-    }
+    restoreConditionFields(processedConfig, conditionFields);
 
     return processedConfig;
   }

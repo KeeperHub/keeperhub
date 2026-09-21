@@ -31,7 +31,7 @@ import {
   markRunning,
   redactInput,
   setRetryCount,
-  withRejectedSignerOverride,
+  withRejectedConfig,
 } from "../_lib/execution-service";
 import { checkRateLimit } from "../_lib/rate-limit";
 import { parseNodeNativeValueWei } from "../_lib/reserved-value";
@@ -350,14 +350,19 @@ async function handleResult(
 
 // Caller-supplied config keys the route must own, not the caller. `network`
 // and `integrationId` are resolved and gated by the route itself; `_context`
-// is injected server-side. `web3Connection` selects the signer mode in
+// and `_actionType` are injected server-side from the resolved action.
+// `_protocolMeta` is a builder-persisted snapshot of the same thing: a
+// caller-supplied one is already inert at execution because a derivable
+// `_actionType` always wins in resolveProtocolMeta, but leaving it in the
+// config would put it in the audit input at the top level, beside fields that
+// did take effect. `web3Connection` selects the signer mode in
 // resolveSignerForNode (lib/safe/signer-resolver.ts): a direct-execution
 // caller must NOT be able to set web3Connection='eoa' to short-circuit to the
 // org's Turnkey EOA and bypass the org Safe's Zodiac Roles policy on
 // org-custodied writes. With it absent, resolveSignerForNode falls back to the
 // "default" branch (resolveSignerMode org-policy path), honouring the Safe +
 // active Role. The sibling execute routes never forward web3Connection either,
-// so this keeps /api/execute/node no weaker. Stripping all four in one place
+// so this keeps /api/execute/node no weaker. Stripping them all in one place
 // keeps the step input and the persisted audit input in lockstep.
 function stripReservedConfig(
   config: Record<string, unknown>
@@ -367,10 +372,22 @@ function stripReservedConfig(
     integrationId: _ignoredIntegrationId,
     web3Connection: _ignoredWeb3Connection,
     _context: _ignoredContext,
+    _actionType: _ignoredActionType,
+    _protocolMeta: _ignoredProtocolMeta,
     ...rest
   } = config;
   return rest;
 }
+
+// Reserved keys the route rejects outright rather than resolving. Each is kept
+// out of the audit input's top level and preserved under `_rejectedConfig`, so
+// a smuggled value stays visible to a reader without being mistaken for one
+// that took effect.
+const REJECTED_AUDIT_KEYS = [
+  "web3Connection",
+  "_actionType",
+  "_protocolMeta",
+] as const;
 
 async function executeNode(
   data: NodeExecuteRequest,
@@ -391,9 +408,10 @@ async function executeNode(
     executionId = preCreatedExecutionId;
   } else {
     const redactedInput = redactInput(
-      withRejectedSignerOverride(
+      withRejectedConfig(
         { actionType: data.actionType, ...safeConfig },
-        config
+        config,
+        REJECTED_AUDIT_KEYS
       )
     );
     const created = await createExecution({
@@ -412,6 +430,23 @@ async function executeNode(
     ...safeConfig,
     ...(integrationId ? { integrationId } : {}),
     ...(network ? { network } : {}),
+    // The request's action type is the node's identity, and the protocol
+    // steps only apply the chain-scoped L2 slug aliases on the `_actionType`
+    // branch of resolveProtocolMeta. Without it a caller that carries a
+    // `_protocolMeta` snapshot in its config (the builder persists one) is
+    // resolved from that stale snapshot instead, and an aliased slug fails on
+    // the L2 here while the same call succeeds through the workflow executor.
+    // Forwarding it also makes `_actionType` authoritative over any
+    // caller-supplied `_protocolMeta`, which is the precedence
+    // resolveProtocolMeta documents and every other caller already gets.
+    //
+    // `resolved.actionType`, not the request string: resolveAction accepts a
+    // legacy id or an exact label ("Sky: Vault Share Balance") and hands back
+    // the canonical `<protocol>/<slug>` id. The raw string derives nothing in
+    // resolveProtocolMeta, so a label-form call would run the right step and
+    // then fall through to the caller's `_protocolMeta` anyway. It is also
+    // what createExecution records as the execution's type.
+    _actionType: resolved.actionType,
     _context: {
       executionId,
       nodeId: executionId,
@@ -649,15 +684,16 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     // Strip the same reserved keys executeNode removes so the persisted audit
     // input matches what the step actually received (see stripReservedConfig),
-    // but preserve a non-honored web3Connection under _rejectedConfig so the
-    // audit log still shows the attempt (see withRejectedSignerOverride).
+    // but preserve the non-honored ones under _rejectedConfig so the audit log
+    // still shows the attempt (see withRejectedConfig).
     const redactedInput = redactInput(
-      withRejectedSignerOverride(
+      withRejectedConfig(
         {
           actionType: validation.data.actionType,
           ...stripReservedConfig(validation.data.config),
         },
-        validation.data.config
+        validation.data.config,
+        REJECTED_AUDIT_KEYS
       )
     );
     const reserve = await checkAndReserveExecution({

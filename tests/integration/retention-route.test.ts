@@ -24,16 +24,30 @@ const {
   mockRecordRun,
   mockRecordWindow,
   mockLogSystemError,
+  MockIncompleteError,
 } = vi.hoisted(() => ({
   mockRunRetentionPurge: vi.fn(),
   mockRecordRows: vi.fn(),
   mockRecordRun: vi.fn(),
   mockRecordWindow: vi.fn(),
   mockLogSystemError: vi.fn(),
+  // Stands in for RetentionPurgeIncompleteError, which the route tells apart
+  // from any other failure with instanceof.
+  MockIncompleteError: class extends Error {
+    readonly result: unknown;
+    readonly failedOrganizationIds: string[];
+
+    constructor(result: unknown, failedOrganizationIds: string[]) {
+      super(`could not drain: ${failedOrganizationIds.join(", ")}`);
+      this.result = result;
+      this.failedOrganizationIds = failedOrganizationIds;
+    }
+  },
 }));
 
 vi.mock("@/lib/retention/purge-executions", () => ({
   runRetentionPurge: mockRunRetentionPurge,
+  RetentionPurgeIncompleteError: MockIncompleteError,
 }));
 
 vi.mock("@/lib/metrics/collectors/prometheus", () => ({
@@ -180,5 +194,39 @@ describe("/api/internal/retention", () => {
       expect.any(Error),
       { endpoint: "/api/internal/retention", operation: "get" }
     );
+  });
+
+  it("counts what an incomplete run deleted and returns it with the 500", async () => {
+    // The run removed rows before one organization failed. Those deletions
+    // are real, so the counters and the job log must still see them.
+    const partial = purgeResult();
+    mockRunRetentionPurge.mockRejectedValue(
+      new MockIncompleteError(partial, ["org-a"])
+    );
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "could not drain: org-a",
+      result: partial,
+    });
+    expect(mockRecordRows).toHaveBeenCalledWith("logs_plan_window", 4200);
+    expect(mockRecordWindow).toHaveBeenCalledWith(7, 975, 4000);
+    expect(mockRecordRun).toHaveBeenCalledWith("failure");
+    expect(mockRecordRun).not.toHaveBeenCalledWith("success");
+  });
+
+  it("does not count the rows of an incomplete dry run", async () => {
+    mockRunRetentionPurge.mockRejectedValue(
+      new MockIncompleteError(purgeResult({ dryRun: true }), ["org-a"])
+    );
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(500);
+    expect(mockRecordRows).not.toHaveBeenCalled();
+    expect(mockRecordWindow).not.toHaveBeenCalled();
+    expect(mockRecordRun).toHaveBeenCalledWith("failure");
   });
 });

@@ -1,13 +1,13 @@
 ---
 title: "Sky Protocol"
-description: "USDS savings (sUSDS), USDS staking (stUSDS), token balances, approvals, and DAI/MKR migration converters on Ethereum, Base, and Arbitrum."
+description: "USDS savings (sUSDS), USDS staking (stUSDS), token balances, approvals, and DAI/MKR migration converters on Ethereum, plus bridged sUSDS and USDS reads on Base and Arbitrum."
 ---
 
 # Sky Protocol
 
 Sky (formerly MakerDAO) is a decentralized protocol for stablecoin savings, governance, and token migration. This plugin exposes two ERC-4626 vaults (the sUSDS savings vault and the stUSDS staked vault), token balance and approval actions for USDS, DAI, and SKY, and converters for migrating legacy DAI to USDS and legacy MKR to SKY.
 
-Supported chains: Ethereum (all contracts), Base (sUSDS, USDS), Arbitrum (sUSDS, USDS). Read-only actions work without credentials. Write actions require a connected wallet.
+Supported chains: Ethereum (all contracts), Base and Arbitrum (USDS, plus balance and total-supply reads on the bridged sUSDS token). Read-only actions work without credentials. Write actions require a connected wallet.
 
 ## Actions
 
@@ -36,7 +36,16 @@ Sky is a multi-contract protocol, so actions are grouped below by the contract t
 | Max Vault Withdraw | `vault-max-withdraw` | Read | Get the maximum amount of assets that can be withdrawn by an owner |
 | Max Vault Redeem | `vault-max-redeem` | Read | Get the maximum number of shares that can be redeemed by an owner |
 
-Available on Ethereum, Base, and Arbitrum.
+Ethereum only. On Base and Arbitrum, sUSDS is a bridged token that implements the ERC-20 surface only, so none of the vault functions above exist there -- see Bridged sUSDS (L2) below for the reads that do work.
+
+### Bridged sUSDS (L2)
+
+| Action | Slug | Type | Description |
+|--------|------|------|-------------|
+| Get sUSDS Balance (L2) | `get-susds-balance-l2` | Read | Check the sUSDS balance of an address on L2 |
+| Get sUSDS Total Supply (L2) | `get-susds-total-supply-l2` | Read | Get the total supply of sUSDS tokens on L2 |
+
+Base and Arbitrum only. Both reads return wei with 18 decimals, the same as their Ethereum counterparts on the savings vault. Vault Share Balance and Vault Total Supply also resolve to these bridged reads on Base and Arbitrum, so either slug works there; the `-l2` slugs are the preferred names for new work.
 
 ### stUSDS Staked Vault
 
@@ -120,7 +129,7 @@ One-click migration of DAI holdings: check balance, approve the converter, conve
 | Chain | Contracts Available |
 |-------|-------------------|
 | Ethereum (1) | sUSDS Savings Vault, stUSDS Staked Vault, USDS, DAI, SKY, DAI-USDS Converter, MKR-SKY Converter |
-| Base (8453) | sUSDS Savings Vault, USDS |
-| Arbitrum (42161) | sUSDS Savings Vault, USDS |
+| Base (8453) | sUSDS (bridged: balance and total supply), USDS |
+| Arbitrum (42161) | sUSDS (bridged: balance and total supply), USDS |
 
-The sUSDS savings vault and USDS stablecoin are available on all three chains. The stUSDS staked vault, DAI, SKY, and the converter contracts are Ethereum-only.
+USDS is available on all three chains. The sUSDS savings vault is Ethereum-only: on Base and Arbitrum, sUSDS is a bridged token implementing the ERC-20 surface only, so the balance and total-supply reads are available there under the `-l2` slugs and the ERC-4626 vault actions are not. The stUSDS staked vault, DAI, SKY, and the converter contracts are Ethereum-only.
