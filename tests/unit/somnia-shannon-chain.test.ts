@@ -1,20 +1,33 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BLOCKSCOUT_INSTANCES } from "@/plugins/blockscout/chains";
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/db/connection-utils", () => ({
+  getDatabaseUrl: () => "postgres://unused",
+}));
+vi.mock("postgres", () => ({
+  default: () => ({ end: async () => undefined }),
+}));
+vi.mock("drizzle-orm/postgres-js", () => ({
+  drizzle: () => ({
+    select: () => ({
+      from: () => ({
+        where: () => ({ limit: async () => [] }),
+      }),
+    }),
+    insert: () => ({ values: async () => undefined }),
+  }),
+}));
 
 const SHANNON_CHAIN_ID = 50_312;
-const PUBLIC_RPC = "https://dream-rpc.somnia.network";
-const seedChainsSource = readFileSync(
-  path.join(process.cwd(), "scripts/seed/seed-chains.ts"),
-  "utf8"
-);
+const PRIMARY_RPC = "https://dream-rpc.somnia.network";
+const FALLBACK_RPC = "https://api.infra.testnet.somnia.network";
+const PRIMARY_WSS = "wss://dream-rpc.somnia.network/ws";
 
 beforeEach(() => {
   vi.stubEnv("CHAIN_RPC_CONFIG", "");
   vi.stubEnv("CHAIN_SOMNIA_SHANNON_PRIMARY_RPC", "");
+  vi.stubEnv("CHAIN_SOMNIA_SHANNON_FALLBACK_RPC", "");
   vi.resetModules();
 });
 
@@ -23,16 +36,22 @@ afterEach(() => {
 });
 
 describe("Somnia Shannon chain onboarding", () => {
-  it("uses the public RPC and official event WebSocket without an override", async () => {
+  it("resolves independent public RPCs and the official event WebSocket", async () => {
     const { CHAIN_CONFIG, getRpcUrlByChainId, getWssUrl } = await import(
       "@/lib/rpc/rpc-config"
     );
 
-    expect(CHAIN_CONFIG[SHANNON_CHAIN_ID].jsonKey).toBe("somnia-shannon");
-    expect(getRpcUrlByChainId(SHANNON_CHAIN_ID)).toBe(PUBLIC_RPC);
+    expect(CHAIN_CONFIG[SHANNON_CHAIN_ID]).toMatchObject({
+      jsonKey: "somnia-shannon",
+      publicDefault: PRIMARY_RPC,
+      publicFallback: FALLBACK_RPC,
+      publicWssDefault: PRIMARY_WSS,
+    });
+    expect(getRpcUrlByChainId(SHANNON_CHAIN_ID)).toBe(PRIMARY_RPC);
+    expect(getRpcUrlByChainId(SHANNON_CHAIN_ID, "fallback")).toBe(FALLBACK_RPC);
     expect(
       getWssUrl({ rpcConfig: {}, jsonKey: "somnia-shannon", type: "primary" })
-    ).toBe("wss://dream-rpc.somnia.network/ws");
+    ).toBe(PRIMARY_WSS);
   });
 
   it("uses a configured primary RPC instead of the public default", async () => {
@@ -44,14 +63,34 @@ describe("Somnia Shannon chain onboarding", () => {
     expect(getRpcUrlByChainId(SHANNON_CHAIN_ID)).toBe(override);
   });
 
-  it("defines Shannon in the executable seed with its reviewed settings", () => {
-    expect(seedChainsSource).toMatch(
-      /chainId: getChainConfigValue\("somnia-shannon", "chainId", 50_312\)[\s\S]*?name: "Somnia Shannon"[\s\S]*?symbol: getChainConfigValue\("somnia-shannon", "symbol", "STT"\)[\s\S]*?chainType: "evm"[\s\S]*?defaultPrimaryWss: getWssUrl\([\s\S]*?isTestnet: getChainConfigValue\("somnia-shannon", "isTestnet", true\)[\s\S]*?isEnabled: getChainConfigValue\("somnia-shannon", "isEnabled", true\)[\s\S]*?status: "experimental"[\s\S]*?aliases: \[\]/
-    );
-    expect(seedChainsSource).toMatch(
-      /50312: \{[\s\S]*?explorerUrl: "https:\/\/shannon-explorer\.somnia\.network"[\s\S]*?explorerApiType: "blockscout"[\s\S]*?explorerApiUrl: "https:\/\/shannon-explorer\.somnia\.network\/api"/
-    );
-    expect(seedChainsSource).toContain('"Somnia Shannon": 50_312');
+  it("defines Shannon in the executable seed with its reviewed settings", async () => {
+    const exit = vi
+      .spyOn(process, "exit")
+      .mockImplementation(() => undefined as never);
+    try {
+      const { DEFAULT_CHAINS } = await import("@/scripts/seed/seed-chains");
+      const shannon = DEFAULT_CHAINS.find(
+        (chain) => chain.chainId === SHANNON_CHAIN_ID
+      );
+
+      expect(shannon).toMatchObject({
+        chainId: SHANNON_CHAIN_ID,
+        name: "Somnia Shannon",
+        symbol: "STT",
+        chainType: "evm",
+        defaultPrimaryRpc: PRIMARY_RPC,
+        defaultFallbackRpc: FALLBACK_RPC,
+        defaultPrimaryWss: PRIMARY_WSS,
+        isTestnet: true,
+        isEnabled: true,
+        status: "experimental",
+        aliases: [],
+      });
+      expect(shannon?.defaultPrimaryRpc).not.toBe(shannon?.defaultFallbackRpc);
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+    } finally {
+      exit.mockRestore();
+    }
   });
 
   it("registers Shannon, Robinhood Chain, and Arc Testnet Blockscout instances", () => {

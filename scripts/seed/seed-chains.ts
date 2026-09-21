@@ -59,7 +59,7 @@ const getChainConfigValue = <T>(
   defaultValue: T
 ): T => getConfigValue(rpcConfig, jsonKey, field, defaultValue);
 
-const DEFAULT_CHAINS: NewChain[] = [
+export const DEFAULT_CHAINS: NewChain[] = [
   {
     chainId: getChainConfigValue("eth-mainnet", "chainId", 1),
     name: "Ethereum Mainnet",
