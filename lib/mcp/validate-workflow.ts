@@ -364,6 +364,7 @@ type NodeActionConfig = {
   tokenAddress: unknown;
   spenderAddress: unknown;
   amount: unknown;
+  abi: unknown;
 };
 
 function readNodeActionConfig(node: unknown): NodeActionConfig | null {
@@ -391,6 +392,7 @@ function readNodeActionConfig(node: unknown): NodeActionConfig | null {
     tokenAddress: cfg.tokenAddress,
     spenderAddress: cfg.spenderAddress,
     amount: cfg.amount,
+    abi: cfg.abi,
   };
 }
 
@@ -689,10 +691,19 @@ const APPROVE_TOKEN_ACTION_TYPE = "web3/approve-token";
 const APPROVE_METHOD = "approve";
 const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 // The same two spellings approve-token-core maps to ethers.MaxUint256.
-const MAX_UINT256 = (BigInt(2) ** BigInt(256) - BigInt(1)).toString();
-const LITERAL_AMOUNT_PATTERN = /^\d+(\.\d+)?$/;
+const MAX_UINT256_BIGINT = BigInt(2) ** BigInt(256) - BigInt(1);
+const MAX_UINT256 = MAX_UINT256_BIGINT.toString();
+const DECIMAL_AMOUNT_PATTERN = /^\d+(\.\d+)?$/;
+const HEX_AMOUNT_PATTERN = /^0x[0-9a-fA-F]+$/;
+const ZERO_AMOUNT_PATTERN = /^0+(\.0+)?$/;
+const HUMAN_READABLE_FUNCTION = /^function\s+([A-Za-z_$][\w$]*)\s*\(/;
+// Functions no ERC-20 declares. An ABI carrying one is a token where the
+// second argument of approve is a token id and allowance has no meaning.
+const NON_ERC20_MARKERS = ["ownerOf", "setApprovalForAll"];
 
-type ApproveAmount = "unlimited" | "exact" | "unknown";
+// "zero" is a revoke: it is neither blind nor re-granting anything, so it
+// does not get the hint at all.
+type ApproveAmount = "unlimited" | "exact" | "zero" | "unknown";
 
 type ApproveGrant = {
   /** Lower-cased token contract address, when it resolves to a literal. */
@@ -706,17 +717,81 @@ type ApproveGrant = {
 };
 
 function approveAmountOf(raw: unknown): ApproveAmount {
-  if (typeof raw === "number" && Number.isFinite(raw)) {
-    return "exact";
+  if (typeof raw === "number") {
+    if (!(Number.isFinite(raw) && Number.isInteger(raw)) || raw < 0) {
+      return "unknown";
+    }
+    return raw === 0 ? "zero" : "exact";
   }
   if (typeof raw !== "string") {
     return "unknown";
   }
   const amount = raw.trim();
-  if (amount.toLowerCase() === "max" || amount === MAX_UINT256) {
+  if (amount.toLowerCase() === "max") {
     return "unlimited";
   }
-  return LITERAL_AMOUNT_PATTERN.test(amount) ? "exact" : "unknown";
+  if (HEX_AMOUNT_PATTERN.test(amount)) {
+    const value = BigInt(amount);
+    if (value === BigInt(0)) {
+      return "zero";
+    }
+    return value >= MAX_UINT256_BIGINT ? "unlimited" : "exact";
+  }
+  if (!DECIMAL_AMOUNT_PATTERN.test(amount)) {
+    return "unknown";
+  }
+  if (ZERO_AMOUNT_PATTERN.test(amount)) {
+    return "zero";
+  }
+  return amount === MAX_UINT256 ? "unlimited" : "exact";
+}
+
+// The function names a write-contract node's stored ABI declares, or null
+// when there is no parseable ABI. Entries may be JSON fragments or
+// human-readable signatures.
+function declaredFunctionNames(abi: unknown): Set<string> | null {
+  let parsed: unknown = abi;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(parsed)) {
+    return null;
+  }
+  const names = new Set<string>();
+  for (const entry of parsed) {
+    if (typeof entry === "string") {
+      const match = HUMAN_READABLE_FUNCTION.exec(entry.trim());
+      if (match !== null) {
+        names.add(match[1]);
+      }
+      continue;
+    }
+    if (entry === null || typeof entry !== "object") {
+      continue;
+    }
+    const item = entry as { type?: unknown; name?: unknown };
+    if (item.type === "function" && typeof item.name === "string") {
+      names.add(item.name);
+    }
+  }
+  return names;
+}
+
+type TokenStandard = "erc20" | "not-erc20" | "unknown";
+
+function tokenStandardOf(abi: unknown): TokenStandard {
+  const names = declaredFunctionNames(abi);
+  if (names === null) {
+    return "unknown";
+  }
+  if (NON_ERC20_MARKERS.some((name) => names.has(name))) {
+    return "not-erc20";
+  }
+  return names.has("allowance") ? "erc20" : "unknown";
 }
 
 function literalAddress(value: unknown): string | null {
@@ -770,14 +845,18 @@ function parseArgs(args: unknown): unknown[] {
 }
 
 // The approve grants a node makes, by node index: one for approve-token, one
-// for a write-contract calling approve, one per approve call in a batch.
+// for a write-contract calling approve. A revoke (amount zero) is not a grant.
 function approveGrantsOf(idx: number, cfg: NodeActionConfig): ApproveGrant[] {
   if (cfg.actionType === APPROVE_TOKEN_ACTION_TYPE) {
+    const amount = approveAmountOf(cfg.amount);
+    if (amount === "zero") {
+      return [];
+    }
     return [
       {
         token: approveTokenAddress(cfg),
         spender: literalAddress(cfg.spenderAddress),
-        amount: approveAmountOf(cfg.amount),
+        amount,
         parameterPath: `nodes[${idx}].config.spenderAddress`,
       },
     ];
@@ -794,13 +873,26 @@ function approveGrantsOf(idx: number, cfg: NodeActionConfig): ApproveGrant[] {
     isWriteActionType(cfg.actionType) &&
     bareMethodName(cfg.abiFunction) === APPROVE_METHOD
   ) {
-    // ERC-20 approve(spender, amount): the amount is the second argument.
+    // approve(address,uint256) is the ERC-20 and the ERC-721 signature. The
+    // second argument is an amount only on an ERC-20; on an ERC-721 it is a
+    // token id and neither the hint nor its remedy means anything, so the
+    // declared ABI decides: a non-ERC-20 marker skips the node, an
+    // allowance function lets the amount be read, anything else reads no
+    // amount.
+    const standard = tokenStandardOf(cfg.abi);
+    if (standard === "not-erc20") {
+      return [];
+    }
     const args = parseArgs(cfg.functionArgs);
+    const amount = standard === "erc20" ? approveAmountOf(args[1]) : "unknown";
+    if (amount === "zero") {
+      return [];
+    }
     return [
       {
         token: literalAddress(cfg.contractAddress),
         spender: literalAddress(args[0]),
-        amount: approveAmountOf(args[1]),
+        amount,
         parameterPath: `nodes[${idx}].config.abiFunction`,
       },
     ];

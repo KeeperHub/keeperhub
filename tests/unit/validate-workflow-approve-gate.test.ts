@@ -35,6 +35,20 @@ const approveTokenNode = (
     ...overrides,
   });
 
+// What the editor stores after auto-fetching a token's ABI: the functions
+// that identify the standard are present alongside approve.
+const ERC20_ABI = JSON.stringify([
+  { type: "function", name: "approve", inputs: [], outputs: [] },
+  { type: "function", name: "allowance", inputs: [], outputs: [] },
+  { type: "function", name: "transfer", inputs: [], outputs: [] },
+]);
+const ERC721_ABI = JSON.stringify([
+  { type: "function", name: "approve", inputs: [], outputs: [] },
+  { type: "function", name: "ownerOf", inputs: [], outputs: [] },
+  { type: "function", name: "setApprovalForAll", inputs: [], outputs: [] },
+]);
+const MINIMAL_ABI = JSON.stringify(["function approve(address,uint256)"]);
+
 const writeApproveNode = (
   id: string,
   overrides: Record<string, unknown> = {}
@@ -42,6 +56,7 @@ const writeApproveNode = (
   actionNode(id, {
     actionType: "web3/write-contract",
     contractAddress: WETH,
+    abi: ERC20_ABI,
     abiFunction: "approve",
     functionArgs: JSON.stringify([ROUTER, "1000000"]),
     ...overrides,
@@ -125,6 +140,100 @@ describe("validateWorkflow - approve without allowance check", () => {
       expect(warning?.message).not.toContain("exact amount");
       expect(warning?.message).toContain("web3/check-allowance");
     }
+  });
+
+  it("skips a write-contract approve whose declared ABI is not an ERC-20", () => {
+    // approve(address,uint256) is also the ERC-721 signature, where the second
+    // argument is a token id; neither the hint nor its remedy applies.
+    const result = validateWorkflow(
+      chain(
+        [triggerNode(), writeApproveNode("w1", { abi: ERC721_ABI })],
+        [edge("e1", "trigger-1", "w1")]
+      )
+    );
+    expect(warningsOf(result)).toHaveLength(0);
+  });
+
+  it("reads no amount from a write-contract approve whose ABI does not identify the standard", () => {
+    for (const abi of [MINIMAL_ABI, undefined, "not json"]) {
+      const result = validateWorkflow(
+        chain(
+          [triggerNode(), writeApproveNode("w1", { abi })],
+          [edge("e1", "trigger-1", "w1")]
+        )
+      );
+      const [warning] = warningsOf(result);
+      expect(warning).toBeDefined();
+      expect(warning?.message).not.toContain("exact amount");
+      expect(warning?.message).not.toContain("unlimited");
+    }
+  });
+
+  it("treats a hex max amount as unlimited and a JSON number as exact", () => {
+    const hexMax = `0x${"f".repeat(64)}`;
+    const hex = validateWorkflow(
+      chain(
+        [
+          triggerNode(),
+          writeApproveNode("w1", {
+            functionArgs: JSON.stringify([ROUTER, hexMax]),
+          }),
+        ],
+        [edge("e1", "trigger-1", "w1")]
+      )
+    );
+    expect(warningsOf(hex)[0]?.message).toContain("unlimited");
+    const numeric = validateWorkflow(
+      chain(
+        [
+          triggerNode(),
+          writeApproveNode("w1", {
+            functionArgs: JSON.stringify([ROUTER, 1000]),
+          }),
+        ],
+        [edge("e1", "trigger-1", "w1")]
+      )
+    );
+    expect(warningsOf(numeric)[0]?.message).toContain("exact amount");
+  });
+
+  it("makes no amount claim for a negative or fractional number", () => {
+    for (const amount of [-1, 1.5]) {
+      const result = validateWorkflow(
+        chain(
+          [
+            triggerNode(),
+            writeApproveNode("w1", {
+              functionArgs: JSON.stringify([ROUTER, amount]),
+            }),
+          ],
+          [edge("e1", "trigger-1", "w1")]
+        )
+      );
+      const [warning] = warningsOf(result);
+      expect(warning?.message).not.toContain("exact amount");
+      expect(warning?.message).not.toContain("unlimited");
+    }
+  });
+
+  it("does not hint on a revoke (amount zero) on either node kind", () => {
+    const token = validateWorkflow(
+      chain(
+        [triggerNode(), approveTokenNode("a1", { amount: "0" })],
+        [edge("e1", "trigger-1", "a1")]
+      )
+    );
+    expect(warningsOf(token)).toHaveLength(0);
+    const write = validateWorkflow(
+      chain(
+        [
+          triggerNode(),
+          writeApproveNode("w1", { functionArgs: JSON.stringify([ROUTER, 0]) }),
+        ],
+        [edge("e1", "trigger-1", "w1")]
+      )
+    );
+    expect(warningsOf(write)).toHaveLength(0);
   });
 
   it("reads a write-contract approve's amount from the second argument", () => {
