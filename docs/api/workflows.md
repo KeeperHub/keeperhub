@@ -470,6 +470,10 @@ unlocks, `GET /api/features` returns the org's feature snapshot (plan, enabled f
 and the full registry); it authenticates with the same `Authorization` header as every other
 agent route.
 
+Every action also carries `protocolDirectExecution`: when true, pass the action to the MCP
+`execute_protocol_action` tool; when false, use an action-specific sibling tool (such as
+`execute_transfer` or `execute_contract_call`) or workflow execution.
+
 ## Get Organization Features
 
 ```http
