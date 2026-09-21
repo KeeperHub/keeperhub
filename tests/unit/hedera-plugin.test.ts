@@ -433,17 +433,17 @@ describe("hedera plugin — verify-message", () => {
     expect(safeFetchMock).not.toHaveBeenCalled();
   });
 
-  it("plugin declares no credential-backed form fields (verify path reads no credentials)", async () => {
+  it("stays credential-free: no connection fields and no credential requirement", async () => {
+    // The verify path reads no credentials, so the integration must not ask for
+    // any. ActionConfigFieldBase has no envVar, so the earlier version of this
+    // case could never fire; the registry-wide invariant it was reaching for
+    // lives in tests/unit/credential-map-coverage.test.ts (every credentials.X
+    // read in a step file must map to a PLUGIN_CREDENTIAL_MAP envVar). What is
+    // checkable here is the plugin-level surface, and that is what a failure
+    // would actually change.
     const plugin = (await import("@/plugins/hedera/index")).default;
-    for (const action of Object.values(plugin.actions)) {
-      for (const field of action.configFields) {
-        if ("envVar" in field && field.envVar) {
-          throw new Error(
-            `${action.label} declares envVar ${field.envVar} but reads no credentials`
-          );
-        }
-      }
-    }
+    expect(plugin.requiresCredentials).toBe(false);
+    expect(plugin.formFields).toHaveLength(0);
     expect(plugin.actions.length).toBeGreaterThan(0);
   });
 });
