@@ -4,6 +4,7 @@ import { ethers } from "ethers";
 import { safeFetch } from "@/lib/safe-fetch";
 import { isNonRetryableError } from "@/lib/rpc/providers/error-classification";
 import { rawToUi, UI_MULTIPLIER_UNIT } from "@/lib/web3/ui-multiplier";
+import { HOUR_MS } from "@/lib/utils/duration";
 
 /**
  * Shared logic for the Robinhood Chain stock-token read actions.
@@ -36,7 +37,7 @@ const FEEDS_URL =
 /** The registry serves a 15 s cache of its own; this avoids hammering it. */
 const REGISTRY_TTL_MS = 60_000;
 /** Feed addresses change only when Chainlink deploys, which is rare. */
-const FEEDS_TTL_MS = 60 * 60 * 1000;
+const FEEDS_TTL_MS = HOUR_MS;
 const FETCH_TIMEOUT_MS = 10_000;
 
 export type StockToken = {

@@ -2,6 +2,7 @@ import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { symmetricDecrypt, symmetricEncrypt } from "better-auth/crypto";
 import { and, eq, gt } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { DEFAULT_SESSION_TTL_MS } from "@/lib/auth/session-constants";
 import {
   hashSessionToken,
   signSessionCookieValue,
@@ -62,7 +63,6 @@ type Body = {
   emailOtp?: string;
 };
 
-const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const EMAIL_OTP_TTL_MINUTES = 5;
 const ACTION = "verify_ip";
 

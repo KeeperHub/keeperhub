@@ -1,13 +1,11 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { hasIndependentTokenList } from "@/lib/chain-utils";
+import { ETHEREUM_MAINNET_CHAIN_ID as MAINNET_CHAIN_ID } from "@/lib/chains/ids";
 import { db } from "@/lib/db";
 import { chains, explorerConfigs, supportedTokens } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-
-// Mainnet chain ID - used as the "master list" of supported tokens
-const MAINNET_CHAIN_ID = 1;
 
 /**
  * Build explorer URL for a token address

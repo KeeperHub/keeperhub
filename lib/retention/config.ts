@@ -1,4 +1,5 @@
 import "server-only";
+import { DAY_MS } from "@/lib/utils/duration";
 
 /**
  * KEEP-1042: configuration for the execution retention purge.
@@ -160,8 +161,6 @@ export function getRetentionConfig(): RetentionConfig {
   };
 }
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
 export function daysBefore(now: Date, days: number): Date {
-  return new Date(now.getTime() - days * MS_PER_DAY);
+  return new Date(now.getTime() - days * DAY_MS);
 }

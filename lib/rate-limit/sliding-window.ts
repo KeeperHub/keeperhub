@@ -13,11 +13,9 @@
  * app/api/user/wallet/export-key/_lib/rate-limit.ts (minimal result shape,
  * amortised eviction) - those diverge from this shape on purpose.
  *
- * Also not yet migrated: lib/workflow/editor/vote-rate-limit.ts (same
- * algorithm and result shape; a drop-in candidate) and
- * lib/mfa/dual-factor-rate-limit.ts (same algorithm plus a per-key reset
- * this factory does not expose). A fix to the window math here must be
- * mirrored there until they are consolidated.
+ * lib/workflow/editor/vote-rate-limit.ts and lib/mfa/dual-factor-rate-limit.ts
+ * were hand-rolled copies of this algorithm; both now build on it. The
+ * per-key reset the latter needed is exposed as reset().
  */
 
 export type SlidingWindowRateLimitResult =
@@ -32,6 +30,8 @@ export type SlidingWindowRateLimitResult =
 
 export type SlidingWindowLimiter = {
   check: (key: string) => SlidingWindowRateLimitResult;
+  /** Clear one key's window, e.g. after a success that should not count. */
+  reset: (key: string) => void;
   /** Test-only hook to reset all counters between unit tests. */
   __reset: () => void;
 };
@@ -77,6 +77,9 @@ export function createSlidingWindowLimiter(options: {
         remaining: limit - recent.length,
         reset,
       };
+    },
+    reset(key: string): void {
+      requestLog.delete(key);
     },
     __reset(): void {
       requestLog.clear();

@@ -20,7 +20,9 @@
 // `<=` rather than `<` so the exact boundary tick is treated as fresh -
 // avoids a one-millisecond hole at the upper edge.
 
-export const NEW_SIGNUP_NOTIFICATION_WINDOW_MS = 24 * 60 * 60 * 1000;
+import { DAY_MS } from "@/lib/utils/duration";
+
+export const NEW_SIGNUP_NOTIFICATION_WINDOW_MS = DAY_MS;
 
 export function isFreshSignup(user: { createdAt?: Date | null }): boolean {
   if (!user.createdAt) {

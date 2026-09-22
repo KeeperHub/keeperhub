@@ -43,10 +43,9 @@ import { SaveAddressBookmark } from "@/components/address-book/save-address-book
 import { toChecksumAddress, truncateAddress } from "@/lib/address-utils";
 import { joinExplorerUrl } from "@/lib/build-explorer-url";
 import type { WithdrawableAsset } from "@/lib/wallet/build-withdrawable-assets";
+import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
 
 export type { WithdrawableAsset };
-
-const COPIED_FOR_MS = 1500;
 
 /**
  * The wallet whose funds the withdraw moves. Default = the org's Turnkey
@@ -133,7 +132,7 @@ export function WithdrawModal({
   // The chain's explorer base, so a finished transaction can be opened rather
   // than only read off the screen.
   const [explorerBase, setExplorerBase] = useState<string | null>(null);
-  const [hashCopied, setHashCopied] = useState(false);
+  const [hashCopied, markHashCopied] = useCopiedFlag();
   const lastEstimateKeyRef = useRef<string | null>(null);
   const factorsProbedRef = useRef(false);
 
@@ -556,9 +555,7 @@ export function WithdrawModal({
       ? joinExplorerUrl(explorerBase, `/tx/${txHash}`)
       : null;
     const copyHash = (): void => {
-      navigator.clipboard.writeText(txHash);
-      setHashCopied(true);
-      setTimeout(() => setHashCopied(false), COPIED_FOR_MS);
+      markHashCopied(txHash);
     };
     return (
       <Overlay

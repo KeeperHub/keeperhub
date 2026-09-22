@@ -6,7 +6,7 @@ export {
   isTempoChain,
 } from "@/lib/wallet/build-withdrawable-assets";
 
-export const MAINNET_CHAIN_ID = 1;
+export { ETHEREUM_MAINNET_CHAIN_ID as MAINNET_CHAIN_ID } from "@/lib/chains/ids";
 
 // The independent-token-list set lives in lib/chain-utils.ts so the API route
 // that serves the modal reads the same one.

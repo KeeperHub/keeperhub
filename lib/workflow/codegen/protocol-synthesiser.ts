@@ -1,5 +1,6 @@
 import { getEncodeTransformKind } from "@/lib/protocol-encode-transforms";
 import type { ProtocolActionInput } from "@/lib/protocol-registry";
+import { ZERO_ADDRESS } from "@/lib/web3/address";
 import {
   type AbiFunctionFragment,
   type AbiParameter,
@@ -447,8 +448,6 @@ function emitChainImport(chain: ResolvedChain): {
     ],
   };
 }
-
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 function addressBlock(value: string): string {
   return `const CONTRACT_ADDRESS = "${value}" as const;`;
