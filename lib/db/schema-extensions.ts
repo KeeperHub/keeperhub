@@ -911,6 +911,77 @@ export type OverageBillingRecord = typeof overageBillingRecords.$inferSelect;
 export type NewOverageBillingRecord = typeof overageBillingRecords.$inferInsert;
 
 /**
+ * How a usage period's boundaries were derived. `subscription` means the Stripe
+ * period carried on organization_subscriptions; `calendar_month` is the UTC
+ * month used for an organization that has no Stripe period.
+ */
+export type ExecutionUsagePeriodSource = "subscription" | "calendar_month";
+
+/**
+ * Execution Usage Periods table
+ *
+ * One row per (organization, closed billing period) recording what that period
+ * was billed on. `overage_billing_records` cannot serve this: it is written
+ * only when a period actually produced a charge, so a period inside plan limits
+ * and every free-plan organization have no row there at all.
+ *
+ * Without this, a closed period's figure exists only as the `workflow_executions`
+ * rows themselves, and the invoices page recomputes it from those rows on every
+ * load. Retiring a run row would then rewrite what a customer was billed for a
+ * past period. This table is what lets the run-row retention pass be turned on.
+ *
+ * `plan`, `tier` and `execution_limit` are frozen as they were when the period
+ * closed, so a later plan change cannot rewrite history either.
+ *
+ * Workflow and direct executions are stored separately. Retention only ever
+ * deletes `workflow_executions`, so keeping the split means a partially retired
+ * period is still recognisable rather than silently reading as a smaller total.
+ *
+ * `source` records how the period boundaries were derived: `subscription` from
+ * the Stripe period on organization_subscriptions, `calendar_month` for an
+ * organization with no Stripe period (every free-plan org), matching the UTC
+ * calendar month the rest of the billing code counts against.
+ */
+export const executionUsagePeriods = pgTable(
+  "execution_usage_periods",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => generateId()),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    periodStart: timestamp("period_start").notNull(),
+    periodEnd: timestamp("period_end").notNull(),
+    plan: text("plan").notNull(),
+    tier: text("tier"),
+    /** -1 means unlimited, matching PlanLimits.maxExecutionsPerMonth. */
+    executionLimit: integer("execution_limit").notNull(),
+    workflowExecutions: integer("workflow_executions").notNull(),
+    directExecutions: integer("direct_executions").notNull(),
+    totalExecutions: integer("total_executions").notNull(),
+    overageCount: integer("overage_count").notNull().default(0),
+    totalChargeCents: integer("total_charge_cents").notNull().default(0),
+    source: text("source").$type<ExecutionUsagePeriodSource>().notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("execution_usage_periods_org_period").on(
+      table.organizationId,
+      table.periodStart,
+      table.periodEnd
+    ),
+    index("idx_execution_usage_periods_org_start").on(
+      table.organizationId,
+      table.periodStart
+    ),
+  ]
+);
+
+export type ExecutionUsagePeriod = typeof executionUsagePeriods.$inferSelect;
+export type NewExecutionUsagePeriod = typeof executionUsagePeriods.$inferInsert;
+
+/**
  * Execution Debt table
  *
  * Tracks unpaid overage executions that reduce the next month's allowance.

@@ -1,5 +1,9 @@
 import { and, eq, lt, or } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import {
+  type CalendarCloseSummary,
+  closeCalendarMonthUsage,
+} from "@/lib/billing/execution-usage-periods";
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import { billOverageForOrg } from "@/lib/billing/overage";
 import { db } from "@/lib/db";
@@ -195,9 +199,41 @@ async function handleScan(): Promise<NextResponse> {
     retried += 1;
   }
 
+  const calendarMonths = await closeCalendarMonthPeriods(now);
+
   return NextResponse.json({
     scanned: subs.length,
     retried,
+    calendarMonths,
     results,
   });
+}
+
+/**
+ * Record the month that just closed for every organization billed on the
+ * calendar month.
+ *
+ * `handleScan` above only reaches organizations whose subscription carries a
+ * provider period, which on production is 16 of 1,526. Everyone else has no
+ * period boundary anywhere, so without this their usage is never frozen and a
+ * closed month would exist only as the execution rows themselves.
+ *
+ * A failure here must not fail the overage scan that ran before it: the charges
+ * are already raised, and nothing was written for the month, so the next run
+ * retries it.
+ */
+async function closeCalendarMonthPeriods(
+  now: Date
+): Promise<CalendarCloseSummary | { error: string }> {
+  try {
+    return await closeCalendarMonthUsage(now);
+  } catch (error) {
+    logSystemError(
+      ErrorCategory.DATABASE,
+      "[Billing] Calendar-month usage close failed",
+      error,
+      { endpoint: "/api/billing/overage", operation: "closeCalendarMonth" }
+    );
+    return { error: "calendar-month usage close failed" };
+  }
 }

@@ -33,12 +33,25 @@ vi.mock("@/lib/billing/providers", () => ({
 }));
 
 const mockDbExecute = vi.fn();
+const mockStoredWhere = vi.fn();
 
 vi.mock("@/lib/db", () => ({
   db: {
     execute: (...args: unknown[]) => mockDbExecute(...args),
+    select: () => ({
+      from: () => ({
+        where: (...args: unknown[]) => mockStoredWhere(...args),
+      }),
+    }),
   },
 }));
+
+/** Live count returned by countExecutionsForPeriod, split into its two halves. */
+function mockLiveCount(workflow: number, direct = 0): void {
+  mockDbExecute.mockResolvedValue([
+    { workflow_executions: workflow, direct_executions: direct },
+  ]);
+}
 
 import { GET } from "@/app/api/billing/invoices/route";
 
@@ -60,6 +73,9 @@ function mockSession(overrides: Record<string, unknown> = {}): void {
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.NEXT_PUBLIC_BILLING_ENABLED = "true";
+  // No stored usage record unless a test provides one.
+  mockStoredWhere.mockResolvedValue([]);
+  mockLiveCount(0);
 });
 
 describe("GET /api/billing/invoices", () => {
@@ -80,8 +96,9 @@ describe("GET /api/billing/invoices", () => {
       ],
       hasMore: false,
     });
-    // Usage count for the invoice's period.
-    mockDbExecute.mockResolvedValue([{ count: 22_140 }]);
+    // No stored record yet, so the period falls back to a live count and the
+    // limit comes from the current plan.
+    mockLiveCount(22_000, 140);
 
     const response = await GET(makeRequest());
     const json = await response.json();
@@ -90,6 +107,42 @@ describe("GET /api/billing/invoices", () => {
     expect(json.invoices).toHaveLength(1);
     expect(json.invoices[0].executionsUsed).toBe(22_140);
     expect(json.invoices[0].executionLimit).toBe(25_000);
+  });
+
+  it("serves a closed period from its stored record, not a live count", async () => {
+    mockSession();
+    mockGetOrgSubscription.mockResolvedValue({
+      providerCustomerId: "cus_1",
+      plan: "pro",
+      tier: "25k",
+    });
+    const periodStart = new Date("2026-06-13T00:00:00Z");
+    const periodEnd = new Date("2026-07-13T00:00:00Z");
+    mockListInvoices.mockResolvedValue({
+      invoices: [{ id: "inv_1", periodStart, periodEnd }],
+      hasMore: false,
+    });
+    // The stored record froze a different figure and a different limit: the
+    // organization has since moved plan. Reading the rows again would rewrite
+    // both on an invoice the customer already paid.
+    mockStoredWhere.mockResolvedValue([
+      {
+        periodStart,
+        periodEnd,
+        totalExecutions: 22_140,
+        executionLimit: 50_000,
+      },
+    ]);
+    mockLiveCount(3);
+
+    const response = await GET(makeRequest());
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.invoices[0].executionsUsed).toBe(22_140);
+    expect(json.invoices[0].executionLimit).toBe(50_000);
+    // The stored row answered it; no period was counted from the rows.
+    expect(mockDbExecute).not.toHaveBeenCalled();
   });
 
   it("returns 401 without auth", async () => {

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, or } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   executionDebt,
@@ -10,6 +10,12 @@ import {
 import { ErrorCategory, logSystemWarn, logUserError } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
 import { MetricNames } from "@/lib/metrics/types";
+import {
+  countExecutionsForPeriod,
+  recordClosedPeriodUsage,
+  resolvePeriodSource,
+  stampPeriodCharge,
+} from "./execution-usage-periods";
 import { getPlanLimits, PLANS, parsePlanName, parseTierKey } from "./plans";
 import type {
   BillingProvider,
@@ -90,7 +96,7 @@ export async function billOverageForOrg(
   organizationId: string,
   periodStart: Date,
   periodEnd: Date,
-  options?: { invoiceId?: string }
+  options?: { invoiceId?: string; subscriptionEnded?: boolean }
 ): Promise<OverageResult> {
   const sub = await db.query.organizationSubscriptions.findFirst({
     where: eq(organizationSubscriptions.organizationId, organizationId),
@@ -103,6 +109,35 @@ export async function billOverageForOrg(
   const plan = parsePlanName(sub.plan);
   const tier = parseTierKey(sub.tier);
   const planDef = PLANS[plan];
+  const limits = getPlanLimits(plan, tier, sub.planOverrides);
+
+  // Freeze what the period was billed on BEFORE any gate below can return.
+  // Every gate here is a reason not to raise a charge, never a reason to forget
+  // the usage: a period inside its limit, a free plan with overage disabled and
+  // an unlimited plan all still need a record, or their figure survives only as
+  // the execution rows themselves and retiring those rewrites history. The
+  // count is taken once and reused below, so this costs one query, not two.
+  const counts = await countExecutionsForPeriod(
+    organizationId,
+    periodStart,
+    periodEnd
+  );
+  await recordClosedPeriodUsage({
+    organizationId,
+    periodStart,
+    periodEnd,
+    source: resolvePeriodSource(sub.currentPeriodStart, sub.currentPeriodEnd),
+    counts,
+    planSnapshot: { plan, tier, executionLimit: limits.maxExecutionsPerMonth },
+    // Billing a period is itself the statement that it has closed. The invoice
+    // hook accepts a period ending within PERIOD_ROLL_SKEW_MS of now, so without
+    // this a cycle closing inside that window is charged while its usage record
+    // is refused as "period still open" -- and the later scan then writes the
+    // record with a zero charge, which is worse than no record at all. Both
+    // callers that pass an invoice have already established the period is done.
+    periodEndedEarly:
+      options?.subscriptionEnded === true || options?.invoiceId !== undefined,
+  });
 
   if (!planDef.overage.enabled) {
     return { billed: false, reason: "overage not enabled for plan" };
@@ -112,7 +147,6 @@ export async function billOverageForOrg(
     return { billed: false, reason: "no provider customer ID" };
   }
 
-  const limits = getPlanLimits(plan, tier, sub.planOverrides);
   if (limits.maxExecutionsPerMonth === -1) {
     return { billed: false, reason: "unlimited plan" };
   }
@@ -130,30 +164,7 @@ export async function billOverageForOrg(
     return { billed: false, reason: "already billed for this period" };
   }
 
-  // Count executions for the period (workflow + direct executions both count
-  // toward the monthly tier; mirror lib/billing/plans-server.ts#checkExecutionLimit)
-  const result = await db.execute<{ count: number }>(
-    sql`SELECT
-          (
-            SELECT COUNT(*)
-              FROM workflow_executions we
-              JOIN workflows w ON we.workflow_id = w.id
-             WHERE w.organization_id = ${organizationId}
-               AND we.started_at >= ${periodStart.toISOString()}
-               AND we.started_at <  ${periodEnd.toISOString()}
-               AND we.billable = TRUE
-          )
-          +
-          (
-            SELECT COUNT(*)
-              FROM direct_executions de
-             WHERE de.organization_id = ${organizationId}
-               AND de.created_at >= ${periodStart.toISOString()}
-               AND de.created_at <  ${periodEnd.toISOString()}
-          ) AS count`
-  );
-
-  const totalExecutions = result[0]?.count ?? 0;
+  const totalExecutions = counts.total;
   const overageCount = Math.max(
     0,
     totalExecutions - limits.maxExecutionsPerMonth
@@ -222,6 +233,26 @@ export async function billOverageForOrg(
       })
       .where(eq(overageBillingRecords.id, record.id));
 
+    // Copy the charge onto the usage record so a closed period renders from one
+    // row. The charge itself stays authoritative in overage_billing_records.
+    const stamped = await stampPeriodCharge(
+      organizationId,
+      periodStart,
+      periodEnd,
+      totalChargeCents
+    );
+    if (!stamped) {
+      // The charge is real and already raised; the record it belongs on is
+      // missing. Never silent: a usage row that reads as free when it was not
+      // is exactly the wrong number this table exists to prevent.
+      logSystemWarn(
+        ErrorCategory.BILLING,
+        `${LOG_PREFIX} Charged a period with no usage record to stamp`,
+        new Error("usage record missing for billed period"),
+        { org_id: organizationId }
+      );
+    }
+
     getMetricsCollector().incrementCounter(
       MetricNames.BILLING_OVERAGE_CHARGED,
       { plan }
@@ -278,11 +309,15 @@ export async function collectFinalPeriodOverage(
     BILLING_CURRENCY
   );
 
+  // The subscription is ending, so this period takes no further billable
+  // execution even if its end date has not arrived. That makes the count final
+  // and recordable; otherwise the period a customer is being charged for right
+  // now would be the one period never written down.
   const result = await billOverageForOrg(
     organizationId,
     periodStart,
     periodEnd,
-    { invoiceId }
+    { invoiceId, subscriptionEnded: true }
   );
 
   if (!result.billed) {

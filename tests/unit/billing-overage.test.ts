@@ -43,6 +43,20 @@ vi.mock("@/lib/billing/providers", () => ({
   getBillingProvider: vi.fn(),
 }));
 
+const mockCountExecutionsForPeriod = vi.fn();
+const mockRecordClosedPeriodUsage = vi.fn();
+const mockStampPeriodCharge = vi.fn();
+
+vi.mock("@/lib/billing/execution-usage-periods", () => ({
+  countExecutionsForPeriod: (...args: unknown[]) =>
+    mockCountExecutionsForPeriod(...args),
+  recordClosedPeriodUsage: (...args: unknown[]) =>
+    mockRecordClosedPeriodUsage(...args),
+  resolvePeriodSource: (start: unknown, end: unknown) =>
+    start && end ? "subscription" : "calendar_month",
+  stampPeriodCharge: (...args: unknown[]) => mockStampPeriodCharge(...args),
+}));
+
 import {
   billOverageForOrg,
   collectFinalPeriodOverage,
@@ -50,12 +64,13 @@ import {
 } from "@/lib/billing/overage";
 import type { BillingProvider } from "@/lib/billing/provider";
 import { getBillingProvider } from "@/lib/billing/providers";
-import { db } from "@/lib/db";
 
 function mockExecutionCount(count: number): void {
-  vi.mocked(db.execute).mockResolvedValue([{ count }] as unknown as Awaited<
-    ReturnType<typeof db.execute>
-  >);
+  mockCountExecutionsForPeriod.mockResolvedValue({
+    workflowExecutions: count,
+    directExecutions: 0,
+    total: count,
+  });
 }
 
 function mockBillingProvider(overrides: Partial<BillingProvider>): void {
@@ -79,6 +94,123 @@ beforeEach(() => {
   });
   mockUpdateWhere.mockResolvedValue(undefined);
   mockSelectWhere.mockResolvedValue([]);
+  mockExecutionCount(0);
+  mockRecordClosedPeriodUsage.mockResolvedValue({ recorded: true, total: 0 });
+  mockStampPeriodCharge.mockResolvedValue(true);
+  mockStampPeriodCharge.mockResolvedValue(undefined);
+});
+
+describe("billOverageForOrg usage records", () => {
+  // Every gate in billOverageForOrg is a reason not to raise a charge, never a
+  // reason to forget the usage. If any of these stops recording, the period's
+  // figure survives only as the execution rows and retiring them rewrites it.
+  it("records usage for a free plan, which never bills overage", async () => {
+    mockFindFirstSub.mockResolvedValue({
+      plan: "free",
+      tier: null,
+      status: "active",
+      providerCustomerId: "cus_123",
+      currentPeriodStart: periodStart,
+      currentPeriodEnd: periodEnd,
+    });
+    mockExecutionCount(42);
+
+    const result = await billOverageForOrg("org_1", periodStart, periodEnd);
+
+    expect(result).toEqual({
+      billed: false,
+      reason: "overage not enabled for plan",
+    });
+    expect(mockRecordClosedPeriodUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org_1",
+        periodStart,
+        periodEnd,
+        source: "subscription",
+        counts: { workflowExecutions: 42, directExecutions: 0, total: 42 },
+      })
+    );
+  });
+
+  it("records usage for a period that stayed inside its limit", async () => {
+    mockFindFirstSub.mockResolvedValue({
+      plan: "pro",
+      tier: "25k",
+      status: "active",
+      providerCustomerId: "cus_123",
+      currentPeriodStart: periodStart,
+      currentPeriodEnd: periodEnd,
+    });
+    mockExecutionCount(10);
+
+    const result = await billOverageForOrg("org_1", periodStart, periodEnd);
+
+    expect(result).toEqual({ billed: false, reason: "no overage" });
+    expect(mockRecordClosedPeriodUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it("records usage for an unlimited plan", async () => {
+    mockFindFirstSub.mockResolvedValue({
+      plan: "enterprise",
+      tier: null,
+      status: "active",
+      providerCustomerId: "cus_123",
+      currentPeriodStart: periodStart,
+      currentPeriodEnd: periodEnd,
+    });
+    mockExecutionCount(99);
+
+    await billOverageForOrg("org_1", periodStart, periodEnd);
+
+    expect(mockRecordClosedPeriodUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it("records usage when the organization has no provider customer", async () => {
+    mockFindFirstSub.mockResolvedValue({
+      plan: "pro",
+      tier: "25k",
+      status: "active",
+      providerCustomerId: null,
+      currentPeriodStart: null,
+      currentPeriodEnd: null,
+    });
+    mockExecutionCount(7);
+
+    await billOverageForOrg("org_1", periodStart, periodEnd);
+
+    expect(mockRecordClosedPeriodUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "calendar_month" })
+    );
+  });
+
+  it("counts the period once and reuses it for the charge", async () => {
+    mockFindFirstSub.mockResolvedValue({
+      plan: "pro",
+      tier: "25k",
+      status: "active",
+      providerCustomerId: "cus_123",
+      currentPeriodStart: periodStart,
+      currentPeriodEnd: periodEnd,
+    });
+    mockFindFirstOverage.mockResolvedValue(undefined);
+    mockExecutionCount(26_000);
+    mockReturning.mockResolvedValue([{ id: "rec_1" }]);
+    mockBillingProvider({
+      createInvoiceItem: vi.fn().mockResolvedValue({ invoiceItemId: "ii_1" }),
+      wasRejectedWithoutCreating: vi.fn().mockReturnValue(false),
+    });
+
+    const result = await billOverageForOrg("org_1", periodStart, periodEnd);
+
+    expect(result).toMatchObject({ billed: true, overageCount: 1000 });
+    expect(mockCountExecutionsForPeriod).toHaveBeenCalledTimes(1);
+    expect(mockStampPeriodCharge).toHaveBeenCalledWith(
+      "org_1",
+      periodStart,
+      periodEnd,
+      expect.any(Number)
+    );
+  });
 });
 
 describe("billOverageForOrg", () => {
@@ -418,6 +550,23 @@ describe("billOverageForOrg", () => {
 
     expect(mockCreateInvoiceItem).toHaveBeenCalledWith(
       expect.not.objectContaining({ invoiceId: expect.anything() })
+    );
+  });
+
+  it("treats a period it is invoiced for as closed, so the record exists to stamp", async () => {
+    // handleInvoiceCreated accepts a cycle ending within PERIOD_ROLL_SKEW_MS of
+    // now. Without invoiceId counting as closure the recorder refuses the
+    // period as "still open", the charge lands with nothing to stamp, and the
+    // later scan writes the record reading zero charge.
+    const periodStart = new Date(Date.now() - 1000);
+    const periodEnd = new Date(Date.now() + 60_000);
+
+    await billOverageForOrg("org_1", periodStart, periodEnd, {
+      invoiceId: "in_123",
+    });
+
+    expect(mockRecordClosedPeriodUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ periodEndedEarly: true })
     );
   });
 });
