@@ -30,6 +30,7 @@ import {
   type PredgeSignedAttestation,
 } from "@/plugins/predge/steps/predge-core";
 import { readSignalStep } from "@/plugins/predge/steps/read-signal";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 const SCHEME = "veri402-ed25519-v1";
 const WALLET = "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984";
@@ -334,6 +335,74 @@ describe("readSignalStep", () => {
 
     expect(out.success).toBe(false);
     expect(out.error).toMatch(/malformed/i);
+  });
+
+  // Attribution, not retry behaviour: a failure the operator's own config
+  // produced should not be filed against Predge's uptime. The same two reasons
+  // stay EXTERNAL when the operator configured nothing, because then they are
+  // genuinely the upstream's doing.
+  it("blames the operator for a pin mismatch only when they set the key id", async () => {
+    mockFetchCredentials.mockResolvedValue({ PREDGE_SIGNER_KEY_ID: "deadbeef" });
+    respondWith(await signSignal(signer, { issuedAt: new Date().toISOString() }));
+
+    const out = (await readSignalStep({
+      wallet: WALLET,
+      integrationId: "int_1",
+    } as never)) as { success: boolean; errorClass: string };
+
+    expect(out.success).toBe(false);
+    expect(out.errorClass).toBe(ExecutionErrorType.USER);
+  });
+
+  it("blames Predge for a pin mismatch when the operator set nothing", async () => {
+    mockFetchCredentials.mockResolvedValue({});
+    respondWith(await signSignal(signer, { issuedAt: new Date().toISOString() }));
+
+    const out = (await readSignalStep({
+      wallet: WALLET,
+      integrationId: "int_1",
+    } as never)) as { success: boolean; errorClass: string };
+
+    expect(out.success).toBe(false);
+    expect(out.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+  });
+
+  it("blames the operator for a malformed body only when they repointed the host", async () => {
+    mockFetchCredentials.mockResolvedValue({
+      PREDGE_SIGNAL_URL: "https://signals.example.internal",
+    });
+    safeFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: () => Promise.resolve({}),
+    });
+
+    const out = (await readSignalStep({
+      wallet: WALLET,
+      integrationId: "int_1",
+    } as never)) as { success: boolean; errorClass: string };
+
+    expect(out.success).toBe(false);
+    expect(out.errorClass).toBe(ExecutionErrorType.USER);
+  });
+
+  it("blames Predge for a malformed body from the default host", async () => {
+    mockFetchCredentials.mockResolvedValue({});
+    safeFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: () => Promise.resolve({}),
+    });
+
+    const out = (await readSignalStep({
+      wallet: WALLET,
+      integrationId: "int_1",
+    } as never)) as { success: boolean; errorClass: string };
+
+    expect(out.success).toBe(false);
+    expect(out.errorClass).toBe(ExecutionErrorType.EXTERNAL);
   });
 
   it("surfaces a wallet-required error before any fetch", async () => {

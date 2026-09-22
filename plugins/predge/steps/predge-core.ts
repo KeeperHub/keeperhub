@@ -88,13 +88,19 @@ export type PredgeVerifyInput = {
 
 export type PredgeVerifyResult = {
   // True only when scheme, pinned signer, signature, subject and freshness all
-  // hold. This is the field a workflow gates value movement on.
+  // hold. Internal to this module: the step does not return it. A workflow that
+  // reads a boolean can forget to branch on it, so the step fails instead, and
+  // an unverified signal cannot be stepped over by omission.
   verified: boolean;
   // Why verification failed, for surfacing to the operator. Undefined on pass.
   reason?: string;
   // hex ed25519 public key the attestation claims to be signed by.
   signer: string;
-  // Whether payload.wallet matches the requested wallet.
+  // True only when payload.wallet matches the requested wallet AND the
+  // signature has already held. Every failure path reports false, including
+  // paths that never compared the wallets, so the field cannot assert a binding
+  // the signature has not earned. False means "not established", not
+  // "mismatch".
   subjectMatch: boolean;
   // ISO-8601 issue time carried by the attestation, when present.
   issuedAt?: string;

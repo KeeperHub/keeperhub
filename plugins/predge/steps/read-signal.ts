@@ -58,6 +58,30 @@ function parseMaxAgeSeconds(raw?: string): number | undefined {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
+// Who to blame for a verification failure, for attribution only: this changes
+// no retry behaviour, it changes which side of the fence the run is filed on.
+//
+// Two of the reasons are only reachable because the operator configured
+// something, and only then. A pinned-key mismatch is Predge rotating its signer
+// unless the operator supplied their own key id, in which case a typo there
+// produces exactly this. A malformed body is Predge serving garbage unless the
+// operator repointed the host, in which case they are parsing something that
+// was never a Predge response. Everything else is the upstream's doing.
+function classifyVerificationFailure(
+  reason: string | undefined,
+  credentials: PredgeCredentials
+): ExecutionErrorType {
+  const operatorSetKeyId = Boolean(credentials.PREDGE_SIGNER_KEY_ID?.trim());
+  const operatorSetUrl = Boolean(credentials.PREDGE_SIGNAL_URL?.trim());
+  if (reason === "signer is not the pinned Predge key" && operatorSetKeyId) {
+    return ExecutionErrorType.USER;
+  }
+  if (reason === "malformed attestation" && operatorSetUrl) {
+    return ExecutionErrorType.USER;
+  }
+  return ExecutionErrorType.EXTERNAL;
+}
+
 async function stepHandler(
   input: ReadSignalCoreInput,
   credentials: PredgeCredentials
@@ -94,7 +118,7 @@ async function stepHandler(
     return {
       success: false,
       error: `Predge signal did not verify: ${verification.reason ?? "unknown reason"}`,
-      errorClass: ExecutionErrorType.EXTERNAL,
+      errorClass: classifyVerificationFailure(verification.reason, credentials),
     };
   }
 
