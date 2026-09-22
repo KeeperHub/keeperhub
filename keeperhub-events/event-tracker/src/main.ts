@@ -36,6 +36,47 @@ async function shutdownRegistry(): Promise<void> {
   await chainProviderManager.destroy();
 }
 
+/**
+ * Workflows whose invalid-config skip has already been logged.
+ *
+ * `buildRegistration` returns null for several reasons (bad chain, missing
+ * fields, unsupported trigger) and the reconciler is not told which, so this
+ * latches on the workflow id alone: log the skip once, then stay quiet while
+ * the workflow keeps failing to build. `synchronizeData` reconciles every 30
+ * seconds and re-maps every workflow, so without the latch the skip line
+ * repeats once per refused workflow every 30 seconds for the life of the pod.
+ * That outlives and buries the capability warn in `workflow-mapper.ts` that
+ * names the chain and the allowed set, which is itself latched. This gives the
+ * generic line the same treatment, so both fire once per transition and go
+ * quiet together, and both stay in the same log window rather than one
+ * surviving rotation while the useful one is gone.
+ *
+ * A transition latch, not a permanent gag. Cleared when the workflow later
+ * builds a registration (a config that becomes valid and then invalid again is
+ * reported the second time) and when the workflow leaves the active set
+ * (re-adding an invalid one is reported again). Mirrors `forgetTraceRefusal`
+ * clearing on a successful map in the mapper.
+ */
+const reportedSkips = new Set<string>();
+
+/** Whether this skip is new. True once per workflow, then false until cleared. */
+function shouldReportSkip(workflowId: string): boolean {
+  if (reportedSkips.has(workflowId)) {
+    return false;
+  }
+  reportedSkips.add(workflowId);
+  return true;
+}
+
+/**
+ * Drop the reconciler skip latch. Tests only, so a case asserting the skip
+ * line is emitted once starts from a defined state rather than inheriting a
+ * latch set by an earlier case in the same process.
+ */
+function resetReconcilerSkipLatch(): void {
+  reportedSkips.clear();
+}
+
 async function reconcile(
   workflows: RawWorkflow[],
   networks: NetworksMap,
@@ -47,6 +88,15 @@ async function reconcile(
       .map((w) => w.id)
       .filter((id): id is string => typeof id === "string"),
   );
+
+  // Drop skip-latch entries for workflows that left the active set, so
+  // re-adding an invalid one is reported again. Mirrors the remove loop below
+  // dropping their listeners.
+  for (const id of [...reportedSkips]) {
+    if (!activeIds.has(id)) {
+      reportedSkips.delete(id);
+    }
+  }
 
   let removed = 0;
   let addAttempted = 0;
@@ -74,12 +124,20 @@ async function reconcile(
         // active set due to invalid config (bad chain, missing fields,
         // unsupported trigger). Without this log, operators see the
         // workflow in the source-of-truth but no listener and no hint why.
-        logger.warn(
-          `[Reconciler] skipping workflow ${workflowId}: buildRegistration returned null (invalid config)`,
-        );
+        // Latched per workflow so a steady refusal is one line at the
+        // transition, not one every reconcile pass: the capability warn in
+        // workflow-mapper.ts that names the chain gate is latched too, and an
+        // unlatched line here repeats past rotation and buries it.
+        if (shouldReportSkip(workflowId)) {
+          logger.warn(
+            `[Reconciler] skipping workflow ${workflowId}: buildRegistration returned null (invalid config)`,
+          );
+        }
         skippedInvalid++;
         continue;
       }
+      // Valid config now, so a later skip for this workflow is a new fact.
+      reportedSkips.delete(workflowId);
       const existingHash = reg.getConfigHash(registration.workflowId);
       if (existingHash === registration.configHash) {
         // Listener already running with the same config; nothing to do.
@@ -136,4 +194,10 @@ async function synchronizeData(): Promise<void> {
   }
 }
 
-export { getRegistry, shutdownRegistry, synchronizeData };
+export {
+  getRegistry,
+  reconcile,
+  resetReconcilerSkipLatch,
+  shutdownRegistry,
+  synchronizeData,
+};

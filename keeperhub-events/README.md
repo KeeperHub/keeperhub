@@ -140,7 +140,7 @@ namespace, state the chains:
 It replaces rather than extends, so a chain in the default set that this
 deployment's upstream does not serve can be removed.
 
-Two parsing rules are worth stating, because the obvious guesses are wrong:
+Three parsing rules are worth stating, because the obvious guesses are wrong:
 
 - An entry that is not a positive integer is dropped with a warn naming it, and
   the rest of the list still applies, so one typo does not widen the set to `*`
@@ -151,6 +151,12 @@ Two parsing rules are worth stating, because the obvious guesses are wrong:
   "none": the operator set the variable in order to enable chains, and reading a
   typo as the opposite instruction would turn off every Trace trigger in the
   deployment. `none` is the only way to say none.
+- `none` has to be the exact and only value. `TRACE_CAPABLE_CHAIN_IDS=none,`
+  with a trailing comma (or `none` beside any other token) is a normal list, so
+  `none` is a non-integer entry that gets dropped. That empties the list, which
+  takes the fall-back above and restores the surveyed default set with a warn
+  rather than refusing every chain. To refuse every chain, set `none` on its own
+  with nothing around it.
 
 In-cluster this is a chart value, not a runtime knob. It is declared empty in
 `deploy/event-tracker/staging/values.yaml` and
