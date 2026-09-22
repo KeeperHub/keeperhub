@@ -711,7 +711,7 @@ describe("math/aggregate - divisor precision and negative rounding", () => {
     }
   });
 
-  it("goes to float, not to a silent zero, when a product collapses at the bound", async () => {
+  it("goes to float, not to a silent zero, when a multiply collapses at the bound", async () => {
     const tiny = `0.${"0".repeat(255)}1`;
     const result = await expectSuccess({
       operation: "sum",

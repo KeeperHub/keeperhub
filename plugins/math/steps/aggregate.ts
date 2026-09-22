@@ -179,7 +179,7 @@ function failedAggregation(error: string): AggregateResult {
 // The result of a post-operation that did not stay in fixed point: a float,
 // a zero divisor (null result with the flag), or a divisor below precision.
 function finishNumberResult(
-  post: Exclude<PostResult<number>, { kind: "value" }> | PostResult<number>,
+  post: PostResult<number>,
   operation: string,
   inputCount: number
 ): AggregateResult {
@@ -557,7 +557,7 @@ function aggregateDecimals(
           return { kind: "float", value: productAsFloat(decimals) };
         }
       }
-      return { kind: "value", value: acc };
+      return aggregated(acc);
     }
     default:
       throw new Error(`Unknown operation: ${operation}`);
@@ -605,6 +605,9 @@ function applyBinaryDecimalPostOperation(
         if (divisor === 0) {
           return { kind: "belowPrecision", postOp };
         }
+        // Float can overflow to Infinity here, as it can on the power path.
+        // The result carries it rather than failing, which is what the
+        // floating-point path has always done.
         return {
           kind: "float",
           value:
@@ -962,19 +965,16 @@ function stepHandler(input: AggregateCoreInput): AggregateResult {
     // fixed-point path, where a fractional sibling keeps its digits instead
     // of being truncated to an integer.
     if (parsed.some((v) => v.kind === "bigint")) {
-      const aggregated = aggregateDecimals(
-        parsed.map(toDecimal),
-        input.operation
-      );
-      if (aggregated.kind === "float") {
+      const exact = aggregateDecimals(parsed.map(toDecimal), input.operation);
+      if (exact.kind === "float") {
         const post = isActivePostOperation(postOperation)
-          ? applyPostOperation(aggregated.value, postOperation, operand)
-          : valueOf(aggregated.value);
+          ? applyPostOperation(exact.value, postOperation, operand)
+          : valueOf(exact.value);
         return done(post);
       }
       const post = isActivePostOperation(postOperation)
-        ? applyDecimalPostOperation(aggregated.value, postOperation, operand)
-        : valueOf(aggregated.value);
+        ? applyDecimalPostOperation(exact.value, postOperation, operand)
+        : valueOf(exact.value);
       if (post.kind !== "value") {
         return done(post);
       }
@@ -987,7 +987,7 @@ function stepHandler(input: AggregateCoreInput): AggregateResult {
       };
     }
 
-    const aggregated = Number(
+    const floatAggregate = Number(
       computeAggregation(
         convertNumericValuesToNumbers(parsed),
         input.operation,
@@ -995,8 +995,8 @@ function stepHandler(input: AggregateCoreInput): AggregateResult {
       )
     );
     const post = isActivePostOperation(postOperation)
-      ? applyPostOperation(aggregated, postOperation, operand)
-      : valueOf(aggregated);
+      ? applyPostOperation(floatAggregate, postOperation, operand)
+      : valueOf(floatAggregate);
     return done(post);
   } catch (error) {
     return failedAggregation(`Aggregation failed: ${getErrorMessage(error)}`);
