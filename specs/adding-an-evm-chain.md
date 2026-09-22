@@ -83,10 +83,13 @@ this entry crashes the seed, and the seed runs on every deploy.
    (`explorerTxPath`, `explorerAddressPath`, `explorerContractPath`) differ by
    explorer software; open a transaction and a verified contract on the
    explorer and copy what you see. If the explorer has no usable API yet,
-   leave `explorerApiUrl` and `explorerApiType` out rather than pointing them
-   at something that does not answer: transaction and address links still
+   leave both `explorerApiUrl` and `explorerApiType` out rather than pointing
+   them at something that does not answer: transaction and address links still
    work, ABI auto-fetch stays off for the chain, and the seed and its test
-   accept the entry (Arc mainnet is in that state today).
+   accept the entry (Arc mainnet is in that state today). Set both or neither:
+   `lib/explorer` needs the pair, so one without the other is a chain that
+   looks configured and silently has no ABI lookups, and the coverage test
+   fails on it.
 
 ### 3. WebSocket endpoint, or Event triggers do not work
 

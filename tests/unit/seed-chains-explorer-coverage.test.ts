@@ -53,10 +53,15 @@ describe("seed-chains explorer coverage", () => {
     );
     for (const config of configs) {
       expect(config.explorerUrl).toMatch(/^https:\/\//);
-      // The API URL is optional: a chain whose explorer has no usable API
-      // (Arc mainnet today) keeps its links and simply has no ABI lookups.
-      if (config.explorerApiUrl !== undefined) {
+      // The API half is optional but indivisible: lib/explorer reports
+      // "Explorer API not configured for this chain" unless both the URL and
+      // the type are set, so one without the other is a chain that keeps its
+      // links and silently loses ABI lookups. Both, or neither.
+      if (config.explorerApiUrl === undefined) {
+        expect(config.explorerApiType).toBeUndefined();
+      } else {
         expect(config.explorerApiUrl).toMatch(/^https:\/\//);
+        expect(config.explorerApiType).toBeTruthy();
       }
     }
   });
