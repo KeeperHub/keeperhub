@@ -21,7 +21,7 @@ Read-only and credential-free: the action queries the public mirror node over HT
 |-------|----------|-------------|
 | Topic ID | Yes | The HCS topic to read, e.g. `0.0.10590142` |
 | Sequence number | Yes | The topic sequence number to verify |
-| Expected message | No | When set, `verified` is true only if the anchored payload matches exactly (whitespace on either side is ignored) |
+| Expected message | No | When set, `verified` is true only if the anchored payload matches (surrounding whitespace on either side is ignored) |
 | Network | Yes | `testnet` (default) or `mainnet` — selects which public mirror node is queried |
 
 ### Outputs
@@ -34,7 +34,7 @@ Read-only and credential-free: the action queries the public mirror node over HT
 | `consensusTimestamp` | The network-assigned consensus timestamp |
 | `sequenceNumber` | The verified sequence number |
 
-A `404` from the mirror surfaces as `found: false` with `success: true` when the topic exists, so workflows can branch on "not yet anchored" without treating it as a failure. A `404` for a topic that does not exist is a configuration error and fails the step, so a polling workflow cannot loop forever on a mistyped topic id. Only a `404` means "no such topic" — a `429` or a `5xx` from the mirror is reported as a mirror failure, never as a bad topic id.
+A `404` from the mirror surfaces as `found: false` with `success: true` when the topic exists, so workflows can branch on "not yet anchored" without treating it as a failure. A `404` for a topic that does not exist is a configuration error and fails the step, so while the mirror is healthy a polling workflow cannot loop forever on a mistyped topic id. Only a `404` means "no such topic": the topic probe reads any other response — including a `429` or a `5xx`, or a request that fails outright — as "topic exists", so during a mirror outage a mistyped topic id polls as `found: false` rather than failing. That bias is deliberate: surfacing a transient mirror error as a topic error would turn one hiccup into a step failure and break the branch-on-`found: false` pattern this action exists for. On the message query itself, a non-`404` error status is reported as a mirror failure.
 
 Disambiguating those two `404`s costs a second request (a probe of the topic itself), and each request carries a 30-second timeout, so a single run of this step can take up to roughly 60 seconds when nothing is anchored at the requested sequence yet.
 
