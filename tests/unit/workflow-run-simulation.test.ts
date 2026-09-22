@@ -1256,6 +1256,39 @@ describe("runWorkflowSimulation", () => {
       });
     });
 
+    it("keeps the hedge on a node whose earlier call in the run reverted", async () => {
+      spies.simulateCallSequence.mockResolvedValueOnce({
+        success: false,
+        status: "simulated",
+        from: "0xaa0000000000000000000000000000000000aa00",
+        atomic: false,
+        mechanism: "eth_simulateV1",
+        wouldRevert: true,
+        results: [REVERT_RESULT, REVERT_RESULT],
+      });
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("approve", "approve"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: linear,
+      });
+
+      // The approve reverted, so it applied nothing: the deposit was judged
+      // against the state before it and its revert may be a consequence.
+      expect(result.warnings).toHaveLength(2);
+      expect(result.warnings[0]?.message).not.toContain(
+        "may depend on an earlier step"
+      );
+      expect(result.warnings[1]?.nodeId).toBe("deposit");
+      expect(result.warnings[1]?.message).toContain(
+        "may depend on an earlier step"
+      );
+    });
+
     it("keeps the earlier-step hedge on a per-node fallback", async () => {
       spies.simulateCallSequence.mockResolvedValueOnce({
         success: false,

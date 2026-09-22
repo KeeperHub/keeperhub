@@ -896,10 +896,15 @@ async function simulateRun(
       outcomes.push(await simulateSingle(context, deadlineAt));
       continue;
     }
-    const chained = chainedInRun(run, index);
     // Only a node whose earlier steps were all applied loses the hedge. The
     // sequence starts from latest state and applies the run alone, so that
-    // holds for a later node only when nothing reachable ran before the run.
+    // holds for a later node only when nothing reachable ran before the run
+    // and every earlier call in the run actually landed: a reverted call
+    // applies no state, so the node after it was judged against the state
+    // before it and its warning may indeed depend on that earlier step.
+    const chained =
+      chainedInRun(run, index) &&
+      sequence.results.slice(0, index).every((r) => r.success);
     outcomes.push(outcomeFromResult({ ...context, chained }, result));
   }
   return outcomes;
