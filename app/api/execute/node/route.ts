@@ -36,7 +36,9 @@ import {
 import { checkRateLimit } from "../_lib/rate-limit";
 import { parseNodeNativeValueWei } from "../_lib/reserved-value";
 import {
+  capRetriesByDeclaration,
   DEFAULT_TIMEOUT_MS as DEFAULT_RETRY_TIMEOUT_MS,
+  effectiveMaxRetries,
   executeWithRetry,
   genericRetryOptions,
   type TransactionResult,
@@ -186,15 +188,43 @@ function isTransactionResult(output: unknown): output is {
   );
 }
 
+/**
+ * A step function, with the retry ceiling a step may declare on itself.
+ *
+ * `maxRetries` is optional because most steps do not set it; when a step does,
+ * it is an upper bound the caller cannot raise (see capRetriesByDeclaration).
+ */
 // biome-ignore lint/suspicious/noExplicitAny: Step functions have varying signatures
-type StepFn = (input: any) => Promise<unknown>;
+type StepFn = ((input: any) => Promise<unknown>) & { maxRetries?: number };
 
+/**
+ * What the route has to answer with, whether the step succeeded or not.
+ *
+ * `maxRetriesApplied` is the budget in force for THIS request: the caller's
+ * `retry.maxRetries`, defaulted by `resolveConfig` and capped by the step's own
+ * declaration. It is absent when the request sent no `retry` config at all, since
+ * then no retries were applied and there is no budget to report - which is why it
+ * does not read as "the retry ceiling this step declares": a step declaring 0
+ * against a request that sent no retry reports nothing here, and the declaration
+ * is read only to cap what the caller asked for.
+ */
 type InvokeResult =
-  | { ok: true; result: unknown; retryCount: number }
-  | { ok: false; error: string; retryCount: number };
+  | {
+      ok: true;
+      result: unknown;
+      retryCount: number;
+      maxRetriesApplied?: number;
+    }
+  | {
+      ok: false;
+      error: string;
+      retryCount: number;
+      maxRetriesApplied?: number;
+    };
 
 function unwrapRetryResult<T>(
-  retryResult: Awaited<ReturnType<typeof executeWithRetry<T>>>
+  retryResult: Awaited<ReturnType<typeof executeWithRetry<T>>>,
+  maxRetriesApplied: number
 ): InvokeResult {
   if (
     retryResult.outcome === "timeout" ||
@@ -204,12 +234,14 @@ function unwrapRetryResult<T>(
       ok: false,
       error: retryResult.error,
       retryCount: retryResult.retryCount,
+      maxRetriesApplied,
     };
   }
   return {
     ok: true,
     result: retryResult.result,
     retryCount: retryResult.retryCount,
+    maxRetriesApplied,
   };
 }
 
@@ -219,21 +251,33 @@ async function invokeStep(
   retry: RetryConfig | undefined,
   isWeb3: boolean
 ): Promise<InvokeResult> {
-  if (retry) {
+  // The step's own declaration caps what the caller may ask for. A step that
+  // declares it must never be retried runs once, whatever the request asked for,
+  // which is what makes the declaration worth setting on a step that spends
+  // money: the retryable-looking failures such a step can produce (a reset after
+  // the server settled the payment) are otherwise retried and charged twice.
+  const effectiveRetry = capRetriesByDeclaration(retry, stepFn.maxRetries);
+  if (effectiveRetry) {
+    // The budget the caller is actually held to, reported back so a request whose
+    // retries the step's declaration nullified is not indistinguishable from one
+    // that never asked to retry. The number is 0 for a step that declares
+    // `maxRetries = 0`, and it is the caller's own when the declaration is absent
+    // or higher.
+    const maxRetriesApplied = effectiveMaxRetries(effectiveRetry);
     if (isWeb3) {
       const retryResult = await executeWithRetry<TransactionResult>(
         async () => (await stepFn(stepInput)) as TransactionResult,
-        retry,
+        effectiveRetry,
         transactionRetryOptions
       );
-      return unwrapRetryResult(retryResult);
+      return unwrapRetryResult(retryResult, maxRetriesApplied);
     }
     const retryResult = await executeWithRetry<unknown>(
       async () => stepFn(stepInput),
-      retry,
+      effectiveRetry,
       genericRetryOptions
     );
-    return unwrapRetryResult(retryResult);
+    return unwrapRetryResult(retryResult, maxRetriesApplied);
   }
   const result = await stepFn(stepInput);
   return { ok: true, result, retryCount: 0 };
@@ -243,6 +287,7 @@ async function handleResult(
   executionId: string,
   result: unknown,
   retryCount: number,
+  maxRetriesApplied: number | undefined,
   idem: IdempotencyOutcome | null
 ): Promise<NextResponse> {
   const output = result as Record<string, unknown> | undefined;
@@ -283,6 +328,7 @@ async function handleResult(
           error: errorMsg,
           ...(transactionHash ? { transactionHash } : {}),
           ...(retryCount > 0 ? { retryCount } : {}),
+          ...(maxRetriesApplied === undefined ? {} : { maxRetriesApplied }),
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }
       ),
@@ -322,6 +368,7 @@ async function handleResult(
           status: outcome.status,
           error: outcome.error ?? "On-chain verification failed",
           ...(retryCount > 0 ? { retryCount } : {}),
+          ...(maxRetriesApplied === undefined ? {} : { maxRetriesApplied }),
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }
       ),
@@ -337,6 +384,7 @@ async function handleResult(
         status: "completed",
         result: output,
         ...(retryCount > 0 ? { retryCount } : {}),
+        ...(maxRetriesApplied === undefined ? {} : { maxRetriesApplied }),
       },
       {
         status: isTransactionResult(output)
@@ -502,6 +550,9 @@ async function executeNode(
             ...(invokeResult.retryCount > 0
               ? { retryCount: invokeResult.retryCount }
               : {}),
+            ...(invokeResult.maxRetriesApplied === undefined
+              ? {}
+              : { maxRetriesApplied: invokeResult.maxRetriesApplied }),
           },
           { status: HttpStatus.UNPROCESSABLE_ENTITY }
         ),
@@ -513,6 +564,7 @@ async function executeNode(
       executionId,
       invokeResult.result,
       invokeResult.retryCount,
+      invokeResult.maxRetriesApplied,
       idem
     );
   } catch (err: unknown) {

@@ -41,6 +41,10 @@ import { useSession } from "@/lib/auth-client";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { getCustomLogo } from "@/lib/workflow/editor/extension-registry";
 import { integrationsAtom } from "@/lib/integrations-store";
+import {
+  SYSTEM_ACTION_INTEGRATIONS,
+  SYSTEM_INTEGRATION_LABELS,
+} from "@/lib/integrations/system";
 import type { IntegrationType } from "@/lib/types/integration";
 import { cn } from "@/lib/utils";
 import { runWorkflowValidationPreflight } from "@/lib/workflow/editor/run-validation";
@@ -171,16 +175,6 @@ type MissingIntegrationInfo = {
   integrationType: IntegrationType;
   integrationLabel: string;
   nodeNames: string[];
-};
-
-// Built-in actions that require integrations but aren't in the plugin registry
-const BUILTIN_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
-  "Database Query": "database",
-};
-
-// Labels for built-in integration types that don't have plugins
-const BUILTIN_INTEGRATION_LABELS: Record<string, string> = {
-  database: "Database",
 };
 
 // Type for broken template reference info
@@ -427,7 +421,7 @@ function getMissingIntegrations(
     const action = findActionById(actionType);
     // Fall back to built-in action integrations for actions not in the registry
     const requiredIntegrationType =
-      action?.integration || BUILTIN_ACTION_INTEGRATIONS[actionType];
+      action?.integration || SYSTEM_ACTION_INTEGRATIONS[actionType];
 
     if (!requiredIntegrationType) {
       continue;
@@ -466,7 +460,7 @@ function getMissingIntegrations(
       integrationType,
       integrationLabel:
         integrationLabels[integrationType] ||
-        BUILTIN_INTEGRATION_LABELS[integrationType] ||
+        SYSTEM_INTEGRATION_LABELS[integrationType] ||
         integrationType,
       nodeNames,
     })

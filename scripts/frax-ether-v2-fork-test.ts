@@ -44,6 +44,7 @@
 import { ethers } from "ethers";
 import fraxEtherV2Abi from "@/protocols/abis/frax-ether-v2.json";
 import { formatSanitizedRpcError } from "../lib/rpc/sanitize-rpc-error";
+import { ETHEREUM_MAINNET_CHAIN_ID } from "@/lib/chains/ids";
 
 const ANVIL_URL = process.env.ANVIL_URL ?? "http://localhost:8545";
 
@@ -62,7 +63,7 @@ const FRXETH_ERC20_ABI = [
 
 const ONE_ETH = ethers.parseEther("1");
 const MINT_TOLERANCE = ethers.parseEther("0.001");
-const MAINNET_CHAIN_ID = BigInt(1);
+const MAINNET_CHAIN_ID = BigInt(ETHEREUM_MAINNET_CHAIN_ID);
 
 function fmtEth(wei: bigint): string {
   return `${ethers.formatEther(wei)} ETH`;

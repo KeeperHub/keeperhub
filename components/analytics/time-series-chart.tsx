@@ -19,6 +19,7 @@ import {
   analyticsTimeSeriesAtom,
   analyticsTimeSeriesIntervalAtom,
 } from "@/lib/atoms/analytics";
+import { DAY_MS } from "@/lib/utils/duration";
 
 // Colours come from the shared status palette, so a band on this chart is the
 // same hue as that status's badge in the table and its swatch in the filter.
@@ -30,8 +31,6 @@ const CHART_COLORS = {
   running: STATUS_DISPLAY.running.chartColor,
   pending: STATUS_DISPLAY.pending.chartColor,
 } as const;
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Labelled at the granularity the bucket actually covers. Keyed off the range

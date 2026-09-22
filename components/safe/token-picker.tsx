@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
 /**
  * Token picker dialog used from inside the policy wizard's per-protocol
@@ -68,8 +69,6 @@ type TokenPickerProps = {
   /** Token addresses (lowercase) already picked and therefore hidden */
   excludeAddresses?: readonly string[];
 };
-
-const ERC20_ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
 
 function truncateAddress(addr: string): string {
   if (addr.length < 12) {
@@ -199,7 +198,7 @@ export function TokenPicker({
 
   const handleAddCustom = async (): Promise<void> => {
     const addr = customAddress.trim();
-    if (!ERC20_ADDRESS_REGEX.test(addr)) {
+    if (!EVM_ADDRESS_RE.test(addr)) {
       toast.error("Enter a valid 0x ERC20 address");
       return;
     }

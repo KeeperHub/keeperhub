@@ -9,6 +9,8 @@
  * only a value that actually is a SQLSTATE -- see `isSqlState`.
  */
 
+import { MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
+
 export type CuratedDbError = { message: string; status: number };
 
 /**
@@ -17,7 +19,6 @@ export type CuratedDbError = { message: string; status: number };
  * single `err.cause.code` check misses real constraint violations. Bounded so
  * a self-referential chain cannot spin.
  */
-const MAX_CAUSE_DEPTH = 5;
 
 /**
  * A Postgres SQLSTATE: exactly five characters, digits and uppercase letters.

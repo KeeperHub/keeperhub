@@ -19,13 +19,10 @@ import {
   integrationsAtom,
   integrationsVersionAtom,
 } from "@/lib/integrations-store";
+import { SYSTEM_INTEGRATION_LABELS } from "@/lib/integrations/system";
 import type { IntegrationType } from "@/lib/types/integration";
 import { cn } from "@/lib/utils";
 import { getIntegration } from "@/plugins/registry";
-
-const SYSTEM_INTEGRATION_LABELS: Partial<Record<IntegrationType, string>> = {
-  database: "Database",
-};
 
 type IntegrationSelectorProps = {
   integrationType: IntegrationType;

@@ -1,11 +1,11 @@
 import { z } from "zod";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
 /** EVM address: 0x followed by exactly 40 hex characters. */
-export const EVM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 
 const evmAddress = z
   .string()
-  .regex(EVM_ADDRESS_REGEX, "Must be a valid EVM address");
+  .regex(EVM_ADDRESS_RE, "Must be a valid EVM address");
 
 // chainId may arrive as a number or a numeric string (the modal sends a
 // number; some callers send a string). Either must denote a positive integer.

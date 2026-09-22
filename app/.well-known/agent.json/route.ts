@@ -4,12 +4,12 @@
 // A2A draft, so a 301 to the canonical path keeps them working without
 // duplicating card content in two places.
 
-const TRAILING_SLASH = /\/$/;
+import { stripTrailingSlashes } from "@/lib/utils/url";
 
 function deriveBaseUrl(request: Request): string {
   const envUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL;
   if (envUrl) {
-    return envUrl.replace(TRAILING_SLASH, "");
+    return stripTrailingSlashes(envUrl);
   }
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;

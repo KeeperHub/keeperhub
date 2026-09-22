@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks -- available to vi.mock factories which run before any imports
@@ -159,6 +159,15 @@ beforeEach(() => {
     },
     isPluginAction: true,
   }));
+});
+
+afterEach(() => {
+  // A step's declared ceiling is written onto the shared step mock as an own
+  // property, and vi.clearAllMocks() clears call history rather than removing
+  // properties. Without this, the first case that declares one leaves it on the
+  // mock for every test after it in this file - which is why the cases below
+  // only passed in the order they are written in.
+  delete (mocks.stepFn as { maxRetries?: number | string }).maxRetries;
 });
 
 // ---------------------------------------------------------------------------
@@ -373,6 +382,151 @@ describe("POST /api/execute/node reserved-field gating", () => {
     );
 
     expect([200, 202]).toContain(response.status);
+  });
+});
+
+describe("POST /api/execute/node step-declared retry ceiling", () => {
+  // The wiring is the defect: invokeStep reads the property off an object that
+  // arrives through a dynamic import. A helper test cannot see that line, so
+  // reverting the route to `if (retry)` would leave every unit case green.
+  it("runs a step that declares maxRetries = 0 exactly once", async () => {
+    Object.assign(mocks.stepFn, { maxRetries: 0 });
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+
+    // "read ECONNRESET" is in RETRYABLE_PATTERNS and the failure carries no
+    // hash, so without the declaration this is four calls.
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("still retries a step that declares nothing, four calls for three retries", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(4);
+  });
+
+  it("reports the budget the declaration left in force", async () => {
+    // The round-7 finding: a caller asking for three retries against a step that
+    // declares none got a 200, one attempt and no retryCount, which is the same
+    // shape as never having asked. Every value-moving step reachable through
+    // `resolveAction` declares 0, and the ones declaring nothing are read-only
+    // queries, so this is the common case rather than the corner.
+    Object.assign(mocks.stepFn, { maxRetries: 0 });
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
+    expect(body.maxRetriesApplied).toBe(0);
+    // Nothing was retried, so the count is still omitted rather than reported.
+    expect(body.retryCount).toBeUndefined();
+  });
+
+  it("reports the caller's own budget when the declaration is absent", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(4);
+    expect(body.maxRetriesApplied).toBe(3);
+  });
+
+  it("reports no budget when the caller never asked to retry", async () => {
+    // Absent rather than 0, so the field distinguishes "never asked" from
+    // "asked and was overridden" instead of collapsing the two.
+    mocks.stepFn.mockResolvedValue({ success: true });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body.maxRetriesApplied).toBeUndefined();
+  });
+
+  it("reports no budget for a declaring step the caller never retried", async () => {
+    // The field is the budget in force for this request, not the step's ceiling:
+    // a step declaring 0 against a request that sent no `retry` runs once and
+    // reports nothing, because no budget was applied to that request. Reading the
+    // field as "this step allows N" is wrong exactly here, and this is the case
+    // that pins the difference - the run above carries no declaration.
+    Object.assign(mocks.stepFn, { maxRetries: 0 });
+    mocks.stepFn.mockResolvedValue({ success: true });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
+    expect(body.maxRetriesApplied).toBeUndefined();
+  });
+
+  it("honours a declaration that is a string zero, which the import cannot type-check", async () => {
+    Object.assign(mocks.stepFn, { maxRetries: "0" });
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,6 +1,7 @@
 import { lt } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { securityAuditLog } from "@/lib/db/schema";
+import { DAY_MS } from "@/lib/utils/duration";
 
 /**
  * Retention window for the security audit trail. MUST match the interval in
@@ -10,11 +11,9 @@ import { securityAuditLog } from "@/lib/db/schema";
  */
 export const AUDIT_RETENTION_DAYS = 730;
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
 /** The timestamp before which audit rows are eligible for purge. */
 export function auditRetentionCutoff(now: Date): Date {
-  return new Date(now.getTime() - AUDIT_RETENTION_DAYS * MS_PER_DAY);
+  return new Date(now.getTime() - AUDIT_RETENTION_DAYS * DAY_MS);
 }
 
 /**

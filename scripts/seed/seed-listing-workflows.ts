@@ -18,12 +18,12 @@ import postgres from "postgres";
 import { getDatabaseUrl } from "../../lib/db/connection-utils";
 import { member, users, workflows } from "../../lib/db/schema";
 import { generateId } from "../../lib/utils/id";
+import { SEED_EMAIL } from "@/scripts/lib/dev-seed";
 
 const connectionString = getDatabaseUrl();
 const client = postgres(connectionString, { max: 1 });
 const db = drizzle(client);
 
-const DEV_EMAIL = process.env.SEED_EMAIL ?? "dev@keeperhub.local";
 
 type ListingWorkflowDef = {
   name: string;
@@ -329,18 +329,18 @@ async function seed(): Promise<void> {
   const userRows = await db
     .select({ id: users.id, email: users.email })
     .from(users)
-    .where(eq(users.email, DEV_EMAIL))
+    .where(eq(users.email, SEED_EMAIL))
     .limit(1);
 
   if (!userRows[0]) {
     console.error(
-      `User "${DEV_EMAIL}" not found. Sign in via the UI first, or set SEED_EMAIL.`
+      `User "${SEED_EMAIL}" not found. Sign in via the UI first, or set SEED_EMAIL.`
     );
     process.exit(1);
   }
 
   const userId = userRows[0].id;
-  console.log(`  User: ${DEV_EMAIL} (${userId})`);
+  console.log(`  User: ${SEED_EMAIL} (${userId})`);
 
   // 2. Find org
   const existingMember = await db
@@ -351,7 +351,7 @@ async function seed(): Promise<void> {
 
   if (!existingMember[0]) {
     console.error(
-      `User "${DEV_EMAIL}" has no organization. Sign in via the UI first to auto-create one.`
+      `User "${SEED_EMAIL}" has no organization. Sign in via the UI first to auto-create one.`
     );
     process.exit(1);
   }

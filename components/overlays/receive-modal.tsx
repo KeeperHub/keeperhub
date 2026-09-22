@@ -6,8 +6,8 @@ import { useMemo, useState } from "react";
 import { Overlay } from "@/components/overlays/overlay";
 import { Button } from "@/components/ui/button";
 import { toChecksumAddress } from "@/lib/address-utils";
+import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
 
-const COPIED_FOR_MS = 1500;
 const QR_SIZE = 176;
 
 function qrSvg(data: string): string {
@@ -48,13 +48,11 @@ export function ReceiveModal({
   chainName?: string;
 }): React.ReactElement {
   const display = isEvm ? toChecksumAddress(address) : address;
-  const [copied, setCopied] = useState(false);
+  const [copied, markCopied] = useCopiedFlag();
   const svg = useMemo(() => qrSvg(display), [display]);
 
   const copy = (): void => {
-    navigator.clipboard.writeText(display);
-    setCopied(true);
-    setTimeout(() => setCopied(false), COPIED_FOR_MS);
+    markCopied(display);
   };
 
   return (

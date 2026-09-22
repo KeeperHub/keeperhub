@@ -1,13 +1,13 @@
-const DEFAULT_BLOCKSCOUT_API_URL = "https://eth.blockscout.com";
-const TRAILING_SLASH_RE = /\/+$/;
+import { stripTrailingSlashes } from "@/lib/utils/url";
 
+const DEFAULT_BLOCKSCOUT_API_URL = "https://eth.blockscout.com";
 export async function testBlockscout(
   credentials: Record<string, string>
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const rawUrl =
       credentials.BLOCKSCOUT_API_URL?.trim() || DEFAULT_BLOCKSCOUT_API_URL;
-    const baseUrl = rawUrl.replace(TRAILING_SLASH_RE, "");
+    const baseUrl = stripTrailingSlashes(rawUrl);
     const apiKey = credentials.BLOCKSCOUT_API_KEY?.trim();
 
     const url = new URL(`${baseUrl}/api/v2/stats`);
