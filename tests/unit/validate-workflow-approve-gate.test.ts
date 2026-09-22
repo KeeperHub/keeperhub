@@ -211,9 +211,65 @@ describe("validateWorkflow - approve without allowance check", () => {
         )
       );
       const [warning] = warningsOf(result);
+      expect(warning).toBeDefined();
       expect(warning?.message).not.toContain("exact amount");
       expect(warning?.message).not.toContain("unlimited");
     }
+  });
+
+  it("does not hint on a revoke whose ABI does not identify the standard", () => {
+    // The zero is read before the ABI gate: it is a revoke on an ERC-20 and
+    // token id zero on an ERC-721, and the hint speaks to neither.
+    for (const abi of [MINIMAL_ABI, ERC721_ABI, undefined]) {
+      const result = validateWorkflow(
+        chain(
+          [
+            triggerNode(),
+            writeApproveNode("w1", {
+              abi,
+              functionArgs: JSON.stringify([ROUTER, 0]),
+            }),
+          ],
+          [edge("e1", "trigger-1", "w1")]
+        )
+      );
+      expect(warningsOf(result)).toHaveLength(0);
+    }
+  });
+
+  it("lets a revoke suppress a later approve of the same grant", () => {
+    // After a revoke the allowance is known to be zero, so the approve that
+    // follows it is not blind and routing around it would be a no-op.
+    const result = validateWorkflow(
+      chain(
+        [
+          triggerNode(),
+          approveTokenNode("a1", { amount: "0" }),
+          approveTokenNode("a2"),
+        ],
+        [edge("e1", "trigger-1", "a1"), edge("e2", "a1", "a2")]
+      )
+    );
+    expect(warningsOf(result)).toHaveLength(0);
+  });
+
+  it("does not let a revoke of a different token suppress an approve", () => {
+    const result = validateWorkflow(
+      chain(
+        [
+          triggerNode(),
+          approveTokenNode("a1", {
+            amount: "0",
+            tokenConfig: tokenConfig(OTHER_TOKEN),
+          }),
+          approveTokenNode("a2"),
+        ],
+        [edge("e1", "trigger-1", "a1"), edge("e2", "a1", "a2")]
+      )
+    );
+    const warnings = warningsOf(result);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.parameterPath).toBe("nodes[2].config.spenderAddress");
   });
 
   it("does not hint on a revoke (amount zero) on either node kind", () => {

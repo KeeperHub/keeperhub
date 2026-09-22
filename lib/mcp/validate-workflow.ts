@@ -848,15 +848,11 @@ function parseArgs(args: unknown): unknown[] {
 // for a write-contract calling approve. A revoke (amount zero) is not a grant.
 function approveGrantsOf(idx: number, cfg: NodeActionConfig): ApproveGrant[] {
   if (cfg.actionType === APPROVE_TOKEN_ACTION_TYPE) {
-    const amount = approveAmountOf(cfg.amount);
-    if (amount === "zero") {
-      return [];
-    }
     return [
       {
         token: approveTokenAddress(cfg),
         spender: literalAddress(cfg.spenderAddress),
-        amount,
+        amount: approveAmountOf(cfg.amount),
         parameterPath: `nodes[${idx}].config.spenderAddress`,
       },
     ];
@@ -878,15 +874,20 @@ function approveGrantsOf(idx: number, cfg: NodeActionConfig): ApproveGrant[] {
     // token id and neither the hint nor its remedy means anything, so the
     // declared ABI decides: a non-ERC-20 marker skips the node, an
     // allowance function lets the amount be read, anything else reads no
-    // amount.
+    // amount. A second argument of zero is read before that gate: it is a
+    // revoke on an ERC-20 and token id zero on an ERC-721, and the hint has
+    // nothing to say about either.
+    const args = parseArgs(cfg.functionArgs);
+    const zero = approveAmountOf(args[1]) === "zero";
     const standard = tokenStandardOf(cfg.abi);
-    if (standard === "not-erc20") {
+    if (!zero && standard === "not-erc20") {
       return [];
     }
-    const args = parseArgs(cfg.functionArgs);
-    const amount = standard === "erc20" ? approveAmountOf(args[1]) : "unknown";
-    if (amount === "zero") {
-      return [];
+    let amount: ApproveAmount = "unknown";
+    if (zero) {
+      amount = "zero";
+    } else if (standard === "erc20") {
+      amount = approveAmountOf(args[1]);
     }
     return [
       {
@@ -900,6 +901,7 @@ function approveGrantsOf(idx: number, cfg: NodeActionConfig): ApproveGrant[] {
   return [];
 }
 
+/** Token and spender match, whatever either approve's amount is. */
 function sameGrant(a: ApproveGrant, b: ApproveGrant): boolean {
   return (
     a.token !== null &&
@@ -951,6 +953,12 @@ function runApproveGateCheck(
 
   for (const { idx, node, grants } of entries) {
     if (isAllowanceGated(gate, node)) {
+      continue;
+    }
+    // A revoke is in the map above so it suppresses a later approve of the
+    // same grant - after it the allowance is known to be zero - but it is
+    // never hinted itself: it grants nothing and there is nothing to skip.
+    if (grants.every((g) => g.amount === "zero")) {
       continue;
     }
     const id = readNodeId(node);
