@@ -66,63 +66,28 @@ export function recordUnresolved(
 }
 
 /**
- * The config as the author wrote it, walked beside the rendered one so the
- * scan can tell a token the author typed from a token that arrived inside a
- * resolved value.
- */
-export type AuthoredSource = { config: unknown };
-
-/** Descend into the authored config alongside the rendered walk. */
-function authoredChild(
-  source: AuthoredSource | undefined,
-  key: string | number
-): AuthoredSource | undefined {
-  if (!source) {
-    return;
-  }
-  const parent = source.config;
-  if (typeof key === "number") {
-    return { config: Array.isArray(parent) ? parent[key] : undefined };
-  }
-  if (parent && typeof parent === "object" && !Array.isArray(parent)) {
-    return { config: (parent as Record<string, unknown>)[key] };
-  }
-  return { config: undefined };
-}
-
-/**
  * Recursively walk the rendered config looking for any leftover `{{...}}`
  * tokens. These are the literal-substitution path (executor.workflow.ts
  * display-ref fallback): the resolver could not match the reference and the
  * original token was passed through unchanged.
  *
- * Pass `source` to hold the scan to tokens the author wrote. A node's output
- * is data, not a template, so a `{{...}}` that only appears after rendering
- * came from the value the resolver substituted and is not a reference anyone
- * can fix. An execution's own error text quotes the tokens it could not
- * resolve, so a step reading an executions API aborted on braces its data
- * carried. Without `source` every leftover is reported, which is what the
- * callers that scan a single rendered string want.
+ * This cannot tell a token the author wrote from one that arrived inside a
+ * resolved value, so the executor no longer uses it: `renderTemplateString`
+ * records leftovers as it renders, where the boundary is known, and passes
+ * `rendererScanned` to skip this walk. It stays for callers that hold a
+ * rendered value with no authored counterpart to reason about.
  */
 export function scanForLeftoverLiterals(
   value: unknown,
   out: UnresolvedRef[],
   depth = 0,
-  path = "",
-  source?: AuthoredSource
+  path = ""
 ): void {
   if (depth > 10 || out.length > 50) {
     return;
   }
   if (typeof value === "string") {
-    const authored = source?.config;
     for (const match of value.matchAll(TEMPLATE_LITERAL_SCAN)) {
-      if (
-        source &&
-        !(typeof authored === "string" && authored.includes(match[0]))
-      ) {
-        continue;
-      }
       out.push({
         token: match[0],
         reason: "literal-leftover",
@@ -137,13 +102,7 @@ export function scanForLeftoverLiterals(
   }
   if (Array.isArray(value)) {
     for (const [index, item] of value.entries()) {
-      scanForLeftoverLiterals(
-        item,
-        out,
-        depth + 1,
-        `${path}[${index}]`,
-        authoredChild(source, index)
-      );
+      scanForLeftoverLiterals(item, out, depth + 1, `${path}[${index}]`);
     }
     return;
   }
@@ -155,8 +114,7 @@ export function scanForLeftoverLiterals(
         item,
         out,
         depth + 1,
-        path ? `${path}.${key}` : key,
-        authoredChild(source, key)
+        path ? `${path}.${key}` : key
       );
     }
   }
@@ -220,18 +178,21 @@ export function restoreConditionFields(
  * reports anything. Always fails closed; KEEP-525 removed the legacy
  * silent-substitute opt-out.
  *
- * Pass `authoredConfig` (the same config before rendering) so the scan
- * reports only tokens the author wrote. The tracker still carries every
- * reference the resolver itself could not resolve, at any depth.
+ * Pass `rendererScanned` when the config came from `processTemplates`, which
+ * records leftovers per field as it renders. Walking the rendered config
+ * again would read the substituted values too, and a value that quotes the
+ * workflow's own config carries a copy of the author's own token.
  */
 export function assertResolved(
   tracker: TemplateResolutionTracker,
   renderedConfig: unknown,
   _context: { nodeId?: string; nodeLabel?: string; actionType?: string },
-  authoredConfig?: AuthoredSource
+  options?: { rendererScanned?: boolean }
 ): void {
   const literals: UnresolvedRef[] = [];
-  scanForLeftoverLiterals(renderedConfig, literals, 0, "", authoredConfig);
+  if (!options?.rendererScanned) {
+    scanForLeftoverLiterals(renderedConfig, literals);
+  }
 
   const all = dedupeByToken([...tracker.unresolved, ...literals]);
   if (all.length === 0) {

@@ -2,11 +2,12 @@
  * A node's output is data, not a template. A `{{...}}` that arrives inside a
  * resolved value must not be read as a reference the author wrote.
  *
- * The shape that surfaced it: a For Each whose `arraySource` points at an
- * executions API response. Every failed run stores an error message that
- * quotes the tokens it could not resolve, the next run reads that message
- * back, and the step aborted on a reference that exists nowhere in the
- * workflow. Each abort wrote a fresh message, so the fault fed itself.
+ * The shape that surfaced it: a For Each whose `arraySource` points at this
+ * workflow's own execution history. Execution logs carry each node's config,
+ * so the payload holds a verbatim copy of the `arraySource` reference itself,
+ * and the step aborted naming its own correct reference. Comparing the
+ * rendered string against the authored one cannot separate the two; only the
+ * renderer knows where its own text ends and a substituted value begins.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -17,31 +18,29 @@ import { processTemplates } from "@/lib/workflow/executor/executor.workflow";
 import {
   assertResolved,
   createTracker,
-  scanForLeftoverLiterals,
-  type UnresolvedRef,
 } from "@/lib/workflow/executor/template-resolution";
 
 const UNRESOLVED_REF_MESSAGE = /Unresolved template reference/;
 
-// An executions payload carrying the error text of an earlier failed run.
+const ARRAY_SOURCE = "{{@http:Last executions.data}}";
+
+// An executions payload holding both an earlier run's error text and a copy
+// of the For Each node's own config, which is what the logs endpoint returns.
 const outputs = {
   http: {
-    label: "Get current workflow last executions",
+    label: "Last executions",
     data: {
       data: [
         {
           id: "yrkgtwxvjw99dlh78q7hw",
-          status: "error",
           error:
             'Unresolved template reference(s): {{QueryEvents.events}} (Display reference "QueryEvents.events" did not resolve.)',
+          config: { arraySource: ARRAY_SOURCE },
         },
-        { id: "4ykuhvwl2ipp49nlpyld0", status: "success", error: null },
       ],
     },
   },
 };
-
-const ARRAY_SOURCE = "{{@http:Get current workflow last executions.data}}";
 
 const render = (config: Record<string, unknown>) => {
   const tracker = createTracker();
@@ -49,97 +48,92 @@ const render = (config: Record<string, unknown>) => {
   return { tracker, processed };
 };
 
+const assert = (
+  tracker: ReturnType<typeof createTracker>,
+  processed: Record<string, unknown>
+) => assertResolved(tracker, processed, {}, { rendererScanned: true });
+
 describe("a token carried in by resolved data is not a reference", () => {
-  it("does not record a token that only appears after rendering", () => {
+  it("ignores a foreign token in the payload", () => {
     const { tracker, processed } = render({ arraySource: ARRAY_SOURCE });
 
     expect(String(processed.arraySource)).toContain("{{QueryEvents.events}}");
     expect(tracker.unresolved).toEqual([]);
+    expect(() => assert(tracker, processed)).not.toThrow();
   });
 
-  it("does not fail the step for it", () => {
+  it("ignores a copy of the field's own reference in the payload", () => {
     const { tracker, processed } = render({ arraySource: ARRAY_SOURCE });
 
-    expect(() =>
-      assertResolved(
-        tracker,
-        processed,
-        { actionType: "For Each" },
-        {
-          config: { arraySource: ARRAY_SOURCE },
-        }
-      )
-    ).not.toThrow();
+    // The payload quotes the arraySource reference verbatim, so a text
+    // comparison against the authored value reports it as authored.
+    expect(String(processed.arraySource)).toContain(ARRAY_SOURCE);
+    expect(tracker.unresolved).toEqual([]);
+    expect(() => assert(tracker, processed)).not.toThrow();
   });
 
-  it("still fails the step for a token the author wrote", () => {
-    const authored = {
-      arraySource: ARRAY_SOURCE,
-      label: "{{Missing.node}}",
-    };
-    const { tracker, processed } = render(authored);
+  it("ignores data-borne tokens inside an array element", () => {
+    const { tracker, processed } = render({ args: [ARRAY_SOURCE] });
 
-    expect(() =>
-      assertResolved(
-        tracker,
-        processed,
-        { actionType: "For Each" },
-        {
-          config: authored,
-        }
-      )
-    ).toThrow(UNRESOLVED_REF_MESSAGE);
+    expect(tracker.unresolved).toEqual([]);
+    expect(() => assert(tracker, processed)).not.toThrow();
   });
 
-  it("leaves data-borne tokens alone inside an array element", () => {
-    const authored = { args: [ARRAY_SOURCE] };
-    const { tracker, processed } = render(authored);
+  it("ignores data-borne tokens nested in an object", () => {
+    const { tracker, processed } = render({ meta: { to: ARRAY_SOURCE } });
 
-    expect(() =>
-      assertResolved(tracker, processed, {}, { config: authored })
-    ).not.toThrow();
+    expect(tracker.unresolved).toEqual([]);
+    expect(() => assert(tracker, processed)).not.toThrow();
+  });
+});
+
+describe("a token the author wrote still fails the step", () => {
+  it("records an unresolvable display reference", () => {
+    const { tracker, processed } = render({ label: "{{Missing.node}}" });
+
+    expect(tracker.unresolved[0]?.reason).toBe("no-path");
+    expect(() => assert(tracker, processed)).toThrow(UNRESOLVED_REF_MESSAGE);
   });
 
-  it("reports an authored token nested in an object", () => {
-    const authored = { meta: { to: "{{Missing.node}}" } };
-    const { tracker, processed } = render(authored);
+  it("records a token neither reference form can match", () => {
+    const { tracker, processed } = render({ arraySource: "{{@noColonHere}}" });
 
-    expect(() =>
-      assertResolved(tracker, processed, {}, { config: authored })
-    ).toThrow(UNRESOLVED_REF_MESSAGE);
+    expect(tracker.unresolved[0]?.reason).toBe("literal-leftover");
+    expect(() => assert(tracker, processed)).toThrow(UNRESOLVED_REF_MESSAGE);
   });
 
-  it("names the field holding an authored token", () => {
-    const authored = { arraySource: "{{Missing.node}}" };
-    const out: UnresolvedRef[] = [];
-    const { processed } = render(authored);
+  it("names the field that held an unmatchable token", () => {
+    const { tracker } = render({ arraySource: "{{@noColonHere}}" });
 
-    scanForLeftoverLiterals(processed, out, 0, "", { config: authored });
-
-    expect(out).toHaveLength(1);
-    expect(out[0]?.path).toBe("arraySource");
+    expect(tracker.unresolved[0]?.path).toBe("arraySource");
   });
 
-  it("reports every leftover when no authored config is given", () => {
-    const out: UnresolvedRef[] = [];
-    const { processed } = render({ arraySource: ARRAY_SOURCE });
+  it("names a nested field by its path", () => {
+    const { tracker } = render({ calls: [{ to: "{{@noColonHere}}" }] });
 
-    scanForLeftoverLiterals(processed, out);
+    expect(tracker.unresolved[0]?.path).toBe("calls[0].to");
+  });
 
-    expect(out.length).toBeGreaterThan(0);
+  it("catches an unmatchable token beside a reference that resolved", () => {
+    const { tracker, processed } = render({
+      arraySource: `${ARRAY_SOURCE} {{@noColonHere}}`,
+    });
+
+    expect(tracker.unresolved).toHaveLength(1);
+    expect(tracker.unresolved[0]?.token).toBe("{{@noColonHere}}");
+    expect(() => assert(tracker, processed)).toThrow(UNRESOLVED_REF_MESSAGE);
   });
 });
 
 describe("references resolve in a single pass", () => {
   it("does not resolve a display ref that came from a resolved value", () => {
-    const withToken = {
-      src: { label: "Src", data: { note: "see {{Other.field}}" } },
-      Other: { label: "Other", data: { field: "SUBSTITUTED" } },
-    };
     const tracker = createTracker();
     const processed = processTemplates(
       { message: "{{@src:Src.note}}" },
-      withToken,
+      {
+        src: { label: "Src", data: { note: "see {{Other.field}}" } },
+        Other: { label: "Other", data: { field: "SUBSTITUTED" } },
+      },
       tracker
     );
 
