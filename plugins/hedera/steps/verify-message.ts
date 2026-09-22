@@ -201,7 +201,7 @@ async function stepHandler(
       verified: false,
       message: null,
       consensusTimestamp: null,
-      sequenceNumber,
+      sequenceNumber: normalizeSequenceNumber(sequenceNumber),
     };
   }
   if (status >= 400) {
