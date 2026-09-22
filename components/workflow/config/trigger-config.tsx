@@ -363,8 +363,11 @@ function displayMinValue(typed: unknown, wei: unknown): string {
   try {
     return formatEther(BigInt(wei.trim()));
   } catch {
-    // Not a decimal wei string. Shown raw so the value in force is visible
-    // and fails the box's own check, rather than disappearing.
+    // Not an integer, so not something the editor writes. Shown raw rather
+    // than dropped, so the value in force is visible. Note that a
+    // decimal-looking one such as "0.5" then passes the box's own check,
+    // which parses native units, so the box reads clean while a non-integer
+    // wei string is what registers.
     return wei;
   }
 }
@@ -401,6 +404,40 @@ export function selectorForFunction(
   } catch {
     return null;
   }
+}
+
+/**
+ * What the selector box should hold after the chosen function changes, or
+ * `undefined` to leave it as it is.
+ *
+ * The dropdown keeps an entry whose inputs cannot be encoded selectable and
+ * withholds only its selector, so a derivation can fail on a real choice.
+ * Leaving the box alone then shows the new function above the previous
+ * function's selector, and the trigger fires on the wrong function with
+ * nothing on screen saying so. The stale value is cleared, but only when it
+ * still holds what the previous function produced, so a selector typed by
+ * hand survives either way.
+ */
+export function selectorForFunctionChange({
+  abi,
+  previousFunction,
+  currentSelector,
+  nextFunction,
+}: {
+  abi: unknown;
+  previousFunction: unknown;
+  currentSelector: string;
+  nextFunction: unknown;
+}): string | undefined {
+  const next = selectorForFunction(abi, nextFunction);
+  if (next !== null) {
+    return next;
+  }
+  const previous = selectorForFunction(abi, previousFunction);
+  if (previous !== null && currentSelector.trim().toLowerCase() === previous) {
+    return "";
+  }
+  return undefined;
 }
 
 // Trace trigger config. Fires once per call frame on the watched contract that
@@ -526,8 +563,13 @@ function TraceTriggerFields({
     if (key !== "abiFunction") {
       return;
     }
-    const next = selectorForFunction(config.contractABI, value);
-    if (next !== null) {
+    const next = selectorForFunctionChange({
+      abi: config.contractABI,
+      previousFunction: config.abiFunction,
+      currentSelector: selector,
+      nextFunction: value,
+    });
+    if (next !== undefined) {
       onUpdateConfig("traceSelector", next);
     }
   }

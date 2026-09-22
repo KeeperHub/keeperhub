@@ -22,6 +22,7 @@ vi.mock("@/components/workflow/config/schema-builder", () => ({
 
 import {
   selectorForFunction,
+  selectorForFunctionChange,
   TriggerConfig,
 } from "@/components/workflow/config/trigger-config";
 
@@ -146,5 +147,60 @@ describe("selectorForFunction", () => {
     expect(selectorForFunction(PAUSABLE, "missing")).toBeNull();
     expect(selectorForFunction("not json", "pause")).toBeNull();
     expect(selectorForFunction(PAUSABLE, "")).toBeNull();
+  });
+});
+
+describe("selectorForFunctionChange", () => {
+  // An entry the dropdown shows but cannot encode: the input has no type,
+  // so no selector can be derived for it.
+  const MIXED = JSON.stringify([
+    {
+      type: "function",
+      name: "pause",
+      inputs: [],
+      stateMutability: "nonpayable",
+    },
+    {
+      type: "function",
+      name: "broken",
+      inputs: [{ name: "amount" }],
+      stateMutability: "nonpayable",
+    },
+  ]);
+  const PAUSE_SELECTOR = "0x8456cb59";
+
+  it("fills in the selector of a function it can encode", () => {
+    expect(
+      selectorForFunctionChange({
+        abi: MIXED,
+        previousFunction: "",
+        currentSelector: "",
+        nextFunction: "pause",
+      })
+    ).toBe(PAUSE_SELECTOR);
+  });
+
+  it("clears the previous function's selector when the new one cannot be derived", () => {
+    // Otherwise the panel shows `broken` above a selector matching pause(),
+    // and the trigger fires on the wrong function with nothing saying so.
+    expect(
+      selectorForFunctionChange({
+        abi: MIXED,
+        previousFunction: "pause",
+        currentSelector: PAUSE_SELECTOR,
+        nextFunction: "broken",
+      })
+    ).toBe("");
+  });
+
+  it("leaves a hand-typed selector alone", () => {
+    expect(
+      selectorForFunctionChange({
+        abi: MIXED,
+        previousFunction: "pause",
+        currentSelector: "0xdeadbeef",
+        nextFunction: "broken",
+      })
+    ).toBeUndefined();
   });
 });
