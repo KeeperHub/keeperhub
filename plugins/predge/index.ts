@@ -59,7 +59,9 @@ const predgePlugin: IntegrationPlugin = {
       configKey: "PREDGE_MAX_SIGNAL_AGE_SECONDS",
       envVar: "PREDGE_MAX_SIGNAL_AGE_SECONDS",
       helpText:
-        "Optional. Reject an attestation issued more than this many seconds ago. Defaults to 600.",
+        "Optional. Reject an attestation issued more than this many seconds ago. Defaults to 600. " +
+        "0 is taken literally and rejects everything, since any network round trip already exceeds it; " +
+        "for the strictest usable window set a few seconds, not 0.",
     },
   ],
 
