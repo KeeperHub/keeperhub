@@ -1,5 +1,3 @@
-const TRAILING_SLASH = /\/+$/;
-
 /**
  * Base URL for the MCP server's server-to-server calls into this app's own
  * /api/* routes (execution, workflow invocation, status polling, resources).
@@ -14,10 +12,12 @@ const TRAILING_SLASH = /\/+$/;
  *
  * INTERNAL_API_URL overrides the default for non-standard deployments.
  */
+import { stripTrailingSlashes } from "@/lib/utils/url";
+
 export function getInternalApiBaseUrl(): string {
   const override = process.env.INTERNAL_API_URL;
   if (override) {
-    return override.replace(TRAILING_SLASH, "");
+    return stripTrailingSlashes(override);
   }
   return `http://127.0.0.1:${process.env.PORT ?? "3000"}`;
 }

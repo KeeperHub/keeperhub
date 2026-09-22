@@ -9,6 +9,8 @@
  * parsing, clamping and backoff rules stay identical.
  */
 
+import { MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
+
 export type RetryAttemptLimits = {
   /** Retries used when the config value is missing or unparseable. */
   defaultAttempts: number;
@@ -117,8 +119,6 @@ const CONNECTION_FAILURE_CODES: ReadonlySet<string> = new Set([
 
 /** safeFetch resolves DNS itself and throws this before any socket opens. */
 const DNS_FAILURE_MESSAGE = "Cannot resolve host:";
-
-const MAX_CAUSE_DEPTH = 5;
 
 /**
  * True when the thrown error, or any error in its `cause` chain (undici wraps

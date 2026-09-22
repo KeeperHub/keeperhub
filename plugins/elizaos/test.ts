@@ -9,10 +9,10 @@
  * endpointUrl field before the test runs. Step files route through safeFetch.
  */
 
+import { stripTrailingSlashes } from "@/lib/utils/url";
+
 // Matches the step: the connection test hits the same user-supplied host.
 const FETCH_TIMEOUT_MS = 10_000;
-
-const TRAILING_SLASH_RE = /\/+$/;
 
 export async function testElizaOS(
   credentials: Record<string, string>
@@ -26,7 +26,7 @@ export async function testElizaOS(
       };
     }
 
-    const baseUrl = rawUrl.replace(TRAILING_SLASH_RE, "");
+    const baseUrl = stripTrailingSlashes(rawUrl);
     const healthUrl = `${baseUrl}/health`;
 
     const apiKey = credentials.ELIZAOS_API_KEY?.trim();

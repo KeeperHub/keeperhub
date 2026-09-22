@@ -50,6 +50,7 @@ import {
   DEFAULT_BATCH_SIZE,
   fetchLogIdBatch,
 } from "@/scripts/lib/exec-log-network-gas-backfill";
+import { isLocalDb } from "@/scripts/lib/local-db";
 
 type CliArgs = {
   dryRun: boolean;
@@ -106,20 +107,6 @@ function dbHost(): string {
   }
 }
 
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "db", "postgres"]);
-
-function isLocalDb(): boolean {
-  try {
-    // URL.hostname drops the port; strip the IPv6 brackets it keeps.
-    const hostname = new URL(process.env.DATABASE_URL ?? "").hostname.replace(
-      /^\[|\]$/g,
-      ""
-    );
-    return LOCAL_HOSTS.has(hostname);
-  } catch {
-    return false;
-  }
-}
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));

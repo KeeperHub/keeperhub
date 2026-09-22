@@ -11,14 +11,13 @@ import {
 import { getErrorMessage } from "@/lib/utils";
 import type { BlockscoutCredentials } from "../credentials";
 import { BLOCKSCOUT_INSTANCES } from "../chains";
+import { stripTrailingSlashes } from "@/lib/utils/url";
 
 // Default public Blockscout instance (Ethereum mainnet), used when no chain is
 // selected and no custom instance URL is configured.
 const DEFAULT_BLOCKSCOUT_API_URL = "https://eth.blockscout.com";
 
 // Strips one or more trailing slashes so paths can be appended consistently.
-const TRAILING_SLASH_RE = /\/+$/;
-
 export type BlockscoutFetchResult<T> =
   | { success: true; data: T }
   | {
@@ -49,7 +48,7 @@ export function resolveInstance(
 ): InstanceResolution {
   const override = credentials.BLOCKSCOUT_API_URL?.trim();
   if (override) {
-    return { url: override.replace(TRAILING_SLASH_RE, "") };
+    return { url: stripTrailingSlashes(override) };
   }
 
   const hasNetwork =

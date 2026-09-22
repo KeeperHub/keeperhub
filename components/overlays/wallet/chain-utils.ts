@@ -15,7 +15,7 @@ const INDEPENDENT_TOKEN_LIST_CHAIN_IDS: ReadonlySet<number> = new Set([
   42_431, 4217, 9745, 5042, 5_042_002,
 ]);
 
-export const MAINNET_CHAIN_ID = 1;
+export { ETHEREUM_MAINNET_CHAIN_ID as MAINNET_CHAIN_ID } from "@/lib/chains/ids";
 
 export function hasIndependentTokenList(chainId: number): boolean {
   return INDEPENDENT_TOKEN_LIST_CHAIN_IDS.has(chainId);

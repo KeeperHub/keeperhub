@@ -5,6 +5,7 @@ import { and, eq, lt } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { idempotencyRecords } from "@/lib/db/schema-extensions";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { DAY_MS } from "@/lib/utils/duration";
 import { generateId } from "@/lib/utils/id";
 
 // A reserved record holds a short "lock" so a crashed request can't block a
@@ -14,7 +15,7 @@ import { generateId } from "@/lib/utils/id";
 // Exported so callers can bound a single request's worst-case runtime below the
 // reservation TTL (a request must not outlive its own processing lock).
 export const PROCESSING_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const COMPLETED_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const COMPLETED_TTL_MS = DAY_MS;
 // Re-extend the processing lock well before it lapses so a retry never reclaims
 // a slot whose original request is still broadcasting on chain.
 const HEARTBEAT_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes

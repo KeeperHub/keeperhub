@@ -3,12 +3,12 @@
 // `/.well-known/agent-card.json`. Without this route they got a 404 and gave
 // up; a 301 keeps them on the canonical card without duplicating content.
 
-const TRAILING_SLASH = /\/$/;
+import { stripTrailingSlashes } from "@/lib/utils/url";
 
 function deriveBaseUrl(request: Request): string {
   const envUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL;
   if (envUrl) {
-    return envUrl.replace(TRAILING_SLASH, "");
+    return stripTrailingSlashes(envUrl);
   }
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;

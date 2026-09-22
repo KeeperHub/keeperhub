@@ -305,6 +305,43 @@ export function processConfigTemplates(
 }
 
 /**
+ * Field access over an array cursor: map the key across every element so
+ * `{{Step.fees.amt}}` over `[{amt:1},{amt:2}]` renders "1, 2". That spread is
+ * load-bearing for real bindings, so a partially populated result is a hit -
+ * `[1, undefined, 2]` still carries a value the user asked for.
+ *
+ * Returns `undefined` when the array is non-empty and no element carries the
+ * key. An array of holes is not a value: the walkers only bail on `undefined`
+ * and `null`, so `[undefined, undefined]` read as resolved and `formatValue`
+ * joined it into ", " - a fabricated string reaching the caller with the
+ * resolution tracker counting zero unresolved references.
+ *
+ * A non-object element contributes `undefined` rather than whatever the key
+ * names on its prototype, which is what makes the all-holes rule bite on the
+ * sharper shape: `.length` over `["0xaaa", "0xbbb"]` used to map to `[5, 5]`,
+ * defined values that read as a hit and rendered plausible numbers. The test
+ * is the element's type, not the key's name - an array of objects that carries
+ * its own `length` field still resolves, because those elements are objects.
+ * Nothing legitimate is lost: a field access on a string, number or boolean
+ * element can only ever reach a builtin.
+ *
+ * An empty array is left as a hit on purpose. With no elements to probe there
+ * is no evidence the key is wrong, and a query that legitimately returned
+ * nothing must not start aborting the action it feeds.
+ */
+function mapFieldOverArray(cursor: unknown[], key: string): unknown {
+  const mapped = cursor.map((item) =>
+    item !== null && typeof item === "object"
+      ? (item as Record<string, unknown>)[key]
+      : undefined
+  );
+  const allMissing =
+    mapped.length > 0 &&
+    mapped.every((value) => value === undefined || value === null);
+  return allMissing ? undefined : mapped;
+}
+
+/**
  * Resolve a field path in data like "field.nested" or "items[0]"
  */
 function resolveFieldPath(data: unknown, fieldPath: string): unknown {
@@ -333,9 +370,7 @@ function resolveFieldPath(data: unknown, fieldPath: string): unknown {
         current = undefined;
       }
     } else if (Array.isArray(current)) {
-      // If current is an array and we're trying to access a field,
-      // map over the array and extract that field from each element
-      current = current.map((item) => item?.[trimmedPart]);
+      current = mapFieldOverArray(current, trimmedPart);
     } else {
       current = (current as Record<string, unknown>)?.[trimmedPart];
     }
@@ -410,11 +445,7 @@ function resolveExpressionById(
         current = undefined;
       }
     } else if (Array.isArray(current)) {
-      // If current is an array and we're trying to access a field,
-      // map over the array and extract that field from each element
-      current = current.map(
-        (item) => (item as Record<string, unknown>)?.[part]
-      );
+      current = mapFieldOverArray(current, part);
     } else {
       current = (current as Record<string, unknown>)?.[part];
     }
@@ -471,11 +502,7 @@ function resolveExpression(
         current = undefined;
       }
     } else if (Array.isArray(current)) {
-      // If current is an array and we're trying to access a field,
-      // map over the array and extract that field from each element
-      current = current.map(
-        (item) => (item as Record<string, unknown>)?.[part]
-      );
+      current = mapFieldOverArray(current, part);
     } else {
       current = (current as Record<string, unknown>)?.[part];
     }

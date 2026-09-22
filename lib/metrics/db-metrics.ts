@@ -59,6 +59,7 @@ import {
   ANONYMOUS_ORG_SLUG,
   NA_ERROR_TYPE,
 } from "@/lib/metrics/metric-constants";
+import { DAY_MS } from "@/lib/utils/duration";
 import type { BillingStatus } from "./types";
 
 // Label value used for workflow executions whose workflow has no organization
@@ -442,7 +443,7 @@ const STUCK_PENDING_TX_THRESHOLD_MS = 15 * 60 * 1000;
 // gave the chain nonce. Without a ceiling a single orphan from an abandoned
 // wallet holds the gauge above zero for the lifetime of the table, and a
 // `> 0` alert can never clear. Rows past this age drop out of the count.
-const STUCK_PENDING_TX_CEILING_MS = 24 * 60 * 60 * 1000;
+const STUCK_PENDING_TX_CEILING_MS = DAY_MS;
 
 export type StuckPendingTransactionCounts = Array<{
   chainId: number;

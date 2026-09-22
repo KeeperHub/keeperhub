@@ -10,12 +10,12 @@ import {
   type StepInput,
 } from "@/lib/workflow/executor/step-handler";
 import type { ElizaOSCredentials } from "../credentials";
+import { stripTrailingSlashes } from "@/lib/utils/url";
 
 // The instance URL is user-supplied and the default flow makes two sequential
 // calls, so a hung server would otherwise hold the step open on both.
 const FETCH_TIMEOUT_MS = 10_000;
 
-const TRAILING_SLASH_RE = /\/+$/;
 
 export type ExecuteAgentActionResult =
   | {
@@ -63,7 +63,7 @@ async function stepHandler(
     };
   }
 
-  const baseUrl = rawUrl.replace(TRAILING_SLASH_RE, "");
+  const baseUrl = stripTrailingSlashes(rawUrl);
   const agentId = input.agentId?.trim() || credentials.ELIZAOS_AGENT_ID?.trim();
   if (!agentId) {
     return {

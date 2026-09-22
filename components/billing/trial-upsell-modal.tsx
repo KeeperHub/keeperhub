@@ -12,11 +12,11 @@ import {
   TRIAL_PLAN_NAME,
 } from "@/lib/billing/plans";
 import { cn } from "@/lib/utils";
+import { DAY_MS } from "@/lib/utils/duration";
 import type { PlanTierItem } from "./pricing-table/types";
 import { getTierPrice, startCheckout } from "./pricing-table/utils";
 
 const PRO = PLANS.pro;
-const DAY_MS = 24 * 60 * 60 * 1000;
 const MONTHS_PER_YEAR = 12;
 
 // Plan-level Pro perks (execution volume is chosen per-tier below).

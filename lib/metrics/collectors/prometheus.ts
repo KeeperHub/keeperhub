@@ -947,6 +947,19 @@ const mcpRateLimitDegraded = getOrCreateCounter(
   ["reason"]
 );
 
+// Retirement evidence for the chain-scoped protocol action-slug aliases in
+// lib/protocol-action-aliases.ts. Each alias entry exists only so workflows
+// saved against a slug whose contract left an L2 keep running there; an entry
+// whose series stays at zero across a full schedule cycle has no traffic left
+// and can be deleted. Cardinality is bounded by the table (four action types
+// over three chain ids today).
+const protocolAliasRedirects = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_protocol_alias_redirects_total",
+  "Protocol action types resolved onto a renamed replacement slug by the chain-scoped alias table, labelled by action_type and chain_id",
+  ["action_type", "chain_id"]
+);
+
 // Error counters
 const pluginErrors = getOrCreateCounter(
   apiRegistry,
@@ -1572,6 +1585,7 @@ const counterMap: Record<string, Counter> = {
   // KEEP-612: see safeFetchBlocks definition above for rationale.
   "safe_fetch.blocks.total": safeFetchBlocks,
   "ratelimit.mcp.degraded.total": mcpRateLimitDegraded,
+  "protocol.alias.redirect.total": protocolAliasRedirects,
 };
 
 const errorCounterMap: Record<string, Counter> = {

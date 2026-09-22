@@ -52,6 +52,7 @@ import {
   integrationsAtom,
   integrationsVersionAtom,
 } from "@/lib/integrations-store";
+import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import type { IntegrationType } from "@/lib/types/integration";
 import {
   ARRAY_SOURCE_RE,
@@ -746,11 +747,6 @@ const SYSTEM_ACTIONS: Array<{ id: string; label: string }> = [
 ];
 
 const SYSTEM_ACTION_IDS = SYSTEM_ACTIONS.map((a) => a.id);
-
-// System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
-  "Database Query": "database",
-};
 
 // Build category mapping dynamically from plugins + System
 function useCategoryData() {

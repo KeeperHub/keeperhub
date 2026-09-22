@@ -1019,32 +1019,58 @@ function renderTemplateValue(
   return value;
 }
 
+/**
+ * Matches a stored ref `{{@nodeId:Label.field}}` OR a display ref
+ * `{{Label.field}}`. The display form is the fallback for tokens the editor
+ * never converted to stored format (mirrors extractTemplateParameters).
+ *
+ * One alternation, so both forms resolve in a single pass. Two passes read
+ * the text the first pass substituted, which made every `{{...}}` inside an
+ * upstream node's output a reference the author appeared to have written. A
+ * step reading an API response that quotes a template then aborted on a
+ * reference that exists nowhere in the workflow. processCodeTemplates has
+ * always resolved code fields in one pass for the same reason.
+ */
+const CONFIG_TEMPLATE_PATTERN =
+  /\{\{@([^:]+):([^}]+)\}\}|\{\{([^@}][^}]*)\}\}/g;
+
 function renderTemplateString(
   value: string,
   outputs: NodeOutputs,
   tracker?: TemplateResolutionTracker
 ): string {
-  const storedPattern = /\{\{@([^:]+):([^}]+)\}\}/g;
-  // Fallback: resolve display-format templates {{Label.field}} that were not
-  // converted to stored format by the editor (mirrors extractTemplateParameters).
-  const displayPattern = /\{\{([^@}][^}]*)\}\}/g;
-
-  let result = value.replace(storedPattern, (m, nodeId, rest) =>
-    replaceConfigTemplate(m, nodeId, rest, outputs, tracker)
-  );
-  result = result.replace(displayPattern, (full, displayRef) => {
-    const resolved = resolveDisplayTemplate(displayRef, outputs);
-    if (resolved === null || resolved === undefined) {
-      recordUnresolved(tracker, {
-        token: full,
-        reason: "no-path",
-        detail: `Display reference "${displayRef}" did not resolve.`,
-      });
-      return full;
+  return value.replace(
+    CONFIG_TEMPLATE_PATTERN,
+    (
+      full: string,
+      storedNodeId: string | undefined,
+      storedRest: string | undefined,
+      displayRef: string | undefined
+    ) => {
+      if (storedNodeId !== undefined && storedRest !== undefined) {
+        return replaceConfigTemplate(
+          full,
+          storedNodeId,
+          storedRest,
+          outputs,
+          tracker
+        );
+      }
+      if (displayRef === undefined) {
+        return full;
+      }
+      const resolved = resolveDisplayTemplate(displayRef, outputs);
+      if (resolved === null || resolved === undefined) {
+        recordUnresolved(tracker, {
+          token: full,
+          reason: "no-path",
+          detail: `Display reference "${displayRef}" did not resolve.`,
+        });
+        return full;
+      }
+      return formatConfigValue(resolved);
     }
-    return formatConfigValue(resolved);
-  });
-  return result;
+  );
 }
 
 /**
@@ -2603,7 +2629,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     // KEEP-468: collect every unresolved reference so we can fail closed
     // before the step runs. Tracker entries cover empty-string substitutions
     // (no-node / no-data / no-path); the post-scan inside `assertResolved`
-    // catches the displayPattern literal-passthrough path.
+    // catches the display-ref literal-passthrough path, reading the authored
+    // config so a `{{...}}` carried in by an upstream value is left alone.
     const tracker = createTracker();
 
     const processedConfig = processTemplates(
@@ -2652,11 +2679,16 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     // otherwise every Condition node downstream of For Each / a Code step
     // false-flags `{{@nodeId:Label.field}}` as a leftover literal and the
     // workflow body cannot run.
-    assertResolved(tracker, processedConfig, {
-      nodeId: assertContext?.nodeId,
-      nodeLabel: assertContext?.nodeLabel,
-      actionType,
-    });
+    assertResolved(
+      tracker,
+      processedConfig,
+      {
+        nodeId: assertContext?.nodeId,
+        nodeLabel: assertContext?.nodeLabel,
+        actionType,
+      },
+      { config }
+    );
 
     if (renderedCode !== undefined) {
       processedConfig.code = renderedCode;
@@ -3597,11 +3629,16 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
             outputs,
             forEachTracker
           );
-          assertResolved(forEachTracker, forEachConfig, {
-            nodeId: node.id,
-            nodeLabel: getNodeName(node),
-            actionType: "For Each",
-          });
+          assertResolved(
+            forEachTracker,
+            forEachConfig,
+            {
+              nodeId: node.id,
+              nodeLabel: getNodeName(node),
+              actionType: "For Each",
+            },
+            { config: node.data.config ?? {} }
+          );
           const iterationSummary = await handleForEachExecution({
             forEachNodeId: nodeId,
             forEachNode: node,

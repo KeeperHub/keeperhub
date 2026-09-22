@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import "@/protocols";
 import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
+import { getChainName } from "@/lib/chain-utils";
 import { getEncodeTransform } from "@/lib/protocol-encode-transforms";
 import { getRegisteredProtocols } from "@/lib/protocol-registry";
 import {
@@ -46,6 +47,10 @@ const GOLDEN_DIR = join(
 const UPDATE = process.env.UPDATE_GOLDENS === "1";
 // Fixed so goldens are stable across machines and runs.
 const WALLET = "0x1111111111111111111111111111111111111111";
+// Trailing parenthetical qualifier on a skip reason's chain list, e.g. the
+// "(bridged)" in "only on Base/Arbitrum (bridged)". Stripped before the list
+// is split so the qualifier is prose, not a chain name.
+const TRAILING_PARENTHETICAL_REGEX = /\s*\([^()]*\)\s*$/;
 
 type GoldenEntry = { to: string; data: string; skipped: boolean };
 type GoldenFile = Record<string, Record<string, GoldenEntry>>;
@@ -122,6 +127,111 @@ describe("protocol calldata: registry address consistency", () => {
       }
       it(`${protocol.slug}/${key} has at least one chain address`, () => {
         expect(Object.keys(contract.addresses).length).toBeGreaterThan(0);
+      });
+    }
+  }
+});
+
+describe("protocol calldata: skips that claim a contract is absent", () => {
+  // A skip reason saying "<contract> contract not on <chain>" is a factual
+  // claim about the registry. The fixture planner takes it on trust: a slug
+  // listed in `skipped` never runs on that chain. When the contract does have
+  // an address there the claim is false and the action is suppressed for no
+  // reason, which is the mirror of advertising a function the chain does not
+  // implement. Skips for a missing prerequisite (a balance the fork does not
+  // provision) use different wording and are not checked here.
+  for (const protocol of getRegisteredProtocols()) {
+    for (const [chainId, chainData] of Object.entries(
+      protocol.testData ?? {}
+    )) {
+      const claims = Object.entries(chainData.skipped ?? {}).filter((entry) =>
+        entry[1].includes("not on ")
+      );
+      if (claims.length === 0) {
+        continue;
+      }
+      it(`${protocol.slug} on ${chainId}: every absence claim matches the registry`, () => {
+        for (const [slug, reason] of claims) {
+          const action = protocol.actions.find((a) => a.slug === slug);
+          expect(
+            action,
+            `skip "${slug}" names no registered action`
+          ).toBeDefined();
+          const contractKey = action?.contract ?? "";
+          const address = protocol.contracts[contractKey]?.addresses?.[chainId];
+          expect(
+            address,
+            `${protocol.slug}/${slug} is skipped as "${reason}" but ${contractKey} resolves ${address} on chain ${chainId}`
+          ).toBeUndefined();
+          // The chain the reason names must be the chain the block skips on.
+          // Absence alone is too weak a check: "not on Arbitrum" sitting in
+          // the Base block is a true sentence in the wrong place, and it
+          // passes an absence-only assertion while telling the next reader
+          // the action was suppressed for a chain that is not this one. The
+          // "only on" describe below compares named against actual for the
+          // same reason.
+          const named = (reason.split("not on ").pop() ?? "")
+            .replace(TRAILING_PARENTHETICAL_REGEX, "")
+            .trim();
+          expect(
+            named,
+            `${protocol.slug}/${slug} is skipped on chain ${chainId} as "${reason}", but that names ${named}, not ${getChainName(chainId)}`
+          ).toBe(getChainName(chainId));
+        }
+      });
+    }
+  }
+});
+
+describe("protocol calldata: skips that name where a contract does live", () => {
+  // The inverted form of the check above, and the one that actually shipped
+  // wrong here: "<contract> contract only on Base/Arbitrum" against a
+  // registry carrying Base alone. The "not on" check cannot see it, because
+  // naming a chain the contract never had is a false claim in the opposite
+  // direction. Compare the named chains against the registry as a set, so a
+  // reason goes stale the moment an address is added or removed.
+  for (const protocol of getRegisteredProtocols()) {
+    for (const [chainId, chainData] of Object.entries(
+      protocol.testData ?? {}
+    )) {
+      const claims = Object.entries(chainData.skipped ?? {}).filter((entry) =>
+        entry[1].includes("only on ")
+      );
+      if (claims.length === 0) {
+        continue;
+      }
+      it(`${protocol.slug} on ${chainId}: every "only on" claim matches the registry`, () => {
+        for (const [slug, reason] of claims) {
+          const action = protocol.actions.find((a) => a.slug === slug);
+          expect(
+            action,
+            `skip "${slug}" names no registered action`
+          ).toBeDefined();
+          const contractKey = action?.contract ?? "";
+          const addresses = protocol.contracts[contractKey]?.addresses ?? {};
+          expect(
+            addresses[chainId],
+            `${protocol.slug}/${slug} is skipped on chain ${chainId} as "${reason}", but ${contractKey} resolves there`
+          ).toBeUndefined();
+          const named = (reason.split("only on ").pop() ?? "")
+            // A reason may qualify the chain list with a trailing
+            // parenthetical -- "only on Base/Arbitrum (bridged)" names the
+            // same two chains as "only on Base/Arbitrum". Without this the
+            // last chain parses as "Arbitrum (bridged)" and the failure
+            // message tells the author to write a list they already wrote.
+            // The invariant is unchanged: the named set must equal the set
+            // the registry carries.
+            .replace(TRAILING_PARENTHETICAL_REGEX, "")
+            .split("/")
+            .map((part) => part.trim())
+            .filter((part) => part !== "")
+            .sort();
+          const actual = Object.keys(addresses).map(getChainName).sort();
+          expect(
+            named,
+            `${protocol.slug}/${slug} is skipped as "${reason}" but ${contractKey} resolves on ${actual.join("/")}; the chain list after "only on" must be "${Object.keys(addresses).map(getChainName).join("/")}", optionally followed by a parenthetical`
+          ).toEqual(actual);
+        }
       });
     }
   }

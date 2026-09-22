@@ -29,6 +29,7 @@ import {
   applyRateLimitHeaders,
   rateLimitHeaders,
 } from "@/lib/rate-limit-headers";
+import { stripTrailingSlashes } from "@/lib/utils/url";
 
 export const dynamic = "force-dynamic";
 
@@ -41,8 +42,6 @@ const CORS_HEADERS = {
 } as const;
 
 startCleanupInterval();
-
-const TRAILING_SLASH = /\/$/;
 
 function ensureMcpAcceptHeader(request: Request): Request {
   const accept = request.headers.get("accept") ?? "";
@@ -76,7 +75,7 @@ function ensureMcpAcceptHeader(request: Request): Request {
 function getBaseUrl(request: Request): string {
   const envUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL;
   if (envUrl) {
-    return envUrl.replace(TRAILING_SLASH, "");
+    return stripTrailingSlashes(envUrl);
   }
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;

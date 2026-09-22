@@ -8,6 +8,7 @@ import { authorizeAction } from "@/lib/middleware/authorize-action";
 import { getActiveOrgId } from "@/lib/middleware/org-context";
 import { redactAuditDiff } from "@/lib/security/audit-redaction";
 import { toCsvCell } from "@/lib/security/csv";
+import { DAY_MS } from "@/lib/utils/duration";
 
 /**
  * Compliance export of the org's security audit trail as CSV.
@@ -24,7 +25,6 @@ import { toCsvCell } from "@/lib/security/csv";
  */
 
 const MAX_EXPORT_ROWS = 50_000;
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const ALLOWED_RANGE_DAYS = new Set([7, 30, 90]);
 
 const COLUMNS = [
@@ -88,7 +88,7 @@ export async function POST(request: Request): Promise<Response> {
       filters.push(
         gte(
           securityAuditLog.createdAt,
-          new Date(Date.now() - windowDays * MS_PER_DAY)
+          new Date(Date.now() - windowDays * DAY_MS)
         )
       );
     }

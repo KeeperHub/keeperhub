@@ -1,3 +1,4 @@
+import { aliasedChainIds } from "@/lib/protocol-action-aliases";
 import {
   assertEncodeTransformsLegalFor,
   setActionInputsLookup,
@@ -18,7 +19,6 @@ import type {
 } from "@/plugins/registry";
 
 const KEBAB_CASE_REGEX = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
-const HEX_ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
 
 export type ProtocolContract = {
   label: string;
@@ -123,7 +123,7 @@ function validateAddresses(contracts: Record<string, ProtocolContract>): void {
       continue;
     }
     for (const [chain, address] of Object.entries(contract.addresses)) {
-      if (!HEX_ADDRESS_REGEX.test(address)) {
+      if (!EVM_ADDRESS_RE.test(address)) {
         throw new Error(
           `Invalid address "${address}" for contract "${contractKey}" on chain "${chain}": must be a 42-character hex string starting with 0x`
         );
@@ -224,6 +224,7 @@ import {
   deriveActionsFromAbi,
   deriveEventsFromAbi,
 } from "@/lib/abi/protocol-derive";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
 export type {
   AbiDrivenContract,
@@ -393,7 +394,18 @@ function buildConfigFieldsFromAction(
   action: ProtocolAction
 ): ActionConfigField[] {
   const contract = def.contracts[action.contract];
-  const allowedChainIds = Object.keys(contract.addresses);
+  // A chain-scoped alias keeps an old slug executing on a chain its declared
+  // contract left (lib/protocol-action-aliases.ts). Those chains belong in the
+  // offered list: this is what the save-time chain-select validation checks a
+  // stored node against and what the builder's chain dropdown renders, so
+  // omitting them makes a Base workflow that still runs unsaveable and blanks
+  // its Network field.
+  const allowedChainIds = Array.from(
+    new Set([
+      ...Object.keys(contract.addresses),
+      ...aliasedChainIds(def, `${def.slug}/${action.slug}`, action),
+    ])
+  );
   const fields: ActionConfigField[] = [
     {
       key: "network",

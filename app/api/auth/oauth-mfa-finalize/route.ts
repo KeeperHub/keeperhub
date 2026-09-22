@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
+import { DEFAULT_SESSION_TTL_MS } from "@/lib/auth/session-constants";
 import {
   hashSessionToken,
   signSessionCookieValue,
@@ -43,8 +44,6 @@ type Body = {
   code?: string;
   emailOtp?: string;
 };
-
-const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function buildSessionSetCookie(token: string, ttlMs: number): string {
   const maxAge = Math.floor(ttlMs / 1000);

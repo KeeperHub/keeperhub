@@ -1,3 +1,6 @@
+import { getMetricsCollector } from "@/lib/metrics";
+import { MetricNames } from "@/lib/metrics/types";
+import { resolveRenamedAction } from "@/lib/protocol-action-aliases";
 import { getProtocol } from "@/lib/protocol-registry";
 
 export type ProtocolMeta = {
@@ -9,8 +12,16 @@ export type ProtocolMeta = {
 
 /**
  * Derive protocol metadata from _actionType by looking up the protocol registry.
+ *
+ * `network` is the numeric chain ID as a string, the same key
+ * `resolveContractAddress` indexes `contract.addresses` by. It is optional:
+ * callers that only need the action's identity (is this a write? does this
+ * action exist?) have no chain in hand, and without one no alias applies.
  */
-function deriveFromActionType(actionType: string): ProtocolMeta | undefined {
+function deriveFromActionType(
+  actionType: string,
+  network?: string
+): ProtocolMeta | undefined {
   const slashIdx = actionType.indexOf("/");
   if (slashIdx <= 0) {
     return undefined;
@@ -28,11 +39,24 @@ function deriveFromActionType(actionType: string): ProtocolMeta | undefined {
     return undefined;
   }
 
+  const resolved = resolveRenamedAction(protocol, actionType, action, network);
+  if (resolved !== action) {
+    // The only signal that an alias entry is still load-bearing. A counter
+    // rather than a log line: this fires once per aliased node execution (a
+    // minutely schedule is roughly 1.4k a day from one node), and the question
+    // it has to answer - "has anything entered on this slug since we last
+    // looked?" - is a time series, not a breadcrumb.
+    getMetricsCollector().incrementCounter(MetricNames.PROTOCOL_ALIAS_REDIRECT, {
+      action_type: actionType,
+      chain_id: network ?? "",
+    });
+  }
+
   return {
     protocolSlug,
-    contractKey: action.contract,
-    functionName: action.function,
-    actionType: action.type,
+    contractKey: resolved.contract,
+    functionName: resolved.function,
+    actionType: resolved.type,
   };
 }
 
@@ -43,6 +67,10 @@ function deriveFromActionType(actionType: string): ProtocolMeta | undefined {
  * action in the workflow builder. _protocolMeta is a cached snapshot that can
  * become stale when the user switches actions on an existing node.
  *
+ * `network` (the numeric chain ID as a string) is used only to apply the
+ * chain-scoped aliases in L2_RENAMED_ACTIONS. Callers that pass no network
+ * get the pre-alias behaviour.
+ *
  * Resolution order:
  *   1. Derive from _actionType (always reflects the current action selection)
  *   2. Fall back to _protocolMeta JSON (for nodes created before this fix)
@@ -50,10 +78,11 @@ function deriveFromActionType(actionType: string): ProtocolMeta | undefined {
 export function resolveProtocolMeta(input: {
   _protocolMeta?: string;
   _actionType?: string;
+  network?: string;
 }): ProtocolMeta | undefined {
   // Prefer _actionType -- it always reflects the current action selection
   if (typeof input._actionType === "string") {
-    const derived = deriveFromActionType(input._actionType);
+    const derived = deriveFromActionType(input._actionType, input.network);
     if (derived) {
       return derived;
     }
@@ -69,4 +98,13 @@ export function resolveProtocolMeta(input: {
   }
 
   return undefined;
+}
+
+/**
+ * Whether an action type is handled by the direct protocol execution route.
+ * Keep this derived from the same registry lookup used by that route so
+ * discovery cannot advertise a capability that execution does not recognise.
+ */
+export function isDirectExecutionSupported(actionType: string): boolean {
+  return resolveProtocolMeta({ _actionType: actionType }) !== undefined;
 }
