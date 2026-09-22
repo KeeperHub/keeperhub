@@ -635,6 +635,54 @@ describe("LayerZero EndpointV2 deployments identify their own chain", () => {
   }
 });
 
+// The docs tell a reader that identifiers naming no path return 0 forever.
+// That holds at every nonce but 0: executable() answers 3 when the stored
+// payload hash is empty AND the nonce is at or below the path's lazy inbound
+// nonce, and on a path with no history both are zero. A user who types 0, or
+// whose upstream template resolves to one, would otherwise be told a message
+// that was never sent has been delivered. Pinned on Ethereum because the
+// claim is about the contract's logic, not about one chain.
+describe("executable() on a path with no history", () => {
+  const DEAD = "0x000000000000000000000000000000000000dEaD";
+
+  async function stateAtNonce(nonce: number): Promise<number> {
+    const result = await manager.executeWithFailover((p) =>
+      p.call({
+        to: layerzeroDef.contracts.endpointV2View.addresses["1"],
+        data: SHIPPED_VIEW_ABI.encodeFunctionData("executable", [
+          { ...UNUSED_ORIGIN, nonce },
+          DEAD,
+        ]),
+      })
+    );
+    const [state] = SHIPPED_VIEW_ABI.decodeFunctionResult("executable", result);
+    return Number(state);
+  }
+
+  let manager: RpcProviderManager;
+
+  beforeAll(async () => {
+    manager = await managerForChain("1", "layerzero-unsent-nonce");
+  });
+
+  itOnchain(
+    "reports 0 for a nonce a real message would carry",
+    async () => {
+      expect(await stateAtNonce(1)).toBe(0);
+      expect(await stateAtNonce(5)).toBe(0);
+    },
+    30_000
+  );
+
+  itOnchain(
+    "reports 3 for nonce 0, which the docs call out",
+    async () => {
+      expect(await stateAtNonce(0)).toBe(3);
+    },
+    30_000
+  );
+});
+
 // The view map is the one thing standing between a user and a wrong answer
 // on the executable read: the action calls whatever address is listed for
 // the destination chain, and a wrong address either reverts or, worse,

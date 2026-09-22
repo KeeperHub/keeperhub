@@ -134,7 +134,7 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     // duplicate there is the likely transcription error. It is NOT unique
     // everywhere: the newer chains are deployed from shared factories, so
     // Plasma, Robinhood Chain and Arc genuinely share one mainnet address
-    // and four testnets share another. Both were confirmed by calling each chain's own
+    // and three testnets share another. Both were confirmed by calling each chain's own
     // deployment, so pin the sharing rather than asserting uniqueness.
     const byAddress = new Map<string, string[]>();
     for (const [chain, addr] of Object.entries(
