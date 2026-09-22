@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { db } from "@/lib/db";
+import { isStatementTimeout } from "@/lib/db/errors";
 import {
   workflowExecutionLogs,
   workflowExecutions,
@@ -23,7 +24,6 @@ import {
 import { paygPayments } from "@/lib/db/schema-extensions";
 import { feedback } from "@/lib/db/schema-feedback";
 import { workflowPayments } from "@/lib/db/schema-payments";
-import { isStatementTimeout } from "@/lib/db/statement-timeout";
 import type { WorkflowExecutionStatus } from "@/lib/errors/execution-status";
 import { logWarn } from "@/lib/logging";
 import {
@@ -42,6 +42,7 @@ import {
   RETENTION_EPOCH,
   setPurgeWatermark,
 } from "@/lib/retention/progress";
+import { DAY_MS, SECOND_MS } from "@/lib/utils/duration";
 
 /**
  * Statuses a run can still be picked up from. Their step logs carry
@@ -113,7 +114,7 @@ export const PLAN_WINDOW_MIN_SLICE_MS = 1000;
  * one page. A day is the width measured on prod at 1.3 s for a full page; the
  * same read over a year did not return in 60 s on an idle database.
  */
-export const PLAN_WINDOW_INITIAL_SLICE_MS = 24 * 60 * 60 * 1000;
+export const PLAN_WINDOW_INITIAL_SLICE_MS = DAY_MS;
 
 /**
  * How long one runs read of a workflow chunk may take before the drain treats
@@ -124,7 +125,7 @@ export const PLAN_WINDOW_INITIAL_SLICE_MS = 24 * 60 * 60 * 1000;
  * per-workflow index. A read that stays on it returns a full page in seconds
  * even over a wide slice.
  */
-export const PLAN_WINDOW_READ_TIMEOUT_MS = 5000;
+export const PLAN_WINDOW_READ_TIMEOUT_MS = 5 * SECOND_MS;
 
 export type RetentionPassName =
   | "logs_floor"

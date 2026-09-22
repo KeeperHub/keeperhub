@@ -1,6 +1,6 @@
 import "server-only";
 
-import { isStatementTimeout } from "@/lib/db/statement-timeout";
+import { isStatementTimeout } from "@/lib/db/errors";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
 import {
