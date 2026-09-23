@@ -12,13 +12,22 @@ import {
   hasResolvedPrincipal,
 } from "@/lib/middleware/auth-helpers";
 import { getWorkflowAccess } from "@/lib/workflow/access";
+import { boundedJsonb } from "@/lib/workflow/bounded-jsonb";
 import { canShareExecutionStatus } from "@/lib/workflow/share-execution-status";
 
 type AuthenticatedContext = Exclude<DualAuthContext, { error: string }>;
 
+// The run's input and output are bounded at the database: past the
+// stored-output limit they arrive as a truncated marker, so no route that
+// resolves an execution can be made to hold an oversized run in memory.
 function loadExecutionWithWorkflow(executionId: string) {
   return db.query.workflowExecutions.findFirst({
     where: eq(workflowExecutions.id, executionId),
+    columns: { input: false, output: false },
+    extras: {
+      input: boundedJsonb(workflowExecutions.input).as("input"),
+      output: boundedJsonb(workflowExecutions.output).as("output"),
+    },
     with: { workflow: true },
   });
 }

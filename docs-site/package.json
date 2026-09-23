@@ -12,14 +12,14 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "16.3.4",
+    "next": "16.3.5",
     "nextra": "^4.0.0",
     "nextra-theme-docs": "^4.0.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
-    "@types/node": "^22.20.2",
+    "@types/node": "^22.20.4",
     "@types/react": "^19.3.0",
     "pagefind": "^1.5.2",
     "typescript": "^5.7.0"

@@ -17,10 +17,11 @@ import { db } from "@/lib/db";
 import { scanResults } from "@/lib/db/schema-scan";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { HOUR_MS } from "@/lib/utils/duration";
 
 export const dynamic = "force-dynamic";
 
-const SCAN_CACHE_RETENTION_MS = 60 * 60 * 1000; // 1 hour
+const SCAN_CACHE_RETENTION_MS = HOUR_MS;
 
 type SweeperResponse = { pruned: number };
 

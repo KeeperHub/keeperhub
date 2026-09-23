@@ -13,11 +13,17 @@
  */
 import { describe, expect, it } from "vitest";
 import "@/protocols";
-import { getProtocol } from "@/lib/protocol-registry";
 import {
   L2_RENAMED_ACTIONS,
-  resolveProtocolMeta,
-} from "@/plugins/protocol/steps/resolve-protocol-meta";
+  resolveRenamedAction,
+} from "@/lib/protocol-action-aliases";
+import {
+  getProtocol,
+  type ProtocolAction,
+  type ProtocolDefinition,
+  protocolActionToPluginAction,
+} from "@/lib/protocol-registry";
+import { resolveProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
 
 describe("resolveProtocolMeta: L2 slug aliases", () => {
   const cases = [
@@ -198,6 +204,22 @@ describe("resolveProtocolMeta: the alias table matches the registry", () => {
       expect(fromDecimals).toEqual([18]);
       expect(toOutputs.map((o) => o.decimals)).toEqual(fromDecimals);
 
+      // Same argument names, in the same order. protocol-read.ts builds the
+      // call args by reading `input[inp.name]` off the node config for each
+      // input of the resolved action, so a renamed parameter binds "" and the
+      // read silently queries the zero address instead of the user's wallet.
+      // The redirect is only argument-compatible because both sides call the
+      // parameter `account`; nothing but this assertion keeps it that way.
+      expect(to.inputs.map((i) => i.name)).toEqual(
+        from.inputs.map((i) => i.name)
+      );
+      // Same output names: the redirected node's downstream template
+      // references ({{@node.balance}}) resolve by name, so a renamed output
+      // breaks every consumer of an aliased node.
+      expect(toOutputs.map((o) => o.name)).toEqual(
+        fromOutputs.map((o) => o.name)
+      );
+
       for (const chainId of rename.chainIds) {
         expect(
           protocol.contracts[from.contract]?.addresses[chainId],
@@ -208,6 +230,138 @@ describe("resolveProtocolMeta: the alias table matches the registry", () => {
           `${protocolSlug}/${rename.slug} has no address on chain ${chainId}, so the alias redirects to another dead end`
         ).toBeDefined();
       }
+
+      // Completeness, not just correctness. The loop above only inspects the
+      // chains the entry already lists, so adding an Optimism address to
+      // sUsdsL2 would leave sky/vault-balance broken there with this suite
+      // green. chainIds must be the whole derived set: every chain the
+      // replacement contract covers and the declared one does not.
+      const derived = Object.keys(
+        protocol.contracts[to.contract]?.addresses ?? {}
+      ).filter(
+        (chainId) =>
+          protocol.contracts[from.contract]?.addresses[chainId] === undefined
+      );
+      expect(
+        [...rename.chainIds].sort(),
+        `${actionType} is aliased on some chains but not every chain where ${to.contract} resolves and ${from.contract} does not`
+      ).toEqual(derived.sort());
     });
   }
+});
+
+describe("resolveRenamedAction refuses a table entry it cannot honour", () => {
+  // The module has to be safe on its own terms. Step ROUTING is chosen from
+  // the requested slug (lib/step-registry.ts registers a read step and a write
+  // step per slug) while the contract and function come from the resolved one,
+  // so an entry that changed read to write would have protocolReadStep
+  // eth_call a state-changer, or hand protocolWriteStep a view function to
+  // broadcast. Every entry is read to read today; nothing but this guard keeps
+  // a future one from being otherwise.
+  const declared = {
+    slug: "vault-balance",
+    contract: "sUsds",
+    type: "read",
+    function: "balanceOf",
+    inputs: [],
+  } as unknown as ProtocolAction;
+  const replacement = {
+    slug: "get-susds-balance-l2",
+    contract: "sUsdsL2",
+    type: "write",
+    function: "balanceOf",
+    inputs: [],
+  } as unknown as ProtocolAction;
+  const protocol = {
+    contracts: {
+      sUsds: { addresses: { "1": "0x1" } },
+      sUsdsL2: { addresses: { "8453": "0x2" } },
+    },
+    actions: [declared, replacement],
+  } as unknown as ProtocolDefinition;
+
+  it("returns the declared action when the replacement flips read to write", () => {
+    expect(
+      resolveRenamedAction(protocol, "sky/vault-balance", declared, "8453")
+    ).toBe(declared);
+  });
+
+  it("does not throw on an action type that names an inherited property", () => {
+    // The table is a plain object literal and actionType is request-derived,
+    // so a key like "constructor" would otherwise answer with a function and
+    // throw on `.chainIds`.
+    const sky = getProtocol("sky");
+    const action = sky?.actions.find((a) => a.slug === "vault-balance");
+    if (!(sky && action)) {
+      throw new Error("sky/vault-balance is not registered");
+    }
+    for (const key of ["constructor", "toString", "__proto__"]) {
+      expect(resolveRenamedAction(sky, key, action, "8453")).toBe(action);
+    }
+  });
+});
+
+describe("the Network field offers the chains the alias covers", () => {
+  // buildConfigFieldsFromAction derives allowedChainIds from the declared
+  // contract's addresses, which after the split lists mainnet alone. That
+  // list is what lib/workflow/validation/action-config.ts checks a stored
+  // node's network against on save, and what chain-select-field.tsx filters
+  // the dropdown by - so leaving the aliased chains out makes a Base
+  // workflow that still executes correctly fail to save with a 422 and
+  // render an empty Network field.
+  for (const [actionType, rename] of Object.entries(L2_RENAMED_ACTIONS)) {
+    it(`${actionType} offers ${rename.chainIds.join("/")}`, () => {
+      const [protocolSlug, oldSlug] = actionType.split("/");
+      const protocol = getProtocol(protocolSlug ?? "");
+      if (!protocol) {
+        throw new Error(`${actionType} names no registered protocol`);
+      }
+      const action = protocol.actions.find((a) => a.slug === oldSlug);
+      if (!action) {
+        throw new Error(`${actionType} names no registered action`);
+      }
+
+      const networkField = protocolActionToPluginAction(
+        protocol,
+        action
+      ).configFields?.find((f) => "key" in f && f.key === "network");
+      const allowed =
+        networkField && "allowedChainIds" in networkField
+          ? (networkField.allowedChainIds ?? [])
+          : [];
+
+      for (const chainId of rename.chainIds) {
+        expect(
+          allowed,
+          `${actionType} resolves on chain ${chainId} through the alias, so the Network field must offer it`
+        ).toContain(chainId);
+      }
+      // The chains the declared contract carries stay offered: the union
+      // adds to the list, it does not replace it.
+      for (const chainId of Object.keys(
+        protocol.contracts[action.contract]?.addresses ?? {}
+      )) {
+        expect(allowed).toContain(chainId);
+      }
+    });
+  }
+
+  it("leaves an unaliased action's chain list untouched", () => {
+    const protocol = getProtocol("sky");
+    const action = protocol?.actions.find((a) => a.slug === "vault-deposit");
+    if (!(protocol && action)) {
+      throw new Error("sky/vault-deposit is not registered");
+    }
+    const networkField = protocolActionToPluginAction(
+      protocol,
+      action
+    ).configFields?.find((f) => "key" in f && f.key === "network");
+    const allowed =
+      networkField && "allowedChainIds" in networkField
+        ? (networkField.allowedChainIds ?? [])
+        : [];
+    expect(allowed).toEqual(
+      Object.keys(protocol.contracts[action.contract]?.addresses ?? {})
+    );
+  });
 });

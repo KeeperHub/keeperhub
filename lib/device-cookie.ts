@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createSignedCookieCodec } from "@/lib/signed-cookie";
+import { DAY_MS } from "@/lib/utils/duration";
 
 /**
  * Long-lived signed cookie that gives a browser a stable device identity
@@ -16,7 +17,7 @@ import { createSignedCookieCodec } from "@/lib/signed-cookie";
  */
 
 const COOKIE_NAME = "kh_device_id";
-const DEFAULT_TTL_MS = 2 * 365 * 24 * 60 * 60 * 1000;
+const DEFAULT_TTL_MS = 2 * 365 * DAY_MS;
 
 export type DeviceCookiePayload = {
   deviceId: string;

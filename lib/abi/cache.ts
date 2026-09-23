@@ -9,6 +9,7 @@ import {
 } from "@/lib/explorer/etherscan";
 import { detectProxyViaRpc } from "@/lib/explorer/proxy-detection";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
+import { DAY_MS } from "@/lib/utils/duration";
 
 type AbiCacheEntry = {
   abi: string;
@@ -27,7 +28,7 @@ type ResolveAbiResult = {
 };
 
 const abiCache = new Map<string, AbiCacheEntry>();
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const CACHE_TTL_MS = DAY_MS;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY ?? "";
 
 function buildCacheKey(chainId: number, contractAddress: string): string {

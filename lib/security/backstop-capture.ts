@@ -28,11 +28,11 @@
  * rethrow.
  */
 
+import { MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
 import { logSecurityEvent } from "@/lib/logging";
 import type { TriggerSource } from "./request-attribution";
 
 const PG_RAISE_INSUFFICIENT_PRIVILEGE = "42501";
-const MAX_CAUSE_DEPTH = 5;
 
 type PgError = { code?: unknown };
 

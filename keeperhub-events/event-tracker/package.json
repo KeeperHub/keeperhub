@@ -17,14 +17,14 @@
     "test:integration": "vitest run tests/integration"
   },
   "dependencies": {
-    "@aws-sdk/client-sqs": "^3.1130.0",
+    "@aws-sdk/client-sqs": "^3.1136.0",
     "ethers": "^6.17.0",
     "ioredis": "^5.11.1",
     "uuid": "^14.0.2",
     "ws": "^8.21.3"
   },
   "devDependencies": {
-    "@types/node": "^22.20.2",
+    "@types/node": "^22.20.4",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.13",
     "tsup": "^8.3.5",

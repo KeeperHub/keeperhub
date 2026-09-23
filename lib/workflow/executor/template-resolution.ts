@@ -68,8 +68,14 @@ export function recordUnresolved(
 /**
  * Recursively walk the rendered config looking for any leftover `{{...}}`
  * tokens. These are the literal-substitution path (executor.workflow.ts
- * displayPattern fallback): the resolver could not match the reference and
- * the original token was passed through unchanged.
+ * display-ref fallback): the resolver could not match the reference and the
+ * original token was passed through unchanged.
+ *
+ * This cannot tell a token the author wrote from one that arrived inside a
+ * resolved value, so the executor no longer uses it: `renderTemplateString`
+ * records leftovers as it renders, where the boundary is known, and passes
+ * `rendererScanned` to skip this walk. It stays for callers that hold a
+ * rendered value with no authored counterpart to reason about.
  */
 export function scanForLeftoverLiterals(
   value: unknown,
@@ -171,14 +177,22 @@ export function restoreConditionFields(
  * rendered config and throw `TemplateResolutionError` if either source
  * reports anything. Always fails closed; KEEP-525 removed the legacy
  * silent-substitute opt-out.
+ *
+ * Pass `rendererScanned` when the config came from `processTemplates`, which
+ * records leftovers per field as it renders. Walking the rendered config
+ * again would read the substituted values too, and a value that quotes the
+ * workflow's own config carries a copy of the author's own token.
  */
 export function assertResolved(
   tracker: TemplateResolutionTracker,
   renderedConfig: unknown,
-  _context: { nodeId?: string; nodeLabel?: string; actionType?: string }
+  _context: { nodeId?: string; nodeLabel?: string; actionType?: string },
+  options?: { rendererScanned?: boolean }
 ): void {
   const literals: UnresolvedRef[] = [];
-  scanForLeftoverLiterals(renderedConfig, literals);
+  if (!options?.rendererScanned) {
+    scanForLeftoverLiterals(renderedConfig, literals);
+  }
 
   const all = dedupeByToken([...tracker.unresolved, ...literals]);
   if (all.length === 0) {

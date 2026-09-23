@@ -53,6 +53,7 @@ import {
   FALLBACK_CHAIN_DISPLAY,
   useChainDisplay,
 } from "@/lib/hooks/use-chain-display";
+import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
 import { cn } from "@/lib/utils";
 import { ProjectDrawer } from "./project-drawer";
 
@@ -300,19 +301,15 @@ function getStepStatusColor(status: string): string {
   return "bg-gray-400";
 }
 
-const COPIED_FOR_MS = 1500;
-
 function CopyErrorButton({ text }: { text: string }): ReactNode {
-  const [copied, setCopied] = useState(false);
+  const [copied, markCopied] = useCopiedFlag();
 
   const handleCopy = useCallback(
     (event: MouseEvent): void => {
       event.stopPropagation();
-      navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), COPIED_FOR_MS);
+      markCopied(text);
     },
-    [text]
+    [markCopied, text]
   );
 
   return (

@@ -3,6 +3,7 @@ import { generateRandomString, symmetricEncrypt } from "better-auth/crypto";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { DEFAULT_SESSION_TTL_MS } from "@/lib/auth/session-constants";
 import { readAllSetCookies } from "@/lib/auth-cookie-chain";
 import {
   hashSessionToken,
@@ -37,7 +38,6 @@ type EnrollResponse = {
 
 const BACKUP_CODE_COUNT = 10;
 const BACKUP_CODE_LENGTH = 10;
-const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function generatePlainBackupCodes(): string[] {
   const codes: string[] = [];

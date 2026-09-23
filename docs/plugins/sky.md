@@ -45,7 +45,7 @@ Ethereum only. On Base and Arbitrum, sUSDS is a bridged token that implements th
 | Get sUSDS Balance (L2) | `get-susds-balance-l2` | Read | Check the sUSDS balance of an address on L2 |
 | Get sUSDS Total Supply (L2) | `get-susds-total-supply-l2` | Read | Get the total supply of sUSDS tokens on L2 |
 
-Base and Arbitrum only. Both reads return wei with 18 decimals, the same as their Ethereum counterparts on the savings vault. Use these slugs instead of Vault Share Balance and Vault Total Supply when the workflow runs on Base or Arbitrum.
+Base and Arbitrum only. Both reads return wei with 18 decimals, the same as their Ethereum counterparts on the savings vault. Vault Share Balance and Vault Total Supply also resolve to these bridged reads on Base and Arbitrum, so either slug works there; the `-l2` slugs are the preferred names for new work.
 
 ### stUSDS Staked Vault
 

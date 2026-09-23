@@ -163,6 +163,20 @@ describe("protocol calldata: skips that claim a contract is absent", () => {
             address,
             `${protocol.slug}/${slug} is skipped as "${reason}" but ${contractKey} resolves ${address} on chain ${chainId}`
           ).toBeUndefined();
+          // The chain the reason names must be the chain the block skips on.
+          // Absence alone is too weak a check: "not on Arbitrum" sitting in
+          // the Base block is a true sentence in the wrong place, and it
+          // passes an absence-only assertion while telling the next reader
+          // the action was suppressed for a chain that is not this one. The
+          // "only on" describe below compares named against actual for the
+          // same reason.
+          const named = (reason.split("not on ").pop() ?? "")
+            .replace(TRAILING_PARENTHETICAL_REGEX, "")
+            .trim();
+          expect(
+            named,
+            `${protocol.slug}/${slug} is skipped on chain ${chainId} as "${reason}", but that names ${named}, not ${getChainName(chainId)}`
+          ).toBe(getChainName(chainId));
         }
       });
     }

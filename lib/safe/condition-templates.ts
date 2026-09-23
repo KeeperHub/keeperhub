@@ -15,13 +15,14 @@
  */
 
 import type { PermissionSet } from "zodiac-roles-sdk";
+import {
+  ARBITRUM_ONE_CHAIN_ID as CHAIN_ARB,
+  BASE_CHAIN_ID as CHAIN_BASE,
+  ETHEREUM_MAINNET_CHAIN_ID as CHAIN_ETH,
+  OPTIMISM_CHAIN_ID as CHAIN_OPT,
+} from "@/lib/chains/ids";
 
 export type HexAddress = `0x${string}`;
-
-const CHAIN_ETH = 1;
-const CHAIN_OPT = 10;
-const CHAIN_BASE = 8453;
-const CHAIN_ARB = 42_161;
 
 /**
  * Per-chain `defi-kit` modules are loaded lazily. `defi-kit/{chain}.mjs`

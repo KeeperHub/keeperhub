@@ -4,10 +4,8 @@ import { Info } from "lucide-react";
 import { type ReactNode, useMemo } from "react";
 import { groupByDate } from "@/lib/activity/time-groups";
 import type { SecurityAuditEvent } from "@/lib/api-client";
+import { DAY_MS, HOUR_MS } from "@/lib/utils/duration";
 import { ActivityRow } from "./activity-row";
-
-const HOUR_MS = 60 * 60 * 1000;
-const DAY_MS = 24 * HOUR_MS;
 
 // Synthetic sample rows shown to members, who can't read the real audit log
 // (the endpoint 403s them). Names/emails are fictional and IPs are from the

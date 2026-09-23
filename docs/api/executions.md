@@ -40,6 +40,40 @@ Returns execution history for a workflow.
 ]
 ```
 
+A run's `input` or `output` larger than 1 MiB is returned as `{ "_truncated": true, "originalSize": <bytes>, "preview": "<first 1024 characters>" }` in place of the value.
+
+### Summary view and pagination
+
+Add `view=summary` for a lighter, paginated list. Each run omits `input`, `output` and `executionTrace`; read those per run from the [logs](#get-execution-logs) endpoint. The default response grows with the size of every run's output, so prefer this view when you only need status and progress.
+
+| Parameter | Description |
+|-----------|-------------|
+| `view` | `summary` |
+| `limit` | Runs per page, 1 to 100. Default 20. |
+| `cursor` | The `nextCursor` value from the previous page. Omit for the first page. |
+
+```json
+{
+  "executions": [
+    {
+      "id": "n5lyy066zzplv64gijm0y",
+      "workflowId": "2mp0ybcgj03t0ybqlngyb",
+      "status": "success",
+      "startedAt": "2024-01-01T00:00:00Z",
+      "completedAt": "2024-01-01T00:00:05Z",
+      "totalSteps": 3,
+      "completedSteps": 3,
+      "transactionHashes": [...],
+      "ranVersion": 2
+    }
+  ],
+  "nextCursor": "WyIyMDI0LTAxLTAxIDAwOjAwOjAwIiwibjVseXkwNjZ6enBsdjY0Z2lqbTB5Il0",
+  "total": 46
+}
+```
+
+`nextCursor` is opaque and `null` on the last page. `total` counts the workflow's runs across all pages; it is exact up to 10,000 and reported as 10,000 for a workflow with more. Summary responses carry an `ETag`; send it back in `If-None-Match` to receive `304 Not Modified` when nothing has changed.
+
 ## Get Execution Status
 
 ```http
@@ -175,6 +209,8 @@ GET /api/workflows/executions/{executionId}/logs
 Returns detailed per-node logs for an execution along with the execution row itself. Use this when you need per-step input, output, error, gas usage, or other step-specific detail. For the common case of "what hashes did this run produce", read `transactionHashes` on the [status](#get-execution-status) or [list](#list-executions) responses instead — that field is denormalised from these logs and avoids parsing per-step output.
 
 `logs` is ordered by `timestamp` descending (most recent first).
+
+A step's `input`, `output` or `outputRaw` larger than 1 MiB is returned as `{ "_truncated": true, "originalSize": <bytes>, "preview": "<first 1024 characters>" }` in place of the value; the same limit applies when the step runs, so a step whose result would exceed it fails with an error naming the size.
 
 ### Response
 

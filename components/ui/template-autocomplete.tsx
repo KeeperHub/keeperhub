@@ -262,7 +262,9 @@ export function TemplateAutocomplete({
 
     const fetchLogs = async () => {
       try {
-        const executions = await api.workflow.getExecutions(workflowId);
+        const { executions } = await api.workflow.getExecutions(workflowId, {
+          limit: 1,
+        });
         if (cancelled) {
           return;
         }

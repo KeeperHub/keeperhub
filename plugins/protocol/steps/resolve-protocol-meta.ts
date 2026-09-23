@@ -1,3 +1,6 @@
+import { getMetricsCollector } from "@/lib/metrics";
+import { MetricNames } from "@/lib/metrics/types";
+import { resolveRenamedAction } from "@/lib/protocol-action-aliases";
 import { getProtocol } from "@/lib/protocol-registry";
 
 export type ProtocolMeta = {
@@ -5,45 +8,6 @@ export type ProtocolMeta = {
   contractKey: string;
   functionName: string;
   actionType: "read" | "write";
-};
-
-/**
- * Action slugs that moved to a new contract key on specific chains, keyed by
- * the old `<protocol>/<slug>` action type.
- *
- * The bridged wstETH and sUSDS tokens implement the ERC-20 surface only, so
- * the full-ABI `wsteth`/`sUsds` contract keys stopped carrying an L2 address
- * and every action bound to them stopped resolving there. The two ERC-20
- * reads that did work on each L2 survive under the read-only `wstethL2` /
- * `sUsdsL2` keys with `-l2` slugs: same address, same selector, same 18
- * decimals. Without an alias a workflow saved against an old slug fails its
- * next run with `contract "sUsds" is not deployed on network "8453"`, which
- * is a break in the identifier rather than in the capability.
- *
- * Scoped per chain deliberately. The old slugs still exist and still work on
- * the chains where the full ABI is implemented (mainnet for both, plus
- * Sepolia for wstETH), so the alias must not shadow them there.
- */
-export const L2_RENAMED_ACTIONS: Record<
-  string,
-  { slug: string; chainIds: readonly string[] }
-> = {
-  "sky/vault-balance": {
-    slug: "get-susds-balance-l2",
-    chainIds: ["8453", "42161"],
-  },
-  "sky/vault-total-supply": {
-    slug: "get-susds-total-supply-l2",
-    chainIds: ["8453", "42161"],
-  },
-  "lido/get-wsteth-balance": {
-    slug: "get-wsteth-balance-l2",
-    chainIds: ["8453"],
-  },
-  "lido/get-wsteth-total-supply": {
-    slug: "get-wsteth-total-supply-l2",
-    chainIds: ["8453"],
-  },
 };
 
 /**
@@ -76,6 +40,17 @@ function deriveFromActionType(
   }
 
   const resolved = resolveRenamedAction(protocol, actionType, action, network);
+  if (resolved !== action) {
+    // The only signal that an alias entry is still load-bearing. A counter
+    // rather than a log line: this fires once per aliased node execution (a
+    // minutely schedule is roughly 1.4k a day from one node), and the question
+    // it has to answer - "has anything entered on this slug since we last
+    // looked?" - is a time series, not a breadcrumb.
+    getMetricsCollector().incrementCounter(MetricNames.PROTOCOL_ALIAS_REDIRECT, {
+      action_type: actionType,
+      chain_id: network ?? "",
+    });
+  }
 
   return {
     protocolSlug,
@@ -83,37 +58,6 @@ function deriveFromActionType(
     functionName: resolved.function,
     actionType: resolved.type,
   };
-}
-
-type RegisteredProtocol = NonNullable<ReturnType<typeof getProtocol>>;
-type RegisteredAction = RegisteredProtocol["actions"][number];
-
-/**
- * Redirect a renamed action to its `-l2` replacement, or return it unchanged.
- *
- * The redirect is conditional on the originally bound contract having no
- * address on this chain, so the alias only fires where the old slug would
- * have failed. If a full-ABI `wsteth`/`sUsds` is ever deployed on one of
- * these chains the old slug starts resolving on its own and the alias steps
- * aside without needing to be deleted.
- */
-function resolveRenamedAction(
-  protocol: RegisteredProtocol,
-  actionType: string,
-  action: RegisteredAction,
-  network: string | undefined
-): RegisteredAction {
-  if (network === undefined) {
-    return action;
-  }
-  const rename = L2_RENAMED_ACTIONS[actionType];
-  if (!rename?.chainIds.includes(network)) {
-    return action;
-  }
-  if (protocol.contracts[action.contract]?.addresses[network] !== undefined) {
-    return action;
-  }
-  return protocol.actions.find((a) => a.slug === rename.slug) ?? action;
 }
 
 /**

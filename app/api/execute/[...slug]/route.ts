@@ -19,7 +19,10 @@ import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { PLUGIN_STEP_IMPORTERS } from "@/lib/step-registry";
-import { resolveProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
+import {
+  type ProtocolMeta,
+  resolveProtocolMeta,
+} from "@/plugins/protocol/steps/resolve-protocol-meta";
 import {
   type ReadContractCoreInput,
   readContractCore,
@@ -47,43 +50,12 @@ import { requireWallet } from "../_lib/wallet-check";
 
 async function executeProtocolAction(
   actionType: string,
+  chainFreeMeta: ProtocolMeta,
   body: Record<string, unknown>,
   organizationId: string,
   apiKeyId: string,
   idem: IdempotencyOutcome | null
 ): Promise<NextResponse> {
-  // Resolved without a chain, so the chain-scoped L2 slug aliases in
-  // resolveProtocolMeta cannot apply yet. This establishes only that the
-  // action type names a registered protocol action; the meta actually used
-  // for execution is re-resolved below, once the chain is normalized.
-  const initialMeta = resolveProtocolMeta({ _actionType: actionType });
-  if (!initialMeta) {
-    return recordIdempotentResponse(
-      idem,
-      NextResponse.json(
-        {
-          success: false,
-          error: `Could not resolve protocol metadata for: ${actionType}`,
-        },
-        { status: HttpStatus.BAD_REQUEST }
-      )
-    );
-  }
-
-  const protocol = getProtocol(initialMeta.protocolSlug);
-  if (!protocol) {
-    return recordIdempotentResponse(
-      idem,
-      NextResponse.json(
-        {
-          success: false,
-          error: `Unknown protocol: ${initialMeta.protocolSlug}`,
-        },
-        { status: HttpStatus.BAD_REQUEST }
-      )
-    );
-  }
-
   // KEEP-490: accept `chainId` as the canonical input, with `network` as a
   // deprecated alias. Either field may carry the numeric chain ID (1, 11155111)
   // or a known chain name/slug ("ethereum", "sepolia", "base"). Downstream
@@ -121,13 +93,34 @@ async function executeProtocolAction(
   }
   const network = String(resolvedChainId);
 
-  // The L2 slug aliases are chain-scoped, so they can only be applied now
-  // that the chain is a numeric ID. An integration still calling a slug the
-  // wstETH/sUSDS L2 split renamed binds the L2 contract key here, matching
-  // what the workflow read/write steps do. Falls back to the chain-free
-  // resolution, which is what every non-aliased action type returns anyway.
+  // The L2 slug aliases are chain-scoped, so the chain has to be normalized
+  // before the action type can be resolved: an integration still calling a
+  // slug the wstETH/sUSDS L2 split renamed binds the L2 contract key here,
+  // matching what the workflow read/write steps do.
+  //
+  // The `??` never fires. The caller only dispatches here after resolving the
+  // same action type without a chain, and the chain steers nothing but
+  // resolveRenamedAction, which returns the declared action unchanged when no
+  // alias applies. Adding a network cannot turn a resolvable action type into
+  // an unresolvable one, so there is no unresolvable case left to answer with
+  // a 400 - an action type that names nothing is already rejected with a 501
+  // by the handler below.
   const meta =
-    resolveProtocolMeta({ _actionType: actionType, network }) ?? initialMeta;
+    resolveProtocolMeta({ _actionType: actionType, network }) ?? chainFreeMeta;
+
+  const protocol = getProtocol(meta.protocolSlug);
+  if (!protocol) {
+    return recordIdempotentResponse(
+      idem,
+      NextResponse.json(
+        {
+          success: false,
+          error: `Unknown protocol: ${meta.protocolSlug}`,
+        },
+        { status: HttpStatus.BAD_REQUEST }
+      )
+    );
+  }
 
   const contract = protocol.contracts[meta.contractKey];
   if (!contract) {
@@ -448,6 +441,7 @@ export async function POST(
     if (meta) {
       const response = await executeProtocolAction(
         actionType,
+        meta,
         body,
         apiKeyCtx.organizationId,
         apiKeyCtx.apiKeyId,

@@ -43,16 +43,21 @@ import riskOracleMiddlewareAbi from "./abis/renzo-risk-oracle-middleware.json";
 // surfaces deferred to a follow-up. Mainnet only: minting settles on the beacon
 // chain.
 //
-// The RestakeManager ABI carries two error fragments so a failed stake is named
-// rather than shown as a raw selector. ContractPaused() (0xab35696f) is the
-// manager's own, declared in its verified ABI. InvalidTokenAmount()
-// (0x21607339) is declared by RenzoOracle (RenzoOracle.sol:144) and bubbles up
-// through the manager's mint-amount call at RestakeManager.sol:637; it is
-// carried here because that selector is what depositETH() actually reverts with
-// when it is sent no value, measured on mainnet, and classifyRevert only
-// consults the target contract's own interface. Neither the ezETH nor the
-// middleware document declares errors: their exposed functions are `view` and
-// have no reachable revert to name.
+// The RestakeManager ABI carries error fragments so a failed stake is named
+// rather than shown as a raw selector. classifyRevert tries the target
+// contract's interface first, then its own Roles and common-error lists, then
+// a bare string decode. Neither shared list holds a Renzo error, so an error
+// raised by a contract depositETH() calls must be declared on this document or
+// it degrades to a four-byte selector. What is declared is the manager's full
+// verified error set plus the five that bubble up from RenzoOracle and
+// OperatorDelegator; OperatoDelegatorNotDelegated is the contract's own
+// spelling and the selector depends on it. Implementations read out of the
+// EIP-1967 slots on 2026-09-21: RestakeManager
+// 0xd5b3be349ed0b7c82dbd9271ce3739a381fc7aa0 and RenzoOracle
+// 0xf206406dc547b3ed138063eab4631b2e1766dbcf are Sourcify exact_match,
+// OperatorDelegator 0x489a36e43aba883b60e5a6cc43d05738479e7589 is a partial
+// match. Neither the ezETH nor the middleware document declares errors: their
+// exposed functions are `view` and have no reachable revert to name.
 
 const RENZO_DOCS =
   "https://docs.renzoprotocol.com/docs/contracts/ethereum-mainnet";

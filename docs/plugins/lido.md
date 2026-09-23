@@ -153,7 +153,7 @@ Get the current wstETH value of 1 stETH. This is the inverse of the exchange rat
 
 ## Get wstETH Balance
 
-Check the wstETH balance of any address on Ethereum Mainnet or Sepolia. For Base, use Get wstETH Balance (L2) below -- the canonical wstETH contract this action targets is not on Base.
+Check the wstETH balance of any address. On Ethereum Mainnet and Sepolia this reads the canonical wstETH contract, which is not deployed on Base; on Base the slug resolves to the bridged token instead, so it works there too. Get wstETH Balance (L2) below is the preferred name for new work on Base.
 
 **Inputs:**
 

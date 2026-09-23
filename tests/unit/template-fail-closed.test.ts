@@ -80,6 +80,77 @@ describe("processTemplate tracker (lib/utils/template)", () => {
   });
 });
 
+/**
+ * Field access over an array cursor is the one shape that rendered a value the
+ * gate never saw. The walkers map the key across every element and bail only
+ * on `undefined` or `null`; an array of holes is neither, so a mistyped
+ * sub-path under an array-typed output recorded nothing and `formatValue`
+ * joined the holes into ", ". The assertion that matters is not the rendered
+ * string but that the tracker now carries the miss all the way to
+ * `assertResolved`.
+ */
+describe("array-cursor misses reach assertResolved", () => {
+  const arrayOutputs = {
+    step: {
+      label: "Step",
+      data: { success: true, result: { owners: ["0xaaa", "0xbbb", "0xccc"] } },
+    },
+  };
+
+  const spellings = [
+    "{{@step:Step.result.owners.typo}}",
+    "{{$step.result.owners.typo}}",
+    "{{Step.result.owners.typo}}",
+  ];
+
+  for (const token of spellings) {
+    it(`fails the step for ${token}`, () => {
+      const tracker = createTracker();
+      const rendered = processTemplate(token, arrayOutputs, tracker);
+
+      expect(rendered).toBe("");
+      expect(tracker.unresolved).toHaveLength(1);
+      expect(tracker.unresolved[0]?.reason).toBe("no-path");
+      expect(() => assertResolved(tracker, { field: rendered }, {})).toThrow(
+        UNRESOLVED_REF_MESSAGE
+      );
+    });
+  }
+
+  it("fails the step for a key only a builtin would answer", () => {
+    const tracker = createTracker();
+    const rendered = processTemplate(
+      "{{@step:Step.result.owners.length}}",
+      arrayOutputs,
+      tracker
+    );
+
+    // The elements are strings, so the map contributes holes rather than
+    // each string's own length, and the gate sees the miss.
+    expect(rendered).toBe("");
+    expect(tracker.unresolved).toHaveLength(1);
+    expect(tracker.unresolved[0]?.reason).toBe("no-path");
+    expect(() => assertResolved(tracker, { field: rendered }, {})).toThrow(
+      UNRESOLVED_REF_MESSAGE
+    );
+  });
+
+  it("leaves a partially populated array binding alone", () => {
+    const tracker = createTracker();
+    const rendered = processTemplate(
+      "{{@fees:Fees.fees.amt}}",
+      { fees: { label: "Fees", data: { fees: [{ amt: 1 }, {}, { amt: 2 }] } } },
+      tracker
+    );
+
+    expect(rendered).toBe("1, , 2");
+    expect(tracker.unresolved).toHaveLength(0);
+    expect(() =>
+      assertResolved(tracker, { field: rendered }, {})
+    ).not.toThrow();
+  });
+});
+
 describe("renderTemplateValue depth against the post-scan's limit", () => {
   // scanForLeftoverLiterals returns at depth > 10; renderTemplateValue has no
   // limit. Nothing recorded which was intended, so both halves are asserted
