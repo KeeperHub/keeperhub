@@ -667,8 +667,9 @@ function runAllowancePreflightCheck(
 // the spender already holds enough allowance, so it cannot skip itself. That
 // is worth a hint, and only a hint: this module reads no chain state. What the
 // hint can say depends on the configured amount. An unlimited approve ("max"
-// or MaxUint256) stays in place once it has landed, so every later run
-// re-grants what is already there; an exact-amount approve is consumed by the
+// on an Approve Token node; MaxUint256 in decimal or hex as the raw second
+// argument of a write-contract approve) stays in place once it has landed, so
+// every later run re-grants what is already there; an exact-amount approve is consumed by the
 // spend after it and is needed every run. The message says which of the two
 // it is looking at, and says nothing about redundancy when the amount is a
 // template reference.
@@ -690,7 +691,11 @@ function runAllowancePreflightCheck(
 const APPROVE_TOKEN_ACTION_TYPE = "web3/approve-token";
 const APPROVE_METHOD = "approve";
 const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
-// The same two spellings approve-token-core maps to ethers.MaxUint256.
+// approve-token-core special-cases only "max" (ethers.MaxUint256); every other
+// string on an Approve Token node goes through parseUnits in the token's
+// decimals, so a decimal MaxUint256 there scales past uint256 and a hex string
+// is not a decimal at all. The raw spellings below belong to a write-contract
+// approve, whose second argument is already in raw units.
 const MAX_UINT256_BIGINT = BigInt(2) ** BigInt(256) - BigInt(1);
 const MAX_UINT256 = MAX_UINT256_BIGINT.toString();
 const DECIMAL_AMOUNT_PATTERN = /^\d+(\.\d+)?$/;
@@ -716,6 +721,33 @@ type ApproveGrant = {
   parameterPath: string;
 };
 
+// The amount on an Approve Token node, as approve-token-core reads it: "max"
+// is the one unlimited spelling, a plain decimal is an exact amount in the
+// token's units (zero is a revoke), and anything else, a hex string or a
+// decimal MaxUint256 included, is a value the action will not send as
+// written, so the hint makes no claim about it.
+function approveTokenAmountOf(raw: unknown): ApproveAmount {
+  if (typeof raw === "number") {
+    if (!(Number.isFinite(raw) && Number.isInteger(raw)) || raw < 0) {
+      return "unknown";
+    }
+    return raw === 0 ? "zero" : "exact";
+  }
+  if (typeof raw !== "string") {
+    return "unknown";
+  }
+  const amount = raw.trim();
+  if (amount.toLowerCase() === "max") {
+    return "unlimited";
+  }
+  if (!DECIMAL_AMOUNT_PATTERN.test(amount)) {
+    return "unknown";
+  }
+  return ZERO_AMOUNT_PATTERN.test(amount) ? "zero" : "exact";
+}
+
+// The second argument of a write-contract approve, in raw units: MaxUint256
+// in decimal or hex is unlimited, zero is a revoke, any other integer is exact.
 function approveAmountOf(raw: unknown): ApproveAmount {
   if (typeof raw === "number") {
     if (!(Number.isFinite(raw) && Number.isInteger(raw)) || raw < 0) {
@@ -845,14 +877,16 @@ function parseArgs(args: unknown): unknown[] {
 }
 
 // The approve grants a node makes, by node index: one for approve-token, one
-// for a write-contract calling approve. A revoke (amount zero) is not a grant.
+// for a write-contract calling approve. A revoke (amount zero) is returned so
+// it can suppress a later approve of the same token and spender, whose
+// allowance is then known to be zero, but it is never hinted itself.
 function approveGrantsOf(idx: number, cfg: NodeActionConfig): ApproveGrant[] {
   if (cfg.actionType === APPROVE_TOKEN_ACTION_TYPE) {
     return [
       {
         token: approveTokenAddress(cfg),
         spender: literalAddress(cfg.spenderAddress),
-        amount: approveAmountOf(cfg.amount),
+        amount: approveTokenAmountOf(cfg.amount),
         parameterPath: `nodes[${idx}].config.spenderAddress`,
       },
     ];

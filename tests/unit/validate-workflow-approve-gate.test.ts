@@ -97,7 +97,7 @@ describe("validateWorkflow - approve without allowance check", () => {
   });
 
   it("says an unlimited approve re-grants an allowance already in place", () => {
-    for (const amount of ["max", "MAX", MAX_UINT256]) {
+    for (const amount of ["max", "MAX"]) {
       const result = validateWorkflow(
         chain(
           [triggerNode(), approveTokenNode("a1", { amount })],
@@ -107,6 +107,51 @@ describe("validateWorkflow - approve without allowance check", () => {
       const [warning] = warningsOf(result);
       expect(warning?.message).toContain("unlimited");
       expect(warning?.message).not.toContain("exact amount");
+    }
+  });
+
+  it('calls only "max" unlimited on an Approve Token node', () => {
+    // approve-token-core special-cases "max" and sends every other string
+    // through parseUnits in the token's decimals: a decimal MaxUint256 is a
+    // (huge) exact amount as configured, and a hex string is not a decimal at
+    // all, so the hint claims nothing about it.
+    const decimal = validateWorkflow(
+      chain(
+        [triggerNode(), approveTokenNode("a1", { amount: MAX_UINT256 })],
+        [edge("e1", "trigger-1", "a1")]
+      )
+    );
+    expect(warningsOf(decimal)[0]?.message).toContain("exact amount");
+    expect(warningsOf(decimal)[0]?.message).not.toContain("unlimited");
+    const hex = validateWorkflow(
+      chain(
+        [
+          triggerNode(),
+          approveTokenNode("a1", { amount: `0x${"f".repeat(64)}` }),
+        ],
+        [edge("e1", "trigger-1", "a1")]
+      )
+    );
+    const [warning] = warningsOf(hex);
+    expect(warning).toBeDefined();
+    expect(warning?.message).not.toContain("unlimited");
+    expect(warning?.message).not.toContain("exact amount");
+  });
+
+  it("keeps the raw spellings of unlimited for a write-contract approve", () => {
+    for (const amount of [MAX_UINT256, `0x${"f".repeat(64)}`]) {
+      const result = validateWorkflow(
+        chain(
+          [
+            triggerNode(),
+            writeApproveNode("w1", {
+              functionArgs: JSON.stringify([ROUTER, amount]),
+            }),
+          ],
+          [edge("e1", "trigger-1", "w1")]
+        )
+      );
+      expect(warningsOf(result)[0]?.message).toContain("unlimited");
     }
   });
 

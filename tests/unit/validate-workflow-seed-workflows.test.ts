@@ -38,7 +38,8 @@ const files = seedWorkflowFiles(SEED_WORKFLOW_DIR);
 
 // Seeds that approve a token with no check-allowance node upstream, by name,
 // so a failure says which seed moved. Every one of them approves unlimited
-// ("max" or MaxUint256), which is what the hint's wording says on them.
+// ("max", the one spelling the Approve Token node treats that way), which is
+// what the hint's wording says on them.
 const SEEDS_THAT_APPROVE_BLIND = [
   "aave-v3/mcp-test-supply-weth.json",
   "aerodrome/mcp-test-swap-weth-usdc.json",
