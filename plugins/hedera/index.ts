@@ -48,9 +48,10 @@ const hederaPlugin: IntegrationPlugin = {
       outputFields: [
         { field: "success", description: "Whether the verification query completed" },
         { field: "found", description: "Whether the mirror holds a message at this sequence (empty payloads count as found)" },
-        { field: "verified", description: "Whether the payload matches the expected message (surrounding whitespace ignored; only asserted when one is provided)" },
+        { field: "verified", description: "Whether the payload matches the expected message AND, when an expected submitter is configured, the message was submitted by that account (surrounding whitespace ignored; only asserted when an expected message is provided)" },
         { field: "message", description: "The decoded anchored payload" },
         { field: "consensusTimestamp", description: "Network-assigned consensus timestamp" },
+        { field: "payerAccountId", description: "The account that submitted this message, as recorded by the mirror — always exposed, so a workflow can gate on it downstream even without an expected submitter configured" },
         { field: "sequenceNumber", description: "The verified sequence number" },
         { field: "error", description: "Error message if failed" },
       ],
@@ -59,10 +60,10 @@ const hederaPlugin: IntegrationPlugin = {
           key: "topicId",
           label: "Topic ID",
           type: "template-input",
-          placeholder: "0.0.10590142",
-          example: "0.0.10590142",
+          placeholder: "0.0.99999999",
+          example: "0.0.99999999",
           required: true,
-          helpTip: "The HCS topic to read, e.g. 0.0.10590142.",
+          helpTip: "The HCS topic to read, e.g. 0.0.99999999.",
         },
         {
           key: "sequenceNumber",
@@ -80,6 +81,14 @@ const hederaPlugin: IntegrationPlugin = {
           required: false,
           helpTip:
             "When set, verification succeeds only if the anchored payload matches (surrounding whitespace is ignored on both sides). Leave empty to just read the payload.",
+        },
+        {
+          key: "expectedSubmitter",
+          label: "Expected Submitter",
+          type: "template-input",
+          required: false,
+          helpTip:
+            "Hedera account id that must have submitted the message (e.g. 0.0.12345). Set this when gating a payment on verified: true — on a topic without a submit key anyone can write matching bytes, so the submitter is what proves authorship. Leave empty to skip the submitter check (it is still reported as payerAccountId).",
         },
         {
           key: "network",
