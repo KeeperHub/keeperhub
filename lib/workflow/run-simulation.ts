@@ -8,6 +8,7 @@ import {
 } from "@/lib/execute/simulate";
 import { simulateCallSequence } from "@/lib/execute/simulate-sequence";
 import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
+import { isMutatingActionType } from "@/lib/mcp/action-type";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { isSolanaChain } from "@/lib/rpc/provider-factory";
 import {
@@ -1035,6 +1036,16 @@ export async function runWorkflowSimulation({
 
     const config = node.data?.config;
     const actionType = config?.actionType ?? node.data?.actionType;
+    // Every reachable node that mutates chain state counts as an earlier
+    // write for the nodes after it, whether or not this preflight can
+    // simulate it: an Approve Token, a batch write, a protocol write or a
+    // Tempo write still lands before the next node runs, so a warning after
+    // it may depend on state the preflight never applied. Only the supported
+    // types go on to be simulated.
+    const hasEarlierReachableWrite = reachableWriteCount > 0;
+    if (isMutatingActionType(actionType)) {
+      reachableWriteCount += 1;
+    }
     if (!(config && isSupportedActionType(actionType))) {
       continue;
     }
@@ -1045,9 +1056,8 @@ export async function runWorkflowSimulation({
       organizationId,
       actionType,
       config,
-      hasEarlierReachableWrite: reachableWriteCount > 0,
+      hasEarlierReachableWrite,
     };
-    reachableWriteCount += 1;
 
     const prepared = await prepareNode(context, deadlineAt);
     if (prepared.kind === "outcome") {

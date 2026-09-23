@@ -1126,6 +1126,49 @@ describe("runWorkflowSimulation", () => {
       );
     });
 
+    it("keeps the hedge after an earlier Approve Token node the preflight does not simulate", async () => {
+      spies.simulateCallSequence.mockResolvedValueOnce({
+        success: false,
+        status: "simulated",
+        from: "0xaa0000000000000000000000000000000000aa00",
+        atomic: false,
+        mechanism: "eth_simulateV1",
+        wouldRevert: true,
+        results: [SUCCESS_RESULT, REVERT_RESULT],
+      });
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          actionNode("grant", "web3/approve-token", {
+            tokenAddress: "0xcc0000000000000000000000000000000000cc00",
+            spenderAddress: "0xbb0000000000000000000000000000000000bb00",
+            amount: "5",
+          }),
+          writeNode("prepare", "approve"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: [
+          { source: "trigger-1", target: "grant" },
+          { source: "grant", target: "prepare" },
+          { source: "prepare", target: "deposit" },
+        ],
+      });
+
+      // The Approve Token node is not one the preflight simulates, but it is
+      // a write that lands before the run, so the deposit's allowance revert
+      // may be its consequence and stays hedged rather than being reported
+      // as settled.
+      expect(spies.simulateCallSequence).toHaveBeenCalledTimes(1);
+      expect(spies.simulateTokenTransfer).not.toHaveBeenCalled();
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toMatchObject({ nodeId: "deposit" });
+      expect(result.warnings[0]?.message).toContain(
+        "may depend on an earlier step"
+      );
+    });
+
     it("keeps a write that carries native value on the single-call path", async () => {
       await runWorkflowSimulation({
         organizationId: "org_test",
