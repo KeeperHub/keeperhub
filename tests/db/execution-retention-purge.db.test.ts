@@ -68,6 +68,9 @@ const ALL_ORGS = [
 const USER = `${PREFIX}user`;
 const NOW = new Date("2026-09-09T12:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The width a real run uses, for the tests that are about the cap itself. */
+const PRODUCTION_SLICE_MS = DAY_MS;
 const daysAgo = (days: number): Date => new Date(NOW.getTime() - days * DAY_MS);
 
 /**
@@ -88,6 +91,12 @@ function config(overrides: Record<string, unknown> = {}) {
     softDeleteGraceDays: 30,
     batchSize: 1000,
     maxRuntimeMs: 60_000,
+    // Wide on purpose. The floor pass parks every watermark a year back, so at
+    // the production width of a day these fixtures walk ~358 slices per
+    // organization per call - minutes of round trips for tests whose subject is
+    // which rows the SQL picks, not how the range is carved. The tests that ARE
+    // about the cap pass PRODUCTION_SLICE_MS explicitly.
+    planWindowSliceMs: 400 * DAY_MS,
     planChangeGraceMs: 24 * 60 * 60 * 1000,
     ...overrides,
   };
@@ -110,7 +119,7 @@ describe("execution retention purge (real database)", () => {
   let softDeletedCountQuery: Purge["softDeletedCountQuery"];
   let workflowChunk: Purge["PLAN_WINDOW_WORKFLOW_CHUNK"];
   let runsPerRead: Purge["PLAN_WINDOW_RUNS_PER_READ"];
-  let initialSlice: Purge["PLAN_WINDOW_INITIAL_SLICE_MS"];
+  let resumableStartedAtQuery: Purge["resumableStartedAtQuery"];
   let getOrgLogRetentionCutoff: Progress["getOrgLogRetentionCutoff"];
 
   async function cleanup(): Promise<void> {
@@ -324,7 +333,7 @@ describe("execution retention purge (real database)", () => {
       softDeletedCountQuery,
       PLAN_WINDOW_WORKFLOW_CHUNK: workflowChunk,
       PLAN_WINDOW_RUNS_PER_READ: runsPerRead,
-      PLAN_WINDOW_INITIAL_SLICE_MS: initialSlice,
+      resumableStartedAtQuery,
     } = await import("@/lib/retention/purge-executions"));
     ({ getOrgLogRetentionCutoff } = await import("@/lib/retention/progress"));
   });
@@ -599,14 +608,14 @@ describe("execution retention purge (real database)", () => {
     // KEEP-1360. The floor pass leaves every organization's watermark at the
     // floor cutoff, so the plan-window walk of a 7-day organization starts a
     // year back. That whole year used to be one slice, and for an organization
-    // whose runs are spread thinly across it the planner answered the read
-    // from the global started_at index and the statement timed out. The slice
-    // now starts capped and doubles, and this is the test that the ramp still
-    // reaches every run in between.
+    // whose runs cannot fill a page early in it the planner answered the read
+    // from the global started_at index and the statement timed out. Every slice
+    // is now capped at PLAN_WINDOW_INITIAL_SLICE_MS, so this is the test that
+    // walking the range in capped slices strands none of the runs in between.
     const orgSparse = `${PREFIX}org_sparse`;
     const workflowId = (index: number) => `${orgSparse}_wf_${index}`;
-    // One run every 20 days from 350 days back to 10, so runs land in slices
-    // of every width the doubling passes through, with empty slices between.
+    // One run every 20 days from 350 days back to 10, so runs are spread across
+    // many capped slices with empty ones between them.
     const ages = Array.from({ length: 18 }, (_, index) => 350 - index * 20);
     await db.insert(organization).values({
       id: orgSparse,
@@ -667,7 +676,10 @@ describe("execution retention purge (real database)", () => {
       },
     ]);
 
-    await runRetentionPurge(config(), NOW);
+    await runRetentionPurge(
+      config({ planWindowSliceMs: PRODUCTION_SLICE_MS }),
+      NOW
+    );
 
     const rows =
       await queryClient`SELECT count(*)::int AS n FROM workflow_execution_logs WHERE id LIKE ${`${orgSparse}_log_%`} AND id <> ${`${orgSparse}_log_fresh`}`;
@@ -676,7 +688,10 @@ describe("execution retention purge (real database)", () => {
     expect(rows[0].n).toBe(0);
     expect(await logExists(`${orgSparse}_log_fresh`)).toBe(true);
     expect(await watermarkOf(orgSparse)).toEqual(daysAgo(7));
-  });
+    // Longer than the 10 s default: this is the one test that runs at the real
+    // slice width, so it walks the ~358 slices a production run walks, for every
+    // organization the fixture defines. About 9 s here.
+  }, 60_000);
 
   it("answers the chunk reads from the indexes", async () => {
     // Keyed by explicit ids and run with sequential scans priced out, as the
@@ -699,7 +714,7 @@ describe("execution retention purge (real database)", () => {
       planWindowExecutionIdsQuery(
         [`${ORG_NONE}_wf`],
         daysAgo(400),
-        new Date(daysAgo(400).getTime() + initialSlice),
+        new Date(daysAgo(400).getTime() + PRODUCTION_SLICE_MS),
         runsPerRead + 1
       ).toSQL()
     );
@@ -714,6 +729,17 @@ describe("execution retention purge (real database)", () => {
     expect(runsPlan).toContain('"Index Name"');
     expect(cappedPlan).not.toContain('"Node Type":"Seq Scan"');
     expect(cappedPlan).toContain('"Index Name"');
+    // The skipped-run read is the only one here that crosses a join, so
+    // enable_seqscan = off reaches both tables. Neither side may fall back.
+    const resumablePlan = await explain(
+      resumableStartedAtQuery(
+        ORG_NONE,
+        daysAgo(400),
+        new Date(daysAgo(400).getTime() + PRODUCTION_SLICE_MS)
+      ).toSQL()
+    );
+    expect(resumablePlan).not.toContain('"Node Type":"Seq Scan"');
+    expect(resumablePlan).toContain('"Index Name"');
     expect(logsPlan).not.toContain('"Node Type":"Seq Scan"');
     expect(logsPlan).toContain("idx_exec_logs_execution_id");
     expect(countPlan).not.toContain('"Node Type":"Seq Scan"');
