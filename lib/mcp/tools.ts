@@ -807,7 +807,7 @@ const GET_EXECUTION_SCHEMA = {
     .boolean()
     .optional()
     .describe(
-      "Include input/output/outputRaw blobs on each log entry. Defaults to true for backward compatibility with v1.11 get_execution_logs callers. Pass false to receive a compact status-only response."
+      "Include input/output/outputRaw blobs on each log entry. Defaults to true for backward compatibility with v1.11 get_execution_logs callers. Pass false to receive a compact status-only response. A blob larger than 1 MiB is always returned as { _truncated: true, originalSize: <bytes>, preview: <first 1024 characters> } in place of the value; the full payload is never served."
     ),
   nodeIds: z
     .array(z.string())
@@ -821,7 +821,7 @@ const GET_EXECUTION_SCHEMA = {
     .positive()
     .optional()
     .describe(
-      "Per-field byte cap. Any input/output/outputRaw JSON-stringified payload exceeding this size is replaced with { _truncated: true, originalSize: <bytes>, preview: <first N bytes of stringified value> }. The error field is NEVER truncated regardless of this cap."
+      "Per-field byte cap. Any input/output/outputRaw JSON-stringified payload exceeding this size is replaced with { _truncated: true, originalSize: <bytes>, preview: <first N bytes of stringified value> }. Payloads above 1 MiB arrive already replaced by that marker whatever this cap is set to. The error field is NEVER truncated regardless of this cap."
     ),
 };
 
@@ -1223,7 +1223,7 @@ export function registerTools(
 
   server.tool(
     "get_execution",
-    "Get combined status and step-by-step logs for a workflow execution. Replaces the v1.11 get_execution_status + get_execution_logs pair. Returns { status, logs } in a single response. `status` and each log's `transactionHashes[].verified`/`receiptStatus` are independently reconciled against on-chain receipts before the execution is allowed to finalize as success -- this, not execute_workflow's trigger acknowledgement, is the authoritative signal for whether a workflow (and any money movement within it) actually completed. By default returns full node input/output data (backward compatible with v1.11 get_execution_logs no-param callers). Pass `includeData: false` to omit input/output/outputRaw blobs, `nodeIds: string[]` to restrict full data to specific nodes (status and error always returned for every node), or `truncateData: number` (bytes) to cap individual input/output/outputRaw payloads. The `error` field is never truncated. One exception to the shape: for an execution owned by another organization that you can see only through its workflow's public share setting, `logs` is null and `status` is redacted (node identifiers omitted) -- includeData, nodeIds and truncateData have no effect there.",
+    "Get combined status and step-by-step logs for a workflow execution. Replaces the v1.11 get_execution_status + get_execution_logs pair. Returns { status, logs } in a single response. `status` and each log's `transactionHashes[].verified`/`receiptStatus` are independently reconciled against on-chain receipts before the execution is allowed to finalize as success -- this, not execute_workflow's trigger acknowledgement, is the authoritative signal for whether a workflow (and any money movement within it) actually completed. By default returns full node input/output data (backward compatible with v1.11 get_execution_logs no-param callers), except that any single input/output/outputRaw payload above 1 MiB is returned as a { _truncated, originalSize, preview } marker. Pass `includeData: false` to omit input/output/outputRaw blobs, `nodeIds: string[]` to restrict full data to specific nodes (status and error always returned for every node), or `truncateData: number` (bytes) to cap individual input/output/outputRaw payloads. The `error` field is never truncated. One exception to the shape: for an execution owned by another organization that you can see only through its workflow's public share setting, `logs` is null and `status` is redacted (node identifiers omitted) -- includeData, nodeIds and truncateData have no effect there.",
     GET_EXECUTION_SCHEMA,
     { title: "Get Execution", readOnlyHint: true, destructiveHint: false },
     scoped("get_execution", async (args) =>

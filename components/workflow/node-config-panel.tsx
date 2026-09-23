@@ -241,13 +241,14 @@ export const PanelInner = () => {
     };
     const checkExecutionsAndOpenOverlay = async () => {
       try {
-        const executions = await api.workflow.getExecutions(currentWorkflowId);
+        const { total } = await api.workflow.getExecutions(currentWorkflowId, {
+          limit: 1,
+        });
         if (cancelled) {
           return;
         }
         setShowDeleteDialog(false);
-        const executionList = Array.isArray(executions) ? executions : [];
-        if (executionList.length > 0) {
+        if (total > 0) {
           openHasExecutionsOverlay();
           return;
         }

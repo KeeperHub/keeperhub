@@ -22,11 +22,7 @@ import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";
-import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import type {
-  NodeExecutionStatus,
-  WorkflowExecutionStatus,
-} from "@/lib/errors/execution-status";
+import type { NodeExecutionStatus } from "@/lib/errors/execution-status";
 import {
   FOR_EACH_GROUP_TYPE,
   buildChildLogsLookup,
@@ -34,13 +30,27 @@ import {
   type ChildLogsLookup,
   type IterationGroup,
 } from "@/lib/workflow/nodes/for-each/iteration-grouping";
-import { api } from "@/lib/api-client";
+import { api, type ExecutionSummary } from "@/lib/api-client";
 import {
   OUTPUT_DISPLAY_CONFIGS,
   type OutputDisplayConfig,
 } from "@/lib/output-display-configs";
 import { cn } from "@/lib/utils";
+import { startSerialPoll } from "@/lib/utils/serial-poll";
 import { getRelativeTime } from "@/lib/utils/time";
+import {
+  appendPage,
+  emptyExecutionPage,
+  type ExecutionPage,
+  mergeFirstPage,
+  nextPageSize,
+  replacePage,
+} from "@/lib/workflow/execution-page-merge";
+import {
+  formatStoredBytes,
+  isTruncatedOutput,
+  MAX_STORED_OUTPUT_BYTES,
+} from "@/lib/workflow/output-limits";
 import {
   currentWorkflowIdAtom,
   executionLogsAtom,
@@ -68,29 +78,12 @@ type ExecutionLog = {
   forEachNodeId: string | null;
 };
 
-type WorkflowExecution = {
-  id: string;
-  workflowId: string;
-  status: WorkflowExecutionStatus;
-  startedAt: Date;
-  completedAt: Date | null;
-  duration: string | null;
-  error: string | null;
-  errorType: ExecutionErrorType | null;
-  errorCategory: string | null;
-  errorCode: string | null;
-  // Progress tracking fields
-  totalSteps: number | null;
-  completedSteps: number | null;
-  currentNodeId: string | null;
-  currentNodeName: string | null;
-  lastSuccessfulNodeId: string | null;
-  lastSuccessfulNodeName: string | null;
-  executionTrace: string[] | null;
-  // The workflow_history version this run executed (resolved server-side from
-  // the run's content hash); null when no matching version exists.
-  ranVersion: number | null;
-};
+type WorkflowExecution = ExecutionSummary;
+
+// Runs fetched per page. The panel keeps every page it has loaded and polls
+// only the first one, so this bounds what each poll costs.
+const RUNS_PAGE_SIZE = 20;
+const RUNS_POLL_INTERVAL_MS = 2000;
 
 type WorkflowRunsProps = {
   isActive?: boolean;
@@ -472,6 +465,23 @@ function CollapsibleSection({
 }
 
 // Component for rendering output with rich display support
+// A step payload the server withheld because it is past the stored-output
+// limit. There is nothing to expand: only the size is known.
+function TruncatedDataNotice({
+  title,
+  bytes,
+}: {
+  title: string;
+  bytes: number;
+}) {
+  return (
+    <div className="rounded-lg border bg-muted/30 px-3 py-2 text-muted-foreground text-xs">
+      {title} too large to display ({formatStoredBytes(bytes)}). The step
+      output limit is {formatStoredBytes(MAX_STORED_OUTPUT_BYTES)}.
+    </div>
+  );
+}
+
 function OutputDisplay({
   output,
   input,
@@ -891,16 +901,32 @@ function ExecutionLogEntry({
 
         {isExpanded && (
           <div className="mt-2 mb-2 space-y-3 px-3">
-            {log.input !== null && log.input !== undefined && (
-              <CollapsibleSection copyData={log.input} title="Input">
-                <pre className="overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs leading-relaxed">
-                  <JsonWithLinks data={log.input} />
-                </pre>
-              </CollapsibleSection>
+            {isTruncatedOutput(log.input) ? (
+              <TruncatedDataNotice
+                bytes={log.input.originalSize}
+                title="Input"
+              />
+            ) : (
+              log.input !== null &&
+              log.input !== undefined && (
+                <CollapsibleSection copyData={log.input} title="Input">
+                  <pre className="overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs leading-relaxed">
+                    <JsonWithLinks data={log.input} />
+                  </pre>
+                </CollapsibleSection>
+              )
             )}
             {middleContent}
-            {log.output !== null && log.output !== undefined && (
-              <OutputDisplay input={log.input} output={log.output} />
+            {isTruncatedOutput(log.output) ? (
+              <TruncatedDataNotice
+                bytes={log.output.originalSize}
+                title="Output"
+              />
+            ) : (
+              log.output !== null &&
+              log.output !== undefined && (
+                <OutputDisplay input={log.input} output={log.output} />
+              )
             )}
             {log.error && (
               <CollapsibleSection
@@ -954,11 +980,31 @@ export function WorkflowRuns({
     },
     [router, pathname, searchParams, setActiveTab]
   );
-  const [executions, setExecutions] = useState<WorkflowExecution[]>([]);
+  const [runs, setRuns] = useState<ExecutionPage<WorkflowExecution>>(() =>
+    emptyExecutionPage(currentWorkflowId)
+  );
+  const { executions, nextCursor, total } = runs;
+  const nextPageCount = nextPageSize(total, executions.length, RUNS_PAGE_SIZE);
+
+  // The workflow whose runs are on screen. Every fetch captures the id it was
+  // made for and applies its result only while this still matches, so a slow
+  // response for the previous workflow cannot land in the next one's list or
+  // clear its loading state. Switching also starts from an empty page so
+  // nothing of the previous workflow is retained under the new one.
+  const shownWorkflowIdRef = useRef<string | null>(currentWorkflowId);
+  useEffect(() => {
+    shownWorkflowIdRef.current = currentWorkflowId;
+    setRuns((loaded) =>
+      loaded.workflowId === currentWorkflowId
+        ? loaded
+        : emptyExecutionPage(currentWorkflowId)
+    );
+  }, [currentWorkflowId]);
   const [logs, setLogs] = useState<Record<string, ExecutionLog[]>>({});
   const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
   const [expandedLogs, setExpandedLogs] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   // Track which execution we've already auto-expanded to prevent loops
   const autoExpandedExecutionRef = useRef<string | null>(null);
@@ -968,28 +1014,70 @@ export function WorkflowRuns({
 
   const loadExecutions = useCallback(
     async (showLoading = true) => {
-      if (!currentWorkflowId) {
+      const workflowId = currentWorkflowId;
+      if (!workflowId) {
         setLoading(false);
         return;
       }
+      const stillShown = () => shownWorkflowIdRef.current === workflowId;
 
       try {
         if (showLoading) {
           setLoading(true);
         }
-        const data = await api.workflow.getExecutions(currentWorkflowId);
-        setExecutions(data as WorkflowExecution[]);
+        const page = {
+          ...(await api.workflow.getExecutions(workflowId, {
+            limit: RUNS_PAGE_SIZE,
+          })),
+          workflowId,
+        };
+        if (!stillShown()) {
+          return;
+        }
+        // A full load (mount, workflow switch) replaces the list; a refresh
+        // folds the first page in and keeps the older pages already loaded.
+        setRuns((loaded) =>
+          showLoading ? replacePage(loaded, page) : mergeFirstPage(loaded, page)
+        );
       } catch (error) {
         console.error("Failed to load executions:", error);
-        setExecutions([]);
+        // A failed refresh keeps what is on screen; only a failed full load
+        // has nothing to show.
+        if (showLoading && stillShown()) {
+          setRuns(emptyExecutionPage(workflowId));
+        }
       } finally {
-        if (showLoading) {
+        if (showLoading && stillShown()) {
           setLoading(false);
         }
       }
     },
     [currentWorkflowId]
   );
+
+  const loadMore = useCallback(async () => {
+    const workflowId = currentWorkflowId;
+    if (!(workflowId && nextCursor) || loadingMore) {
+      return;
+    }
+    setLoadingMore(true);
+    try {
+      const page = {
+        ...(await api.workflow.getExecutions(workflowId, {
+          limit: RUNS_PAGE_SIZE,
+          cursor: nextCursor,
+        })),
+        workflowId,
+      };
+      if (shownWorkflowIdRef.current === workflowId) {
+        setRuns((loaded) => appendPage(loaded, page));
+      }
+    } catch (error) {
+      console.error("Failed to load more executions:", error);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [currentWorkflowId, nextCursor, loadingMore]);
 
   // Expose refresh function via ref
   useEffect(() => {
@@ -1139,16 +1227,29 @@ export function WorkflowRuns({
     [mapNodeLabels, selectedExecutionId, setExecutionLogs]
   );
 
-  // Poll for new executions when tab is active
+  // Poll for new executions when tab is active. Only the first page is
+  // re-fetched: that is where runs start and change; older pages stay as
+  // loaded. The poll is serial, so a slow response delays the next request
+  // instead of stacking another one behind it.
   useEffect(() => {
     if (!(isActive && currentWorkflowId)) {
       return;
     }
 
+    const workflowId = currentWorkflowId;
+    let cancelled = false;
     const pollExecutions = async () => {
       try {
-        const data = await api.workflow.getExecutions(currentWorkflowId);
-        setExecutions(data as WorkflowExecution[]);
+        const page = {
+          ...(await api.workflow.getExecutions(workflowId, {
+            limit: RUNS_PAGE_SIZE,
+          })),
+          workflowId,
+        };
+        if (cancelled) {
+          return;
+        }
+        setRuns((loaded) => mergeFirstPage(loaded, page));
 
         // Refresh logs for expanded runs: always for running, once more for newly-terminal
         const terminalStatuses = new Set([
@@ -1158,7 +1259,7 @@ export function WorkflowRuns({
           "system_error",
           "skipped",
         ]);
-        const executionMap = new Map(data.map((e) => [e.id, e]));
+        const executionMap = new Map(page.executions.map((e) => [e.id, e]));
         for (const executionId of expandedRuns) {
           const execution = executionMap.get(executionId);
           if (!execution) {
@@ -1181,8 +1282,11 @@ export function WorkflowRuns({
       }
     };
 
-    const interval = setInterval(pollExecutions, 2000);
-    return () => clearInterval(interval);
+    const stop = startSerialPoll(pollExecutions, RUNS_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      stop();
+    };
   }, [isActive, currentWorkflowId, expandedRuns, refreshExecutionLogs]);
 
   const toggleRun = async (executionId: string) => {
@@ -1336,7 +1440,7 @@ export function WorkflowRuns({
               >
                 <div className="mb-1 flex items-center gap-2">
                   <span className="font-semibold text-sm">
-                    Run #{executions.length - index}
+                    Run #{total - index}
                   </span>
                 </div>
                 <div className="flex items-center gap-2 font-mono text-muted-foreground text-xs">
@@ -1467,6 +1571,18 @@ export function WorkflowRuns({
           </div>
         );
       })}
+      {nextCursor !== null && nextPageCount > 0 && (
+        <Button
+          className="w-full"
+          disabled={loadingMore}
+          onClick={loadMore}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          {loadingMore ? <Spinner /> : `Load ${nextPageCount} more`}
+        </Button>
+      )}
     </div>
   );
 }

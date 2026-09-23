@@ -173,7 +173,9 @@ export function TemplateCodeEditor({
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: async fetch with cancellation guard mirrors template-autocomplete.tsx
     const fetchLogs = async (): Promise<void> => {
       try {
-        const executions = await api.workflow.getExecutions(workflowId);
+        const { executions } = await api.workflow.getExecutions(workflowId, {
+          limit: 1,
+        });
         if (cancelled) {
           return;
         }

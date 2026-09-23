@@ -693,8 +693,8 @@ export const loadWorkflowAtom = atom(null, async (get, set) => {
       // Guard: only apply if the workflow hasn't changed by the time data arrives.
       const workflowId = workflow.id;
       api.workflow
-        .getExecutions(workflowId)
-        .then((executions) => {
+        .getExecutions(workflowId, { limit: 1 })
+        .then(({ executions }) => {
           const latest = executions[0];
           if (!latest?.id) {
             return;

@@ -755,7 +755,10 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
 
     const rehydrate = async (): Promise<void> => {
       try {
-        const executions = await api.workflow.getExecutions(currentWorkflowId);
+        const { executions } = await api.workflow.getExecutions(
+          currentWorkflowId,
+          { limit: 50 }
+        );
         if (cancelled) {
           return;
         }

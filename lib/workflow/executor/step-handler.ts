@@ -26,6 +26,10 @@ import {
   recordTransactionHashIfPresent,
 } from "@/lib/workflow/executor/step-success-tracker";
 import {
+  oversizeStepResult,
+  storedOutputOverflow,
+} from "@/lib/workflow/executor/stored-output-cap";
+import {
   incrementCompletedSteps,
   logStepCompleteDb,
   logStepStartDb,
@@ -358,7 +362,17 @@ async function withStepLoggingInner<TInput extends StepInput, TOutput>(
   const logInfo = await logStepStart(context, loggedInput);
 
   try {
-    const result = await stepLogic();
+    const produced = await stepLogic();
+
+    // A result larger than the stored-output limit fails here, before it is
+    // persisted, handed back to the executor or read by a later step. Storing
+    // it truncated instead would let a resume feed the marker downstream as
+    // if it were the step's data.
+    const overflow = storedOutputOverflow(produced);
+    const result: TOutput =
+      overflow === null
+        ? produced
+        : (oversizeStepResult(overflow) as unknown as TOutput);
 
     // Check if result indicates an error
     const isErrorResult =
