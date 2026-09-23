@@ -279,6 +279,17 @@ const TOKEN_CONFIGS: TokenConfig[] = [
   },
 
   // ==========================================================================
+  // Somnia Shannon Testnet (chainId: 50312)
+  // ==========================================================================
+  {
+    chainId: 50_312,
+    tokenAddress: "0x0ed782b8079529f7385c3eda9faf1eaa0dbc6a17", // USDC
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
   // 0G Mainnet (chainId: 16661)
   // ==========================================================================
   // Only XSwap-bridged USDC.e is tracked: Circle has not deployed native USDC
