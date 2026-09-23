@@ -21,6 +21,12 @@ export function isValidTopicId(value: string): boolean {
   return TOPIC_ID_RE.test(value.trim());
 }
 
+// Hedera account ids share the topic-id 0.0.<number> shape; the expected
+// submitter is one, so the same validation applies.
+export function isValidAccountId(value: string): boolean {
+  return TOPIC_ID_RE.test(value.trim());
+}
+
 export function resolveNetwork(raw: string | undefined): HederaNetwork | null {
   const v = (raw || "testnet").toLowerCase();
   return v === "mainnet" || v === "testnet" ? (v as HederaNetwork) : null;
