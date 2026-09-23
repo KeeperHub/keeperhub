@@ -1,5 +1,6 @@
+import { stripTrailingSlashes } from "@/lib/utils/url";
+
 const DEFAULT_PREDGE_SIGNAL_URL = "https://api.predge.io";
-const TRAILING_SLASH_RE = /\/+$/;
 
 export async function testPredge(
   credentials: Record<string, string>
@@ -7,7 +8,7 @@ export async function testPredge(
   try {
     const rawUrl =
       credentials.PREDGE_SIGNAL_URL?.trim() || DEFAULT_PREDGE_SIGNAL_URL;
-    const baseUrl = rawUrl.replace(TRAILING_SLASH_RE, "");
+    const baseUrl = stripTrailingSlashes(rawUrl);
 
     // Read-only: the published keyset confirms the signal service is reachable
     // and is serving Predge signing keys.

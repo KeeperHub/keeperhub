@@ -7,22 +7,35 @@ import {
   type StepInput,
 } from "@/lib/workflow/executor/step-handler";
 import type { PredgeCredentials } from "../credentials";
-import { fetchSignedSignal, verifyPredgeSignal } from "./predge-core";
+import {
+  blameForBadBody,
+  fetchSignedSignal,
+  parseConvictionPayload,
+  type PredgeAction,
+  type PredgeWindow,
+  verifyPredgeSignal,
+} from "./predge-core";
 
-// A successful step means a verified signal: the step fails (below) if
-// verification does not hold, so success carries only the verified data. A
-// failed verification travels the error path with its reason, not the data
-// path with a `verified: false` an author could forget to gate on.
+// A successful step means a verified signal whose fields are the documented
+// shape: the step fails (below) if verification does not hold OR if the signed
+// payload is not a conviction signal, so success carries only checked data. A
+// signature proves who issued the bytes, not what is in them, so the two are
+// separate gates and both are on the error path -- not in the data as a flag an
+// author could forget to gate on.
 type ReadSignalResult =
   | {
       success: true;
       // The wallet the step asked for; equals the signed subject, which was
       // checked to match before this point.
       wallet: string;
-      // 0-100 conviction from Predge's on-chain track-record model.
+      // 0-100 conviction from Predge's on-chain track-record model. Checked to
+      // be a finite number in that range, never a numeric string and never
+      // absent: a workflow comparing it is comparing numbers.
       conviction: number;
-      action: string;
-      window: string;
+      // One of accumulate / reduce / hold, checked against that set.
+      action: PredgeAction;
+      // One of 7d / 30d, checked against that set.
+      window: PredgeWindow;
       // hex ed25519 public key the signature verified against.
       signer: string;
       // ISO-8601 issue time carried by the verified attestation.
@@ -72,12 +85,11 @@ function classifyVerificationFailure(
   credentials: PredgeCredentials
 ): ExecutionErrorType {
   const operatorSetKeyId = Boolean(credentials.PREDGE_SIGNER_KEY_ID?.trim());
-  const operatorSetUrl = Boolean(credentials.PREDGE_SIGNAL_URL?.trim());
   if (reason === "signer is not the pinned Predge key" && operatorSetKeyId) {
     return ExecutionErrorType.USER;
   }
-  if (reason === "malformed attestation" && operatorSetUrl) {
-    return ExecutionErrorType.USER;
+  if (reason === "malformed attestation") {
+    return blameForBadBody(credentials);
   }
   return ExecutionErrorType.EXTERNAL;
 }
@@ -122,7 +134,21 @@ async function stepHandler(
     };
   }
 
-  const signal = signed.attestation.payload;
+  // The signature vouches for the bytes, not for what is in them. Everything
+  // this step returns is checked against the documented shape before it can
+  // reach a workflow: a conviction outside 0-100, a numeric string, a missing
+  // field or an unrecognised action or window fails the step rather than being
+  // handed to a gate that would coerce it.
+  const parsed = parseConvictionPayload(signed.attestation.payload);
+  if (!parsed.valid) {
+    return {
+      success: false,
+      error: `Predge signal payload is not a conviction signal: ${parsed.reason}`,
+      errorClass: blameForBadBody(credentials),
+    };
+  }
+
+  const signal = parsed.signal;
   return {
     success: true,
     // The requested wallet; subject binding already confirmed it equals the

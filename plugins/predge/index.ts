@@ -8,9 +8,16 @@ const walletField = (): ActionConfigField => ({
   label: "Wallet",
   type: "template-input",
   placeholder: "0x... or {{NodeName.address}}",
-  // A wallet Predge currently ranks, so the example returns a live signed
-  // signal rather than a 404 (only verified smart-money wallets carry one).
+  // Only verified smart-money wallets carry a signal, and conviction is a
+  // percentile within a set Predge re-ranks, so membership is not permanent:
+  // this address was ranked when it was captured and may 404 now. It is an
+  // address-shaped example, not a guarantee of a live 200 -- the help text
+  // below says so, because `example` also feeds AI workflow generation.
   example: "0x0224bb9eb0a5c9fd261ac9123a72cbdd5748292a",
+  helpText:
+    "Wallet to read a signal for. Only wallets in Predge's verified smart-money set carry one; " +
+    "the set is re-ranked, so a wallet can leave it and the step then fails with \"No Predge signal for this wallet\". " +
+    "The prefilled example is illustrative and may no longer be ranked.",
   required: true,
 });
 
@@ -19,7 +26,7 @@ const predgePlugin: IntegrationPlugin = {
   egress: "user-destination",
   label: "Predge",
   description:
-    "Read verifiable smart-money signals from Predge. The signal's ed25519 signature is checked offline against a pinned key before the step succeeds, so a workflow only ever acts on a verified number.",
+    "Read verifiable smart-money signals from Predge. Before the step succeeds, the signal's ed25519 signature is checked offline against a pinned key, the signed envelope is checked to be the conviction signal for the wallet asked for, and every field the step returns is checked against its documented type and range. A workflow therefore only ever acts on a verified conviction that is a number in 0-100, never on a numeric string, a missing field or an out-of-range value.",
 
   icon: PredgeIcon,
 
@@ -77,29 +84,29 @@ const predgePlugin: IntegrationPlugin = {
       slug: "read-signal",
       label: "Read Predge Signal",
       description:
-        "Fetch a wallet's conviction signal from Predge and verify it offline: pinned ed25519 signer, signature over the canonical payload, subject binding to the wallet, and freshness. The step FAILS if verification does not hold, with the reason in its error, so a successful step is a verified signal and there is no `verified` flag to forget to gate on.",
+        "Fetch a wallet's conviction signal from Predge and verify it offline: pinned ed25519 signer, signature over the canonical payload, the signed `resource` naming the conviction signal for this wallet, subject binding to the wallet, and freshness. The signed payload is then checked field by field: conviction a finite number in 0-100, action one of accumulate/reduce/hold, window one of 7d/30d, each required. The step FAILS on either gate, with the field or the reason in its error, so a successful step is a verified signal whose fields are the documented shape, and there is no `verified` flag to forget to gate on.",
       category: "Predge",
       stepFunction: "readSignalStep",
       stepImportPath: "read-signal",
       outputFields: [
-        { field: "success", description: "True only for a signal that verified; the step errors otherwise" },
+        { field: "success", description: "True only for a signal that verified and whose fields passed their type and range checks; the step errors otherwise" },
         { field: "wallet", description: "The wallet asked for, which the signal was bound to" },
         {
           field: "conviction",
-          description: "Predge conviction score (0-100) from the wallet's on-chain track record",
+          description: "Predge conviction score from the wallet's on-chain track record; always a number in 0-100, checked before the step succeeds",
         },
         {
           field: "action",
-          description: "Recommended action for the wallet (accumulate / reduce / hold)",
+          description: "Recommended action for the wallet; always one of accumulate / reduce / hold",
         },
-        { field: "window", description: "Scoring window for the signal (7d / 30d)" },
+        { field: "window", description: "Scoring window for the signal; always 7d or 30d" },
         { field: "signer", description: "Hex ed25519 public key the signature verified against (Predge's published key, or your pinned override)" },
         { field: "issuedAt", description: "ISO-8601 issue time carried by the verified attestation" },
         {
           field: "ageSeconds",
           description: "Age of the attestation in seconds at verification time; can be slightly negative within the clock-skew tolerance",
         },
-        { field: "error", description: "On failure, why the lookup or verification did not hold" },
+        { field: "error", description: "On failure, why the lookup, the verification or a payload field check did not hold" },
       ],
       configFields: [walletField()],
     },
