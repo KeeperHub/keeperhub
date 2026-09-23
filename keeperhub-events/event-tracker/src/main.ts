@@ -2,6 +2,7 @@ import type { NetworksMap, RawWorkflow } from "../lib/types";
 import { fetchActiveWorkflows } from "../lib/utils/fetch-utils";
 import { logger } from "../lib/utils/logger";
 import { chainProviderManager } from "./chains/provider-manager";
+import { forgetTraceRefusalsFor } from "./chains/trace-capability";
 import { createRegistry } from "./listener/factory";
 import type { ListenerRegistry } from "./listener/registry";
 import { buildRegistration } from "./listener/workflow-mapper";
@@ -92,9 +93,15 @@ async function reconcile(
   // Drop skip-latch entries for workflows that left the active set, so
   // re-adding an invalid one is reported again. Mirrors the remove loop below
   // dropping their listeners.
+  //
+  // The mapper's own refusal latch is pruned on the same trigger. Both lines
+  // describe one refusal and only one of them names the chain and the allowed
+  // set, so clearing them on different triggers meant a disable-then-enable
+  // reported the generic line without the useful one.
   for (const id of [...reportedSkips]) {
     if (!activeIds.has(id)) {
       reportedSkips.delete(id);
+      forgetTraceRefusalsFor(id);
     }
   }
 

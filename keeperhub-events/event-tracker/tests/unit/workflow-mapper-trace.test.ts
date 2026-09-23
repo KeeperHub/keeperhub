@@ -3,6 +3,7 @@ import type { NetworkConfig, NetworksMap, RawWorkflow } from "../../lib/types";
 import { logger } from "../../lib/utils/logger";
 import {
   TRACE_CAPABILITY_ENV_VAR,
+  forgetTraceRefusalsFor,
   resetTraceCapabilityCache,
 } from "../../src/chains/trace-capability";
 import { isTraceRegistration } from "../../src/listener/registry";
@@ -99,12 +100,16 @@ const PAUSE_SELECTOR = "0x8456cb59";
  */
 const NONE_SENTINEL = "none";
 
+/** The id `makeWorkflow` stamps, named so the refusal-latch cases can prune it. */
+const WORKFLOW_ID = "wf-trace-1";
+
 function makeWorkflow(
   configOverrides: Record<string, unknown> = {},
   chainId: number = CHAIN_ID,
+  workflowId: string = WORKFLOW_ID,
 ): RawWorkflow {
   return {
-    id: "wf-trace-1",
+    id: workflowId,
     name: "Pause watcher",
     userId: "user-1",
     nodes: [
@@ -583,6 +588,71 @@ describe("buildRegistration - Trace", () => {
         expect(buildOn(UNTRACEABLE_CHAIN_ID)).not.toBeNull();
         process.env[TRACE_CAPABILITY_ENV_VAR] = String(CHAIN_ID);
         expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+      });
+
+      describe("a workflow leaving the active set forgets its refusals", () => {
+        // The reconciler prunes its own skip latch when a workflow leaves the
+        // active set, and calls this on the same trigger. Clearing the two on
+        // different triggers left a disable-then-enable reporting the generic
+        // `invalid config` line while the line that names the chain and the
+        // allowed set stayed latched, which is the wrong half to keep.
+
+        it("reports again after the workflow left and came back", () => {
+          expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+          expect(warnLines(REFUSAL)).toHaveLength(1);
+
+          forgetTraceRefusalsFor(WORKFLOW_ID);
+
+          expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+          expect(warnLines(REFUSAL)).toHaveLength(2);
+        });
+
+        it("forgets every chain the workflow was refused on", () => {
+          // The reconciler knows the workflow left, not which chains it was
+          // refused on, so one call has to drop them all.
+          buildOn(UNTRACEABLE_CHAIN_ID);
+          buildOn(SECOND_UNTRACEABLE_CHAIN_ID);
+          expect(warnLines(REFUSAL)).toHaveLength(2);
+
+          forgetTraceRefusalsFor(WORKFLOW_ID);
+
+          buildOn(UNTRACEABLE_CHAIN_ID);
+          buildOn(SECOND_UNTRACEABLE_CHAIN_ID);
+          expect(warnLines(REFUSAL)).toHaveLength(4);
+        });
+
+        it("leaves another workflow's latch alone", () => {
+          // Pruning one workflow must not re-arm the rest, or one disable
+          // re-reports every refusal in the deployment.
+          expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+          expect(warnLines(REFUSAL)).toHaveLength(1);
+
+          forgetTraceRefusalsFor(`${WORKFLOW_ID}-other`);
+
+          expect(buildOn(UNTRACEABLE_CHAIN_ID)).toBeNull();
+          expect(warnLines(REFUSAL)).toHaveLength(1);
+        });
+
+        it("does not let one workflow id prune another it prefixes", () => {
+          // A workflow id is free-form text, so the latch key's workflow half
+          // is compared whole. `wf-trace-1:1` on chain 1 keys
+          // `wf-trace-1:1:1`, which a `wf-trace-1:` prefix test would match
+          // and wrongly re-arm.
+          const nested = `${WORKFLOW_ID}:1`;
+          const buildNested = () =>
+            buildRegistration(
+              makeWorkflow({}, UNTRACEABLE_CHAIN_ID, nested),
+              NETWORKS,
+            );
+
+          expect(buildNested()).toBeNull();
+          expect(warnLines(nested)).toHaveLength(1);
+
+          forgetTraceRefusalsFor(WORKFLOW_ID);
+
+          expect(buildNested()).toBeNull();
+          expect(warnLines(nested)).toHaveLength(1);
+        });
       });
     });
   });

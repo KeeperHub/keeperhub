@@ -46,6 +46,10 @@ vi.mock("../../src/listener/factory", () => ({
 }));
 vi.mock("../../src/listener/workflow-mapper", () => ({ buildRegistration }));
 
+import {
+  resetTraceCapabilityCache,
+  shouldReportTraceRefusal,
+} from "../../src/chains/trace-capability";
 import { reconcile, resetReconcilerSkipLatch } from "../../src/main";
 
 const NETWORKS: NetworksMap = {};
@@ -135,5 +139,60 @@ describe("reconciler skip-line latch", () => {
       await reconcile([workflow("wf-ok")], NETWORKS);
     }
     expect(skipLines("wf-ok")).toHaveLength(0);
+  });
+
+  describe("prunes the mapper's refusal latch on the same trigger", () => {
+    // Both latches describe one refusal, and only the mapper's names the chain
+    // and the allowed set. They used to clear on different triggers: this one
+    // dropped when a workflow left the active set while the mapper's cleared
+    // only on a successful map, so a disable-then-enable re-reported the
+    // generic `invalid config` line with the useful one still latched.
+    //
+    // `workflow-mapper` is mocked here, so the refusal line itself cannot be
+    // observed. The latch is read directly instead: `shouldReportTraceRefusal`
+    // returns true exactly when the next refusal would be reported.
+
+    beforeEach(() => {
+      resetTraceCapabilityCache();
+    });
+
+    it("re-arms the refusal after the workflow left the active set", async () => {
+      buildRegistration.mockReturnValue(null);
+      await reconcile([workflow("wf-trace")], NETWORKS);
+
+      // Stand in for the mapper having reported the refusal on this pass.
+      expect(shouldReportTraceRefusal("wf-trace", 1)).toBe(true);
+      expect(shouldReportTraceRefusal("wf-trace", 1)).toBe(false);
+
+      await reconcile([], NETWORKS);
+
+      expect(shouldReportTraceRefusal("wf-trace", 1)).toBe(true);
+    });
+
+    it("keeps the refusal latched while the workflow stays active", async () => {
+      // The counterpart. Pruning on every pass would put the repeat back, which
+      // is the whole defect the mapper's latch exists to stop.
+      buildRegistration.mockReturnValue(null);
+      await reconcile([workflow("wf-trace")], NETWORKS);
+      expect(shouldReportTraceRefusal("wf-trace", 1)).toBe(true);
+
+      for (let i = 0; i < 3; i += 1) {
+        await reconcile([workflow("wf-trace")], NETWORKS);
+      }
+
+      expect(shouldReportTraceRefusal("wf-trace", 1)).toBe(false);
+    });
+
+    it("leaves a still-active workflow's refusal latched when another leaves", async () => {
+      buildRegistration.mockReturnValue(null);
+      await reconcile([workflow("wf-stays"), workflow("wf-goes")], NETWORKS);
+      expect(shouldReportTraceRefusal("wf-stays", 1)).toBe(true);
+      expect(shouldReportTraceRefusal("wf-goes", 1)).toBe(true);
+
+      await reconcile([workflow("wf-stays")], NETWORKS);
+
+      expect(shouldReportTraceRefusal("wf-stays", 1)).toBe(false);
+      expect(shouldReportTraceRefusal("wf-goes", 1)).toBe(true);
+    });
   });
 });

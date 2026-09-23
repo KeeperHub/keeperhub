@@ -254,6 +254,32 @@ export function forgetTraceRefusal(workflowId: string, chainId: number): void {
 }
 
 /**
+ * Forget every latched refusal for a workflow, whatever chain it was on.
+ *
+ * Exists so the two latches clear on the same trigger. The reconciler prunes
+ * its own skip latch when a workflow leaves the active set, so that re-adding
+ * an invalid workflow is reported again. Without this, the pair was asymmetric
+ * in the worse direction: on a disable-then-enable the generic `invalid
+ * config` line reappeared while the line naming the chain and the allowed set
+ * stayed latched, leaving an operator the half that says nothing. Called from
+ * that same prune loop.
+ *
+ * The caller knows the workflow left the active set, not which chains it was
+ * refused on, so this drops every chain rather than asking it to supply one.
+ * Compared on the key's workflow half rather than by `startsWith`, because a
+ * workflow id is free-form text: a `${workflowId}:` prefix test would let
+ * workflow `a` drop the latch belonging to workflow `a:1`.
+ */
+export function forgetTraceRefusalsFor(workflowId: string): void {
+  for (const key of [...reportedRefusals]) {
+    const boundary = key.lastIndexOf(":");
+    if (boundary !== -1 && key.slice(0, boundary) === workflowId) {
+      reportedRefusals.delete(key);
+    }
+  }
+}
+
+/**
  * Drop the memoised resolution and the refusal latch. Tests only.
  *
  * The parse warns once per distinct value and the refusal warns once per
