@@ -352,11 +352,16 @@ organization's wallet replaced by the placeholder used elsewhere on this page.
 ABI supplied here named the second parameter `amount`; the platform's own
 ERC-20 ABI names it `value`.
 
-Because it comes from the frame rather than the transaction, it is the acting
-address under every routing mode with no second definition: your organization's
-wallet on a direct send, that same wallet when a sponsor paid the gas, and the
-Safe on a Safe-routed organization, where the wallet signs the outer transaction
-but `msg.sender` at the target is the Safe.
+`from` is the sender of the first frame, in execution order, that called the
+target with the decoded function; the trace is walked depth-first, so that is
+the call that ran first, not the shallowest one. When your organization calls
+the target directly, which is every case above, that frame is the direct call,
+and the field is the acting address under every routing mode: your
+organization's wallet on a direct send, that same wallet when a sponsor paid the
+gas, and the Safe on a Safe-routed organization, where the wallet signs the
+outer transaction but `msg.sender` at the target is the Safe. If a contract the
+transaction calls reaches the target before your direct call does, the earlier
+frame is the one reported and `from` is that contract.
 
 One precision: `from` is the sender of the trace frame that hit the target,
 which is not always the Solidity-level `msg.sender`. When the target is called
@@ -369,7 +374,9 @@ not what this field reports.
 
 `executedCall` is best-effort. It is omitted entirely when the transaction
 cannot be traced (an RPC without `debug_traceTransaction`, or no call frame
-matching the target), so read it defensively rather than assuming it is there.
+matching the target), and `from` alone is omitted when the trace records no
+sender for the matched frame, so read both defensively rather than assuming
+they are there.
 
 ## Transfer Funds
 

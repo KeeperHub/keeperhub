@@ -320,10 +320,10 @@ describe("trace-decode", () => {
       expect(viaImpl?.from).toBe(PROXY);
     });
 
-    it("takes the outermost frame when the target is hit twice with the same function", async () => {
+    it("takes the first matching frame in execution order when the target is hit twice", async () => {
       // A hook inside the target re-enters it (or a helper calls it again deeper in the tree). The
-      // caller's own frame is the shallower one, and depth-first pre-order lists it first; that
-      // ordering is what makes from the caller's wallet rather than the target's own address.
+      // caller's own frame executed first, and execution order (depth-first pre-order) lists it
+      // first; that ordering is what makes from the caller's wallet rather than the helper.
       const HELPER = "0x00000000000000000000000000000000000000e3";
       const tree: RawCallFrame = {
         type: "CALL",
@@ -350,6 +350,56 @@ describe("trace-decode", () => {
       });
       expect(result?.from).toBe(ORG_EOA);
       expect(result?.from).not.toBe(HELPER);
+    });
+
+    it("prefers an earlier deeper frame over a later shallower one: execution order, not depth", async () => {
+      // Root calls ROUTER. ROUTER's first child calls HELPER, which calls the target at depth 2;
+      // ROUTER's second child calls the target at depth 1. The depth-2 call ran first, so it is
+      // the executed call and from is HELPER, even though a shallower match exists.
+      const ROUTER = "0x00000000000000000000000000000000000000e4";
+      const HELPER = "0x00000000000000000000000000000000000000e3";
+      const tree: RawCallFrame = {
+        type: "CALL",
+        from: ORG_EOA,
+        to: ROUTER,
+        input: "0xabcdef01",
+        calls: [
+          {
+            type: "CALL",
+            from: ROUTER,
+            to: HELPER,
+            input: "0x12345678",
+            calls: [
+              { type: "CALL", from: HELPER, to: TARGET, input: transferData },
+            ],
+          },
+          { type: "CALL", from: ROUTER, to: TARGET, input: transferData },
+        ],
+      };
+      const provider = { send: vi.fn<SendFn>().mockResolvedValue(tree) };
+      const result = await resolveExecutedCall(provider, "0xhash", {
+        target: TARGET,
+        iface: IFACE,
+        functionName: "transfer",
+      });
+      expect(result?.from).toBe(HELPER);
+    });
+
+    it("omits from when the matched frame carries no sender", async () => {
+      const provider = {
+        send: vi.fn<SendFn>().mockResolvedValue({
+          type: "CALL",
+          to: TARGET,
+          input: transferData,
+        }),
+      };
+      const result = await resolveExecutedCall(provider, "0xhash", {
+        target: TARGET,
+        iface: IFACE,
+        functionName: "transfer",
+      });
+      expect(result).not.toBeNull();
+      expect(result).not.toHaveProperty("from");
     });
 
     it("lowercases from, as it does every other address", async () => {
