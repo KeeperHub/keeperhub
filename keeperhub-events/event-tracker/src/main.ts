@@ -55,8 +55,14 @@ async function shutdownRegistry(): Promise<void> {
  * A transition latch, not a permanent gag. Cleared when the workflow later
  * builds a registration (a config that becomes valid and then invalid again is
  * reported the second time) and when the workflow leaves the active set
- * (re-adding an invalid one is reported again). Mirrors `forgetTraceRefusal`
- * clearing on a successful map in the mapper.
+ * (re-adding an invalid one is reported again).
+ *
+ * The mapper's latch clears on both of the same triggers, which is what keeps
+ * the pair in step: `forgetTraceRefusal` on a successful map, and
+ * `forgetTraceRefusalsFor` from the prune loop below when the workflow leaves
+ * the active set. Clearing on only one of the two is what used to let a
+ * disable-then-enable report this generic line with the chain-naming one still
+ * latched.
  */
 const reportedSkips = new Set<string>();
 
