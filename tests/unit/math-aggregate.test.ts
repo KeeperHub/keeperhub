@@ -669,6 +669,45 @@ describe("math/aggregate - bounds on fixed-point work", () => {
     expect(result.resultType).toBe("number");
   });
 
+  it("keeps a tiny factor alive until a later large one, whichever order they come in", async () => {
+    // 1e-200 * 1e-200 * 1e310 is exactly 1e-90. Bounding the intermediate
+    // product at 256 places would have zeroed it before the large factor
+    // applied, and a float of each factor underflows the same way, so the
+    // answer used to be "0" or "NaN" depending on the order of the inputs.
+    const tiny = "1e-200";
+    const big = `1${"0".repeat(310)}`;
+    const expected = `0.${"0".repeat(89)}1`;
+    for (const explicitValues of [
+      `${tiny}, ${tiny}, ${big}`,
+      `${big}, ${tiny}, ${tiny}`,
+      `${tiny}, ${big}, ${tiny}`,
+    ]) {
+      const result = await expectSuccess({
+        operation: "product",
+        explicitValues,
+      });
+      expect(result.result).toBe(expected);
+      expect(result.resultType).toBe("number");
+    }
+  });
+
+  it("returns the exact 100-place product when it fits the bound, in either order", async () => {
+    const tiny = "1e-200";
+    const big = `1${"0".repeat(300)}`;
+    const expected = `0.${"0".repeat(99)}1`;
+    for (const explicitValues of [
+      `${tiny}, ${tiny}, ${big}`,
+      `${big}, ${tiny}, ${tiny}`,
+    ]) {
+      const result = await expectSuccess({
+        operation: "product",
+        explicitValues,
+      });
+      expect(result.result).toBe(expected);
+      expect(result.resultType).toBe("number");
+    }
+  });
+
   it("sends a power whose result would be too long through float", async () => {
     const base = "1".repeat(1000);
     const start = performance.now();
@@ -709,6 +748,22 @@ describe("math/aggregate - divisor precision and negative rounding", () => {
         (result as { divisionByZero?: true }).divisionByZero
       ).toBeUndefined();
     }
+  });
+
+  it("fails modulo, without the flag, by a divisor below the scale bound", async () => {
+    // 1e-300 is zero at 256 places but not to a float. Divide goes through
+    // float there; a float remainder by such a divisor is noise, so modulo
+    // fails with the precision message instead of a meaningless success.
+    const result = await expectFailure({
+      operation: "sum",
+      explicitValues: "9007199254740993",
+      postOperation: "modulo",
+      postOperand: "1e-300",
+    });
+    expect(result.error).toContain("not zero but is below the precision");
+    expect(
+      (result as { divisionByZero?: true }).divisionByZero
+    ).toBeUndefined();
   });
 
   it("goes to float, not to a silent zero, when a multiply collapses at the bound", async () => {

@@ -486,14 +486,25 @@ function sortBigInts(values: bigint[]): bigint[] {
   });
 }
 
-// Called with at least one value: the fixed-point path only runs when some
-// value is a bigint.
-function productAsFloat(decimals: Decimal[]): number {
-  let product = 1;
-  for (const d of decimals) {
-    product *= Number(formatScaled(d.value, d.decimals));
+// The float nearest an exact fixed-point value, taken from the value itself
+// rather than from its factors, so the answer cannot depend on the order the
+// factors came in or underflow on a transient intermediate. A magnitude past
+// what a float can hold lands on 0 or Infinity, as any float would.
+function floatOfExact(d: Decimal): number {
+  return Number(`${d.value}e-${d.decimals}`);
+}
+
+// Keeps a running product to MAX_DIGITS significant digits by dropping
+// fractional digits only: the scale comes down, the integer part is never
+// touched, so what is carried stays exact until a product has more
+// significant digits than any input set could sensibly need.
+function trimSignificant(d: Decimal): Decimal {
+  const excess = digitCount(d.value) - MAX_DIGITS;
+  if (excess <= 0 || d.decimals === 0) {
+    return d;
   }
-  return product;
+  const drop = Math.min(excess, d.decimals);
+  return { value: d.value / pow10(drop), decimals: d.decimals - drop };
 }
 
 type Aggregated =
@@ -546,18 +557,24 @@ function aggregateDecimals(
         decimals: scale,
       });
     case "product": {
+      // The running product is carried exactly, its scale allowed past
+      // MAX_SCALE while factors remain: a tiny factor followed by a large one
+      // must not vanish on the way, and the result must not depend on the
+      // order the factors came in. The scale bound is applied once, at the
+      // end; a product with no 256-place form is handed to float from that
+      // exact value, never from a float of each factor.
       let acc: Decimal = { value: BIGINT_ONE, decimals: 0 };
       for (const d of decimals) {
-        const exact = {
+        acc = trimSignificant({
           value: acc.value * d.value,
           decimals: acc.decimals + d.decimals,
-        };
-        acc = boundScale(exact);
-        if (exact.value !== BIGINT_ZERO && acc.value === BIGINT_ZERO) {
-          return { kind: "float", value: productAsFloat(decimals) };
-        }
+        });
       }
-      return aggregated(acc);
+      const bounded = boundScale(acc);
+      if (acc.value !== BIGINT_ZERO && bounded.value === BIGINT_ZERO) {
+        return { kind: "float", value: floatOfExact(acc) };
+      }
+      return aggregated(bounded);
     }
     default:
       throw new Error(`Unknown operation: ${operation}`);
@@ -589,7 +606,7 @@ function applyBinaryDecimalPostOperation(
       };
       const bounded = boundScale(exact);
       if (exact.value !== BIGINT_ZERO && bounded.value === BIGINT_ZERO) {
-        return { kind: "float", value: asFloat(value) * Number(operand.value) };
+        return { kind: "float", value: floatOfExact(exact) };
       }
       return valueOf(bounded);
     }
@@ -599,10 +616,13 @@ function applyBinaryDecimalPostOperation(
         return { kind: "divisionByZero" };
       }
       if (b === BIGINT_ZERO) {
-        // Not zero as written, zero at the bound. Float can still answer
-        // while the operand is above its own floor; below it nothing can.
+        // Not zero as written, zero at the bound. A quotient can still be
+        // answered in float while the operand is above its own floor; below
+        // it nothing can. A remainder cannot: a float remainder by a divisor
+        // the fixed-point scale cannot even represent is noise, not an
+        // answer, so modulo fails here on both counts.
         const divisor = Number(operand.value);
-        if (divisor === 0) {
+        if (divisor === 0 || postOp === "modulo") {
           return { kind: "belowPrecision", postOp };
         }
         // Float can overflow to Infinity here, as it can on the power path.
