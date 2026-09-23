@@ -260,7 +260,8 @@ app:
             echo "Running database migrations..."
             pnpm db:migrate
             echo "Seeding chains..."
-            pnpm db:seed
+            # seed-chains refuses a non-local DATABASE_URL unless told otherwise; this job is the one remote caller
+            ALLOW_REMOTE=1 pnpm db:seed
             echo "Backfilling workflow version-history baselines..."
             pnpm db:backfill-workflow-history || echo "[deploy] workflow-history backfill skipped (non-fatal)"
             echo "Migrations and seeding completed successfully"

@@ -86,7 +86,9 @@ this entry crashes the seed, and the seed runs on every deploy.
    leave both `explorerApiUrl` and `explorerApiType` out rather than pointing
    them at something that does not answer: transaction and address links still
    work, ABI auto-fetch stays off for the chain, and the seed and its test
-   accept the entry (Arc mainnet is in that state today). Set both or neither:
+   accept the entry. No shipped chain is in that state today: Arc mainnet was,
+   until Etherscan V2 started serving chain 5042, and its entry now points
+   there. Set both or neither:
    `lib/explorer` needs the pair, so one without the other is a chain that
    looks configured and silently has no ABI lookups, and the coverage test
    fails on it.
@@ -184,6 +186,14 @@ and fails on drift.
   lockstep by hand; do not add a chain to one without the other.
 
 ## Verify locally
+
+`scripts/seed/seed-chains.ts` refuses to run against a `DATABASE_URL` whose
+host is not this machine unless `ALLOW_REMOTE=1` is set. Check what your shell
+exports before you run it: a shell export overrides `.env`, and the seed
+writes null WSS and private-RPC columns on every chain row when
+`CHAIN_RPC_CONFIG` is absent, which is harmless on a local database and is
+exactly what the guard keeps away from a shared one. The deploy migrator sets
+`ALLOW_REMOTE=1` because it is the one caller meant to seed a remote database.
 
 ```bash
 pnpm tsx scripts/seed/seed-chains.ts

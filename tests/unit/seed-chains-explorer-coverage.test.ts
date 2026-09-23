@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { CHAIN_CONFIG } from "@/lib/rpc/rpc-config";
 import {
+  assertLocalOrAllowed,
   buildExplorerConfigs,
   CHAIN_TO_DEFAULT_ID,
   DEFAULT_CHAINS,
@@ -107,5 +108,27 @@ describe("seed-chains explorer coverage", () => {
       EXPLORER_CONFIG_TEMPLATES[CHAIN_TO_DEFAULT_ID[chain.name] ?? 0]
         ?.explorerUrl
     );
+  });
+});
+
+describe("seed-chains local-database guard", () => {
+  it("lets a local database through", () => {
+    for (const url of [
+      "postgres://localhost:5432/workflow",
+      "postgres://user:pw@127.0.0.1:5432/workflow",
+      "postgres://[::1]:5432/workflow",
+    ]) {
+      expect(() => assertLocalOrAllowed(url, {})).not.toThrow();
+    }
+  });
+
+  it("refuses a remote database unless ALLOW_REMOTE=1", () => {
+    const remote = "postgres://user:pw@db.example.internal:5432/workflow";
+    expect(() => assertLocalOrAllowed(remote, {})).toThrow(
+      /non-local host 'db.example.internal'/
+    );
+    expect(() =>
+      assertLocalOrAllowed(remote, { ALLOW_REMOTE: "1" })
+    ).not.toThrow();
   });
 });
