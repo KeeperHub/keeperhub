@@ -35,10 +35,9 @@ import {
   PagerDutyTestNodeButton,
   PagerDutyTriggerNodeField,
 } from "@/components/workflow/config/pagerduty-resource-field";
-import { SwitchField } from "@/components/workflow/config/switch-field";
+import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
 import { integrationsAtom } from "@/lib/integrations-store";
-import { resolveSponsorGas } from "@/lib/web3/sponsorship-feature-flag";
 import {
   registerBranding,
   registerFieldRenderer,
@@ -660,14 +659,14 @@ registerFieldRenderer(
 registerFieldRenderer(
   "gas-sponsorship-switch",
   ({ field, config, onUpdateConfig, disabled }) => (
-    <SwitchField
-      checked={resolveSponsorGas(config[field.key])}
+    <SponsorGasField
       description={field.helpTip ?? field.helpText}
       disabled={disabled}
       id={field.key}
       key={field.key}
       label={field.label}
       onChange={(checked) => onUpdateConfig(field.key, checked)}
+      value={config[field.key]}
     />
   )
 );
