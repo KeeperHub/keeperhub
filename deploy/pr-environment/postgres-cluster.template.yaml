@@ -19,10 +19,14 @@ spec:
       secret:
         name: keeperhub-pr-${PR_NUMBER}-db-credentials
 
-  # Storage configuration
+  # Storage configuration.
+  # gp3-ephemeral reclaims the EBS volume when this PVC goes away. The shared gp3
+  # class is Retain, so it left one 5 GiB volume billing per torn-down preview
+  # (KEEP-1377). This class exists on techops-staging only, which is the only
+  # cluster PR environments deploy to.
   storage:
     size: 5Gi
-    storageClass: gp3
+    storageClass: gp3-ephemeral
 
   # Resource limits
   resources:
