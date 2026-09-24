@@ -196,7 +196,7 @@ Field-name gotchas the strict validator will reject:
 
 A warning on `functionName` and `args`: the save-time validator accepts them, because workflows persisted before a field rename still carry that shape and have to stay re-savable. The runtime does not translate them. A workflow that uses `functionName` will therefore save without complaint and then fail at execution with ``Missing `abiFunction` in the step config``. Always send `abiFunction` and `functionArgs`.
 
-Trigger data reference from a downstream action uses the [stored templating format](/workflows/templating): `{{@<nodeId>:<Label>.<field>}}`. Fields on the `input` object are spread into the trigger's output, so `{"input": {"depositId": "0x…"}}` sent to [`POST /api/workflows/{id}/execute`](#execute-workflow) is reachable at `{{@trigger-1:Manual.depositId}}`. Valid `triggerType` values are `Manual`, `Schedule`, `Webhook`, `Event`, `Block`, and `Transfer`; a `Webhook` trigger receives the same treatment on its own `POST /api/workflows/{id}/webhook` URL.
+Trigger data reference from a downstream action uses the [stored templating format](/workflows/templating): `{{@<nodeId>:<Label>.<field>}}`. Fields on the `input` object are spread into the trigger's output, so `{"input": {"depositId": "0x…"}}` sent to [`POST /api/workflows/{id}/execute`](#execute-workflow) is reachable at `{{@trigger-1:Manual.depositId}}`. Valid `triggerType` values are `Manual`, `Schedule`, `Webhook`, `Event`, `Block`, `Transfer`, and `Trace`; a `Webhook` trigger receives the same treatment on its own `POST /api/workflows/{id}/webhook` URL.
 
 ### Response
 

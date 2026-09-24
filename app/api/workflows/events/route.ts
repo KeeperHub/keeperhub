@@ -3,11 +3,24 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { type Chain, chains, workflows } from "@/lib/db/schema";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { getProtocol } from "@/lib/protocol-registry";
 import type { WorkflowNode } from "@/lib/workflow/store";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
+import {
+  prepareTraceTriggerConfig,
+  type TraceConfigCheck,
+} from "@/lib/workflow/trace-trigger-config";
+
+const TRACE_REFUSAL_REASONS: Record<
+  Extract<TraceConfigCheck, { ok: false }>["reason"],
+  string
+> = {
+  "contract-address": "missing or malformed watched contract address",
+  "call-types": "unreadable call types",
+  selector: "malformed function selector",
+};
 
 // The Transfer trigger always watches the fixed TIP-20
 // TransferWithMemo event. The event-tracker's mapper needs an ABI + event name
@@ -99,8 +112,9 @@ export async function GET(request: Request) {
             return null;
           }
 
-          // Admit Event triggers and the Transfer trigger; both
-          // register through the event-tracker as on-chain log subscriptions.
+          // Admit Event and Transfer triggers, which register through the
+          // event-tracker as on-chain log subscriptions, and Trace triggers,
+          // which it serves from block call traces on the same drain loop.
           const triggerType = triggerNode.data?.config?.triggerType as
             | string
             | undefined;
@@ -108,11 +122,31 @@ export async function GET(request: Request) {
           const isEventTrigger = triggerType === WorkflowTriggerEnum.EVENT;
           const isTempoPaymentTrigger =
             triggerType === WorkflowTriggerEnum.TEMPO_PAYMENT;
-          if (!(isEventTrigger || isTempoPaymentTrigger)) {
+          const isTraceTrigger = triggerType === WorkflowTriggerEnum.TRACE;
+          if (!(isEventTrigger || isTempoPaymentTrigger || isTraceTrigger)) {
             return null;
           }
 
           const config = triggerNode.data?.config;
+
+          if (isTraceTrigger && config) {
+            // Refused here rather than handed to the tracker: a missing
+            // watched contract fires on every call frame on the chain, and a
+            // selector or call-type list the matcher cannot read registers and
+            // never fires. Nothing validates trigger nodes on save
+            // (action-config validation covers action nodes only), so the
+            // editor's own checks cannot be the only ones.
+            const check = prepareTraceTriggerConfig(config);
+            if (!check.ok) {
+              logUserError(
+                ErrorCategory.VALIDATION,
+                `[Workflow Events] Trace trigger refused: ${TRACE_REFUSAL_REASONS[check.reason]}`,
+                undefined,
+                { workflow_id: workflow.id, reason: check.reason }
+              );
+              return null;
+            }
+          }
 
           // Inject the fixed TransferWithMemo ABI + event name for the Tempo
           // trigger so the mapper can build the subscription. contractAddress

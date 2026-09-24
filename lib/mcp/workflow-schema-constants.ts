@@ -304,6 +304,52 @@ export const TRIGGERS = {
         "string - ISO timestamp when the payment was detected (available on all trigger types)",
     },
   },
+  Trace: {
+    triggerType: "Trace",
+    label: "Trace",
+    description:
+      "Fires once per call frame that matches a filter on a watched contract, read from block call traces. Sees what events cannot: reverted calls, internal ETH transfers, delegatecalls and unlogged function calls. Only fires on networks whose RPC serves debug_traceBlockByNumber",
+    requiredFields: {
+      network:
+        'string - EVM chain ID (e.g., "9745" for Plasma, "4217" for Tempo)',
+      contractAddress:
+        "string - Contract whose incoming calls are watched (the call's `to`), as a 0x-prefixed 20-byte address. Required: a Trace trigger without one is not registered, since every other filter matches everything when absent",
+    },
+    optionalFields: {
+      traceCaller: "string - Only match calls made from this address",
+      traceSelector:
+        'string - Only match this 4-byte function selector, 0x followed by 8 hex characters (e.g., "0x8456cb59"). A value in any other shape is refused, since it would match nothing',
+      abiFunction:
+        "string - The function chosen in the editor, which fills in traceSelector there. The tracker reads traceSelector only, so when writing the config directly send traceSelector to narrow the trigger to one function; abiFunction alone narrows nothing",
+      contractABI: "string - Contract ABI JSON, needed only for abiFunction",
+      traceCallTypes:
+        "string[] - Only match these frame types: CALL, STATICCALL, DELEGATECALL, CALLCODE, CREATE, CREATE2, SELFDESTRUCT. Empty matches all",
+      traceMinValueWei:
+        "string - Only match calls moving at least this much native value, in wei (decimal integer)",
+      traceMinValue:
+        "string - Optional. The same minimum as traceMinValueWei written in native token units, for display in the editor. When absent the editor converts traceMinValueWei for display; traceMinValueWei is what registers",
+      traceStatus:
+        '"success" (default, applied when absent) | "reverted" | "any" - Which call outcomes match',
+    },
+    outputFields: {
+      transactionHash: "string - Hash of the transaction the call ran in",
+      blockNumber: "number - Block height the transaction landed in",
+      chainId: "number - Numeric chain ID the call ran on",
+      from: "string - Address that made the call",
+      to: "string - Address that was called (the watched contract)",
+      value: "string - Native value moved by the call, in wei (decimal)",
+      selector: "string - 4-byte selector of the call, or 0x when none",
+      input: "string - Full calldata of the call",
+      callType: "string - CALL, DELEGATECALL, STATICCALL, CREATE, ...",
+      reverted: "boolean - Whether the call reverted",
+      depth: "number - Call depth inside the transaction (0 = top level)",
+      frameIndex:
+        "number - Position of the call in the transaction's execution order",
+      transactionIndex: "number - Index of the transaction in the block",
+      triggeredAt:
+        "string - ISO timestamp when the call was detected (available on all trigger types)",
+    },
+  },
 } as const;
 
 // =============================================================================

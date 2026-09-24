@@ -18,6 +18,7 @@ export enum WorkflowTriggerEnum {
   EVENT = "Event", // keeperhub custom field //
   BLOCK = "Block", // keeperhub custom field //
   TEMPO_PAYMENT = "Transfer", // keeperhub custom field //
+  TRACE = "Trace", // keeperhub custom field //
 }
 
 export type WorkflowTriggerType = `${WorkflowTriggerEnum}`;
@@ -34,7 +35,8 @@ export function shouldShowEnableSwitch(
     triggerType === WorkflowTriggerEnum.SCHEDULE ||
     triggerType === WorkflowTriggerEnum.BLOCK ||
     triggerType === WorkflowTriggerEnum.WEBHOOK ||
-    triggerType === WorkflowTriggerEnum.TEMPO_PAYMENT
+    triggerType === WorkflowTriggerEnum.TEMPO_PAYMENT ||
+    triggerType === WorkflowTriggerEnum.TRACE
   );
 }
 

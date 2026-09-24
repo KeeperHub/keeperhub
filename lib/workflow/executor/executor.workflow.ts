@@ -2655,7 +2655,9 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     if (tt === "Scheduled" || tt === "Schedule") {
       return "scheduled";
     }
-    if (tt === "Event") {
+    // A Trace trigger fires on an on-chain call frame, so its follow-up
+    // transactions carry the same urgency as an Event trigger's.
+    if (tt === "Event" || tt === "Trace") {
       return "event";
     }
     return "manual";
@@ -3465,7 +3467,11 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
             ...deserializeTriggerInput(triggerType, triggerInput),
           };
 
-          if (triggerType === "Event" || triggerType === "Transfer") {
+          if (
+            triggerType === "Event" ||
+            triggerType === "Transfer" ||
+            triggerType === "Trace"
+          ) {
             // Enrich event data with explorer links so the execution log UI can
             // render clickable transaction/address links. Uses a step function
             // to keep db/schema out of the workflow bundle.
