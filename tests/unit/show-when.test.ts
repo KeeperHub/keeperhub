@@ -199,4 +199,50 @@ describe("evaluateShowWhen", () => {
       ).toBe(false);
     });
   });
+
+  describe("computed: sponsorshipSupported", () => {
+    const predicate = {
+      computed: "sponsorshipSupported",
+      networkField: "network",
+    } as const;
+
+    it("shows the field on a chain the Gas Station covers", () => {
+      // The chain select stores String(chainId); 1 is Ethereum, 84532 Base Sepolia.
+      expect(evaluateShowWhen(predicate, { network: "1" })).toBe(true);
+      expect(evaluateShowWhen(predicate, { network: "84532" })).toBe(true);
+    });
+
+    it("hides the field on an EVM chain the Gas Station does not cover", () => {
+      // Optimism and BNB are deliberately absent from SPONSORSHIP_CHAINS, so a
+      // toggle there could only turn off something that was never available.
+      expect(evaluateShowWhen(predicate, { network: "10" })).toBe(false);
+      expect(evaluateShowWhen(predicate, { network: "56" })).toBe(false);
+    });
+
+    it("hides the field on a Solana network", () => {
+      // Transfer Native Token accepts Solana, and its step returns before the
+      // sponsorship gate is reached.
+      // SOLANA_MAINNET / SOLANA_DEVNET in lib/rpc/types.ts.
+      expect(evaluateShowWhen(predicate, { network: "101" })).toBe(false);
+      expect(evaluateShowWhen(predicate, { network: "103" })).toBe(false);
+    });
+
+    it("resolves a legacy network name, not just a numeric id", () => {
+      expect(evaluateShowWhen(predicate, { network: "mainnet" })).toBe(true);
+      expect(evaluateShowWhen(predicate, { network: "base" })).toBe(true);
+    });
+
+    it("hides the field rather than throwing when the network is unusable", () => {
+      // getChainIdFromNetwork throws on these. buildExampleConfig seeds the
+      // network field with placeholder text ("Your network") when assembling the
+      // AI prompt, and this runs on every render of the config form.
+      expect(evaluateShowWhen(predicate, {})).toBe(false);
+      expect(evaluateShowWhen(predicate, { network: "" })).toBe(false);
+      expect(evaluateShowWhen(predicate, { network: "Your network" })).toBe(
+        false
+      );
+      expect(evaluateShowWhen(predicate, { network: null })).toBe(false);
+      expect(evaluateShowWhen(predicate, { network: {} })).toBe(false);
+    });
+  });
 });

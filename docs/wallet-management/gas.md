@@ -87,6 +87,24 @@ A transaction is sponsored only when all of the following are true. Otherwise it
 - **Direct wallet sender (no Safe)**: the active Sender is the wallet itself.
 - **Public mempool**: transactions routed through a private mempool are not sponsored.
 - **Gas credits available**: your organization still has gas credits for the current period.
+- **Sponsor gas is on for the node**: the action's own toggle, described below.
+
+### Sponsor gas toggle
+
+Each write action decides for itself whether to use sponsorship:
+
+1. Open the action node configuration (Transfer Native Token, Transfer ERC20 Token, Approve ERC20 Token, Write Contract, or any protocol write action)
+2. Pick a network that gas sponsorship covers, listed above
+3. Expand the **Advanced** section
+4. Set **Sponsor gas**
+
+The toggle appears only once the node points at a network sponsorship covers. On any other network there is nothing for it to turn off, so it stays hidden and the wallet pays gas as usual.
+
+The toggle is on by default, which is the behavior every existing workflow already had: the action tries sponsorship first and falls back to your own wallet when any eligibility condition above is not met.
+
+Turn it off to keep the action on your own wallet. Sponsorship is then not attempted at all, so the action spends no gas credits and the sending wallet must hold enough native token for both the gas fee and any value the transaction sends. Use it when you want a predictable sender and fee source for one action, for example a transaction whose gas you want billed to the wallet rather than your gas credit allowance.
+
+The toggle only removes sponsorship. Turning it on does not override the conditions above: an unsupported network, a Safe sender, a private mempool route, or an exhausted credit allowance still pays gas from the wallet.
 
 ### Safe wallets
 
