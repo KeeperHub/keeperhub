@@ -41,6 +41,7 @@ export const PUBLIC_RPCS = {
   ETH_MAINNET: "https://ethereum-rpc.publicnode.com",
   ETH_MAINNET_FALLBACK: "https://1rpc.io/eth",
   SEPOLIA: "https://ethereum-sepolia-rpc.publicnode.com",
+  HOODI: "https://ethereum-hoodi-rpc.publicnode.com",
   BASE_MAINNET: "https://mainnet.base.org",
   BASE_SEPOLIA: "https://sepolia.base.org",
   TEMPO_TESTNET: "https://rpc.testnet.tempo.xyz",
@@ -153,6 +154,13 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     envKey: "CHAIN_SEPOLIA_PRIMARY_RPC",
     fallbackEnvKey: "CHAIN_SEPOLIA_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.SEPOLIA,
+  },
+  // Hoodi Testnet
+  560048: {
+    jsonKey: "eth-hoodi",
+    envKey: "CHAIN_HOODI_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_HOODI_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.HOODI,
   },
   // Base Mainnet
   8453: {

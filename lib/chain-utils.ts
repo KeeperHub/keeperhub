@@ -5,6 +5,7 @@ const CHAIN_NAMES: Record<string, string> = {
   "137": "Polygon",
   "8453": "Base",
   "42161": "Arbitrum",
+  "560048": "Ethereum Hoodi",
   "11155111": "Ethereum Sepolia",
   "84532": "Base Sepolia",
   "42431": "Tempo Testnet",
@@ -19,6 +20,7 @@ const EXPLORER_URLS: Record<string, string> = {
   "8453": "https://basescan.org/address/",
   "42161": "https://arbiscan.io/address/",
   "11155111": "https://sepolia.etherscan.io/address/",
+  "560048": "https://hoodi.etherscan.io/address/",
 };
 
 export function getChainName(chainId: string): string {

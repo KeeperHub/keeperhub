@@ -106,6 +106,29 @@ const DEFAULT_CHAINS: NewChain[] = [
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "eth-sepolia" }),
   },
   {
+    chainId: getChainConfigValue("eth-hoodi", "chainId", 560_048),
+    name: "Ethereum Hoodi",
+    symbol: getChainConfigValue("eth-hoodi", "symbol", "ETH"),
+    chainType: "evm",
+    defaultPrimaryRpc: getRpcUrlByChainId(560_048, "primary"),
+    defaultFallbackRpc: getRpcUrlByChainId(560_048, "fallback"),
+    defaultPrimaryWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[560_048].jsonKey,
+      type: "primary",
+    }),
+    defaultFallbackWss: getWssUrl({
+      rpcConfig,
+      jsonKey: CHAIN_CONFIG[560_048].jsonKey,
+      type: "fallback",
+    }),
+    isTestnet: getChainConfigValue("eth-hoodi", "isTestnet", true),
+    isEnabled: getChainConfigValue("eth-hoodi", "isEnabled", true),
+    usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "eth-hoodi" }),
+    defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "eth-hoodi" }),
+    aliases: ["hoodi", "eth-hoodi"],
+  },
+  {
     chainId: getChainConfigValue("base-mainnet", "chainId", 8453),
     name: "Base",
     symbol: getChainConfigValue("base-mainnet", "symbol", "BASE"),
@@ -703,6 +726,16 @@ const EXPLORER_CONFIG_TEMPLATES: Record<
     explorerAddressPath: "/address/{address}",
     explorerContractPath: "/address/{address}#code",
   },
+  // Ethereum Hoodi - Etherscan V2
+  560048: {
+    chainType: "evm",
+    explorerUrl: "https://hoodi.etherscan.io",
+    explorerApiType: "etherscan",
+    explorerApiUrl: "https://api.etherscan.io/v2/api",
+    explorerTxPath: "/tx/{hash}",
+    explorerAddressPath: "/address/{address}",
+    explorerContractPath: "/address/{address}#code",
+  },
   // Base Mainnet - Etherscan V2 (Basescan)
   8453: {
     chainType: "evm",
@@ -1049,6 +1082,7 @@ async function seedChains() {
   const chainToDefaultIdMap: Record<string, number> = {
     "Ethereum Mainnet": 1,
     "Ethereum Sepolia": 11_155_111,
+    "Ethereum Hoodi": 560_048,
     Base: 8453,
     "Base Sepolia": 84_532,
     "Tempo Testnet": 42_431,

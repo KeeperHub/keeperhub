@@ -139,7 +139,7 @@
       "path": "/api/chains/{chainId}/abi",
       "route_file": "app/api/chains/[chainId]/abi/route.ts",
       "source": "docs/api/chains.md",
-      "line": 142
+      "line": 143
     },
     {
       "method": "GET",

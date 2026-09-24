@@ -127,6 +127,7 @@ These string aliases are normalized to the numeric chain ID before routing. Name
 |---|---|---|
 | `mainnet`, `ethereum`, `eth-mainnet`, `ethereum-mainnet` | 1 | Ethereum Mainnet |
 | `sepolia`, `eth-sepolia`, `sepolia-testnet` | 11155111 | Ethereum Sepolia |
+| `hoodi`, `eth-hoodi`, `hoodi-testnet` | 560048 | Ethereum Hoodi |
 | `base`, `base-mainnet` | 8453 | Base |
 | `base-sepolia`, `base-testnet` | 84532 | Base Sepolia |
 | `tempo`, `tempo-mainnet` | 4217 | Tempo |
