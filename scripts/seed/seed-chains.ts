@@ -59,7 +59,7 @@ const getChainConfigValue = <T>(
   defaultValue: T
 ): T => getConfigValue(rpcConfig, jsonKey, field, defaultValue);
 
-const DEFAULT_CHAINS: NewChain[] = [
+export const DEFAULT_CHAINS: NewChain[] = [
   {
     chainId: getChainConfigValue("eth-mainnet", "chainId", 1),
     name: "Ethereum Mainnet",
@@ -679,7 +679,7 @@ const DEFAULT_CHAINS: NewChain[] = [
 // All Etherscan-family chains use the unified V2 API (api.etherscan.io/v2/api)
 // with chainid param - one API key covers all chains.
 // Note: chainIds are resolved dynamically from DEFAULT_CHAINS to ensure consistency
-const EXPLORER_CONFIG_TEMPLATES: Record<
+export const EXPLORER_CONFIG_TEMPLATES: Record<
   number,
   Omit<NewExplorerConfig, "chainId">
 > = {
@@ -743,18 +743,16 @@ const EXPLORER_CONFIG_TEMPLATES: Record<
     explorerAddressPath: "/address/{address}",
     explorerContractPath: "/address/{address}?tab=contract",
   },
-  // Arc Mainnet - Blockscout frontend went live 2026-09-16, but its
-  // /api/v2/* is still behind a Cloudflare challenge (verified live), unlike
-  // testnet's API which resolves cleanly. explorerApiType/explorerApiUrl are
-  // deliberately omitted: fetchContractAbi and fetchContractTransactions both
-  // guard on `explorerApiUrl && explorerApiType` and degrade to
-  // "Explorer API not configured for this chain" rather than throwing, so
-  // ABI auto-fetch correctly stays off while transactionLink/addressLink
-  // (which only need explorerUrl) start working. Add the API fields once
-  // explorer.arc.io/api stops being challenge-gated.
+  // Arc Mainnet - the Blockscout frontend went live 2026-09-16 and its
+  // /api/v2/* is still behind a Cloudflare challenge, so the API half comes
+  // from Etherscan V2, which serves chain 5042 ("Arc Mainnet") on the same
+  // endpoint the other V2-family chains use. Links still open on
+  // explorer.arc.io.
   5042: {
     chainType: "evm",
     explorerUrl: "https://explorer.arc.io",
+    explorerApiType: "etherscan",
+    explorerApiUrl: "https://api.etherscan.io/v2/api",
     explorerTxPath: "/tx/{hash}",
     explorerAddressPath: "/address/{address}",
     explorerContractPath: "/address/{address}?tab=contract",
@@ -954,8 +952,115 @@ const EXPLORER_CONFIG_TEMPLATES: Record<
   },
 };
 
+// Joins a seeded chain to its explorer template by display name. The chain's
+// own chainId can be overridden per environment through CHAIN_RPC_CONFIG, so
+// the name is the stable key and this map turns it back into the default id
+// the templates are keyed by. Every DEFAULT_CHAINS entry needs a row here;
+// tests/unit/seed-chains-explorer-coverage.test.ts fails when one is missing.
+export const CHAIN_TO_DEFAULT_ID: Record<string, number> = {
+  "Ethereum Mainnet": 1,
+  "Ethereum Sepolia": 11_155_111,
+  Base: 8453,
+  "Base Sepolia": 84_532,
+  "Tempo Testnet": 42_431,
+  Tempo: 4217,
+  "BNB Chain": 56,
+  "BNB Chain Testnet": 97,
+  Polygon: 137,
+  "Arbitrum One": 42_161,
+  "Polygon Amoy": 80_002,
+  "Arbitrum Sepolia": 421_614,
+  Optimism: 10,
+  "Optimism Sepolia": 11_155_420,
+  Avalanche: 43_114,
+  "Avalanche Fuji": 43_113,
+  Plasma: 9745,
+  "Plasma Testnet": 9746,
+  "0G": 16_661,
+  "0G Galileo": 16_602,
+  "Robinhood Chain": 4663,
+  "Robinhood Chain Testnet": 46_630,
+  Solana: 101,
+  "Solana Devnet": 103,
+  "Arc Testnet": 5_042_002,
+  Arc: 5042,
+};
+
+// The explorer_configs rows the seed writes: one per chain, keyed by the
+// chain's resolved chainId, with the template looked up through the name map.
+//
+// A chain with no map entry or no template throws. This used to be a
+// console.warn followed by a zero exit, which is how a chain shipped without
+// an explorer: the seed said so once, in a deploy log nobody was reading.
+export function buildExplorerConfigs(
+  seededChains: readonly NewChain[],
+  nameToDefaultId: Record<string, number>,
+  templates: Record<number, Omit<NewExplorerConfig, "chainId">>
+): NewExplorerConfig[] {
+  return seededChains.map((chain) => {
+    const defaultChainId = nameToDefaultId[chain.name];
+    if (defaultChainId === undefined) {
+      throw new Error(
+        `No CHAIN_TO_DEFAULT_ID entry for chain "${chain.name}" (${chain.chainId}); add one so the chain gets an explorer config`
+      );
+    }
+    const template = templates[defaultChainId];
+    if (template === undefined) {
+      throw new Error(
+        `No EXPLORER_CONFIG_TEMPLATES entry for chain "${chain.name}" (default id ${defaultChainId})`
+      );
+    }
+    return { chainId: chain.chainId, ...template };
+  });
+}
+
+/**
+ * Refuse a database that is not on this machine unless the caller says so.
+ *
+ * The chain UPDATE below writes every column it does not know as null: with
+ * no CHAIN_RPC_CONFIG in the environment it clears the WSS and private RPC
+ * columns of every chain row and turns private-mempool routing off. Run by a
+ * contributor whose shell still exports a shared DATABASE_URL, that silently
+ * stops Event triggers registering on every chain until the next deploy
+ * re-seeds. Same shape and override as scripts/backfill-drizzle-migrations.ts;
+ * the deploy migrator, the one legitimate remote caller, sets ALLOW_REMOTE=1
+ * on its command line.
+ */
+export function assertLocalOrAllowed(
+  connectionString: string,
+  env: Record<string, string | undefined> = process.env
+): void {
+  let hostname: string;
+  try {
+    hostname = new URL(connectionString).hostname;
+  } catch {
+    hostname = "";
+  }
+  const isLocal =
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "::1" ||
+    hostname === "[::1]" ||
+    hostname === "";
+  if (!isLocal && env.ALLOW_REMOTE !== "1") {
+    throw new Error(
+      `Refusing to seed chains against non-local host '${hostname}'. Set ALLOW_REMOTE=1 to override.`
+    );
+  }
+}
+
 async function seedChains() {
+  // Resolved before anything is written: a chain with no explorer mapping
+  // fails the run here, with the database untouched, rather than after every
+  // chain row has been upserted and stale ones disabled.
+  const EXPLORER_CONFIGS = buildExplorerConfigs(
+    DEFAULT_CHAINS,
+    CHAIN_TO_DEFAULT_ID,
+    EXPLORER_CONFIG_TEMPLATES
+  );
+
   const connectionString = getDatabaseUrl();
+  assertLocalOrAllowed(connectionString);
 
   console.log("Connecting to database...");
   const client = postgres(connectionString, { max: 1 });
@@ -1043,56 +1148,6 @@ async function seedChains() {
     }
   }
 
-  // Build EXPLORER_CONFIGS dynamically using resolved chainIds from DEFAULT_CHAINS
-  // This ensures chainId consistency between chains and explorer configs
-  // We map each chain to its explorer config using the CHAIN_CONFIG to find the default chainId
-  const chainToDefaultIdMap: Record<string, number> = {
-    "Ethereum Mainnet": 1,
-    "Ethereum Sepolia": 11_155_111,
-    Base: 8453,
-    "Base Sepolia": 84_532,
-    "Tempo Testnet": 42_431,
-    Tempo: 4217,
-    "BNB Chain": 56,
-    "BNB Chain Testnet": 97,
-    Polygon: 137,
-    "Arbitrum One": 42_161,
-    "Polygon Amoy": 80_002,
-    "Arbitrum Sepolia": 421_614,
-    Optimism: 10,
-    "Optimism Sepolia": 11_155_420,
-    Avalanche: 43_114,
-    "Avalanche Fuji": 43_113,
-    Plasma: 9745,
-    "Plasma Testnet": 9746,
-    "0G": 16_661,
-    "0G Galileo": 16_602,
-    "Robinhood Chain": 4663,
-    "Robinhood Chain Testnet": 46_630,
-    Solana: 101,
-    "Solana Devnet": 103,
-    "Arc Testnet": 5_042_002,
-    Arc: 5042,
-  };
-
-  const EXPLORER_CONFIGS: NewExplorerConfig[] = DEFAULT_CHAINS.map((chain) => {
-    // Look up the default chainId using the chain name
-    const defaultChainId = chainToDefaultIdMap[chain.name];
-
-    if (!(defaultChainId && EXPLORER_CONFIG_TEMPLATES[defaultChainId])) {
-      console.warn(
-        `  ! No explorer config template for chain ${chain.name} (${chain.chainId}), skipping`
-      );
-      return null;
-    }
-
-    const template = EXPLORER_CONFIG_TEMPLATES[defaultChainId];
-    return {
-      chainId: chain.chainId, // Use the resolved chainId from the chain
-      ...template,
-    };
-  }).filter((config): config is NewExplorerConfig => config !== null);
-
   console.log(`\nSeeding ${EXPLORER_CONFIGS.length} explorer configs...`);
 
   for (const config of EXPLORER_CONFIGS) {
@@ -1135,7 +1190,13 @@ async function seedChains() {
   process.exit(0);
 }
 
-seedChains().catch((err) => {
-  console.error("Error seeding chains:", err);
-  process.exit(1);
-});
+// Only when run directly, so a test can import DEFAULT_CHAINS and the
+// explorer join without connecting to a database. `require.main === module`
+// rather than a process.argv[1] comparison; scripts/check-api-docs-routes.ts
+// records why.
+if (require.main === module) {
+  seedChains().catch((err) => {
+    console.error("Error seeding chains:", err);
+    process.exit(1);
+  });
+}

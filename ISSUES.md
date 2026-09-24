@@ -59,6 +59,9 @@ so two people do not build the same thing.
 - Dependencies added, removed, or upgraded
 - Protocol definitions, contract addresses, ABIs, or the chains a protocol is
   offered on
+- A new chain (the procedure is in
+  [specs/adding-an-evm-chain.md](specs/adding-an-evm-chain.md); the issue
+  should carry the facts its first table asks for)
 - CI, build, deployment, or environment configuration
 - Pricing, limits, plans, or anything a user is charged for
 - New features and new abstractions

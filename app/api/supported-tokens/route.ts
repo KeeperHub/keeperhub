@@ -1,18 +1,11 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { hasIndependentTokenList } from "@/lib/chain-utils";
 import { ETHEREUM_MAINNET_CHAIN_ID as MAINNET_CHAIN_ID } from "@/lib/chains/ids";
 import { db } from "@/lib/db";
 import { chains, explorerConfigs, supportedTokens } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-
-// Mainnet chain ID - used as the "master list" of supported tokens
-// Chains with their own stablecoin lineup that doesn't mirror Ethereum mainnet
-// (TEMPO mainnet/testnet, Plasma mainnet, Arc mainnet/testnet). These bypass
-// the master-list overlay and return only their own supported_tokens rows,
-// avoiding misleading "Not available" entries for assets that don't exist on
-// the chain.
-const INDEPENDENT_TOKEN_LIST_CHAIN_IDS = [42_431, 4217, 9745, 5042, 5_042_002];
 
 /**
  * Build explorer URL for a token address
@@ -125,7 +118,7 @@ export async function GET(request: Request) {
 
     // For chains with independent stablecoin lineups (TEMPO, Plasma), return
     // only their own tokens; no master-list overlay.
-    if (INDEPENDENT_TOKEN_LIST_CHAIN_IDS.includes(chainId)) {
+    if (hasIndependentTokenList(chainId)) {
       const tokens = await db
         .select()
         .from(supportedTokens)
