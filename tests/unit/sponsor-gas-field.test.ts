@@ -44,6 +44,23 @@ describe("Sponsor gas field placement", () => {
   });
 });
 
+describe("Sponsor gas field visibility", () => {
+  it("gates every copy of the field on the selected network", () => {
+    // Without this the toggle renders on chains the Gas Station never covered,
+    // where it can only turn off something that was not there.
+    for (const actionType of SPONSORABLE) {
+      const fields = findActionById(actionType)?.configFields ?? [];
+      const field = fields
+        .flatMap((f) => (f.type === "group" ? f.fields : [f]))
+        .find((f) => "key" in f && f.key === "sponsorGas");
+      expect(field?.showWhen).toEqual({
+        computed: "sponsorshipSupported",
+        networkField: "network",
+      });
+    }
+  });
+});
+
 describe("resolveSponsorGas", () => {
   it("defaults on so a node authored before the toggle keeps its route", () => {
     expect(resolveSponsorGas(undefined)).toBe(true);

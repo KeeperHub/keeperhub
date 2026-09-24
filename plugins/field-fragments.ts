@@ -112,6 +112,9 @@ export function sponsorGasField(): ActionConfigFieldBase {
       "When on, the transaction goes through gas sponsorship first and falls back to your own wallet if sponsorship is unavailable on this network or your credits are spent. Turn it off to always pay gas from your own wallet. Sponsorship is skipped regardless when the node routes through a private mempool or signs through a Safe.",
     key: "sponsorGas",
     label: "Sponsor gas",
+    // Hidden on a network the Gas Station does not cover, where the toggle
+    // could only ever turn off something that was never available.
+    showWhen: { computed: "sponsorshipSupported", networkField: "network" },
     type: "gas-sponsorship-switch",
   };
 }
