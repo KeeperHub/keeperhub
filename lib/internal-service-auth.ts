@@ -28,6 +28,7 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { parseAuthTimestamp } from "@/lib/auth-timestamp";
 import {
   listActiveHmacSecrets,
   lookupHmacSecret,
@@ -199,8 +200,15 @@ async function verifyHmac(
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const ts = Number.parseInt(timestamp, 10);
-  if (!Number.isFinite(ts) || Math.abs(now - ts) > REPLAY_WINDOW_SECONDS) {
+  const ts = parseAuthTimestamp(timestamp);
+  if (ts === null) {
+    return {
+      authenticated: false,
+      error: "Malformed timestamp",
+      status: 401,
+    };
+  }
+  if (Math.abs(now - ts) > REPLAY_WINDOW_SECONDS) {
     return {
       authenticated: false,
       error: "Timestamp outside replay window",

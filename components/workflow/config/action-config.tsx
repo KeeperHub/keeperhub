@@ -27,7 +27,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { TemplateCodeEditor } from "@/components/ui/template-code-editor";
+import { TemplateCodeEditor } from "@/components/workflow/config/template-code-editor";
 import { actionRequiresCredentials } from "@/lib/integration-helpers";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import { ConditionQueryBuilder } from "@/components/workflow/condition-query-builder";

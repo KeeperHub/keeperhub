@@ -263,6 +263,7 @@ import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { RpcRelayTransportError } from "@/lib/rpc/providers/transport-error";
 import { parsePriorityFeeGwei } from "@/lib/web3/gas-defaults";
 import { OnChainPendingError } from "@/lib/web3/onchain-revert";
+import { PreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 // Import mocks for assertion
 import { initializeWalletSigner } from "@/lib/web3/wallet-helpers";
 // Import SUT after all mocks
@@ -666,6 +667,26 @@ describe("writeContractCore broadcast with an unreadable receipt", () => {
     }
     expect(applyFailOnError(result, false).success).toBe(true);
   });
+
+  it("retains the receipt hash when post-broadcast explorer decoration fails", async () => {
+    mockGetTransactionUrl.mockRejectedValueOnce(
+      new Error("explorer lookup unavailable")
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.transactionHash).toBe("0xhash");
+      expect(result.broadcastAttempted).toBe(true);
+    }
+  });
 });
 
 describe("writeContractCore sponsored-relay failure link", () => {
@@ -817,5 +838,81 @@ describe("writeContractCore functionArgs shape (#2359)", () => {
     });
     expect(result).toMatchObject({ success: false, errorClass: "user" });
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+});
+
+describe("writeContractCore broadcastAttempted evidence", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+  });
+
+  it("reports broadcastAttempted: false for a tagged pre-broadcast connection refusal", async () => {
+    // The marker is applied by submitSignedTransactionWithFailover at the
+    // broadcast boundary, where provenance is known. This is the evidence
+    // that lets the disposition layer release the key: nothing was sent.
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new PreBroadcastNetworkError(
+        "RPC failed on both endpoints. Primary: ECONNREFUSED. Fallback: ECONNREFUSED",
+        new Error("ECONNREFUSED")
+      )
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.broadcastAttempted).toBe(false);
+      expect(result.transactionHash).toBeUndefined();
+    }
+  });
+
+  it("reports broadcastAttempted: true for a generic send failure", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(new Error("boom"));
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.broadcastAttempted).toBe(true);
+    }
+  });
+
+  it("fails closed on an untagged error whose text matches a connection refusal", async () => {
+    // The blocker regression: an ECONNREFUSED rendered by executeWithFailover
+    // for the post-broadcast receipt poll or the nonce bookkeeping insert is
+    // text-identical to a refused send. Without the tag, the core must NOT
+    // read it as "nothing was sent" -- the transaction may be in the mempool.
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new Error(
+        "RPC failed on both endpoints. Primary: ECONNREFUSED. Fallback: ECONNREFUSED"
+      )
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.broadcastAttempted).toBe(true);
+    }
   });
 });

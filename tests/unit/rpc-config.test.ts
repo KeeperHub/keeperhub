@@ -8,6 +8,7 @@ import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logSystemError } from "@/lib/logging";
 import {
+  CHAIN_CONFIG,
   getConfigValue,
   getPrivateRpcUrl,
   getRpcUrl,
@@ -333,6 +334,7 @@ describe("RPC Config Resolution", () => {
       { json: "base-testnet", public: PUBLIC_RPCS.BASE_SEPOLIA },
       { json: "tempo-testnet", public: PUBLIC_RPCS.TEMPO_TESTNET },
       { json: "tempo-mainnet", public: PUBLIC_RPCS.TEMPO_MAINNET },
+      { json: "hyperevm-mainnet", public: PUBLIC_RPCS.HYPEREVM_MAINNET },
       { json: "solana-mainnet", public: PUBLIC_RPCS.SOLANA_MAINNET },
       { json: "solana-devnet", public: PUBLIC_RPCS.SOLANA_DEVNET },
     ];
@@ -801,6 +803,63 @@ describe("RPC Config Resolution", () => {
     });
   });
 
+  describe("Unichain CHAIN_CONFIG wiring", () => {
+    it.each([
+      {
+        chainId: 130,
+        jsonKey: "unichain-mainnet",
+        wss: PUBLIC_RPCS.UNICHAIN_MAINNET_WSS,
+      },
+      {
+        chainId: 1301,
+        jsonKey: "unichain-testnet",
+        wss: PUBLIC_RPCS.UNICHAIN_SEPOLIA_WSS,
+      },
+    ])(
+      "should wire chain $chainId to $jsonKey with the publicnode WSS default",
+      ({ chainId, jsonKey, wss }) => {
+        expect(CHAIN_CONFIG[chainId].jsonKey).toBe(jsonKey);
+        expect(
+          getWssUrl({
+            rpcConfig: {},
+            jsonKey: CHAIN_CONFIG[chainId].jsonKey,
+            type: "primary",
+          })
+        ).toBe(wss);
+      }
+    );
+
+    it.each([
+      {
+        chainId: 130,
+        envKey: "CHAIN_UNICHAIN_MAINNET_PRIMARY_RPC",
+        fallbackEnvKey: "CHAIN_UNICHAIN_MAINNET_FALLBACK_RPC",
+        publicFallback: PUBLIC_RPCS.UNICHAIN_MAINNET_FALLBACK,
+      },
+      {
+        chainId: 1301,
+        envKey: "CHAIN_UNICHAIN_SEPOLIA_PRIMARY_RPC",
+        fallbackEnvKey: "CHAIN_UNICHAIN_SEPOLIA_FALLBACK_RPC",
+        publicFallback: PUBLIC_RPCS.UNICHAIN_SEPOLIA_FALLBACK,
+      },
+    ])(
+      "should pin env keys and public fallback for chain $chainId, with no fallback WSS",
+      ({ chainId, envKey, fallbackEnvKey, publicFallback }) => {
+        const entry = CHAIN_CONFIG[chainId];
+        expect(entry.envKey).toBe(envKey);
+        expect(entry.fallbackEnvKey).toBe(fallbackEnvKey);
+        expect(entry.publicFallback).toBe(publicFallback);
+        expect(
+          getWssUrl({
+            rpcConfig: {},
+            jsonKey: entry.jsonKey,
+            type: "fallback",
+          })
+        ).toBeUndefined();
+      }
+    );
+  });
+
   describe("getWssUrl", () => {
     it("should return primary WSS URL", () => {
       const rpcConfig: RpcConfig = {
@@ -863,6 +922,60 @@ describe("RPC Config Resolution", () => {
       });
 
       expect(result).toBeUndefined();
+    });
+
+    it("should fall back to HyperEVM's public WSS default, since its official RPC is HTTP only", () => {
+      expect(
+        getWssUrl({
+          rpcConfig: {},
+          jsonKey: "hyperevm-mainnet",
+          type: "primary",
+        })
+      ).toBe(PUBLIC_RPCS.HYPEREVM_MAINNET_WSS);
+      // A configured socket still wins over the public default.
+      expect(
+        getWssUrl({
+          rpcConfig: {
+            "hyperevm-mainnet": { primaryWssUrl: "wss://keyed.example.com" },
+          },
+          jsonKey: "hyperevm-mainnet",
+          type: "primary",
+        })
+      ).toBe("wss://keyed.example.com");
+    });
+
+    it("should resolve HyperEVM chain 999 to its official RPC with the dRPC fallback", () => {
+      expect(CHAIN_CONFIG[999]).toMatchObject({
+        jsonKey: "hyperevm-mainnet",
+        publicDefault: "https://rpc.hyperliquid.xyz/evm",
+        publicFallback: "https://hyperliquid.drpc.org",
+        publicWssDefault: "wss://hyperliquid.drpc.org",
+      });
+    });
+
+    it("should fall back to public WSS defaults when JSON has no WSS URL", () => {
+      const rpcConfig: RpcConfig = {
+        "arc-mainnet": {
+          primaryRpcUrl: "https://chain.techops.live/arc-mainnet",
+          // No WSS URLs
+        },
+      };
+
+      expect(
+        getWssUrl({
+          rpcConfig,
+          jsonKey: "arc-mainnet",
+          type: "primary",
+        })
+      ).toBe("wss://rpc.mainnet.arc.io");
+
+      expect(
+        getWssUrl({
+          rpcConfig,
+          jsonKey: "arc-mainnet",
+          type: "fallback",
+        })
+      ).toBe("wss://rpc.blockdaemon.mainnet.arc.io/websocket");
     });
   });
 

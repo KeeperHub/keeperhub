@@ -307,6 +307,29 @@ export async function expireDueHeldPayments(): Promise<number> {
   return rows.length;
 }
 
+/** Move an unresolved broadcast to the back of the reconciliation queue.
+ *
+ * A not-found receipt is not proof of failure: the transaction may have been
+ * accepted by one endpoint and be temporarily invisible to another. Touching
+ * updatedAt preserves that uncertainty while ensuring a small set of stale
+ * rows cannot monopolise the bounded reconcile batch forever.
+ */
+export async function deferBroadcastReconcile(
+  id: string
+): Promise<TempoHeldPayment | null> {
+  const rows = await db
+    .update(tempoHeldPayments)
+    .set({ updatedAt: new Date() })
+    .where(
+      and(
+        eq(tempoHeldPayments.id, id),
+        eq(tempoHeldPayments.status, "broadcast")
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
 /** Rows sent to the node but not yet reconciled (poller path). A later tick
  *  checks each receipt and advances it to `confirmed` or `failed`. */
 export async function selectBroadcastToReconcile(

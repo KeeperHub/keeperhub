@@ -422,6 +422,7 @@ const pagerDutyPlugin: IntegrationPlugin = {
               example: "",
               label: "Custom details",
               type: "template-textarea",
+              valueFormat: "json",
               rows: 4,
               placeholder: '{ "vault": "{{Check Vault.id}}" }',
               helpText:
@@ -624,6 +625,7 @@ const pagerDutyPlugin: IntegrationPlugin = {
           example: "",
           label: "Custom details",
           type: "template-textarea",
+          valueFormat: "json",
           rows: 3,
           placeholder: '{ "commit": "{{Build.sha}}" }',
         },

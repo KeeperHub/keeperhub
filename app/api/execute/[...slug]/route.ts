@@ -8,6 +8,7 @@ import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
   recordIdempotentResponse,
@@ -44,6 +45,7 @@ import {
 import { buildProtocolFunctionArgs } from "../_lib/protocol-function-args";
 import { checkRateLimit } from "../_lib/rate-limit";
 import { parseNativeValueEther } from "../_lib/reserved-value";
+import { refuseSimulateBody, rejectSimulateQuery } from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import type { ExecuteResponse } from "../_lib/types";
 import { requireWallet } from "../_lib/wallet-check";
@@ -308,6 +310,7 @@ async function executeProtocolAction(
       transactionHash: result.transactionHash,
       chainId: result.chainId,
       sponsored: result.sponsored,
+      broadcastAttempted: result.broadcastAttempted,
       transactionLink: result.transactionLink,
       rejection: result.rejection,
       errorClass: result.errorClass,
@@ -346,12 +349,12 @@ async function executeProtocolAction(
       : {}),
   };
 
-  // The tx reached the broadcast path, so finalize as success or failed and
-  // never release: a retry on the same key must not re-broadcast.
+  const disposition = dispositionForExecutionOutcome(outcome.status, result);
+
   return recordIdempotentResponse(
     idem,
     NextResponse.json(responseBody, { status: HttpStatus.ACCEPTED }),
-    outcome.status === "completed" ? "success" : "failed"
+    disposition
   );
 }
 
@@ -383,6 +386,13 @@ export async function POST(
       { error: apiKeyCtx.error },
       { status: apiKeyCtx.status }
     );
+  }
+
+  // #2004: ?simulate= is refused on every /api/execute/* route rather than
+  // silently ignored.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
   }
 
   const scopeError = requireScope(apiKeyCtx.scope, SCOPE_MCP_WRITE, {
@@ -417,6 +427,16 @@ export async function POST(
       { error: "Invalid JSON body" },
       { status: HttpStatus.BAD_REQUEST }
     );
+  }
+
+  // #2004 (the severe half): this route has no dry-run support, and a body
+  // `simulate` used to fall through as an unknown field while the protocol
+  // action broadcast for real (issue #1929). Refuse it loudly, before the
+  // idempotency key is reserved so a refused request consumes no execution
+  // and leaves no lock to release.
+  const simulateBody = refuseSimulateBody(body);
+  if (simulateBody) {
+    return simulateBody;
   }
 
   const idem = await beginIdempotentFromRequest({

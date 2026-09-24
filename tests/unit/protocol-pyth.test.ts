@@ -10,6 +10,7 @@ const EXPECTED_ADDRESSES: Record<string, string> = {
   "56": "0x4D7E825f80bDf85e913E0DD2A2D54927e9dE1594",
   "43114": "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
   "11155111": "0xDd24F84d36BF92C65F92307595335bdFab5Bbd21",
+  "999": "0xe9d69CdD6Fe41e7B621B4A688C5D1a68cB5c8ADc",
 };
 
 describe("Pyth Network Protocol Definition", () => {
@@ -21,7 +22,7 @@ describe("Pyth Network Protocol Definition", () => {
     expect(pythProtocol.contracts.customOracle).toBeDefined();
   });
 
-  it("pins exact literal EVM contract addresses and EIP-55 checksums across all 7 supported chains", () => {
+  it("pins exact literal EVM contract addresses and EIP-55 checksums across all 8 supported chains", () => {
     const oracle = pythProtocol.contracts.oracle;
     const customOracle = pythProtocol.contracts.customOracle;
 

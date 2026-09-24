@@ -123,6 +123,7 @@ describe("sendRawSolanaInstructionCore", () => {
     expect(result).toEqual({
       success: false,
       error: expect.stringContaining("maxSol is required"),
+      broadcastAttempted: false,
     });
     expect(mockAdapter.sendTransaction).not.toHaveBeenCalled();
   });
@@ -241,6 +242,7 @@ describe("sendRawSolanaInstructionCore", () => {
     expect(result).toEqual({
       success: false,
       error: "At least one instruction is required",
+      broadcastAttempted: false,
     });
   });
 
@@ -343,7 +345,10 @@ describe("sendRawSolanaInstructionCore", () => {
 
     const result = await sendRawSolanaInstructionCore(validInput);
 
-    expect(result).toMatchObject({ success: false });
+    expect(result).toMatchObject({
+      success: false,
+      broadcastAttempted: true,
+    });
     expect((result as { error: string }).error).toContain("Simulation failed");
   });
 

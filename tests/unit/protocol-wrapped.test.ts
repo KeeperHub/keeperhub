@@ -134,6 +134,7 @@ describe("Wrapped Protocol Definition (ABI-driven)", () => {
     expect(chains).toContain("137");
     expect(chains).toContain("43114");
     expect(chains).toContain("43113");
+    expect(chains).toContain("999");
     expect(chains).not.toContain("10");
   });
 

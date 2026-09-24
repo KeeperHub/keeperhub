@@ -1,0 +1,418 @@
+/**
+ * Broadcast-stage marker for the executor latency instrumentation (issue #2289).
+ *
+ * The stage timestamp lives inside lib/web3 write paths, but the latency
+ * timeline is owned by this satellite's long-lived process. A web3 write
+ * executes inside a separate pod (or a separate engine call) with no handle on
+ * the `ExecutionLatency` instance, so the timestamp is handed over through a
+ * side channel and the executor applies it to the right run:
+ *
+ * 1. The write path calls markBroadcast() at the exact broadcast point.
+ * 2. markBroadcast() records {executionId, broadcastAt} into a per-execution
+ *    registry (KH_BROADCAST_MARKER_DIR, one file per execution id) and
+ *    increments the registered `keeperhub_executor_broadcasts_total` counter.
+ *    Per-execution file names exist because the executor runs up to
+ *    `maxMessages` (10) in-process executions concurrently
+ *    (Promise.allSettled in index.ts): with one fixed filename a later
+ *    broadcast could overwrite an earlier one before its run reads it back,
+ *    silently losing the sample. The counter ships to the executor with the
+ *    other counter deltas, so the broadcast stage stays observable even where
+ *    the per-run file cannot be read back at all (read-only fs). The write is
+ *    first-wins, deliberately matching `ExecutionLatency.mark`: a workflow
+ *    that approves and then swaps must report the interval to its *first*
+ *    broadcast, or the headline number includes the later step's confirmation
+ *    wait and the two ends of the interval measure different broadcasts.
+ * 3. After executeWorkflow() returns, the runner takes its own execution's
+ *    marker (read-and-discard for exactly its execution id) and includes the
+ *    stage in its structured completion log; the observation collector ships
+ *    the interval to the executor. Taking by explicit execution id is what
+ *    keeps concurrent in-process runs from stealing each other's marker.
+ *
+ * Writes are gated: only a process that also consumes the registry calls
+ * enableBroadcastMarkers() (the executor's listen() and the workflow-runner's
+ * entry), because a marker file is only useful where one of the three removal
+ * paths below can run. Everywhere else - the Next app pod above all, which
+ * serves executeViaApi for EXECUTION_MODE=process and the webhook and MCP
+ * routes - markBroadcast() increments the counters and writes nothing, so the
+ * registry stays bounded by construction rather than by cleanup.
+ *
+ * Removal paths inside a gated process, so no single failure mode can
+ * accumulate files: the runner's or the in-process success take
+ * (read-and-discard), the in-process failure catch (best-effort discard, so
+ * a run that broadcasts and then throws leaves nothing behind), and a sweep
+ * of the whole registry at executor startup (sweepBroadcastMarkers, called
+ * from the executor's listen() before any run can start - covers a process
+ * killed mid-run, where no in-process handler ever returns). Best-effort by
+ * design: every failure mode degrades to a missing optional stage mark, and
+ * inside a gated process a missed cleanup costs one tiny file until the next
+ * startup sweep. Never throws into the write path - observability must not
+ * be able to fail a transaction.
+ */
+
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { getWorkflowErrorContext } from "@/lib/workflow/executor/error-context";
+
+// Registry directory. KH_BROADCAST_MARKER_DIR is operator-controlled and is
+// not validated: the write path only creates the directory and files named
+// after allowlisted ids, and the sweep deletes only `.json` entries (below),
+// so nothing in this module treats the directory's other contents as data.
+const MARKER_DIR = process.env.KH_BROADCAST_MARKER_DIR || "/tmp/kh-broadcast-markers";
+
+/** Stage record written by the write path and consumed by the runner. */
+export type BroadcastMarker = {
+  executionId: string;
+  broadcastAt: number;
+};
+
+export function getBroadcastMarkerPath(executionId: string): string {
+  return join(MARKER_DIR, `${executionId}.json`);
+}
+
+/**
+ * Path hardening (issue #2289 review): the execution id drives both a file
+ * path and the rmSync in takeBroadcastMarker, so it is validated before it
+ * reaches the filesystem. Allowlist rather than blocklist: the platform's
+ * ids are nanoid over [0-9a-z] (lib/utils/id.ts generateId) or UUIDs, so
+ * [A-Za-z0-9_-] with a 128-char cap accepts every id the platform issues
+ * while rejecting path separators, `..` and control characters outright.
+ * Hardening rather than a live hole - ids are DB-generated and SQS messages
+ * are HMAC-signed - but the value became load-bearing for a delete, so it
+ * is checked like one.
+ */
+const SAFE_EXECUTION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+function isSafeExecutionId(executionId: string): boolean {
+  return SAFE_EXECUTION_ID.test(executionId);
+}
+
+/**
+ * Write gate (issue #2289 review, third pass): the registry is only consumed
+ * by the executor and the runner, so only they may populate it. Every other
+ * process importing the lib/web3 write paths - the Next app pod above all,
+ * which is the longest-lived pod in the fleet - would otherwise write one
+ * marker per execution with no take, no catch and no sweep to remove it. A
+ * startup sweep wired into the app would only bound it per restart, not per
+ * run; the gate bounds it per run, structurally. Side-effect import pattern:
+ * the same mechanism workflow-error-context-bootstrap uses.
+ */
+let markerWritesEnabled = false;
+
+export function enableBroadcastMarkers(): void {
+  markerWritesEnabled = true;
+}
+
+/**
+ * Best-effort execution id for the broadcast marker: reads the async-local
+ * workflow error context the engine enters at run start, which carries
+ * execution_id across every async leg of the run (including plugin steps).
+ * Callers that know their execution id (the runner, the in-process path,
+ * tests) pass it explicitly; outside a registered context (scripts, tests)
+ * this returns undefined and markBroadcast only bumps the counters. This
+ * function itself uses no Node builtins, so importing it from lib/web3 write
+ * paths adds nothing the engine has not already loaded -- note that the
+ * module as a whole is not pure: it imports `node:fs` and `node:path` above
+ * to maintain the registry. Only this accessor is dependency-free.
+ */
+export function currentExecutionId(): string | undefined {
+  return getWorkflowErrorContext()?.execution_id;
+}
+
+/**
+ * Record the moment a transaction was handed to the chain. Called at the
+ * broadcast points inside lib/web3 write paths; the owning execution id is
+ * resolved from the async-local workflow context the engine enters at run
+ * start. Errors are swallowed: a failed marker write must never fail the
+ * transaction it observes.
+ */
+export function markBroadcast(
+  executionId: string | undefined = currentExecutionId(),
+  /** Test seam: pins the stamped time so a test can place the broadcast
+   * before the run's observed epoch (the skewed-clock case). Production
+   * callers never pass it and get Date.now() as before. */
+  broadcastAt: number = Date.now()
+): void {
+  broadcastCount++;
+  bumpRegisteredCounter();
+  // Ungated process (the Next app pod, scripts, tests without the gate): the
+  // counters are the guarantee, the sidecar is a consumer-local optimization.
+  // Writes stay exclusive to the processes that remove what they write.
+  if (!markerWritesEnabled) {
+    return;
+  }
+  // An unsafe id still counts (the broadcast did happen) but writes no file:
+  // the sidecar is an optimization, the counters are the guarantee.
+  if (!executionId || !isSafeExecutionId(executionId)) {
+    return;
+  }
+  try {
+    mkdirSync(MARKER_DIR, { recursive: true });
+    // First write wins (`wx`), matching ExecutionLatency.mark's first-wins
+    // semantics. Without it a multi-write run keeps its *last* broadcast, and
+    // `observed -> last broadcast` would carry the later step's full
+    // confirmation wait into the headline interval. EEXIST is the intended
+    // outcome here - the earlier mark stands - and is swallowed below like
+    // every other write failure, because the write path must never notice.
+    writeFileSync(
+      getBroadcastMarkerPath(executionId),
+      JSON.stringify({
+        executionId,
+        broadcastAt,
+      } satisfies BroadcastMarker),
+      { encoding: "utf-8", flag: "wx" }
+    );
+  } catch (error) {
+    // EEXIST is the first-wins race working as designed, not a failure.
+    // Everything else (ENOSPC, EACCES) means the sidecar is unavailable and
+    // every later write will fail the same way, so count it: the registered
+    // broadcast counter still records that a broadcast happened, and this
+    // counter records that the histogram will not see its timestamp.
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== "EEXIST") {
+      broadcastWriteFailures++;
+      bumpWriteFailureCounter();
+    }
+    // Sidecar unavailable (read-only fs, sandbox): the registered broadcast
+    // counter still records that a broadcast happened this run.
+  }
+}
+
+/**
+ * How many broadcast marker writes failed for a reason other than the
+ * first-wins EEXIST. Diagnostic only; a sustained rise means the sidecar
+ * filesystem is unavailable and the observed -> broadcast histogram is
+ * silently losing every sample.
+ */
+export function getBroadcastWriteFailures(): number {
+  return broadcastWriteFailures;
+}
+
+/** Process-local count of broadcasts this pod has performed (diagnostic). */
+export function getBroadcastCount(): number {
+  return broadcastCount;
+}
+
+/**
+ * Non-destructive read of the marker for one execution. Concurrent
+ * in-process runs can each peek at their own file without touching another
+ * run's sample. Returns undefined when no broadcast was marked for this
+ * execution (or the file is unreadable/corrupt - treated the same way).
+ */
+export function peekBroadcastMarker(
+  executionId: string
+): BroadcastMarker | undefined {
+  if (!isSafeExecutionId(executionId)) {
+    return undefined;
+  }
+  try {
+    const path = getBroadcastMarkerPath(executionId);
+    if (!existsSync(path)) {
+      return undefined;
+    }
+    const marker = parseMarker(readFileSync(path, "utf-8"));
+    // Reader-level id check: a marker is only valid for the execution whose
+    // name the file carries. parseMarker validates shape without knowing the
+    // requested id; this closes the content-vs-filename gap here so no
+    // consumer can ever receive a mismatched marker.
+    if (marker && marker.executionId !== executionId) {
+      return undefined;
+    }
+    return marker;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read-and-discard the marker for one execution: the caller has consumed the
+ * stage record, so its per-execution file is removed. Passing the execution
+ * id explicitly (rather than consuming a shared file) is what makes this safe
+ * under concurrent in-process executions - run B's marker can never be taken
+ * by run A, because A only ever removes its own file.
+ */
+export function takeBroadcastMarker(
+  executionId: string
+): BroadcastMarker | undefined {
+  if (!isSafeExecutionId(executionId)) {
+    return undefined;
+  }
+  try {
+    const path = getBroadcastMarkerPath(executionId);
+    if (!existsSync(path)) {
+      return undefined;
+    }
+    const raw = readFileSync(path, "utf-8");
+    rmSync(path, { force: true });
+    const marker = parseMarker(raw);
+    // Same reader-level id check as peekBroadcastMarker. A mismatched file is
+    // still consumed (removed above): a misfiled marker is garbage either
+    // way, and leaving it behind would defeat the cleanup paths.
+    if (marker && marker.executionId !== executionId) {
+      return undefined;
+    }
+    return marker;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Delete the marker files this module wrote and return how many were removed.
+ * Called from the executor's listen() at process startup, before the SQS
+ * consumer can start any in-process run: at that point every file present is
+ * a leftover from a previous process that died between broadcast and take
+ * (the one failure mode neither the success take nor the failure catch
+ * covers). Runner pods mount their own emptyDir, so a sweep in the executor
+ * pod cannot touch markers belonging to a live dispatch. The filter is part
+ * of the deletion contract: this module writes only `<safe-id>.json`, so the
+ * sweep removes only `.json` entries, one `rmSync` per entry without
+ * `recursive`, and the count it returns is marker files - not directories,
+ * not anything else that happens to share the directory. Best-effort: a
+ * missing or unreadable directory sweeps nothing and returns 0.
+ */
+export function sweepBroadcastMarkers(): number {
+  try {
+    const entries = readdirSync(MARKER_DIR);
+    let removed = 0;
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) {
+        continue;
+      }
+      try {
+        rmSync(join(MARKER_DIR, entry), { force: true });
+        removed++;
+      } catch {
+        // Unlinkable entry (permissions, concurrent removal): leave it. The
+        // sweep runs again on the next startup and the file is inert until
+        // then.
+      }
+    }
+    return removed;
+  } catch {
+    // No registry directory yet (fresh pod): nothing to sweep, not an error.
+    return 0;
+  }
+}
+
+function parseMarker(raw: string): BroadcastMarker | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as BroadcastMarker).executionId === "string" &&
+      typeof (parsed as BroadcastMarker).broadcastAt === "number"
+    ) {
+      return parsed as BroadcastMarker;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The registered counter (keeperhub_executor_broadcasts_total) lives in
+// lib/metrics/collectors/prometheus, which is server-only and drags the whole
+// metrics stack with it; importing it eagerly would weight every lib/web3
+// write path for a metric it rarely reads. Resolve it lazily on first
+// broadcast instead. Resolution is not tied to a startup step: the delta
+// collectors run on an ingest POST (executor) and at shutdown (runner), so
+// the promise may stay unresolved for the process's whole uptime. That is
+// acceptable because nothing depends on it landing early - marks landing
+// before resolution are buffered and flushed on arrival, so the count is
+// exact no matter when the collector appears. Where the collector never
+// becomes available (tests without the server-only shim) this stays a
+// no-op - observability must not be able to fail a transaction.
+/**
+ * Broadcasts whose sidecar write failed with something other than the
+ * expected EEXIST. The only expected failure is the first-wins race (the
+ * marker already exists), so any other code - ENOSPC on a full emptyDir,
+ * EACCES on a read-only fs - means the sidecar is down for this process and
+ * every subsequent marker write will fail the same way. Bumped into the
+ * registered keeperhub_executor_broadcast_write_failures_total counter on
+ * the same lazy-import path as broadcasts_total (so it ships to the
+ * executor's registry via the counter-delta ingest), and mirrored locally
+ * through getBroadcastWriteFailures for tests and scrapes where the
+ * collector never resolves. Either series tells "no broadcasts happened"
+ * apart from "broadcasts happened and none could be recorded" - the second
+ * is the silent zero-sample histogram the review flagged.
+ */
+let broadcastWriteFailures = 0;
+
+let broadcastCount = 0;
+let broadcastCounter: import("prom-client").Counter<string> | undefined;
+let countersRequested = false;
+let broadcastCounterBuffer = 0;
+let writeFailureCounter: import("prom-client").Counter<string> | undefined;
+let writeFailureCounterBuffer = 0;
+// The in-flight resolution of the lazy counter import, captured so tests can
+// await it deterministically (waitForBroadcastCounterForTests) instead of
+// assuming a dynamic ESM import settles within a fixed number of ticks. One
+// import serves both counters - the write-failure sibling ships from the
+// same module and bumps on the same marks.
+let countersReady: Promise<void> | undefined;
+
+function resolveCounters(): void {
+  if (countersRequested) {
+    return;
+  }
+  countersRequested = true;
+  countersReady = import("../../lib/metrics/collectors/prometheus")
+    .then(
+      ({
+        executorBroadcastsTotal,
+        executorBroadcastWriteFailuresTotal,
+      }) => {
+        broadcastCounter = executorBroadcastsTotal;
+        writeFailureCounter = executorBroadcastWriteFailuresTotal;
+        if (broadcastCounterBuffer > 0) {
+          broadcastCounter.inc(broadcastCounterBuffer);
+          broadcastCounterBuffer = 0;
+        }
+        if (writeFailureCounterBuffer > 0) {
+          writeFailureCounter.inc(writeFailureCounterBuffer);
+          writeFailureCounterBuffer = 0;
+        }
+      }
+    )
+    .catch(() => {
+      // Collector unavailable in this process (tests, bundles without the
+      // metrics stack): keep counting locally via getBroadcastCount() and
+      // getBroadcastWriteFailures().
+      broadcastCounterBuffer = 0;
+      writeFailureCounterBuffer = 0;
+    });
+}
+
+function bumpRegisteredCounter(): void {
+  if (broadcastCounter) {
+    broadcastCounter.inc();
+    return;
+  }
+  broadcastCounterBuffer++;
+  resolveCounters();
+}
+
+function bumpWriteFailureCounter(): void {
+  if (writeFailureCounter) {
+    writeFailureCounter.inc();
+    return;
+  }
+  writeFailureCounterBuffer++;
+  resolveCounters();
+}
+
+/**
+ * Test seam: resolves once a requested counter import has settled (counters
+ * registered, or resolution failed and the buffers were dropped). Resolves
+ * immediately when no import was ever requested. Without this, a test
+ * asserting on the registered counters would have to assume a dynamic ESM
+ * import settles within one macrotask tick - which holds only by accident of
+ * module-load order, not by guarantee.
+ */
+export async function waitForBroadcastCounterForTests(): Promise<void> {
+  if (countersReady) {
+    await countersReady;
+  }
+}

@@ -354,6 +354,7 @@ describe("callSolanaProgramCore", () => {
     expect(result).toEqual({
       success: false,
       error: expect.stringContaining("maxSol is required"),
+      broadcastAttempted: false,
     });
     expect(mockAdapter.sendTransaction).not.toHaveBeenCalled();
   });
@@ -407,9 +408,24 @@ describe("callSolanaProgramCore", () => {
       _context: undefined,
     });
 
-    expect(result).toMatchObject({ success: false });
+    expect(result).toMatchObject({
+      success: false,
+      broadcastAttempted: false,
+    });
     expect((result as { error: string }).error).toContain(
       "Execution ID or organization ID is required"
     );
+  });
+
+  it("marks a submit failure as an attempted broadcast", async () => {
+    mockAdapter.sendTransaction.mockRejectedValue(new Error("RPC unavailable"));
+
+    const result = await callSolanaProgramCore(validInput);
+
+    expect(result).toMatchObject({
+      success: false,
+      broadcastAttempted: true,
+      error: expect.stringContaining("RPC unavailable"),
+    });
   });
 });

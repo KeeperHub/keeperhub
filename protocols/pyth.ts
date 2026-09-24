@@ -10,6 +10,10 @@ const PYTH_ADDRESSES: Record<string, string> = {
   "137": "0xff1a0f4744e8582DF1aE09D5611b887B6a12925C",
   "56": "0x4D7E825f80bDf85e913E0DD2A2D54927e9dE1594",
   "43114": "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
+  // HyperEVM. Pyth lists two live mainnet `hyperevm` feeds; this is the
+  // first-listed one in Pyth's EvmPriceFeedContracts.json, the rule every
+  // other mainnet entry here already follows.
+  "999": "0xe9d69CdD6Fe41e7B621B4A688C5D1a68cB5c8ADc",
   "11155111": "0xDd24F84d36BF92C65F92307595335bdFab5Bbd21",
 };
 

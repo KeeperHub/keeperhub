@@ -53,11 +53,11 @@ Two things this does **not** do: it does not price non-stablecoin ERC-20s, which
 This sequence is for `/api/execute/transfer`, `/api/execute/contract-call` and
 `/api/execute/check-and-execute` - the three endpoints that accept a `simulate`
 flag. **It does not apply to protocol actions or to `/api/execute/node`**,
-neither of which reads that flag: sent there, `"simulate": true` is ignored for
-dispatch, so step 2 signs and broadcasts a real transaction believing it is a
-dry run. The flag is still recorded as part of the execution's input, so
-reusing one `Idempotency-Key` across a `simulate: true` send and the same send
-with the flag removed returns `409 idempotency_conflict` rather than replaying.
+neither of which has a dry run. Both refuse the flag: `"simulate": true` in the
+request body, or inside `config` on `/api/execute/node`, is rejected with `400`
+and code `unsupported_param` before anything is reserved, signed or broadcast.
+`"simulate": false` is accepted, because it asks for the real execution those
+endpoints perform.
 
 A first write on those two endpoints has no dry run to put in step 2's place,
 so the pre-flight has to happen off this API:
@@ -156,9 +156,43 @@ the request was received, so a retry must be able to match the original. Reusing
 key is what makes that retry safe: it returns the in-progress guard while the first
 request is still running, and the real outcome as a replay once it finishes.
 
-**Rotate to a new key** once the previous attempt returned a definite result. A
-stored failure is replayable for 24 hours, so a key that has already failed keeps
-returning that failure rather than retrying.
+**Reuse the same key after a failure the chain was conclusive about.** A
+transaction that reached the chain and reverted at inclusion releases the key:
+it landed, the chain gave a verdict, and nothing is still in flight. The same
+key simply executes again, so you no longer have to rotate to recover from that
+attempt.
+
+The send boundary preserves evidence instead of making the route guess from a
+missing RPC reply. Directly signed EVM transactions retain a deterministic hash
+once submission may have begun. Every broadcasting core also reports its boundary:
+`broadcastAttempted: false` means it proved the attempt stopped before submission;
+`true` means submission may have started. Missing evidence fails closed and keeps
+the key rather than treating a missing hash as proof that nothing was broadcast.
+
+Two consequences worth stating plainly, because they decide what your retry
+should do:
+
+- A write-core pre-broadcast rejection (for example `staticCall` or an in-core
+  balance check) is **released**. Validation 4xx responses also release, while
+  `simulate: true` reserves no idempotency record at all.
+- The mixed-chain `/api/execute/transfer` route keeps a hashless Solana failure
+  **held**. Solana send failures report attempted evidence where known, and any
+  missing evidence fails closed; absence of a signature is never treated as
+  proof that nothing reached the network.
+- A Safe transaction whose outer `execTransaction` mined while the inner call
+  reverted is **held**. The Safe's nonce and the owner signatures for it were
+  consumed, so "nothing landed" is not true even though the intended work did
+  not happen.
+
+**An outcome nobody could read keeps its key.** If the receipt was unreadable
+the transaction may still land, so that record is held and replays for 24 hours.
+The reply carries `"status": "unconfirmed"` and `"idempotentReplay": true`. Poll
+`GET /api/execute/{executionId}/status` rather than rotating, because a new key
+has no record to match and would broadcast a second transaction for work the
+first attempt may still be completing.
+
+**Rotate to a new key** when the work itself is different, not to escape a
+failure.
 
 **A conflict does not by itself mean rotate.** `retryable: false` says only that
 this body is not the body the key was bound to, and there are two reasons for
@@ -535,6 +569,11 @@ Pass action parameters as a JSON object. `chainId` is required for every action
 (the legacy `network` field is accepted as a deprecated alias). Required fields
 for each action are defined in the protocol registry.
 
+Protocol actions have no dry run. A `simulate` field is rejected with `400` and
+code `unsupported_param` before anything is reserved or signed, except
+`"simulate": false`. To check a write before sending it, see
+[Safe First-Write Sequence](#safe-first-write-sequence).
+
 ### Response
 
 **Read actions** return the plugin result directly with HTTP `200`.
@@ -700,7 +739,7 @@ Add `"simulate": true` to any of the standard request bodies:
 }
 ```
 
-`simulate` must be a strict boolean — `true` or `false`. Strings (`"true"`), numbers (`1`), and other non-boolean values are rejected with HTTP 400 to prevent silent fall-through to a real broadcast. There is no query-string form; the body field is the only way to request a dry run.
+`simulate` must be a strict boolean — `true` or `false`. Strings (`"true"`), numbers (`1`), and other non-boolean values are rejected with HTTP 400 to prevent silent fall-through to a real broadcast. The top-level body field is the only way to request a dry run. There is no query-string form: a `simulate` query parameter, in any letter case, is rejected with `400` and code `unsupported_param` on every `/api/execute/*` endpoint. The one exception is `?simulate=false`, which asks for nothing the endpoint would not already do.
 
 Because a dry run never signs or broadcasts, a credential scoped `mcp:read` may run one. Removing `simulate` to broadcast requires `mcp:write`.
 
@@ -871,7 +910,7 @@ For ERC-20 transfers, `decimals` is optional — when omitted, the simulator loo
 
 ### check-and-execute specifics
 
-`simulate: true` still evaluates the condition (which is read-only) and only swaps the **action's** write for a simulated call. The response wraps the simulate body in the existing `{ executed, conditionResult }` envelope:
+`simulate: true` still evaluates the condition (which is read-only) and only swaps the **action's** write for a simulated call. The flag goes at the top level of the body, not inside `action`: `action.simulate` is rejected with `400` (code `unsupported_param`, field `action.simulate`) rather than ignored, except `"simulate": false`. The response wraps the simulate body in the existing `{ executed, conditionResult }` envelope:
 
 ```json
 {
@@ -1066,7 +1105,7 @@ Direct execution endpoints return detailed error information:
 - `403`: The daily spending cap is exceeded, or the credential lacks the scope the request needs (`insufficient_scope`). Scope is enforced for both OAuth tokens and organization API keys. A key created without a scope has no scope restriction and passes every gate. See [Spending Caps](#spending-caps) — an organization that never configured a cap is still subject to the platform default.
 - `422`: Wallet not configured, code `WALLET_NOT_CONFIGURED` (see [Wallet Management](/wallet-management/turnkey))
 - `429`: Rate limit exceeded
-- `400`: Invalid request parameters
+- `400`: Invalid request parameters. A `simulate` flag sent where the endpoint does not read it returns code `unsupported_param`, with `field` naming where it was found (`simulate`, `config.simulate` or `action.simulate`); see [Dry-Run Simulation](#dry-run-simulation)
 
 An `insufficient_scope` response names the scope the endpoint needs and the one
 this connection is allowed:

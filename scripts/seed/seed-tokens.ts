@@ -124,6 +124,28 @@ const TOKEN_CONFIGS: TokenConfig[] = [
   },
 
   // ==========================================================================
+  // Unichain Mainnet (chainId: 130)
+  // ==========================================================================
+  {
+    chainId: 130,
+    tokenAddress: "0x078d782b760474a361dda0af3839290b0ef57ad6", // USDC (native, Circle)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Unichain Sepolia (chainId: 1301)
+  // ==========================================================================
+  {
+    chainId: 1301,
+    tokenAddress: "0x31d0220469e10c4e71834a79b1f276d740d3768f", // USDC (Circle's official Unichain Sepolia)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
   // Tempo Testnet (chainId: 42431)
   // ==========================================================================
   {
@@ -305,6 +327,28 @@ const TOKEN_CONFIGS: TokenConfig[] = [
     logoUrl: LOGOS.USDT,
     isStablecoin: true,
     sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // HyperEVM Mainnet (chainId: 999)
+  // ==========================================================================
+  // The chain's two largest dollar stablecoins, verified over the official RPC
+  // on 2026-09-15: USDC ("USDC", 6 decimals, ~6.36B supply) and USDT0 ("USD₮0",
+  // 6 decimals, ~85.6M supply). USDe, USDHL and feUSD also exist on HyperEVM
+  // and can be added here later.
+  {
+    chainId: 999,
+    tokenAddress: "0xb88339cb7199b77e23db6e890353e22632ba630f", // USDC
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+  {
+    chainId: 999,
+    tokenAddress: "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb", // USDT0 (Tether omnichain via LayerZero)
+    logoUrl: LOGOS.USDT,
+    isStablecoin: true,
+    sortOrder: 2,
   },
 
   // ==========================================================================

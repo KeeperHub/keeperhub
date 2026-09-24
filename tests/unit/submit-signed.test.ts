@@ -2,11 +2,21 @@ import { ethers, makeError } from "ethers";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/sleep", () => ({
+  sleep: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/logging", () => ({
+  ErrorCategory: { NETWORK_RPC: "network_rpc" },
+  logSystemError: vi.fn(),
+  logSystemWarn: vi.fn(),
+}));
 
-import type { RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
+import { type RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
 import {
   isNonceConflictError,
+  isPreBroadcastNetworkError,
   NonceConflictError,
+  PreBroadcastNetworkError,
   submitSignedTransactionWithFailover,
 } from "@/lib/web3/submit-signed";
 
@@ -248,7 +258,7 @@ describe("submitSignedTransactionWithFailover", () => {
     ).rejects.toBeInstanceOf(NonceConflictError);
   });
 
-  it("re-throws original error when broadcast fails with non-conflict error and no on-chain trace", async () => {
+  it("tags a lone connection refusal as PreBroadcastNetworkError, preserving the cause", async () => {
     const { signer } = makeMockSigner();
     const originalError = new Error("ECONNREFUSED");
     const { rpcManager } = makeMockRpcManager({
@@ -257,9 +267,80 @@ describe("submitSignedTransactionWithFailover", () => {
       getTransaction: vi.fn().mockResolvedValue(null),
     });
 
+    const thrown = await submitSignedTransactionWithFailover(
+      signer,
+      TEST_TX_REQUEST,
+      rpcManager
+    ).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(thrown).toBeInstanceOf(PreBroadcastNetworkError);
+    expect(isPreBroadcastNetworkError(thrown)).toBe(true);
+    // The tag wraps, it does not rewrite: log readers and message matchers
+    // see the original text, and the cause chain keeps the raw error.
+    expect((thrown as Error).message).toBe("ECONNREFUSED");
+    expect((thrown as PreBroadcastNetworkError).cause).toBe(originalError);
+  });
+
+  it("preserves the deterministic hash when failover mixes timeout with connection refusal", async () => {
+    const { signer } = makeMockSigner();
+    const originalError = new Error(
+      "RPC failed on both endpoints. Primary: request timed out. Fallback: ECONNREFUSED"
+    );
+    const { rpcManager } = makeMockRpcManager({
+      broadcastTransaction: vi.fn().mockRejectedValue(originalError),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
     await expect(
       submitSignedTransactionWithFailover(signer, TEST_TX_REQUEST, rpcManager)
-    ).rejects.toBe(originalError);
+    ).rejects.toMatchObject({
+      name: "OnChainPendingError",
+      kind: "onchain-pending",
+      transactionHash: EXPECTED_HASH,
+    });
+  });
+
+  it("tags an all-refused failover round as PreBroadcastNetworkError", async () => {
+    const { signer } = makeMockSigner();
+    const originalError = new Error(
+      "RPC failed on both endpoints. Primary: connection refused. Fallback: ECONNREFUSED"
+    );
+    const { rpcManager } = makeMockRpcManager({
+      broadcastTransaction: vi.fn().mockRejectedValue(originalError),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
+    await expect(
+      submitSignedTransactionWithFailover(signer, TEST_TX_REQUEST, rpcManager)
+    ).rejects.toMatchObject({
+      name: "PreBroadcastNetworkError",
+      kind: "pre-broadcast",
+      cause: originalError,
+    });
+  });
+
+  it("preserves the deterministic hash when a send reply is ambiguous", async () => {
+    const { signer } = makeMockSigner();
+    const { rpcManager } = makeMockRpcManager({
+      broadcastTransaction: vi
+        .fn()
+        .mockRejectedValue(new Error("request timed out")),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
+    await expect(
+      submitSignedTransactionWithFailover(signer, TEST_TX_REQUEST, rpcManager)
+    ).rejects.toMatchObject({
+      name: "OnChainPendingError",
+      kind: "onchain-pending",
+      transactionHash: EXPECTED_HASH,
+    });
   });
 
   it("does not invoke sign or any rpc call when populateTransaction throws", async () => {
@@ -274,8 +355,29 @@ describe("submitSignedTransactionWithFailover", () => {
 
     await expect(
       submitSignedTransactionWithFailover(signer, TEST_TX_REQUEST, rpcManager)
-    ).rejects.toBe(populateError);
+    ).rejects.toMatchObject({
+      name: "PreBroadcastNetworkError",
+      kind: "pre-broadcast",
+      cause: populateError,
+    });
     expect(sign).not.toHaveBeenCalled();
+    expect(executeWithFailover).not.toHaveBeenCalled();
+  });
+
+  it("tags a signing failure as pre-broadcast and never calls rpc", async () => {
+    const signError = new Error("wallet signing refused");
+    const signer = {
+      populateTransaction: vi.fn().mockResolvedValue(TEST_TX_REQUEST),
+      signTransaction: vi.fn().mockRejectedValue(signError),
+    } as unknown as ethers.Signer;
+    const { rpcManager, executeWithFailover } = makeMockRpcManager({});
+    await expect(
+      submitSignedTransactionWithFailover(signer, TEST_TX_REQUEST, rpcManager)
+    ).rejects.toMatchObject({
+      name: "PreBroadcastNetworkError",
+      kind: "pre-broadcast",
+      cause: signError,
+    });
     expect(executeWithFailover).not.toHaveBeenCalled();
   });
 
@@ -320,6 +422,76 @@ describe("submitSignedTransactionWithFailover", () => {
     );
 
     expect(result.preExistingReceipt).toBe(receipt);
+  });
+});
+
+describe("RpcProviderManager write-broadcast retry evidence", () => {
+  it("does not call an endpoint all-refused when an earlier retry timed out", async () => {
+    const manager = new RpcProviderManager({
+      config: {
+        primaryRpcUrl: "http://127.0.0.1:1",
+        maxRetries: 3,
+        timeoutMs: 50,
+        chainName: "retry-history-test",
+        chainId: 1,
+      },
+    });
+    let attempt = 0;
+
+    const thrown = await manager
+      .executeWithFailover(async () => {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new Error("Timeout after 50ms");
+        }
+        throw new Error("ECONNREFUSED");
+      }, "write-broadcast")
+      .then(
+        () => undefined,
+        (error: unknown) => error
+      );
+
+    expect(attempt).toBe(3);
+    expect(thrown).toBeInstanceOf(Error);
+    expect(
+      (
+        thrown as Error & {
+          allAttemptsConnectionRefused?: boolean;
+        }
+      ).allAttemptsConnectionRefused
+    ).toBe(false);
+  });
+
+  it("marks an endpoint all-refused only when every retry was refused", async () => {
+    const manager = new RpcProviderManager({
+      config: {
+        primaryRpcUrl: "http://127.0.0.1:1",
+        maxRetries: 3,
+        timeoutMs: 50,
+        chainName: "retry-history-test",
+        chainId: 1,
+      },
+    });
+    let attempt = 0;
+
+    const thrown = await manager
+      .executeWithFailover(async () => {
+        attempt += 1;
+        throw new Error("ECONNREFUSED");
+      }, "write-broadcast")
+      .then(
+        () => undefined,
+        (error: unknown) => error
+      );
+
+    expect(attempt).toBe(3);
+    expect(
+      (
+        thrown as Error & {
+          allAttemptsConnectionRefused?: boolean;
+        }
+      ).allAttemptsConnectionRefused
+    ).toBe(true);
   });
 });
 
@@ -388,5 +560,27 @@ describe("isNonceConflictError", () => {
       revert: null,
     });
     expect(isNonceConflictError(err)).toBe(false);
+  });
+});
+
+describe("isPreBroadcastNetworkError", () => {
+  it("recognises the tagged error and nothing else", () => {
+    const tagged = new PreBroadcastNetworkError("ECONNREFUSED", new Error("x"));
+    expect(isPreBroadcastNetworkError(tagged)).toBe(true);
+
+    // The whole point of the tag: identical TEXT without the marker is not
+    // evidence. A refused receipt poll or bookkeeping insert reads exactly
+    // like this, and text-matching it is what let a live transaction look
+    // safe to retry.
+    expect(isPreBroadcastNetworkError(new Error("ECONNREFUSED"))).toBe(false);
+    expect(
+      isPreBroadcastNetworkError(
+        new Error(
+          "RPC failed on both endpoints. Primary: connection refused. Fallback: ECONNREFUSED"
+        )
+      )
+    ).toBe(false);
+    expect(isPreBroadcastNetworkError("ECONNREFUSED")).toBe(false);
+    expect(isPreBroadcastNetworkError(undefined)).toBe(false);
   });
 });

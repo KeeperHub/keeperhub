@@ -12,6 +12,7 @@ import {
 } from "@/lib/execute/simulate";
 import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
 import { checkStablecoinContractCallBatch } from "@/lib/execute/stablecoin-cap";
+import { ErrorCategory, logSystemWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
 import { decodeRevertReason } from "@/lib/web3/decode-revert-error";
@@ -216,7 +217,7 @@ async function runWithStateOverrides(
   const overrides: Record<string, Record<string, unknown>> = {};
   const results: RawCallResult[] = [];
 
-  for (const call of calls) {
+  for (const [index, call] of calls.entries()) {
     const tx = txForNode(from, call);
     // A snapshot per call: the accumulator keeps growing, and executeWithFailover
     // re-runs the operation on a retry, so the object handed to the node must
@@ -253,33 +254,63 @@ async function runWithStateOverrides(
       continue;
     }
 
+    // The last call's diff would seed a nonexistent next call, and it is the
+    // most expensive trace of the sequence (largest accumulated
+    // stateOverrides). Skip it.
+    if (index === calls.length - 1) {
+      continue;
+    }
+
     try {
+      // Trace against the same accumulated state the eth_call above used.
+      // Without stateOverrides the node traces this call against the raw
+      // latest chain state, so a call that only succeeds because an earlier
+      // call set up state reverts here and its state changes never reach the
+      // later calls -- exactly the failure this path exists to avoid.
+      const traceOptions: Record<string, unknown> = {
+        tracer: "prestateTracer",
+        tracerConfig: { diffMode: true },
+      };
+      if (Object.keys(stateAtThisCall).length > 0) {
+        traceOptions.stateOverrides = stateAtThisCall;
+      }
       const diff = await rpc.executeWithFailover(
         (provider) =>
           provider.send("debug_traceCall", [
             tx,
             "latest",
-            { tracer: "prestateTracer", tracerConfig: { diffMode: true } },
+            traceOptions,
           ]) as Promise<{ post?: Record<string, Record<string, unknown>> }>,
         "preflight"
       );
       mergeDiffIntoOverrides(overrides, diff?.post ?? {});
-    } catch {
+    } catch (err) {
       // Without the diff the next call sees state as if this one never ran,
       // which is the behaviour this whole path exists to avoid. Stop rather
-      // than return answers that silently mean something else.
-      results.push(...unavailableRest(calls, results.length));
+      // than return answers that silently mean something else. Carry the node's
+      // own error through so an operator can tell a capability refusal
+      // (prestateTracer or stateOverrides missing) from a transport failure.
+      results.push(
+        ...unavailableRest(calls, results.length, getErrorMessage(err))
+      );
       return results;
     }
   }
   return results;
 }
 
-function unavailableRest(calls: EncodedCall[], from: number): RawCallResult[] {
+function unavailableRest(
+  calls: EncodedCall[],
+  from: number,
+  reason?: string
+): RawCallResult[] {
+  const detail =
+    reason && reason.length > 0
+      ? reason
+      : "the node did not answer debug_traceCall with the prestateTracer trace and the accumulated state overrides";
   return calls.slice(from).map(() => ({
     error: {
-      message:
-        "Could not carry state to this call: the node did not answer debug_traceCall with prestateTracer",
+      message: `Could not carry state to this call: ${detail}`,
     },
   }));
 }
@@ -467,6 +498,17 @@ export async function simulateCallSequence(
       if (!isMethodNotFound(err)) {
         return sequenceUnavailable(from, encoded, getErrorMessage(err));
       }
+      // The fallback is pinned for the process lifetime, and the result
+      // message reaches only the caller, so an operator would otherwise never
+      // learn that this chain's node stopped answering eth_simulateV1.
+      // Log the flip here, where the pin happens: once per process per chain,
+      // best-effort (a concurrent first-use race can log it twice).
+      logSystemWarn(
+        ErrorCategory.NETWORK_RPC,
+        `[SimulateSequence] chain ${chainId} does not answer eth_simulateV1; degraded to the state-overrides fallback for the process lifetime`,
+        err,
+        { chain_id: String(chainId) }
+      );
       mechanism = "state-overrides";
       mechanismByChain.set(chainId, "state-overrides");
       try {

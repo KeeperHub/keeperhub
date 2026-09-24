@@ -36,7 +36,8 @@ vi.mock("@/plugins/web3/steps/transfer-token-core", () => ({
 
 vi.mock("@/lib/logging", () => ({
   logSystemError: vi.fn(),
-  ErrorCategory: { DATABASE: "database" },
+  logSystemWarn: vi.fn(),
+  ErrorCategory: { DATABASE: "database", NETWORK_RPC: "network_rpc" },
   logSecurityEvent: vi.fn(),
 }));
 
@@ -71,6 +72,7 @@ import {
   resetSequenceMechanismCache,
   simulateCallSequence,
 } from "@/lib/execute/simulate-sequence";
+import { logSystemWarn } from "@/lib/logging";
 
 const ERC20_ABI = JSON.stringify([
   {
@@ -297,6 +299,98 @@ describe("simulateCallSequence on a node without eth_simulateV1", () => {
     });
   });
 
+  it("traces each call against the accumulated state, not the raw chain state", async () => {
+    fallbackNode();
+
+    // Three calls so the final-call skip does not remove every trace: the
+    // second call's diff seeds the third call's eth_call.
+    await run([
+      ...APPROVE_THEN_DEPOSIT,
+      {
+        contractAddress: TOKEN,
+        abi: ERC20_ABI,
+        functionName: "allowance",
+        functionArgs: JSON.stringify([FROM, VAULT]),
+      },
+    ]);
+
+    const traces = spies.send.mock.calls.filter(
+      ([m]) => m === "debug_traceCall"
+    );
+    // The last call's trace would only feed a nonexistent next call, so it
+    // is not sent.
+    expect(traces).toHaveLength(2);
+    // The first call has nothing to carry, so no overrides are sent.
+    expect(traces[0][1][2]).toEqual({
+      tracer: "prestateTracer",
+      tracerConfig: { diffMode: true },
+    });
+    // The second call must be traced on top of what the first call wrote;
+    // without the overrides its diff is computed against the raw latest
+    // state and the state it set up never reaches later calls.
+    expect(traces[1][1][2]).toEqual({
+      tracer: "prestateTracer",
+      tracerConfig: { diffMode: true },
+      stateOverrides: {
+        [TOKEN]: { nonce: "0x3", stateDiff: { "0xslot": "0xvalue" } },
+      },
+    });
+  });
+
+  it("proves state actually flows: the trace post depends on the state passed in", async () => {
+    // A node whose prestateTracer output depends on the state it is given:
+    // on raw latest state it writes "0xraw"; when the request already
+    // carries a TOKEN entry it writes "0xcarried" instead. A stub that
+    // ignored stateOverrides would produce a constant post and could not
+    // be told apart from a correct one by request-shape assertions alone.
+    spies.send.mockImplementation((method: string, params: unknown[]) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(
+          new Error("the method eth_simulateV1 does not exist")
+        );
+      }
+      if (method === "eth_call") {
+        return Promise.resolve(TRUE);
+      }
+      if (method === "eth_estimateGas") {
+        return Promise.resolve("0x5208");
+      }
+      if (method === "debug_traceCall") {
+        const opts = (params[2] ?? {}) as {
+          stateOverrides?: Record<string, unknown>;
+        };
+        const carried = Object.keys(opts.stateOverrides ?? {}).length > 0;
+        const slot = carried ? "0xcarried" : "0xraw";
+        return Promise.resolve({
+          post: { [TOKEN]: { storage: { [slot]: "0x1" } } },
+        });
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    await run([
+      ...APPROVE_THEN_DEPOSIT,
+      {
+        contractAddress: TOKEN,
+        abi: ERC20_ABI,
+        functionName: "allowance",
+        functionArgs: JSON.stringify([FROM, VAULT]),
+      },
+    ]);
+
+    const calls = spies.send.mock.calls.filter(([m]) => m === "eth_call");
+    // Call 1 was traced on raw state, so only its "0xraw" write is carried.
+    expect(calls[1][1][2]).toEqual({
+      [TOKEN]: { stateDiff: { "0xraw": "0x1" } },
+    });
+    // Call 2's trace ran ON TOP of call 1's state, so the "0xcarried" diff
+    // it produced must reach call 2's eth_call. If the trace were run
+    // against raw latest state instead, this would show 0xraw again.
+    expect(calls[2][1][2]).toEqual({
+      [TOKEN]: { stateDiff: { "0xraw": "0x1", "0xcarried": "0x1" } },
+    });
+  });
+
   it("does not retry eth_simulateV1 for that chain again", async () => {
     fallbackNode();
 
@@ -311,6 +405,26 @@ describe("simulateCallSequence on a node without eth_simulateV1", () => {
 
     expect(firstAttempts).toBe(1);
     expect(totalAttempts).toBe(1);
+  });
+
+  it("logs the one-time degradation warning when the mechanism flips to state-overrides", async () => {
+    fallbackNode();
+
+    const first = await run();
+    expect(first.mechanism).toBe("state-overrides");
+    // The flip is logged exactly once, at the point the fallback is pinned.
+    const warn = vi.mocked(logSystemWarn);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [category, message, error, labels] = warn.mock.calls[0];
+    expect(category).toBe("network_rpc");
+    expect(String(message)).toContain("eth_simulateV1");
+    expect(error).toBeDefined();
+    expect(labels).toEqual({ chain_id: "84532" });
+
+    // The pinned fallback path stays silent: the warning fires only at the flip.
+    const second = await run();
+    expect(second.mechanism).toBe("state-overrides");
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it("stops rather than answering as if the earlier call never ran", async () => {
@@ -334,6 +448,12 @@ describe("simulateCallSequence on a node without eth_simulateV1", () => {
       success: false,
       failureKind: "unavailable",
     });
+    // The node's own refusal is carried into the message (previously dropped
+    // by the bare catch), so an operator can tell a capability problem from
+    // a transport failure.
+    expect(String((result.results[1] as { error?: string }).error)).toContain(
+      "prestateTracer is not supported"
+    );
   });
 
   it("keeps a node error that is not a missing method as unavailable", async () => {

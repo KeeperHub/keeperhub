@@ -180,6 +180,16 @@ export function classifyRpcError(error: unknown): RpcErrorType {
   return "rpc_error";
 }
 
+function isConnectionRefusal(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message.toLowerCase()
+      : String(error).toLowerCase();
+  return (
+    message.includes("econnrefused") || message.includes("connection refused")
+  );
+}
+
 export type RpcProviderConfig = {
   primaryRpcUrl: string;
   fallbackRpcUrl?: string;
@@ -391,8 +401,18 @@ export class RpcProviderManager {
         throw this.failoverError(
           `RPC failed on both endpoints. Fallback: ${fallbackResult.error}. Primary: ${primaryResult.error}`,
           [
-            { endpoint: "fallback", transport: fallbackResult.transport },
-            { endpoint: "primary", transport: primaryResult.transport },
+            {
+              endpoint: "fallback",
+              transport: fallbackResult.transport,
+              allAttemptsConnectionRefused:
+                fallbackResult.allAttemptsConnectionRefused,
+            },
+            {
+              endpoint: "primary",
+              transport: primaryResult.transport,
+              allAttemptsConnectionRefused:
+                primaryResult.allAttemptsConnectionRefused,
+            },
           ]
         );
       }
@@ -462,15 +482,32 @@ export class RpcProviderManager {
       throw this.failoverError(
         `RPC failed on both endpoints. Primary: ${primaryResult.error}. Fallback: ${fallbackResult.error}`,
         [
-          { endpoint: "primary", transport: primaryResult.transport },
-          { endpoint: "fallback", transport: fallbackResult.transport },
+          {
+            endpoint: "primary",
+            transport: primaryResult.transport,
+            allAttemptsConnectionRefused:
+              primaryResult.allAttemptsConnectionRefused,
+          },
+          {
+            endpoint: "fallback",
+            transport: fallbackResult.transport,
+            allAttemptsConnectionRefused:
+              fallbackResult.allAttemptsConnectionRefused,
+          },
         ]
       );
     }
 
     throw this.failoverError(
       `RPC failed on primary endpoint: ${primaryResult.error}`,
-      [{ endpoint: "primary", transport: primaryResult.transport }]
+      [
+        {
+          endpoint: "primary",
+          transport: primaryResult.transport,
+          allAttemptsConnectionRefused:
+            primaryResult.allAttemptsConnectionRefused,
+        },
+      ]
     );
   }
 
@@ -488,18 +525,30 @@ export class RpcProviderManager {
     failures: readonly {
       endpoint: "primary" | "fallback";
       transport?: boolean;
+      allAttemptsConnectionRefused?: boolean;
     }[]
   ): Error {
     const redacted = redactAllUrls(message);
+    const allAttemptsConnectionRefused =
+      failures.length > 0 &&
+      failures.every(
+        (failure) => failure.allAttemptsConnectionRefused === true
+      );
     const allOnTheRelay = failures.every(
       (failure) =>
         failure.transport &&
         failure.endpoint === "primary" &&
         this.config.primaryIsPrivateRelay
     );
-    return allOnTheRelay
+    const result = allOnTheRelay
       ? new RpcRelayTransportError(redacted)
       : new Error(redacted);
+    // A write-broadcast classifier must know whether *every retry attempt*
+    // was refused. The rendered message only contains each endpoint's final
+    // error, so text alone can turn "timeout, then refused" into "never sent".
+    // Duck-typed by submit-signed.ts to avoid coupling callers to this class.
+    Object.assign(result, { allAttemptsConnectionRefused });
+    return result;
   }
 
   private recordAttempt(
@@ -603,8 +652,12 @@ export class RpcProviderManager {
     error?: string;
     /** Whether the last attempt failed on transport rather than on an answer. */
     transport?: boolean;
+    /** True only when every retry attempt ended in a connection refusal. */
+    allAttemptsConnectionRefused?: boolean;
   }> {
     let lastError: Error | undefined;
+    let attemptCount = 0;
+    let allAttemptsConnectionRefused = true;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const startTime = performance.now();
@@ -635,6 +688,9 @@ export class RpcProviderManager {
         );
 
         lastError = error instanceof Error ? error : new Error(String(error));
+        attemptCount += 1;
+        allAttemptsConnectionRefused =
+          allAttemptsConnectionRefused && isConnectionRefusal(error);
         this.recordFailure(providerType, operationType);
         this.metricsCollector.recordErrorType(
           this.config.chainName,
@@ -663,6 +719,8 @@ export class RpcProviderManager {
       // mask the key before the message reaches thrown errors and logs.
       error: scrubRpcUrls(lastError?.message ?? "") || "Unknown error",
       transport: isTransportFailure(lastError),
+      allAttemptsConnectionRefused:
+        attemptCount > 0 && allAttemptsConnectionRefused,
     };
   }
 

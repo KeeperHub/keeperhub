@@ -37,6 +37,7 @@
  * signature, or timestamp in error paths.
  */
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { parseAuthTimestamp } from "@/lib/auth-timestamp";
 import { listActiveHmacSecrets, lookupHmacSecret } from "./hmac-secret-store";
 
 const REPLAY_WINDOW_SECONDS = 300;
@@ -72,8 +73,11 @@ export async function verifyHmacRequest(
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const ts = Number.parseInt(timestamp, 10);
-  if (!Number.isFinite(ts) || Math.abs(now - ts) > REPLAY_WINDOW_SECONDS) {
+  const ts = parseAuthTimestamp(timestamp);
+  if (ts === null) {
+    return { ok: false, status: 401, error: "Malformed timestamp" };
+  }
+  if (Math.abs(now - ts) > REPLAY_WINDOW_SECONDS) {
     return { ok: false, status: 401, error: "Timestamp outside replay window" };
   }
 

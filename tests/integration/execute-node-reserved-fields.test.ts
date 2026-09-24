@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   stepFn: vi.fn(),
   ownershipResult: [] as unknown[],
   capturedInput: undefined as Record<string, unknown> | undefined,
+  recordIdempotentResponse: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -74,6 +75,14 @@ vi.mock("@/app/api/execute/_lib/execution-service", async (importActual) => {
 vi.mock("@/app/api/execute/_lib/action-resolver", () => ({
   resolveAction: mocks.resolveAction,
 }));
+
+vi.mock("@/lib/idempotency", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/idempotency")>();
+  return {
+    ...actual,
+    recordIdempotentResponse: mocks.recordIdempotentResponse,
+  };
+});
 
 vi.mock("@/lib/utils", async () => {
   const actual =
@@ -143,6 +152,9 @@ beforeEach(() => {
   mocks.setRetryCount.mockResolvedValue(undefined);
   mocks.redactInput.mockImplementation(
     (input: Record<string, unknown>) => input
+  );
+  mocks.recordIdempotentResponse.mockImplementation(
+    (_outcome: unknown, response: Response) => Promise.resolve(response)
   );
 
   mocks.stepFn.mockImplementation((input: Record<string, unknown>) => {
@@ -541,6 +553,7 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
       error: "Transaction sent but receipt not available",
       transactionHash: "0xpending",
       chainId: 1,
+      broadcastAttempted: true,
     });
     mocks.failExecution.mockResolvedValue({ status: "unconfirmed" });
 
@@ -554,7 +567,11 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
     expect(mocks.failExecution).toHaveBeenCalledWith(
       "ex1",
       "Transaction sent but receipt not available",
-      expect.objectContaining({ transactionHash: "0xpending", chainId: 1 })
+      expect.objectContaining({
+        transactionHash: "0xpending",
+        chainId: 1,
+        broadcastAttempted: true,
+      })
     );
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.status).toBe("unconfirmed");
@@ -641,5 +658,117 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.status).toBe("failed");
     expect(body.transactionHash).toBeUndefined();
+  });
+
+  it("releases a failed node transaction only after hash+chain adjudication", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "execution reverted",
+      transactionHash: "0xreverted",
+      chainId: 8453,
+    });
+    mocks.failExecution.mockResolvedValue({ status: "failed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "release"
+    );
+  });
+
+  it("holds a failed node transaction while receipt verification is unconfirmed", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "receipt unavailable",
+      transactionHash: "0xpending",
+      chainId: 8453,
+    });
+    mocks.failExecution.mockResolvedValue({ status: "unconfirmed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "failed"
+    );
+  });
+
+  it("holds a hash when chainId is not numeric instead of releasing it", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "provider returned malformed chain context",
+      transactionHash: "0xlive",
+      chainId: "8453",
+    });
+    mocks.failExecution.mockResolvedValue({ status: "failed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.failExecution).toHaveBeenCalledWith(
+      "ex1",
+      "provider returned malformed chain context",
+      expect.objectContaining({ transactionHash: "0xlive", chainId: undefined })
+    );
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "failed"
+    );
+  });
+
+  it("releases the non-completed success branch only after hash+chain adjudication", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: true,
+      transactionHash: "0xreverted",
+      gasUsed: "21000",
+      effectiveGasPrice: "1",
+      chainId: 8453,
+    });
+    mocks.completeExecution.mockResolvedValue({ status: "failed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "release"
+    );
+  });
+
+  it("holds the non-completed success branch while verification is unconfirmed", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: true,
+      transactionHash: "0xpending",
+      gasUsed: "21000",
+      effectiveGasPrice: "1",
+      chainId: 8453,
+    });
+    mocks.completeExecution.mockResolvedValue({ status: "unconfirmed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "failed"
+    );
   });
 });

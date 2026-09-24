@@ -11,6 +11,7 @@ import {
 } from "@/lib/execute/simulate";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   idempotencyEarlyResponse,
   recordIdempotentResponse,
   withIdempotencyHeartbeat,
@@ -37,7 +38,7 @@ import {
   parseNativeValueEther,
   parseNativeValueLamports,
 } from "../_lib/reserved-value";
-import { parseSimulateFlag } from "../_lib/simulate-flag";
+import { parseSimulateFlag, rejectSimulateQuery } from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import type { ExecuteResponse } from "../_lib/types";
 import { validateTokenFields, validateTransferInput } from "../_lib/validate";
@@ -51,6 +52,15 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: apiKeyCtx.error },
       { status: apiKeyCtx.status }
     );
+  }
+
+  // 1.5 #2004: ?simulate= is refused on every /api/execute/* route rather
+  // than silently ignored. This route honours the flag only in the body;
+  // a query flag used to fall through to a real broadcast with no
+  // acknowledgement that a dry run had been asked for.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
   }
 
   // Parsed before the scope gate because the required scope depends on
@@ -323,6 +333,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       transactionHash: result.transactionHash,
       chainId: result.chainId,
       sponsored: result.sponsored,
+      broadcastAttempted: result.broadcastAttempted,
     });
     outcome = { status: settled.status, error: result.error };
   }
@@ -344,11 +355,12 @@ export async function POST(request: Request): Promise<NextResponse> {
       : {}),
     ...(outcome.error ? { error: outcome.error } : {}),
   };
+  const disposition = dispositionForExecutionOutcome(outcome.status, result);
   return applyRateLimitHeaders(
     await recordIdempotentResponse(
       idem,
       NextResponse.json(responseBody, { status: HttpStatus.ACCEPTED }),
-      outcome.status === "completed" ? "success" : "failed"
+      disposition
     ),
     rateLimit
   );

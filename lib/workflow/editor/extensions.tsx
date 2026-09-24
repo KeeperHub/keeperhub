@@ -13,6 +13,7 @@ import { KeeperHubLogo } from "@/components/icons/keeperhub-logo";
 import { SendGridConnectionSection } from "@/components/settings/sendgrid-connection-section";
 import { Web3WalletSection } from "@/components/settings/web3-wallet-section";
 import { Label } from "@/components/ui/label";
+import { AbiEventArgsField } from "@/components/workflow/config/abi-event-args-field";
 import { AbiEventSelectField } from "@/components/workflow/config/abi-event-select-field";
 import { AbiWithAutoFetchField } from "@/components/workflow/config/abi-with-auto-fetch-field";
 import { ArgsListField } from "@/components/workflow/config/args-list-field";
@@ -162,6 +163,42 @@ registerFieldRenderer(
         <AbiEventSelectField
           abiValue={abiValue}
           disabled={disabled}
+          field={field}
+          onChange={(val: unknown) => onUpdateConfig(field.key, val)}
+          value={value}
+        />
+      </div>
+    );
+  }
+);
+
+/**
+ * ABI Event Args Field
+ * One input per indexed parameter of the selected event, with the ones no
+ * topic can match on disabled rather than offered and left to fail at the RPC.
+ */
+registerFieldRenderer(
+  "abi-event-args",
+  ({ field, config, onUpdateConfig, disabled }) => {
+    const rawAbi = config[field.abiField || "abi"];
+    const abiValue = typeof rawAbi === "string" ? rawAbi : "";
+    const rawEvent = config[field.abiEventField || "eventName"];
+    const eventValue = typeof rawEvent === "string" ? rawEvent : "";
+    // Passed through as stored: the step accepts the filter as a JSON string
+    // or as an object, and the field reads both.
+    const rawValue = config[field.key];
+    const value =
+      rawValue === undefined || rawValue === null || rawValue === ""
+        ? (field.defaultValue ?? "")
+        : rawValue;
+
+    return (
+      <div className="space-y-2" key={field.key}>
+        <ProtocolFieldLabel field={field} />
+        <AbiEventArgsField
+          abiValue={abiValue}
+          disabled={disabled}
+          eventValue={eventValue}
           field={field}
           onChange={(val: unknown) => onUpdateConfig(field.key, val)}
           value={value}

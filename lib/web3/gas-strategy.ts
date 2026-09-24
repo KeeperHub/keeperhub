@@ -253,6 +253,127 @@ async function getPercentileFees(
   }
 }
 
+// Hardcoded chain-specific overrides (used when the DB has no row for the
+// chain). Exported so tests can iterate it: `CHAIN_GAS_DEFAULTS` in
+// lib/web3/gas-defaults.ts must carry the same multiplier for every chain
+// here, and the parity test checks both directions.
+export const HARDCODED_CHAIN_OVERRIDES: Record<
+  number,
+  Partial<ChainGasConfig>
+> = {
+  // Ethereum mainnet
+  1: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 0.5,
+  },
+  // Sepolia testnet
+  11155111: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 0.1,
+  },
+  // Arbitrum One
+  42161: {
+    gasLimitMultiplier: 1.5, // L2 estimates are more accurate
+    minPriorityFeeGwei: 0.01,
+    maxPriorityFeeGwei: 10,
+  },
+  // Arbitrum Sepolia
+  421614: {
+    gasLimitMultiplier: 1.5,
+    minPriorityFeeGwei: 0.01,
+    maxPriorityFeeGwei: 10,
+  },
+  // Base
+  8453: {
+    gasLimitMultiplier: 1.5,
+    minPriorityFeeGwei: 0.001,
+    maxPriorityFeeGwei: 5,
+  },
+  // Base Sepolia
+  84532: {
+    gasLimitMultiplier: 1.5,
+    minPriorityFeeGwei: 0.001,
+    maxPriorityFeeGwei: 5,
+  },
+  // Polygon
+  137: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 30, // Polygon has higher base priority fees
+    maxPriorityFeeGwei: 1000,
+  },
+  // Polygon Amoy testnet
+  80002: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 30,
+    maxPriorityFeeGwei: 1000,
+  },
+  // Robinhood Chain (Arbitrum Orbit L2) and its testnet. Priority fees are
+  // inert here: the sequencer orders first-come-first-served, so a tip buys
+  // no inclusion advantage. Measured on 4663 (2026-08-12): eth_feeHistory
+  // returned 0 reward at the 25th, 50th, 75th and 99th percentiles across
+  // 10 consecutive blocks, eth_maxPriorityFeePerGas returned 0, and
+  // eth_gasPrice (0.0423 gwei) matched the base fee (0.0428 gwei).
+  // The 0.1 gwei default floor would therefore add roughly 2.3x the base
+  // fee as a tip nothing consumes, so the floor is dropped to 0. The cap
+  // stays low to bound a bad percentile read rather than to price anything.
+  4663: {
+    gasLimitMultiplier: 1.5, // Orbit L2, same estimate accuracy as Arbitrum
+    minPriorityFeeGwei: 0,
+    maxPriorityFeeGwei: 1,
+  },
+  46630: {
+    gasLimitMultiplier: 1.5,
+    minPriorityFeeGwei: 0,
+    maxPriorityFeeGwei: 1,
+  },
+  // HyperEVM. Regular blocks carry a 3,000,000 gas limit, and the
+  // node rejects a transaction above it at submission with
+  // -32000 "exceeds block gas limit" before it checks the balance. The
+  // larger 30,000,000 blocks require the sender to opt in on HyperCore,
+  // which KeeperHub does not do -- they are interleaved with the regular
+  // ones rather than absent, so a short sample can show only 3,000,000
+  // limits (one 30,000,000 block appeared in 80 consecutive blocks on
+  // 2026-09-22). What holds is the cap on a sender that has not opted in,
+  // not a single limit for the chain. The 2.0 default would therefore make any
+  // estimate above 1,500,000 gas unsendable, so the multiplier drops to
+  // 1.5, covering estimates up to 2,000,000. Above that, set an absolute
+  // gas limit on the action. Priority fees keep the defaults: unlike
+  // Robinhood Chain, eth_feeHistory here returns non-zero rewards
+  // (0 to 0.55 gwei), so the 0.1 gwei floor prices real competition.
+  999: {
+    gasLimitMultiplier: 1.5,
+  },
+  // 0G Galileo testnet. The mempool admits tips at 2 gwei (matching the
+  // node's "needed 2 gwei" floor) but validators only include txs paying
+  // >= ~4 gwei. Validated 2026-05-01: sampled 10k recent blocks (400 txs);
+  // 77% paid exactly 4.0 gwei, 91% paid >= 4.0, eth_maxPriorityFeePerGas
+  // returns 4.0. A 2 gwei tip clears mempool admission then sits unmined
+  // indefinitely. If 0G validator policy shifts (mempool floor != inclusion
+  // floor is the trap), re-sample and adjust this entry.
+  16602: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 4.0,
+    maxPriorityFeeGwei: 500,
+  },
+  // 0G Mainnet -- mirrors Galileo's tip-cap requirement (same client/protocol).
+  // If mainnet's actual floor differs, narrow this entry; defensive default
+  // until we have mainnet-specific signal.
+  16661: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 4.0,
+    maxPriorityFeeGwei: 500,
+  },
+  // Tempo mainnet -- fees paid in a TIP-20 stablecoin, estimates are
+  // accurate, so an L2-like 1.5x limit multiplier is enough headroom.
+  4217: {
+    gasLimitMultiplier: 1.5,
+  },
+  // Tempo Moderato testnet
+  42431: {
+    gasLimitMultiplier: 1.5,
+  },
+};
+
 export class AdaptiveGasStrategy {
   private readonly config: GasStrategyConfig;
 
@@ -514,104 +635,7 @@ export class AdaptiveGasStrategy {
    * Hardcoded chain-specific overrides (fallback when DB unavailable)
    */
   private getHardcodedOverrides(chainId: number): Partial<ChainGasConfig> {
-    const overrides: Record<number, Partial<ChainGasConfig>> = {
-      // Ethereum mainnet
-      1: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 0.5,
-      },
-      // Sepolia testnet
-      11155111: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 0.1,
-      },
-      // Arbitrum One
-      42161: {
-        gasLimitMultiplier: 1.5, // L2 estimates are more accurate
-        minPriorityFeeGwei: 0.01,
-        maxPriorityFeeGwei: 10,
-      },
-      // Arbitrum Sepolia
-      421614: {
-        gasLimitMultiplier: 1.5,
-        minPriorityFeeGwei: 0.01,
-        maxPriorityFeeGwei: 10,
-      },
-      // Base
-      8453: {
-        gasLimitMultiplier: 1.5,
-        minPriorityFeeGwei: 0.001,
-        maxPriorityFeeGwei: 5,
-      },
-      // Base Sepolia
-      84532: {
-        gasLimitMultiplier: 1.5,
-        minPriorityFeeGwei: 0.001,
-        maxPriorityFeeGwei: 5,
-      },
-      // Polygon
-      137: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 30, // Polygon has higher base priority fees
-        maxPriorityFeeGwei: 1000,
-      },
-      // Polygon Amoy testnet
-      80002: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 30,
-        maxPriorityFeeGwei: 1000,
-      },
-      // Robinhood Chain (Arbitrum Orbit L2) and its testnet. Priority fees are
-      // inert here: the sequencer orders first-come-first-served, so a tip buys
-      // no inclusion advantage. Measured on 4663 (2026-08-12): eth_feeHistory
-      // returned 0 reward at the 25th, 50th, 75th and 99th percentiles across
-      // 10 consecutive blocks, eth_maxPriorityFeePerGas returned 0, and
-      // eth_gasPrice (0.0423 gwei) matched the base fee (0.0428 gwei).
-      // The 0.1 gwei default floor would therefore add roughly 2.3x the base
-      // fee as a tip nothing consumes, so the floor is dropped to 0. The cap
-      // stays low to bound a bad percentile read rather than to price anything.
-      4663: {
-        gasLimitMultiplier: 1.5, // Orbit L2, same estimate accuracy as Arbitrum
-        minPriorityFeeGwei: 0,
-        maxPriorityFeeGwei: 1,
-      },
-      46630: {
-        gasLimitMultiplier: 1.5,
-        minPriorityFeeGwei: 0,
-        maxPriorityFeeGwei: 1,
-      },
-      // 0G Galileo testnet. The mempool admits tips at 2 gwei (matching the
-      // node's "needed 2 gwei" floor) but validators only include txs paying
-      // >= ~4 gwei. Validated 2026-05-01: sampled 10k recent blocks (400 txs);
-      // 77% paid exactly 4.0 gwei, 91% paid >= 4.0, eth_maxPriorityFeePerGas
-      // returns 4.0. A 2 gwei tip clears mempool admission then sits unmined
-      // indefinitely. If 0G validator policy shifts (mempool floor != inclusion
-      // floor is the trap), re-sample and adjust this entry.
-      16602: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 4.0,
-        maxPriorityFeeGwei: 500,
-      },
-      // 0G Mainnet -- mirrors Galileo's tip-cap requirement (same client/protocol).
-      // If mainnet's actual floor differs, narrow this entry; defensive default
-      // until we have mainnet-specific signal.
-      16661: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 4.0,
-        maxPriorityFeeGwei: 500,
-      },
-      // Tempo mainnet -- fees paid in a TIP-20 stablecoin, estimates are
-      // accurate, so an L2-like 1.5x limit multiplier is enough headroom.
-      4217: {
-        gasLimitMultiplier: 1.5,
-      },
-      // Tempo Moderato testnet
-      42431: {
-        gasLimitMultiplier: 1.5,
-      },
-    };
-
-    return overrides[chainId] || {};
+    return HARDCODED_CHAIN_OVERRIDES[chainId] || {};
   }
 }
 
