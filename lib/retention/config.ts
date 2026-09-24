@@ -1,5 +1,5 @@
 import "server-only";
-import { DAY_MS } from "@/lib/utils/duration";
+import { DAY_MS, HOUR_MS } from "@/lib/utils/duration";
 
 /**
  * KEEP-1042: configuration for the execution retention purge.
@@ -45,6 +45,39 @@ export type RetentionConfig = {
   softDeleteGraceDays: number;
   /** Rows touched by a single statement. */
   batchSize: number;
+  /**
+   * Widest time slice the plan-window drain will use. It starts every
+   * organization here and its doubling may never exceed it.
+   *
+   * KEEP-1360: the slice used to start at the whole remaining range and double
+   * back up to it. An organization whose runs sit in a burst with empty months
+   * ahead of it cannot fill one page early over that range, so the planner
+   * stops using (workflow_id, started_at) and scans the global started_at index
+   * instead, discarding every other organization's runs as it goes.
+   *
+   * Measured on prod for the organization that hit this, whose runs past the
+   * window are 395,415 rows inside two days with about ten empty months before
+   * them, with `enable_seqscan = off` both times. Over one day of the burst:
+   * Bitmap Index Scan on idx_workflow_executions_workflow_started, a full page
+   * in 63 ms. Over the whole year: Index Scan on
+   * idx_workflow_executions_started_at, 2,960,451 rows removed by filter to
+   * find the same page, 3.4 s warm - and past the 30 s pool timeout when it
+   * actually fired in production on a cold cache.
+   *
+   * A hard cap rather than a starting point, deliberately. That spread between
+   * warm and cold is the reason: the read timeout alone cannot be relied on to
+   * catch this width, because the same statement is comfortably inside the
+   * bound warm and far outside it cold. Capping the slice makes the width
+   * unreachable instead of merely usually caught.
+   *
+   * Narrower means more slices, and the drain reads every workflow chunk once
+   * per slice, so the cost is paid by organizations with very many workflows:
+   * the largest on prod holds 151,791, so a year-wide backlog is about 543,000
+   * reads across roughly eleven runs rather than one. That drains on its own,
+   * because the watermark advances after every slice. Configurable so an
+   * operator can trade one against the other without a deploy.
+   */
+  planWindowSliceMs: number;
   /** A run stops itself here so it never overlaps the next one. */
   maxRuntimeMs: number;
   /**
@@ -75,6 +108,7 @@ const DEFAULTS = {
   softDeleteGraceDays: 30,
   batchSize: 5000,
   maxRuntimeSeconds: 240,
+  planWindowSliceHours: 24,
   planChangeGraceHours: 24,
 } as const;
 
@@ -145,6 +179,11 @@ export function getRetentionConfig(): RetentionConfig {
       "EXECUTION_RETENTION_BATCH_SIZE",
       DEFAULTS.batchSize
     ),
+    planWindowSliceMs:
+      readPositiveInt(
+        "EXECUTION_RETENTION_PLAN_WINDOW_SLICE_HOURS",
+        DEFAULTS.planWindowSliceHours
+      ) * HOUR_MS,
     maxRuntimeMs:
       readPositiveInt(
         "EXECUTION_RETENTION_MAX_RUNTIME_SECONDS",

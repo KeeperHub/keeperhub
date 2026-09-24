@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { curateDbError, isUniqueViolation } from "@/lib/db/errors";
+import {
+  curateDbError,
+  isStatementTimeout,
+  isUniqueViolation,
+} from "@/lib/db/errors";
 
 /**
  * Build a chain of `n` plain wrappers ending in an object carrying `code`,
@@ -122,6 +126,26 @@ describe("pgErrorCode chain walk", () => {
     expect(isUniqueViolation(null)).toBe(false);
     expect(isUniqueViolation(undefined)).toBe(false);
     expect(isUniqueViolation("23505")).toBe(false);
+  });
+});
+
+describe("isStatementTimeout", () => {
+  it("recognises a cancelled statement on the thrown error and under its cause", () => {
+    expect(isStatementTimeout({ code: "57014" })).toBe(true);
+    expect(isStatementTimeout({ cause: { code: "57014" } })).toBe(true);
+  });
+
+  it("finds one the drizzle wrapper buried deeper than one hop", () => {
+    // The executor's own copy of this check, before it moved here, looked at
+    // the error and one cause and no further.
+    expect(isStatementTimeout(wrapToDepth(3, "57014"))).toBe(true);
+  });
+
+  it("is not fooled by another SQLSTATE or by a Node errno", () => {
+    expect(isStatementTimeout({ code: "23505" })).toBe(false);
+    expect(isStatementTimeout({ code: "EPIPE" })).toBe(false);
+    expect(isStatementTimeout(new Error("canceling statement"))).toBe(false);
+    expect(isStatementTimeout(undefined)).toBe(false);
   });
 });
 
