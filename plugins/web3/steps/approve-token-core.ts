@@ -69,12 +69,12 @@ export type ApproveTokenCoreInput = {
   amount: string;
   gasLimitMultiplier?: string;
   tokenAddress?: string;
-  // KEEP-137: Route through private mempool (Flashbots Protect). Skips
-  // Turnkey-sponsored execution -- mutually exclusive.
   // Per-node "Sponsor gas" toggle. Defaults on; false skips the gas-sponsored
   // route outright so the transaction is signed and paid for by the org's own
   // wallet. Resolved through resolveSponsorGas so an unset value stays on.
   sponsorGas?: boolean;
+  // KEEP-137: Route through private mempool (Flashbots Protect). Skips
+  // Turnkey-sponsored execution -- mutually exclusive.
   usePrivateMempool?: boolean;
   // Strict mode: when true and usePrivateMempool is true, failing to reach the
   // private RPC does NOT fall back to the public mempool. Ignored otherwise.

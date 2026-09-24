@@ -85,12 +85,12 @@ export type WriteContractCoreInput = {
   // the network's mempool requires a tip above the configured floor (e.g. 0G
   // Galileo demands >= 2 gwei but the strategy floor is lower).
   priorityFeeGwei?: string;
-  // KEEP-137: Route the write transaction through the chain's private mempool
-  // RPC (e.g. Flashbots Protect). Skips Turnkey-sponsored execution -- mutually exclusive.
   // Per-node "Sponsor gas" toggle. Defaults on; false skips the gas-sponsored
   // route outright so the transaction is signed and paid for by the org's own
   // wallet. Resolved through resolveSponsorGas so an unset value stays on.
   sponsorGas?: boolean;
+  // KEEP-137: Route the write transaction through the chain's private mempool
+  // RPC (e.g. Flashbots Protect). Skips Turnkey-sponsored execution -- mutually exclusive.
   usePrivateMempool?: boolean;
   // When true and usePrivateMempool is true, failing to reach the private RPC
   // does NOT fall back to the public mempool. Ignored when usePrivateMempool is false.
