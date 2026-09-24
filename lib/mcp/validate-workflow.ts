@@ -17,6 +17,10 @@ import {
   type ValidationWarningCode,
 } from "@/lib/mcp/validate-workflow-codes";
 import {
+  type ChainWebsockets,
+  eventTriggerRegistration,
+} from "@/lib/mcp/validate-workflow-trigger";
+import {
   chainExists,
   tokenAddressFormat,
 } from "@/lib/mcp/validate-workflow-web3";
@@ -55,6 +59,13 @@ export type ValidateWorkflowOptions = {
    * entirely (no false errors).
    */
   chainIds?: Set<number>;
+  /**
+   * Pre-fetched `chains.default_primary_wss` keyed by chain ID. Same contract
+   * as `chainIds`: the caller does the query, and omitting it SKIPS the
+   * Event-trigger WebSocket check rather than reporting every trigger as
+   * unregisterable.
+   */
+  chainWebsockets?: ChainWebsockets;
 };
 
 export function validateWorkflow(
@@ -94,6 +105,16 @@ export function validateWorkflow(
 
   // VALID-06: token / contract address format (always runs — no DB needed)
   for (const issue of tokenAddressFormat(workflow.nodes)) {
+    errors.push(issue);
+  }
+
+  // Event-trigger registration: the conditions under which the event tracker
+  // declines to register the workflow and nothing reaches the user. The
+  // WebSocket check inside needs opts.chainWebsockets; the rest need nothing.
+  for (const issue of eventTriggerRegistration(
+    workflow.nodes,
+    opts.chainWebsockets
+  )) {
     errors.push(issue);
   }
 
