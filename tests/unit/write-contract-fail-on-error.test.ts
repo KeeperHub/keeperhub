@@ -168,7 +168,10 @@ vi.mock("@/lib/web3/sponsored-send-error", () => ({
   resolveSponsoredSendError: vi.fn(),
 }));
 
-vi.mock("@/lib/web3/sponsorship-feature-flag", () => ({
+vi.mock("@/lib/web3/sponsorship-feature-flag", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/web3/sponsorship-feature-flag")
+  >()),
   isGasSponsorshipEnabled: vi.fn().mockReturnValue(false),
 }));
 

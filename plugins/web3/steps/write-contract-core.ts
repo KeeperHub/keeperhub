@@ -66,7 +66,10 @@ import {
   isOnChainPendingError,
 } from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
-import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
+import {
+  isGasSponsorshipEnabled,
+  resolveSponsorGas,
+} from "@/lib/web3/sponsorship-feature-flag";
 import {
   type TransactionContext,
   withNonceSession,
@@ -87,6 +90,10 @@ export type WriteContractCoreInput = {
   priorityFeeGwei?: string;
   // KEEP-137: Route the write transaction through the chain's private mempool
   // RPC (e.g. Flashbots Protect). Skips Turnkey-sponsored execution -- mutually exclusive.
+  // Per-node "Sponsor gas" toggle. Defaults on; false skips the gas-sponsored
+  // route outright so the transaction is signed and paid for by the org's own
+  // wallet. Resolved through resolveSponsorGas so an unset value stays on.
+  sponsorGas?: boolean;
   usePrivateMempool?: boolean;
   // When true and usePrivateMempool is true, failing to reach the private RPC
   // does NOT fall back to the public mempool. Ignored when usePrivateMempool is false.
@@ -234,6 +241,7 @@ async function writeContractCoreImpl(
     ethValue,
     gasLimitMultiplier,
     priorityFeeGwei,
+    sponsorGas,
     usePrivateMempool,
     strict,
     web3Connection,
@@ -527,7 +535,9 @@ async function writeContractCoreImpl(
   // Turnkey broadcasts via its own infrastructure, which bypasses Flashbots Protect.
   // Also skip in Safe mode: the sponsored path sends from the org's EOA wallet,
   // which would change msg.sender away from the Safe.
+  // The node's own Sponsor gas toggle opts out of the route entirely.
   if (
+    resolveSponsorGas(sponsorGas) &&
     !usePrivateMempool &&
     signerMode.kind === SIGNER_MODE.EOA &&
     isGasSponsorshipEnabled()

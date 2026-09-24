@@ -52,7 +52,10 @@ import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
 import { traceExecutedCallWithFailover } from "@/lib/web3/trace-executed-call";
-import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
+import {
+  isGasSponsorshipEnabled,
+  resolveSponsorGas,
+} from "@/lib/web3/sponsorship-feature-flag";
 import {
   type TransactionContext,
   withNonceSession,
@@ -72,6 +75,10 @@ export type ApproveTokenCoreInput = {
   tokenAddress?: string;
   // KEEP-137: Route through private mempool (Flashbots Protect). Skips
   // Turnkey-sponsored execution -- mutually exclusive.
+  // Per-node "Sponsor gas" toggle. Defaults on; false skips the gas-sponsored
+  // route outright so the transaction is signed and paid for by the org's own
+  // wallet. Resolved through resolveSponsorGas so an unset value stays on.
+  sponsorGas?: boolean;
   usePrivateMempool?: boolean;
   // Strict mode: when true and usePrivateMempool is true, failing to reach the
   // private RPC does NOT fall back to the public mempool. Ignored otherwise.
@@ -149,6 +156,7 @@ async function approveTokenCoreImpl(
     spenderAddress,
     amount,
     gasLimitMultiplier,
+    sponsorGas,
     usePrivateMempool,
     strict,
     web3Connection,
@@ -310,8 +318,10 @@ async function approveTokenCoreImpl(
   // Turnkey broadcasts via its own infrastructure, which bypasses Flashbots Protect.
   // Also skip in Safe mode: the sponsored path sends from the org's EOA wallet,
   // which would change msg.sender away from the Safe.
+  // The node's own Sponsor gas toggle opts out of the route entirely.
   if (
     isSponsorshipSupported(chainId) &&
+    resolveSponsorGas(sponsorGas) &&
     !usePrivateMempool &&
     signerMode.kind === SIGNER_MODE.EOA &&
     isGasSponsorshipEnabled()

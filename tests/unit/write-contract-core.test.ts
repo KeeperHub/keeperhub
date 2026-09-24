@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const DIRECT_ID_PREFIX_REGEX = /^direct-/;
 
@@ -221,7 +221,10 @@ vi.mock("@/lib/web3/sponsored-send-error", () => ({
     mockResolveSponsoredSendError(...args),
 }));
 
-vi.mock("@/lib/web3/sponsorship-feature-flag", () => ({
+vi.mock("@/lib/web3/sponsorship-feature-flag", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/web3/sponsorship-feature-flag")
+  >()),
   isGasSponsorshipEnabled: () => mockIsGasSponsorshipEnabled(),
 }));
 
@@ -738,6 +741,84 @@ describe("writeContractCore sponsored-relay failure link", () => {
       "0xsponsored"
     );
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+});
+
+describe("writeContractCore Sponsor gas toggle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+    mockIsGasSponsorshipEnabled.mockReturnValue(true);
+    mockExecuteSponsoredContractTransaction.mockResolvedValue({
+      transactionHash: "0xsponsored",
+      gasUsed: "21000",
+      gasUsedUnits: "21000",
+      effectiveGasPrice: "1000000000",
+    });
+    mockResolveSponsoredSendError.mockReturnValue({ fallback: true });
+    mockFindExplorerConfig.mockResolvedValue(null);
+    mockExecuteContractCall.mockResolvedValue({
+      hash: "0xhash",
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+    });
+  });
+
+  // clearAllMocks keeps implementations, so the sponsored success set up here
+  // would follow the suite into every later describe.
+  afterEach(() => {
+    mockIsGasSponsorshipEnabled.mockReturnValue(false);
+    mockExecuteSponsoredContractTransaction.mockResolvedValue(null);
+  });
+
+  it("takes the sponsored route when the toggle is unset", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.sponsored).toBe(true);
+      expect(result.transactionHash).toBe("0xsponsored");
+    }
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("signs directly and spends no sponsorship credit when the toggle is off", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      sponsorGas: false,
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.transactionHash).toBe("0xhash");
+    }
+    expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
+    expect(mockExecuteContractCall).toHaveBeenCalled();
+  });
+
+  it('reads the "false" string the editor may persist as off', async () => {
+    await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      sponsorGas: "false" as unknown as boolean,
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
+    expect(mockExecuteContractCall).toHaveBeenCalled();
   });
 });
 
