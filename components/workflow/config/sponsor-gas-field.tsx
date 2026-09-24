@@ -44,7 +44,7 @@ export function SponsorGasField({
         onChange={onChange}
       />
       {!sponsored && (
-        <div className="flex items-start gap-1.5 rounded-md border border-destructive/50 bg-destructive/10 p-2 text-destructive text-xs">
+        <div className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-amber-700 text-xs dark:text-amber-300">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           <span className="break-words">
             This action pays its own gas from the sending wallet's native
