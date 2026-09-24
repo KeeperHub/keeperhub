@@ -1,5 +1,12 @@
 import "server-only";
-import { SPONSORSHIP_CHAIN_IDS } from "./sponsorship-chains-meta";
+import {
+  isSponsorshipSupported,
+  SPONSORSHIP_CHAIN_IDS,
+} from "./sponsorship-chains-meta";
+
+// Re-exported so server-side callers keep one import path for the predicate
+// while the node config form reads it from the client-safe metadata module.
+export { isSponsorshipSupported } from "./sponsorship-chains-meta";
 
 /**
  * Chain IDs where gas sponsorship via Turnkey's native Transaction Management
@@ -17,10 +24,6 @@ import { SPONSORSHIP_CHAIN_IDS } from "./sponsorship-chains-meta";
  */
 export const SUPPORTED_SPONSORSHIP_CHAINS: ReadonlySet<number> =
   SPONSORSHIP_CHAIN_IDS;
-
-export function isSponsorshipSupported(chainId: number): boolean {
-  return SUPPORTED_SPONSORSHIP_CHAINS.has(chainId);
-}
 
 /**
  * Map an EVM chain ID to the CAIP-2 identifier Turnkey expects on

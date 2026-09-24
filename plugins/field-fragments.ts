@@ -8,7 +8,11 @@
  * diverge from a fragment goes back to an inline literal in its action - do
  * not add override parameters here.
  */
-import type { ActionConfigField, OutputField } from "@/plugins/registry";
+import type {
+  ActionConfigField,
+  ActionConfigFieldBase,
+  OutputField,
+} from "@/plugins/registry";
 
 export function solanaNetworkField(): ActionConfigField {
   return {
@@ -91,6 +95,27 @@ export function readFailOnErrorField(): ActionConfigField {
     key: "failOnError",
     label: "Fail workflow on error",
     type: "fail-on-error-switch",
+  };
+}
+
+/**
+ * The "Sponsor gas" toggle shared by the web3 write actions that have a
+ * sponsored route. On (the default) the action tries Turnkey Gas Station
+ * first and falls back to direct signing; off skips the sponsored route
+ * outright, so the transaction is always signed and paid for by the org's
+ * own wallet. See resolveSponsorGas in lib/web3/sponsorship-feature-flag.ts.
+ */
+export function sponsorGasField(): ActionConfigFieldBase {
+  return {
+    defaultValue: "true",
+    helpTip:
+      "When on, the transaction goes through gas sponsorship first and falls back to your own wallet if sponsorship is unavailable on this network or your credits are spent. Turn it off to always pay gas from your own wallet. Sponsorship is skipped regardless when the node routes through a private mempool or signs through a Safe.",
+    key: "sponsorGas",
+    label: "Sponsor gas",
+    // Hidden on a network the Gas Station does not cover, where the toggle
+    // could only ever turn off something that was never available.
+    showWhen: { computed: "sponsorshipSupported", networkField: "network" },
+    type: "gas-sponsorship-switch",
   };
 }
 
