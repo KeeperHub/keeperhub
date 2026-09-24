@@ -2,6 +2,7 @@ import type { AbiInputOverride } from "@/lib/abi/protocol-derive";
 import { defineAbiProtocol } from "@/lib/protocol-registry";
 import { contract, type ProtocolTestData, wallet } from "@/lib/test-data/types";
 import layerzeroEndpointV2Abi from "./abis/layerzero-endpoint-v2.json";
+import layerzeroEndpointV2ViewAbi from "./abis/layerzero-endpoint-v2-view.json";
 import layerzeroErc20Abi from "./abis/layerzero-erc20.json";
 import layerzeroOftAbi from "./abis/layerzero-oft.json";
 
@@ -28,16 +29,47 @@ export const LAYERZERO_CONFIG_DOCS =
 export const LAYERZERO_DEPLOYMENTS_DOCS =
   "https://docs.layerzero.network/v2/deployments/deployed-contracts";
 
-// Endpoint IDs per EVM chain ID. Source: LayerZero metadata API
-// (metadata.layerzero-api.com/v1/metadata), 2026-09-05.
+// Endpoint IDs per EVM chain ID, covering every EVM chain KeeperHub
+// supports. Source: LayerZero metadata API
+// (metadata.layerzero-api.com/v1/metadata), 2026-09-16, with every entry
+// then confirmed against the chain itself by calling eid() on that chain's
+// EndpointV2. The integration suite repeats that check for all of them: it
+// asks each chain's view which endpoint it serves and that endpoint which
+// chain it is on, so a corrected or mistyped ID here fails CI rather than
+// being compared against itself in a unit test.
+//
+// Chosen by hand, one chain at a time, because the metadata cannot be
+// filtered on nativeChainId alone: chain 1 is both Ethereum and Aptos, and
+// chain 11155111 carries three rows of which only sepolia-testnet is the
+// lane in use. Reading eid() from the deployment is what settles those.
+// Plasma Testnet is the case that proves the point: it has three metadata
+// rows (40409, 40411, 40417) sharing one endpoint address, and the endpoint
+// reports 40417.
 export const LAYERZERO_EIDS: Record<string, number> = {
   "1": 30_101,
   "8453": 30_184,
   "42161": 30_110,
   "10": 30_111,
   "137": 30_109,
+  "56": 30_102,
+  "43114": 30_106,
+  "9745": 30_383,
+  "16661": 30_388,
+  "4217": 30_410,
+  "4663": 30_416,
+  "5042": 30_417,
   "11155111": 40_161,
   "84532": 40_245,
+  "421614": 40_231,
+  "11155420": 40_232,
+  "80002": 40_267,
+  "97": 40_102,
+  "43113": 40_106,
+  "9746": 40_417,
+  "16602": 40_428,
+  "42431": 40_444,
+  "46630": 40_451,
+  "5042002": 40_434,
 };
 
 // Type 3 options: executor lzReceive gas of 200,000 and no native drop.
@@ -66,8 +98,25 @@ const EID_CHAIN_NAMES: readonly (readonly [string, string])[] = [
   ["42161", "Arbitrum One"],
   ["10", "Optimism"],
   ["137", "Polygon"],
+  ["56", "BNB Chain"],
+  ["43114", "Avalanche"],
+  ["9745", "Plasma"],
+  ["16661", "0G"],
+  ["4217", "Tempo"],
+  ["4663", "Robinhood Chain"],
+  ["5042", "Arc"],
   ["11155111", "Ethereum Sepolia"],
   ["84532", "Base Sepolia"],
+  ["421614", "Arbitrum Sepolia"],
+  ["11155420", "Optimism Sepolia"],
+  ["80002", "Polygon Amoy"],
+  ["97", "BNB Chain Testnet"],
+  ["43113", "Avalanche Fuji"],
+  ["9746", "Plasma Testnet"],
+  ["16602", "0G Galileo"],
+  ["42431", "Tempo Testnet"],
+  ["46630", "Robinhood Chain Testnet"],
+  ["5042002", "Arc Testnet"],
 ];
 
 // Built from LAYERZERO_EIDS rather than typed out beside it, so a corrected
@@ -93,6 +142,12 @@ const EID_TABLE = formatEidTable();
 
 // EndpointV2 per chain. Same address on every mainnet listed; testnets
 // share a different one. Source: LayerZero metadata API, 2026-09-05.
+//
+// Deliberately still the five mainnets and two testnets the OFT reference
+// map covers, while the view map below covers every chain KeeperHub runs.
+// The endpoint's own actions bind a reference OFT deployment per chain; the
+// view's does not, so widening this map is a separate change from widening
+// the read that needs no such deployment.
 const ENDPOINT_V2_ADDRESSES: Record<string, string> = {
   "1": "0x1a44076050125825900e736c501f859c50fE728c",
   "8453": "0x1a44076050125825900e736c501f859c50fE728c",
@@ -101,6 +156,63 @@ const ENDPOINT_V2_ADDRESSES: Record<string, string> = {
   "137": "0x1a44076050125825900e736c501f859c50fE728c",
   "11155111": "0x6EDCE65403992e310A62460808c4b910D972f10f",
   "84532": "0x6EDCE65403992e310A62460808c4b910D972f10f",
+};
+
+// EndpointV2View per chain: LayerZero's read-only view over the endpoint's
+// inbound state, whose executable() is what LayerZero's own executor polls
+// before delivering. Unlike EndpointV2 the address differs on almost every
+// chain, so none of it is derivable.
+//
+// Source: LayerZero metadata API `endpointV2View`, 2026-09-16. Every entry
+// was called on its own chain that day: each answers executable() with 0
+// for an unused nonce, and the endpoint it reports serves the eid
+// LAYERZERO_EIDS lists for that chain. That endpoint()/eid() round-trip is
+// what identifies the address; the contract is an upgradeable proxy, so its
+// code is the same for every view behind the same admin and says nothing
+// about which chain's view it is.
+//
+// Executed (3) means the endpoint holds no payload for that nonce and the
+// path has reached it. That covers lzReceive having run, the OApp having
+// dropped the message with clear(), skip() or burn(), and any nonce at or
+// below the path's lazy inbound nonce, whether or not it is the message the
+// caller meant. It says nothing about lzCompose, which runs as a separate
+// call afterwards.
+//
+// Not executable (0) is just as ambiguous in the other direction: it covers
+// a message the verifiers have not delivered yet, a nonce the OApp owner
+// nilified (the NIL payload hash matches none of the executable branches,
+// so a permanently dead message reports 0), and identifiers that name no
+// message at all.
+//
+// Arc (5042) and Arc Testnet (5042002) were added on 2026-09-21 and checked
+// the same way: each view's endpoint() reports an endpoint whose eid() is
+// 30417 and 40434 respectively. Arc shares its mainnet view address with
+// Plasma and Robinhood Chain.
+const ENDPOINT_V2_VIEW_ADDRESSES: Record<string, string> = {
+  "1": "0x8FAFC84cAeA1Cef8475cb5CB344658D160c9CE0b",
+  "8453": "0x5e2A88c385B86f00eb8F4d9f861649a6feB93F24",
+  "42161": "0x5440E2097C41F8e0a8551521d569c71de70fDe23",
+  "10": "0xECEE8B581960634aF89f467AE624Ff468a9Db14B",
+  "137": "0x1Bef2d7C5c60fD826Cc1b1f29cA357Af2d0Ae2c6",
+  "56": "0x40B36b785A6872b40Cd6957Ce211E515E1be1081",
+  "43114": "0x5cDc927876031B4Ef910735225c425A7Fc8efed9",
+  "9745": "0xAaB5A48CFC03Efa9cC34A2C1aAcCCB84b4b770e4",
+  "16661": "0x4514FC667a944752ee8A29F544c1B20b1A315f25",
+  "4217": "0x6903A4a6F09f8837886928b9494C0635Cf3091ED",
+  "4663": "0xAaB5A48CFC03Efa9cC34A2C1aAcCCB84b4b770e4",
+  "5042": "0xAaB5A48CFC03Efa9cC34A2C1aAcCCB84b4b770e4",
+  "11155111": "0x982Ca8b3532236C5e77Ff215791dD454e07E21F7",
+  "84532": "0xF49d162484290EAeAd7bb8C2c7E3a6f8f52e32d6",
+  "421614": "0x91282bEf7b549732c6acE92778167E952F864A5e",
+  "11155420": "0x1e5432719b432738aDeb8F8C5bb6d118e09E768d",
+  "80002": "0xcF1B0F4106B0324F96fEfcC31bA9498caa80701C",
+  "97": "0x9a8E38C2394A4ec94421750b96a67A5CeF75EbfE",
+  "43113": "0x31fFd858c7826817F830C3dF2bb2A74126d51126",
+  "9746": "0x6Ac7bdc07A0583A362F1497252872AE6c0A5F5B8",
+  "16602": "0x6Ac7bdc07A0583A362F1497252872AE6c0A5F5B8",
+  "42431": "0x9BDD19d8cF1cAB4972802bCA09f72d8c8325dBfB",
+  "46630": "0x6Ac7bdc07A0583A362F1497252872AE6c0A5F5B8",
+  "5042002": "0x145C041566B21Bec558B2A37F1a5Ff261aB55998",
 };
 
 // Reference OFT deployments. The runtime address always comes from the
@@ -286,6 +398,18 @@ const TEST_DATA: ProtocolTestData = {
         eid: "30110",
         configType: "2",
       },
+      // A real USDT0 transfer from Arbitrum into the chain-1 adapter:
+      // Arbitrum tx 0xd3f268dff7fc88568424cc39f6f3757709bd68079c5b1f3f67b716c95dd721c3
+      // emitted PacketSent with nonce 28910 from the Arbitrum USDT0 adapter.
+      // Ethereum's EndpointV2View returned Executed for it on 2026-09-15, and
+      // an executed message never leaves that state, so the fixture holds on
+      // any fork taken after that day.
+      "endpoint-view-executable": {
+        srcEid: "30110",
+        sender: OFT_REFERENCE_ADDRESSES["42161"],
+        nonce: "28910",
+        receiver: OFT_REFERENCE_ADDRESSES["1"],
+      },
       "endpoint-is-supported-eid": { eid: "30110" },
     },
     // Long-lived invariants of the USDT0 adapter and the Ethereum endpoint,
@@ -304,6 +428,8 @@ const TEST_DATA: ProtocolTestData = {
       "endpoint-get-send-library": [{ nonZero: true }],
       "endpoint-get-config": [{ notEmpty: true }],
       "endpoint-is-supported-eid": [{ equals: "true" }],
+      // 3 is Executed; see the fixture above.
+      "endpoint-view-executable": [{ equals: "3" }],
     },
     // oft-approve runs. An earlier revision skipped it as "a write
     // requiring a USDT balance"; that reason was wrong twice over. ERC-20
@@ -638,6 +764,68 @@ export default defineAbiProtocol({
           },
           outputs: {
             result: { name: "supported", label: "Supported" },
+          },
+        },
+      },
+    },
+
+    endpointV2View: {
+      label: "LayerZero EndpointV2View",
+      abi: JSON.stringify(layerzeroEndpointV2ViewAbi),
+      addresses: ENDPOINT_V2_VIEW_ADDRESSES,
+      overrides: {
+        executable: {
+          slug: "endpoint-view-executable",
+          label: "Endpoint Message Executable",
+          description:
+            "Where an inbound message stands on this (the destination) chain: 0 not executable, 1 verified but waiting on an earlier nonce, 2 ready to execute, 3 executed. 0 covers a message the verifiers have not delivered yet, a nonce the receiving app nilified (permanently dead), and identifiers that name no message, so it is not a state that must eventually change. 3 is also returned when the receiving app cleared, skipped or burned the message, and for any nonce the path has already moved past, so it confirms the path is past that nonce rather than that this message arrived. It does not cover lzCompose.",
+          docUrl: LAYERZERO_PROTOCOL_DOCS,
+          inputs: {
+            srcEid: {
+              label: "Source Endpoint ID",
+              // Solana's endpoint IDs are named here and nowhere else in the
+              // file. The source may be non-EVM - that is what the bytes32
+              // sender is for - and a user polling a Solana send has no
+              // other way to learn the ID. A wrong one returns 0 forever,
+              // which reads as "not delivered yet" rather than "wrong lane".
+              // It says nothing about destinations: the action's network
+              // picker is EVM-only, and Solana has no view contract.
+              helpTip: `LayerZero endpoint ID of the chain the message was sent from, not the EVM chain ID. ${EID_TABLE} A non-EVM source works too, with its sender given as bytes32: Solana 30168, Solana Devnet 40168.`,
+              docUrl: LAYERZERO_DEPLOYMENTS_DOCS,
+            },
+            sender: {
+              label: "Sender (OApp on the source chain)",
+              helpTip:
+                "The OApp that sent the message on the source chain, for example the source OFT. An EVM address is padded to the bytes32 the endpoint expects; a bytes32 value is passed as-is.",
+              docUrl: LAYERZERO_PROTOCOL_DOCS,
+            },
+            nonce: {
+              label: "Message Nonce",
+              helpTip:
+                "The nonce of the message on its sender, receiver and source endpoint path, as carried in the source chain's PacketSent event.",
+              docUrl: LAYERZERO_PROTOCOL_DOCS,
+            },
+            receiver: {
+              label: "Receiver (OApp on this chain)",
+              helpTip: "The OApp the message is addressed to on this chain.",
+              docUrl: LAYERZERO_PROTOCOL_DOCS,
+            },
+          },
+          outputs: {
+            // Named in the ABI rather than renamed here: the step wraps a
+            // single output as { [name]: value } only when the ABI names it,
+            // so a renamed output would advertise a path that resolves to
+            // nothing.
+            //
+            // The deployed contract leaves that output unnamed, so the name
+            // in layerzero-endpoint-v2-view.json is ours. Regenerating that
+            // file from chain would drop it, turn the result back into a
+            // bare scalar and break saved workflows reading result.state;
+            // the unit test beside this one is what catches that.
+            state: {
+              label:
+                "Execution State (0 not executable: undelivered, nilified or unknown; 1 verified but not executable, 2 executable, 3 executed)",
+            },
           },
         },
       },

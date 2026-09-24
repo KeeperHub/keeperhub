@@ -27,9 +27,11 @@ The last row is the one that does not announce itself. The other failures are lo
 
 ## What this integration does today
 
-Supported chains: Ethereum, Base, Arbitrum One, Optimism, Polygon, Ethereum Sepolia, Base Sepolia.
+Supported chains for the OFT and endpoint configuration actions: Ethereum, Base, Arbitrum One, Optimism, Polygon, Ethereum Sepolia, Base Sepolia.
 
-The OFT actions and the underlying-token actions take the contract address as an input, because there is no single OFT address the way there is a single lending pool: every omnichain token is its own deployment. The EndpointV2 actions do not, because LayerZero's endpoint has one known address per chain (`0x1a44076050125825900e736c501f859c50fE728c` on the mainnets listed above, `0x6EDCE65403992e310A62460808c4b910D972f10f` on both testnets), which is resolved from the chain you select.
+Endpoint Message Executable runs on a wider set, because it needs no token deployment to point at: every chain KeeperHub supports where LayerZero deploys its endpoint view. On top of the seven above, that is BNB Chain, Avalanche, Plasma, 0G, Tempo, Robinhood Chain and Arc, plus the testnets Arbitrum Sepolia, Optimism Sepolia, Polygon Amoy, BNB Chain Testnet, Avalanche Fuji, Plasma Testnet, 0G Galileo, Tempo Testnet, Robinhood Chain Testnet and Arc Testnet: twenty-four in all.
+
+The OFT actions and the underlying-token actions take the contract address as an input, because there is no single OFT address the way there is a single lending pool: every omnichain token is its own deployment. The EndpointV2 actions do not, because LayerZero's endpoint has one known address per chain (`0x1a44076050125825900e736c501f859c50fE728c` on the mainnets listed above, `0x6EDCE65403992e310A62460808c4b910D972f10f` on both testnets), which is resolved from the chain you select. Endpoint Message Executable reads LayerZero's EndpointV2View the same way; its address differs on almost every chain and is also resolved for you.
 
 Every read action works without credentials. The one write action, OFT Approve, needs a connected wallet.
 
@@ -42,12 +44,29 @@ LayerZero addresses chains by its own identifier, the endpoint ID (EID). It is n
 | Network | EVM chain ID | LayerZero endpoint ID |
 |---------|--------------|-----------------------|
 | Ethereum | 1 | 30101 |
-| Optimism | 10 | 30111 |
-| Polygon | 137 | 30109 |
 | Base | 8453 | 30184 |
 | Arbitrum One | 42161 | 30110 |
+| Optimism | 10 | 30111 |
+| Polygon | 137 | 30109 |
+| BNB Chain | 56 | 30102 |
+| Avalanche | 43114 | 30106 |
+| Plasma | 9745 | 30383 |
+| 0G | 16661 | 30388 |
+| Tempo | 4217 | 30410 |
+| Robinhood Chain | 4663 | 30416 |
+| Arc | 5042 | 30417 |
 | Ethereum Sepolia | 11155111 | 40161 |
 | Base Sepolia | 84532 | 40245 |
+| Arbitrum Sepolia | 421614 | 40231 |
+| Optimism Sepolia | 11155420 | 40232 |
+| Polygon Amoy | 80002 | 40267 |
+| BNB Chain Testnet | 97 | 40102 |
+| Avalanche Fuji | 43113 | 40106 |
+| Plasma Testnet | 9746 | 40417 |
+| 0G Galileo | 16602 | 40428 |
+| Tempo Testnet | 42431 | 40444 |
+| Robinhood Chain Testnet | 46630 | 40451 |
+| Arc Testnet | 5042002 | 40434 |
 
 Mainnet endpoint IDs start at 30000 and testnet endpoint IDs at 40000. A destination outside this table still works as long as the endpoint supports it; check it with Endpoint Is Supported EID and look the identifier up on the [LayerZero deployed contracts page](https://docs.layerzero.network/v2/deployments/deployed-contracts).
 
@@ -81,6 +100,7 @@ Steps one through six each end in a revert or a shortfall you would have found t
 | Endpoint Get Send Library | Read | No | The message library an OFT will send through for a destination |
 | Endpoint Get Config | Read | No | The executor or DVN configuration an OFT uses on a library for a destination |
 | Endpoint Is Supported EID | Read | No | Whether this endpoint can route to a destination endpoint ID at all |
+| Endpoint Message Executable | Read | No | Where an inbound message stands on this chain: unverified, verified, executable, or executed |
 
 ---
 
@@ -391,6 +411,48 @@ Be clear about what this does and does not cover. It is a statement about the en
 Runs against LayerZero's endpoint on the chain you select, so it takes no contract address of its own.
 
 **When to use:** validating an endpoint ID a user typed before anything else runs, and confirming a newly announced chain is actually routable from the chain you are on.
+
+---
+
+## Endpoint Message Executable
+
+Where an inbound message stands on the destination chain. Select the destination as the network: the read runs against LayerZero's EndpointV2View there, the same read-only contract LayerZero's own executor consults before it delivers a message.
+
+**Inputs:**
+
+| Input | Type | Description |
+|-------|------|-------------|
+| srcEid | uint32 | Source Endpoint ID. The LayerZero endpoint ID of the chain the message was sent from, not its EVM chain ID |
+| sender | bytes32 | Sender. The OApp that sent the message on the source chain, for example the source OFT. An EVM address is padded to bytes32 for you; a full bytes32 passes through unchanged, which is how a non-EVM sender is given |
+| nonce | uint64 | Message Nonce. The message's nonce on its sender, receiver and source endpoint path, as carried in the source chain's `PacketSent` event |
+| receiver | address | Receiver. The OApp the message is addressed to on this chain |
+
+**Outputs:**
+
+| Output | Type | Description |
+|--------|------|-------------|
+| state | uint8 | Execution state, one of the four values below |
+
+| `state` | Meaning |
+|---------|---------|
+| 0 | Not executable. The verifier set has not delivered the payload yet, or the nonce was nilified, or the identifiers name no message at all |
+| 1 | Verified, but an earlier nonce on the same path is still outstanding, so this one cannot run yet |
+| 2 | Executable. Verified and next in line, waiting on the executor |
+| 3 | Executed, or the path has already moved past this nonce |
+
+Four limits are worth stating plainly, because each can make a workflow act on a transfer that has not finished, or wait for one that never will.
+
+A `0` is not only "still waiting". `nilify()` is how an OApp owner permanently blocks a stuck inbound nonce, and a nilified message carries the NIL payload hash, which matches none of the executable branches and so reports `0` as well. A message that is terminally dead therefore reads exactly like one the verifiers have not reached yet. A workflow polling for `2` or `3` on a schedule will poll forever, so bound the wait rather than treating `0` as a state that must eventually change.
+
+A `3` means the endpoint no longer holds the payload. That is the state after the receiving app ran the message, and it is equally the state after the app dropped the message without running it, with `clear()`, `skip()` or `burn()`. Read it as "executed or cleared" rather than as proof of delivery.
+
+A `3` is also returned for every nonce the path has already moved past, whether or not a message with that nonce is the one you mean. A mistyped or guessed nonce below the path's latest executed nonce reads as `3`, so a `3` confirms the path is past that nonce, not that this message arrived. Take the nonce from the send's `PacketSent` event rather than typing it. A wrong source endpoint ID, sender or receiver behaves differently, and how it behaves depends on whether the wrong identifiers happen to name a real path. Identifiers with no history return `0` indefinitely at every nonce except `0` itself: `executable` reports `3` when the stored payload hash is empty and the nonce is at or below the path's lazy inbound nonce, and on a path with no history both of those are zero, so nonce `0` satisfies it. Real nonces start at 1, so this bites only a typed or template-resolved `0`. A wrong-but-real combination that does carry traffic returns that path's state for the nonce, which can be a `3`.
+
+Finally, a `3` covers `lzReceive` only. An app that composes further work runs `lzCompose` as a separate call afterwards, which can fail on its own. If your workflow acts on funds arriving, confirm the balance rather than the state alone.
+
+The inputs identify the message, and all four come from the source chain's `PacketSent` event. Nothing here searches by transaction hash, so a workflow that starts from a send needs the nonce and sender out of that event.
+
+**When to use:** polling a known message until it reaches `3` on a schedule trigger, alerting when a message sits at `0` or `1` longer than a lane's normal verification time, and gating a follow-up action on the message having executed rather than on a fixed delay.
 
 ---
 
