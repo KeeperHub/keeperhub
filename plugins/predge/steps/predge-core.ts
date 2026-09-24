@@ -43,9 +43,22 @@ const MAX_CLOCK_SKEW_MS = 60_000;
 // step open. Mirrors plugins/robinhood/steps/stock-token-core.ts.
 const FETCH_TIMEOUT_MS = 10_000;
 // The signed envelope is well under a kilobyte, and the host is operator-chosen,
-// so bound what a misconfigured or hostile one can make the step allocate.
-// Mirrors plugins/web3/steps/check-approval-exploit.ts.
+// so bound what a misconfigured or hostile one can make the step parse.
+//
+// It bounds what is parsed, not what is allocated, with the same caveat
+// plugins/web3/steps/check-approval-exploit.ts states: the declared
+// content-length is checked first and is the allocation bound for any server
+// that states one, but when the header is absent `response.text()` has already
+// materialised the whole body before its length can be read, so the second
+// check is too late to bound memory. `body.length` also counts UTF-16 code
+// units rather than bytes, which for the ASCII JSON this endpoint serves is the
+// same number and for anything else is a smaller one than the budget names.
 const MAX_RESPONSE_BYTES = 64 * 1024;
+
+// Opening words of the reason a resource mismatch fails with. The step matches
+// on this to attribute the failure, so the constant is the contract between the
+// two and the message can be reworded without silently changing attribution.
+export const RESOURCE_MISMATCH_REASON = "attestation is for";
 
 // Domain separator for the conviction-signal product: the `resource` the signal
 // service stamps, and the thing this plugin is willing to read. `scheme` is a
@@ -117,8 +130,8 @@ export type PredgeVerifyInput = {
 };
 
 export type PredgeVerifyResult = {
-  // True only when scheme, pinned signer, signature, subject and freshness all
-  // hold. Internal to this module: the step does not return it. A workflow that
+  // True only when scheme, pinned signer, signature, subject, the signed
+  // `resource` and freshness all hold. Internal to this module: the step does not return it. A workflow that
   // reads a boolean can forget to branch on it, so the step fails instead, and
   // an unverified signal cannot be stepped over by omission.
   verified: boolean;
@@ -210,7 +223,9 @@ async function ed25519SignatureValid(
  *      to choose its own key);
  *   3. the ed25519 signature matches the canonical payload bytes;
  *   4. the payload is about the wallet the step asked for;
- *   5. the attestation was issued recently enough.
+ *   5. the signed `resource` is the conviction signal for that same wallet,
+ *      not another signed Predge product about it;
+ *   6. the attestation was issued recently enough.
  */
 export async function verifyPredgeSignal(
   signed: PredgeSignedAttestation,
@@ -287,7 +302,7 @@ export async function verifyPredgeSignal(
   const expectedResource = `${RESOURCE_PREFIX}${requestedWallet}`;
   if (raw.resource.trim().toLowerCase() !== expectedResource) {
     return fail(
-      `attestation is for ${JSON.stringify(raw.resource)}, expected ${JSON.stringify(expectedResource)}`
+      `${RESOURCE_MISMATCH_REASON} ${JSON.stringify(raw.resource)}, expected ${JSON.stringify(expectedResource)}`
     );
   }
 
@@ -403,8 +418,9 @@ export function parseConvictionPayload(payload: unknown): PredgePayloadResult {
  * Who a bad response body is attributed to. It is the upstream's doing unless
  * the operator repointed the host, in which case they are reading something
  * that was never a Predge response. Covers an unparseable body, an oversized
- * one, a malformed attestation and a payload that is not a conviction signal,
- * which are the same mistake at four depths. Attribution only: this changes no
+ * one, a malformed attestation, an envelope signed for a different resource and
+ * a payload that is not a conviction signal, which are the same mistake at five
+ * depths. Attribution only: this changes no
  * retry behaviour, only which side of the fence the run is filed on.
  */
 export function blameForBadBody(credentials: PredgeCredentials): ExecutionErrorType {
