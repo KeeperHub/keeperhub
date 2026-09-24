@@ -10,7 +10,10 @@ import { programsInvoked } from "@/lib/policy/solana-programs";
 
 const PAYER = Keypair.generate().publicKey;
 const BLOCKHASH = "11111111111111111111111111111111";
-const MEMO = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+// Built from bytes rather than written as a base58 literal: this is a stand-in
+// for "some program", and naming a real deployed one would put a mainnet
+// address in the tree that nobody needs to verify.
+const MEMO = new PublicKey(Uint8Array.from({ length: 32 }, (_, i) => i + 1));
 
 function serialize(tx: Transaction): Uint8Array {
   return tx.serialize({ requireAllSignatures: false, verifySignatures: false });
@@ -73,9 +76,7 @@ describe("reading the programs out of a Solana transaction", () => {
     );
     // Lowercasing a base58 address does not fail, it decodes to a different and
     // still valid key, so a rule would be about a program nobody named.
-    expect(programsInvoked(serialize(tx))).toContain(
-      "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-    );
+    expect(programsInvoked(serialize(tx))).toContain(MEMO.toBase58());
   });
 
   it.each([
