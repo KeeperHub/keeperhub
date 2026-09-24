@@ -254,6 +254,15 @@ export const CONTROL_PLANE_ROUTES: Readonly<
     }),
   },
   "/api/integrations/[integrationId]/test": { POST: ungoverned(READ_ONLY) },
+  // Not read-only like the credential check beside it: this one sends a real
+  // alert through a real service on the organization's own credential, so an
+  // organization that refuses outbound notifications refuses this too.
+  "/api/integrations/[integrationId]/pagerduty/test-node": {
+    POST: governed(Capability.OFFCHAIN_NOTIFY, {
+      type: ArnSegment.INTEGRATION,
+      param: "integrationId",
+    }),
+  },
   "/api/integrations/test": { POST: ungoverned(READ_ONLY) },
 
   "/api/internal/executions": { POST: ungoverned("internal service call") },

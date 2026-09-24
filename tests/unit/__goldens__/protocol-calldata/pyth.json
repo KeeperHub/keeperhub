@@ -1,0 +1,64 @@
+{
+  "1": {
+    "get-price-unsafe": {
+      "to": "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
+      "data": "0x96834ad3ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+      "skipped": false
+    },
+    "get-price": {
+      "to": "",
+      "data": "unencodable-while-skipped",
+      "skipped": true
+    },
+    "get-price-no-older-than": {
+      "to": "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
+      "data": "0xa4ae35e0ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace0000000000000000000000000000000000000000000000000000000001e13380",
+      "skipped": false
+    },
+    "get-ema-price-unsafe": {
+      "to": "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
+      "data": "0x9474f45bff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+      "skipped": false
+    },
+    "get-ema-price": {
+      "to": "",
+      "data": "unencodable-while-skipped",
+      "skipped": true
+    },
+    "get-ema-price-no-older-than": {
+      "to": "0x4305FB66699C3B2702D4d05CF36551390A4c69C6",
+      "data": "0x711a2e28ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace0000000000000000000000000000000000000000000000000000000001e13380",
+      "skipped": false
+    },
+    "custom-get-price-unsafe": {
+      "to": "",
+      "data": "unencodable-while-skipped",
+      "skipped": true
+    },
+    "custom-get-price": {
+      "to": "",
+      "data": "unencodable-while-skipped",
+      "skipped": true
+    },
+    "custom-get-price-no-older-than": {
+      "to": "",
+      "data": "unencodable-while-skipped",
+      "skipped": true
+    },
+    "custom-get-ema-price-unsafe": {
+      "to": "",
+      "data": "unencodable-while-skipped",
+      "skipped": true
+    },
+    "custom-get-ema-price": {
+      "to": "",
+      "data": "unencodable-while-skipped",
+      "skipped": true
+    },
+    "custom-get-ema-price-no-older-than": {
+      "to": "",
+      "data": "unencodable-while-skipped",
+      "skipped": true
+    }
+  }
+}

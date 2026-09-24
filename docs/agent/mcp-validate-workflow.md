@@ -140,7 +140,15 @@ Warnings do not set `valid: false`. They indicate something worth reviewing, but
 |------|--------------|---------------------|
 | `write-action-on-read-workflow` | `workflowType` is `"read"` but the workflow contains a write-action node | When the classification is intentional (for example, a simulate-then-read pattern) |
 | `low-confidence-abi-match` | (`deepCheck` only) The declared ABI's function signatures do not match those resolved from the contract's on-chain bytecode | Always safe to ignore for proxy contracts — Aave V3 Pool, Uniswap V3, WETH, and any EIP-1967 / EIP-1822 / EIP-2535 proxy. The platform's runtime ABI resolver handles proxies automatically; a deep-check mismatch here is informational only |
-| `missing-allowance-preflight` | A `write-contract` node calls an allowance-consuming method (`transferFrom`, `redeem`, `withdrawFrom`) without a preceding Check Allowance node | When the spender already has sufficient allowance, or allowance is granted outside this workflow |
+| `missing-allowance-preflight` | A `write-contract` node calls an allowance-consuming method (`transferFrom`, `redeem`, `withdrawFrom`) and no Check Allowance node is upstream of it | When the spender already has sufficient allowance, or allowance is granted outside this workflow |
+
+### What "upstream" means for `missing-allowance-preflight`
+
+A Check Allowance node suppresses this warning for a given write only when it can reach that write by following connections forward. A check on a parallel branch, or one placed after the write, does not suppress it: neither ordering runs before the write, so neither prevents the revert the warning is about. Each write node is assessed on its own, so one workflow can warn about an unchecked write while staying silent about a checked one.
+
+Both `web3/check-allowance` and the protocol-specific allowance reads — `chainlink/ccip-check-bridge-allowance` and `chainlink/ccip-check-fee-allowance` — count as a Check Allowance node.
+
+Workflows saved without connection data are exempt: with no graph to reason about, any Check Allowance node anywhere in the workflow suppresses the warning.
 
 ## deepCheck semantics
 

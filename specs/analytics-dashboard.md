@@ -45,7 +45,7 @@ Normalizes `workflow_executions` and `direct_executions` into a single shape:
 | Method | Path | Response |
 |--------|------|----------|
 | GET | `/api/analytics/summary?range=24h` | `AnalyticsSummary` |
-| GET | `/api/analytics/time-series?range=24h` | `{ buckets: TimeSeriesBucket[] }` |
+| GET | `/api/analytics/time-series?range=24h&tz=Europe/Berlin` | `TimeSeriesResponse` |
 | GET | `/api/analytics/networks?range=24h` | `{ networks: NetworkBreakdown[] }` |
 | GET | `/api/analytics/runs?range=24h&cursor=X&limit=50&status=error&source=workflow` | `{ runs: UnifiedRun[], nextCursor }` |
 | GET | `/api/analytics/stream?range=24h` | SSE stream |

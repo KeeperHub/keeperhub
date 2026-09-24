@@ -11,6 +11,7 @@ import {
 } from "@/lib/execute/simulate";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   idempotencyEarlyResponse,
   recordIdempotentResponse,
   withIdempotencyHeartbeat,
@@ -33,13 +34,14 @@ import {
   redactInput,
   withRejectedSignerOverride,
 } from "../_lib/execution-service";
+import { readGasLimitMultiplier } from "../_lib/gas-limit-multiplier";
 import { checkRateLimit } from "../_lib/rate-limit";
 import {
   isSolanaNetwork,
+  parseNativeValueEther,
   parseNativeValueLamports,
-  parseNativeValueWei,
 } from "../_lib/reserved-value";
-import { parseSimulateFlag } from "../_lib/simulate-flag";
+import { parseSimulateFlag, rejectSimulateQuery } from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import type { ExecuteResponse } from "../_lib/types";
 import { validateTokenFields, validateTransferInput } from "../_lib/validate";
@@ -53,6 +55,15 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: apiKeyCtx.error },
       { status: apiKeyCtx.status }
     );
+  }
+
+  // 1.5 #2004: ?simulate= is refused on every /api/execute/* route rather
+  // than silently ignored. This route honours the flag only in the body;
+  // a query flag used to fall through to a real broadcast with no
+  // acknowledgement that a dry run had been asked for.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
   }
 
   // Parsed before the scope gate because the required scope depends on
@@ -224,7 +235,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!isTokenTransfer) {
     const parsedValue = isSolanaTransfer
       ? parseNativeValueLamports(amount)
-      : parseNativeValueWei(amount);
+      : parseNativeValueEther(amount);
     if (!parsedValue.ok) {
       return applyRateLimitHeaders(
         await recordIdempotentResponse(
@@ -300,6 +311,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // 8. Execute (heartbeat the idempotency lock across the on-chain wait).
   const context = { organizationId: apiKeyCtx.organizationId };
+  const gasLimitMultiplier = readGasLimitMultiplier(body.gasLimitMultiplier);
 
   const result = await withIdempotencyHeartbeat(idem, () =>
     isTokenTransfer
@@ -311,12 +323,14 @@ export async function POST(request: Request): Promise<NextResponse> {
           tokenAddress: body.tokenAddress as string | undefined,
           recipientAddress,
           amount,
+          gasLimitMultiplier,
           _context: context,
         })
       : transferFundsCore({
           network,
           recipientAddress,
           amount,
+          gasLimitMultiplier,
           _context: context,
         })
   );
@@ -346,6 +360,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       transactionHash: result.transactionHash,
       chainId: result.chainId,
       sponsored: result.sponsored,
+      broadcastAttempted: result.broadcastAttempted,
     });
     outcome = { status: settled.status, error: result.error };
   }
@@ -367,11 +382,12 @@ export async function POST(request: Request): Promise<NextResponse> {
       : {}),
     ...(outcome.error ? { error: outcome.error } : {}),
   };
+  const disposition = dispositionForExecutionOutcome(outcome.status, result);
   return applyRateLimitHeaders(
     await recordIdempotentResponse(
       idem,
       NextResponse.json(responseBody, { status: HttpStatus.ACCEPTED }),
-      outcome.status === "completed" ? "success" : "failed"
+      disposition
     ),
     rateLimit
   );

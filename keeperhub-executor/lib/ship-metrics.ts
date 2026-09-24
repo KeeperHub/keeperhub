@@ -7,12 +7,21 @@
  * observability never blocks workflow completion.
  */
 
-import { collectCounterDeltas, type IngestPayload } from "./metrics-shipping";
+import {
+  collectCounterDeltas,
+  type IngestPayload,
+  type LatencyObservation,
+} from "./metrics-shipping";
 
 const SHIP_TIMEOUT_MS = 5000;
-const TRAILING_SLASH = /\/$/;
+// Same rule as stripTrailingSlashes in lib/utils/url.ts. The executor is an
+// isolated package with its own build context and cannot import root lib/,
+// so this stays a local copy (same convention as log-facade.ts).
+const TRAILING_SLASHES = /\/+$/;
 
-export async function shipMetricsToExecutor(): Promise<void> {
+export async function shipMetricsToExecutor(
+  observations: LatencyObservation[] = []
+): Promise<void> {
   if (process.env.METRICS_COLLECTOR !== "prometheus") {
     return;
   }
@@ -30,11 +39,11 @@ export async function shipMetricsToExecutor(): Promise<void> {
     return;
   }
 
-  if (deltas.length === 0) {
+  if (deltas.length === 0 && observations.length === 0) {
     return;
   }
 
-  const url = `${ingestBase.replace(TRAILING_SLASH, "")}/metrics/ingest`;
+  const url = `${ingestBase.replace(TRAILING_SLASHES, "")}/metrics/ingest`;
   const token = process.env.METRICS_INGEST_TOKEN ?? "";
 
   try {
@@ -44,7 +53,10 @@ export async function shipMetricsToExecutor(): Promise<void> {
         "Content-Type": "application/json",
         "X-Ingest-Token": token,
       },
-      body: JSON.stringify({ deltas } satisfies IngestPayload),
+      body: JSON.stringify({
+        deltas,
+        ...(observations.length > 0 ? { observations } : {}),
+      } satisfies IngestPayload),
       signal: AbortSignal.timeout(SHIP_TIMEOUT_MS),
     });
 

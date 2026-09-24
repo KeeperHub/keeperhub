@@ -1,5 +1,9 @@
 import { z } from "zod";
+import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
+import { readErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
 import { isValidOperator, VALID_OPERATORS } from "./condition";
+import { selectorOf } from "./raw-calldata";
 import type { ExecuteErrorResponse } from "./types";
 
 /**
@@ -13,7 +17,6 @@ import type { ExecuteErrorResponse } from "./types";
  * validation itself now runs through Zod's safeParse at the boundary.
  */
 
-const HEX_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 const MAX_PRIORITY_FEE_GWEI = 10_000;
 
 function isNonEmptyString(value: unknown): value is string {
@@ -73,11 +76,158 @@ function functionNameConflict(
   };
 }
 
+// A dry run of several calls in order. The sequence replaces the single
+// top-level call rather than joining it, so the ordinary shape is untouched.
+function hasCallSequenceInput(record: Record<string, unknown>): boolean {
+  return "calls" in record;
+}
+
+function callFieldError(
+  index: number,
+  field: string,
+  details: string
+): ExecuteErrorResponse {
+  return {
+    error: "Invalid field value",
+    field: `calls[${index}].${field}`,
+    details,
+  };
+}
+
+function callSequenceError(
+  record: Record<string, unknown>
+): ExecuteErrorResponse | null {
+  const calls = record.calls;
+  if (!Array.isArray(calls)) {
+    return {
+      error: "Invalid field type",
+      field: "calls",
+      details:
+        "calls must be an array of { contractAddress, functionName, ... }",
+    };
+  }
+  if (calls.length === 0) {
+    return {
+      error: "Invalid field value",
+      field: "calls",
+      details: "calls must contain at least one call",
+    };
+  }
+  if (calls.length > MAX_SEQUENCE_CALLS) {
+    return {
+      error: "Invalid field value",
+      field: "calls",
+      details: `calls must contain at most ${MAX_SEQUENCE_CALLS} calls`,
+    };
+  }
+  for (const [index, call] of calls.entries()) {
+    if (!isNonNullObject(call)) {
+      return callFieldError(index, "", "each call must be an object");
+    }
+    if (!isNonEmptyString(call.contractAddress)) {
+      return callFieldError(
+        index,
+        "contractAddress",
+        "contractAddress is required and must be a non-empty string"
+      );
+    }
+    if (!isNonEmptyString(call.functionName)) {
+      return callFieldError(
+        index,
+        "functionName",
+        "functionName is required and must be a non-empty string"
+      );
+    }
+    if ("functionArgs" in call && typeof call.functionArgs !== "string") {
+      return callFieldError(
+        index,
+        "functionArgs",
+        "functionArgs must be a JSON string when provided"
+      );
+    }
+    if ("abi" in call && typeof call.abi !== "string") {
+      return callFieldError(
+        index,
+        "abi",
+        "abi must be a JSON string when provided"
+      );
+    }
+    if ("value" in call && typeof call.value !== "string") {
+      return callFieldError(
+        index,
+        "value",
+        "value must be a decimal string in ether units when provided"
+      );
+    }
+  }
+  return null;
+}
+
+// Checked here because a missing function key short-circuits this schema, so
+// nothing downstream would ever see `data`.
+function hasRawCalldataInput(record: Record<string, unknown>): boolean {
+  return "data" in record;
+}
+
+// Same rule as functionNameConflict: keyed on the keys being present, because
+// the route would otherwise decode one and quietly drop the other.
+function rawCalldataConflict(
+  record: Record<string, unknown>
+): ExecuteErrorResponse | null {
+  const named = "functionName" in record ? "functionName" : "abiFunction";
+  if (!(named in record)) {
+    return null;
+  }
+  return {
+    error: "Conflicting field values",
+    field: "data",
+    details: `data and ${named} describe the same call twice; send raw calldata in data, or the function key and functionArgs, not both.`,
+  };
+}
+
+function rawCalldataError(
+  record: Record<string, unknown>
+): ExecuteErrorResponse | null {
+  const data = record.data;
+  if (typeof data !== "string") {
+    return {
+      error: "Invalid field type",
+      field: "data",
+      details: "data must be a 0x-prefixed hex string",
+    };
+  }
+  const selector = selectorOf(data);
+  if (typeof selector !== "string") {
+    return {
+      error: "Invalid field value",
+      field: "data",
+      details: selector.error,
+    };
+  }
+  return null;
+}
+
 function requiredFieldError(field: string): ExecuteErrorResponse {
   return {
     error: "Missing required field",
     field,
     details: `${field} is required and must be a non-empty string`,
+  };
+}
+
+// #2430: extra error sources for the decode path. The bounds and the shape
+// checks live with the decoder (`lib/web3/extra-error-abis.ts`) so the field a
+// route accepts is the field the decoder can use; this only maps the refusal
+// onto the execute error contract.
+function errorAbisFieldError(value: unknown): ExecuteErrorResponse | null {
+  const result = readErrorAbiDocuments(value);
+  if (result.ok) {
+    return null;
+  }
+  return {
+    error: result.message,
+    field: "errorAbis",
+    details: result.details,
   };
 }
 
@@ -123,7 +273,7 @@ export const tokenFieldsSchema = objectBase.superRefine((record, ctx) => {
   if (
     "tokenAddress" in record &&
     (typeof record.tokenAddress !== "string" ||
-      !HEX_ADDRESS_REGEX.test(record.tokenAddress))
+      !EVM_ADDRESS_RE.test(record.tokenAddress))
   ) {
     addError(ctx, {
       error: "Invalid field type",
@@ -178,6 +328,22 @@ function priorityFeeError(value: unknown): ExecuteErrorResponse | null {
 }
 
 export const contractCallInputSchema = objectBase.superRefine((record, ctx) => {
+  if (hasCallSequenceInput(record)) {
+    if (!hasChainInput(record)) {
+      addError(ctx, chainFieldError);
+      return;
+    }
+    const sequenceError = callSequenceError(record);
+    if (sequenceError) {
+      addError(ctx, sequenceError);
+      return;
+    }
+    const sequenceFeeError = priorityFeeError(record.priorityFeeGwei);
+    if (sequenceFeeError) {
+      addError(ctx, sequenceFeeError);
+    }
+    return;
+  }
   if (!isNonEmptyString(record.contractAddress)) {
     addError(ctx, requiredFieldError("contractAddress"));
     return;
@@ -186,7 +352,18 @@ export const contractCallInputSchema = objectBase.superRefine((record, ctx) => {
     addError(ctx, chainFieldError);
     return;
   }
-  if (!hasFunctionNameInput(record)) {
+  if (hasRawCalldataInput(record)) {
+    const conflict = rawCalldataConflict(record);
+    if (conflict) {
+      addError(ctx, conflict);
+      return;
+    }
+    const dataError = rawCalldataError(record);
+    if (dataError) {
+      addError(ctx, dataError);
+      return;
+    }
+  } else if (!hasFunctionNameInput(record)) {
     addError(ctx, requiredFieldError("functionName"));
     return;
   }
@@ -206,6 +383,11 @@ export const contractCallInputSchema = objectBase.superRefine((record, ctx) => {
   const feeError = priorityFeeError(record.priorityFeeGwei);
   if (feeError) {
     addError(ctx, feeError);
+    return;
+  }
+  const errorAbisError = errorAbisFieldError(record.errorAbis);
+  if (errorAbisError) {
+    addError(ctx, errorAbisError);
   }
 });
 
@@ -282,6 +464,11 @@ export const checkAndExecuteInputSchema = objectBase.superRefine(
     const actError = actionError(record.action);
     if (actError) {
       addError(ctx, actError);
+      return;
+    }
+    const errorAbisError = errorAbisFieldError(record.errorAbis);
+    if (errorAbisError) {
+      addError(ctx, errorAbisError);
     }
   }
 );

@@ -5,7 +5,9 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { workflowExecutionLogs } from "@/lib/db/schema";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { redactSensitiveData } from "@/lib/utils/redact";
+import { boundedJsonb } from "@/lib/workflow/bounded-jsonb";
 import { resolveAuthorizedExecution } from "@/lib/workflow/execution-access";
+import { isTruncatedOutput } from "@/lib/workflow/output-limits";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 
 type TruncatedMarker = {
@@ -16,6 +18,10 @@ type TruncatedMarker = {
 
 function truncateField(value: unknown, maxBytes: number): unknown | TruncatedMarker {
   if (value === null || value === undefined) {
+    return value;
+  }
+  // Already withheld at the database; re-truncating would hide the real size.
+  if (isTruncatedOutput(value)) {
     return value;
   }
   const stringified = JSON.stringify(value);
@@ -76,11 +82,22 @@ export async function GET(
         execution.error === null ? null : redactSecretUrls(execution.error),
     };
 
+    // Step payloads are bounded at the database: a value past the
+    // stored-output limit arrives as the same truncated marker `truncateData`
+    // produces, so one oversized step cannot size the whole response.
     const logs = await db.query.workflowExecutionLogs.findMany({
       where: and(
         eq(workflowExecutionLogs.executionId, executionId),
         executionLogNotDeleted()
       ),
+      columns: { input: false, output: false, outputRaw: false },
+      extras: {
+        input: boundedJsonb(workflowExecutionLogs.input).as("input"),
+        output: boundedJsonb(workflowExecutionLogs.output).as("output"),
+        outputRaw: boundedJsonb(workflowExecutionLogs.outputRaw).as(
+          "output_raw"
+        ),
+      },
       orderBy: [desc(workflowExecutionLogs.timestamp)],
     });
 

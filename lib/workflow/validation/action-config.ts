@@ -1,4 +1,11 @@
 import { ADDRESS_BOOK_SELECTION_KEY } from "@/lib/address-book-selection";
+import { stripControlChars } from "@/lib/utils/control-chars";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
+import {
+  HEX_BYTES_PATTERN,
+  INTEGER_PATTERN,
+  UNSIGNED_INTEGER_PATTERN,
+} from "@/lib/web3/solidity-values";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { SYSTEM_ACTION_TYPES as SYSTEM_ACTION_TYPE_LIST } from "@/lib/workflow/executor/system-action-types";
 import {
@@ -6,6 +13,7 @@ import {
   type ActionConfigFieldBase,
   findActionById,
   getAllActions,
+  isDisplayOnlyField,
 } from "@/plugins/registry";
 
 // Built from the shared union so this validator, the executor dispatch table,
@@ -27,41 +35,61 @@ const RESERVED_CONFIG_KEYS = new Set([
 ]);
 
 const TEMPLATE_VALUE_PATTERN = /\{\{[^}]+}}/;
-const ETH_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
-const HEX_BYTES_PATTERN = /^0x(?:[0-9a-fA-F]{2})*$/;
-const INTEGER_PATTERN = /^-?\d+$/;
-const UNSIGNED_INTEGER_PATTERN = /^\d+$/;
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/;
+// The `nodes[N]` prefix the validator writes into every issue path, used to
+// tell two nodes apart when neither carries an id.
+const NODE_PATH_PREFIX_PATTERN = /^nodes\[\d+]/;
 
 // Maximum characters for a node label rendered into the top-level message.
 // Matches the 500-char cap in export-schema.ts but shorter for readability.
 const NODE_LABEL_MAX_CHARS = 100;
 
-// Control characters, Unicode bidi overrides and isolates that can inject
-// invisible text or alter rendering order in error messages. Stripped from
-// node labels before interpolation into the summary.
-//
-// Covers: C0 + DEL + C1 controls, line/paragraph separators, zero-width
-// chars (ZWSP/ZWNJ/ZWJ/LRM/RLM), bidi overrides (LRE/RLE/PDF/LRO/RLO),
-// bidi isolates (LRI/RLI/FSI/PDI), Arabic letter mark, BOM, and soft
-// hyphen.
-const NODE_LABEL_CONTROL_CHARS_RE =
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: deliberately matching control chars + Unicode separators + bidi-overrides/isolates to neutralise log-injection / hidden-text vectors before rendering upstream-supplied strings
-  /[\u0000-\u001f\u007f-\u009f\u00ad\ufeff\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+// An UNKNOWN_FIELD issue carries a config key the caller chose, so field names
+// are sanitised on the same path as labels, with a tighter cap.
+const FIELD_NAME_MAX_CHARS = 40;
 
-function sanitiseNodeLabel(label: string): string {
-  let stripped = label.replace(NODE_LABEL_CONTROL_CHARS_RE, " ");
-  // Escape format delimiters to prevent a malicious label from rendering a
+// Per-node field names rendered into the message before it elides the rest.
+const SUMMARY_FIELDS_PER_NODE = 3;
+
+// Which names survive the cap. The validator emits every UNKNOWN_FIELD before
+// any MISSING_REQUIRED_FIELD, so in emission order a node with a few stray
+// keys elides the very field that blocks the save. Rank the blocking codes
+// first; ties keep emission order, since the sort is stable.
+const SUMMARY_NAME_PRIORITY: Record<ActionConfigValidationIssueCode, number> = {
+  UNKNOWN_ACTION_TYPE: 0,
+  MISSING_REQUIRED_FIELD: 1,
+  INVALID_FIELD_TYPE: 1,
+  UNKNOWN_FIELD: 2,
+};
+
+function sanitiseSummaryText(text: string, maxChars: number): string {
+  // The text is interpolated into a single-line summary, so nothing
+  // whitespace-like survives, and a removed character leaves a space rather
+  // than joining the words either side of it into one.
+  let stripped = stripControlChars(text, { replacement: " " });
+  // Escape format delimiters to prevent malicious text from rendering a
   // convincing fake entry in the summary.
   stripped = stripped
     .replace(/"/g, "'")
     .replace(/\(/g, "[")
     .replace(/\)/g, "]");
   stripped = stripped.trim();
-  if (stripped.length > NODE_LABEL_MAX_CHARS) {
-    return `${stripped.slice(0, NODE_LABEL_MAX_CHARS - 3)}...`;
+  if (stripped.length > maxChars) {
+    return `${stripped.slice(0, maxChars - 3)}...`;
   }
   return stripped;
+}
+
+function sanitiseNodeLabel(label: string): string {
+  return sanitiseSummaryText(label, NODE_LABEL_MAX_CHARS);
+}
+
+// A node label is rendered inside quotes, so escaping `"` is enough to stop it
+// forging a neighbouring entry. A field name is rendered bare, separated only
+// by commas and elided with `+N more`, so those two characters are its
+// delimiters and a caller-supplied config key must not contain either.
+function sanitiseFieldName(field: string): string {
+  return sanitiseSummaryText(field.replace(/[,+]/g, " "), FIELD_NAME_MAX_CHARS);
 }
 
 export type ActionConfigValidationIssueCode =
@@ -248,6 +276,24 @@ function isJsonArrayString(value: unknown): boolean {
   }
 }
 
+function isJsonObjectString(value: unknown): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return true;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return (
+      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isJsonArrayOrObjectString(value: unknown): boolean {
   if (typeof value !== "string") {
     return false;
@@ -360,9 +406,16 @@ function validateFieldValue(
       if (!validateStringLike(value)) {
         return { valid: false, expected: "select option", received: value };
       }
+      // A template resolves at run time, so its text is never one of the
+      // options and cannot be checked here. That is only allowed where the
+      // field opted in: a select's options are a promise to the step, and
+      // waiving it for every select in the product would let a template steer
+      // fields like robinhood's buy/sell `side`, which treats anything that
+      // is not "buy" as a sell.
       if (
         field.options &&
         field.options.length > 0 &&
+        !(field.allowTemplate && valueContainsTemplate(value)) &&
         !field.options.some((option) => option.value === String(value))
       ) {
         return {
@@ -390,7 +443,7 @@ function validateFieldValue(
       return { valid: true };
     case "protocol-address":
       return typeof value === "string" &&
-        (valueContainsTemplate(value) || ETH_ADDRESS_PATTERN.test(value))
+        (valueContainsTemplate(value) || EVM_ADDRESS_RE.test(value))
         ? { valid: true }
         : { valid: false, expected: "address", received: value };
     case "protocol-uint":
@@ -456,10 +509,17 @@ function validateFieldValue(
         isJsonArrayOrObjectString(value)
         ? { valid: true }
         : { valid: false, expected: "object or array", received: value };
+    case "abi-event-args":
+      // Keyed by indexed parameter name, so the step refuses an array.
+      return isRecord(value) ||
+        valueContainsTemplate(value) ||
+        isJsonObjectString(value)
+        ? { valid: true }
+        : { valid: false, expected: "object", received: value };
     default:
       if (field.isAddressField) {
         return typeof value === "string" &&
-          (valueContainsTemplate(value) || ETH_ADDRESS_PATTERN.test(value))
+          (valueContainsTemplate(value) || EVM_ADDRESS_RE.test(value))
           ? { valid: true }
           : { valid: false, expected: "address", received: value };
       }
@@ -560,6 +620,14 @@ export function validateWorkflowActionConfigs(
     }
 
     for (const field of fields) {
+      // A field that renders rather than collects has no value to validate,
+      // and cannot be required. Nothing writes under these keys today, so
+      // this is not a live fault - but the AI-prompt and pin-schema paths both
+      // had to learn the same exception, and a display panel that ever
+      // persisted anything would otherwise start blocking saves.
+      if (isDisplayOnlyField(field.type)) {
+        continue;
+      }
       if (!evaluateShowWhen(field.showWhen, config)) {
         continue;
       }
@@ -599,6 +667,8 @@ export function validateWorkflowActionConfigs(
             path: `nodes[${nodeIndex}].data.config.${field.key}[${missingCall.callIndex}].${missingCall.fieldKey}`,
             actionType,
             field: `${field.key}[${missingCall.callIndex}].${missingCall.fieldKey}`,
+            nodeId: identity.nodeId,
+            nodeLabel: identity.nodeLabel,
             expected: missingCall.fieldLabel,
             message: `Missing required field "${missingCall.fieldLabel}" for call ${missingCall.callIndex + 1} on action "${actionType}".`,
           });
@@ -627,8 +697,9 @@ export function validateWorkflowActionConfigs(
 
 // Returns true if any known action node in `nodes` is in draft state — i.e.
 // its config contains only actionType, reserved keys, and underscore-prefixed
-// metadata keys with no user-supplied parameters. Used by the PATCH handler to
-// block enabling a workflow before all action nodes are configured.
+// metadata keys with no user-supplied parameters. Actions that declare no
+// config fields are exempt. Used by the PATCH handler to block enabling a
+// workflow before all action nodes are configured.
 export function hasDraftActionNodes(
   nodes: WorkflowNodeForValidation[]
 ): boolean {
@@ -647,7 +718,14 @@ export function hasDraftActionNodes(
     if (SYSTEM_ACTION_TYPES.has(actionType)) {
       continue;
     }
-    if (!findActionById(actionType)) {
+    const action = findActionById(actionType);
+    if (!action) {
+      continue;
+    }
+    // An action that declares no config fields has nothing for the user to
+    // fill in, so its config can only ever hold reserved keys. Treating it as
+    // draft would make every workflow that uses one permanently un-enablable.
+    if (flattenConfigFields(action.configFields).length === 0) {
       continue;
     }
     const hasUserParams = Object.keys(config).some(
@@ -660,39 +738,101 @@ export function hasDraftActionNodes(
   return false;
 }
 
+// What to call an issue in the summary. An issue with no `field` -- an
+// unknown actionType, say -- still has to appear: dropping it would hide the
+// real blocker behind whichever sibling issue happened to name a field. The
+// last path segment is the field-shaped part of the path, so it reads the
+// same way ("actionType") and every issue contributes exactly one name.
+function issueFieldName(issue: ActionConfigValidationIssue): string {
+  const raw = issue.field ?? issue.path.split(".").pop() ?? "";
+  return sanitiseFieldName(raw);
+}
+
+// Which node an issue belongs to, for grouping. The `nodes[N]` path prefix
+// leads because it is the only identifier unique by construction: every
+// emitter writes it from the index into the node array. A nodeId arrives
+// straight off the payload with no uniqueness check and can be absent after
+// an import, and two nodes routinely share a default label -- keying on
+// either would merge distinct nodes into one entry, so fixing one would leave
+// an identical message with the other still broken.
+function issueNodeKey(issue: ActionConfigValidationIssue): string {
+  return (
+    issue.path.match(NODE_PATH_PREFIX_PATTERN)?.[0] ??
+    issue.nodeId ??
+    issue.nodeLabel ??
+    issue.path
+  );
+}
+
+// Renders the field names behind a node's issues, so a consumer that surfaces
+// only `message` still learns which fields to fix.
+function formatNodeFields(fields: string[], count: number): string {
+  if (fields.length === 0) {
+    return count > 1 ? ` (${count} issues)` : "";
+  }
+  const shown = fields.slice(0, SUMMARY_FIELDS_PER_NODE);
+  const hidden = fields.length - shown.length;
+  const list =
+    hidden > 0 ? `${shown.join(", ")} +${hidden} more` : shown.join(", ");
+  return ` (${list})`;
+}
+
 export function formatActionConfigValidationResponse(
   validation: ActionConfigValidationResult
 ) {
   const summary =
     validation.issues.length > 0
       ? (() => {
-          const labels = new Map<string, { count: number; fallback: string }>();
+          const labels = new Map<
+            string,
+            {
+              count: number;
+              display: string;
+              fallback: string;
+              fields: Map<string, number>;
+            }
+          >();
           for (const issue of validation.issues) {
-            const raw = issue.nodeLabel ?? issue.nodeId ?? issue.path;
-            const existing = labels.get(raw);
-            if (existing) {
-              existing.count++;
-            } else {
-              labels.set(raw, {
-                count: 1,
-                fallback: issue.nodeId ?? issue.path,
-              });
+            const key = issueNodeKey(issue);
+            const existing = labels.get(key);
+            const entry = existing ?? {
+              count: 0,
+              display: issue.nodeLabel ?? issue.nodeId ?? issue.path,
+              fallback: issue.nodeId ?? issue.path,
+              fields: new Map<string, number>(),
+            };
+            entry.count++;
+            const field = issueFieldName(issue);
+            if (field) {
+              // One name can come from several issues; keep the most blocking
+              // rank so a field that is both unknown and required ranks first.
+              const rank = SUMMARY_NAME_PRIORITY[issue.code];
+              const seen = entry.fields.get(field);
+              if (seen === undefined || rank < seen) {
+                entry.fields.set(field, rank);
+              }
+            }
+            if (!existing) {
+              labels.set(key, entry);
             }
           }
           const entries: string[] = [];
           let shown = 0;
-          for (const [raw, { count, fallback }] of labels) {
+          for (const { count, display, fallback, fields } of labels.values()) {
             if (shown >= 3) {
               entries.push(`and ${labels.size - 3} more`);
               break;
             }
-            let label = sanitiseNodeLabel(raw);
+            let label = sanitiseNodeLabel(display);
             if (!label.trim()) {
-              label = fallback;
+              // The fallback is a nodeId or path, both caller-supplied, so it
+              // needs the same escaping as the label it stands in for.
+              label = sanitiseNodeLabel(fallback);
             }
-            entries.push(
-              count > 1 ? `"${label}" (${count} issues)` : `"${label}"`
-            );
+            const ordered = [...fields.entries()]
+              .sort(([, a], [, b]) => a - b)
+              .map(([name]) => name);
+            entries.push(`"${label}"${formatNodeFields(ordered, count)}`);
             shown++;
           }
           return `Invalid node(s): ${entries.join(", ")}. `;

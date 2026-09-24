@@ -1,0 +1,31 @@
+[
+  {
+    "type": "function",
+    "name": "getSendLibrary",
+    "stateMutability": "view",
+    "inputs": [
+      { "name": "sender", "type": "address" },
+      { "name": "dstEid", "type": "uint32" }
+    ],
+    "outputs": [{ "name": "", "type": "address" }]
+  },
+  {
+    "type": "function",
+    "name": "getConfig",
+    "stateMutability": "view",
+    "inputs": [
+      { "name": "oapp", "type": "address" },
+      { "name": "lib", "type": "address" },
+      { "name": "eid", "type": "uint32" },
+      { "name": "configType", "type": "uint32" }
+    ],
+    "outputs": [{ "name": "", "type": "bytes" }]
+  },
+  {
+    "type": "function",
+    "name": "isSupportedEid",
+    "stateMutability": "view",
+    "inputs": [{ "name": "eid", "type": "uint32" }],
+    "outputs": [{ "name": "", "type": "bool" }]
+  }
+]

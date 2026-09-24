@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks -- available to vi.mock factories which run before any imports
@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   stepFn: vi.fn(),
   ownershipResult: [] as unknown[],
   capturedInput: undefined as Record<string, unknown> | undefined,
+  recordIdempotentResponse: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -80,6 +81,14 @@ vi.mock("@/app/api/execute/_lib/execution-service", async (importActual) => {
 vi.mock("@/app/api/execute/_lib/action-resolver", () => ({
   resolveAction: mocks.resolveAction,
 }));
+
+vi.mock("@/lib/idempotency", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/idempotency")>();
+  return {
+    ...actual,
+    recordIdempotentResponse: mocks.recordIdempotentResponse,
+  };
+});
 
 vi.mock("@/lib/utils", async () => {
   const actual =
@@ -150,6 +159,9 @@ beforeEach(() => {
   mocks.redactInput.mockImplementation(
     (input: Record<string, unknown>) => input
   );
+  mocks.recordIdempotentResponse.mockImplementation(
+    (_outcome: unknown, response: Response) => Promise.resolve(response)
+  );
 
   mocks.stepFn.mockImplementation((input: Record<string, unknown>) => {
     mocks.capturedInput = input;
@@ -165,6 +177,15 @@ beforeEach(() => {
     },
     isPluginAction: true,
   }));
+});
+
+afterEach(() => {
+  // A step's declared ceiling is written onto the shared step mock as an own
+  // property, and vi.clearAllMocks() clears call history rather than removing
+  // properties. Without this, the first case that declares one leaves it on the
+  // mock for every test after it in this file - which is why the cases below
+  // only passed in the order they are written in.
+  delete (mocks.stepFn as { maxRetries?: number | string }).maxRetries;
 });
 
 // ---------------------------------------------------------------------------
@@ -291,6 +312,40 @@ describe("POST /api/execute/node reserved-field gating", () => {
     expect(auditInput._rejectedConfig).toEqual({ web3Connection: "eoa" });
   });
 
+  it("keeps a smuggled _actionType and _protocolMeta out of the audit input's top level", async () => {
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: {
+          network: "1",
+          contractAddress: "0xabc",
+          // Both are route-owned: the route injects _actionType from the
+          // resolved action, and _protocolMeta is a builder-persisted snapshot
+          // of the same thing that a derivable _actionType always beats.
+          _actionType: "sky/vault-deposit",
+          _protocolMeta: '{"protocolSlug":"sky","contractKey":"sUsds"}',
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    // Neither may sit beside contractAddress, which did take effect.
+    const auditInput = mocks.checkAndReserveExecution.mock.calls[0]?.[0]
+      ?.input as Record<string, unknown>;
+    expect(auditInput).toBeDefined();
+    expect("_actionType" in auditInput).toBe(false);
+    expect("_protocolMeta" in auditInput).toBe(false);
+    expect(auditInput.contractAddress).toBe("0xabc");
+    expect(auditInput._rejectedConfig).toEqual({
+      _actionType: "sky/vault-deposit",
+      _protocolMeta: '{"protocolSlug":"sky","contractKey":"sUsds"}',
+    });
+    // The step sees the route's action type and no stale snapshot at all.
+    expect(mocks.capturedInput?._actionType).toBe("web3/write-contract");
+    expect("_protocolMeta" in (mocks.capturedInput ?? {})).toBe(false);
+    expect("_rejectedConfig" in (mocks.capturedInput ?? {})).toBe(false);
+  });
+
   it("omits _rejectedConfig from the audit input when no override was sent", async () => {
     const response = await nodePOST(
       postRequest({
@@ -348,6 +403,151 @@ describe("POST /api/execute/node reserved-field gating", () => {
   });
 });
 
+describe("POST /api/execute/node step-declared retry ceiling", () => {
+  // The wiring is the defect: invokeStep reads the property off an object that
+  // arrives through a dynamic import. A helper test cannot see that line, so
+  // reverting the route to `if (retry)` would leave every unit case green.
+  it("runs a step that declares maxRetries = 0 exactly once", async () => {
+    Object.assign(mocks.stepFn, { maxRetries: 0 });
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+
+    // "read ECONNRESET" is in RETRYABLE_PATTERNS and the failure carries no
+    // hash, so without the declaration this is four calls.
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("still retries a step that declares nothing, four calls for three retries", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(4);
+  });
+
+  it("reports the budget the declaration left in force", async () => {
+    // The round-7 finding: a caller asking for three retries against a step that
+    // declares none got a 200, one attempt and no retryCount, which is the same
+    // shape as never having asked. Every value-moving step reachable through
+    // `resolveAction` declares 0, and the ones declaring nothing are read-only
+    // queries, so this is the common case rather than the corner.
+    Object.assign(mocks.stepFn, { maxRetries: 0 });
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
+    expect(body.maxRetriesApplied).toBe(0);
+    // Nothing was retried, so the count is still omitted rather than reported.
+    expect(body.retryCount).toBeUndefined();
+  });
+
+  it("reports the caller's own budget when the declaration is absent", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(4);
+    expect(body.maxRetriesApplied).toBe(3);
+  });
+
+  it("reports no budget when the caller never asked to retry", async () => {
+    // Absent rather than 0, so the field distinguishes "never asked" from
+    // "asked and was overridden" instead of collapsing the two.
+    mocks.stepFn.mockResolvedValue({ success: true });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body.maxRetriesApplied).toBeUndefined();
+  });
+
+  it("reports no budget for a declaring step the caller never retried", async () => {
+    // The field is the budget in force for this request, not the step's ceiling:
+    // a step declaring 0 against a request that sent no `retry` runs once and
+    // reports nothing, because no budget was applied to that request. Reading the
+    // field as "this step allows N" is wrong exactly here, and this is the case
+    // that pins the difference - the run above carries no declaration.
+    Object.assign(mocks.stepFn, { maxRetries: 0 });
+    mocks.stepFn.mockResolvedValue({ success: true });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
+    expect(body.maxRetriesApplied).toBeUndefined();
+  });
+
+  it("honours a declaration that is a string zero, which the import cannot type-check", async () => {
+    Object.assign(mocks.stepFn, { maxRetries: "0" });
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("POST /api/execute/node broadcast hash on a failed step", () => {
   it("hands the step's hash to failExecution and reports its verdict", async () => {
     // The adapter threw after broadcasting, so the step returns the hash with
@@ -359,6 +559,7 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
       error: "Transaction sent but receipt not available",
       transactionHash: "0xpending",
       chainId: 1,
+      broadcastAttempted: true,
     });
     mocks.failExecution.mockResolvedValue({ status: "unconfirmed" });
 
@@ -372,7 +573,11 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
     expect(mocks.failExecution).toHaveBeenCalledWith(
       "ex1",
       "Transaction sent but receipt not available",
-      expect.objectContaining({ transactionHash: "0xpending", chainId: 1 })
+      expect.objectContaining({
+        transactionHash: "0xpending",
+        chainId: 1,
+        broadcastAttempted: true,
+      })
     );
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.status).toBe("unconfirmed");
@@ -381,6 +586,65 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
     // transport layer, same as its verified-success branch; only the body
     // distinguishes them.
     expect(response.status).toBe(422);
+  });
+
+  it("forwards the request's action type to the step as _actionType", async () => {
+    // The protocol steps only apply the chain-scoped L2 slug aliases on the
+    // _actionType branch of resolveProtocolMeta. Without this field a node
+    // executed here resolves from whatever _protocolMeta the caller carried,
+    // so an old slug on an L2 fails while the same node succeeds through the
+    // workflow executor.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "sky/vault-balance",
+        network: "8453",
+        config: { account: "0xabc" },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.capturedInput?._actionType).toBe("sky/vault-balance");
+  });
+
+  it("forwards the canonical action type when the request named the action by label", async () => {
+    // resolveAction accepts a legacy id or an exact label and hands back the
+    // canonical `<protocol>/<slug>` id. The raw request string derives nothing
+    // in resolveProtocolMeta, so forwarding it would run the right step and
+    // then leave it resolving from whatever _protocolMeta the caller carried -
+    // the hole the _actionType forward exists to close.
+    mocks.resolveAction.mockImplementation(() => ({
+      actionType: "sky/vault-balance",
+      label: "Sky: Vault Share Balance",
+      importer: {
+        importer: () => Promise.resolve({ step: mocks.stepFn }),
+        stepFunction: "step",
+      },
+      isPluginAction: true,
+    }));
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "Sky: Vault Share Balance",
+        network: "8453",
+        config: { account: "0xabc" },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.capturedInput?._actionType).toBe("sky/vault-balance");
+  });
+
+  it("overrides an _actionType smuggled inside config", async () => {
+    const response = await nodePOST(
+      postRequest({
+        actionType: "sky/vault-balance",
+        network: "8453",
+        config: { account: "0xabc", _actionType: "sky/vault-deposit" },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.capturedInput?._actionType).toBe("sky/vault-balance");
   });
 
   it("still reports a pre-broadcast failure as terminal with no hash", async () => {
@@ -400,5 +664,117 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.status).toBe("failed");
     expect(body.transactionHash).toBeUndefined();
+  });
+
+  it("releases a failed node transaction only after hash+chain adjudication", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "execution reverted",
+      transactionHash: "0xreverted",
+      chainId: 8453,
+    });
+    mocks.failExecution.mockResolvedValue({ status: "failed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "release"
+    );
+  });
+
+  it("holds a failed node transaction while receipt verification is unconfirmed", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "receipt unavailable",
+      transactionHash: "0xpending",
+      chainId: 8453,
+    });
+    mocks.failExecution.mockResolvedValue({ status: "unconfirmed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "failed"
+    );
+  });
+
+  it("holds a hash when chainId is not numeric instead of releasing it", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "provider returned malformed chain context",
+      transactionHash: "0xlive",
+      chainId: "8453",
+    });
+    mocks.failExecution.mockResolvedValue({ status: "failed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.failExecution).toHaveBeenCalledWith(
+      "ex1",
+      "provider returned malformed chain context",
+      expect.objectContaining({ transactionHash: "0xlive", chainId: undefined })
+    );
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "failed"
+    );
+  });
+
+  it("releases the non-completed success branch only after hash+chain adjudication", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: true,
+      transactionHash: "0xreverted",
+      gasUsed: "21000",
+      effectiveGasPrice: "1",
+      chainId: 8453,
+    });
+    mocks.completeExecution.mockResolvedValue({ status: "failed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "release"
+    );
+  });
+
+  it("holds the non-completed success branch while verification is unconfirmed", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: true,
+      transactionHash: "0xpending",
+      gasUsed: "21000",
+      effectiveGasPrice: "1",
+      chainId: 8453,
+    });
+    mocks.completeExecution.mockResolvedValue({ status: "unconfirmed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "failed"
+    );
   });
 });

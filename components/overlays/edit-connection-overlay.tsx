@@ -1,6 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { ExclusiveGroupHeading } from "@/components/overlays/exclusive-group-heading";
+import {
+  type ExclusiveGroup,
+  isFieldLocked,
+  resolveExclusiveGroups,
+} from "@/lib/integrations/exclusive-groups";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,16 +20,13 @@ import {
   type DatabaseTab,
 } from "@/components/database-connection-form";
 import { getSecretConfigKeys } from "@/lib/integrations/secret-fields";
+import { SYSTEM_INTEGRATION_LABELS } from "@/lib/integrations/system";
 import { getCustomIntegrationFormHandler } from "@/lib/workflow/editor/extension-registry";
 import type { IntegrationConfig } from "@/lib/types/integration";
 import { getIntegration, getIntegrationLabels } from "@/plugins/registry";
 import { ConfirmOverlay } from "./confirm-overlay";
 import { Overlay } from "./overlay";
 import { useOverlay } from "./overlay-provider";
-
-const SYSTEM_INTEGRATION_LABELS: Record<string, string> = {
-  database: "Database",
-};
 
 const getLabel = (type: string): string => {
   const labels = getIntegrationLabels() as Record<string, string>;
@@ -65,9 +68,8 @@ function renderFieldHelp(field: PluginFormField): React.ReactNode {
   );
 }
 
-type IntegrationWithOptionalConfig = Integration & {
-  config?: IntegrationConfig;
-};
+/** Stands in for a stored secret the browser is never sent. Never rendered. */
+const STORED_SECRET_PLACEHOLDER = "\u0000stored";
 
 type EditConnectionOverlayProps = {
   overlayId: string;
@@ -95,39 +97,17 @@ export function EditConnectionForm({
   inline?: boolean;
 }) {
   const { push, closeAll } = useOverlay();
-  const integrationWithConfig = integration as IntegrationWithOptionalConfig;
-  const hasConfigFromProps =
-    integrationWithConfig.config != null &&
-    typeof integrationWithConfig.config === "object" &&
-    !Array.isArray(integrationWithConfig.config);
-  const [loading, setLoading] = useState(!hasConfigFromProps);
+  // Config always comes from the fetch below: `GET /api/integrations`
+  // excludes it deliberately, so a props shortcut could only ever be a path
+  // where `storedSecrets` was never populated.
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [name, setName] = useState(integration.name);
-  const [config, setConfig] = useState<Record<string, string>>(() => {
-    if (hasConfigFromProps && integrationWithConfig.config) {
-      return normalizeConfig(integrationWithConfig.config);
-    }
-    return {};
-  });
-  const [dbTab, setDbTab] = useState<DatabaseTab>(() => {
-    if (hasConfigFromProps && integrationWithConfig.config) {
-      return detectDefaultTab(normalizeConfig(integrationWithConfig.config));
-    }
-    return "url";
-  });
+  const [config, setConfig] = useState<Record<string, string>>({});
+  const [dbTab, setDbTab] = useState<DatabaseTab>("url");
 
   useEffect(() => {
-    if (hasConfigFromProps && integrationWithConfig.config) {
-      setName(integration.name);
-      const normalized = normalizeConfig(integrationWithConfig.config);
-      setConfig(normalized);
-      if (integration.type === "database") {
-        setDbTab(detectDefaultTab(normalized));
-      }
-      setLoading(false);
-      return;
-    }
     let cancelled = false;
     setLoading(true);
     api.integration
@@ -139,6 +119,7 @@ export function EditConnectionForm({
         setName(full.name);
         const normalized = normalizeConfig(full.config);
         setConfig(normalized);
+        setStoredSecrets(full.storedSecretKeys ?? []);
         if (integration.type === "database") {
           setDbTab(detectDefaultTab(normalized));
         }
@@ -154,16 +135,38 @@ export function EditConnectionForm({
     return () => {
       cancelled = true;
     };
-  }, [
-    integration.id,
-    integration.name,
-    integration.type,
-    hasConfigFromProps,
-    integrationWithConfig.config,
-  ]);
+  }, [integration.id, integration.name, integration.type]);
+
+  /**
+   * Stored credentials the user has asked to remove.
+   *
+   * A blank secret field means "unchanged", because the stored value is never
+   * sent to the browser and so cannot be resent - which left no way to take a
+   * credential away. Removing is therefore its own act rather than an empty
+   * field, and typing a replacement cancels it.
+   */
+  const [clearedKeys, setClearedKeys] = useState<Set<string>>(new Set());
+
+  /** Secret keys the connection holds a value for. Values never come down. */
+  const [storedSecrets, setStoredSecrets] = useState<string[]>([]);
 
   const updateConfig = (key: string, value: string) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
+    if (value.length > 0) {
+      setClearedKeys((prev) => {
+        if (!prev.has(key)) {
+          return prev;
+        }
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
+
+  const markCleared = (key: string) => {
+    setConfig((prev) => ({ ...prev, [key]: "" }));
+    setClearedKeys((prev) => new Set(prev).add(key));
   };
 
   // Credential values are never sent to the client, so a secret field starts
@@ -189,6 +192,26 @@ export function EditConnectionForm({
   };
 
   /**
+   * What to store.
+   *
+   * A blank secret is dropped, because the client is never given the stored
+   * one and a blank field means it was left alone. Everything else is sent as
+   * the form shows it, blank included - those values did come down to the
+   * browser, so a field the user emptied was emptied on purpose, and dropping
+   * it here made From email and Account subdomain impossible to clear.
+   */
+  const getConfigForSave = (): Record<string, string> => {
+    const result: Record<string, string> = {};
+    for (const [key, value] of Object.entries(config)) {
+      const isSecret = secretKeys.has(key);
+      if (isSecret ? value && value.length > 0 : !clearedKeys.has(key)) {
+        result[key] = value ?? "";
+      }
+    }
+    return result;
+  };
+
+  /**
    * Build non-empty config for sending as overrides to the server-side test.
    */
   const getNonEmptyConfig = (): Record<string, string> => {
@@ -204,11 +227,13 @@ export function EditConnectionForm({
   const doSave = async () => {
     try {
       setSaving(true);
-      const nonEmptyConfig = getNonEmptyConfig();
-      const hasNewConfig = Object.keys(nonEmptyConfig).length > 0;
+      const configForSave = getConfigForSave();
+      const cleared = [...clearedKeys];
+      const hasNewConfig = Object.keys(configForSave).length > 0;
       await api.integration.update(integration.id, {
         name: name.trim(),
-        ...(hasNewConfig ? { config: nonEmptyConfig } : {}),
+        ...(hasNewConfig ? { config: configForSave } : {}),
+        ...(cleared.length > 0 ? { clearedConfigKeys: cleared } : {}),
       });
       toast.success("Connection updated");
       onSuccess?.();
@@ -226,10 +251,21 @@ export function EditConnectionForm({
   }> => {
     // Always test server-side. The stored credential never leaves the server,
     // and any value the user typed is merged over it before the test runs.
-    const overrides = getNonEmptyConfig();
+    // What the save will store, not what was typed. These differ for a
+    // non-secret field somebody emptied - Account subdomain, From email -
+    // which the save keeps as blank and the old payload dropped, so the
+    // server filled it back in from storage and the test passed against a
+    // value that was about to be erased.
+    const overrides = getConfigForSave();
+    const cleared = [...clearedKeys];
+    // The pending removals go with it. The server fills anything not sent
+    // from what is stored, so a test that did not know about them
+    // authenticated with the credential the save was about to delete and came
+    // back green.
     return api.integration.testConnection(
       integration.id,
-      Object.keys(overrides).length > 0 ? overrides : undefined
+      Object.keys(overrides).length > 0 ? overrides : undefined,
+      cleared.length > 0 ? cleared : undefined
     );
   };
 
@@ -242,7 +278,9 @@ export function EditConnectionForm({
       return false;
     }
     const hasNewConfig = Object.values(config).some((v) => v && v.length > 0);
-    return !hasNewConfig;
+    // A pending removal changes what the connection will authenticate with,
+    // which is exactly what the test is for.
+    return !(hasNewConfig || clearedKeys.size > 0);
   };
 
   const handleSave = async () => {
@@ -363,7 +401,7 @@ export function EditConnectionForm({
       return null;
     }
 
-    return formFields.map((field) => {
+    const renderedFields = formFields.map((field) => {
       const help = renderFieldHelp(field);
       if (field.type === "password") {
         return (
@@ -380,6 +418,35 @@ export function EditConnectionForm({
           />
         );
       }
+      if (field.type === "checkbox") {
+        // A checkbox binds `checked`, not `value`. An empty string means
+        // unset rather than false: that is what every connection saved before
+        // this branch holds, and a plugin whose box defaults on would show
+        // unticked while behaving as ticked.
+        const stored = config[field.configKey];
+        const checked =
+          stored === undefined || stored === ""
+            ? Boolean(field.defaultValue)
+            : stored === "true";
+        return (
+          <div className="space-y-2" key={field.id}>
+            <div className="flex items-center gap-2">
+              <input
+                checked={checked}
+                className="size-4 rounded border-input accent-primary"
+                id={field.id}
+                onChange={(e) =>
+                  updateConfig(field.configKey, String(e.target.checked))
+                }
+                type="checkbox"
+              />
+              <Label htmlFor={field.id}>{field.label}</Label>
+            </div>
+            {help}
+          </div>
+        );
+      }
+
       return (
         <div className="space-y-2" key={field.id}>
           <Label htmlFor={field.id}>{field.label}</Label>
@@ -391,6 +458,96 @@ export function EditConnectionForm({
             value={config[field.configKey] || ""}
           />
           {help}
+        </div>
+      );
+    });
+
+    // A stored secret stands in for its value, which the browser is never
+    // sent, so every state resolves from values. The fields do not render
+    // until the fetch resolves, so an empty `storedSecrets` is an answer.
+    const knownConfig: Record<string, unknown> = { ...config };
+    for (const key of storedSecrets) {
+      if (!(knownConfig[key] as string | undefined)?.length) {
+        knownConfig[key] = STORED_SECRET_PLACEHOLDER;
+      }
+    }
+    const exclusive = resolveExclusiveGroups(formFields, knownConfig);
+    // Groups that hold a credential, not groups that exist: a form declaring
+    // one credential group beside a group of ordinary settings would
+    // otherwise offer removal on its only credential, which is the case this
+    // deliberately excludes.
+    const credentialGroupCount = exclusive.groups.filter((group) =>
+      group.configKeys.some((key) => secretKeys.has(key))
+    ).length;
+    const useThisInstead = (group: ExclusiveGroup) => {
+      const inUse = exclusive.groups.find(
+        (one) => one.id === exclusive.activeGroupId
+      );
+      for (const key of inUse?.configKeys ?? []) {
+        // Emptying the field is not enough for a stored secret: a blank one
+        // means "unchanged" on the way back, so the credential being switched
+        // away from has to be marked for removal or the run time would go on
+        // preferring it.
+        if (storedSecrets.includes(key)) {
+          markCleared(key);
+        } else {
+          updateConfig(key, "");
+        }
+      }
+    };
+
+    return renderedFields.map((rendered, index) => {
+      const field = formFields[index];
+      const heading = exclusive.groups.find(
+        (group) => group.firstFieldId === field.id
+      );
+      const locked = isFieldLocked(field, exclusive);
+      // Only where the form holds an alternative, because a blank field means
+      // "unchanged" for a secret and removing a connection's sole credential
+      // would leave one that still selects on a node and fails every run.
+      const removable =
+        secretKeys.has(field.configKey) &&
+        Boolean(field.exclusiveGroup) &&
+        credentialGroupCount > 1;
+      const cleared = clearedKeys.has(field.configKey);
+      if (!(heading || locked || removable)) {
+        return rendered;
+      }
+      return (
+        <div className="space-y-2" key={field.id}>
+          {heading && (
+            <ExclusiveGroupHeading
+              group={heading}
+              onUseThisInstead={useThisInstead}
+              state={exclusive}
+            />
+          )}
+          <div
+            aria-hidden={locked}
+            className={locked ? "pointer-events-none opacity-45" : undefined}
+          >
+            {rendered}
+            {removable && !locked && (
+              // No left margin: this sits under the field's own help line,
+              // which has none.
+              <div className="mt-1">
+                {cleared ? (
+                  <span className="text-muted-foreground text-xs">
+                    Will be removed when you save. Type a new value to keep this
+                    credential instead.
+                  </span>
+                ) : (
+                  <button
+                    className="text-muted-foreground text-xs underline hover:text-foreground"
+                    onClick={() => markCleared(field.configKey)}
+                    type="button"
+                  >
+                    Remove the stored value
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       );
     });

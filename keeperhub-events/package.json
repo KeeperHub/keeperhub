@@ -1,5 +1,6 @@
 {
   "name": "@techops/events",
+  "packageManager": "pnpm@10.34.5",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +11,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
-    "@types/node": "^22.20.1",
+    "@types/node": "^22.20.4",
     "tsx": "^4.23.13",
     "typescript": "^5.8.3"
   },
@@ -25,6 +26,11 @@
       "esbuild@>=0.27.3 <0.28.1": "^0.28.1",
       "postcss": ">=8.5.18",
       "nanoid@<3.3.17": "^3.3.17"
-    }
+    },
+    "patchedDependencies": {
+      "stream-json@1.9.1": "patches/stream-json@1.9.1.patch"
+    },
+    "allowUnusedPatchesComment": "stream-json reaches this workspace through solana-tracker only. The event-tracker image installs just its own subset, so the patch is legitimately unused there and pnpm would otherwise fail the build.",
+    "allowUnusedPatches": true
   }
 }

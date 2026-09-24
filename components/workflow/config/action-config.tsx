@@ -27,7 +27,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { TemplateCodeEditor } from "@/components/ui/template-code-editor";
+import { TemplateCodeEditor } from "@/components/workflow/config/template-code-editor";
 import { actionRequiresCredentials } from "@/lib/integration-helpers";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import { ConditionQueryBuilder } from "@/components/workflow/condition-query-builder";
@@ -35,6 +35,8 @@ import type { ConditionGroup } from "@/lib/workflow/nodes/condition/builder-type
 import {
   DEFAULT_HTTP_METHOD,
   HTTP_METHODS,
+  MAX_RETRY_ATTEMPTS,
+  MAX_RETRY_DELAY_SECONDS,
 } from "@/lib/workflow/nodes/http-request/constants";
 import {
   createEmptyGroup,
@@ -50,6 +52,7 @@ import {
   integrationsAtom,
   integrationsVersionAtom,
 } from "@/lib/integrations-store";
+import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import type { IntegrationType } from "@/lib/types/integration";
 import {
   ARRAY_SOURCE_RE,
@@ -71,6 +74,8 @@ import {
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { SchemaBuilder } from "./schema-builder";
 import { Web3ConnectionSelect } from "./web3-connection-select";
+
+const DIGITS_ONLY = /[^0-9]/g;
 
 type ConfigValue = string | boolean | Record<string, unknown> | undefined;
 
@@ -261,6 +266,49 @@ function HttpRequestFields({
           How long to wait for a response. Default 5 seconds, max 30.
         </p>
       </div>
+      <div className="space-y-2">
+        <Label htmlFor="retryAttempts">Retry attempts</Label>
+        <Input
+          disabled={disabled}
+          id="retryAttempts"
+          max={MAX_RETRY_ATTEMPTS}
+          min={0}
+          onChange={(e) => {
+            const raw = e.target.value.replace(DIGITS_ONLY, "");
+            onUpdateConfig("retryAttempts", raw);
+          }}
+          placeholder="0"
+          type="number"
+          value={(config?.retryAttempts as string) || ""}
+        />
+        <p className="text-muted-foreground text-xs">
+          Extra attempts after the first, for connection errors, timeouts and
+          retryable statuses (408, 425, 429, 5xx). Default 0, max{" "}
+          {MAX_RETRY_ATTEMPTS}.
+        </p>
+      </div>
+      {Number(config?.retryAttempts ?? 0) > 0 && (
+        <div className="space-y-2">
+          <Label htmlFor="retryDelay">Retry delay (seconds)</Label>
+          <Input
+            disabled={disabled}
+            id="retryDelay"
+            max={MAX_RETRY_DELAY_SECONDS}
+            min={0}
+            onChange={(e) => {
+              const raw = e.target.value.replace(DIGITS_ONLY, "");
+              onUpdateConfig("retryDelay", raw);
+            }}
+            placeholder="1"
+            type="number"
+            value={(config?.retryDelay as string) || ""}
+          />
+          <p className="text-muted-foreground text-xs">
+            Backs off linearly: attempt N waits this many seconds times N.
+            Default 1, max {MAX_RETRY_DELAY_SECONDS}.
+          </p>
+        </div>
+      )}
       <FailOnErrorSwitchField
         description="When off, a non-2xx response or timeout passes a soft error to the next node instead of failing the run."
         disabled={disabled}
@@ -700,11 +748,6 @@ const SYSTEM_ACTIONS: Array<{ id: string; label: string }> = [
 
 const SYSTEM_ACTION_IDS = SYSTEM_ACTIONS.map((a) => a.id);
 
-// System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
-  "Database Query": "database",
-};
-
 // Build category mapping dynamically from plugins + System
 function useCategoryData() {
   const nodes = useAtomValue(nodesAtom);
@@ -944,9 +987,21 @@ export function ActionConfig({
     <>
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-2">
-          <Label className="ml-1" htmlFor="actionCategory">
-            Service
-          </Label>
+          <div className="flex items-center justify-between gap-2">
+            <Label className="ml-1" htmlFor="actionCategory">
+              Service
+            </Label>
+            {pluginAction?.docUrl && (
+              <a
+                className="mr-1 inline-flex items-center text-muted-foreground text-xs hover:text-primary"
+                href={pluginAction.docUrl}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                Docs &#x2197;
+              </a>
+            )}
+          </div>
           <Select
             disabled={disabled}
             onValueChange={handleCategoryChange}
@@ -1015,16 +1070,6 @@ export function ActionConfig({
                 })}
             </SelectContent>
           </Select>
-          {pluginAction?.docUrl && (
-            <a
-              className="ml-1 inline-flex items-center text-muted-foreground text-xs hover:text-primary"
-              href={pluginAction.docUrl}
-              rel="noopener noreferrer"
-              target="_blank"
-            >
-              Docs &#x2197;
-            </a>
-          )}
         </div>
       </div>
 

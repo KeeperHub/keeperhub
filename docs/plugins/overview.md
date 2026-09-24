@@ -13,7 +13,8 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 |--------|----------|---------|---------------------|
 | [Web3](/plugins/web3) | Blockchain | Balance checks, contract reads/writes, transfers, calldata decoding, risk assessment | Wallet (for writes) |
 | [Code](/plugins/code) | Code | Execute custom JavaScript in a sandboxed VM | None |
-| [Math](/plugins/math) | Math | Aggregation operations (sum, count, average, median, min, max, product) | None |
+| [Math](/plugins/math) | Math | Aggregation operations (sum, count, average, median, min, max, product), tolerance comparison, number formatting | None |
+| [Data](/plugins/data) | Data | Encode/decode strings, hash values (keccak256, SHA-2, SHA3, RIPEMD-160, BLAKE2b), extract named fields, flatten findings, static config | None |
 | [Safe](/plugins/safe) | Protocol | Safe multisig owners, threshold, nonce, module status, pending transactions | API key (for pending txs) |
 | [Aave V3](/plugins/aave-v3) | Protocol | Supply, borrow, repay, collateral management, health factor monitoring | Wallet (for writes) |
 | [Aave V4](/plugins/aave-v4) | Protocol | Hub-and-Spoke supply, borrow, repay, collateral management via the Lido Spoke | Wallet (for writes) |
@@ -21,14 +22,18 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [Ajna](/plugins/ajna) | Protocol | Liquidation keeper operations, vault rebalancing, buffer management | Wallet (for writes) |
 | [Chainlink](/plugins/chainlink) | Protocol | Oracle price feeds -- latest prices, round data, decimals, feed metadata | None |
 | [Chronicle](/plugins/chronicle) | Protocol | Verifiable oracle price feeds with Schnorr signature verification | None (whitelisted caller) |
+| [Coinbase cbETH](/plugins/coinbase-cbeth) | Protocol | Read-only cbETH reads on Ethereum mainnet: exchange rate, balance, total supply | None |
 | [Compound V3](/plugins/compound) | Protocol | Supply, withdraw, base/collateral/borrow balance monitoring | Wallet (for writes) |
 | [CoW Swap](/plugins/cowswap) | Protocol | Order pre-signing, fill monitoring, conditional orders, order cancellation | Wallet (for writes) |
 | [Curve](/plugins/curve) | Protocol | Pool swaps, LP management, virtual prices, CRV token operations | Wallet (for writes) |
 | [Ethena](/plugins/ethena) | Protocol | sUSDe staking vault, cooldown/unstake, USDe and ENA balances | Wallet (for writes) |
+| [Euler V2](/plugins/euler-v2) | Protocol | ERC-4626 vault deposit/mint/withdraw/redeem, liquidity, borrow demand, interest accrual, vault configuration | Wallet (for writes) |
 | [Frax Ether V2](/plugins/frax-ether-v2) | Protocol | Liquid staking on Ethereum mainnet. Mint frxETH 1:1 from native ETH, or mint and stake directly into sfrxETH in one transaction | Wallet (for writes) |
+| [LayerZero](/plugins/layerzero) | Protocol | Crosschain OFT fee quotes, transfer previews, peer and approval checks, endpoint send library and DVN configuration reads | Wallet (for the approve action) |
 | [Lido](/plugins/lido) | Protocol | Wrap/unwrap stETH to wstETH, exchange rates, balances across Ethereum, Base, Sepolia | Wallet (for writes) |
 | [Morpho](/plugins/morpho) | Protocol | Supply, borrow, repay, liquidate, collateral management, position tracking, market monitoring | Wallet (for writes) |
 | [Pendle](/plugins/pendle) | Protocol | Yield tokenization, market data, PT/YT/SY balances, mint/redeem | Wallet (for writes) |
+| [Renzo](/plugins/renzo) | Protocol | Liquid restaking on Ethereum. Deposit ETH to mint ezETH, both halves of the deposit pause gate, ezETH balances and total supply | Wallet (for writes) |
 | [Rocket Pool](/plugins/rocket-pool) | Protocol | rETH exchange rate, balances, total supply, ETH deposits and withdrawals | Wallet (for writes) |
 | [Sky](/plugins/sky) | Protocol | USDS savings and staking vaults, token balances, approvals, DAI/MKR converters | Wallet (for writes) |
 | [Spark](/plugins/spark) | Protocol | Lending, borrowing, sDAI savings, health factor monitoring | Wallet (for writes) |
@@ -40,6 +45,7 @@ Plugins provide the actions available in your workflows. Each plugin adds one or
 | [Slack](/plugins/slack) | Notifications | Send messages to channels | Bot token |
 | [Telegram](/plugins/telegram) | Notifications | Send messages to chats | Bot token |
 | [SendGrid](/plugins/sendgrid) | Notifications | Send emails | API key |
+| [PagerDuty](/plugins/pagerduty) | Notifications | Trigger, acknowledge and resolve incidents on a service picked from your account | Read-only API token, or scoped OAuth |
 | [Webhook](/plugins/webhook) | Integrations | Send HTTP requests to external services | None |
 | [Hyperliquid](/plugins/hyperliquid) | Data | Read-only Info API queries: clearinghouse state, vault details, validators, funding history, spot deploy state, referrals, sub-accounts, active asset data | None |
 | [Blockscout](/plugins/blockscout) | Data | Read-only block explorer queries: address balance, transaction details, token info | None (optional instance URL/API key) |
@@ -72,7 +78,7 @@ Security-focused actions for transaction analysis, risk assessment, and Safe mul
 
 ### Notifications
 
-Send alerts and messages through Discord, Slack, Telegram, email, and webhooks. Typically used as the final step in monitoring workflows to notify your team when conditions are met.
+Send alerts and messages through Discord, Slack, Telegram, email, PagerDuty and webhooks. Typically used as the final step in monitoring workflows to notify your team when conditions are met. PagerDuty differs from the rest: it opens an incident that someone is paged for and that the workflow can resolve again, rather than posting a message.
 
 ### Integrations
 

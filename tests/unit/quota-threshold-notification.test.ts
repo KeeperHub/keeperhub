@@ -34,6 +34,9 @@ const mocks = vi.hoisted(() => {
         : null;
     },
     sendExecutionQuotaEmail: vi.fn(async () => true),
+    // The plan re-read has its own suite; here it passes the candidate through
+    // so these cases keep exercising delivery and the claim.
+    confirmQuotaStatus: vi.fn(async (status: unknown) => status),
     redisSet: vi.fn(async (): Promise<string | null> => "OK"),
     db: {
       select: () => chain,
@@ -60,6 +63,9 @@ vi.mock("@/lib/db/schema", () => ({
   member: {},
   organization: {},
   users: {},
+}));
+vi.mock("@/lib/billing/quota-threshold", () => ({
+  confirmQuotaStatus: mocks.confirmQuotaStatus,
 }));
 vi.mock("@/lib/email", () => ({
   sendExecutionQuotaEmail: mocks.sendExecutionQuotaEmail,
@@ -117,9 +123,62 @@ beforeEach(() => {
   mocks.setPaygConfigured(true);
   mocks.redisSet.mockClear();
   mocks.redisSet.mockResolvedValue("OK");
+  mocks.confirmQuotaStatus.mockClear();
+  mocks.confirmQuotaStatus.mockImplementation(
+    async (status: unknown) => status
+  );
 });
 
 describe("notifyOrgQuotaThreshold", () => {
+  it("claims nothing and sends nothing when the plan no longer has a limit", async () => {
+    mocks.confirmQuotaStatus.mockResolvedValue(null);
+
+    const result = await notifyOrgQuotaThreshold(quotaStatus(), APP_URL);
+
+    expect(result).toBeNull();
+    expect(mocks.sendExecutionQuotaEmail).not.toHaveBeenCalled();
+    // The guard runs ahead of the owner lookup, so nothing was read either.
+    expect(mocks.selectQueue).toHaveLength(0);
+  });
+
+  it("mails the confirmed plan's figures, not the counted ones", async () => {
+    mocks.selectQueue.push(
+      [
+        {
+          email: "owner@example.com",
+          emailVerified: true,
+          stepUpEmail: null,
+          name: "Owner",
+        },
+      ],
+      [{ name: "Acme" }]
+    );
+    mocks.setInsertResult([{ id: "notif_1" }]);
+    mocks.confirmQuotaStatus.mockResolvedValue(
+      quotaStatus({
+        plan: "business",
+        planLabel: "Business",
+        limit: 250_000,
+        includedLimit: 250_000,
+        usagePercent: 80,
+        paygEligible: false,
+        overageRatePerThousand: 1.5,
+        used: 200_000,
+      })
+    );
+
+    await notifyOrgQuotaThreshold(quotaStatus({ used: 200_000 }), APP_URL);
+
+    expect(mocks.sendExecutionQuotaEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planLabel: "Business",
+        limit: 250_000,
+        payg: null,
+        overageRatePerThousand: 1.5,
+      })
+    );
+  });
+
   it("emails the org owner and reports the send", async () => {
     mocks.selectQueue.push(
       [

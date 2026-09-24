@@ -45,12 +45,14 @@ vi.mock("ethers", () => ({
 
 // Import after mocks
 import {
+  CHAIN_GAS_DEFAULTS,
+  getChainGasDefaults,
+} from "@/lib/web3/gas-defaults";
+import {
   AdaptiveGasStrategy,
-  DEFAULT_RETRY_CONFIG,
-  executeWithRetry,
   getGasStrategy,
+  HARDCODED_CHAIN_OVERRIDES,
   resetGasStrategy,
-  TransactionStuckError,
 } from "@/lib/web3/gas-strategy";
 
 // Helper to create mock provider
@@ -478,6 +480,55 @@ describe("AdaptiveGasStrategy", () => {
         expect(config.gasLimit).toBe(BigInt(42_000));
       }
     );
+
+    it("should keep a HyperEVM gas limit inside the chain's 3M block cap", async () => {
+      // HyperEVM's regular blocks cap at 3,000,000 gas and the node rejects
+      // anything above it at submission with -32000 "exceeds block gas
+      // limit", before it checks the balance. The 2.0 default would turn a
+      // 1.6M estimate into 3.2M and make the transaction unsendable, so the
+      // 1.5 override is the whole safety claim of the chain's entry here.
+      const strategy = new AdaptiveGasStrategy();
+      const provider = createMockProvider({});
+
+      const config = await strategy.getGasConfig(
+        provider as unknown as import("ethers").Provider,
+        BigInt(1_600_000),
+        999
+      );
+
+      expect(config.gasLimit).toBe(BigInt(2_400_000));
+      expect(config.gasLimit).toBeLessThanOrEqual(BigInt(3_000_000));
+    });
+
+    it("should carry the same multiplier in the client-side display table", () => {
+      // gas-defaults.ts states by comment that every entry must match
+      // getHardcodedOverrides here, and the two are kept in sync by hand
+      // because that module must stay ethers-free. Nothing enforced it.
+      //
+      // Iterates both tables, so a chain added to either one alone fails
+      // here instead of depending on someone remembering the other.
+      const chainIds = new Set([
+        ...Object.keys(CHAIN_GAS_DEFAULTS),
+        ...Object.keys(HARDCODED_CHAIN_OVERRIDES),
+      ]);
+      expect(chainIds.size).toBeGreaterThan(0);
+      for (const key of chainIds) {
+        const chainId = Number(key);
+        // Asserted separately because getChainGasDefaults falls back to the
+        // global default, whose multiplier is 2.0. Comparing the values
+        // alone would pass for a chain present only in the overrides with a
+        // 2.0 multiplier -- six entries use 2.0 today -- so the membership
+        // is what makes this direction real rather than a coincidence.
+        expect(
+          Object.hasOwn(CHAIN_GAS_DEFAULTS, chainId),
+          `chain ${chainId}`
+        ).toBe(true);
+        expect(
+          getChainGasDefaults(chainId).multiplier,
+          `chain ${chainId}`
+        ).toBe(HARDCODED_CHAIN_OVERRIDES[chainId]?.gasLimitMultiplier);
+      }
+    });
   });
 
   describe("priority fee clamping", () => {
@@ -914,40 +965,5 @@ describe("AdaptiveGasStrategy", () => {
 
       expect(config.gasLimit).toBe(BigInt(150_000)); // Exactly 1.5x
     });
-  });
-});
-
-describe("executeWithRetry types and config", () => {
-  it("should have correct default retry config", () => {
-    expect(DEFAULT_RETRY_CONFIG).toEqual({
-      maxAttempts: 3,
-      escalationFactor: 1.5,
-      checkIntervalMs: 5000,
-      stuckThresholdMs: 30_000,
-    });
-  });
-
-  it("should expose TransactionStuckError class", () => {
-    const error = new TransactionStuckError("0x123abc", 3);
-
-    expect(error).toBeInstanceOf(Error);
-    expect(error.name).toBe("TransactionStuckError");
-    expect(error.txHash).toBe("0x123abc");
-    expect(error.attempts).toBe(3);
-    expect(error.message).toContain("stuck after 3 attempt(s)");
-  });
-
-  it("should have proper TransactionStuckError inheritance", () => {
-    const error = new TransactionStuckError("0xabc123", 2);
-
-    expect(error instanceof Error).toBe(true);
-    expect(error.stack).toBeDefined();
-    expect(error.message).toBe(
-      "Transaction 0xabc123 stuck after 2 attempt(s). Consider manual intervention."
-    );
-  });
-
-  it("should export executeWithRetry as a function", () => {
-    expect(typeof executeWithRetry).toBe("function");
   });
 });

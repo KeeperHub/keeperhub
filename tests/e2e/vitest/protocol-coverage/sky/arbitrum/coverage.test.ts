@@ -1,0 +1,44 @@
+import { afterAll, beforeAll, describe } from "vitest";
+import { runPhaseFixtures } from "../../_shared/run-fixture";
+import { cleanupAll, createSharedCtx, runSetup } from "../../_shared/setup";
+
+const PROTOCOL = "sky";
+const CHAIN_ID = "42161";
+// Arbitrum One — not a fork chain, uses TESTNET_FUNDER_PK to provide gas to
+// the test wallet (0.01 ETH needed for read-only test execution). Executes
+// the two sUsdsL2 reads plus get-usds-balance; the ERC-4626 vault actions
+// are skipped on this chain because the bridged sUSDS implements the ERC-20
+// surface only.
+const SKIP_INFRA_TESTS =
+  !(process.env.DATABASE_URL && process.env.TESTNET_FUNDER_PK) ||
+  process.env.SKIP_INFRA_TESTS === "true";
+
+describe.skipIf(SKIP_INFRA_TESTS)(`${PROTOCOL} (Arbitrum)`, () => {
+  const ctx = createSharedCtx();
+
+  beforeAll(async () => {
+    await runSetup({ protocol: PROTOCOL, chainId: CHAIN_ID, ctx });
+  }, 600_000);
+
+  afterAll(async () => {
+    await cleanupAll(ctx);
+  });
+
+  describe("read", () => {
+    runPhaseFixtures({
+      protocol: PROTOCOL,
+      chainId: CHAIN_ID,
+      phase: "read",
+      ctx,
+    });
+  });
+
+  describe("write", () => {
+    runPhaseFixtures({
+      protocol: PROTOCOL,
+      chainId: CHAIN_ID,
+      phase: "write",
+      ctx,
+    });
+  });
+});

@@ -42,7 +42,7 @@ Call `GET /api/analytics/spend-cap` before planning a large transfer. Read `effe
 
 An ERC-20 transfer carries no native value, so the daily caps above cannot see it. A single transaction that moves a recognised stablecoin (any token listed for that chain and flagged as a stablecoin) is limited to **100 USD**, applying the 1:1 peg to the token's own decimals. The limit is per transaction rather than per day, and covers every write path: `/api/execute/transfer`, `/api/execute/contract-call`, protocol actions, `/api/execute/node`, and the equivalent workflow steps. Over the limit nothing is signed or broadcast; the request completes as a failed execution (`202` with `status: "failed"`) whose error reads `Stablecoin transfer of ... exceeds the 100.0 USD per-transaction limit`. Self-hosted deployments can change the figure with `EXECUTE_DEFAULT_STABLECOIN_CAP_MICRO_USD` (micro-USD, so `100000000` is 100 USD).
 
-A dry run reports the same refusal: simulating an over-limit transfer returns a failed simulation carrying the limit, rather than a clean estimate for a transfer that would fail at broadcast.
+On the three endpoints that accept `simulate` a dry run reports the same refusal: simulating an over-limit transfer returns a failed simulation carrying the limit, rather than a clean estimate for a transfer that would fail at broadcast. Protocol actions and `/api/execute/node` have no dry run at all, so the limit is only reported there at broadcast.
 
 `approve` is bounded by the same figure, with one exception. Approving more than the limit is allowed when the spender is a contract belonging to a protocol integration, which is what makes the usual approve-then-swap pattern work. Approving more than the limit to any other address is refused, because an unbounded allowance to an address outside that set is a standing right to move the balance that no later check can see. An approval at or under the limit is always allowed.
 
@@ -52,6 +52,36 @@ Organization policies apply to these endpoints as well, and can bound them by
 contract, counterparty, asset, amount and time. See [Policies](/api/policies).
 
 ## Safe First-Write Sequence
+
+This sequence is for `/api/execute/transfer`, `/api/execute/contract-call` and
+`/api/execute/check-and-execute` - the three endpoints that accept a `simulate`
+flag. **It does not apply to protocol actions or to `/api/execute/node`**,
+neither of which has a dry run. Both refuse the flag: `"simulate": true` in the
+request body, or inside `config` on `/api/execute/node`, is rejected with `400`
+and code `unsupported_param` before anything is reserved, signed or broadcast.
+`"simulate": false` is accepted, because it asks for the real execution those
+endpoints perform.
+
+A first write on those two endpoints has no dry run to put in step 2's place,
+so the pre-flight has to happen off this API:
+
+1. Read `GET /api/chains` and choose a chain where `isEnabled` and `isTestnet`
+   are both `true`.
+2. Simulate the call yourself, against your own RPC: an `eth_call` from the
+   account that will be `msg.sender` at the target contract - the
+   organization's EOA, or the Safe when the organization routes writes through
+   one.
+3. Send once, with an `Idempotency-Key`. The key must identify the work rather
+   than the attempt: see [Choosing a stable key](#choosing-a-stable-key).
+4. Save the returned `executionId` and poll
+   [`GET /api/execute/{executionId}/status`](#get-execution-status). Both
+   endpoints return one. `unconfirmed` is not a failure: do not rotate the key
+   and do not re-send, or a transaction that may still land is sent twice.
+5. Read the effect back off chain. A confirmed receipt says a transaction was
+   included; it does not say the contract's state is what you intended.
+
+`/api/execute/node` is named above as a write path the stablecoin limit covers,
+but is not otherwise documented on this page.
 
 Use the same request body from simulation through broadcast so the transaction
 you inspected is the transaction you send:
@@ -129,9 +159,43 @@ the request was received, so a retry must be able to match the original. Reusing
 key is what makes that retry safe: it returns the in-progress guard while the first
 request is still running, and the real outcome as a replay once it finishes.
 
-**Rotate to a new key** once the previous attempt returned a definite result. A
-stored failure is replayable for 24 hours, so a key that has already failed keeps
-returning that failure rather than retrying.
+**Reuse the same key after a failure the chain was conclusive about.** A
+transaction that reached the chain and reverted at inclusion releases the key:
+it landed, the chain gave a verdict, and nothing is still in flight. The same
+key simply executes again, so you no longer have to rotate to recover from that
+attempt.
+
+The send boundary preserves evidence instead of making the route guess from a
+missing RPC reply. Directly signed EVM transactions retain a deterministic hash
+once submission may have begun. Every broadcasting core also reports its boundary:
+`broadcastAttempted: false` means it proved the attempt stopped before submission;
+`true` means submission may have started. Missing evidence fails closed and keeps
+the key rather than treating a missing hash as proof that nothing was broadcast.
+
+Two consequences worth stating plainly, because they decide what your retry
+should do:
+
+- A write-core pre-broadcast rejection (for example `staticCall` or an in-core
+  balance check) is **released**. Validation 4xx responses also release, while
+  `simulate: true` reserves no idempotency record at all.
+- The mixed-chain `/api/execute/transfer` route keeps a hashless Solana failure
+  **held**. Solana send failures report attempted evidence where known, and any
+  missing evidence fails closed; absence of a signature is never treated as
+  proof that nothing reached the network.
+- A Safe transaction whose outer `execTransaction` mined while the inner call
+  reverted is **held**. The Safe's nonce and the owner signatures for it were
+  consumed, so "nothing landed" is not true even though the intended work did
+  not happen.
+
+**An outcome nobody could read keeps its key.** If the receipt was unreadable
+the transaction may still land, so that record is held and replays for 24 hours.
+The reply carries `"status": "unconfirmed"` and `"idempotentReplay": true`. Poll
+`GET /api/execute/{executionId}/status` rather than rotating, because a new key
+has no record to match and would broadcast a second transaction for work the
+first attempt may still be completing.
+
+**Rotate to a new key** when the work itself is different, not to escape a
+failure.
 
 **A conflict does not by itself mean rotate.** `retryable: false` says only that
 this body is not the body the key was bound to, and there are two reasons for
@@ -338,7 +402,7 @@ Successful broadcast requests return HTTP `202 Accepted`:
 
 ```json
 {
-  "executionId": "direct_123",
+  "executionId": "n3364uzl2s6aram5v558c",
   "status": "completed",
   "transactionHash": "0x...",
   "transactionLink": "https://etherscan.io/tx/0x..."
@@ -389,8 +453,57 @@ Call any smart contract function. Automatically detects read vs write operations
   with a 400 naming both values.
 - `functionArgs` (optional): JSON array string of function arguments (e.g., `"[\"0x...\", \"1000\"]"`)
 - `abi` (optional): Contract ABI as JSON string. Auto-fetched from block explorer if omitted.
+- `errorAbis` (optional): JSON array of ABI documents whose `error` entries join
+  revert decoding, after the ABI above. Decoding only: `abi` still encodes the
+  call, so the extra documents cannot change the calldata. Use it when the
+  revert is raised somewhere other than the call target, such as a hook the
+  target calls or an implementation behind a proxy. At most 4 documents, 16 KB
+  each; a document declaring no error the decoder can build is rejected with a
+  400 rather than accepted and ignored.
 - `value` (optional): Native value to send with the call, as a decimal string in ether units (e.g. `0.1`) (for payable functions)
 - `gasLimitMultiplier` (optional): Gas limit multiplier
+
+### Raw calldata
+
+Callers that already hold encoded calldata (execution frameworks, transaction
+builders, replayed transactions) may send `data` instead of `functionName` and
+`functionArgs`:
+
+```json
+{
+  "contractAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "chainId": 8453,
+  "data": "0x095ea7b3000000000000000000000000c1256ae5ff1cf2719d4937adb3bbccab2e00a2ca00000000000000000000000000000000000000000000000000000000004c4b40",
+  "abi": "[{...}]",
+  "simulate": true
+}
+```
+
+The route decodes `data` against the ABI, either the `abi` in the body or the
+explorer-verified ABI it fetches when `abi` is omitted, into the canonical
+function key (`approve(address,uint256)`) and a typed `functionArgs` array, and
+then continues exactly as a typed request: read functions return their result,
+`simulate` dry-runs, writes reserve against the spending caps and the
+stablecoin limit, and the execution record carries the decoded function and
+arguments rather than opaque bytes.
+
+Nothing is inferred. A selector the ABI does not contain is rejected with
+`400` on field `data`; supply the contract's ABI or the typed fields instead.
+No signature database is consulted, so a guessed signature can never reach the
+signing path. `data` must be 0x-prefixed hex of whole bytes carrying at least
+the 4-byte selector; plain value transfers use [Transfer Funds](#transfer-funds).
+
+The decode must be lossless. The transaction that is broadcast is rebuilt from
+the decoded function and arguments, not from the bytes you sent, so calldata is
+re-encoded and compared against `data`, and anything that does not survive the
+round trip - trailing bytes past the arguments (an ERC-2771 appended sender,
+for example), non-minimal offsets, non-canonical padding - is rejected with
+`400` on field `data` rather than dropped silently.
+
+Send `data` or the typed fields, not both. A body carrying `data` alongside
+`functionName` (or `abiFunction`) describes the same call twice and is rejected
+with `400` on field `data`, for the same reason a differing `functionName` and
+`abiFunction` pair is. `check-and-execute` does not accept `data`.
 
 **Direct execution vs. workflow node field names**
 
@@ -424,7 +537,7 @@ Read functions return immediately with the result value.
 
 ```json
 {
-  "executionId": "direct_123",
+  "executionId": "n3364uzl2s6aram5v558c",
   "status": "completed",
   "transactionHash": "0x...",
   "transactionLink": "https://etherscan.io/tx/0x..."
@@ -459,6 +572,11 @@ Pass action parameters as a JSON object. `chainId` is required for every action
 (the legacy `network` field is accepted as a deprecated alias). Required fields
 for each action are defined in the protocol registry.
 
+Protocol actions have no dry run. A `simulate` field is rejected with `400` and
+code `unsupported_param` before anything is reserved or signed, except
+`"simulate": false`. To check a write before sending it, see
+[Safe First-Write Sequence](#safe-first-write-sequence).
+
 ### Response
 
 **Read actions** return the plugin result directly with HTTP `200`.
@@ -474,7 +592,7 @@ the write step produced one (including on revert).
 
 ```json
 {
-  "executionId": "direct_123",
+  "executionId": "n3364uzl2s6aram5v558c",
   "status": "failed",
   "transactionHash": "0x...",
   "transactionLink": "https://etherscan.io/tx/0x...",
@@ -519,6 +637,7 @@ Read a contract value, evaluate a condition, and conditionally execute a write o
   "functionName": "balanceOf",
   "functionArgs": "[\"0x742d35Cc6634C0532925a3b844Bc454e4438f44e\"]",
   "abi": "[{...}]",
+  "errorAbis": ["[{...}]"],
   "condition": {
     "operator": "gt",
     "value": "1000000000000000000"
@@ -532,6 +651,10 @@ Read a contract value, evaluate a condition, and conditionally execute a write o
   }
 }
 ```
+
+`errorAbis` (optional) is the same field the contract-call route accepts, and it
+sits at the top level rather than inside `action` so one list covers both calls
+this route makes: the check read and the action write. Decoding only, for both.
 
 **Condition Operators:**
 
@@ -573,7 +696,7 @@ not part of the supported request shape.
 ```json
 {
   "executed": true,
-  "executionId": "direct_123",
+  "executionId": "n3364uzl2s6aram5v558c",
   "status": "completed",
   "conditionResult": {
     "met": true,
@@ -619,9 +742,85 @@ Add `"simulate": true` to any of the standard request bodies:
 }
 ```
 
-`simulate` must be a strict boolean — `true` or `false`. Strings (`"true"`), numbers (`1`), and other non-boolean values are rejected with HTTP 400 to prevent silent fall-through to a real broadcast. There is no query-string form; the body field is the only way to request a dry run.
+`simulate` must be a strict boolean — `true` or `false`. Strings (`"true"`), numbers (`1`), and other non-boolean values are rejected with HTTP 400 to prevent silent fall-through to a real broadcast. The top-level body field is the only way to request a dry run. There is no query-string form: a `simulate` query parameter, in any letter case, is rejected with `400` and code `unsupported_param` on every `/api/execute/*` endpoint. The one exception is `?simulate=false`, which asks for nothing the endpoint would not already do.
 
 Because a dry run never signs or broadcasts, a credential scoped `mcp:read` may run one. Removing `simulate` to broadcast requires `mcp:write`.
+
+### A sequence of calls
+
+A single dry run resolves against latest state, so the second call of an
+approve-then-deposit pair reverts on allowance every time: the approve has not
+landed. Send `calls` instead of the single top-level call to dry-run an ordered
+sequence, each call against the state the one before it produced:
+
+```json
+{
+  "chainId": 84532,
+  "simulate": true,
+  "calls": [
+    {
+      "contractAddress": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+      "functionName": "approve",
+      "functionArgs": "[\"0xd36e12a5b2926a5cbe6b4de42a0d60fd35d3cb04\", \"1000\"]"
+    },
+    {
+      "contractAddress": "0xd36e12a5b2926a5cbe6b4de42a0d60fd35d3cb04",
+      "functionName": "deposit",
+      "functionArgs": "[\"1000\", \"0x...orgWallet\"]"
+    }
+  ]
+}
+```
+
+Each call takes its own `abi`, falling back to a top-level `abi` and then to the
+explorer-verified ABI, so a sequence spanning two contracts needs no extra
+round trip from you. `value` is accepted per call. At most 10 calls.
+
+**`calls` is a dry-run shape only.** This endpoint broadcasts one transaction
+per request, so `calls` without `simulate: true` is rejected with `400`. The
+response says the same thing in `atomic: false`: the entries describe N separate
+transactions sent from the wallet in that order, and on the real chain nothing
+stops another transaction landing between them.
+
+The response carries one result per call, in order, each the same shape a
+single-call dry run returns:
+
+```json
+{
+  "success": false,
+  "status": "simulated",
+  "from": "0x...orgWallet",
+  "atomic": false,
+  "mechanism": "eth_simulateV1",
+  "wouldRevert": true,
+  "results": [
+    { "success": true, "status": "simulated", "gasEstimate": "55425", "wouldRevert": false },
+    {
+      "success": false,
+      "status": "simulated",
+      "failureKind": "revert",
+      "wouldRevert": true,
+      "revertReason": "ERC4626: deposit more than max"
+    }
+  ]
+}
+```
+
+`success` is true only when every call answered cleanly. The status code follows
+the worst call: `503` if the node could not answer one, `400` if one would
+revert or did not validate, `200` otherwise.
+
+`mechanism` names how the answer was produced. `eth_simulateV1` carries state
+across calls in one request and is used wherever the chain's node offers it.
+Nodes without it fall back to `state-overrides`, which replays each call's
+`debug_traceCall` state diff as an `eth_call` override for the next one — the
+same answer, one round trip per call instead of one for the sequence. If a node
+offers neither, the calls after the first report `failureKind: "unavailable"`
+rather than quietly answering against latest state.
+
+The per-transaction stablecoin ceiling is applied to each call, exactly as it is
+on the single-call path: these are separate transactions at broadcast, so a call
+over the ceiling would fail at send and must not dry-run clean.
 
 ### Response — successful simulate
 
@@ -643,7 +842,7 @@ Because a dry run never signs or broadcasts, a credential scoped `mcp:read` may 
   not the transfer recipient
 - `value`: native value in wei sent with the call
 - `gasEstimate`: estimated gas units required by the call, as a decimal string
-- `simulatedReturnValue`: the decoded return value of the call (e.g. `true` for ERC-20 `transfer`, the read value for view functions, `null` for native transfers to an EOA recipient)
+- `simulatedReturnValue`: the decoded return value of the call (e.g. `true` for ERC-20 `transfer`, the read value for view functions, `null` for native transfers to an EOA recipient). A non-standard token that returns no data on `transfer` (the USDT pattern) also simulates successfully with `simulatedReturnValue: null` — the simulator treats an empty return the same as a native transfer to an EOA, not as a failure.
 - `wouldRevert`: always `false` on this path
 
 ### Response — would-revert
@@ -669,7 +868,7 @@ When the chain would have rejected the transaction, the endpoint returns HTTP 40
 - `wouldRevert`: `true` on this failure path; use it together with `failureKind`, not as
   a revert discriminator by itself
 
-Revert decoding tries (in order): the contract's own ABI custom errors, common OpenZeppelin / standard errors, then the standard `Error(string)` revert (which is surfaced as `Error(<message>)`). If none match, the failure is either attributed to a funding shortfall (see below) or the raw RPC error message is surfaced.
+Revert decoding tries (in order): custom errors in the ABI the request supplied, custom errors in any of its `errorAbis` documents, common OpenZeppelin / standard errors, then the standard `Error(string)` revert (which is surfaced as `Error(<message>)`). If none match, the failure is either attributed to a funding shortfall (see below) or the raw RPC error message is surfaced. A revert raised in a contract other than the call target - a hook, a proxy implementation, a router - is only decodable through `errorAbis`, because the ABI that encodes the call is the target's own.
 
 ### Response — underfunded sender
 
@@ -702,6 +901,7 @@ A node asked to estimate gas for a transfer the sender cannot pay for rejects it
 - `nativeSymbol`: the chain's native currency symbol (`ETH`, `BNB`, `POL`); falls back to `native` if the chain is not seeded
 - `originalError`: the node's own message, kept verbatim. Attribution only ever adds — nothing the chain said is discarded
 - `undecodedRevertData`: present only when the node did return revert data that no ABI on the decode path matched. The first four bytes are the custom-error selector, which you can look up in a selector database. When this field is set, funding the wallet may not be enough on its own — the contract is also rejecting the call
+- When `undecodedRevertData` is set, the selector alone is not the whole answer: a selector database names it but cannot give its arguments, and the arguments are where a reason code or a job id lives. Supply the ABI of the contract that raised the revert in the request's `errorAbis` field (see [Call Smart Contract](#call-smart-contract)) and the revert decodes with its arguments instead of staying hex
 
 The comparison is against the transfer value only; gas is not included (the gas estimate is what failed, so there is no number to add). A wallet funded with exactly the transfer amount therefore still fails, carrying the node's own `insufficient funds for gas * price + value` message and no `code`.
 
@@ -713,7 +913,7 @@ For ERC-20 transfers, `decimals` is optional — when omitted, the simulator loo
 
 ### check-and-execute specifics
 
-`simulate: true` still evaluates the condition (which is read-only) and only swaps the **action's** write for a simulated call. The response wraps the simulate body in the existing `{ executed, conditionResult }` envelope:
+`simulate: true` still evaluates the condition (which is read-only) and only swaps the **action's** write for a simulated call. The flag goes at the top level of the body, not inside `action`: `action.simulate` is rejected with `400` (code `unsupported_param`, field `action.simulate`) rather than ignored, except `"simulate": false`. The response wraps the simulate body in the existing `{ executed, conditionResult }` envelope:
 
 ```json
 {
@@ -775,7 +975,7 @@ Check the status of a direct execution.
 
 ```json
 {
-  "executionId": "direct_123",
+  "executionId": "n3364uzl2s6aram5v558c",
   "status": "completed",
   "type": "transfer",
   "network": "11155111",
@@ -908,7 +1108,7 @@ Direct execution endpoints return detailed error information:
 - `403`: The daily spending cap is exceeded, or the credential lacks the scope the request needs (`insufficient_scope`). Scope is enforced for both OAuth tokens and organization API keys. A key created without a scope has no scope restriction and passes every gate. See [Spending Caps](#spending-caps) — an organization that never configured a cap is still subject to the platform default.
 - `422`: Wallet not configured, code `WALLET_NOT_CONFIGURED` (see [Wallet Management](/wallet-management/turnkey))
 - `429`: Rate limit exceeded
-- `400`: Invalid request parameters
+- `400`: Invalid request parameters. A `simulate` flag sent where the endpoint does not read it returns code `unsupported_param`, with `field` naming where it was found (`simulate`, `config.simulate` or `action.simulate`); see [Dry-Run Simulation](#dry-run-simulation)
 
 An `insufficient_scope` response names the scope the endpoint needs and the one
 this connection is allowed:

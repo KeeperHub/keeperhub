@@ -36,28 +36,13 @@ import {
 } from "../lib/auth-session-token-hash";
 import { getDatabaseUrl } from "../lib/db/connection-utils";
 import { member, organization, sessions, users } from "../lib/db/schema";
+import { DEFAULT_SESSION_TTL_MS } from "@/lib/auth/session-constants";
+import { assertLocalDb } from "@/scripts/lib/local-db";
 
 // ---------------------------------------------------------------------------
 // Guards: hostname + opt-in env var
 // ---------------------------------------------------------------------------
 
-const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "db", "postgres"]);
-
-function assertLocalDb(url: string): void {
-  let hostname: string;
-  try {
-    hostname = new URL(url).hostname;
-  } catch {
-    throw new Error(`dev-mint-session: DATABASE_URL is not a parseable URL`);
-  }
-  if (!ALLOWED_HOSTS.has(hostname)) {
-    throw new Error(
-      `dev-mint-session: refusing to run against host "${hostname}". ` +
-        `Only ${[...ALLOWED_HOSTS].join(", ")} are allowed. ` +
-        "Set DATABASE_URL to a local Postgres before re-running."
-    );
-  }
-}
 
 function assertOptIn(): void {
   if (process.env.KEEPERHUB_DEV_MINT !== "1") {
@@ -72,7 +57,6 @@ function assertOptIn(): void {
 // Mint
 // ---------------------------------------------------------------------------
 
-const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const COOKIE_OUTPUT_PATH = path.join(
   process.cwd(),
   ".claude",
@@ -202,7 +186,7 @@ function parseEmail(): string {
 
 async function main(): Promise<void> {
   const url = getDatabaseUrl();
-  assertLocalDb(url);
+  assertLocalDb(url, "dev-mint-session");
   assertOptIn();
   const email = parseEmail();
   const result = await mintSession(email);

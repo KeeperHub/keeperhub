@@ -6,9 +6,10 @@ import {
   mcpOauthClients,
   mcpOauthRefreshTokens,
 } from "@/lib/db/schema";
+import { DAY_MS } from "@/lib/utils/duration";
 
 const AUTH_CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const REFRESH_TOKEN_TTL_MS = 30 * DAY_MS;
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");

@@ -3,6 +3,8 @@ import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
+import { describeAmbiguousKey, resolveAbiFunction } from "@/lib/abi/utils";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { db } from "@/lib/db";
 import { explorerConfigs } from "@/lib/db/schema";
 import {
@@ -57,7 +59,11 @@ export type QueryTransactionsResult =
       contractAddressLink: string;
       error?: string;
     }
-  | (ReadDestinationFailure & { success: false; error: string });
+  | (ReadDestinationFailure & {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+    });
 
 export type QueryTransactionsCoreInput = ReadFailOnErrorInput & {
   network: string;
@@ -290,19 +296,36 @@ function validateInputs(
     return { success: false, error: abiResult.error };
   }
 
-  const iface = new ethers.Interface(abiResult.parsed);
-  const functionFragment = iface.getFunction(abiFunction);
-  if (!functionFragment) {
+  const resolution = resolveAbiFunction(abiResult.parsed, abiFunction);
+  if (resolution.status === "ambiguous") {
+    return {
+      success: false,
+      error: describeAmbiguousKey(abiFunction, resolution.candidates),
+    };
+  }
+  if (resolution.status !== "found") {
     return {
       success: false,
       error: `Function '${abiFunction}' not found in ABI`,
     };
   }
 
-  return {
-    success: true,
-    data: { iface, functionFragment, chainId },
-  };
+  try {
+    const iface = new ethers.Interface(abiResult.parsed);
+    const functionFragment = iface.getFunction(resolution.canonicalKey);
+    if (!functionFragment) {
+      return {
+        success: false,
+        error: `Function '${abiFunction}' has no valid ABI fragment`,
+      };
+    }
+    return { success: true, data: { iface, functionFragment, chainId } };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Invalid ABI function '${abiFunction}': ${getErrorMessage(error)}`,
+    };
+  }
 }
 
 /** Data fields a softened query reports, so a soft failure never looks like an empty result set. */
@@ -329,7 +352,7 @@ async function queryTransactionsInner(
 ): Promise<QueryTransactionsResult> {
   const validation = validateInputs(input);
   if (!validation.success) {
-    return validation;
+    return { ...validation, errorClass: ExecutionErrorType.USER };
   }
 
   const { iface, functionFragment, chainId } = validation.data;

@@ -1,6 +1,6 @@
 ---
 title: "Math Plugin"
-description: "Aggregation and arithmetic operations across array data or multiple upstream node outputs."
+description: "Aggregation, tolerance comparison and number formatting across array data or multiple upstream node outputs."
 ---
 
 # Math Plugin
@@ -11,9 +11,11 @@ No credentials or setup required -- this is a pure computation node.
 
 ## Actions
 
-| Action    | Description                                                                        |
-| --------- | ---------------------------------------------------------------------------------- |
-| Aggregate | Reduce multiple values into one via sum, count, average, median, min, max, product |
+| Action                | Description                                                                        |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| Aggregate             | Reduce multiple values into one via sum, count, average, median, min, max, product |
+| Compare With Tolerance | Compare an actual value against an expected value with a percentage or absolute tolerance |
+| Format Number         | Turn a raw integer or decimal into a readable string                               |
 
 ## Aggregate
 
@@ -115,6 +117,102 @@ Values from upstream nodes often arrive as strings. The Aggregate node handles:
 - Mixed types in the same set (some string, some number)
 
 Non-numeric values are silently skipped. Check `inputCount` to verify how many values were actually processed.
+
+---
+
+## Compare With Tolerance
+
+Compares an actual value against an expected value and reports whether the difference is inside a tolerance. All arithmetic is BigInt-based, so RAD and WAD magnitude values (1e45, 1e18) compare without the precision loss a `Number` round trip introduces.
+
+### Inputs
+
+| Input | Required | Description |
+| ----- | -------- | ----------- |
+| actual | Yes | The observed value |
+| expected | Yes | The reference value |
+| mode | Yes | `percent` (percentage of expected, the default) or `absolute` |
+| tolerance | Yes | In percent mode a percentage, so `0.5` means half a percent. In absolute mode, the same units as the values |
+| precision | No | Decimal places used when formatting `percentDifference`. Default 6 |
+
+### Outputs
+
+| Output | Description |
+| ------ | ----------- |
+| withinTolerance | True when the difference is inside the tolerance |
+| breached | True when it is outside -- wire this to an alert branch |
+| direction | `above`, `below` or `equal`, relative to expected |
+| difference | Actual minus expected, as a signed decimal string |
+| absoluteDifference | The difference without its sign |
+| percentDifference | Signed percentage difference from expected, or `null` when expected is zero |
+| actual | The normalised actual value |
+| expected | The normalised expected value |
+| tolerance | The tolerance that was applied |
+| mode | `percent` or `absolute` |
+| error | Error message if the comparison failed |
+
+### Notes
+
+- A difference exactly equal to the tolerance counts as within.
+- When `expected` is zero, a percentage is undefined: `percentDifference` is `null` and only an exact match counts as within tolerance.
+- Decimal inputs are supported directly, so `100.4` against `100` with a `0.5` percent tolerance passes.
+
+### Example
+
+```
+-> Read Contract (Oracle Price)
+-> Database Query (Previous Price)
+-> Compare With Tolerance:
+     actual: {{@oracle:Oracle Price.result}}
+     expected: {{@prev:Previous Price.rows.0.price}}
+     mode: percent
+     tolerance: 2
+-> Condition: {{@check:Compare With Tolerance.breached}} == true
+-> Discord: "Price moved {{@check:Compare With Tolerance.percentDifference}}%"
+```
+
+---
+
+## Format Number
+
+Turns a raw integer or decimal into a readable string: scales down token decimals, groups thousands, or shortens to compact K/M/B/T notation with an optional unit.
+
+### Inputs
+
+| Input | Required | Description |
+| ----- | -------- | ----------- |
+| value | Yes | The raw number, as a string or number |
+| decimals | No | Divides the value by 10 to this power before formatting. Use 18 for a wei amount, 6 for USDC, 0 for a plain number. Default 0 |
+| notation | No | `compact` (1.23M, the default) or `plain` (1,230,000.00) |
+| precision | No | Decimal places. Default 2 |
+| unit | No | Appended after the number, separated by a space |
+
+### Outputs
+
+| Output | Description |
+| ------ | ----------- |
+| formatted | The display string, e.g. `1.23M SKY` |
+| value | The full scaled value as a decimal string, with no rounding applied |
+| magnitude | The compact suffix used: `K`, `M`, `B`, `T` or empty |
+| notation | `compact` or `plain` |
+| error | Error message if formatting failed |
+
+### Notes
+
+- Scaling is BigInt-based, so a wei amount larger than `Number.MAX_SAFE_INTEGER` keeps every digit in the `value` output.
+- `formatted` is for display; use `value` when a downstream node needs the number.
+
+### Example
+
+```
+-> Read Contract (Locked Tokens)
+-> Format Number:
+     value: {{@locked:Locked Tokens.result}}
+     decimals: 18
+     notation: compact
+     precision: 2
+     unit: SKY
+-> Discord: "Locked: {{@fmt:Format Number.formatted}}"
+```
 
 ---
 

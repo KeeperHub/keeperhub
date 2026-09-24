@@ -16,7 +16,8 @@ export const SOLANA_NATIVE_DECIMALS = 9;
 /**
  * Native notional value (in wei) an execution will move, used by the per-org
  * daily spending cap. Parses a human-decimal ETH amount (e.g. "1.5") the same
- * way the web3 cores do (`ethers.parseEther`).
+ * way the web3 cores do (`ethers.parseEther`). Named Ether, not Wei,
+ * because that is the input unit; the returned `valueWei` is still wei.
  *
  * An absent/empty amount reserves "0". Only native value is counted today;
  * ERC-20 token amounts are not yet priced into the cap, so token-only transfers
@@ -29,7 +30,7 @@ export const SOLANA_NATIVE_DECIMALS = 9;
  * and a negative reservation would lower the day's SUM and bank credit against
  * the cap.
  */
-export function parseNativeValueWei(
+export function parseNativeValueEther(
   rawAmount: string | undefined | null
 ): ReservedValue {
   if (rawAmount === undefined || rawAmount === null || rawAmount === "") {
@@ -58,12 +59,12 @@ export function parseNativeValueWei(
  * per-org daily Solana cap (`organizationSpendCaps.dailySolanaValueCapLamports`).
  *
  * Parses a human-decimal SOL amount (e.g. "1.5") at SOL's true 9 decimals
- * rather than reusing `parseNativeValueWei`, whose `ethers.parseEther` is fixed
+ * rather than reusing `parseNativeValueEther`, whose `ethers.parseEther` is fixed
  * at 18. Charging SOL on an 18-decimal scale was only ever a workaround for
  * having a single wei-denominated cap; with a dedicated lamports cap the
  * accurate unit is both correct and safe.
  *
- * Mirrors `parseNativeValueWei`'s contract exactly: absent/empty reserves "0",
+ * Mirrors `parseNativeValueEther`'s contract exactly: absent/empty reserves "0",
  * malformed returns `{ ok: false }` for the caller to decide, and negatives are
  * rejected (a negative reservation would lower the day's SUM and bank credit
  * against the cap).

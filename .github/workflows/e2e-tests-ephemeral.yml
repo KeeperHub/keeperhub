@@ -887,8 +887,8 @@ jobs:
   # of the e2e stack instead of serially at its tail. The job carries its
   # own postgres/localstack services, app (from the shared build artifact or
   # ECR image), sandbox, and the anvil mainnet fork (every fork suite is on
-  # chain 1 since the chronicle/superfluid re-homing; ajna runs against
-  # live Base, reads only).
+  # chain 1 since the chronicle/superfluid re-homing; ajna, plus sky and
+  # lido's L2 suites, run against live Base / Arbitrum One, reads only).
   protocol-coverage-ephemeral:
     name: protocol-coverage-ephemeral (shard ${{ matrix.shard }})
     needs: [should-run, build-app]
@@ -912,13 +912,13 @@ jobs:
       matrix:
         include:
           - shard: 1
-            suites: sky/ethereum pendle/ethereum curve/ethereum rocket-pool/ethereum
+            suites: sky/ethereum pendle/ethereum curve/ethereum rocket-pool/ethereum sky/base sky/arbitrum
           - shard: 2
-            suites: morpho/ethereum ajna/base uniswap/ethereum lido/ethereum safe/ethereum
+            suites: morpho/ethereum ajna/base uniswap/ethereum lido/ethereum safe/ethereum lido/base
           - shard: 3
             suites: spark/ethereum superfluid/ethereum chainlink/ethereum chronicle/ethereum
           - shard: 4
-            suites: ethena/ethereum yearn/ethereum aave-v3/ethereum frax-ether-v2/ethereum wrapped/ethereum
+            suites: ethena/ethereum yearn/ethereum aave-v3/ethereum frax-ether-v2/ethereum wrapped/ethereum layerzero/ethereum
     runs-on: ${{ vars.USE_SELF_HOSTED_RUNNERS == 'true' && inputs.caller_event != 'pull_request' && 'arc-keeperhub-build' || 'ubuntu-latest' }}
     # Always staging: e2e validates against test credentials, never prod.
     environment: staging
@@ -1253,14 +1253,15 @@ jobs:
           TEST_API_KEY: ${{ secrets.TEST_API_KEY }}
           CHAIN_RPC_CONFIG: ${{ secrets.CHAIN_RPC_CONFIG }}
           # Funder EOA for protocol-coverage suites on live (non-fork)
-          # chains; only ajna on Base still gates on it, and it never
-          # spends (reads only). When unset that suite skips cleanly.
+          # chains; ajna on Base, sky on Base and Arbitrum One, and lido on
+          # Base gate on it, and none of them spends (reads only). When
+          # unset those suites skip cleanly.
           TESTNET_FUNDER_PK: ${{ secrets.TESTNET_FUNDER_PK }}
           # Archive-node URL for the Ethereum mainnet anvil fork started
           # above. When set, protocol-coverage suites for chain 1 (morpho,
           # wrapped, lido, ethena, curve, chainlink, spark, yearn, uniswap,
           # pendle, sky, aave-v3, frax-ether-v2, rocket-pool, safe,
-          # chronicle, superfluid) run for real. When unset those suites
+          # chronicle, superfluid, layerzero) run for real. When unset those suites
           # skip cleanly and the floor above drops accordingly.
           ANVIL_FORK_MAINNET_URL: ${{ secrets.ANVIL_FORK_MAINNET_URL }}
           # Non-empty only when the fork-cache download produced a warmed,
@@ -1398,8 +1399,18 @@ jobs:
           # reads = 232; floor 200 leaves margin for individual fixtures
           # moving to documented skips without a same-PR floor bump.
           # Without ANVIL_FORK_MAINNET_URL every mainnet suite self-skips
-          # and only ajna runs (25 reads, 1 representative), so the floor
-          # drops with the gate instead of failing the job spuriously.
+          # and only the live-chain suites run (ajna 25 reads plus the three
+          # L2 suites' 8, 4 representatives), so the floor drops with the
+          # gate instead of failing the job spuriously.
+          # The three live-chain L2 suites (sky/base, sky/arbitrum,
+          # lido/base) add 3 representative pairs - one read pair each, no
+          # runnable write - and 8 full-mode actions, all reads. The floors
+          # below are lower bounds, so they stay as they are; the sweep only
+          # grows. Separately, the 2026-07-07 derivation above predates later
+          # registry growth: the chain-1 harnessed suites plan 247 runnable
+          # actions today, not 207 (measured with `pnpm coverage:report` on
+          # staging). Re-deriving the floors from that belongs in its own
+          # change; both floors remain valid lower bounds meanwhile.
           if [ -n "${ANVIL_FORK_MAINNET_URL:-}" ]; then
             if [ "${PROTOCOL_E2E_REPRESENTATIVES:-}" = "1" ]; then FLOOR=22; else FLOOR=200; fi
           else

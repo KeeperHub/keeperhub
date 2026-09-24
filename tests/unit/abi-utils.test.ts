@@ -1,10 +1,14 @@
+import { ethers } from "ethers";
 import { describe, expect, it } from "vitest";
-
 import {
   type AbiItem,
+  canonicalType,
   computeSelector,
+  describeAmbiguousKey,
   findAbiFunction,
+  resolveAbiFunction,
 } from "@/lib/abi/utils";
+import { TUPLE_SHAPES } from "../fixtures/abi-tuple-shapes";
 
 const SELECTOR_PATTERN = /^0x[\da-f]{8}$/;
 
@@ -172,7 +176,19 @@ describe("findAbiFunction", () => {
     expect(result?.inputs).toHaveLength(2);
   });
 
-  it("finds the other overload by qualified signature", () => {
+  it("finds the tuple overload by canonical signature", () => {
+    const result = findAbiFunction(
+      OVERLOADED_ABI,
+      "send((uint32,bytes32),address)"
+    );
+    expect(result).toBeDefined();
+    expect(result?.stateMutability).toBe("payable");
+  });
+
+  it("still finds the tuple overload by its legacy raw signature", () => {
+    // Keys stored before tuples were expanded spell a struct as "tuple". They
+    // stay valid wherever they identify one overload, so saved workflows and
+    // external API callers keep working.
     const result = findAbiFunction(OVERLOADED_ABI, "send(tuple,address)");
     expect(result).toBeDefined();
     expect(result?.stateMutability).toBe("payable");
@@ -208,5 +224,356 @@ describe("findAbiFunction", () => {
     const result = findAbiFunction(abi, "Transfer");
     expect(result).toBeDefined();
     expect(result?.type).toBe("function");
+  });
+});
+
+const COLLIDING_ABI: AbiItem[] = [
+  {
+    type: "function",
+    name: "permit",
+    stateMutability: "nonpayable",
+    inputs: [
+      { type: "address", name: "owner" },
+      {
+        type: "tuple",
+        name: "permitSingle",
+        components: [
+          { name: "token", type: "address" },
+          { name: "amount", type: "uint160" },
+        ],
+      },
+      { type: "bytes", name: "signature" },
+    ],
+  },
+  {
+    type: "function",
+    name: "permit",
+    stateMutability: "nonpayable",
+    inputs: [
+      { type: "address", name: "owner" },
+      {
+        type: "tuple",
+        name: "permitBatch",
+        components: [
+          { name: "spender", type: "address" },
+          { name: "deadline", type: "uint256" },
+        ],
+      },
+      { type: "bytes", name: "signature" },
+    ],
+  },
+];
+
+describe("canonicalType", () => {
+  it("expands a tuple into its component types", () => {
+    expect(
+      canonicalType({
+        type: "tuple",
+        components: [
+          { name: "a", type: "uint32" },
+          { name: "b", type: "bytes32" },
+        ],
+      })
+    ).toBe("(uint32,bytes32)");
+  });
+
+  it("keeps the array suffix on a tuple array", () => {
+    expect(
+      canonicalType({
+        type: "tuple[]",
+        components: [{ name: "a", type: "uint256" }],
+      })
+    ).toBe("(uint256)[]");
+  });
+
+  it('throws on a tuple with no components rather than returning the literal "tuple"', () => {
+    // The one malformed shape that used to produce a wrong answer silently:
+    // "tuple" is exactly the spelling ethers rejects, and it would otherwise
+    // flow into a stored key, a selector and a canonical signature.
+    expect(() => canonicalType({ type: "tuple" })).toThrow();
+    expect(() => canonicalType({ type: "tuple[]" })).toThrow();
+    expect(() =>
+      canonicalType({
+        type: "tuple",
+        components: { a: "uint256" } as unknown as AbiItem["inputs"],
+      })
+    ).toThrow();
+  });
+
+  it("throws on an input with no type rather than fabricating a signature", () => {
+    expect(() =>
+      canonicalType({ components: [] } as unknown as { type: string })
+    ).toThrow();
+  });
+});
+
+describe("computeSelector on overloads that differ only inside a struct", () => {
+  // The Diamond facet merge in app/api/web3/fetch-abi dedupes on this selector.
+  // Raw ABI types render both structs as the literal "tuple", so the two
+  // functions would collide and one would be dropped from the merged ABI.
+  it("gives two tuple overloads distinct selectors", () => {
+    const first = computeSelector("permit", COLLIDING_ABI[0].inputs ?? []);
+    const second = computeSelector("permit", COLLIDING_ABI[1].inputs ?? []);
+    expect(first).not.toBe(second);
+  });
+
+  it("collides when the signature is built from raw types instead", () => {
+    const rawSignature = (item: AbiItem) =>
+      `${item.name}(${(item.inputs ?? []).map((i) => i.type).join(",")})`;
+    expect(rawSignature(COLLIDING_ABI[0])).toBe(rawSignature(COLLIDING_ABI[1]));
+  });
+});
+
+describe("resolveAbiFunction", () => {
+  it("reports a canonical key as found", () => {
+    const result = resolveAbiFunction(
+      OVERLOADED_ABI,
+      "send((uint32,bytes32),address)"
+    );
+    expect(result.status).toBe("found");
+  });
+
+  it("returns the canonical key for a legacy raw key", () => {
+    const result = resolveAbiFunction(OVERLOADED_ABI, "send(tuple,address)");
+    expect(result).toMatchObject({
+      status: "found",
+      canonicalKey: "send((uint32,bytes32),address)",
+    });
+  });
+
+  it("reports a legacy key that two overloads share as ambiguous", () => {
+    const result = resolveAbiFunction(
+      COLLIDING_ABI,
+      "permit(address,tuple,bytes)"
+    );
+    expect(result.status).toBe("ambiguous");
+    if (result.status === "ambiguous") {
+      expect(result.candidates).toHaveLength(2);
+    }
+  });
+
+  it("resolves each colliding overload by its own canonical key", () => {
+    const single = resolveAbiFunction(
+      COLLIDING_ABI,
+      "permit(address,(address,uint160),bytes)"
+    );
+    const batch = resolveAbiFunction(
+      COLLIDING_ABI,
+      "permit(address,(address,uint256),bytes)"
+    );
+    expect(single.status).toBe("found");
+    expect(batch.status).toBe("found");
+    if (single.status === "found" && batch.status === "found") {
+      expect(single.entry).not.toBe(batch.entry);
+    }
+  });
+
+  it("reports a bare overloaded name as ambiguous while the UI helper stays total", () => {
+    expect(resolveAbiFunction(OVERLOADED_ABI, "send").status).toBe("ambiguous");
+    expect(findAbiFunction(OVERLOADED_ABI, "send")).toBe(OVERLOADED_ABI[0]);
+  });
+
+  it("reports an unknown key as not found", () => {
+    expect(resolveAbiFunction(OVERLOADED_ABI, "missing(uint256)")).toEqual({
+      status: "not_found",
+    });
+  });
+
+  it("finds a healthy function next to an entry that cannot be canonicalised", () => {
+    const abi = [
+      {
+        type: "function",
+        name: "broken",
+        inputs: [{ name: "a" }],
+      },
+      {
+        type: "function",
+        name: "broken",
+        inputs: [{ name: "b", type: "uint256" }],
+      },
+    ] as unknown as AbiItem[];
+    const result = resolveAbiFunction(abi, "broken(uint256)");
+    expect(result.status).toBe("found");
+  });
+
+  it("does not match a corrupt entry against a stringified key", () => {
+    const abi = [
+      { type: "function", name: "broken", inputs: [{ name: "a" }] },
+    ] as unknown as AbiItem[];
+    expect(resolveAbiFunction(abi, "broken(undefined)")).toEqual({
+      status: "not_found",
+    });
+  });
+
+  it("does not report a tuple overload with no components as a canonical match", () => {
+    const abi: AbiItem[] = [
+      {
+        type: "function",
+        name: "send",
+        stateMutability: "payable",
+        inputs: [
+          { name: "p", type: "tuple" },
+          { name: "r", type: "address" },
+        ],
+      },
+      {
+        type: "function",
+        name: "send",
+        stateMutability: "nonpayable",
+        inputs: [
+          { name: "to", type: "address" },
+          { name: "amount", type: "uint256" },
+        ],
+      },
+    ];
+    // The legacy spelling still identifies the entry, so it resolves -- but
+    // the key it hands back must not be presented as a canonical signature,
+    // because no encodable one exists for an entry like this.
+    const result = resolveAbiFunction(abi, "send(tuple,address)");
+    expect(result.status).toBe("found");
+    if (result.status === "found") {
+      expect(result.entry.stateMutability).toBe("payable");
+      expect(result.canonicalKey).toBe("send(tuple,address)");
+    }
+    expect(resolveAbiFunction(abi, "send(address,uint256)").status).toBe(
+      "found"
+    );
+  });
+
+  it("tolerates components that are not an array", () => {
+    const abi = [
+      {
+        type: "function",
+        name: "weird",
+        inputs: [{ name: "p", type: "tuple", components: { a: "uint256" } }],
+      },
+    ] as unknown as AbiItem[];
+    expect(() => resolveAbiFunction(abi, "weird(tuple)")).not.toThrow();
+    expect(resolveAbiFunction(abi, "weird(tuple)").status).toBe("found");
+  });
+});
+
+describe("resolveAbiFunction on duplicated entries", () => {
+  // Merged facet ABIs and some explorer responses list one function twice.
+  // Repeats of the same signature are one function, not overloads.
+  const DUPLICATED_SCALAR: AbiItem[] = [
+    {
+      type: "function",
+      name: "f",
+      stateMutability: "view",
+      inputs: [{ name: "x", type: "uint256" }],
+    },
+    {
+      type: "function",
+      name: "f",
+      stateMutability: "view",
+      inputs: [{ name: "x", type: "uint256" }],
+    },
+  ];
+
+  const DUPLICATED_TUPLE: AbiItem[] = [
+    {
+      type: "function",
+      name: "f",
+      stateMutability: "view",
+      inputs: [
+        {
+          name: "p",
+          type: "tuple",
+          components: [{ name: "a", type: "address" }],
+        },
+      ],
+    },
+    {
+      type: "function",
+      name: "f",
+      stateMutability: "view",
+      inputs: [
+        {
+          name: "p",
+          type: "tuple",
+          components: [{ name: "a", type: "address" }],
+        },
+      ],
+    },
+  ];
+
+  it("resolves a scalar function that is listed twice", () => {
+    expect(resolveAbiFunction(DUPLICATED_SCALAR, "f(uint256)").status).toBe(
+      "found"
+    );
+    expect(findAbiFunction(DUPLICATED_SCALAR, "f(uint256)")).toBeDefined();
+  });
+
+  it("resolves a tuple function that is listed twice by its canonical key", () => {
+    expect(resolveAbiFunction(DUPLICATED_TUPLE, "f((address))").status).toBe(
+      "found"
+    );
+  });
+
+  it("resolves a tuple function that is listed twice by its legacy key", () => {
+    expect(resolveAbiFunction(DUPLICATED_TUPLE, "f(tuple)").status).toBe(
+      "found"
+    );
+  });
+
+  it("reports ambiguity only across distinct overloads, listing each once", () => {
+    const abi: AbiItem[] = [...DUPLICATED_TUPLE, ...COLLIDING_ABI];
+    const tuple = resolveAbiFunction(abi, "f(tuple)");
+    expect(tuple.status).toBe("found");
+
+    const permit = resolveAbiFunction(
+      [...COLLIDING_ABI, COLLIDING_ABI[0]],
+      "permit(address,tuple,bytes)"
+    );
+    expect(permit.status).toBe("ambiguous");
+    if (permit.status === "ambiguous") {
+      expect(permit.candidates).toHaveLength(2);
+    }
+  });
+});
+
+describe("describeAmbiguousKey", () => {
+  it("names the canonical signatures to choose between", () => {
+    const result = resolveAbiFunction(
+      COLLIDING_ABI,
+      "permit(address,tuple,bytes)"
+    );
+    if (result.status !== "ambiguous") {
+      throw new Error("expected an ambiguous resolution");
+    }
+    const message = describeAmbiguousKey(
+      "permit(address,tuple,bytes)",
+      result.candidates
+    );
+    expect(message).toContain("permit(address,(address,uint160),bytes)");
+    expect(message).toContain("permit(address,(address,uint256),bytes)");
+  });
+});
+
+describe("canonical tuple shapes against ethers", () => {
+  it.each(TUPLE_SHAPES)("$label", ({ input, canonical }) => {
+    expect(canonicalType(input)).toBe(canonical);
+    const fragment = ethers.FunctionFragment.from({
+      type: "function",
+      name: "f",
+      inputs: [input],
+    });
+    expect(fragment.format("sighash")).toBe(`f(${canonical})`);
+    expect(computeSelector("f", [input])).toBe(fragment.selector);
+  });
+
+  it("combines a tuple and a scalar in one selector", () => {
+    const inputs = [
+      TUPLE_SHAPES[0].input,
+      { name: "recipient", type: "address" },
+    ];
+    const fragment = ethers.FunctionFragment.from({
+      type: "function",
+      name: "send",
+      inputs,
+    });
+    expect(fragment.format("sighash")).toBe("send((uint32,bytes32),address)");
+    expect(computeSelector("send", inputs)).toBe(fragment.selector);
   });
 });

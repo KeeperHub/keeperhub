@@ -19,3 +19,19 @@ export function simulationHttpStatus(result: SimulateResult): HttpStatusCode {
 
   return HttpStatus.BAD_REQUEST;
 }
+
+/**
+ * A sequence answers once for N calls, so the status reflects the worst call:
+ * anything the node could not answer is 503, a call that would revert or did
+ * not validate is 400, and only an all-clear sequence is 200. Same mapping as
+ * the single-call path, applied to the whole.
+ */
+export function sequenceHttpStatus(results: SimulateResult[]): HttpStatusCode {
+  if (results.some((r) => !r.success && r.failureKind === "unavailable")) {
+    return HttpStatus.SERVICE_UNAVAILABLE;
+  }
+  if (results.some((r) => !r.success)) {
+    return HttpStatus.BAD_REQUEST;
+  }
+  return HttpStatus.OK;
+}

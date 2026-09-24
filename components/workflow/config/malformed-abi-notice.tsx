@@ -9,7 +9,8 @@ export function MalformedAbiArgsNotice(): React.ReactNode {
   return (
     <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-destructive text-sm">
       The parameters for this function could not be read from the ABI. Check
-      that the ABI above is valid JSON and that every parameter has a type.
+      that the ABI above is valid JSON, every parameter has a type, and every
+      tuple has its components.
     </div>
   );
 }

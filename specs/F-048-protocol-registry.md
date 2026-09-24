@@ -281,7 +281,7 @@ Tab switcher on Hub page (Workflows | Protocols), protocol grid matching workflo
 
 - All custom code in `keeperhub/` directory per fork policy
 - Step files with `"use step"` cannot export functions -- use `-core.ts` pattern
-- No Node.js-only SDKs in step files -- use `fetch()` directly
+- No Node.js-only SDKs in step files - use `safeFetch()` from `@/lib/safe-fetch` for HTTP calls, not the raw `fetch` global
 - Biome lint: block statements required, cognitive complexity max 15, top-level regex
 - Run `pnpm discover-plugins` after adding protocol files
 - Run `pnpm check` and `pnpm type-check` before committing

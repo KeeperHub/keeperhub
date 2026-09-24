@@ -92,11 +92,78 @@ export const PUBLIC_RPCS = {
   // No publicWssDefault for either chain, deliberately. Robinhood publishes
   // wss://feed.mainnet.chain.robinhood.com, but it is not a JSON-RPC socket --
   // it streams raw Arbitrum sequencer-feed messages and cannot serve
-  // eth_subscribe -- and dRPC's free tier rejects eth_subscribe outright. There
+  // eth_subscribe -- and dRPC's socket for THIS chain rejects eth_subscribe.
+  // That is a per-chain observation rather than a property of the free tier:
+  // dRPC's HyperEVM socket does serve it (see CHAIN_CONFIG[999]), so a new
+  // chain needs its own check rather than inheriting this conclusion. There
   // is no public WSS endpoint for this chain to fall back to, so event and
   // block triggers depend on the WSS URLs in CHAIN_RPC_CONFIG.
+  // HyperEVM (Hyperliquid's EVM). The official endpoint is HTTP only: it answers
+  // a WebSocket upgrade with 405. dRPC's socket is the public WSS default, and
+  // unlike Robinhood's dRPC endpoint above it does serve eth_subscribe. The
+  // difference is per-chain rather than per-tier, so it was measured over a
+  // window long enough to mean something: on 2026-09-16 the socket held open
+  // for 10 minutes delivered 415 newHeads notifications with no gap longer
+  // than 8 seconds, and served eth_getLogs and eth_call alongside them.
+  //
+  // No publicWssFallback: on the same day the other four public candidates
+  // refused the upgrade outright (rpc.hyperliquid.xyz/evm and
+  // rpc.hypurrscan.io answered 405, stakely and thirdweb 302). So a deployed
+  // environment that cannot tolerate a single public socket should set a
+  // keyed WSS URL through CHAIN_RPC_CONFIG, which takes priority over this.
+  //
+  // The primary is not an archive node, and it does not say so: a historical
+  // block tag is answered with present-day state, HTTP 200 and no error,
+  // which is the one failure shape failover cannot detect. eth_getCode for
+  // the seeded USDC at block 0x1 returns the deployed proxy bytecode on
+  // rpc.hyperliquid.xyz/evm and "0x" on the dRPC fallback, which is the
+  // correct answer for a block predating the contract. eth_getLogs is served
+  // a million blocks deep on both, so event and block triggers are
+  // unaffected, and no step today pins a historical state block tag. A
+  // workflow that needs one should set a keyed archive URL through
+  // CHAIN_RPC_CONFIG rather than trusting this default. The order is left as
+  // it is deliberately: the fallback is the more capable endpoint, but it is
+  // a free third-party tier, and making it the default would route every
+  // HyperEVM call through it.
+  HYPEREVM_MAINNET: "https://rpc.hyperliquid.xyz/evm",
+  HYPEREVM_MAINNET_FALLBACK: "https://hyperliquid.drpc.org",
+  HYPEREVM_MAINNET_WSS: "wss://hyperliquid.drpc.org",
   SOLANA_MAINNET: "https://api.mainnet-beta.solana.com",
   SOLANA_DEVNET: "https://api.devnet.solana.com",
+  // Arc Testnet (Circle). USDC is the native gas token here, not ETH.
+  ARC_TESTNET: "https://rpc.testnet.arc.io",
+  ARC_TESTNET_FALLBACK: "https://rpc.drpc.testnet.arc.io",
+  ARC_TESTNET_WSS: "wss://rpc.testnet.arc.io",
+  // Arc Mainnet (Circle). Same USDC-as-gas model as the testnet. Public
+  // mainnet opened 2026-09-16; rpc.mainnet.arc.io is Circle's own primary and
+  // answers eth_chainId publicly (0x13b2 = 5042), so it replaces the
+  // arc-scan.org placeholder used before launch. dRPC's mainnet host now
+  // resolves too, unlike pre-launch, so it serves as publicFallback.
+  ARC_MAINNET: "https://rpc.mainnet.arc.io",
+  ARC_MAINNET_FALLBACK: "https://rpc.drpc.mainnet.arc.io",
+  // Unichain (Uniswap Labs' OP Stack L2, native gas is ETH). Chain IDs
+  // confirmed via eth_chainId against the official RPCs: mainnet returns
+  // 0x82 (130), Sepolia testnet returns 0x515 (1301). publicnode's WSS
+  // mirrors were verified live with a real eth_subscribe-capable connection
+  // on both networks, unlike Robinhood which has no public WSS.
+  UNICHAIN_MAINNET: "https://mainnet.unichain.org",
+  UNICHAIN_MAINNET_FALLBACK: "https://unichain.drpc.org",
+  UNICHAIN_MAINNET_WSS: "wss://unichain-rpc.publicnode.com",
+  UNICHAIN_SEPOLIA: "https://sepolia.unichain.org",
+  UNICHAIN_SEPOLIA_FALLBACK: "https://unichain-sepolia.drpc.org",
+  UNICHAIN_SEPOLIA_WSS: "wss://unichain-sepolia-rpc.publicnode.com",
+  // Circle's own host, mirroring the HTTP primary and the testnet WSS
+  // pattern. Blockdaemon's endpoint also completes the WSS upgrade with no
+  // API key required (unlike the Alchemy/QuickNode mirrors docs.arc.io
+  // lists), so it serves as the WSS fallback rather than the sole source.
+  ARC_MAINNET_WSS: "wss://rpc.mainnet.arc.io",
+  // Blockdaemon's socket idles out (code 1006) after ~61s of no outbound
+  // traffic, vs. 75s+ observed on Circle's. Both consumers ping every 30s: the
+  // event tracker's HEARTBEAT_INTERVAL_MS (provider-manager.ts) and the
+  // scheduler's PING_INTERVAL_MS (chain-monitor.ts, env-overridable), giving
+  // ~2x margin on both, but raising either above ~60s would make this
+  // fallback churn every minute.
+  ARC_MAINNET_WSS_FALLBACK: "wss://rpc.blockdaemon.mainnet.arc.io/websocket",
 } as const;
 
 /**
@@ -144,6 +211,24 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     envKey: "CHAIN_BASE_SEPOLIA_PRIMARY_RPC",
     fallbackEnvKey: "CHAIN_BASE_SEPOLIA_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.BASE_SEPOLIA,
+  },
+  // Unichain Mainnet (Uniswap Labs' OP Stack L2)
+  130: {
+    jsonKey: "unichain-mainnet",
+    envKey: "CHAIN_UNICHAIN_MAINNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_UNICHAIN_MAINNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.UNICHAIN_MAINNET,
+    publicFallback: PUBLIC_RPCS.UNICHAIN_MAINNET_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.UNICHAIN_MAINNET_WSS,
+  },
+  // Unichain Sepolia
+  1301: {
+    jsonKey: "unichain-testnet",
+    envKey: "CHAIN_UNICHAIN_SEPOLIA_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_UNICHAIN_SEPOLIA_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.UNICHAIN_SEPOLIA,
+    publicFallback: PUBLIC_RPCS.UNICHAIN_SEPOLIA_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.UNICHAIN_SEPOLIA_WSS,
   },
   // Tempo Testnet
   42431: {
@@ -289,6 +374,15 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     publicDefault: PUBLIC_RPCS.ROBINHOOD_TESTNET,
     publicFallback: PUBLIC_RPCS.ROBINHOOD_TESTNET_FALLBACK,
   },
+  // HyperEVM Mainnet
+  999: {
+    jsonKey: "hyperevm-mainnet",
+    envKey: "CHAIN_HYPEREVM_MAINNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_HYPEREVM_MAINNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.HYPEREVM_MAINNET,
+    publicFallback: PUBLIC_RPCS.HYPEREVM_MAINNET_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.HYPEREVM_MAINNET_WSS,
+  },
   // Solana Mainnet
   101: {
     jsonKey: "solana-mainnet",
@@ -302,6 +396,27 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     envKey: "CHAIN_SOLANA_DEVNET_PRIMARY_RPC",
     fallbackEnvKey: "CHAIN_SOLANA_DEVNET_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.SOLANA_DEVNET,
+  },
+  // Arc Testnet (Circle)
+  5042002: {
+    jsonKey: "arc-testnet",
+    envKey: "CHAIN_ARC_TESTNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_ARC_TESTNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.ARC_TESTNET,
+    publicFallback: PUBLIC_RPCS.ARC_TESTNET_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.ARC_TESTNET_WSS,
+  },
+  // Arc Mainnet (Circle). Public mainnet opened 2026-09-16 with a working
+  // WSS endpoint (see PUBLIC_RPCS.ARC_MAINNET_WSS), unlike the pre-launch
+  // state where no mainnet WSS host existed at all.
+  5042: {
+    jsonKey: "arc-mainnet",
+    envKey: "CHAIN_ARC_MAINNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_ARC_MAINNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.ARC_MAINNET,
+    publicFallback: PUBLIC_RPCS.ARC_MAINNET_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.ARC_MAINNET_WSS,
+    publicWssFallback: PUBLIC_RPCS.ARC_MAINNET_WSS_FALLBACK,
   },
 };
 

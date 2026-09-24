@@ -215,6 +215,423 @@ function expectBlocked(outcome: SandboxOutcome): void {
 // prefixes, and the pre-DNS hostname denylist). These cases use IP
 // literals or pre-DNS-blocked hostnames so the test is deterministic and
 // performs no real DNS / network IO.
+// The sandbox context used to be built by copying ~55 host intrinsics into
+// createContext(): Array, JSON, Math, Object, the typed arrays, URL, Response.
+// Each was an object from the spawning realm, so X.constructor.constructor
+// resolved to the host Function and user code could compile a function running
+// outside the sandbox -- process, process.env and process.binding("spawn_sync")
+// all followed, and spawn_sync reaches the network directly, past pinnedFetch
+// and the SSRF blocklist the rest of the grandchild exists to enforce. The
+// context is now a fresh realm that supplies its own intrinsics, and the three
+// bridged values exchange primitives only. These tests pin that property.
+describe("sandbox grandchild runs user code in its own realm", () => {
+  it("injects no host intrinsics into the sandbox context", () => {
+    expect(SANDBOX_CHILD_SOURCE).toContain(
+      "const carrier = Object.create(null)"
+    );
+    expect(SANDBOX_CHILD_SOURCE).toContain("createContext(carrier)");
+    for (const injected of [
+      "Object: Object",
+      "Array: Array",
+      "JSON: JSON",
+      "Math: Math",
+      "Uint8Array: Uint8Array",
+      "Response: Response",
+      "Intl: Intl",
+    ]) {
+      expect(SANDBOX_CHILD_SOURCE).not.toContain(injected);
+    }
+  });
+
+  it("evaluates Array.constructor('return typeof process')() to undefined", async () => {
+    const outcome = await runSandboxed(
+      "return String(Array.constructor('return typeof process')());"
+    );
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.result).toBe("undefined");
+    }
+  }, 10_000);
+
+  it.each([
+    ["Object", "Object"],
+    ["Error", "Error"],
+    ["JSON", "JSON"],
+    ["Uint8Array", "Uint8Array"],
+    ["a plain object literal", "({})"],
+    ["console.log", "console.log"],
+    ["fetch", "fetch"],
+    ["crypto.randomUUID", "crypto.randomUUID"],
+    ["structuredClone", "structuredClone"],
+    ["a URL instance", "new URL('https://example.com/')"],
+    ["a TextEncoder instance", "new TextEncoder()"],
+    ["an AbortController instance", "new AbortController()"],
+    ["a Headers instance", "new Headers({ a: '1' })"],
+  ])(
+    "%s leads to no host realm",
+    async (_label, expression) => {
+      const outcome = await runSandboxed(`
+      try {
+        const escape = (${expression}).constructor.constructor;
+        return String(escape("return typeof process")());
+      } catch (_err) {
+        return "throws";
+      }
+    `);
+      expect(outcome.ok).toBe(true);
+      if (outcome.ok) {
+        expect(["undefined", "throws"]).toContain(outcome.result);
+      }
+    },
+    10_000
+  );
+
+  it("cannot reach process.binding('spawn_sync')", async () => {
+    const outcome = await runSandboxed(`
+      try {
+        const escape = Object.constructor("return process.binding('spawn_sync')");
+        return String(typeof escape());
+      } catch (_err) {
+        return "throws";
+      }
+    `);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(["undefined", "throws"]).toContain(outcome.result);
+    }
+  }, 10_000);
+
+  it("still blanks SharedArrayBuffer in the fresh realm", async () => {
+    const outcome = await runSandboxed("return typeof SharedArrayBuffer;");
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.result).toBe("undefined");
+    }
+  }, 10_000);
+
+  it("rebuilds the non-ECMAScript globals inside the realm", async () => {
+    const outcome = await runSandboxed(`
+      return {
+        url: typeof URL,
+        urlSearchParams: typeof URLSearchParams,
+        headers: typeof Headers,
+        textEncoder: typeof TextEncoder,
+        textDecoder: typeof TextDecoder,
+        structuredClone: typeof structuredClone,
+        atob: typeof atob,
+        btoa: typeof btoa,
+        abortController: typeof AbortController,
+        fetch: typeof fetch,
+        randomUUID: typeof crypto.randomUUID,
+        intl: typeof Intl,
+        json: typeof JSON,
+      };
+    `);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      const kinds = outcome.result as Record<string, string>;
+      for (const key of Object.keys(kinds)) {
+        expect(kinds[key]).not.toBe("undefined");
+      }
+    }
+  }, 10_000);
+
+  it("round-trips URL, encoding and clone helpers through the in-realm implementations", async () => {
+    const outcome = await runSandboxed(`
+      const url = new URL("https://example.com/path?a=1");
+      url.searchParams.set("b", "2");
+      const bytes = new TextEncoder().encode("hi \u00e9");
+      const original = { nested: [1, 2] };
+      const clone = structuredClone(original);
+      clone.nested.push(3);
+      return {
+        href: url.toString(),
+        origin: url.origin,
+        decoded: new TextDecoder().decode(bytes),
+        base64: btoa("hello"),
+        plain: atob(btoa("hello")),
+        original: original.nested.length,
+        clone: clone.nested.length,
+      };
+    `);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.result).toEqual({
+        href: "https://example.com/path?a=1&b=2",
+        origin: "https://example.com",
+        decoded: "hi \u00e9",
+        base64: "aGVsbG8=",
+        plain: "hello",
+        original: 2,
+        clone: 3,
+      });
+    }
+  }, 10_000);
+
+  // Spot checks only prove the vectors someone thought to name. These two
+  // enumerate instead: every global the sandbox exposes, and then the whole
+  // object graph reachable from globalThis.
+  it("exposes no global that reaches the host realm", async () => {
+    const outcome = await runSandboxed(`
+      const results = [];
+      function probe(label, value) {
+        try {
+          const ctor = value.constructor;
+          const compile = ctor && ctor.constructor;
+          if (typeof compile !== "function") {
+            results.push([label, "no-ctor"]);
+            return;
+          }
+          const reached = compile("return typeof process === 'object' ? 'HOST' : 'none'")();
+          results.push([label, reached === "HOST" ? "HOST" : "contained"]);
+        } catch (_err) {
+          results.push([label, "throws"]);
+        }
+      }
+      for (const name of Object.getOwnPropertyNames(globalThis).sort()) {
+        let value;
+        try {
+          value = globalThis[name];
+        } catch (_err) {
+          continue;
+        }
+        if (value === undefined || value === null) {
+          continue;
+        }
+        probe(name, value);
+        if (typeof value === "function" && value.prototype) {
+          probe(name + ".prototype", value.prototype);
+        }
+      }
+      return results;
+    `);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      const results = outcome.result as [string, string][];
+      // Sanity: the enumeration actually ran over a populated realm.
+      expect(results.length).toBeGreaterThan(60);
+      expect(results.filter(([, verdict]) => verdict === "HOST")).toEqual([]);
+    }
+  }, 15_000);
+
+  it("reaches no host-realm object anywhere in the graph from globalThis", async () => {
+    // Breadth-first over own properties (accessors included, both the accessor
+    // functions and what they return), prototypes, and function .prototype.
+    // A value is flagged when its prototype chain never reaches this realm's
+    // Object.prototype or Function.prototype; each flag is then confirmed with
+    // the actual exploit, so a legitimately null-prototype in-realm object
+    // (Array.prototype[Symbol.unscopables]) reports as inert rather than as a
+    // leak.
+    const outcome = await runSandboxed(
+      `
+      const REALM_OBJECT_PROTO = Object.prototype;
+      const REALM_FN_PROTO = Function.prototype;
+      const seen = new Set();
+      const findings = [];
+      let visited = 0;
+
+      function isAlien(value) {
+        let current = value;
+        let hops = 0;
+        while (current !== null && hops < 100) {
+          if (current === REALM_OBJECT_PROTO || current === REALM_FN_PROTO) {
+            return false;
+          }
+          current = Object.getPrototypeOf(current);
+          hops++;
+        }
+        return true;
+      }
+
+      function exploit(value) {
+        try {
+          const ctor = value.constructor;
+          const compile = ctor && ctor.constructor;
+          if (typeof compile !== "function") {
+            return "no-ctor";
+          }
+          return compile("return typeof process === 'object' ? 'HOST' : 'none'")();
+        } catch (_err) {
+          return "throws";
+        }
+      }
+
+      const queue = [["globalThis", globalThis]];
+      while (queue.length > 0 && visited < 200000) {
+        const entry = queue.shift();
+        const path = entry[0];
+        const value = entry[1];
+        if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+          continue;
+        }
+        if (seen.has(value)) {
+          continue;
+        }
+        seen.add(value);
+        visited++;
+
+        if (isAlien(value)) {
+          findings.push({ path: path, exploit: exploit(value) });
+        }
+
+        let keys = [];
+        try {
+          keys = Object.getOwnPropertyNames(value).concat(
+            Object.getOwnPropertySymbols(value)
+          );
+        } catch (_err) {
+          keys = [];
+        }
+        for (const key of keys) {
+          let descriptor;
+          try {
+            descriptor = Object.getOwnPropertyDescriptor(value, key);
+          } catch (_err) {
+            continue;
+          }
+          if (!descriptor) {
+            continue;
+          }
+          const label = path + "." + String(key);
+          if ("value" in descriptor) {
+            queue.push([label, descriptor.value]);
+          } else {
+            if (descriptor.get) {
+              queue.push([label + "[[get]]", descriptor.get]);
+              try {
+                queue.push([label, descriptor.get.call(value)]);
+              } catch (_err) {
+                // a getter that throws exposes nothing
+              }
+            }
+            if (descriptor.set) {
+              queue.push([label + "[[set]]", descriptor.set]);
+            }
+          }
+        }
+        try {
+          const proto = Object.getPrototypeOf(value);
+          if (proto) {
+            queue.push([path + ".__proto__", proto]);
+          }
+        } catch (_err) {
+          // exotic object with no observable prototype
+        }
+      }
+      return { visited: visited, exhausted: queue.length === 0, findings: findings };
+    `,
+      15_000
+    );
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      const crawl = outcome.result as {
+        visited: number;
+        exhausted: boolean;
+        findings: Array<{ path: string; exploit: string }>;
+      };
+      // The crawl must have covered the realm, not bailed early.
+      expect(crawl.exhausted).toBe(true);
+      expect(crawl.visited).toBeGreaterThan(400);
+      expect(crawl.findings.filter((f) => f.exploit === "HOST")).toEqual([]);
+    }
+  }, 20_000);
+
+  it("does not publish the carrier object's prototype as globalThis.constructor", async () => {
+    // createContext keeps the object it is given as the context's contextified
+    // object, and the global proxy forwards lookups to it INCLUDING inherited
+    // ones. A plain {} carrier therefore hands user code this realm's
+    // Object.prototype through globalThis.constructor, and the host Function
+    // through globalThis.constructor.constructor -- a live route even once
+    // every intrinsic is realm-local. The carrier is null-prototype for that
+    // reason.
+    const outcome = await runSandboxed(`
+      const escape = globalThis.constructor && globalThis.constructor.constructor;
+      if (typeof escape !== "function") {
+        return "no-ctor";
+      }
+      return String(escape("return typeof process")());
+    `);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(["undefined", "no-ctor"]).toContain(outcome.result);
+    }
+  }, 10_000);
+
+  it.each([
+    ["a Date instance", "new Date()"],
+    ["an Error instance", "new Error('x')"],
+    ["a Map instance", "new Map()"],
+    ["a Set instance", "new Set()"],
+    ["a WeakMap instance", "new WeakMap()"],
+    ["a Promise", "Promise.resolve()"],
+    ["an ArrayBuffer", "new ArrayBuffer(1)"],
+    ["a DataView", "new DataView(new ArrayBuffer(8))"],
+    ["a typed array", "new Float64Array(1)"],
+    ["an array iterator", "[].values()"],
+    ["a RegExp", "/re/"],
+    ["a Symbol", "Symbol('s')"],
+    ["an Intl formatter", "new Intl.NumberFormat('en-US')"],
+    ["an Intl bound format", "new Intl.NumberFormat('en-US').format"],
+    ["a Proxy", "new Proxy({}, {})"],
+    ["a URLSearchParams", "new URLSearchParams('a=1')"],
+    ["a URL searchParams", "new URL('https://a.test/?a=1').searchParams"],
+    ["a Headers iterator", "new Headers().entries()"],
+    ["an AbortSignal", "new AbortController().signal"],
+    ["an abort reason", "AbortSignal.abort().reason"],
+    ["a structuredClone result", "structuredClone({ a: 1 })"],
+    ["an encoded byte array", "new TextEncoder().encode('a')"],
+  ])(
+    "%s built by user code stays in the realm",
+    async (_label, expression) => {
+      const outcome = await runSandboxed(`
+      try {
+        const compile = (${expression}).constructor.constructor;
+        return String(compile("return typeof process")());
+      } catch (_err) {
+        return "throws";
+      }
+    `);
+      expect(outcome.ok).toBe(true);
+      if (outcome.ok) {
+        expect(["undefined", "throws"]).toContain(outcome.result);
+      }
+    },
+    10_000
+  );
+
+  it("preserves structured-type fidelity for values built by the sandbox realm", async () => {
+    // The result encoder runs in the host realm on values the sandbox realm
+    // created, so it has to identify them with cross-realm predicates rather
+    // than instanceof.
+    const outcome = await runSandboxed(`
+      return {
+        date: new Date(0),
+        set: new Set([1, 2]),
+        map: new Map([["k", 1]]),
+        bytes: new Uint8Array([1, 2, 3]),
+        pattern: /ab+/gi,
+      };
+    `);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      const r = outcome.result as {
+        date: Date;
+        set: Set<number>;
+        map: Map<string, number>;
+        bytes: Uint8Array;
+        pattern: RegExp;
+      };
+      expect(r.date).toBeInstanceOf(Date);
+      expect(r.date.getTime()).toBe(0);
+      expect([...r.set]).toEqual([1, 2]);
+      expect(r.map.get("k")).toBe(1);
+      expect([...r.bytes]).toEqual([1, 2, 3]);
+      expect(r.pattern.source).toBe("ab+");
+      expect(r.pattern.flags).toBe("gi");
+    }
+  }, 10_000);
+}, 60_000);
+
 describe("sandbox grandchild SSRF guard fires on every category", () => {
   it.each([
     ['await fetch("http://169.254.169.254/")', "IMDSv2 link-local"],
@@ -778,6 +1195,158 @@ describe("sandbox grandchild pinned fetch preserves the Response contract", () =
       expect(r.header).toBe("yes");
       expect(r.body.ok).toBe(true);
       expect(r.body.path).toBe("/ping");
+    }
+  }, 10_000);
+}, 30_000);
+
+// The host Response cannot be handed to user code (Response.constructor
+// .constructor is the host Function), so it is flattened into primitives and
+// rebuilt inside the sandbox realm. That rebuilt object still has to behave
+// like a fetch response, and must not become a new way back to the host.
+describe("sandbox grandchild marshals fetch responses into the sandbox realm", () => {
+  let server: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/cookies") {
+        res.writeHead(200, { "set-cookie": ["a=1", "b=2"] });
+        res.end("ok");
+        return;
+      }
+      if (url.pathname === "/big") {
+        res.writeHead(200, { "content-type": "application/octet-stream" });
+        res.end(Buffer.alloc(64 * 1024, 0x61));
+        return;
+      }
+      res.writeHead(201, {
+        "content-type": "application/json",
+        "x-marker": "yes",
+      });
+      res.end(JSON.stringify({ path: url.pathname }));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  });
+
+  it("exposes the response contract without exposing the host realm", async () => {
+    const code = `
+      const r = await fetch(${JSON.stringify(`${base}/ping`)});
+      const escape = r.constructor.constructor;
+      let reached;
+      try {
+        reached = String(escape("return typeof process")());
+      } catch (_err) {
+        reached = "throws";
+      }
+      return {
+        status: r.status,
+        statusText: r.statusText,
+        ok: r.ok,
+        url: r.url,
+        redirected: r.redirected,
+        marker: r.headers.get("x-marker"),
+        body: await r.json(),
+        reached: reached,
+      };
+    `;
+    const outcome = await runSandboxed(code, 3000, REDIRECT_TEST_SOURCE);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      const r = outcome.result as {
+        status: number;
+        statusText: string;
+        ok: boolean;
+        url: string;
+        redirected: boolean;
+        marker: string;
+        body: { path: string };
+        reached: string;
+      };
+      expect(r.status).toBe(201);
+      expect(r.ok).toBe(true);
+      expect(r.url).toBe(`${base}/ping`);
+      expect(r.redirected).toBe(false);
+      expect(r.marker).toBe("yes");
+      expect(r.body.path).toBe("/ping");
+      expect(["undefined", "throws"]).toContain(r.reached);
+    }
+  }, 10_000);
+
+  it("keeps repeated set-cookie headers separate", async () => {
+    const code = `
+      const r = await fetch(${JSON.stringify(`${base}/cookies`)});
+      return { cookies: r.headers.getSetCookie(), joined: r.headers.get("set-cookie") };
+    `;
+    const outcome = await runSandboxed(code, 3000, REDIRECT_TEST_SOURCE);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      const r = outcome.result as { cookies: string[]; joined: string };
+      expect(r.cookies).toEqual(["a=1", "b=2"]);
+      expect(r.joined).toBe("a=1, b=2");
+    }
+  }, 10_000);
+
+  it("reads the same body as text and as bytes", async () => {
+    const code = `
+      const r = await fetch(${JSON.stringify(`${base}/ping`)});
+      const text = await r.text();
+      const bytes = await r.clone().bytes();
+      return { text: text, length: bytes.length, first: bytes[0] };
+    `;
+    const outcome = await runSandboxed(code, 3000, REDIRECT_TEST_SOURCE);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      const r = outcome.result as {
+        text: string;
+        length: number;
+        first: number;
+      };
+      expect(JSON.parse(r.text)).toEqual({ path: "/ping" });
+      expect(r.length).toBe(r.text.length);
+      expect(r.first).toBe("{".charCodeAt(0));
+    }
+  }, 10_000);
+
+  it("rejects with an AbortError when the caller's signal fires", async () => {
+    const code = `
+      const controller = new AbortController();
+      const pending = fetch(${JSON.stringify(`${base}/ping`)}, { signal: controller.signal });
+      controller.abort();
+      try {
+        await pending;
+        return "resolved";
+      } catch (err) {
+        return err.name;
+      }
+    `;
+    const outcome = await runSandboxed(code, 3000, REDIRECT_TEST_SOURCE);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.result).toBe("AbortError");
+    }
+  }, 10_000);
+
+  it("errors instead of buffering a body past the cap", async () => {
+    const source = REDIRECT_TEST_SOURCE.replace(
+      `const MAX_RESPONSE_BODY_BYTES = ${SANDBOX_RESULT_MAX_BYTES};`,
+      "const MAX_RESPONSE_BODY_BYTES = 1024;"
+    );
+    expect(source).not.toBe(REDIRECT_TEST_SOURCE);
+    const code = `const r = await fetch(${JSON.stringify(`${base}/big`)}); return await r.text();`;
+    const outcome = await runSandboxed(code, 3000, source);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.errorMessage).toContain("response body exceeds");
     }
   }, 10_000);
 }, 30_000);

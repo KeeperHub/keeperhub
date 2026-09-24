@@ -162,10 +162,45 @@ address a wallet user signed in with - see
 
 ### Experimental
 
-| Network | chainId | Status |
-|---|---|---|
-| 0G | `16661` | experimental |
-| 0G Galileo (testnet) | `16602` | experimental |
+| Network | chainId | USDC | Status |
+|---|---|---|---|
+| 0G | `16661` | - | experimental |
+| 0G Galileo (testnet) | `16602` | - | experimental |
+| Arc (Circle) | `5042` | `0x3600000000000000000000000000000000000000` | experimental |
+| Arc Testnet (Circle) | `5042002` | `0x3600000000000000000000000000000000000000` | experimental |
+| HyperEVM | `999` | `0xb88339cb7199b77e23db6e890353e22632ba630f` | experimental |
+| Unichain | `130` | `0x078D782b760474a361dDA0AF3839290b0EF57AD6` | experimental |
+| Unichain Sepolia (testnet) | `1301` | `0x31d0220469e10c4E71834a79b1f276d740d3768F` | experimental |
+
+HyperEVM's regular blocks cap at 3,000,000 gas, and the node rejects a
+transaction above that before it is sent, so KeeperHub sizes gas limits with a
+1.5x multiplier there rather than the default 2x. A transaction that genuinely
+needs more than 3,000,000 gas cannot be sent from KeeperHub today: larger blocks
+on HyperEVM require an opt-in made on HyperCore. HyperEVM also carries USDT0 at
+`0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`. Mainnet only; the testnet has no
+working explorer API.
+
+The 1.5x multiplier is a workaround, not a ceiling: an estimate above roughly
+2,000,000 gas can still exceed the block limit once the multiplier is applied,
+and blocks routinely reach 0.7 to 0.9 of the limit. Size such a transaction down
+rather than relying on the multiplier.
+
+Chain id 999 is registered as HyperEVM by Etherscan and the node itself, but
+`chainid.network` still lists 999 as Wanchain Testnet, so third-party tooling
+keyed off that registry may label the chain Wanchain.
+
+Arc's USDC is also its native gas token. The Arc address above is the fixed
+ERC-20-interface precompile Circle documents for programmatic balance and
+transfer access; it reports balances at 6 decimals, distinct from the
+18-decimal native currency accounting used for gas. The same precompile is at
+the same address on both Arc networks.
+
+Arc mainnet has one limitation the testnet does not: contract ABIs cannot be
+fetched automatically, so supply the ABI directly when configuring a contract
+action. Transaction and address links work normally - Circle's mainnet
+explorer went live at explorer.arc.io, but its API is still gated, which is
+what ABI auto-fetch depends on. Event and block triggers work normally on
+both networks.
 
 The live source of truth for chains is `GET /api/chains`; agents can read the
 same list (including per-chain `status`) from the `list_action_schemas` MCP
@@ -277,14 +312,20 @@ Additive changes ship inside a version and need no action from you: new
 endpoints, new optional fields, new enum members, new response headers. Treat
 unknown fields as forward compatibility rather than as errors.
 
-A breaking change ships as a new version, never in place. When an endpoint or a
-version is scheduled for removal its responses carry:
+A breaking change ships as a new version, never in place. When an endpoint, a
+version, or one accepted request shape is scheduled for removal, the responses
+that carry it also carry:
 
 | Header | Meaning |
 |---|---|
-| `Deprecation: <http-date>` | RFC 9745. The date the deprecation took effect. The endpoint still works. |
-| `Sunset: <http-date>` | RFC 8594. The earliest date it may stop answering. |
-| `Link: <url>; rel="deprecation"` | Where to read what replaces it. |
+| `Deprecation: @<epoch-seconds>` | RFC 9745. The date the deprecation took effect, as a Structured Fields Date. Not an HTTP-date, unlike `Sunset`. What is deprecated still works. |
+| `Sunset: <http-date>` | RFC 8594. The earliest date the deprecated thing may stop being accepted. |
+| `Link: <url>; rel="deprecation"` | Where to read what replaces it, and what exactly is being removed. |
+
+Read the `Link` target before acting on a `Sunset` date. These headers ride the
+response that carries the deprecated thing, which is not always the whole
+endpoint: where only one accepted request shape is deprecated, the endpoint
+keeps answering past the sunset date and only that shape stops being accepted.
 
 **A sunset date is never less than 180 days after the `Deprecation` header first
 appears.** Log these headers rather than discarding them — they are the only

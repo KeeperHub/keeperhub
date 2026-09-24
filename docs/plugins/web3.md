@@ -23,7 +23,7 @@ Interact with EVM-compatible blockchain networks and Solana. Read-only actions w
 | Transfer SPL Token | Web3 | Wallet | Send SPL tokens on Solana to a recipient |
 | Approve ERC20 Token | Web3 | Wallet | Approve a spender contract to spend tokens on your behalf |
 | Check ERC20 Allowance | Web3 | No | Check the current token spending allowance granted to a spender |
-| Query Contract Events | Web3 | No | Query historical smart contract events across a block range |
+| Query Contract Events | Web3 | No | Query historical smart contract events across a block range, optionally filtered by indexed argument values |
 | Query Transaction History | Web3 | No | Query historical transactions by function call with optional argument filtering |
 | Sign Typed Data (EIP-712) | Web3 | Wallet | Produce an EIP-712 signature over a typed-data payload for off-chain signed intents |
 | Decode Calldata | Security | No | Decode raw calldata into human-readable function calls |
@@ -373,6 +373,7 @@ Query historical smart contract events (logs) across a block range with automati
 - Contract Address (required)
 - Contract ABI (required, auto-fetched from block explorer)
 - Event Name (required, selected from ABI)
+- Filter by Indexed Arguments (optional) -- a value for any indexed parameter of the event. Omit a parameter to match any value for it; a parameter given an empty value fails the step. One value per parameter: `eth_getLogs` also accepts a list of alternatives per topic, but that OR form is not supported here
 - Block Lookback -- number of blocks to scan back from To Block (default: 6500, ~1 day on Ethereum). Ignored if From Block is set
 - From Block -- explicit start block (overrides Block Lookback)
 - To Block -- end block number (default: latest)
@@ -382,11 +383,25 @@ Query historical smart contract events (logs) across a block range with automati
 **How it works:**
 
 1. Resolves the block range from inputs (either explicit From/To or lookback from latest)
-2. Splits the range into 2,000-block batches to avoid RPC provider limits
-3. Queries each batch via `eth_getLogs` and decodes events using the ABI
-4. Concatenates all results and returns the full event list
+2. Compiles any indexed argument filter into log topics, failing the step on a filter that could never match
+3. Splits the range into 2,000-block batches to avoid RPC provider limits
+4. Queries each batch via `eth_getLogs` and decodes events using the ABI
+5. Concatenates all results and returns the full event list
 
-**When to use:** Index historical events, monitor contract activity over time, aggregate on-chain data for analytics, trigger downstream actions based on past events.
+**Filtering by indexed arguments**
+
+The filter is applied by the RPC node, not after the fact, so a narrow filter changes what the query costs rather than only what it returns. On a busy contract that can be the difference between a query that completes and one that times out or hits the provider's response limit.
+
+Only indexed parameters can be filtered. Whether a parameter is indexed is fixed by the contract, so the configuration panel lists the ones available and disables the rest.
+
+Two limits are worth knowing before you rely on it:
+
+- An indexed `string` or `bytes` is stored as a hash of its contents rather than the contents. Filtering one matches the whole value exactly; there is no partial or prefix matching, and the original value cannot be read back out of the log.
+- An indexed array or tuple cannot be filtered at all, for the same reason: its topic is a hash of the encoded contents. Those parameters are shown but disabled, and filtering them in a later node is the way to do it.
+
+A filter naming a parameter that is not indexed, or a value that does not fit its type, fails the step before any query runs rather than scanning the range and returning nothing.
+
+**When to use:** Index historical events, monitor contract activity over time, aggregate on-chain data for analytics, trigger downstream actions based on past events, and watch one address, pool or token ID on a contract busy enough that an unfiltered scan is impractical.
 
 **Example workflow -- DEX Swap Monitor:**
 ```
@@ -402,6 +417,15 @@ Schedule (daily)
   -> Query Contract Events: Governor contract, event "VoteCast", Block Lookback 7200
   -> SendGrid: "{{QueryEvents.eventCount}} votes cast today"
 ```
+
+**Example workflow -- Treasury Deposit Watch:**
+```
+Schedule (every 15 minutes)
+  -> Query Contract Events: USDC, event "Transfer", to = treasury address, Block Lookback 75
+  -> Condition: eventCount > 0
+  -> Discord: "{{QueryEvents.eventCount}} incoming transfers"
+```
+Without the `to` filter this query fetches every USDC transfer in the window and the node is doing the filtering; with it, the RPC returns only the treasury's.
 
 ---
 
@@ -468,7 +492,7 @@ Schedule (every 15 min)
 
 Execute state-changing functions on smart contracts using your Turnkey wallet. Requires a connected wallet.
 
-**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Gas Limit Multiplier (optional, in Advanced section)
+**Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit Multiplier (optional, in Advanced section)
 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `error`
 
@@ -477,6 +501,19 @@ Execute state-changing functions on smart contracts using your Turnkey wallet. R
 **Gas Configuration:** Optionally set a custom Gas Limit Multiplier in the Advanced section to override the chain default. See [Gas Management](/wallet-management/gas) for details.
 
 **Note:** The `gasUsed` output represents the total transaction cost in wei (gas units × effective gas price), not just the number of gas units consumed.
+
+### When a write fails
+
+`Fail workflow on error` is on by default, so a write that fails stops the run and the failure is reported on the node.
+
+Turn it off and the failure is softened instead: the workflow continues, and the node reports `success: true` with `error` and `rejection` set. The softened result carries only those three fields, so `transactionHash`, `transactionLink` and the receipt fields are absent from it. Read `error` to tell a softened failure from a real success, because at the node the two are otherwise identical.
+
+The two halves of a softened failure are reported in different places, which is the part that surprises people:
+
+- **On the node:** `success: true`, `error` set, no `transactionHash`.
+- **On the execution:** `status: success`, `transactionHashes: []`, and `errorContext: null`, because that field is only populated for a failed status. The run reads as a success in `/api/analytics/runs` with no hash against it.
+
+Not every failure softens. A failure with no class, or one classified as a third-party dependency, is softened. One classified as this workflow's own configuration or as a platform problem still fails the run whatever the toggle says, and so does a write whose outcome the platform cannot yet determine: a send that is still in flight is never reported as a success.
 
 ### Direct-API field names
 
@@ -491,6 +528,7 @@ If you're building this action via the [Workflows API](/api/workflows) rather th
 | Contract ABI | `abi` | JSON-encoded string (same convention as `functionArgs`) |
 | Web3 Connection | `web3Connection` | Sender routing: `"default"` (org policy), `"eoa"` (force the Turnkey EOA), or `"safe:<safeWalletId>"`. The signing wallet is your org's Turnkey wallet, resolved automatically. |
 | Network | `network` | numeric chain id as a string (e.g. `"11155111"`) |
+| Fail workflow on error | `failOnError` | boolean, on by default. `false`, or the string `"false"`, softens a failed write into `success: true` with `error` set; any other value stays on. |
 
 See the [generic web3 write-contract example](/api/workflows#generic-web3-write-contract-example-manual-trigger) in the Workflows API docs for a full working request body.
 

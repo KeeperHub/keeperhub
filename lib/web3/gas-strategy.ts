@@ -19,14 +19,8 @@ import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { db } from "@/lib/db";
 import { chains } from "@/lib/db/schema";
-import {
-  ErrorCategory,
-  logSystemWarn,
-  logUserError,
-  logWarn,
-} from "@/lib/logging";
+import { ErrorCategory, logSystemWarn, logWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
-import { sleep } from "@/lib/sleep";
 
 /**
  * Route an RPC call through the failover-aware RpcProviderManager when one
@@ -258,6 +252,127 @@ async function getPercentileFees(
     };
   }
 }
+
+// Hardcoded chain-specific overrides (used when the DB has no row for the
+// chain). Exported so tests can iterate it: `CHAIN_GAS_DEFAULTS` in
+// lib/web3/gas-defaults.ts must carry the same multiplier for every chain
+// here, and the parity test checks both directions.
+export const HARDCODED_CHAIN_OVERRIDES: Record<
+  number,
+  Partial<ChainGasConfig>
+> = {
+  // Ethereum mainnet
+  1: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 0.5,
+  },
+  // Sepolia testnet
+  11155111: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 0.1,
+  },
+  // Arbitrum One
+  42161: {
+    gasLimitMultiplier: 1.5, // L2 estimates are more accurate
+    minPriorityFeeGwei: 0.01,
+    maxPriorityFeeGwei: 10,
+  },
+  // Arbitrum Sepolia
+  421614: {
+    gasLimitMultiplier: 1.5,
+    minPriorityFeeGwei: 0.01,
+    maxPriorityFeeGwei: 10,
+  },
+  // Base
+  8453: {
+    gasLimitMultiplier: 1.5,
+    minPriorityFeeGwei: 0.001,
+    maxPriorityFeeGwei: 5,
+  },
+  // Base Sepolia
+  84532: {
+    gasLimitMultiplier: 1.5,
+    minPriorityFeeGwei: 0.001,
+    maxPriorityFeeGwei: 5,
+  },
+  // Polygon
+  137: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 30, // Polygon has higher base priority fees
+    maxPriorityFeeGwei: 1000,
+  },
+  // Polygon Amoy testnet
+  80002: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 30,
+    maxPriorityFeeGwei: 1000,
+  },
+  // Robinhood Chain (Arbitrum Orbit L2) and its testnet. Priority fees are
+  // inert here: the sequencer orders first-come-first-served, so a tip buys
+  // no inclusion advantage. Measured on 4663 (2026-08-12): eth_feeHistory
+  // returned 0 reward at the 25th, 50th, 75th and 99th percentiles across
+  // 10 consecutive blocks, eth_maxPriorityFeePerGas returned 0, and
+  // eth_gasPrice (0.0423 gwei) matched the base fee (0.0428 gwei).
+  // The 0.1 gwei default floor would therefore add roughly 2.3x the base
+  // fee as a tip nothing consumes, so the floor is dropped to 0. The cap
+  // stays low to bound a bad percentile read rather than to price anything.
+  4663: {
+    gasLimitMultiplier: 1.5, // Orbit L2, same estimate accuracy as Arbitrum
+    minPriorityFeeGwei: 0,
+    maxPriorityFeeGwei: 1,
+  },
+  46630: {
+    gasLimitMultiplier: 1.5,
+    minPriorityFeeGwei: 0,
+    maxPriorityFeeGwei: 1,
+  },
+  // HyperEVM. Regular blocks carry a 3,000,000 gas limit, and the
+  // node rejects a transaction above it at submission with
+  // -32000 "exceeds block gas limit" before it checks the balance. The
+  // larger 30,000,000 blocks require the sender to opt in on HyperCore,
+  // which KeeperHub does not do -- they are interleaved with the regular
+  // ones rather than absent, so a short sample can show only 3,000,000
+  // limits (one 30,000,000 block appeared in 80 consecutive blocks on
+  // 2026-09-22). What holds is the cap on a sender that has not opted in,
+  // not a single limit for the chain. The 2.0 default would therefore make any
+  // estimate above 1,500,000 gas unsendable, so the multiplier drops to
+  // 1.5, covering estimates up to 2,000,000. Above that, set an absolute
+  // gas limit on the action. Priority fees keep the defaults: unlike
+  // Robinhood Chain, eth_feeHistory here returns non-zero rewards
+  // (0 to 0.55 gwei), so the 0.1 gwei floor prices real competition.
+  999: {
+    gasLimitMultiplier: 1.5,
+  },
+  // 0G Galileo testnet. The mempool admits tips at 2 gwei (matching the
+  // node's "needed 2 gwei" floor) but validators only include txs paying
+  // >= ~4 gwei. Validated 2026-05-01: sampled 10k recent blocks (400 txs);
+  // 77% paid exactly 4.0 gwei, 91% paid >= 4.0, eth_maxPriorityFeePerGas
+  // returns 4.0. A 2 gwei tip clears mempool admission then sits unmined
+  // indefinitely. If 0G validator policy shifts (mempool floor != inclusion
+  // floor is the trap), re-sample and adjust this entry.
+  16602: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 4.0,
+    maxPriorityFeeGwei: 500,
+  },
+  // 0G Mainnet -- mirrors Galileo's tip-cap requirement (same client/protocol).
+  // If mainnet's actual floor differs, narrow this entry; defensive default
+  // until we have mainnet-specific signal.
+  16661: {
+    gasLimitMultiplier: 2.0,
+    minPriorityFeeGwei: 4.0,
+    maxPriorityFeeGwei: 500,
+  },
+  // Tempo mainnet -- fees paid in a TIP-20 stablecoin, estimates are
+  // accurate, so an L2-like 1.5x limit multiplier is enough headroom.
+  4217: {
+    gasLimitMultiplier: 1.5,
+  },
+  // Tempo Moderato testnet
+  42431: {
+    gasLimitMultiplier: 1.5,
+  },
+};
 
 export class AdaptiveGasStrategy {
   private readonly config: GasStrategyConfig;
@@ -520,247 +635,8 @@ export class AdaptiveGasStrategy {
    * Hardcoded chain-specific overrides (fallback when DB unavailable)
    */
   private getHardcodedOverrides(chainId: number): Partial<ChainGasConfig> {
-    const overrides: Record<number, Partial<ChainGasConfig>> = {
-      // Ethereum mainnet
-      1: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 0.5,
-      },
-      // Sepolia testnet
-      11155111: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 0.1,
-      },
-      // Arbitrum One
-      42161: {
-        gasLimitMultiplier: 1.5, // L2 estimates are more accurate
-        minPriorityFeeGwei: 0.01,
-        maxPriorityFeeGwei: 10,
-      },
-      // Arbitrum Sepolia
-      421614: {
-        gasLimitMultiplier: 1.5,
-        minPriorityFeeGwei: 0.01,
-        maxPriorityFeeGwei: 10,
-      },
-      // Base
-      8453: {
-        gasLimitMultiplier: 1.5,
-        minPriorityFeeGwei: 0.001,
-        maxPriorityFeeGwei: 5,
-      },
-      // Base Sepolia
-      84532: {
-        gasLimitMultiplier: 1.5,
-        minPriorityFeeGwei: 0.001,
-        maxPriorityFeeGwei: 5,
-      },
-      // Polygon
-      137: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 30, // Polygon has higher base priority fees
-        maxPriorityFeeGwei: 1000,
-      },
-      // Polygon Amoy testnet
-      80002: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 30,
-        maxPriorityFeeGwei: 1000,
-      },
-      // Robinhood Chain (Arbitrum Orbit L2) and its testnet. Priority fees are
-      // inert here: the sequencer orders first-come-first-served, so a tip buys
-      // no inclusion advantage. Measured on 4663 (2026-08-12): eth_feeHistory
-      // returned 0 reward at the 25th, 50th, 75th and 99th percentiles across
-      // 10 consecutive blocks, eth_maxPriorityFeePerGas returned 0, and
-      // eth_gasPrice (0.0423 gwei) matched the base fee (0.0428 gwei).
-      // The 0.1 gwei default floor would therefore add roughly 2.3x the base
-      // fee as a tip nothing consumes, so the floor is dropped to 0. The cap
-      // stays low to bound a bad percentile read rather than to price anything.
-      4663: {
-        gasLimitMultiplier: 1.5, // Orbit L2, same estimate accuracy as Arbitrum
-        minPriorityFeeGwei: 0,
-        maxPriorityFeeGwei: 1,
-      },
-      46630: {
-        gasLimitMultiplier: 1.5,
-        minPriorityFeeGwei: 0,
-        maxPriorityFeeGwei: 1,
-      },
-      // 0G Galileo testnet. The mempool admits tips at 2 gwei (matching the
-      // node's "needed 2 gwei" floor) but validators only include txs paying
-      // >= ~4 gwei. Validated 2026-05-01: sampled 10k recent blocks (400 txs);
-      // 77% paid exactly 4.0 gwei, 91% paid >= 4.0, eth_maxPriorityFeePerGas
-      // returns 4.0. A 2 gwei tip clears mempool admission then sits unmined
-      // indefinitely. If 0G validator policy shifts (mempool floor != inclusion
-      // floor is the trap), re-sample and adjust this entry.
-      16602: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 4.0,
-        maxPriorityFeeGwei: 500,
-      },
-      // 0G Mainnet -- mirrors Galileo's tip-cap requirement (same client/protocol).
-      // If mainnet's actual floor differs, narrow this entry; defensive default
-      // until we have mainnet-specific signal.
-      16661: {
-        gasLimitMultiplier: 2.0,
-        minPriorityFeeGwei: 4.0,
-        maxPriorityFeeGwei: 500,
-      },
-      // Tempo mainnet -- fees paid in a TIP-20 stablecoin, estimates are
-      // accurate, so an L2-like 1.5x limit multiplier is enough headroom.
-      4217: {
-        gasLimitMultiplier: 1.5,
-      },
-      // Tempo Moderato testnet
-      42431: {
-        gasLimitMultiplier: 1.5,
-      },
-    };
-
-    return overrides[chainId] || {};
+    return HARDCODED_CHAIN_OVERRIDES[chainId] || {};
   }
-}
-
-// ============================================================================
-// Retry Escalation Strategy
-// ============================================================================
-
-/**
- * Configuration for transaction retry with gas escalation
- */
-export type RetryConfig = {
-  maxAttempts: number;
-  escalationFactor: number; // Multiply priority fee by this each retry
-  checkIntervalMs: number; // Time between confirmation checks
-  stuckThresholdMs: number; // Time before considering tx stuck
-};
-
-export const DEFAULT_RETRY_CONFIG: RetryConfig = {
-  maxAttempts: 3,
-  escalationFactor: 1.5,
-  checkIntervalMs: 5000,
-  stuckThresholdMs: 30_000,
-};
-
-/**
- * Error thrown when a transaction is stuck after max retry attempts
- */
-export class TransactionStuckError extends Error {
-  readonly txHash: string;
-  readonly attempts: number;
-
-  constructor(txHash: string, attempts: number) {
-    super(
-      `Transaction ${txHash} stuck after ${attempts} attempt(s). Consider manual intervention.`
-    );
-    this.name = "TransactionStuckError";
-    this.txHash = txHash;
-    this.attempts = attempts;
-  }
-}
-
-/**
- * Wait for transaction confirmation with timeout
- */
-async function waitForConfirmation(
-  tx: ethers.TransactionResponse,
-  config: RetryConfig
-): Promise<ethers.TransactionReceipt | null> {
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < config.stuckThresholdMs) {
-    try {
-      // Try to get receipt directly
-      const receipt = await tx.provider?.getTransactionReceipt(tx.hash);
-      if (receipt?.blockNumber) {
-        return receipt;
-      }
-    } catch (_error) {
-      // Receipt not available yet, continue waiting
-    }
-
-    await sleep(config.checkIntervalMs);
-  }
-
-  return null; // Timed out
-}
-
-/**
- * Execute a transaction with automatic retry and gas escalation
- *
- * When a transaction is stuck in the mempool, this function will:
- * 1. Wait for confirmation up to stuckThresholdMs
- * 2. If stuck, send a replacement transaction with higher gas (same nonce)
- * 3. Repeat up to maxAttempts times
- *
- * @param signer - Wallet/signer to send transaction
- * @param txRequest - Transaction request (must include nonce for replacement)
- * @param config - Retry configuration
- * @returns Transaction receipt on success
- * @throws TransactionStuckError if all attempts fail
- */
-export async function executeWithRetry(
-  signer: ethers.Signer,
-  txRequest: ethers.TransactionRequest,
-  config: RetryConfig = DEFAULT_RETRY_CONFIG
-): Promise<ethers.TransactionReceipt> {
-  let lastTxHash = "";
-  let currentPriorityFee = txRequest.maxPriorityFeePerGas as bigint;
-  let currentMaxFee = txRequest.maxFeePerGas as bigint;
-
-  // Ensure nonce is set for replacement transactions
-  if (txRequest.nonce === undefined) {
-    txRequest.nonce = await signer.getNonce("pending");
-  }
-
-  for (let attempt = 1; attempt <= config.maxAttempts; attempt++) {
-    // Escalate gas price for retries (replacement transaction)
-    if (attempt > 1) {
-      const escalationBps = BigInt(Math.floor(config.escalationFactor * 100));
-      currentPriorityFee = (currentPriorityFee * escalationBps) / BigInt(100);
-      currentMaxFee = (currentMaxFee * escalationBps) / BigInt(100);
-
-      txRequest.maxPriorityFeePerGas = currentPriorityFee;
-      txRequest.maxFeePerGas = currentMaxFee;
-
-      console.log(
-        `[GasStrategy] Retry attempt ${attempt}, escalating priority fee to ${ethers.formatUnits(currentPriorityFee, "gwei")} gwei`
-      );
-    }
-
-    // Send transaction
-    const tx = await signer.sendTransaction(txRequest);
-    lastTxHash = tx.hash;
-
-    console.log(
-      `[GasStrategy] Transaction sent: ${tx.hash} (attempt ${attempt}/${config.maxAttempts})`
-    );
-
-    // Wait for confirmation with timeout
-    const receipt = await waitForConfirmation(tx, config);
-
-    if (receipt) {
-      console.log(
-        `[GasStrategy] Transaction confirmed: ${tx.hash}, ` +
-          `gasUsed=${receipt.gasUsed.toString()} ` +
-          `(${((Number(receipt.gasUsed) / Number(txRequest.gasLimit || receipt.gasUsed)) * 100).toFixed(1)}% of limit)`
-      );
-      return receipt;
-    }
-
-    // Transaction stuck - will retry with higher gas (replacement)
-    logUserError(
-      ErrorCategory.TRANSACTION,
-      `[GasStrategy] Transaction ${tx.hash} stuck after ${config.stuckThresholdMs}ms`,
-      undefined,
-      {
-        tx_hash: tx.hash,
-        stuck_threshold_ms: String(config.stuckThresholdMs),
-      }
-    );
-  }
-
-  throw new TransactionStuckError(lastTxHash, config.maxAttempts);
 }
 
 // ============================================================================

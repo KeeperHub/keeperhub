@@ -407,13 +407,168 @@ function parseBatchCallAbiFunctions(callsValue: unknown): unknown[] {
   );
 }
 
-function workflowHasCheckAllowanceNode(nodes: unknown[]): boolean {
-  for (const node of nodes) {
-    const cfg = readNodeActionConfig(node);
-    if (
-      typeof cfg?.actionType === "string" &&
-      cfg.actionType.includes("check-allowance")
-    ) {
+// An action slug that reads an ERC-20 allowance, matched on the slug alone
+// because this module resolves no registry.
+//
+// The contiguous "check-allowance" test alone misses the two allowance reads
+// chainlink ships: `ccip-check-bridge-allowance` and `ccip-check-fee-allowance`
+// place a qualifier between the verb and the noun, so neither contains the
+// substring. Both are `allowance(owner, spender)` reads on an ERC-20
+// (protocols/chainlink.ts), the same call `web3/check-allowance` makes, so
+// both should gate.
+//
+// The pattern requires the `check` verb rather than only a terminal
+// "allowance". `deriveActionsFromAbi` slugs an un-overridden ABI function as
+// its kebab-cased name (lib/abi/protocol-derive.ts), so an ERC-20 extension
+// exposing `increaseAllowance` / `decreaseAllowance` would slug to
+// "increase-allowance" / "decrease-allowance". Those grant an allowance rather
+// than read one and must not gate.
+//
+// The substring test is kept alongside the pattern so this is purely additive:
+// no action type that gates today stops gating.
+const CHECK_ALLOWANCE_ACTION_FRAGMENT = "check-allowance";
+const CHECK_ALLOWANCE_SLUG_PATTERN = /(?:^|-)check(?:-[a-z0-9]+)*-allowance$/;
+
+function isCheckAllowanceActionType(actionType: unknown): boolean {
+  if (typeof actionType !== "string") {
+    return false;
+  }
+  if (actionType.includes(CHECK_ALLOWANCE_ACTION_FRAGMENT)) {
+    return true;
+  }
+  // Action types are "<plugin-or-protocol-slug>/<action-slug>"; match the
+  // action slug so a protocol slug can never satisfy the pattern by itself.
+  const slug = actionType.slice(actionType.lastIndexOf("/") + 1);
+  return CHECK_ALLOWANCE_SLUG_PATTERN.test(slug);
+}
+
+function readNodeId(node: unknown): string | null {
+  if (node === null || typeof node !== "object" || !("id" in node)) {
+    return null;
+  }
+  const { id } = node as { id?: unknown };
+  return typeof id === "string" && id !== "" ? id : null;
+}
+
+/**
+ * Whether an allowance-check node gates a given write node.
+ *
+ * The gate used to be presence-based: any allowance-check node anywhere in the
+ * workflow suppressed the warning for every write in the workflow, including a
+ * check sitting on a parallel branch that never reaches the write, or one
+ * placed after it. Neither ordering prevents the revert the warning is about.
+ * It is now reachability over `workflow.edges`: a write is gated only by a
+ * check that is actually upstream of it.
+ *
+ * `incoming` is null when the workflow carries no usable edges. The route
+ * passes `row.edges ?? []` (app/api/workflows/[workflowId]/validate/route.ts),
+ * so a workflow whose edges were never persisted arrives with an empty array
+ * rather than a graph, and under a strict reading nothing would be upstream of
+ * anything. The gate falls back to the presence test in that case: less
+ * information must not produce a more aggressive warning.
+ */
+type AllowanceGate = {
+  /** An allowance-check node exists somewhere in the workflow. */
+  present: boolean;
+  /** Ids of the allowance-check nodes. */
+  gateIds: Set<string>;
+  /** target node id -> source node ids, or null when there is no graph. */
+  incoming: Map<string, string[]> | null;
+  /** Memoised ancestor sets, keyed by node id. */
+  ancestors: Map<string, Set<string>>;
+};
+
+function buildIncomingEdges(edges: unknown): Map<string, string[]> | null {
+  if (!Array.isArray(edges)) {
+    return null;
+  }
+  const incoming = new Map<string, string[]>();
+  for (const rawEdge of edges) {
+    if (rawEdge === null || typeof rawEdge !== "object") {
+      continue;
+    }
+    const { source, target } = rawEdge as {
+      source?: unknown;
+      target?: unknown;
+    };
+    if (typeof source !== "string" || typeof target !== "string") {
+      continue;
+    }
+    const sources = incoming.get(target);
+    if (sources === undefined) {
+      incoming.set(target, [source]);
+    } else {
+      sources.push(source);
+    }
+  }
+  return incoming.size === 0 ? null : incoming;
+}
+
+function buildAllowanceGate(workflow: ValidatorWorkflow): AllowanceGate {
+  const gateIds = new Set<string>();
+  let present = false;
+  for (const node of workflow.nodes) {
+    if (!isCheckAllowanceActionType(readNodeActionConfig(node)?.actionType)) {
+      continue;
+    }
+    present = true;
+    const id = readNodeId(node);
+    if (id !== null) {
+      gateIds.add(id);
+    }
+  }
+  return {
+    present,
+    gateIds,
+    incoming: buildIncomingEdges(workflow.edges),
+    ancestors: new Map(),
+  };
+}
+
+// Every node that can reach `id` by following edges backwards. `seen` doubles
+// as the visited guard, so a cycle in the graph terminates instead of looping.
+function ancestorsOf(id: string, gate: AllowanceGate): Set<string> {
+  const cached = gate.ancestors.get(id);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const seen = new Set<string>();
+  const incoming = gate.incoming ?? new Map<string, string[]>();
+  const queue = [...(incoming.get(id) ?? [])];
+  let current = queue.pop();
+  while (current !== undefined) {
+    if (seen.has(current)) {
+      current = queue.pop();
+      continue;
+    }
+    seen.add(current);
+    for (const parent of incoming.get(current) ?? []) {
+      if (!seen.has(parent)) {
+        queue.push(parent);
+      }
+    }
+    current = queue.pop();
+  }
+  gate.ancestors.set(id, seen);
+  return seen;
+}
+
+function isAllowanceGated(gate: AllowanceGate, node: unknown): boolean {
+  if (!gate.present) {
+    return false;
+  }
+  // No graph, or gate nodes the graph cannot address by id: fall back to the
+  // presence test rather than warn on missing information.
+  if (gate.incoming === null || gate.gateIds.size === 0) {
+    return true;
+  }
+  const id = readNodeId(node);
+  if (id === null) {
+    return true;
+  }
+  const ancestors = ancestorsOf(id, gate);
+  for (const gateId of gate.gateIds) {
+    if (ancestors.has(gateId)) {
       return true;
     }
   }
@@ -427,22 +582,24 @@ function runAllowancePreflightCheck(
   if (!Array.isArray(workflow.nodes)) {
     return;
   }
-  if (workflowHasCheckAllowanceNode(workflow.nodes)) {
-    return;
-  }
+  const gate = buildAllowanceGate(workflow);
+
   for (const [idx, node] of workflow.nodes.entries()) {
     const cfg = readNodeActionConfig(node);
     if (cfg === null) {
       continue;
     }
     if (cfg.actionType === BATCH_WRITE_CONTRACT_ACTION_TYPE) {
+      if (isAllowanceGated(gate, node)) {
+        continue;
+      }
       const abiFunctions = parseBatchCallAbiFunctions(cfg.calls);
       for (const [callIdx, abiFunction] of abiFunctions.entries()) {
         const method = bareMethodName(abiFunction);
         if (method !== null && ALLOWANCE_SPEND_METHODS.has(method)) {
           warnings.push({
             code: VALIDATION_WARNING_CODES.MISSING_ALLOWANCE_PREFLIGHT,
-            message: `nodes[${idx}].config.calls[${callIdx}] calls "${method}", which moves tokens via an existing allowance, but the workflow has no web3/check-allowance node. Add an upstream web3/check-allowance node before this write to avoid an "insufficient allowance" revert at execution time. Note: batch calls run with msg.sender set to the Multicall3 contract, not your wallet, so a "${method}" call that relies on a wallet allowance will not work in a batch; keep it in a standalone write node instead.`,
+            message: `nodes[${idx}].config.calls[${callIdx}] calls "${method}", which moves tokens via an existing allowance, but no web3/check-allowance node is upstream of it. Add an upstream web3/check-allowance node before this write to avoid an "insufficient allowance" revert at execution time. Note: batch calls run with msg.sender set to the Multicall3 contract, not your wallet, so a "${method}" call that relies on a wallet allowance will not work in a batch; keep it in a standalone write node instead.`,
             parameterPath: `nodes[${idx}].config.calls[${callIdx}].abiFunction`,
           });
         }
@@ -453,10 +610,18 @@ function runAllowancePreflightCheck(
       continue;
     }
     const method = bareMethodName(cfg.abiFunction);
-    if (method !== null && ALLOWANCE_SPEND_METHODS.has(method)) {
+    // Gate last: the ancestor walk is the expensive half, and only a node that
+    // already resolved to a spend method can produce a warning. The batch
+    // branch consults it first instead, because every call in `calls[]` shares
+    // one gate result.
+    if (
+      method !== null &&
+      ALLOWANCE_SPEND_METHODS.has(method) &&
+      !isAllowanceGated(gate, node)
+    ) {
       warnings.push({
         code: VALIDATION_WARNING_CODES.MISSING_ALLOWANCE_PREFLIGHT,
-        message: `nodes[${idx}].config calls "${method}", which moves tokens via an existing allowance, but the workflow has no web3/check-allowance node. Add an upstream web3/check-allowance node before this write to avoid an "insufficient allowance" revert at execution time.`,
+        message: `nodes[${idx}].config calls "${method}", which moves tokens via an existing allowance, but no web3/check-allowance node is upstream of it. Add an upstream web3/check-allowance node before this write to avoid an "insufficient allowance" revert at execution time.`,
         parameterPath: `nodes[${idx}].config.abiFunction`,
       });
     }

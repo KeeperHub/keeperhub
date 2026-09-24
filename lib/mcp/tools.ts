@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import "@/protocols";
 import {
   describeCron,
   IntervalTooSmallError,
@@ -806,7 +807,7 @@ const GET_EXECUTION_SCHEMA = {
     .boolean()
     .optional()
     .describe(
-      "Include input/output/outputRaw blobs on each log entry. Defaults to true for backward compatibility with v1.11 get_execution_logs callers. Pass false to receive a compact status-only response."
+      "Include input/output/outputRaw blobs on each log entry. Defaults to true for backward compatibility with v1.11 get_execution_logs callers. Pass false to receive a compact status-only response. A blob larger than 1 MiB is always returned as { _truncated: true, originalSize: <bytes>, preview: <first 1024 characters> } in place of the value; the full payload is never served."
     ),
   nodeIds: z
     .array(z.string())
@@ -820,7 +821,7 @@ const GET_EXECUTION_SCHEMA = {
     .positive()
     .optional()
     .describe(
-      "Per-field byte cap. Any input/output/outputRaw JSON-stringified payload exceeding this size is replaced with { _truncated: true, originalSize: <bytes>, preview: <first N bytes of stringified value> }. The error field is NEVER truncated regardless of this cap."
+      "Per-field byte cap. Any input/output/outputRaw JSON-stringified payload exceeding this size is replaced with { _truncated: true, originalSize: <bytes>, preview: <first N bytes of stringified value> }. Payloads above 1 MiB arrive already replaced by that marker whatever this cap is set to. The error field is NEVER truncated regardless of this cap."
     ),
 };
 
@@ -1222,7 +1223,7 @@ export function registerTools(
 
   server.tool(
     "get_execution",
-    "Get combined status and step-by-step logs for a workflow execution. Replaces the v1.11 get_execution_status + get_execution_logs pair. Returns { status, logs } in a single response. `status` and each log's `transactionHashes[].verified`/`receiptStatus` are independently reconciled against on-chain receipts before the execution is allowed to finalize as success -- this, not execute_workflow's trigger acknowledgement, is the authoritative signal for whether a workflow (and any money movement within it) actually completed. By default returns full node input/output data (backward compatible with v1.11 get_execution_logs no-param callers). Pass `includeData: false` to omit input/output/outputRaw blobs, `nodeIds: string[]` to restrict full data to specific nodes (status and error always returned for every node), or `truncateData: number` (bytes) to cap individual input/output/outputRaw payloads. The `error` field is never truncated. One exception to the shape: for an execution owned by another organization that you can see only through its workflow's public share setting, `logs` is null and `status` is redacted (node identifiers omitted) -- includeData, nodeIds and truncateData have no effect there.",
+    "Get combined status and step-by-step logs for a workflow execution. Replaces the v1.11 get_execution_status + get_execution_logs pair. Returns { status, logs } in a single response. `status` and each log's `transactionHashes[].verified`/`receiptStatus` are independently reconciled against on-chain receipts before the execution is allowed to finalize as success -- this, not execute_workflow's trigger acknowledgement, is the authoritative signal for whether a workflow (and any money movement within it) actually completed. By default returns full node input/output data (backward compatible with v1.11 get_execution_logs no-param callers), except that any single input/output/outputRaw payload above 1 MiB is returned as a { _truncated, originalSize, preview } marker. Pass `includeData: false` to omit input/output/outputRaw blobs, `nodeIds: string[]` to restrict full data to specific nodes (status and error always returned for every node), or `truncateData: number` (bytes) to cap individual input/output/outputRaw payloads. The `error` field is never truncated. One exception to the shape: for an execution owned by another organization that you can see only through its workflow's public share setting, `logs` is null and `status` is redacted (node identifiers omitted) -- includeData, nodeIds and truncateData have no effect there.",
     GET_EXECUTION_SCHEMA,
     { title: "Get Execution", readOnlyHint: true, destructiveHint: false },
     scoped("get_execution", async (args) =>
@@ -1700,14 +1701,28 @@ export function registerTools(
           "",
           "DIRECT EXECUTION (EVM WRITES)",
           "1. Call execute_transfer, execute_contract_call, or execute_check_and_execute with simulate=true",
-          "2. Continue only after success=true and wouldRevert=false; any tool error is a hard stop",
+          "2. Continue only after success=true, and wouldRevert=false when that field is present; any tool error is a hard stop",
           "3. Repeat the same arguments with simulate omitted and a unique idempotency_key",
           "4. Poll get_direct_execution_status with bounded backoff until completed or failed",
           "5. Save the terminal transactionLink as the onchain proof",
           "- status unconfirmed means the transaction was broadcast but the chain has not confirmed it yet; it is NOT a failure. Keep polling. Never re-send an unconfirmed execution: the transaction may still land and re-sending moves the funds twice",
           "- simulate must be a JSON boolean, not a string",
           "- simulation is EVM-only; Solana chain IDs 101/103 and their aliases are rejected before the API call",
-          "- view/pure calls and unmet conditions return their normal read/no-action result",
+          "- view/pure calls executed through execute_contract_call return their normal read/no-action result",
+          "",
+          "DIRECT EXECUTION: SIMULATE RESPONSE SHAPE",
+          "A successful dry run on execute_transfer or execute_contract_call arrives as data, the tool result content, with this shape:",
+          '- {success: true, status: "simulated", from, to, value, gasEstimate, simulatedReturnValue, wouldRevert: false}',
+          "Exception: a view/pure function called through execute_contract_call with simulate: true never reaches the simulator at all -- it dispatches straight to the normal read path and returns {result: ...} at HTTP 200, with no success, status, or wouldRevert field.",
+          "A failed dry run does NOT arrive as data. The underlying API returns a non-2xx status -- including 400 (deterministic validation/revert), 422 (WALLET_NOT_CONFIGURED -- no wallet set up for the org, checked before simulation and often the first failure on a fresh org; fix it once, do not retry), 503 (simulator/RPC unavailable), and 429 (rate limited) -- and any non-2xx makes the tool call fail: isError: true, with a text message, not a parseable object -- there is no success or wouldRevert field to branch on. Always branch on isError, never on parsing the failure text as JSON. Exception: a 403 scope denial never reaches the API at all -- withScopeCheck short-circuits to a structured result with isError: true whose text is the one failure body that IS parseable JSON:",
+          "- A revert, or a 400 with a machine-readable code (currently only insufficient_balance), gets its text enriched with an appended Reason / Next step block after the original 'API call failed: 400 ... - {...}' line, with a Reason code line added only when the failure carries a code (validation failures only -- a revert has no code field)",
+          "- An uncoded validation 400, the 422 wallet-not-configured case, and every 503 (simulator itself failed -- RPC/infra, not a signal the call would succeed), get NO enrichment: the bare 'API call failed: <status> ... - {...}' string, with the failure JSON surviving only as a fragment of that error text",
+          '- For reference, the failure JSON embedded in that text has shape {success: false, status: "simulated", from, to, value, error, failureKind, wouldRevert, revertReason?, code?, balanceWei?, requiredWei?, shortfallWei?, nativeSymbol?, originalError?, undecodedRevertData?}; failureKind is "validation", "revert", or "unavailable" -- when failureKind is "unavailable" (a 503), wouldRevert is false but is not the signal to read: the simulator itself failed, not the call, so branch on success and failureKind rather than wouldRevert to tell it apart from a real revert',
+          "execute_check_and_execute's simulate response has three distinct branches, not one shared shape:",
+          "- Condition not met: {success, status, executed: false, conditionResult} -- no gasEstimate, no wouldRevert (no call was made); arrives as data",
+          "- Condition met, action is view/pure: {success, status, executed: true, conditionResult, result} -- no gasEstimate, no wouldRevert; arrives as data",
+          "- Condition met, action is a write: follows the execute_transfer/execute_contract_call rule above -- a successful dry run arrives as data (the full simulate shape plus executed and conditionResult); a failed one is isError text embedding the same failure JSON, not data, plus executed and conditionResult when the failure came from the simulator itself (400/503) -- the 422 wallet-not-configured case is checked before the condition is evaluated, so it carries neither field",
+          "Full field-by-field docs: https://docs.keeperhub.com/api/direct-execution#dry-run-simulation",
           "",
           "PROTOCOL WRITES",
           "1. Call execute_protocol_action with a unique idempotency_key. There is no simulate / dry-run mode; a write signs and broadcasts immediately",
@@ -1740,7 +1755,7 @@ export function registerTools(
 
   server.tool(
     "execute_transfer",
-    "Transfer native tokens (ETH, MATIC) or ERC20 tokens from your wallet to a recipient address. Requires a wallet integration.",
+    "Transfer native tokens (ETH, MATIC) or ERC20 tokens from your wallet to a recipient address. Requires a wallet integration. Full simulate response shape (success/failure fields, failureKind values): https://docs.keeperhub.com/api/direct-execution#dry-run-simulation",
     {
       chain_id: looseString(
         "Chain ID (e.g., '1' for Ethereum, '8453' for Base, or '103' for Solana Devnet). Solana transfers can broadcast, but simulate is currently EVM-only."
@@ -1757,6 +1772,9 @@ export function registerTools(
         .describe(
           "ERC20 token contract address. Omit for native token transfers."
         ),
+      gas_limit_multiplier: looseString(
+        "Gas limit multiplier (e.g., '1.5' for 50% buffer)"
+      ).optional(),
       simulate: SIMULATE_ARG,
       idempotency_key: IDEMPOTENCY_KEY_ARG,
     },
@@ -1776,6 +1794,7 @@ export function registerTools(
               recipientAddress: args.to_address,
               amount: args.amount,
               tokenAddress: args.token_address,
+              gasLimitMultiplier: args.gas_limit_multiplier,
               simulate: args.simulate,
             },
             args.idempotency_key,
@@ -1791,7 +1810,7 @@ export function registerTools(
 
   server.tool(
     "execute_contract_call",
-    'Call a smart contract function. For view/pure functions, returns the result directly. For state-changing functions, submits a transaction and returns the execution ID. Requires a wallet integration for write calls. Full example: {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "chain_id": "11155111", "function_name": "transfer", "function_args": "[\\"0xRecipient...\\", \\"1000\\"]"} - note that function_args is a JSON array encoded as a string.',
+    'Call a smart contract function. For view/pure functions, returns the result directly. For state-changing functions, submits a transaction and returns the execution ID. Requires a wallet integration for write calls. Full example: {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "chain_id": "11155111", "function_name": "transfer", "function_args": "[\\"0xRecipient...\\", \\"1000\\"]"} - note that function_args is a JSON array encoded as a string. Full simulate response shape (success/failure fields, failureKind values): https://docs.keeperhub.com/api/direct-execution#dry-run-simulation',
     {
       contract_address: z.string().describe("Contract address (0x...)"),
       chain_id: looseString("Chain ID (e.g., '1' for Ethereum)"),
@@ -1851,7 +1870,7 @@ export function registerTools(
 
   server.tool(
     "execute_check_and_execute",
-    'Read one supported scalar from a contract and execute an action if its condition is met. A single Solidity integer output supports every operator; a single address or bytes1 through bytes32 output supports eq and neq only. Empty, multiple, compound, and other scalar outputs are rejected before the RPC read. Useful for conditional on-chain operations (e.g., \'if balance > 1000, then transfer\'). Requires a wallet integration. Full example: {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "chain_id": "11155111", "function_name": "balanceOf", "function_args": "[\\"0xHolder...\\"]", "condition": {"operator": "gt", "value": "1000"}, "action": {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "function_name": "transfer", "function_args": "[\\"0xRecipient...\\", \\"1000\\"]"}} - note that function_args is a JSON array encoded as a string, on both the check and the action.',
+    'Read one supported scalar from a contract and execute an action if its condition is met. A single Solidity integer output supports every operator; a single address or bytes1 through bytes32 output supports eq and neq only. Empty, multiple, compound, and other scalar outputs are rejected before the RPC read. Useful for conditional on-chain operations (e.g., \'if balance > 1000, then transfer\'). Requires a wallet integration. Full example: {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "chain_id": "11155111", "function_name": "balanceOf", "function_args": "[\\"0xHolder...\\"]", "condition": {"operator": "gt", "value": "1000"}, "action": {"contract_address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "function_name": "transfer", "function_args": "[\\"0xRecipient...\\", \\"1000\\"]"}} - note that function_args is a JSON array encoded as a string, on both the check and the action. The simulate response does NOT always carry gasEstimate/wouldRevert: a condition that is not met, or a view/pure action, never made a call to estimate, so those fields are absent on those two branches. Only a write action returns the full simulate shape (plus executed and conditionResult). Full response shapes for all three branches: https://docs.keeperhub.com/api/direct-execution#check-and-execute-specifics',
     {
       contract_address: z
         .string()
@@ -2153,7 +2172,12 @@ export function registerTools(
         .describe("Token symbol or address config"),
       amount: z.string().describe("Human-readable token amount"),
       recipientAddress: z.string().describe("Recipient address"),
-      memo: z.string().optional().describe("Optional memo (max 32 bytes)"),
+      memo: z
+        .string()
+        .optional()
+        .describe(
+          "Attached on-chain as an indexed bytes32 topic. Plain text (<= 31 bytes) is utf8-encoded; a 0x + 64-hex value is used verbatim (e.g. a receipt hash)."
+        ),
       broadcastMode: z
         .enum(["manual", "schedule"])
         .optional()
@@ -2325,7 +2349,7 @@ export function registerMetaTools(
   // Meta-tool 1: Search and discover available protocol actions
   server.tool(
     "search_protocol_actions",
-    "Search for available protocol actions across all supported DeFi protocols (Aave, Morpho, Chronicle, Chainlink, Uniswap, Compound, Lido, etc.). Call this first to discover what actions are available and what parameters they require, then use execute_protocol_action to run them.",
+    "Search for available protocol actions across all supported DeFi protocols (Aave, Morpho, Chronicle, Chainlink, Uniswap, Compound, Lido, etc.). Call this first to discover what actions are available and what parameters they require, then use execute_protocol_action only when protocolDirectExecution is true; otherwise use the action-specific sibling tool (such as execute_transfer or execute_contract_call) or workflow execution.",
     {
       query: z
         .string()
@@ -2369,6 +2393,9 @@ export function registerMetaTools(
             requiredFields?: Record<string, string>;
             optionalFields?: Record<string, string>;
             requiresCredentials?: boolean;
+            requiredPlan?: string | null;
+            featureEnabled?: boolean;
+            protocolDirectExecution?: boolean;
           }
         >;
 
@@ -2397,6 +2424,9 @@ export function registerMetaTools(
           requiredFields: a.requiredFields,
           optionalFields: a.optionalFields,
           requiresCredentials: a.requiresCredentials,
+          requiredPlan: a.requiredPlan ?? null,
+          featureEnabled: a.featureEnabled ?? true,
+          protocolDirectExecution: a.protocolDirectExecution ?? false,
         }));
 
         return {
@@ -2544,7 +2574,7 @@ export function registerMetaTools(
   // Meta-tool 4: Invoke a listed workflow by its globally unique slug
   server.tool(
     "call_workflow",
-    "Invoke a listed KeeperHub workflow. For read workflows, executes and returns the result. For write workflows, returns unsigned calldata {to, data, value} for the caller to submit. Use search_workflows first to discover available workflows. PAID WORKFLOWS: this tool DOES NOT auto-pay. A paid listing returns HTTP 402 with an x402 challenge — pay it with @keeperhub/wallet's paymentSigner.fetch(), agentcash's mcp__agentcash__fetch, or the marketplace UI, then retry. The 402 error message includes the price and concrete next-step paths.",
+    "Invoke a listed KeeperHub workflow. For read workflows, executes and returns the result. For write workflows, returns unsigned calldata {to, data, value} for the caller to submit. Use search_workflows first to discover available workflows. PAID WORKFLOWS: this tool DOES NOT auto-pay. A paid listing returns HTTP 402 with an x402 challenge — pay it with @keeperhub/wallet's paymentSigner.fetch(), agentcash's mcp__agentcash__fetch, or the marketplace UI, then retry with PAYMENT-SIGNATURE (or Authorization: Payment for MPP). The 402 error message includes the price and concrete next-step paths. Pass idempotency_key only for paid calls after payment is verified: the key is scoped to the verified payer and protocol. Once finalized (including a `running` completion after the wait timeout), retrying with the SAME key replays that outcome and does not start a second execution. Free listings ignore the key (no caller identity to scope). A NEW PAYMENT-SIGNATURE can still settle (x402 settles after HTTP 200). Identical-credential replay is also blocked by payment_hash.",
     {
       slug: z
         .string()
@@ -2554,6 +2584,16 @@ export function registerMetaTools(
       inputs: z
         .record(z.string(), z.unknown())
         .describe("Input fields as declared in the workflow's inputSchema"),
+      idempotency_key: z
+        .string()
+        // Keep in sync with MAX_IDEMPOTENCY_KEY_LENGTH in lib/idempotency.ts.
+        // Do not import that module here: it is server-only and breaks Vitest
+        // collection for tools importers that do not mock server-only.
+        .max(255)
+        .optional()
+        .describe(
+          "Optional Idempotency-Key for paid listings after payment verification. Scoped to the verified payer and protocol so a retry with the same key does not start a second execution (within 24h once finalized, including `running`). Free listings ignore this field. This tool does not attach payment credentials — pay a 402 challenge externally, then retry. A new PAYMENT-SIGNATURE can still settle. Two 409s are possible: `idempotency_in_progress` (retryable true) means retry shortly with the same key; `idempotency_conflict` (retryable false) means this body is not the body the key was bound to — rotate only for genuinely different work."
+        ),
     },
     // Invokes a third-party listing whose body we do not control, and a paid
     // listing charges USDC on retry after the 402 is settled.
@@ -2567,7 +2607,7 @@ export function registerMetaTools(
             `/api/mcp/workflows/${encodeURIComponent(args.slug)}/call`,
             "POST",
             args.inputs,
-            undefined,
+            args.idempotency_key,
             NO_MCP_FETCH_TIMEOUT
           );
           return {

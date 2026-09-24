@@ -4,12 +4,21 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { resolveAbi } from "@/lib/abi/cache";
-import { type AbiItem, findAbiFunction } from "@/lib/abi/utils";
+import {
+  type AbiItem,
+  describeAmbiguousKey,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { simulateContractCall } from "@/lib/execute/simulate";
 import {
+  type SimulateSequenceCall,
+  simulateCallSequence,
+} from "@/lib/execute/simulate-sequence";
+import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
   recordIdempotentResponse,
@@ -19,6 +28,7 @@ import { SCOPE_MCP_READ, SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { getErrorMessage } from "@/lib/utils";
+import { normalizeErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
 import { readContractCore } from "@/plugins/web3/steps/read-contract-core";
 import { writeContractCore } from "@/plugins/web3/steps/write-contract-core";
 import { validateApiKey } from "../_lib/auth";
@@ -31,9 +41,12 @@ import {
   redactInput,
   withRejectedSignerOverride,
 } from "../_lib/execution-service";
+import { readGasLimitMultiplier } from "../_lib/gas-limit-multiplier";
 import { checkRateLimit } from "../_lib/rate-limit";
-import { parseNativeValueWei } from "../_lib/reserved-value";
-import { parseSimulateFlag } from "../_lib/simulate-flag";
+import { isRawCalldataRequest, resolveRawCalldata } from "../_lib/raw-calldata";
+import { parseNativeValueEther } from "../_lib/reserved-value";
+import { parseSimulateFlag, rejectSimulateQuery } from "../_lib/simulate-flag";
+import { sequenceHttpStatus } from "../_lib/simulation-response";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import type { ExecuteResponse } from "../_lib/types";
 import { validateContractCallInput } from "../_lib/validate";
@@ -54,13 +67,17 @@ function findFunctionInAbi(
     return { error: "ABI must be a JSON array" };
   }
 
-  const entry = findAbiFunction(parsed, functionName);
+  const resolution = resolveAbiFunction(parsed, functionName);
 
-  if (!entry) {
+  if (resolution.status === "ambiguous") {
+    return { error: describeAmbiguousKey(functionName, resolution.candidates) };
+  }
+
+  if (resolution.status !== "found") {
     return { error: `Function '${functionName}' not found in ABI` };
   }
 
-  return { entry };
+  return { entry: resolution.entry };
 }
 
 async function resolveAbiForRequest(
@@ -86,7 +103,8 @@ async function resolveAbiForRequest(
 async function handleReadCall(
   body: Record<string, unknown>,
   resolvedAbi: string,
-  organizationId: string
+  organizationId: string,
+  errorAbis: string[]
 ): Promise<NextResponse> {
   const result = await readContractCore({
     contractAddress: body.contractAddress as string,
@@ -94,6 +112,9 @@ async function handleReadCall(
     abi: resolvedAbi,
     abiFunction: body.functionName as string,
     functionArgs: body.functionArgs as string | undefined,
+    // #2430: decode-only. The read is encoded from `abi` exactly as before;
+    // these only join the interface a revert is decoded against.
+    errorAbis,
     _context: { organizationId },
   });
 
@@ -113,7 +134,8 @@ async function handleReadCall(
 async function handleSimulateCall(
   body: Record<string, unknown>,
   resolvedAbi: string,
-  organizationId: string
+  organizationId: string,
+  errorAbis: string[]
 ): Promise<NextResponse> {
   const walletError = await requireWallet(organizationId);
   if (walletError) {
@@ -128,10 +150,75 @@ async function handleSimulateCall(
     functionName: body.functionName as string,
     functionArgs: body.functionArgs as string | undefined,
     value: body.value as string | undefined,
+    errorAbis,
   });
 
   return NextResponse.json(result, {
     status: simulationHttpStatus(result),
+  });
+}
+
+/**
+ * A dry run of several calls in order, each against the state the one before
+ * it produced. Never broadcasts, so it stops at the simulator rather than
+ * joining the read/write dispatch below.
+ */
+async function handleSimulateSequence(
+  body: Record<string, unknown>,
+  organizationId: string,
+  simulate: boolean
+): Promise<NextResponse> {
+  if (!simulate) {
+    return NextResponse.json(
+      {
+        error:
+          "calls describes a dry run of a sequence; send simulate: true, or send a single call to broadcast",
+        field: "calls",
+        details:
+          "This endpoint broadcasts one transaction per request. A sequence is simulated, never sent as a unit.",
+      },
+      { status: HttpStatus.BAD_REQUEST }
+    );
+  }
+
+  const walletError = await requireWallet(organizationId);
+  if (walletError) {
+    return walletError;
+  }
+
+  const rawCalls = body.calls as Record<string, unknown>[];
+  const calls: SimulateSequenceCall[] = [];
+  for (const [index, call] of rawCalls.entries()) {
+    // Each call resolves its own ABI: a sequence usually spans two contracts,
+    // and a top-level `abi` is the fallback only when the call omits one.
+    const abiResult = await resolveAbiForRequest({
+      ...call,
+      abi: call.abi ?? body.abi,
+      network: body.network,
+    });
+    if ("error" in abiResult) {
+      return NextResponse.json(
+        { error: abiResult.error, field: `calls[${index}].abi` },
+        { status: HttpStatus.BAD_REQUEST }
+      );
+    }
+    calls.push({
+      contractAddress: call.contractAddress as string,
+      abi: abiResult.abi,
+      functionName: call.functionName as string,
+      functionArgs: call.functionArgs as string | undefined,
+      value: call.value as string | undefined,
+    });
+  }
+
+  const result = await simulateCallSequence({
+    organizationId,
+    network: body.network as string,
+    calls,
+  });
+
+  return NextResponse.json(result, {
+    status: sequenceHttpStatus(result.results),
   });
 }
 
@@ -141,7 +228,8 @@ async function handleWriteCall(
   organizationId: string,
   apiKeyId: string,
   idem: IdempotencyOutcome | null,
-  paygOverflow: boolean
+  paygOverflow: boolean,
+  errorAbis: string[]
 ): Promise<NextResponse> {
   const walletError = await requireWallet(organizationId);
   if (walletError) {
@@ -151,7 +239,7 @@ async function handleWriteCall(
 
   const redactedInput = redactInput(withRejectedSignerOverride(body, body));
   // Charge any native ETH value sent with the call against the daily value cap.
-  const parsedValue = parseNativeValueWei(body.value as string | undefined);
+  const parsedValue = parseNativeValueEther(body.value as string | undefined);
   if (!parsedValue.ok) {
     return recordIdempotentResponse(
       idem,
@@ -192,8 +280,9 @@ async function handleWriteCall(
       abi: resolvedAbi,
       abiFunction: body.functionName as string,
       functionArgs: body.functionArgs as string | undefined,
+      errorAbis,
       ethValue: body.value as string | undefined,
-      gasLimitMultiplier: body.gasLimitMultiplier as string | undefined,
+      gasLimitMultiplier: readGasLimitMultiplier(body.gasLimitMultiplier),
       priorityFeeGwei: body.priorityFeeGwei as string | undefined,
       _context: { organizationId },
     })
@@ -224,6 +313,7 @@ async function handleWriteCall(
       transactionHash: result.transactionHash,
       chainId: result.chainId,
       sponsored: result.sponsored,
+      broadcastAttempted: result.broadcastAttempted,
     });
     outcome = { status: settled.status, error: result.error };
   }
@@ -252,10 +342,12 @@ async function handleWriteCall(
     ...(outcome.error ? { error: outcome.error } : {}),
   };
 
+  const disposition = dispositionForExecutionOutcome(outcome.status, result);
+
   return recordIdempotentResponse(
     idem,
     NextResponse.json(responseBody, { status: HttpStatus.ACCEPTED }),
-    outcome.status === "completed" ? "success" : "failed"
+    disposition
   );
 }
 
@@ -266,6 +358,16 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: apiKeyCtx.error },
       { status: apiKeyCtx.status }
     );
+  }
+
+  // #2004: ?simulate= is refused on every /api/execute/* route rather than
+  // silently ignored. This route honours the flag only in the body; the
+  // old "query string must NOT be honoured" position is retired deliberately
+  // -- a family where transfer rejects and this route ignores is the worst
+  // of the three uniform answers.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
   }
 
   // Parsed before the scope gate because the required scope depends on
@@ -349,6 +451,42 @@ export async function POST(request: Request): Promise<NextResponse> {
     body.network = String(body.chainId);
   }
 
+  // Before the single-call ABI resolution below, which has no one
+  // contractAddress to work from when the body describes a sequence.
+  if (Array.isArray(body.calls)) {
+    return applyRateLimitHeaders(
+      await handleSimulateSequence(
+        body,
+        apiKeyCtx.organizationId,
+        simulateFlag.simulate
+      ),
+      rateLimit
+    );
+  }
+
+  // Decode `data` here so everything below keeps seeing a named function with
+  // typed arguments.
+  if (isRawCalldataRequest(body)) {
+    const rawAbi = await resolveAbiForRequest(body);
+    if ("error" in rawAbi) {
+      return NextResponse.json(
+        { error: rawAbi.error, field: "abi" },
+        { status: HttpStatus.BAD_REQUEST }
+      );
+    }
+    const decoded = resolveRawCalldata(body.data as string, rawAbi.abi);
+    if ("error" in decoded) {
+      return NextResponse.json(
+        { error: decoded.error, field: "data" },
+        { status: HttpStatus.BAD_REQUEST }
+      );
+    }
+    body.functionName = decoded.functionName;
+    body.functionArgs = decoded.functionArgs;
+    body.abi = rawAbi.abi;
+    body.data = undefined;
+  }
+
   const abiResult = await resolveAbiForRequest(body);
   if ("error" in abiResult) {
     return NextResponse.json(
@@ -358,6 +496,10 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const resolvedAbi = abiResult.abi;
+
+  // #2430: the extras are read once, after the schema has already refused a
+  // malformed one, so the decode sites cannot disagree about what they are.
+  const errorAbis = normalizeErrorAbiDocuments(body.errorAbis);
 
   const fnResult = findFunctionInAbi(resolvedAbi, body.functionName as string);
   if ("error" in fnResult) {
@@ -373,7 +515,12 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   if (isReadOnly) {
     return applyRateLimitHeaders(
-      await handleReadCall(body, resolvedAbi, apiKeyCtx.organizationId),
+      await handleReadCall(
+        body,
+        resolvedAbi,
+        apiKeyCtx.organizationId,
+        errorAbis
+      ),
       rateLimit
     );
   }
@@ -382,7 +529,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   // never broadcast, never reserve a directExecutions row.
   if (simulateFlag.simulate) {
     return applyRateLimitHeaders(
-      await handleSimulateCall(body, resolvedAbi, apiKeyCtx.organizationId),
+      await handleSimulateCall(
+        body,
+        resolvedAbi,
+        apiKeyCtx.organizationId,
+        errorAbis
+      ),
       rateLimit
     );
   }
@@ -421,7 +573,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       apiKeyCtx.organizationId,
       apiKeyCtx.apiKeyId,
       idem,
-      executionGuard.limitResult?.paygOverflow === true
+      executionGuard.limitResult?.paygOverflow === true,
+      errorAbis
     ),
     rateLimit
   );

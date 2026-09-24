@@ -12,13 +12,17 @@
  * confirmed payable (not view) in lib/contracts/abis/multicall3.json.
  */
 import "server-only";
+import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { coerceArgsForAbi, reshapeArgsForAbi } from "@/lib/abi/struct-args";
 import { validateArgsForAbi } from "@/lib/abi/validate-args";
-import { findAbiFunction } from "@/lib/abi/utils";
+import {
+  describeAmbiguousKey,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import { getAbiFunctionKey } from "@/lib/abi/function-key";
 import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
@@ -131,6 +135,7 @@ export type BatchWriteContractResult =
     // resolution, a whole-batch revert on the staticCall itself).
     results?: BatchWriteCallResult[];
     totalCalls?: number;
+    broadcastAttempted?: boolean;
   };
 
 /**
@@ -392,13 +397,20 @@ function buildCallWithMeta(
     return { ok: false, error: `Call at index ${index}: ABI must be a JSON array` };
   }
 
-  const functionAbi = findAbiFunction(parsedAbi, rawCall.abiFunction);
-  if (!functionAbi) {
+  const resolution = resolveAbiFunction(parsedAbi, rawCall.abiFunction);
+  if (resolution.status === "ambiguous") {
+    return {
+      ok: false,
+      error: `Call at index ${index}: ${describeAmbiguousKey(rawCall.abiFunction, resolution.candidates)}`,
+    };
+  }
+  if (resolution.status !== "found") {
     return {
       ok: false,
       error: `Call at index ${index}: Function '${rawCall.abiFunction}' not found in ABI`,
     };
   }
+  const functionAbi = resolution.entry;
   const functionKey = getAbiFunctionKey(parsedAbi, rawCall.abiFunction, functionAbi);
 
   const { args, error: argsError } = coerceAndValidateArgs(
@@ -512,7 +524,7 @@ async function getWorkflowIdFromExecution(
  * `isolateCallFailures`.
  */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Contract interaction requires extensive validation, mirrors write-contract-core.ts
-export async function batchWriteContractCore(
+async function batchWriteContractCoreImpl(
   input: BatchWriteContractCoreInput
 ): Promise<BatchWriteContractResult> {
   const {
@@ -695,6 +707,7 @@ export async function batchWriteContractCore(
       };
     }
 
+    let receivedTransactionHash: string | undefined;
     try {
       const receipt = await adapter.executeContractCall(
         signer,
@@ -712,6 +725,7 @@ export async function batchWriteContractCore(
         }
       );
 
+      receivedTransactionHash = receipt.hash;
       const gasUsedUnits = receipt.gasUsed.toString();
       const effectiveGasPrice = receipt.effectiveGasPrice.toString();
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
@@ -736,12 +750,19 @@ export async function batchWriteContractCore(
       const errorClass =
         rpcRelayErrorClass(error) ??
         (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
-      const broadcastHash = broadcastTransactionHash(error);
+      const broadcastHash =
+        broadcastTransactionHash(error) ?? receivedTransactionHash;
       const base = {
         success: false as const,
         error: formatContractError(error, revertIface),
         ...(errorClass ? { errorClass } : {}),
         ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
+        broadcastAttempted: broadcastHash
+          ? true
+          : rejection.kind !== "unknown" ||
+              isPreBroadcastNetworkError(error)
+            ? false
+            : true,
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
       };
       // aggregate3 is atomic, so a confirmed on-chain revert (receipt status
@@ -767,4 +788,14 @@ export async function batchWriteContractCore(
       };
     }
   });
+}
+
+export async function batchWriteContractCore(
+  input: BatchWriteContractCoreInput
+): Promise<BatchWriteContractResult> {
+  const result = await batchWriteContractCoreImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }

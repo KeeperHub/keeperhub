@@ -82,6 +82,16 @@ protocol exposes a read action (for example a `chronicle/eth-usd-read` or
 `morpho/get-position` actionType), calling that first returns current state, but it cannot
 tell you whether a particular write will revert; there is no substitute for a dry run here.
 
+**Know the wallet that signs direct executions.** Broadcasts come from your organization's
+Turnkey wallet, not your own. Discover its address over REST with `GET /api/user/wallet`
+(`walletAddress` for EVM, `solanaAddress` for Solana) or `GET /api/integrations` (canonical
+EIP-55 checksummed `address`, preferred when an address must match exactly). Over MCP, call
+`list_integrations` to find the web3 integration, then `get_wallet_integration` with that
+integration's id - it returns the address as `walletAddress`. What a direct execution debits
+from the wallet is the value a write moves, not the gas: on sponsored chains a relayer pays
+the network fee. (A step configured against a Safe spends the Safe's balance instead.) See
+[User API](/api/user) and [Integrations](/api/integrations).
+
 Always preflight the three simulate-capable tools:
 
 1. Call the tool with `simulate: true`.
@@ -93,9 +103,12 @@ Always preflight the three simulate-capable tools:
 5. Keep `transactionLink` from the terminal response as the onchain proof.
 
 `execute_protocol_action` is not in that loop: it has no simulate step, so call it once with
-an `idempotency_key` and treat its response as the terminal result. For a write action the
-call returns the outcome directly - `transactionHash` and `transactionLink` on success, the
-error on failure - and there is no `executionId` to poll afterwards. (A read actionType
+an `idempotency_key`. A write action answers `202` with an envelope carrying `executionId`
+and a `status` of `completed`, `failed`, or `unconfirmed` (plus `transactionHash` and
+`transactionLink` when the write produced one). Only `completed` and `failed` are terminal:
+when the status is `unconfirmed` the transaction is broadcast but not yet confirmed, so poll
+`get_direct_execution_status` with the returned `executionId` until it is terminal - never
+re-send an `unconfirmed` execution, the transaction may still land. (A read actionType
 returns the read value instead, as above.)
 
 **Simulation is EVM-only.** On Solana mainnet (`101`) and devnet (`103`), a `simulate: true` call

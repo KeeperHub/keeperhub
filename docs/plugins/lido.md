@@ -7,7 +7,7 @@ description: "Liquid staking for Ethereum -- wrap stETH to wstETH, unwrap back, 
 
 Lido is the largest liquid staking protocol on Ethereum. Users stake ETH and receive stETH, a rebasing token that accrues staking rewards. wstETH is a non-rebasing wrapper around stETH, suitable for DeFi protocols and cross-chain bridging. The wstETH/stETH exchange rate increases over time as staking rewards accrue.
 
-Supported chains: Ethereum Mainnet (wrap/unwrap + all reads), Base (balance only), Sepolia Testnet. Read-only actions work without credentials. Write actions require a connected wallet.
+Supported chains: Ethereum Mainnet (wrap/unwrap + all reads), Base (bridged wstETH: balance and total supply only), Sepolia Testnet. Read-only actions work without credentials. Write actions require a connected wallet.
 
 ## Actions
 
@@ -22,7 +22,11 @@ Supported chains: Ethereum Mainnet (wrap/unwrap + all reads), Base (balance only
 | wstETH Per stETH (Inverse Rate) | Read | No | Get the wstETH value of 1 stETH |
 | Get wstETH Balance | Read | No | Check wstETH balance of an address |
 | Get wstETH Total Supply | Read | No | Get total wstETH tokens in circulation |
+| Get wstETH Balance (L2) | Read | No | Check wstETH balance of an address on Base |
+| Get wstETH Total Supply (L2) | Read | No | Get total bridged wstETH tokens on Base |
 | Get stETH Balance | Read | No | Check stETH balance of an address |
+
+Every action above except the two marked (L2) targets the canonical wstETH or stETH contract, which is on Ethereum Mainnet and Sepolia. The two (L2) actions target the bridged wstETH token on Base.
 
 ---
 
@@ -149,7 +153,7 @@ Get the current wstETH value of 1 stETH. This is the inverse of the exchange rat
 
 ## Get wstETH Balance
 
-Check the wstETH balance of any Ethereum address. Works on Ethereum Mainnet, Base, and Sepolia.
+Check the wstETH balance of any address. On Ethereum Mainnet and Sepolia this reads the canonical wstETH contract, which is not deployed on Base; on Base the slug resolves to the bridged token instead, so it works there too. Get wstETH Balance (L2) below is the preferred name for new work on Base.
 
 **Inputs:**
 
@@ -169,7 +173,7 @@ Check the wstETH balance of any Ethereum address. Works on Ethereum Mainnet, Bas
 
 ## Get wstETH Total Supply
 
-Get the total supply of wstETH tokens currently in circulation.
+Get the total supply of wstETH tokens currently in circulation on Ethereum Mainnet or Sepolia. For the bridged supply on Base, use Get wstETH Total Supply (L2) below.
 
 **Inputs:** None
 
@@ -180,6 +184,42 @@ Get the total supply of wstETH tokens currently in circulation.
 | totalSupply | uint256 | Total wstETH Supply (wei), 18 decimals |
 
 **When to use:** Monitor protocol adoption, track total wrapped stETH, analyze wrapping trends.
+
+---
+
+## Get wstETH Balance (L2)
+
+Slug: `get-wsteth-balance-l2`. Check the wstETH balance of any address on Base. wstETH on Base is a bridged token: it holds balances and reports a total supply, but implements none of the wrap, unwrap, or exchange-rate functions, so this action exists separately from Get wstETH Balance rather than extending it to another chain.
+
+**Inputs:**
+
+| Input | Type | Description |
+|-------|------|-------------|
+| account | address | Wallet Address |
+
+**Outputs:**
+
+| Output | Type | Description |
+|--------|------|-------------|
+| balance | uint256 | wstETH Balance (wei), 18 decimals |
+
+**When to use:** Monitor bridged wstETH holdings on Base. Returns the same wei-denominated, 18-decimal value as the Ethereum action, so a workflow moving from Mainnet to Base needs no unit change.
+
+---
+
+## Get wstETH Total Supply (L2)
+
+Slug: `get-wsteth-total-supply-l2`. Get the total supply of bridged wstETH on Base. This is the supply of the Base token, not of canonical wstETH on Ethereum.
+
+**Inputs:** None
+
+**Outputs:**
+
+| Output | Type | Description |
+|--------|------|-------------|
+| totalSupply | uint256 | Total wstETH Supply (wei), 18 decimals |
+
+**When to use:** Track how much wstETH has been bridged to Base, compare Base supply against Mainnet supply.
 
 ---
 
@@ -236,7 +276,7 @@ Track total wstETH supply and its stETH value, sending daily data to an external
 | Chain | Contracts Available |
 |-------|-------------------|
 | Ethereum (1) | wstETH, stETH |
-| Base (8453) | wstETH (bridged, balance only) |
+| Base (8453) | wstETH (bridged: balance and total supply) |
 | Sepolia (11155111) | wstETH, stETH (testnet) |
 
-On Ethereum Mainnet, all wrap/unwrap and conversion functions are available. On Base, wstETH is a bridged ERC-20 token with balance queries only. Sepolia provides testnet versions for development.
+On Ethereum Mainnet, all wrap/unwrap and conversion functions are available. On Base, wstETH is a bridged ERC-20 token: it answers balance and total-supply reads, under the `get-wsteth-balance-l2` and `get-wsteth-total-supply-l2` slugs, and implements none of the wrap, unwrap, or exchange-rate functions. Sepolia provides testnet versions for development.

@@ -344,7 +344,7 @@ spec:
               cpu: "200m"
               ephemeral-storage: "64Mi"  # honest floor for accounting (env RUNNER_EPHEMERAL_STORAGE_REQUEST)
             limits:
-              memory: "320Mi"
+              memory: "768Mi"        # paired with --max-old-space-size=512; the gap covers off-heap RSS
               cpu: "750m"
               ephemeral-storage: "1Gi"   # runaway-/tmp guard (~2 MiB normal); evicts a pathological pod before it threatens the node (env RUNNER_EPHEMERAL_STORAGE_LIMIT)
       volumes:

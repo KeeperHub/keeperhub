@@ -1,5 +1,6 @@
 import { getEncodeTransformKind } from "@/lib/protocol-encode-transforms";
 import type { ProtocolActionInput } from "@/lib/protocol-registry";
+import { ZERO_ADDRESS } from "@/lib/web3/address";
 import {
   type AbiFunctionFragment,
   type AbiParameter,
@@ -71,21 +72,17 @@ function camelCaseSlug(slug: string): string {
 
 // -- Chain & address resolution ----------------------------------------------
 
-function resolveChain(
-  ctx: ProtocolActionContext,
-  nodeConfig: Record<string, unknown> | undefined
-): ResolvedChain {
-  const chainId = nodeConfig?.network as string | undefined;
+function resolveChain(chainId: string | undefined): ResolvedChain {
   if (!chainId) {
     return { kind: "missing" };
   }
   const entry = VIEM_CHAINS[chainId];
+  // "unknown" means unknown to viem, and nothing else. Whether the contract
+  // has an address on this chain is resolveAddress's question, and it already
+  // answers it with "no deployment recorded for chain id N". Folding the two
+  // together made a node on Base emit "chain id 8453 is not in viem/chains",
+  // which is false and sends the reader to define a chain viem ships.
   if (!entry) {
-    return { kind: "unknown", chainId };
-  }
-  if (
-    !(ctx.contract.userSpecifiedAddress || chainId in ctx.contract.addresses)
-  ) {
     return { kind: "unknown", chainId };
   }
   return { kind: "known", chainId, entry };
@@ -199,9 +196,16 @@ function applyEncodeTransform(
   ctx: ProtocolActionContext,
   fieldName: string
 ): string {
+  // `ctx.action.slug`, not `ctx.actionSlug`: a transform is registered against
+  // the action that declares the input, and the runtime looks it up with the
+  // slug of the action it resolved (protocol-read.ts and
+  // protocol-write.ts both find the action by function + contract key, then
+  // pass its slug to applyEncodeTransformsNamed). For an aliased slug the two
+  // differ, and keying off the requested one would emit SDK source that
+  // encodes an argument differently from the step.
   const kind = getEncodeTransformKind(
     ctx.protocolSlug,
-    ctx.actionSlug,
+    ctx.action.slug,
     fieldName
   );
   if (!kind) {
@@ -210,9 +214,37 @@ function applyEncodeTransform(
   if (kind === "padAddressToBytes") {
     return `("0x" + (${expr}).slice(2).padStart(64, "0") as ${HEX_BYTES_TYPE})`;
   }
-  // Exhaustive over EncodeTransformKind. Adding a new kind to the registry
-  // requires a new branch above; until then the synthesiser preserves the
-  // raw expression rather than silently dropping the transform.
+  if (kind === "weiToEther") {
+    // Unreachable: registerEncodeTransform refuses this kind on a declared
+    // ABI input, and only ABI params reach this builder - the virtual
+    // ethValue field is resolved on its own path and never arrives here.
+    // Throw rather than fall through to the raw expression. A silent
+    // passthrough is the shape that runs and produces a wrong number: it
+    // would emit SDK source converting nothing while the runtime converts,
+    // and nothing would say so. If the registration guard is ever removed
+    // or bypassed, this fails the export instead.
+    //
+    // On the payable path the divergence runs the other way, and it is
+    // worth stating precisely because the obvious reading is backwards.
+    // The emitted SDK already treats ethValue as wei (buildWriteParts
+    // emits `BigInt(input.ethValue)`), while the runtime treats it as
+    // ether (write-contract-core.ts calls parseEther). Registering
+    // weiToEther on an action therefore makes the runtime *agree* with the
+    // SDK for that action; every action without the transform stays
+    // divergent. So this is not "the SDK is behind and will catch up" -
+    // reconciling the field to one unit everywhere is a separate change,
+    // and it would move the SDK and the runtime together rather than only
+    // the SDK.
+    throw new Error(
+      `The weiToEther transform reached the SDK args builder for "${ctx.protocolSlug}/${ctx.action.slug}/${fieldName}". That kind is only valid on the virtual ethValue field, which never reaches this builder, so the registration guard in lib/protocol-encode-transforms.ts has been removed or bypassed.`
+    );
+  }
+  // Exhaustive over EncodeTransformKind, enforced at compile time: adding a
+  // new kind to the registry without a branch above narrows `kind` to
+  // something other than `never` here and fails type-check. At runtime an
+  // unknown kind falls through to the untransformed expression rather than
+  // the kind name.
+  const _exhaustive: never = kind;
   return expr;
 }
 
@@ -416,8 +448,6 @@ function emitChainImport(chain: ResolvedChain): {
     ],
   };
 }
-
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 function addressBlock(value: string): string {
   return `const CONTRACT_ADDRESS = "${value}" as const;`;
@@ -633,11 +663,12 @@ function buildSynthesisInputs(
   actionId: string,
   nodeConfig?: Record<string, unknown>
 ): SynthesisInputs | null {
-  const ctx = getProtocolActionContext(actionId);
+  const chainId = nodeConfig?.network as string | undefined;
+  const ctx = getProtocolActionContext(actionId, chainId);
   if (!ctx) {
     return null;
   }
-  const chain = resolveChain(ctx, nodeConfig);
+  const chain = resolveChain(chainId);
   const address = resolveAddress(ctx, chain, nodeConfig);
   const fnVarName = `${camelCaseSlug(ctx.actionSlug)}Step`;
   return { ctx, chain, address, fnVarName };

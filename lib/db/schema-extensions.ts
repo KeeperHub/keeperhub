@@ -533,8 +533,12 @@ export type NewWalletLock = typeof walletLocks.$inferInsert;
  * Tracks pending blockchain transactions for validation and recovery.
  * Used by NonceManager to:
  * - Reconcile pending txs with chain state at workflow start
- * - Detect stuck transactions that may need gas bumping
  * - Provide observability into transaction state
+ *
+ * Rows that stay `pending` well past their submittedAt are surfaced as the
+ * `keeperhub_web3_pending_transactions_stuck` gauge so a backlog
+ * can be alerted on. Nothing acts on that signal automatically: no code path
+ * re-prices a transaction at the same nonce, so recovery is a human decision.
  *
  * Status lifecycle: pending -> confirmed | dropped | replaced
  */
@@ -547,7 +551,7 @@ export const pendingTransactions = pgTable(
     txHash: text("tx_hash").notNull(),
     executionId: text("execution_id").notNull(),
     workflowId: text("workflow_id"),
-    gasPrice: text("gas_price"), // for stuck tx analysis
+    gasPrice: text("gas_price"), // fee actually paid, recorded for post-hoc review
     submittedAt: timestamp("submitted_at", { withTimezone: true }).defaultNow(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
     status: text("status").default("pending"), // pending, confirmed, dropped, replaced
@@ -560,6 +564,17 @@ export const pendingTransactions = pgTable(
       table.status
     ),
     index("idx_pending_tx_execution").on(table.executionId),
+    // Backs the stuck-backlog gauge. Pre-emptive rather than a present fix:
+    // at production volume (11k rows, 48/day as of 2026-09-09) the planner
+    // already serves that query from idx_pending_tx_status via a bitmap scan
+    // in 0.13ms, since a bitmap scan needs no leading-column match. The table
+    // is append-only - nothing prunes it - so this exists for the crossover
+    // where a full index scan plus heap fetches loses to a sequential scan.
+    // Partial on status = 'pending', so it stays the size of the unresolved
+    // set rather than the table.
+    index("idx_pending_tx_stuck")
+      .on(table.submittedAt, table.chainId)
+      .where(sql`${table.status} = 'pending'`),
   ]
 );
 
@@ -1487,3 +1502,35 @@ export type ExecutionQuotaNotification =
   typeof executionQuotaNotifications.$inferSelect;
 export type NewExecutionQuotaNotification =
   typeof executionQuotaNotifications.$inferInsert;
+
+/**
+ * KEEP-1042: per-organization watermark for the step-log retention purge.
+ *
+ * Every execution of this organization that started before
+ * `executionsPurgedThrough` has had its step logs removed. Without it the purge
+ * has no way to tell a drained organization from one it has never looked at,
+ * and each run would re-walk the whole already-purged history: the plan windows
+ * differ by three orders of magnitude, so a scan from the oldest row walks
+ * millions of long-window rows to reach a handful of short-window ones.
+ *
+ * The row is advanced only when an organization's range is fully drained, so an
+ * interrupted run resumes rather than skipping rows. Deliberately keyed by
+ * organization and not by window: an organization that moves to a shorter plan
+ * must have the newly-expired range reprocessed, which a window-keyed cursor
+ * would skip.
+ */
+export const executionRetentionProgress = pgTable(
+  "execution_retention_progress",
+  {
+    organizationId: text("organization_id")
+      .primaryKey()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    executionsPurgedThrough: timestamp("executions_purged_through").notNull(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  }
+);
+
+export type ExecutionRetentionProgress =
+  typeof executionRetentionProgress.$inferSelect;
+export type NewExecutionRetentionProgress =
+  typeof executionRetentionProgress.$inferInsert;

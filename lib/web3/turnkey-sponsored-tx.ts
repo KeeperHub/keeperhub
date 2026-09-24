@@ -1,4 +1,5 @@
 import "server-only";
+import { TurnkeyRequestError } from "@turnkey/sdk-server";
 import { getAddress, type Hex } from "viem";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { sleep } from "@/lib/sleep";
@@ -21,9 +22,15 @@ import { toCaip2 } from "@/lib/web3/turnkey-sponsorship-config";
  * which we poll until the transaction is broadcast and a hash is available.
  *
  * Return contract:
- *   - `null` only for failures that happened BEFORE anything was broadcast
- *     (unsupported chain, `ethSendTransaction` rejected, or a terminal-failure
- *     status with no tx hash). Callers may safely fall back to direct signing.
+ *   - `null` only for failures that are certain to have happened BEFORE
+ *     anything was broadcast: an unsupported chain, an `ethSendTransaction`
+ *     rejection that Turnkey returned without accepting the activity, or a
+ *     terminal-failure status with no tx hash. Callers may safely fall back to
+ *     direct signing.
+ *   - A transport failure or timeout on the send request is NOT one of those,
+ *     because it cannot distinguish "not received" from "received and
+ *     executing". It is reported as a pending error so the caller never
+ *     re-sends.
  *   - `SponsoredTxRevertError` when the tx broadcast and reverted on-chain.
  *   - `SponsoredTxPendingError` when the send was accepted but we could not
  *     confirm its outcome within the wait window (Turnkey slow to broadcast,
@@ -58,6 +65,31 @@ const TERMINAL_FAILURE_STATUSES = new Set([
   "TIMEOUT",
   "REVERTED",
 ]);
+
+// gRPC status codes that mean Turnkey read the request and refused it before
+// any broadcast was attempted: bad arguments, no signing resource for the
+// wallet, denied, failed precondition, unauthenticated. A send that fails with
+// one of these never left, so the caller may fall back to direct signing.
+//
+// Anything else - DEADLINE_EXCEEDED, UNAVAILABLE, INTERNAL, or a transport
+// error that never reached Turnkey's API - leaves it unknown whether the
+// activity was accepted and broadcast. A timeout in particular cannot
+// distinguish "not received" from "received and executing", so it must not be
+// reported as "nothing happened".
+const PRE_BROADCAST_REJECTION_CODES = new Set([
+  3, // INVALID_ARGUMENT
+  5, // NOT_FOUND (no signing resource for this wallet)
+  7, // PERMISSION_DENIED
+  9, // FAILED_PRECONDITION
+  16, // UNAUTHENTICATED
+]);
+
+function isDefinitePreBroadcastRejection(error: unknown): boolean {
+  return (
+    error instanceof TurnkeyRequestError &&
+    PRE_BROADCAST_REJECTION_CODES.has(error.code)
+  );
+}
 
 export type TurnkeySponsoredTxParams = {
   subOrgId: string;
@@ -122,7 +154,19 @@ export async function submitTurnkeySponsoredTransaction(
         chain_id: params.chainId.toString(),
       }
     );
-    return null;
+    // Only a definite rejection means the activity was never accepted. A
+    // timeout or transport failure leaves it unknown whether Turnkey accepted
+    // and broadcast the send; returning null there would let the caller fall
+    // back to direct signing and broadcast a second transaction, which is the
+    // double-send this path exists to prevent. Surface a pending error with no
+    // status id instead, and never fall back.
+    if (isDefinitePreBroadcastRejection(error)) {
+      return null;
+    }
+    throw new SponsoredTxPendingError({
+      message:
+        "Turnkey send request failed with an undetermined outcome; not falling back to avoid a duplicate broadcast",
+    });
   }
 
   const txHash = await pollForTxHash(params.subOrgId, statusId, pollOptions);
@@ -180,31 +224,37 @@ async function pollForTxHash(
     }
 
     const hash = response.eth?.txHash;
-    const hasFailure =
-      TERMINAL_FAILURE_STATUSES.has(response.txStatus) ||
-      Boolean(response.txError) ||
-      Boolean(response.error);
+    const hasHash = hash !== undefined && hash !== "";
+    const terminalFailure = TERMINAL_FAILURE_STATUSES.has(response.txStatus);
+    const failureFlagged = Boolean(response.txError) || Boolean(response.error);
 
-    if (hasFailure) {
+    if (hasHash && (terminalFailure || failureFlagged)) {
       // Post-broadcast revert: txHash is set, the underlying call is already
       // on-chain. Throw a typed error carrying Turnkey's structured revert
       // chain so callers can surface the real revert reason and skip the
       // direct-signing fallback (which would just revert again).
-      if (hash !== undefined && hash !== "") {
-        const revertChain = (response.error?.eth?.revertChain ??
-          []) as readonly RevertChainEntry[];
-        const message = response.txError ?? formatRevertChain(revertChain);
-        throw new SponsoredTxRevertError({
-          message,
-          txHash: hash as Hex,
-          sendTransactionStatusId,
-          revertChain,
-        });
-      }
+      const revertChain = (response.error?.eth?.revertChain ??
+        []) as readonly RevertChainEntry[];
+      const message = response.txError ?? formatRevertChain(revertChain);
+      throw new SponsoredTxRevertError({
+        message,
+        txHash: hash as Hex,
+        sendTransactionStatusId,
+        revertChain,
+      });
+    }
 
-      // Pre-broadcast failure (policy denial, gas-cap exhaustion, simulation
-      // error). Nothing happened on-chain; return null so the caller falls
-      // back to direct signing.
+    // Turnkey assigned a hash -> the tx is broadcast and we own it. Return it
+    // so the caller waits for the receipt and reports the real on-chain outcome
+    // (included or reverted) as the node result, and never re-sends.
+    if (hasHash) {
+      return hash as Hex;
+    }
+
+    if (terminalFailure) {
+      // Definite pre-broadcast failure (policy denial, gas-cap exhaustion,
+      // simulation error). The activity ended before broadcast; return null so
+      // the caller falls back to direct signing.
       logSystemError(
         ErrorCategory.EXTERNAL_SERVICE,
         "[Turnkey Sponsorship] Transaction terminated before broadcast",
@@ -218,11 +268,26 @@ async function pollForTxHash(
       return null;
     }
 
-    // Turnkey assigned a hash -> the tx is broadcast and we own it. Return it
-    // so the caller waits for the receipt and reports the real on-chain outcome
-    // (included or reverted) as the node result, and never re-sends.
-    if (hash !== undefined && hash !== "") {
-      return hash as Hex;
+    if (failureFlagged) {
+      // An error flag without a terminal status. Turnkey has accepted the
+      // activity and no hash has come back yet, so it may still broadcast;
+      // reporting "nothing happened" here would let the caller re-send and
+      // double-broadcast. Surface a pending error and never fall back.
+      logSystemError(
+        ErrorCategory.EXTERNAL_SERVICE,
+        "[Turnkey Sponsorship] Error flagged without a terminal status; outcome unknown",
+        new Error(response.txError ?? response.txStatus),
+        {
+          service: "turnkey",
+          send_transaction_status_id: sendTransactionStatusId,
+          tx_status: response.txStatus,
+        }
+      );
+      throw new SponsoredTxPendingError({
+        message:
+          "Turnkey reported an error without a terminal status; sponsored transaction outcome unknown",
+        sendTransactionStatusId,
+      });
     }
 
     await sleep(intervalMs);

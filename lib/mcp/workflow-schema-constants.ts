@@ -53,6 +53,10 @@ export const SYSTEM_ACTIONS = {
       timeout: "number - Request timeout in seconds (default 5, min 1, max 30)",
       failOnError:
         "boolean - Default true. When false, a non-2xx response or timeout does not fail the step; instead the next node receives { status, data: null, error }. Use for aggregator workflows where one source being down should not fail the whole run.",
+      retryAttempts:
+        "number - Extra attempts after the first (default 0, min 0, max 5). Retries only transient failures: connection errors, timeouts, and status 408, 425, 429, 500, 502, 503 and 504. A 4xx other than 408/425/429, a blocked URL and a malformed URL are never retried.",
+      retryDelay:
+        "number - Base delay in seconds between attempts (default 1, min 0, max 30). Backs off linearly, so attempt N waits delay * N seconds.",
     },
     outputFields: {
       status: "number - HTTP status code (null on timeout or connection error)",

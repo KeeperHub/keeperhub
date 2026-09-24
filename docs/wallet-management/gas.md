@@ -96,6 +96,46 @@ Workflows that route through a Safe (Sender ON) are not gas sponsored. The spons
 
 Sponsored gas is metered in USD against your plan's monthly gas credit cap (shown on the billing page). Mainnet usage counts against the cap; testnet usage is not charged. When the cap is reached, sponsorship pauses for the rest of the period and transactions pay gas from the wallet.
 
+### When sponsorship falls back
+
+Sponsorship is attempted first and falls back to direct signing (your wallet pays
+the gas) whenever any eligibility condition above is not met. Sponsorship can
+also be unavailable for a specific organization or wallet even when all of them
+hold: Turnkey can reject an activity at submission time, and the step then falls
+back the same way.
+
+The Runs panel shows a **Gas sponsored** badge on each sponsored step; a step
+that fell back has no badge. The badge is per step, so a run with one sponsored
+step and one fallback step still shows it on the sponsored step. The run-level
+**Sponsored** filter (under **Used gas**) lists runs that drew on gas credits.
+The run output does not say why sponsorship was skipped.
+
+What the fallback does next depends on the wallet balance:
+
+- **Wallet holds native gas**: the run completes, paid from your wallet.
+- **Wallet has no native gas**: the gas preflight runs before the transaction is
+  broadcast and fails the step with:
+
+  ```
+  Insufficient ETH balance. Have: 0.0, Need: 0.000000231. Fund
+  0x...orgWallet with at least 0.000000231 ETH on this chain and retry.
+  ```
+
+  Nothing was broadcast at this point, so there is no transaction hash to look
+  up. Fund the address named in the message and retry. The preflight caches the
+  balance and the gas price for about ten seconds, so a retry started right
+  after the funds land can repeat the same error; give it a few seconds.
+
+The preflight runs in the Web3 plugin's EVM write actions and in the protocol
+actions built on them. Actions on chains with their own transaction path, such
+as Tempo, do not run it. Reaching the preflight means the wallet is paying gas
+itself -- either the step was never eligible for sponsorship, or a sponsored
+attempt fell back -- and funding the address fixes the run either way. For a
+write that sends no native value, restoring the eligibility conditions above can
+also fix it without funding. A write that sends native value always needs that
+value in the wallet, because sponsorship covers the fee only (see
+[What sponsorship covers](#what-sponsorship-covers)).
+
 ## FAQ
 
 ### What happens if I leave the gas limit empty?

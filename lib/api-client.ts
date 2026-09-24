@@ -5,7 +5,10 @@
 
 import type { PlanName } from "@/lib/billing/plans";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import type { NodeExecutionStatus } from "@/lib/errors/execution-status";
+import type {
+  NodeExecutionStatus,
+  WorkflowExecutionStatus,
+} from "@/lib/errors/execution-status";
 import type { Page } from "@/lib/pagination";
 import type { HeldPaymentView } from "@/lib/tempo/held-payment-view";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
@@ -99,6 +102,43 @@ export type WorkflowVersionSummary = {
 };
 
 export type WorkflowHistoryResponse = Page<WorkflowVersionSummary>;
+
+/**
+ * One run as the `view=summary` executions list returns it: status and
+ * progress only. The run's input, output and execution trace stay on the
+ * full list and the per-execution logs route.
+ */
+export type ExecutionSummary = {
+  id: string;
+  workflowId: string;
+  userId: string;
+  status: WorkflowExecutionStatus;
+  error: string | null;
+  errorType: ExecutionErrorType | null;
+  errorCategory: string | null;
+  errorCode: string | null;
+  startedAt: Date;
+  completedAt: Date | null;
+  duration: string | null;
+  // Progress tracking fields
+  totalSteps: number | null;
+  completedSteps: number | null;
+  currentNodeId: string | null;
+  currentNodeName: string | null;
+  lastSuccessfulNodeId: string | null;
+  lastSuccessfulNodeName: string | null;
+  // The workflow_history version this run executed, resolved from the
+  // run's content hash. Null when no matching version exists yet.
+  ranVersion: number | null;
+};
+
+export type ExecutionSummaryPage = {
+  executions: ExecutionSummary[];
+  /** Opaque token for the next (older) page; null on the last page. */
+  nextCursor: string | null;
+  /** Live runs for the workflow, across all pages. */
+  total: number;
+};
 
 export type VoteResponse = {
   userVote: VoteDirection | null;
@@ -423,6 +463,8 @@ export type Integration = {
 };
 
 export type IntegrationWithConfig = Integration & {
+  /** Secret keys holding a value, never the values. */
+  storedSecretKeys?: string[];
   config: IntegrationConfig;
 };
 
@@ -453,7 +495,14 @@ export const integrationApi = {
     }),
 
   // Update integration
-  update: (id: string, data: { name?: string; config?: IntegrationConfig }) =>
+  update: (
+    id: string,
+    data: {
+      name?: string;
+      config?: IntegrationConfig;
+      clearedConfigKeys?: string[];
+    }
+  ) =>
     apiCall<IntegrationWithConfig>(`/api/integrations/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
@@ -469,14 +518,20 @@ export const integrationApi = {
   // that are merged server-side with stored secrets before testing
   testConnection: (
     integrationId: string,
-    configOverrides?: IntegrationConfig
+    configOverrides?: IntegrationConfig,
+    clearedConfigKeys?: string[]
   ) =>
     apiCall<{ status: "success" | "error"; message: string }>(
       `/api/integrations/${integrationId}/test`,
       {
         method: "POST",
-        ...(configOverrides
-          ? { body: JSON.stringify({ configOverrides }) }
+        ...(configOverrides || clearedConfigKeys?.length
+          ? {
+              body: JSON.stringify({
+                ...(configOverrides ? { configOverrides } : {}),
+                ...(clearedConfigKeys?.length ? { clearedConfigKeys } : {}),
+              }),
+            }
           : {}),
       }
     ),
@@ -773,36 +828,23 @@ export const workflowApi = {
       `/api/workflows/${id}/code`
     ),
 
-  // Get executions
-  getExecutions: (id: string) =>
-    apiCall<
-      Array<{
-        id: string;
-        workflowId: string;
-        userId: string;
-        status: string;
-        input: unknown;
-        output: unknown;
-        error: string | null;
-        errorType: ExecutionErrorType | null;
-        errorCategory: string | null;
-        errorCode: string | null;
-        startedAt: Date;
-        completedAt: Date | null;
-        duration: string | null;
-        // Progress tracking fields
-        totalSteps: number | null;
-        completedSteps: number | null;
-        currentNodeId: string | null;
-        currentNodeName: string | null;
-        lastSuccessfulNodeId: string | null;
-        lastSuccessfulNodeName: string | null;
-        executionTrace: string[] | null;
-        // The workflow_history version this run executed, resolved from the
-        // run's content hash. Null when no matching version exists yet.
-        ranVersion: number | null;
-      }>
-    >(`/api/workflows/${id}/executions`),
+  // Get executions: the summary view, one page at a time. Pass the previous
+  // page's nextCursor for the next one.
+  getExecutions: (
+    id: string,
+    options?: { limit?: number; cursor?: string | null }
+  ) => {
+    const params = new URLSearchParams({ view: "summary" });
+    if (options?.limit !== undefined) {
+      params.set("limit", String(options.limit));
+    }
+    if (options?.cursor) {
+      params.set("cursor", options.cursor);
+    }
+    return apiCall<ExecutionSummaryPage>(
+      `/api/workflows/${id}/executions?${params.toString()}`
+    );
+  },
 
   // Delete executions
   deleteExecutions: (id: string) =>

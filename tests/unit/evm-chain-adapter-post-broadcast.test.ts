@@ -241,6 +241,45 @@ describe("EvmChainAdapter post-broadcast failures (non-Tempo)", () => {
     expect(broadcastTransactionHash(error)).toBe(TX_HASH);
   });
 
+  /**
+   * KEEP-1281: unbounded, tx.wait() waits for as long as the step is allowed
+   * to live. A transaction that never mines pinned the step until the reaper
+   * swept it, and the reaper records no hash -- so the broadcast never
+   * entered the reconciler's scan at all.
+   */
+  it("bounds the receipt wait rather than waiting for as long as the step may live", async () => {
+    const h = createHarness(vi.fn().mockResolvedValue(buildReceipt(TX_HASH)));
+
+    await send(h);
+
+    const [confirms, timeoutMs] = h.wait.mock.calls[0] as [number, number];
+    expect(confirms).toBe(1);
+    // Above one primary-then-fallback failover round (186s): a receipt read
+    // riding out a degraded primary must not be cut short by its own
+    // deadline, or a transaction that was going to mine is reported as a
+    // failed run and every step after it is skipped.
+    expect(timeoutMs).toBeGreaterThan(186_000);
+    // Below the reaper's 30-minute default, so the pending row is recorded
+    // while the step is still ours to finalize.
+    expect(timeoutMs).toBeLessThan(30 * 60 * 1000);
+  });
+
+  it("carries the hash when the bounded wait expires", async () => {
+    const h = createHarness(
+      vi.fn().mockRejectedValue(
+        Object.assign(new Error("wait for transaction timeout"), {
+          code: "TIMEOUT",
+        })
+      )
+    );
+
+    const error = await sendAndCatch(h);
+
+    // The deadline says we stopped looking, never that the transaction failed.
+    expect(isOnChainPendingError(error)).toBe(true);
+    expect(broadcastTransactionHash(error)).toBe(TX_HASH);
+  });
+
   it("carries the hash when the provider fails mid-wait", async () => {
     const h = createHarness(
       vi.fn().mockRejectedValue(

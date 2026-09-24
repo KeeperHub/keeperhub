@@ -23,9 +23,10 @@ jobs:
           fetch-depth: 1
 
       - name: Setup pnpm
+        # No version input: the version comes from the packageManager field in
+        # package.json. It has to match what wrote the lockfile, because pnpm
+        # validates patchedDependencies hashes on a frozen install.
         uses: pnpm/action-setup@v6
-        with:
-          version: 10
 
       - name: Setup Node
         uses: actions/setup-node@v7

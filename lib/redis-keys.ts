@@ -66,3 +66,13 @@ export function nativeBalanceKey(chainId: number, address: string): string {
 export function gasPriceKey(chainId: number): string {
   return deploymentKey("gas-price", String(chainId));
 }
+
+/**
+ * Marks a workflow step as claimed by one replica. The durability layer
+ * replays the workflow body on every replica that picks up a step, so the
+ * same step is reached many times per run; this key is what stops two of
+ * those replays from running it at once.
+ */
+export function stepClaimKey(executionId: string, nodeId: string): string {
+  return deploymentKey("step-claim", executionId, nodeId);
+}

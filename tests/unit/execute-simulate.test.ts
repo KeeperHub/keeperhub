@@ -156,6 +156,67 @@ function resetSpies(): void {
 }
 
 describe("simulateContractCall", () => {
+  it("B2 refuses a bare overloaded name before RPC", async () => {
+    resetSpies();
+    executeWithFailover.mockResolvedValue([BigInt(45_000), "0x"]);
+    const abi = [
+      {
+        type: "function",
+        name: "swap",
+        inputs: [{ name: "amount", type: "uint256" }],
+        outputs: [],
+      },
+      {
+        type: "function",
+        name: "swap",
+        inputs: [
+          {
+            name: "params",
+            type: "tuple",
+            components: [
+              { name: "token", type: "address" },
+              { name: "amount", type: "uint256" },
+            ],
+          },
+        ],
+        outputs: [],
+      },
+    ];
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: JSON.stringify(abi),
+      functionName: "swap",
+      functionArgs: "[1]",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("matches 2 overloads");
+    }
+    expect(getRpcProvider).not.toHaveBeenCalled();
+    expect(executeWithFailover).not.toHaveBeenCalled();
+  });
+
+  it("B2 accepts duplicate entries of the same canonical signature", async () => {
+    resetSpies();
+    executeWithFailover.mockResolvedValueOnce([BigInt(45_000), "0x"]);
+    const entry = JSON.parse(WRITE_ABI)[0];
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: JSON.stringify([
+        entry,
+        { ...entry, inputs: [{ name: "renamed", type: "uint256" }] },
+      ]),
+      functionName: "setValue",
+      functionArgs: "[1]",
+    });
+    expect(result.success).toBe(true);
+    expect(executeWithFailover).toHaveBeenCalledTimes(1);
+  });
+
   // The contract-call route calls this function directly rather than going
   // through simulateTokenTransfer, so gating only the latter left
   // POST /api/execute/contract-call?simulate=true reporting a clean dry run
@@ -232,6 +293,52 @@ describe("simulateContractCall", () => {
     );
   });
 
+  it("decodes the return value when the key is a legacy tuple spelling", async () => {
+    // API callers still send keys stored before tuples were expanded, such as
+    // `f(tuple)`. Resolving that key is only half the job: the call data and
+    // the returned bytes both have to go through a signature ethers accepts,
+    // or the decode fails silently and the caller gets raw hex back.
+    resetSpies();
+    const encoded42 =
+      "0x000000000000000000000000000000000000000000000000000000000000002a";
+    executeWithFailover.mockResolvedValueOnce([BigInt(30_000), encoded42]);
+
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: JSON.stringify([
+        {
+          type: "function",
+          name: "f",
+          inputs: [{ name: "x", type: "uint256" }],
+          outputs: [{ name: "", type: "uint256" }],
+          stateMutability: "view",
+        },
+        {
+          type: "function",
+          name: "f",
+          inputs: [
+            {
+              name: "p",
+              type: "tuple",
+              components: [{ name: "a", type: "uint256" }],
+            },
+          ],
+          outputs: [{ name: "", type: "uint256" }],
+          stateMutability: "view",
+        },
+      ]),
+      functionName: "f(tuple)",
+      functionArgs: JSON.stringify([{ a: "7" }]),
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.simulatedReturnValue).toBe("42");
+    }
+  });
+
   it("returns wouldRevert with a decoded reason when failover rejects", async () => {
     resetSpies();
     // Build a CALL_EXCEPTION-shaped error carrying a standard
@@ -259,6 +366,80 @@ describe("simulateContractCall", () => {
       expect(result.failureKind).toBe("revert");
       expect(result.revertReason).toContain("Insufficient balance");
       expect(result.error).toBe(result.revertReason);
+    }
+  });
+
+  // #2430: a revert raised in a callee, not in the contract being called. The
+  // ABI that encodes `setValue` cannot name it, so it arrives as hex and the
+  // caller learns nothing from a field that is supposed to carry the reason.
+  const CALLEE_ERROR = "error ReleaseBlocked(uint256 jobId, bytes32 reason)";
+  const CALLEE_ERROR_DATA = new ethers.Interface([
+    CALLEE_ERROR,
+  ]).encodeErrorResult("ReleaseBlocked", [
+    BigInt(8),
+    "0x455f5354414c4500000000000000000000000000000000000000000000000000",
+  ]);
+  const CALLEE_ERROR_ABI = JSON.stringify([
+    {
+      type: "error",
+      name: "ReleaseBlocked",
+      inputs: [
+        { name: "jobId", type: "uint256" },
+        { name: "reason", type: "bytes32" },
+      ],
+    },
+  ]);
+
+  it("decodes a callee's custom error when its ABI travels in errorAbis", async () => {
+    resetSpies();
+    executeWithFailover.mockRejectedValueOnce({
+      data: CALLEE_ERROR_DATA,
+      message: "execution reverted (unknown custom error)",
+    });
+
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: WRITE_ABI,
+      functionName: "setValue",
+      functionArgs: JSON.stringify(["1"]),
+      errorAbis: [CALLEE_ERROR_ABI],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.wouldRevert).toBe(true);
+    if (!result.success && result.failureKind !== "unavailable") {
+      expect(result.failureKind).toBe("revert");
+      expect(result.revertReason).toContain("ReleaseBlocked(8");
+      expect(result.revertReason).toContain("0x455f5354414c45");
+    }
+  });
+
+  it("leaves that error undecoded when errorAbis is absent", async () => {
+    // The same request without the extra ABI, so the case above is evidence
+    // about the field rather than about the fixture.
+    resetSpies();
+    executeWithFailover.mockRejectedValueOnce({
+      data: CALLEE_ERROR_DATA,
+      message: "execution reverted (unknown custom error)",
+    });
+
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: WRITE_ABI,
+      functionName: "setValue",
+      functionArgs: JSON.stringify(["1"]),
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success && result.failureKind !== "unavailable") {
+      expect(result.revertReason).not.toContain("ReleaseBlocked");
+      expect(result.revertReason).toContain("unknown custom error");
+      // The bytes are kept, which is how a caller knows more ABI would help.
+      expect(result.undecodedRevertData).toBe(CALLEE_ERROR_DATA);
     }
   });
 

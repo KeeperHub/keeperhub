@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { OrganizationSubscription } from "@/lib/db/schema";
+import { DAY_MS } from "@/lib/utils/duration";
 import {
   DEFAULT_TRIAL_TIER_KEY,
   isConfigurableTrialTier,
@@ -41,7 +42,6 @@ const MAX_TRIAL_DAYS = 90;
 
 const DEFAULT_REPEAT_COOLDOWN_DAYS = 90;
 const MIN_REPEAT_COOLDOWN_DAYS = 1;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Whether trial offers are turned on. Off by default -- trials are a deliberate

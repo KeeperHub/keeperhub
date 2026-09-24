@@ -23,6 +23,7 @@ import {
   getPendingClaim,
   useClaimWorkflow,
 } from "@/lib/hooks/use-claim-workflow";
+import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import {
   integrationsAtom,
   integrationsLoadedAtom,
@@ -78,11 +79,6 @@ type WorkflowPageProps = {
 
 type WorkflowEditorProps = {
   workflowId: string;
-};
-
-// System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
-  "Database Query": "database",
 };
 
 // Helper to get required integration type for an action
@@ -759,7 +755,10 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
 
     const rehydrate = async (): Promise<void> => {
       try {
-        const executions = await api.workflow.getExecutions(currentWorkflowId);
+        const { executions } = await api.workflow.getExecutions(
+          currentWorkflowId,
+          { limit: 50 }
+        );
         if (cancelled) {
           return;
         }

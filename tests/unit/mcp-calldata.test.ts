@@ -136,14 +136,14 @@ describe("generateCalldataForWorkflow", () => {
     }
   });
 
-  it("calls encodeFunctionData with correct ABI, function name, and args", () => {
+  it("calls encodeFunctionData with the canonical signature and args", () => {
     const nodes = [makeWriteNode()];
     generateCalldataForWorkflow(nodes, {});
 
-    expect(mockEncodeFunctionData).toHaveBeenCalledWith("transfer", [
-      "0xRecipient",
-      "1000",
-    ]);
+    expect(mockEncodeFunctionData).toHaveBeenCalledWith(
+      "transfer(address,uint256)",
+      ["0xRecipient", "1000"]
+    );
   });
 
   it("resolves {{@trigger:Trigger.recipient}} template from triggerInputs", () => {
@@ -154,10 +154,10 @@ describe("generateCalldataForWorkflow", () => {
     ];
     generateCalldataForWorkflow(nodes, { recipient: "0xResolvedAddress" });
 
-    expect(mockEncodeFunctionData).toHaveBeenCalledWith("transfer", [
-      "0xResolvedAddress",
-      "500",
-    ]);
+    expect(mockEncodeFunctionData).toHaveBeenCalledWith(
+      "transfer(address,uint256)",
+      ["0xResolvedAddress", "500"]
+    );
   });
 
   it("converts ethValue '0.1' to wei string via parseEther", () => {

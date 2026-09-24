@@ -5,9 +5,9 @@
  * preserved within each group.
  */
 
-export type DateGroup<T> = { label: string; items: T[] };
+import { DAY_MS } from "@/lib/utils/duration";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+export type DateGroup<T> = { label: string; items: T[] };
 
 function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();

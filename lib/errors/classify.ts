@@ -628,7 +628,12 @@ export function applyErrorClassHint(
   }
   if (hint === ExecutionErrorType.USER) {
     return {
-      errorCategory: classification.errorCategory,
+      // A step's hint only overrides the category when no rule matched;
+      // otherwise the rule's answer stands. "Matched" is the code, not the
+      // category - E-0001, E-0002 and E-0003 also carry WORKFLOW_ENGINE.
+      errorCategory: isDefaultClassification(classification)
+        ? ErrorCategory.CONFIGURATION
+        : classification.errorCategory,
       errorType: ExecutionErrorType.USER,
       code: null,
     };

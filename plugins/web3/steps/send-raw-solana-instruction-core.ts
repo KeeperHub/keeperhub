@@ -71,7 +71,7 @@ export type SendRawSolanaInstructionResult =
       effectiveGasPrice: string;
       instructionCount: number;
     }
-  | { success: false; error: string };
+  | { success: false; error: string; broadcastAttempted?: boolean };
 
 /**
  * Decodes an instruction's data field. Mirrors normalizeSolanaTransaction: a
@@ -253,7 +253,7 @@ function findForeignSigner(
   return null;
 }
 
-export async function sendRawSolanaInstructionCore(
+async function sendRawSolanaInstructionCoreImpl(
   input: SendRawSolanaInstructionCoreInput
 ): Promise<SendRawSolanaInstructionResult> {
   const { network, _context } = input;
@@ -382,6 +382,25 @@ export async function sendRawSolanaInstructionCore(
         chain_id: String(chainId),
       }
     );
-    return { success: false, error: getErrorMessage(error) };
+    return {
+      success: false,
+      error: getErrorMessage(error),
+      broadcastAttempted: true,
+    };
   }
+}
+
+/**
+ * Marks every failure returned before submit as definite pre-broadcast evidence.
+ * Any path after submit begins must set broadcastAttempted itself, otherwise the
+ * wrapper would incorrectly convert an ambiguous send into releasable evidence.
+ */
+export async function sendRawSolanaInstructionCore(
+  input: SendRawSolanaInstructionCoreInput
+): Promise<SendRawSolanaInstructionResult> {
+  const result = await sendRawSolanaInstructionCoreImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }

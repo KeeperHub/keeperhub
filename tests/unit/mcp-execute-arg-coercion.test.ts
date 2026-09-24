@@ -113,6 +113,18 @@ describe("MCP execute tools accept the natural first-guess encoding (#1841)", ()
     expect(body.amount).toBe("0.1");
   });
 
+  it("execute_transfer takes numeric gas_limit_multiplier and forwards a string (#1973)", async () => {
+    const result = await callTool("execute_transfer", {
+      chain_id: "11155111",
+      to_address: "0xabc",
+      amount: "0.1",
+      gas_limit_multiplier: 1.5,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(lastBody().gasLimitMultiplier).toBe("1.5");
+  });
+
   it("execute_contract_call takes a real array for function_args and forwards its JSON encoding", async () => {
     const result = await callTool("execute_contract_call", {
       contract_address: "0xc",

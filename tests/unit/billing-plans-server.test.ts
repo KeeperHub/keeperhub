@@ -14,13 +14,27 @@ const mockExecute = vi.fn();
 Object.assign(db, { execute: mockExecute });
 
 function mockSelectReturning(rows: Record<string, unknown>[]): void {
-  vi.mocked(db.select).mockReturnValue({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(rows),
-      }),
+  const tail = {
+    where: vi.fn().mockReturnValue({
+      limit: vi.fn().mockResolvedValue(rows),
     }),
+  };
+  vi.mocked(db.select).mockReturnValue({
+    from: vi.fn().mockReturnValue({ ...tail, leftJoin: vi.fn(() => tail) }),
   } as unknown as ReturnType<typeof db.select>);
+}
+
+/**
+ * A plan read that resolved: the organization row came back, carrying whatever
+ * subscription it has. Null is an org with no subscription, which is free.
+ */
+function mockPlanRead(subscription: Record<string, unknown> | null): void {
+  mockSelectReturning([{ orgId: "org_1", subscription }]);
+}
+
+/** The organization row itself did not come back, so the plan is unknown. */
+function mockPlanUnresolved(): void {
+  mockSelectReturning([]);
 }
 
 function mockExecuteReturning(rows: Record<string, unknown>[]): void {
@@ -116,8 +130,24 @@ describe("checkFeatureAccess", () => {
 });
 
 describe("checkExecutionLimit", () => {
+  it("admits without a downgrade when the plan cannot be established", async () => {
+    mockPlanUnresolved();
+
+    const result = await checkExecutionLimit("org_1");
+
+    // Not the free plan's 5,000: that would gate an unlimited org and hand its
+    // runs to pay-as-you-go, which charges the org's wallet per execution.
+    expect(result).toEqual({
+      allowed: true,
+      isOverage: false,
+      paygOverflow: false,
+      debtExecutions: 0,
+      effectiveLimit: -1,
+    });
+  });
+
   it("allows unlimited plans (enterprise)", async () => {
-    mockSelectReturning([{ plan: "enterprise", tier: null, status: "active" }]);
+    mockPlanRead({ plan: "enterprise", tier: null, status: "active" });
 
     const result = await checkExecutionLimit("org_1");
     expect(result).toEqual({
@@ -130,7 +160,7 @@ describe("checkExecutionLimit", () => {
   });
 
   it("allows free plan when under limit", async () => {
-    mockSelectReturning([]);
+    mockPlanRead(null);
     mockExecuteReturning([{ count: 100 }]);
 
     const result = await checkExecutionLimit("org_1");
@@ -147,7 +177,7 @@ describe("checkExecutionLimit", () => {
   // 4999 prior executions means this one is number 5000 of 5000: included, and
   // not flagged for the pay-as-you-go charge.
   it("does not flag the last included execution as billable", async () => {
-    mockSelectReturning([]);
+    mockPlanRead(null);
     mockExecuteReturning([{ count: 4999 }]);
 
     const result = await checkExecutionLimit("org_1");
@@ -161,7 +191,7 @@ describe("checkExecutionLimit", () => {
   });
 
   it("allows pro plan within limits without overage flag", async () => {
-    mockSelectReturning([{ plan: "pro", tier: "25k", status: "active" }]);
+    mockPlanRead({ plan: "pro", tier: "25k", status: "active" });
     mockExecuteReturning([{ count: 1000 }]);
 
     const result = await checkExecutionLimit("org_1");
@@ -175,7 +205,7 @@ describe("checkExecutionLimit", () => {
   });
 
   it("allows pro plan over limit with overage details", async () => {
-    mockSelectReturning([{ plan: "pro", tier: "25k", status: "active" }]);
+    mockPlanRead({ plan: "pro", tier: "25k", status: "active" });
     mockExecuteReturning([{ count: 30_000 }]);
 
     const result = await checkExecutionLimit("org_1");
@@ -194,7 +224,7 @@ describe("checkExecutionLimit", () => {
   // Pay-as-you-go covers every free org past its included limit, so admission
   // allows the run and the per-execution charge is the gate.
   it("allows free plan at limit for the pay-as-you-go charge to gate", async () => {
-    mockSelectReturning([]);
+    mockPlanRead(null);
     mockExecuteReturning([{ count: 5000 }]);
 
     const result = await checkExecutionLimit("org_1");
@@ -210,7 +240,7 @@ describe("checkExecutionLimit", () => {
   });
 
   it("allows free plan over limit for the pay-as-you-go charge to gate", async () => {
-    mockSelectReturning([]);
+    mockPlanRead(null);
     mockExecuteReturning([{ count: 6000 }]);
 
     const result = await checkExecutionLimit("org_1");
@@ -230,7 +260,7 @@ describe("checkExecutionLimit", () => {
   it("blocks free plan over limit when billing is disabled", async () => {
     const original = process.env.NEXT_PUBLIC_BILLING_ENABLED;
     process.env.NEXT_PUBLIC_BILLING_ENABLED = "false";
-    mockSelectReturning([]);
+    mockPlanRead(null);
     mockExecuteReturning([{ count: 6000 }]);
 
     try {
@@ -249,7 +279,7 @@ describe("checkExecutionLimit", () => {
   });
 
   it("blocks paid plan when canceled (overage disabled)", async () => {
-    mockSelectReturning([{ plan: "pro", tier: "25k", status: "canceled" }]);
+    mockPlanRead({ plan: "pro", tier: "25k", status: "canceled" });
     mockExecuteReturning([{ count: 30_000 }]);
 
     const result = await checkExecutionLimit("org_1");
@@ -264,7 +294,7 @@ describe("checkExecutionLimit", () => {
   });
 
   it("reduces effective limit by debt executions", async () => {
-    mockSelectReturning([{ plan: "pro", tier: "25k", status: "active" }]);
+    mockPlanRead({ plan: "pro", tier: "25k", status: "active" });
     mockGetActiveDebtExecutions.mockResolvedValue(5000);
     mockExecuteReturning([{ count: 21_000 }]);
 
@@ -283,7 +313,7 @@ describe("checkExecutionLimit", () => {
   });
 
   it("blocks paid plan when active debt exists despite overage support", async () => {
-    mockSelectReturning([{ plan: "pro", tier: "25k", status: "active" }]);
+    mockPlanRead({ plan: "pro", tier: "25k", status: "active" });
     mockGetActiveDebtExecutions.mockResolvedValue(5000);
     mockExecuteReturning([{ count: 26_000 }]);
 
@@ -300,7 +330,7 @@ describe("checkExecutionLimit", () => {
   });
 
   it("blocks paid plan with large debt even when usage is low", async () => {
-    mockSelectReturning([{ plan: "pro", tier: "25k", status: "active" }]);
+    mockPlanRead({ plan: "pro", tier: "25k", status: "active" });
     mockGetActiveDebtExecutions.mockResolvedValue(30_000);
     mockExecuteReturning([{ count: 50 }]);
 
@@ -317,7 +347,7 @@ describe("checkExecutionLimit", () => {
   });
 
   it("blocks when usage exceeds debt-reduced limit", async () => {
-    mockSelectReturning([{ plan: "pro", tier: "25k", status: "canceled" }]);
+    mockPlanRead({ plan: "pro", tier: "25k", status: "canceled" });
     mockGetActiveDebtExecutions.mockResolvedValue(10_000);
     mockExecuteReturning([{ count: 16_000 }]);
 

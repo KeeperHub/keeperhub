@@ -1069,8 +1069,64 @@
     {
       "idx": 152,
       "version": "7",
-      "when": 1788839869869,
-      "tag": "0152_keep_1080_organization_policies",
+      "when": 1788862439420,
+      "tag": "0152_keep_1291_pending_tx_stuck_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1789062501958,
+      "tag": "0153_keep_1346_exec_log_sponsored_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
+      "when": 1789062561958,
+      "tag": "0154_keep_1042_execution_retention_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1789062621958,
+      "tag": "0155_keep_1042_execution_retention_progress",
+      "breakpoints": true
+    },
+    {
+      "idx": 156,
+      "version": "7",
+      "when": 1789062681958,
+      "tag": "0156_keep_1042_sponsored_index_on_output",
+      "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "7",
+      "when": 1789418108876,
+      "tag": "0157_workflow_step_claims",
+      "breakpoints": true
+    },
+    {
+      "idx": 158,
+      "version": "7",
+      "when": 1789418108877,
+      "tag": "0158_keep_2305_condition_group_to_condition_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 159,
+      "version": "7",
+      "when": 1789650394873,
+      "tag": "0159_declare_workflow_executions_workflow_started",
+      "breakpoints": true
+    },
+    {
+      "idx": 160,
+      "version": "7",
+      "when": 1789650395873,
+      "tag": "0160_keep_1080_organization_policies",
       "breakpoints": true
     }
   ]

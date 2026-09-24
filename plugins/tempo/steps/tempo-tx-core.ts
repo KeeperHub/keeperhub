@@ -26,6 +26,8 @@
  * honored when a fee-payer co-signs, so it cannot be used here.
  */
 import "server-only";
+import { isDefinitelyPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
+import { OnChainPendingError, OnChainRevertError } from "@/lib/web3/onchain-revert";
 
 import { ethers } from "ethers";
 import { TxEnvelopeTempo } from "ox/tempo";
@@ -527,6 +529,42 @@ export async function signTempoTx(
 }
 
 /**
+ * Rejections where the node read the envelope and refused it outright: the
+ * payer cannot cover the cost (isFundingShortfall), a generic
+ * insufficient-funds answer, or an intrinsic-gas validation failure. All
+ * mean the envelope never entered the mempool, so the send is conclusively
+ * terminal rather than unknown.
+ */
+const NODE_ENVELOPE_REJECTION_PATTERNS: readonly RegExp[] = [
+  /insufficient funds/i,
+  /intrinsic gas/i,
+];
+
+function isSingleNodeEnvelopeRejection(message: string): boolean {
+  return (
+    isFundingShortfall(message) ||
+    NODE_ENVELOPE_REJECTION_PATTERNS.some((pattern) => pattern.test(message))
+  );
+}
+
+function isNodeEnvelopeRejection(message: string): boolean {
+  // executeWithFailover renders endpoint failures into one composite message.
+  // Treat the send as terminal only when every endpoint independently gave a
+  // definite envelope rejection. A timeout on one endpoint plus insufficient
+  // funds on the other is unknown because the timed-out endpoint may have
+  // accepted the transaction.
+  const endpointFailures = message
+    .split(/\b(?:primary|fallback):\s*/i)
+    .slice(1)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (endpointFailures.length > 0) {
+    return endpointFailures.every(isSingleNodeEnvelopeRejection);
+  }
+  return isSingleNodeEnvelopeRejection(message);
+}
+
+/**
  * Broadcast a previously-signed Tempo 0x76 blob and (by default) wait for a
  * successful receipt. Deserializes first to enforce the on-chain validity
  * window before spending an RPC round-trip, and to verify the blob still hashes
@@ -557,9 +595,9 @@ export async function broadcastStoredTempoTx(
       );
     }
   }
+  const actualHash = TxEnvelopeTempo.hash(envelope as TxEnvelopeTempo.Signed);
   if (expectedHash) {
-    const actual = TxEnvelopeTempo.hash(envelope as TxEnvelopeTempo.Signed);
-    if (actual.toLowerCase() !== expectedHash.toLowerCase()) {
+    if (actualHash.toLowerCase() !== expectedHash.toLowerCase()) {
       throw new Error(
         "Stored Tempo transaction does not match its expected hash; refusing to broadcast."
       );
@@ -583,16 +621,60 @@ export async function broadcastStoredTempoTx(
       error,
       { chain_id: String(chainId) }
     );
-    throw error;
+    // A definite envelope rejection or an all-attempts connection refusal is
+    // terminal only if the deterministic signed hash is also absent. A prior
+    // retry may have reached a node before a later refusal masked it, so probe
+    // the hash exactly as the EVM signed-send path does before releasing the
+    // idempotency key.
+    const looksDefinitelyPreBroadcast =
+      isNodeEnvelopeRejection(message) ||
+      isDefinitelyPreBroadcastNetworkError(error);
+    if (looksDefinitelyPreBroadcast) {
+      let visible: ethers.TransactionResponse | null;
+      try {
+        visible = await rpcManager.executeWithFailover(
+          (provider) => provider.getTransaction(actualHash),
+          "read"
+        );
+      } catch (lookupError) {
+        throw new OnChainPendingError({
+          message: `Tempo transaction send outcome could not be determined (${lookupError instanceof Error ? lookupError.message : String(lookupError)})`,
+          transactionHash: actualHash,
+        });
+      }
+
+      if (visible) {
+        hash = actualHash;
+      } else {
+        throw error;
+      }
+    } else {
+      throw new OnChainPendingError({
+        message: `Tempo transaction send outcome could not be determined (${message})`,
+        transactionHash: actualHash,
+      });
+    }
   }
 
   if (!waitForConfirmation) {
     return { hash, confirmed: false };
   }
 
-  const receipt = await waitForReceipt(rpcManager, hash);
+  let receipt: ethers.TransactionReceipt;
+  try {
+    receipt = await waitForReceipt(rpcManager, hash);
+  } catch (error) {
+    throw new OnChainPendingError({
+      message: error instanceof Error ? error.message : String(error),
+      transactionHash: actualHash,
+    });
+  }
   if (receipt.status === 0) {
-    throw new Error(`Tempo transaction reverted (${hash})`);
+    throw new OnChainRevertError({
+      message: `Tempo transaction reverted (${hash})`,
+      transactionHash: actualHash,
+      blockNumber: receipt.blockNumber,
+    });
   }
   return { hash, confirmed: true };
 }
@@ -638,6 +720,7 @@ export async function signAndBroadcastTempoTx(
     chainId: params.chainId,
     userId: params.userId,
     serialized: signed.serialized,
+    expectedHash: signed.hash,
     waitForConfirmation: true,
   });
   return { hash, from: signed.from };

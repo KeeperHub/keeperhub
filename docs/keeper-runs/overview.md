@@ -47,4 +47,15 @@ Use the Copy button next to any INPUT or OUTPUT section to copy the JSON data to
 
 ## Run History Retention
 
-Run history is stored for each workflow and persists across sessions. Use the Runs panel as your primary interface for understanding workflow behavior and performance.
+A run stays in the Runs panel long after its step details are gone. The step details behind a run - the input and output of each step - are kept for the log retention window of your plan:
+
+| Plan | Step details kept for |
+| --- | --- |
+| Free | 7 days |
+| Pro | 30 days |
+| Business | 90 days |
+| Enterprise | 1 year |
+
+Step details older than the window are deleted permanently. When a plan ends, or changes to one with a shorter window, the shorter window applies from then on, and step details older than it are deleted no sooner than a day after the change.
+
+Use the Runs panel as your primary interface for understanding workflow behavior and performance.

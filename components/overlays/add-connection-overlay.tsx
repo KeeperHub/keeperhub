@@ -1,6 +1,12 @@
 "use client";
 
 import { useAtomValue } from "jotai";
+import { ExclusiveGroupHeading } from "@/components/overlays/exclusive-group-heading";
+import {
+  type ExclusiveGroup,
+  isFieldLocked,
+  resolveExclusiveGroups,
+} from "@/lib/integrations/exclusive-groups";
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -20,6 +26,11 @@ import {
 } from "@/components/database-connection-form";
 import { getCustomIntegrationFormHandler } from "@/lib/workflow/editor/extension-registry";
 import { integrationsAtom } from "@/lib/integrations-store";
+import {
+  SYSTEM_INTEGRATION_DESCRIPTIONS,
+  SYSTEM_INTEGRATION_LABELS,
+  SYSTEM_INTEGRATION_TYPES,
+} from "@/lib/integrations/system";
 import type { IntegrationType } from "@/lib/types/integration";
 import {
   getIntegration,
@@ -31,15 +42,6 @@ import { ConfirmOverlay } from "./confirm-overlay";
 import { Overlay } from "./overlay";
 import { OverlayFooter } from "./overlay-footer";
 import { useOverlay } from "./overlay-provider";
-
-// System integrations that don't have plugins
-const SYSTEM_INTEGRATION_TYPES: IntegrationType[] = ["database"];
-const SYSTEM_INTEGRATION_LABELS: Record<string, string> = {
-  database: "Database",
-};
-const SYSTEM_INTEGRATION_DESCRIPTIONS: Record<string, string> = {
-  database: "Connect to PostgreSQL databases",
-};
 
 // Get all integration types (plugins + system)
 const getIntegrationTypes = (): IntegrationType[] => [
@@ -419,7 +421,7 @@ export function ConfigureConnectionForm({
       return null;
     }
 
-    return formFields.map((field) => {
+    const renderedFields = formFields.map((field) => {
       if (field.type === "password") {
         return (
           <SecretField
@@ -433,6 +435,56 @@ export function ConfigureConnectionForm({
             placeholder={field.placeholder}
             value={config[field.configKey] || ""}
           />
+        );
+      }
+
+      if (field.type === "checkbox") {
+        // A checkbox has to bind `checked`, not `value`: e.target.value is the
+        // element's value attribute, so the generic text branch below stored
+        // an empty string however the box was ticked, and every plugin reading
+        // the flag saw it as unset.
+        // An empty string counts as unset, not as false. Before this branch
+        // existed the generic text input stored "" for a checkbox however it
+        // was ticked, so that is exactly what every connection saved until
+        // now holds - and SendGrid's box defaults to true and is read at run
+        // time as "on unless it says false". Treating "" as false would show
+        // an existing connection unticked while it behaves as ticked, and one
+        // careless save would turn it genuinely off.
+        const stored = config[field.configKey];
+        const checked =
+          stored === undefined || stored === ""
+            ? Boolean(field.defaultValue)
+            : stored === "true";
+        return (
+          <div className="space-y-2" key={field.id}>
+            <div className="flex items-center gap-2">
+              <input
+                checked={checked}
+                className="size-4 rounded border-input accent-primary"
+                id={field.id}
+                onChange={(e) =>
+                  updateConfig(field.configKey, String(e.target.checked))
+                }
+                type="checkbox"
+              />
+              <Label htmlFor={field.id}>{field.label}</Label>
+            </div>
+            {(field.helpText || field.helpLink) && (
+              <p className="text-muted-foreground text-xs">
+                {field.helpText}
+                {field.helpLink && (
+                  <a
+                    className="underline hover:text-foreground"
+                    href={field.helpLink.url}
+                    rel="noopener noreferrer"
+                    target="_blank"
+                  >
+                    {field.helpLink.text}
+                  </a>
+                )}
+              </p>
+            )}
+          </div>
         );
       }
 
@@ -461,6 +513,46 @@ export function ConfigureConnectionForm({
               )}
             </p>
           )}
+        </div>
+      );
+    });
+
+    // Alternative credentials: hold the option that is not in use shut, so a
+    // form listing four fields does not read as though it wants all four.
+    const exclusive = resolveExclusiveGroups(formFields, config);
+    const useThisInstead = (group: ExclusiveGroup) => {
+      const inUse = exclusive.groups.find(
+        (one) => one.id === exclusive.activeGroupId
+      );
+      for (const key of inUse?.configKeys ?? []) {
+        updateConfig(key, "");
+      }
+    };
+
+    return renderedFields.map((rendered, index) => {
+      const field = formFields[index];
+      const heading = exclusive.groups.find(
+        (group) => group.firstFieldId === field.id
+      );
+      const locked = isFieldLocked(field, exclusive);
+      if (!(heading || locked)) {
+        return rendered;
+      }
+      return (
+        <div className="space-y-2" key={field.id}>
+          {heading && (
+            <ExclusiveGroupHeading
+              group={heading}
+              onUseThisInstead={useThisInstead}
+              state={exclusive}
+            />
+          )}
+          <div
+            aria-hidden={locked}
+            className={locked ? "pointer-events-none opacity-45" : undefined}
+          >
+            {rendered}
+          </div>
         </div>
       );
     });

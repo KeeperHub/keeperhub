@@ -67,6 +67,28 @@ function getEnvVar(envVars: V1EnvVar[], name: string): string | undefined {
   return envVars.find((v) => v.name === name)?.value;
 }
 
+function getHeapCapMib(envVars: V1EnvVar[]): number {
+  const nodeOptions = getEnvVar(envVars, "NODE_OPTIONS") ?? "";
+  const match = nodeOptions.match(/--max-old-space-size=(\d+)/);
+  if (!match) {
+    throw new Error(`No heap cap in NODE_OPTIONS: "${nodeOptions}"`);
+  }
+  return Number(match[1]);
+}
+
+function getMemoryLimitMib(job: V1Job): number {
+  const limit =
+    job.spec?.template?.spec?.containers?.[0]?.resources?.limits?.memory;
+  if (typeof limit !== "string") {
+    throw new Error("Runner container declares no memory limit");
+  }
+  const match = limit.match(/^(\d+)(Mi|Gi)$/);
+  if (!match) {
+    throw new Error(`Unsupported memory limit format: "${limit}"`);
+  }
+  return match[2] === "Gi" ? Number(match[1]) * 1024 : Number(match[1]);
+}
+
 function getSecretRef(
   envVars: V1EnvVar[],
   name: string
@@ -437,7 +459,76 @@ describe("createWorkflowJob", () => {
     expect(drainMs).toBeLessThan(deadlineMs);
   });
 
-  it("caps the runner heap below the container memory limit", async () => {
+  it("propagates a label-safe correlation id to the Job env and labels", async () => {
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "event",
+      correlationId: "abcd1234efgh5678",
+      latencyEpochs: { receivedAt: 1_000, observedAt: 500 },
+    });
+
+    const job = getSubmittedJob();
+    expect(job.metadata?.labels?.["correlation-id"]).toBe("abcd1234efgh5678");
+    const envVars = getJobEnvVars(job);
+    expect(getEnvVar(envVars, "KH_CORRELATION_ID")).toBe("abcd1234efgh5678");
+    expect(getEnvVar(envVars, "KH_RECEIVED_AT")).toBe("1000");
+    expect(getEnvVar(envVars, "KH_OBSERVED_AT")).toBe("500");
+  });
+
+  it("never puts a label-unsafe correlation id on the Job", async () => {
+    // A Kubernetes label value caps at 63 characters with a restricted
+    // charset; an invalid value fails Job creation, which would turn a bad
+    // correlation id into a workflow that never runs.
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "event",
+      correlationId: `bad/${"a".repeat(70)}`,
+    });
+
+    const job = getSubmittedJob();
+    expect(job.metadata?.labels?.["correlation-id"]).toBeUndefined();
+    expect(getEnvVar(getJobEnvVars(job), "KH_CORRELATION_ID")).toBeUndefined();
+  });
+
+  it("accepts a correlation id at the 63-character label limit", async () => {
+    const atLimit = "a".repeat(63);
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "event",
+      correlationId: atLimit,
+    });
+
+    const job = getSubmittedJob();
+    expect(job.metadata?.labels?.["correlation-id"]).toBe(atLimit);
+    expect(getEnvVar(getJobEnvVars(job), "KH_CORRELATION_ID")).toBe(atLimit);
+  });
+
+  it.each([
+    ["one character over the limit", "a".repeat(64)],
+    ["a leading separator", "-abcd1234"],
+    ["a trailing separator", "abcd1234."],
+    ["a trailing newline", "abcd1234\n"],
+  ])("drops a correlation id with %s", async (_case, correlationId) => {
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "event",
+      correlationId,
+    });
+
+    const job = getSubmittedJob();
+    expect(job.metadata?.labels?.["correlation-id"]).toBeUndefined();
+    expect(getEnvVar(getJobEnvVars(job), "KH_CORRELATION_ID")).toBeUndefined();
+  });
+
+  it("omits the latency env anchors when no stage stamps are supplied", async () => {
     await createWorkflowJob({
       workflowId: "wf-1",
       executionId: "exec-1234abcd",
@@ -446,6 +537,26 @@ describe("createWorkflowJob", () => {
     });
 
     const envVars = getJobEnvVars(getSubmittedJob());
-    expect(getEnvVar(envVars, "NODE_OPTIONS")).toBe("--max-old-space-size=224");
+    expect(envVars.find((v) => v.name === "KH_CORRELATION_ID")).toBeUndefined();
+    expect(envVars.find((v) => v.name === "KH_RECEIVED_AT")).toBeUndefined();
+    expect(envVars.find((v) => v.name === "KH_OBSERVED_AT")).toBeUndefined();
+  });
+
+  it("caps the runner heap below the container memory limit", async () => {
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const job = getSubmittedJob();
+    const heapCapMib = getHeapCapMib(getJobEnvVars(job));
+    const limitMib = getMemoryLimitMib(job);
+
+    // The kill lands on total RSS, so the heap cap has to leave room for the
+    // off-heap allocations that sit alongside it, not merely undercut the limit.
+    expect(heapCapMib).toBeLessThan(limitMib);
+    expect(limitMib - heapCapMib).toBeGreaterThanOrEqual(256);
   });
 });

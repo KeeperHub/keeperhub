@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_DATE_EPOCH_MS, SAFE_CORRELATION_ID } from "./latency";
 import type { ExecutorMessage } from "./types";
 
 /**
@@ -49,6 +50,17 @@ const eventMessageSchema = z.object({
   // passes decoded event data through verbatim; keep this permissive so a
   // non-object payload never fails an already-authenticated message.
   triggerData: z.unknown(),
+  // Latency correlation (issue #2289): optional so messages enqueued by
+  // older trackers (without the fields) still validate and dispatch. Both are
+  // bounded because both become load-bearing downstream: observedAt is
+  // rendered with `new Date(at).toISOString()` and correlationId is written
+  // into the runner Job's Kubernetes labels, where a 63-char cap and a
+  // restricted charset mean an over-long or slash-bearing value fails Job
+  // creation. Bounded here is the producer contract; the consumers
+  // (latency.ts, k8s-job.ts) additionally drop an unusable value, so a bad
+  // field is never the reason a transaction fails.
+  correlationId: z.string().regex(SAFE_CORRELATION_ID).optional(),
+  observedAt: z.number().safe().gte(0).lte(MAX_DATE_EPOCH_MS).optional(),
 });
 
 // manual and webhook share a shape but are separate literal branches so the

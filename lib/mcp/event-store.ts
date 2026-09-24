@@ -5,9 +5,10 @@ import type {
   StreamId,
 } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import { HOUR_MS } from "@/lib/utils/duration";
 
 const MAX_EVENTS_PER_STREAM = 1000;
-const STREAM_TTL_MS = 60 * 60 * 1000; // 1 hour
+const STREAM_TTL_MS = HOUR_MS;
 
 interface StoredEvent {
   eventId: EventId;

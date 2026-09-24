@@ -19,6 +19,10 @@ export const analyticsCustomEndAtom = atom<string | null>(null);
 
 export const analyticsSummaryAtom = atom<AnalyticsSummary | null>(null);
 export const analyticsTimeSeriesAtom = atom<TimeSeriesBucket[]>([]);
+// Width of one chart bucket, chosen server-side from how wide the window is.
+// The axis labels read from this rather than from the range name, which says
+// nothing about granularity once the range is a hand-picked one.
+export const analyticsTimeSeriesIntervalAtom = atom<number>(60 * 60 * 1000);
 export const analyticsNetworksAtom = atom<NetworkBreakdown[]>([]);
 export const analyticsRunsAtom = atom<RunsResponse | null>(null);
 

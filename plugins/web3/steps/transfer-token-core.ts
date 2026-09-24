@@ -6,6 +6,7 @@
  * exporting functions from "use step" files (which breaks the workflow bundler).
  */
 import "server-only";
+import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 
 import { and, eq, inArray } from "drizzle-orm";
 import { ethers } from "ethers";
@@ -128,6 +129,7 @@ export type TransferTokenResult =
       // True when the terminal failure came from the gas-sponsored path, so
       // the finalizer can report the route accurately on a failed execution.
       sponsored?: boolean;
+      broadcastAttempted?: boolean;
     };
 
 /**
@@ -243,7 +245,7 @@ export async function parseTokenAddress(
  * When _context.organizationId is provided, skips workflowExecutions lookup.
  */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Token transfer handler with comprehensive validation and error handling
-export async function transferTokenCore(
+async function transferTokenCoreImpl(
   input: TransferTokenCoreInput
 ): Promise<TransferTokenResult> {
   const {
@@ -537,6 +539,7 @@ export async function transferTokenCore(
           // in-flight send into success.
           errorClass: decision.errorClass,
           sponsored: true,
+          broadcastAttempted: decision.broadcastAttempted,
           ...(decision.transactionHash
             ? { transactionHash: decision.transactionHash, chainId }
             : {}),
@@ -579,14 +582,16 @@ export async function transferTokenCore(
     // Create contract instance for the actual write (needs signer)
     const contract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
 
-    try {
       const tokenHolderAddress =
         signerMode.kind === SIGNER_MODE.SAFE_ROLE || signerMode.kind === SIGNER_MODE.SAFE
           ? signerMode.safeAddress
           : signerAddress;
 
-      const [decimals, symbol, balance] =
-        await rpcManager.executeWithFailover((p) => {
+      let decimals: bigint;
+      let symbol: string;
+      let balance: bigint;
+      try {
+        [decimals, symbol, balance] = await rpcManager.executeWithFailover((p) => {
           const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, p);
           return Promise.all([
             tokenContract.decimals() as Promise<bigint>,
@@ -594,6 +599,12 @@ export async function transferTokenCore(
             tokenContract.balanceOf(tokenHolderAddress) as Promise<bigint>,
           ]);
         });
+      } catch (error) {
+        return {
+          success: false,
+          error: `Failed to read token metadata or balance: ${getErrorMessage(error)}`,
+        };
+      }
 
       const decimalsNum = Number(decimals);
 
@@ -647,6 +658,8 @@ export async function transferTokenCore(
         };
       }
 
+    let receivedTransactionHash: string | undefined;
+    try {
       let receipt: Awaited<ReturnType<typeof adapter.executeContractCall>>;
       if (signerMode.kind === SIGNER_MODE.SAFE_ROLE) {
         receipt = await executeContractCallAsRole(
@@ -704,6 +717,7 @@ export async function transferTokenCore(
         );
       }
 
+      receivedTransactionHash = receipt.hash;
       const gasUsedUnits = receipt.gasUsed.toString();
       const effectiveGasPrice = receipt.effectiveGasPrice.toString();
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
@@ -740,6 +754,8 @@ export async function transferTokenCore(
         }
       );
       const rejection = classifyRevert(error, contract.interface);
+      const broadcastHash =
+        broadcastTransactionHash(error) ?? receivedTransactionHash;
       // Attributed as a system fault so the execution log records a fault
       // domain for it; a relay-determined class is more specific, so it wins.
       const errorClass =
@@ -754,10 +770,24 @@ export async function transferTokenCore(
         ),
         ...(errorClass ? { errorClass } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
-        ...(broadcastTransactionHash(error)
-          ? { transactionHash: broadcastTransactionHash(error), chainId }
-          : {}),
+        broadcastAttempted:
+          broadcastHash ? true
+            : rejection.kind !== "unknown" ||
+                isPreBroadcastNetworkError(error)
+              ? false
+              : true,
+        ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
       };
     }
   });
+}
+
+export async function transferTokenCore(
+  input: TransferTokenCoreInput
+): Promise<TransferTokenResult> {
+  const result = await transferTokenCoreImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }

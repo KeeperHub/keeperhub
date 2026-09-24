@@ -312,6 +312,28 @@ describe("applyFailOnError", () => {
     expect(applyFailOnError(failure, false)).toEqual(failure);
   });
 
+  /**
+   * KEEP-1281: the shape the core actually returns for an OnChainPendingError
+   * -- a broadcast hash plus the SYSTEM class the catch block stamps on a
+   * pending send. Softening this to success would tell the workflow to carry
+   * on past a transfer that may still be landing, and would feed a hash the
+   * chain has not confirmed into the KEEP-966 success gate.
+   */
+  it("never softens a broadcast whose receipt could not be read", () => {
+    const pending: WriteContractResult = {
+      success: false,
+      error: "Transaction sent but receipt could not be read (timeout)",
+      errorClass: ExecutionErrorType.SYSTEM,
+      transactionHash: "0xinflight",
+      chainId: 1,
+    };
+
+    const softened = applyFailOnError(pending, false);
+
+    expect(softened).toEqual(pending);
+    expect(softened.success).toBe(false);
+  });
+
   it("softens an EXTERNAL-classified relay outage when failOnError is false", () => {
     const failure: WriteContractResult = {
       success: false,

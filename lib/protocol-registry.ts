@@ -1,5 +1,11 @@
+import { aliasedChainIds } from "@/lib/protocol-action-aliases";
+import {
+  assertEncodeTransformsLegalFor,
+  setActionInputsLookup,
+} from "@/lib/protocol-encode-transforms";
 import { solidityTypeToFieldType } from "@/lib/solidity-type-fields";
 import type { IntegrationType } from "@/lib/types/integration";
+import { getReadContractOutputFields } from "@/lib/workflow/editor/action-output-fields";
 
 import {
   createProtocolIconComponent,
@@ -13,7 +19,6 @@ import type {
 } from "@/plugins/registry";
 
 const KEBAB_CASE_REGEX = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
-const HEX_ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
 
 export type ProtocolContract = {
   label: string;
@@ -118,7 +123,7 @@ function validateAddresses(contracts: Record<string, ProtocolContract>): void {
       continue;
     }
     for (const [chain, address] of Object.entries(contract.addresses)) {
-      if (!HEX_ADDRESS_REGEX.test(address)) {
+      if (!EVM_ADDRESS_RE.test(address)) {
         throw new Error(
           `Invalid address "${address}" for contract "${contractKey}" on chain "${chain}": must be a 42-character hex string starting with 0x`
         );
@@ -219,6 +224,7 @@ import {
   deriveActionsFromAbi,
   deriveEventsFromAbi,
 } from "@/lib/abi/protocol-derive";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
 export type {
   AbiDrivenContract,
@@ -269,8 +275,28 @@ export function defineAbiProtocol(
 // Runtime protocol registry
 const protocolRegistry = new Map<string, ProtocolDefinition>();
 
+// Give the encode-transform registry a way to see an action's declared ABI
+// inputs so it can refuse an illegal weiToEther registration at the moment
+// it happens. The dependency runs one way (registry -> transforms) on
+// purpose: the transform module must not import this one, or the two form
+// a cycle.
+setActionInputsLookup(
+  (protocolSlug, actionSlug) =>
+    protocolRegistry
+      .get(protocolSlug)
+      ?.actions.find((a) => a.slug === actionSlug)?.inputs
+);
+
 export function registerProtocol(def: ProtocolDefinition): void {
   defineProtocol(def);
+  // Transforms are registered eagerly at module load, so a protocol often
+  // arrives after its own transforms and the check inside
+  // registerEncodeTransform could not see the action yet. Re-check here,
+  // now that it can - and re-check BEFORE the insert, reading the
+  // definition's own actions, so a caller that catches the throw is not
+  // left with the protocol registered and the illegal transform still in
+  // place.
+  assertEncodeTransformsLegalFor(def.slug, def.actions);
   protocolRegistry.set(def.slug, def);
 }
 
@@ -368,7 +394,18 @@ function buildConfigFieldsFromAction(
   action: ProtocolAction
 ): ActionConfigField[] {
   const contract = def.contracts[action.contract];
-  const allowedChainIds = Object.keys(contract.addresses);
+  // A chain-scoped alias keeps an old slug executing on a chain its declared
+  // contract left (lib/protocol-action-aliases.ts). Those chains belong in the
+  // offered list: this is what the save-time chain-select validation checks a
+  // stored node against and what the builder's chain dropdown renders, so
+  // omitting them makes a Base workflow that still runs unsaveable and blanks
+  // its Network field.
+  const allowedChainIds = Array.from(
+    new Set([
+      ...Object.keys(contract.addresses),
+      ...aliasedChainIds(def, `${def.slug}/${action.slug}`, action),
+    ])
+  );
   const fields: ActionConfigField[] = [
     {
       key: "network",
@@ -456,7 +493,85 @@ function buildConfigFieldsFromAction(
   return fields;
 }
 
+/**
+ * The ABI output parameters of the function an action calls.
+ *
+ * Returns undefined when the contract or function cannot be resolved, which
+ * leaves the caller to fall back rather than guess at a shape.
+ */
+function resolveAbiOutputs(
+  def: ProtocolDefinition,
+  action: ProtocolAction
+): Array<{ name?: string }> | undefined {
+  const contract = def.contracts?.[action.contract];
+  if (!contract?.abi) {
+    return;
+  }
+  try {
+    const parsed = JSON.parse(contract.abi) as Array<{
+      type?: string;
+      name?: string;
+      outputs?: Array<{ name?: string }>;
+    }>;
+    const fn = parsed.find(
+      (entry) => entry.type === "function" && entry.name === action.function
+    );
+    return fn?.outputs;
+  } catch {
+    return;
+  }
+}
+
+/**
+ * Template paths for a read action's return value.
+ *
+ * Delegates to getReadContractOutputFields, the same function the generic
+ * Read Contract action uses, so the two surfaces cannot drift: it already
+ * mirrors structureAbiOutputs (a single named output keyed by its ABI name,
+ * a single unnamed one as the bare value, several keyed by name or
+ * unnamedOutput<i>) and expands tuple components to the same depth the
+ * editor offers. Deriving the paths here a second time is what let tuple
+ * reads suggest `result` while the value was a struct, which a string field
+ * renders as its JSON text rather than the component the user wanted.
+ *
+ * The declared `outputs` overrides supply wording only. Their name used to be
+ * the path, which suggested a field that resolved to undefined whenever the
+ * ABI named nothing; the on-chain ABI is the authority on shape.
+ */
+function buildReadOutputPaths(
+  def: ProtocolDefinition,
+  action: ProtocolAction
+): Array<{ field: string; description: string }> {
+  const contract = def.contracts?.[action.contract];
+  const valueFields = getReadContractOutputFields(
+    contract?.abi,
+    action.function
+  ).filter((f) => f.field === "result" || f.field.startsWith("result."));
+
+  // Map each top-level output's path to its declared label, by position.
+  const abiOutputs = resolveAbiOutputs(def, action) ?? [];
+  const declared = action.outputs ?? [];
+  const topLevelPaths =
+    abiOutputs.length === 1
+      ? [
+          abiOutputs[0].name?.trim()
+            ? `result.${abiOutputs[0].name.trim()}`
+            : "result",
+        ]
+      : abiOutputs.map(
+          (output, index) =>
+            `result.${output.name?.trim() || `unnamedOutput${index}`}`
+        );
+
+  return valueFields.map((field) => {
+    const index = topLevelPaths.indexOf(field.field);
+    const label = index >= 0 ? declared[index]?.label : undefined;
+    return label ? { field: field.field, description: label } : field;
+  });
+}
+
 function buildOutputFieldsFromAction(
+  def: ProtocolDefinition,
   action: ProtocolAction
 ): Array<{ field: string; description: string }> {
   const outputs: Array<{ field: string; description: string }> = [];
@@ -465,10 +580,8 @@ function buildOutputFieldsFromAction(
   // Write actions still have ABI-derived outputs at the model layer, but
   // writeContractCore returns result: undefined, so surfacing them would
   // create template suggestions that resolve to undefined at runtime.
-  if (action.type === "read" && action.outputs) {
-    for (const output of action.outputs) {
-      outputs.push({ field: output.name, description: output.label });
-    }
+  if (action.type === "read") {
+    outputs.push(...buildReadOutputPaths(def, action));
   }
 
   outputs.push({
@@ -506,7 +619,7 @@ export function protocolActionToPluginAction(
     requiresCredentials: action.type === "write",
     ...(action.type === "write" ? { credentialIntegrationType: "web3" } : {}),
     configFields: buildConfigFieldsFromAction(def, action),
-    outputFields: buildOutputFieldsFromAction(action),
+    outputFields: buildOutputFieldsFromAction(def, action),
     ...(action.docUrl ? { docUrl: action.docUrl } : {}),
   };
 }

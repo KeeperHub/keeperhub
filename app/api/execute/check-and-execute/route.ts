@@ -10,6 +10,7 @@ import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { simulateContractCall } from "@/lib/execute/simulate";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
   recordIdempotentResponse,
@@ -20,6 +21,7 @@ import { requireScope } from "@/lib/middleware/require-scope";
 import { enforceDirectNodePolicy } from "@/lib/policy/direct-execution";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { getErrorMessage } from "@/lib/utils";
+import { normalizeErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
 import { readContractCore } from "@/plugins/web3/steps/read-contract-core";
 import { writeContractCore } from "@/plugins/web3/steps/write-contract-core";
 import { validateApiKey } from "../_lib/auth";
@@ -34,8 +36,13 @@ import {
   redactInput,
   withRejectedSignerOverride,
 } from "../_lib/execution-service";
+import { readGasLimitMultiplier } from "../_lib/gas-limit-multiplier";
 import { checkRateLimit } from "../_lib/rate-limit";
-import { parseSimulateFlag } from "../_lib/simulate-flag";
+import {
+  parseSimulateFlag,
+  rejectNestedSimulate,
+  rejectSimulateQuery,
+} from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import { validateCheckAndExecuteInput } from "../_lib/validate";
 import { requireWallet } from "../_lib/wallet-check";
@@ -171,7 +178,8 @@ async function executeConditionalRead(
   resolvedWriteAbi: string,
   organizationId: string,
   conditionResult: ConditionResult,
-  simulate: boolean
+  simulate: boolean,
+  errorAbis: string[]
 ): Promise<NextResponse> {
   const readResult = await readContractCore({
     contractAddress: action.contractAddress,
@@ -179,6 +187,8 @@ async function executeConditionalRead(
     abi: resolvedWriteAbi,
     abiFunction: action.functionName,
     functionArgs: action.functionArgs,
+    // #2430: decode-only, so it cannot change the call being made.
+    errorAbis,
     _context: { organizationId },
   });
 
@@ -209,7 +219,8 @@ async function simulateConditionalWrite(
   network: string,
   resolvedWriteAbi: string,
   organizationId: string,
-  conditionResult: ConditionResult
+  conditionResult: ConditionResult,
+  errorAbis: string[]
 ): Promise<NextResponse> {
   const walletError = await requireWallet(organizationId);
   if (walletError) {
@@ -222,6 +233,7 @@ async function simulateConditionalWrite(
     abi: resolvedWriteAbi,
     functionName: action.functionName,
     functionArgs: action.functionArgs,
+    errorAbis,
   });
   // `executed` reflects "the action would have run successfully" rather
   // than "we reached the action step". A reverted simulate means a real
@@ -241,7 +253,8 @@ async function executeConditionalWrite(
   fullBody: Record<string, unknown>,
   conditionResult: ConditionResult,
   idem: IdempotencyOutcome | null,
-  paygOverflow: boolean
+  paygOverflow: boolean,
+  errorAbis: string[]
 ): Promise<NextResponse> {
   const walletError = await requireWallet(organizationId);
   if (walletError) {
@@ -284,7 +297,9 @@ async function executeConditionalWrite(
       abi: resolvedWriteAbi,
       abiFunction: action.functionName,
       functionArgs: action.functionArgs,
-      gasLimitMultiplier: action.gasLimitMultiplier,
+      gasLimitMultiplier: readGasLimitMultiplier(action.gasLimitMultiplier),
+      // #2430: the action's own `abi` encodes it; these only join the decode.
+      errorAbis,
       _context: { organizationId },
     })
   );
@@ -314,9 +329,12 @@ async function executeConditionalWrite(
       transactionHash: result.transactionHash,
       chainId: result.chainId,
       sponsored: result.sponsored,
+      broadcastAttempted: result.broadcastAttempted,
     });
     outcome = { status: settled.status, error: result.error };
   }
+
+  const disposition = dispositionForExecutionOutcome(outcome.status, result);
 
   return recordIdempotentResponse(
     idem,
@@ -330,7 +348,7 @@ async function executeConditionalWrite(
       },
       { status: HttpStatus.ACCEPTED }
     ),
-    outcome.status === "completed" ? "success" : "failed"
+    disposition
   );
 }
 
@@ -341,6 +359,13 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: apiKeyCtx.error },
       { status: apiKeyCtx.status }
     );
+  }
+
+  // #2004: ?simulate= is refused on every /api/execute/* route rather than
+  // silently ignored. This route honours the flag only in the body.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
   }
 
   // Parsed before the scope gate because the required scope depends on
@@ -361,6 +386,13 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: simulateFlag.error, field: "simulate" },
       { status: HttpStatus.BAD_REQUEST }
     );
+  }
+
+  // #2004: only the top-level flag is read. `action.simulate` used to be
+  // ignored while the action broadcast for real.
+  const nestedSimulate = rejectNestedSimulate(body, "action");
+  if (nestedSimulate) {
+    return nestedSimulate;
   }
 
   // A dry run never signs, broadcasts, or reserves, so mcp:read satisfies it.
@@ -405,6 +437,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       status: HttpStatus.BAD_REQUEST,
     });
   }
+
+  // #2430: extra error sources for this request's decode paths. Read once,
+  // after the schema has refused a malformed field.
+  const errorAbis = normalizeErrorAbiDocuments(body.errorAbis);
 
   // KEEP-490: chainId is the canonical input; network is a deprecated alias.
   const network = String(body.chainId ?? body.network ?? "");
@@ -457,6 +493,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     abi: readAbiResult.abi,
     abiFunction: body.functionName as string,
     functionArgs: body.functionArgs as string | undefined,
+    errorAbis,
     _context: { organizationId: apiKeyCtx.organizationId },
   });
 
@@ -532,7 +569,8 @@ export async function POST(request: Request): Promise<NextResponse> {
         writeAbiResult.abi,
         apiKeyCtx.organizationId,
         conditionResult,
-        simulateFlag.simulate
+        simulateFlag.simulate,
+        errorAbis
       ),
       rateLimit
     );
@@ -547,7 +585,8 @@ export async function POST(request: Request): Promise<NextResponse> {
         network,
         writeAbiResult.abi,
         apiKeyCtx.organizationId,
-        conditionResult
+        conditionResult,
+        errorAbis
       ),
       rateLimit
     );
@@ -590,7 +629,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       body,
       conditionResult,
       idem,
-      executionGuard.limitResult?.paygOverflow === true
+      executionGuard.limitResult?.paygOverflow === true,
+      errorAbis
     ),
     rateLimit
   );

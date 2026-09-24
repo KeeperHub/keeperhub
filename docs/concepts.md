@@ -36,7 +36,7 @@ Every workflow starts with a trigger that determines when it runs:
 Actions perform the actual work in your workflow:
 
 - **Web3 Actions**: Check Balance, Read Contract, Write Contract, Transfer Funds
-- **Notification Actions**: Send Email, Send Discord Message, Send Slack Message
+- **Notification Actions**: Send Email, Send Discord Message, Send Slack Message, Trigger PagerDuty Incident
 - **Integration Actions**: Send Webhook, custom HTTP requests
 
 ### Condition Nodes
@@ -57,6 +57,7 @@ Connections store credentials for external services. Set up connections once and
 - **Discord**: Webhook URLs for Discord channels
 - **Slack**: Bot token
 - **Telegram**: Bot token from BotFather
+- **PagerDuty**: Read-only REST API token, or a scoped OAuth app
 - **Webhook**: Custom HTTP endpoint credentials
 
 ## Workflow Runs

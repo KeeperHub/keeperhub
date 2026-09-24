@@ -15,3 +15,9 @@ export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type HttpMethod = (typeof HTTP_METHODS)[number];
 
 export const DEFAULT_HTTP_METHOD: HttpMethod = "POST";
+
+/** Retry defaults, shared by the editor, the worker and the SDK codegen. */
+export const DEFAULT_RETRY_ATTEMPTS = 0;
+export const MAX_RETRY_ATTEMPTS = 5;
+export const DEFAULT_RETRY_DELAY_SECONDS = 1;
+export const MAX_RETRY_DELAY_SECONDS = 30;

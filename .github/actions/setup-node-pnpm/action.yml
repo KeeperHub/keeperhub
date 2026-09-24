@@ -20,9 +20,11 @@ runs:
         node-version: "22"
 
     - name: Setup pnpm
+      # No version input: pnpm/action-setup resolves the exact version from
+      # the packageManager field in the root package.json, and errors if both
+      # are set. Pinning in one place keeps CI and local installs on the same
+      # pnpm major, which patchedDependencies hashes depend on.
       uses: pnpm/action-setup@v4
-      with:
-        version: 9
 
     - name: Get pnpm store directory
       shell: bash

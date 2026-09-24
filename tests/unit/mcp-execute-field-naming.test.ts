@@ -108,6 +108,7 @@ describe("MCP execute tools field naming - handler level (KEEP-495)", () => {
     const keys = Object.keys(getTool("execute_transfer").schema);
     expect(keys).toContain("chain_id");
     expect(keys).toContain("to_address");
+    expect(keys).toContain("gas_limit_multiplier");
     expect(keys).not.toContain("network");
     expect(keys).not.toContain("recipient_address");
   });
@@ -125,10 +126,12 @@ describe("MCP execute tools field naming - handler level (KEEP-495)", () => {
       chain_id: "8453",
       to_address: "0xabc",
       amount: "0.1",
+      gas_limit_multiplier: "1.5",
     });
     const body = lastBody();
     expect(body.chainId).toBe("8453");
     expect(body.recipientAddress).toBe("0xabc");
+    expect(body.gasLimitMultiplier).toBe("1.5");
   });
 
   it("execute_contract_call: chain_id maps to chainId", async () => {

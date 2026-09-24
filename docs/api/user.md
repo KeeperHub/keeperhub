@@ -67,6 +67,7 @@ Returns the Turnkey wallet for the authenticated user's active organization. The
   "canExportKey": true,
   "isOwner": true,
   "walletAddress": "0x...",
+  "solanaAddress": null,
   "walletId": "turnkey_wallet_...",
   "email": "wallet@example.com",
   "createdAt": "2026-01-01T00:00:00.000Z",
@@ -74,6 +75,9 @@ Returns the Turnkey wallet for the authenticated user's active organization. The
   "isActive": true
 }
 ```
+
+`walletAddress` is the EVM address; `solanaAddress` is present when the wallet has a Solana
+address and `null` otherwise.
 
 When the organization has no wallet yet, the response is `{ "hasWallet": false, "message": "No wallet found for this organization" }`.
 

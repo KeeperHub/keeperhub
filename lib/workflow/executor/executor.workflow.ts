@@ -81,7 +81,9 @@ import type { SystemActionType } from "@/lib/workflow/executor/system-action-typ
 import {
   assertResolved,
   createTracker,
+  liftConditionFields,
   recordUnresolved,
+  restoreConditionFields,
   TemplateResolutionError,
   type TemplateResolutionTracker,
 } from "@/lib/workflow/executor/template-resolution";
@@ -99,12 +101,22 @@ import {
   preValidateConditionExpression,
   validateConditionExpression,
 } from "@/lib/workflow/nodes/condition/validator";
+import {
+  FOR_EACH_BODY_FAILURE_MARKER,
+  type ForEachIterationFailure,
+  isForEachBodyFailureResult,
+} from "@/lib/workflow/nodes/for-each/iteration-failure";
 import { ARRAY_SOURCE_RE } from "@/lib/workflow/nodes/for-each/utils";
 import { triggerStep } from "@/lib/workflow/nodes/trigger/step";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import { splitTemplateRef } from "@/lib/workflow/template-ref";
 import { triggerTypeOf } from "@/lib/workflow/trigger-type";
 import { LEGACY_ACTION_MAPPINGS } from "@/plugins/legacy-mappings";
+
+export {
+  type ForEachIterationFailure,
+  isForEachBodyFailureResult,
+} from "@/lib/workflow/nodes/for-each/iteration-failure";
 
 // System actions that don't have plugins - maps to module import functions.
 // `satisfies Record<SystemActionType, ...>` makes the dispatch table and the
@@ -931,7 +943,8 @@ function replaceConfigTemplate(
   nodeId: string,
   rest: string,
   outputs: NodeOutputs,
-  tracker?: TemplateResolutionTracker
+  tracker?: TemplateResolutionTracker,
+  path?: string
 ): string {
   const trimmedNodeId = nodeId.trim();
   const sanitizedNodeId = trimmedNodeId.replace(/[^a-zA-Z0-9]/g, "_");
@@ -955,6 +968,7 @@ function replaceConfigTemplate(
       token: match,
       reason: "no-node",
       detail: `Node "${trimmedNodeId}" has no output yet.`,
+      path,
     });
     return "";
   }
@@ -967,6 +981,7 @@ function replaceConfigTemplate(
       token: match,
       reason: "no-data",
       detail: `Node "${trimmedNodeId}" produced no data.`,
+      path,
     });
     return "";
   }
@@ -995,6 +1010,7 @@ function replaceConfigTemplate(
       token: match,
       reason: "no-path",
       detail: `Field "${fieldPath || "(whole output)"}" not found on node "${trimmedNodeId}".`,
+      path,
     });
     return "";
   }
@@ -1010,7 +1026,14 @@ function replaceConfigTemplate(
 
 /**
  * Process template variables in config.
- * Recurses into nested objects; supports array paths like data.recipes[0].
+ *
+ * Recurses into nested objects and arrays, rendering every string it reaches.
+ * A reference may itself carry an index, `data.recipes[0]`; that is a path
+ * inside the reference and the resolver's business. Array-valued config is a
+ * different thing: each element is rendered here the way an object's values
+ * are. Until #2359 arrays were copied verbatim, so a token in one was never
+ * rendered and was then found by scanForLeftoverLiterals, which does walk
+ * arrays, and the run aborted naming a reference that was correct.
  *
  * KEEP-468: optional `tracker` records every reference that fell through to
  * the empty-string or literal-pass-through path so the caller can fail
@@ -1019,48 +1042,176 @@ function replaceConfigTemplate(
 export function processTemplates(
   config: Record<string, unknown>,
   outputs: NodeOutputs,
-  tracker?: TemplateResolutionTracker
+  tracker?: TemplateResolutionTracker,
+  path = ""
 ): Record<string, unknown> {
   const processed: Record<string, unknown> = {};
-  const storedPattern = /\{\{@([^:]+):([^}]+)\}\}/g;
-  // Fallback: resolve display-format templates {{Label.field}} that were not
-  // converted to stored format by the editor (mirrors extractTemplateParameters).
-  const displayPattern = /\{\{([^@}][^}]*)\}\}/g;
-
   for (const [key, value] of Object.entries(config)) {
-    if (typeof value === "string") {
-      let result = value.replace(storedPattern, (m, nodeId, rest) =>
-        replaceConfigTemplate(m, nodeId, rest, outputs, tracker)
-      );
-      result = result.replace(displayPattern, (full, displayRef) => {
-        const resolved = resolveDisplayTemplate(displayRef, outputs);
-        if (resolved === null || resolved === undefined) {
-          recordUnresolved(tracker, {
-            token: full,
-            reason: "no-path",
-            detail: `Display reference "${displayRef}" did not resolve.`,
-          });
-          return full;
-        }
-        return formatConfigValue(resolved);
-      });
-      processed[key] = result;
-    } else if (
-      typeof value === "object" &&
-      value !== null &&
-      !Array.isArray(value)
-    ) {
-      processed[key] = processTemplates(
-        value as Record<string, unknown>,
-        outputs,
-        tracker
-      );
-    } else {
-      processed[key] = value;
-    }
+    processed[key] = renderTemplateValue(
+      value,
+      outputs,
+      tracker,
+      path ? `${path}.${key}` : key
+    );
   }
-
   return processed;
+}
+
+/**
+ * One config value. A string is rendered, an array element by element, an
+ * object through processTemplates, and anything else (numbers, booleans,
+ * null) is passed through as it is. Arrays and objects take the same path so
+ * that this and scanForLeftoverLiterals agree on what a container is.
+ */
+/*
+ * No depth limit here. This walk has to render whatever the config actually
+ * holds, so a limit would leave a token unrendered at the bottom of a deep
+ * config and pass it to the action verbatim. It records every unresolved
+ * reference as it goes, at any depth, including one it could not match, so
+ * assertResolved fails the step wherever the token sits. Pinned in
+ * tests/unit/template-fail-closed.test.ts.
+ */
+function renderTemplateValue(
+  value: unknown,
+  outputs: NodeOutputs,
+  tracker?: TemplateResolutionTracker,
+  path = ""
+): unknown {
+  if (typeof value === "string") {
+    return renderTemplateString(value, outputs, tracker, path);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item, index) =>
+      renderTemplateValue(item, outputs, tracker, `${path}[${index}]`)
+    );
+  }
+  if (typeof value === "object" && value !== null) {
+    return processTemplates(
+      value as Record<string, unknown>,
+      outputs,
+      tracker,
+      path
+    );
+  }
+  return value;
+}
+
+/**
+ * Matches a stored ref `{{@nodeId:Label.field}}` OR a display ref
+ * `{{Label.field}}`. The display form is the fallback for tokens the editor
+ * never converted to stored format (mirrors extractTemplateParameters).
+ *
+ * One alternation, so both forms resolve in a single pass. Two passes read
+ * the text the first pass substituted, so every `{{...}}` inside an upstream
+ * node's output became a reference the author appeared to have written.
+ * processCodeTemplates has always resolved code fields in one pass.
+ */
+const configTemplatePattern = (): RegExp =>
+  /\{\{@([^:]+):([^}]+)\}\}|\{\{([^@}][^}]*)\}\}/g;
+
+/** Any `{{...}}`, used to find a token the reference patterns cannot match. */
+const anyTemplateToken = (): RegExp => /\{\{[^}]+\}\}/g;
+
+/** Resolve one matched reference to the text that replaces it. */
+function resolveConfigMatch(
+  match: RegExpExecArray,
+  outputs: NodeOutputs,
+  tracker?: TemplateResolutionTracker,
+  path?: string
+): string {
+  const [full, storedNodeId, storedRest, displayRef] = match;
+  if (storedNodeId !== undefined && storedRest !== undefined) {
+    return replaceConfigTemplate(
+      full,
+      storedNodeId,
+      storedRest,
+      outputs,
+      tracker,
+      path
+    );
+  }
+  if (displayRef === undefined) {
+    return full;
+  }
+  const resolved = resolveDisplayTemplate(displayRef, outputs);
+  if (resolved === null || resolved === undefined) {
+    recordUnresolved(tracker, {
+      token: full,
+      reason: "no-path",
+      detail: `Display reference "${displayRef}" did not resolve.`,
+      path,
+    });
+    return full;
+  }
+  return formatConfigValue(resolved);
+}
+
+/**
+ * Enough entries to diagnose the fault, bounded so a config holding thousands
+ * of tokens cannot grow the tracker without limit on every run. The error
+ * message quotes the first five and counts the rest either way; the old
+ * post-scan capped itself at the same order for the same reason.
+ */
+const MAX_TRACKED_LEFTOVERS = 50;
+
+/**
+ * Report a `{{...}}` the reference patterns could not match, in a stretch of
+ * the author's own text. Only authored stretches reach here, so a token that
+ * arrived inside a resolved value is never reported.
+ */
+function recordAuthoredLeftovers(
+  authored: string,
+  tracker: TemplateResolutionTracker | undefined,
+  path: string
+): void {
+  if (!(tracker && authored.includes("{{"))) {
+    return;
+  }
+  for (const leftover of authored.matchAll(anyTemplateToken())) {
+    if (tracker.unresolved.length >= MAX_TRACKED_LEFTOVERS) {
+      return;
+    }
+    recordUnresolved(tracker, {
+      token: leftover[0],
+      reason: "literal-leftover",
+      detail: "Reference left in rendered config; resolver did not match.",
+      path: path || undefined,
+    });
+  }
+}
+
+/**
+ * Render one config string, tracking where the author's text ends and a
+ * substituted value begins.
+ *
+ * The boundary is the whole point. A rendered string is a blend of the two,
+ * and a node's output is data: a `{{...}}` inside it is not a reference
+ * anyone can fix. Walking the matches keeps the halves apart, so the
+ * leftover check reads the gaps between references and never the text that
+ * replaced one. Comparing the rendered string against the authored one
+ * cannot do this, because an output that quotes the workflow's own config
+ * carries a verbatim copy of the author's token.
+ */
+function renderTemplateString(
+  value: string,
+  outputs: NodeOutputs,
+  tracker?: TemplateResolutionTracker,
+  path = ""
+): string {
+  const pattern = configTemplatePattern();
+  let result = "";
+  let cursor = 0;
+  let match = pattern.exec(value);
+  while (match !== null) {
+    const authored = value.slice(cursor, match.index);
+    recordAuthoredLeftovers(authored, tracker, path);
+    result += authored + resolveConfigMatch(match, outputs, tracker, path);
+    cursor = match.index + match[0].length;
+    match = pattern.exec(value);
+  }
+  const tail = value.slice(cursor);
+  recordAuthoredLeftovers(tail, tracker, path);
+  return result + tail;
 }
 
 /**
@@ -2108,6 +2259,199 @@ export function planIterationContinuation(
   return { kind: "none" };
 }
 
+export type ForEachIterationSummary = {
+  arrayLength: number;
+  maxIterations: number;
+  iterationsRan: number;
+  failedIterations: number;
+  firstFailureError?: string;
+  firstFailureNodeId?: string;
+};
+
+/**
+ * Prefer a nested For Each summary's firstFailureNodeId over the bodyResults
+ * key. Insertion order records the nested loop id before routeAfterSuccess
+ * overwrites the entry with data: summary. Guard on `failedIterations` so a
+ * failed result with unrelated `data` is not treated as a summary.
+ */
+export function resolveBodyFailureNodeId(
+  bodyFailure: [string, { success: boolean; error?: string; data?: unknown }]
+): string {
+  const data = bodyFailure[1].data;
+  if (
+    data !== null &&
+    typeof data === "object" &&
+    "failedIterations" in data &&
+    typeof (data as ForEachIterationSummary).failedIterations === "number"
+  ) {
+    return (
+      (data as ForEachIterationSummary).firstFailureNodeId ?? bodyFailure[0]
+    );
+  }
+  return bodyFailure[0];
+}
+
+/**
+ * First failed iteration result, if any. Used to flip the For Each log and
+ * to gate post-loop Collect / done-targets continuation.
+ */
+export function findFirstIterationFailure(
+  iterationResults: unknown[]
+): ForEachIterationFailure | undefined {
+  return iterationResults.find(isForEachBodyFailureResult);
+}
+
+/** Count iteration results tagged as genuine body failures. */
+export function countIterationFailures(iterationResults: unknown[]): number {
+  return iterationResults.filter(isForEachBodyFailureResult).length;
+}
+
+/**
+ * When post-loop Collect is skipped due to iteration failure, mark the Collect
+ * node visited and record an explicit failure so the parent DAG dispatcher does
+ * not re-dispatch it via a second incoming edge.
+ */
+export function markCollectSkippedOnForEachFailure(params: {
+  aggregateCollectNodeId: string;
+  collectNodeId: string | undefined;
+  doneCollectNodeId: string | undefined;
+  collectLabel: string;
+  error: string;
+  iterationResults: unknown[];
+  currentVisited: Set<string>;
+  currentResults: Record<
+    string,
+    { success: boolean; error?: string; data?: unknown }
+  >;
+  currentOutputs: NodeOutputs;
+  attemptedNodes: Set<string>;
+}): void {
+  const skipData = {
+    results: params.iterationResults.map((result) =>
+      isForEachBodyFailureResult(result)
+        ? { error: result.error, nodeId: result.nodeId }
+        : result
+    ),
+    count: params.iterationResults.length,
+    skipped: true as const,
+  };
+  const sanitizedCollectId = params.aggregateCollectNodeId.replace(
+    /[^a-zA-Z0-9]/g,
+    "_"
+  );
+  params.currentVisited.add(params.aggregateCollectNodeId);
+  params.attemptedNodes.add(params.aggregateCollectNodeId);
+  params.currentResults[params.aggregateCollectNodeId] = {
+    success: false,
+    error: params.error,
+    data: skipData,
+  };
+  params.currentOutputs[sanitizedCollectId] = {
+    label: params.collectLabel,
+    data: skipData,
+  };
+
+  if (
+    params.doneCollectNodeId &&
+    params.collectNodeId &&
+    params.collectNodeId !== params.doneCollectNodeId
+  ) {
+    const legacyCollectNodeId = params.collectNodeId;
+    const sanitizedLegacyId = legacyCollectNodeId.replace(/[^a-zA-Z0-9]/g, "_");
+    params.currentVisited.add(legacyCollectNodeId);
+    params.attemptedNodes.add(legacyCollectNodeId);
+    params.currentResults[legacyCollectNodeId] = {
+      success: false,
+      error: params.error,
+      data: skipData,
+    };
+    params.currentOutputs[sanitizedLegacyId] = {
+      label: params.collectLabel,
+      data: skipData,
+    };
+  }
+}
+
+export type ForEachPostLoopResult =
+  | "skipped"
+  | "aggregate-collect"
+  | "done-targets"
+  | "none";
+
+/**
+ * Dispatch Collect aggregation or done-targets after runIterations.
+ * Skips entirely when any iteration failed so downstream side effects
+ * (transfers, webhooks) do not fire after a failed loop body.
+ */
+async function dispatchForEachPostLoopIfNeeded(params: {
+  firstIterationFailure: ForEachIterationFailure | undefined;
+  continuation: IterationContinuation;
+  onAggregateCollect: (collectNodeId: string) => Promise<void>;
+  onDoneTargets: (targets: string[]) => Promise<void>;
+}): Promise<ForEachPostLoopResult> {
+  if (params.firstIterationFailure) {
+    return "skipped";
+  }
+  if (params.continuation.kind === "aggregate-collect") {
+    await params.onAggregateCollect(params.continuation.collectNodeId);
+    return "aggregate-collect";
+  }
+  if (params.continuation.kind === "done-targets") {
+    await params.onDoneTargets(params.continuation.targets);
+    return "done-targets";
+  }
+  return "none";
+}
+
+/**
+ * Dispatch post-loop continuation, or mark Collect skipped with an explicit
+ * result so the parent DAG cannot re-fire it and execution output still has
+ * a `data` payload.
+ */
+export async function settleForEachPostLoop(params: {
+  firstIterationFailure: ForEachIterationFailure | undefined;
+  continuation: IterationContinuation;
+  onAggregateCollect: (collectNodeId: string) => Promise<void>;
+  onDoneTargets: (targets: string[]) => Promise<void>;
+  collectNodeId: string | undefined;
+  doneCollectNodeId: string | undefined;
+  collectLabel: string;
+  iterationResults: unknown[];
+  currentVisited: Set<string>;
+  currentResults: Record<
+    string,
+    { success: boolean; error?: string; data?: unknown }
+  >;
+  currentOutputs: NodeOutputs;
+  attemptedNodes: Set<string>;
+}): Promise<ForEachPostLoopResult> {
+  const postLoopResult = await dispatchForEachPostLoopIfNeeded({
+    firstIterationFailure: params.firstIterationFailure,
+    continuation: params.continuation,
+    onAggregateCollect: params.onAggregateCollect,
+    onDoneTargets: params.onDoneTargets,
+  });
+  if (
+    postLoopResult === "skipped" &&
+    params.continuation.kind === "aggregate-collect" &&
+    params.firstIterationFailure
+  ) {
+    markCollectSkippedOnForEachFailure({
+      aggregateCollectNodeId: params.continuation.collectNodeId,
+      collectNodeId: params.collectNodeId,
+      doneCollectNodeId: params.doneCollectNodeId,
+      collectLabel: params.collectLabel,
+      error: params.firstIterationFailure.error,
+      iterationResults: params.iterationResults,
+      currentVisited: params.currentVisited,
+      currentResults: params.currentResults,
+      currentOutputs: params.currentOutputs,
+      attemptedNodes: params.attemptedNodes,
+    });
+  }
+  return postLoopResult;
+}
+
 /**
  * Resolve a template string to its raw array value.
  * Accepts {{@nodeId:Label.field}} syntax or a JSON array literal.
@@ -2212,6 +2556,15 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   // Enter async-local context so any logUserError/logSystemError called from
   // this point on (including inside plugin steps) automatically includes
   // org/owner/workflow identifiers without manual threading.
+  //
+  // Mechanism note: enterWorkflowErrorContext uses ALS enterWith, which
+  // mutates the current async resource's store rather than scoping a callback
+  // like run() does. That is the weaker of the two mechanisms, and it holds
+  // here because by the time executeWorkflow runs, concurrent in-process
+  // executions are on distinct async resources, so each mutation lands on its
+  // own store. The step-level runWithWorkflowErrorContext in step-handler.ts
+  // is a proper run() and is the path web3 writes actually take, so plugin
+  // execution is scoped by the stronger mechanism regardless.
   enterWorkflowErrorContext({
     workflow_id: workflowId,
     execution_id: executionId,
@@ -2398,11 +2751,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     currentOutputs: NodeOutputs,
     assertContext?: { nodeId?: string; nodeLabel?: string }
   ): Record<string, unknown> {
-    const configWithoutSpecial = { ...config };
-    const originalCondition = config.condition;
-    configWithoutSpecial.condition = undefined;
-    const originalConditionConfig = config.conditionConfig;
-    configWithoutSpecial.conditionConfig = undefined;
+    const { rest: configWithoutSpecial, lifted: conditionFields } =
+      liftConditionFields(config);
     const originalDbQuery = config.dbQuery;
     if (actionType === "Database Query") {
       configWithoutSpecial.dbQuery = undefined;
@@ -2413,9 +2763,9 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     }
 
     // KEEP-468: collect every unresolved reference so we can fail closed
-    // before the step runs. Tracker entries cover empty-string substitutions
-    // (no-node / no-data / no-path); the post-scan inside `assertResolved`
-    // catches the displayPattern literal-passthrough path.
+    // before the step runs. The renderer records all of them, including a
+    // token it could not match, against the field that held it, so a
+    // `{{...}}` carried in by an upstream value is never mistaken for one.
     const tracker = createTracker();
 
     const processedConfig = processTemplates(
@@ -2464,21 +2814,21 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     // otherwise every Condition node downstream of For Each / a Code step
     // false-flags `{{@nodeId:Label.field}}` as a leftover literal and the
     // workflow body cannot run.
-    assertResolved(tracker, processedConfig, {
-      nodeId: assertContext?.nodeId,
-      nodeLabel: assertContext?.nodeLabel,
-      actionType,
-    });
+    assertResolved(
+      tracker,
+      processedConfig,
+      {
+        nodeId: assertContext?.nodeId,
+        nodeLabel: assertContext?.nodeLabel,
+        actionType,
+      },
+      { rendererScanned: true }
+    );
 
     if (renderedCode !== undefined) {
       processedConfig.code = renderedCode;
     }
-    if (originalCondition !== undefined) {
-      processedConfig.condition = originalCondition;
-    }
-    if (originalConditionConfig !== undefined) {
-      processedConfig.conditionConfig = originalConditionConfig;
-    }
+    restoreConditionFields(processedConfig, conditionFields);
 
     return processedConfig;
   }
@@ -2597,7 +2947,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         forEachNode: nestedForEachNode,
         processedConfig,
       }) => {
-        await handleForEachExecution({
+        return await handleForEachExecution({
           forEachNodeId: nestedForEachNodeId,
           forEachNode: nestedForEachNode,
           processedConfig,
@@ -2662,14 +3012,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       fromNodeId: string,
       targets: string[]
     ) => Promise<void>;
-  }): Promise<{
-    arrayLength: number;
-    maxIterations: number;
-    iterationsRan: number;
-    failedIterations: number;
-    firstFailureError?: string;
-    firstFailureNodeId?: string;
-  }> {
+  }): Promise<ForEachIterationSummary> {
     const {
       forEachNodeId,
       forEachNode,
@@ -2789,15 +3132,16 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         ([, r]) => !r.success
       );
       if (bodyFailure) {
+        const failureNodeId = resolveBodyFailureNodeId(bodyFailure);
         console.log(
-          `[Workflow Executor] For Each "${getNodeName(forEachNode)}" iteration ${index} failed at node "${getNodeName(nodeMap.get(bodyFailure[0]) ?? forEachNode)}" (${bodyFailure[0]}): ${bodyFailure[1].error}`
+          `[Workflow Executor] For Each "${getNodeName(forEachNode)}" iteration ${index} failed at node "${getNodeName(nodeMap.get(failureNodeId) ?? forEachNode)}" (${failureNodeId}): ${bodyFailure[1].error}`
         );
         return {
-          __forEachBodyFailure: true as const,
-          success: false as const,
+          [FOR_EACH_BODY_FAILURE_MARKER]: true,
+          success: false,
           error: bodyFailure[1].error ?? "Body node failed",
-          nodeId: bodyFailure[0],
-        };
+          nodeId: failureNodeId,
+        } satisfies ForEachIterationFailure;
       }
 
       // Capture output from the last body node(s) that produced data.
@@ -2859,13 +3203,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
 
     // 5a. If any iteration failed, flip the For Each node's own log row to error
     // so the UI can surface which step errored rather than showing all green.
-    const firstIterationFailure = iterationResults.find(
-      (r): r is { success: false; error: string } =>
-        r !== null &&
-        typeof r === "object" &&
-        "success" in (r as object) &&
-        (r as { success: unknown }).success === false
-    );
+    const firstIterationFailure = findFirstIterationFailure(iterationResults);
     if (firstIterationFailure && executionId) {
       await triggerStep({
         triggerData: {},
@@ -2891,75 +3229,97 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     //                      ordinary post-loop steps via continueWithDoneTargets
     //                      (no aggregation injection).
     //   none:              fire-and-forget loop, nothing to do here.
-    if (continuation.kind === "aggregate-collect") {
-      const aggregateCollectNodeId = continuation.collectNodeId;
-      const collectData = {
-        results: iterationResults,
-        count: iterationResults.length,
-      };
-      const sanitizedCollectId = aggregateCollectNodeId.replace(
-        /[^a-zA-Z0-9]/g,
-        "_"
-      );
-      const collectNode = nodeMap.get(aggregateCollectNodeId);
-      const collectLabel = collectNode ? getNodeName(collectNode) : "Collect";
+    // Any failed iteration skips this block entirely (no Collect / downstream).
+    const skipCollectNodeId =
+      continuation.kind === "aggregate-collect"
+        ? continuation.collectNodeId
+        : undefined;
+    const skipCollectNode = skipCollectNodeId
+      ? nodeMap.get(skipCollectNodeId)
+      : undefined;
+    const skipCollectLabel = skipCollectNode
+      ? getNodeName(skipCollectNode)
+      : "Collect";
 
-      const collectAction = SYSTEM_ACTIONS.Collect;
-      if (collectAction) {
-        const mod = await collectAction.importer();
-        await mod[collectAction.stepFunction]({
-          ...collectData,
-          _context: {
-            executionId,
-            nodeId: aggregateCollectNodeId,
-            nodeName: collectLabel,
-            nodeType: "Collect",
-            forEachNodeId,
-            organizationId,
-            orgSlug: organizationSlug,
-            createdBy,
-            workflowId,
-          } satisfies StepContext,
-        });
-      }
+    await settleForEachPostLoop({
+      firstIterationFailure,
+      continuation,
+      onAggregateCollect: async (aggregateCollectNodeId) => {
+        const collectData = {
+          results: iterationResults,
+          count: iterationResults.length,
+        };
+        const sanitizedCollectId = aggregateCollectNodeId.replace(
+          /[^a-zA-Z0-9]/g,
+          "_"
+        );
+        const collectLabel = skipCollectLabel;
 
-      currentOutputs[sanitizedCollectId] = {
-        label: collectLabel,
-        data: collectData,
-      };
-      currentResults[aggregateCollectNodeId] = {
-        success: true,
-        data: collectData,
-      };
-      currentVisited.add(aggregateCollectNodeId);
+        const collectAction = SYSTEM_ACTIONS.Collect;
+        if (collectAction) {
+          const mod = await collectAction.importer();
+          await mod[collectAction.stepFunction]({
+            ...collectData,
+            _context: {
+              executionId,
+              nodeId: aggregateCollectNodeId,
+              nodeName: collectLabel,
+              nodeType: "Collect",
+              forEachNodeId,
+              organizationId,
+              orgSlug: organizationSlug,
+              createdBy,
+              workflowId,
+            } satisfies StepContext,
+          });
+        }
 
-      // Skip the legacy in-body Collect in mixed wiring: don't re-fire it,
-      // but mark it visited so the parent DAG dispatcher leaves it alone.
-      if (
-        doneCollectNodeId &&
-        collectNodeId &&
-        collectNodeId !== doneCollectNodeId
-      ) {
-        currentVisited.add(collectNodeId);
-      }
+        currentOutputs[sanitizedCollectId] = {
+          label: collectLabel,
+          data: collectData,
+        };
+        currentResults[aggregateCollectNodeId] = {
+          success: true,
+          data: collectData,
+        };
+        currentVisited.add(aggregateCollectNodeId);
 
-      if (continueAfterCollect) {
-        await continueAfterCollect(aggregateCollectNodeId);
-      }
-    } else if (
-      continuation.kind === "done-targets" &&
-      continueWithDoneTargets
-    ) {
-      await continueWithDoneTargets(forEachNodeId, continuation.targets);
-    }
+        // Skip the legacy in-body Collect in mixed wiring: don't re-fire it,
+        // but mark it visited so the parent DAG dispatcher leaves it alone.
+        if (
+          doneCollectNodeId &&
+          collectNodeId &&
+          collectNodeId !== doneCollectNodeId
+        ) {
+          currentVisited.add(collectNodeId);
+        }
+
+        if (continueAfterCollect) {
+          await continueAfterCollect(aggregateCollectNodeId);
+        }
+      },
+      onDoneTargets: async (targets) => {
+        if (continueWithDoneTargets) {
+          await continueWithDoneTargets(forEachNodeId, targets);
+        }
+      },
+      collectNodeId,
+      doneCollectNodeId,
+      collectLabel: skipCollectLabel,
+      iterationResults,
+      currentVisited,
+      currentResults,
+      currentOutputs,
+      attemptedNodes,
+    });
 
     return {
       arrayLength: resolvedArray.length,
       maxIterations,
       iterationsRan: itemsToProcess.length,
-      failedIterations: firstIterationFailure === undefined ? 0 : 1,
+      failedIterations: countIterationFailures(iterationResults),
       firstFailureError: firstIterationFailure?.error,
-      firstFailureNodeId: undefined,
+      firstFailureNodeId: firstIterationFailure?.nodeId,
     };
   }
 
@@ -3404,11 +3764,16 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
             outputs,
             forEachTracker
           );
-          assertResolved(forEachTracker, forEachConfig, {
-            nodeId: node.id,
-            nodeLabel: getNodeName(node),
-            actionType: "For Each",
-          });
+          assertResolved(
+            forEachTracker,
+            forEachConfig,
+            {
+              nodeId: node.id,
+              nodeLabel: getNodeName(node),
+              actionType: "For Each",
+            },
+            { rendererScanned: true }
+          );
           const iterationSummary = await handleForEachExecution({
             forEachNodeId: nodeId,
             forEachNode: node,

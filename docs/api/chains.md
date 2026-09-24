@@ -131,6 +131,7 @@ These string aliases are normalized to the numeric chain ID before routing. Name
 | `base-sepolia`, `base-testnet` | 84532 | Base Sepolia |
 | `tempo`, `tempo-mainnet` | 4217 | Tempo |
 | `tempo-testnet` | 42431 | Tempo Testnet |
+| `hyperevm`, `hyperevm-mainnet` | 999 | HyperEVM |
 | `solana`, `solana-mainnet` | 101 | Solana |
 | `solana-devnet`, `solana-testnet` | 103 | Solana Devnet |
 

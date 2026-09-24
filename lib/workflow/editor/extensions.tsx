@@ -8,10 +8,12 @@
  * extensions are registered before components are rendered.
  */
 
+import { useAtomValue } from "jotai";
 import { KeeperHubLogo } from "@/components/icons/keeperhub-logo";
 import { SendGridConnectionSection } from "@/components/settings/sendgrid-connection-section";
 import { Web3WalletSection } from "@/components/settings/web3-wallet-section";
 import { Label } from "@/components/ui/label";
+import { AbiEventArgsField } from "@/components/workflow/config/abi-event-args-field";
 import { AbiEventSelectField } from "@/components/workflow/config/abi-event-select-field";
 import { AbiWithAutoFetchField } from "@/components/workflow/config/abi-with-auto-fetch-field";
 import { ArgsListField } from "@/components/workflow/config/args-list-field";
@@ -23,12 +25,24 @@ import {
 import { CodeEditorField } from "@/components/workflow/config/code-editor-field";
 import { FailOnErrorSwitchField } from "@/components/workflow/config/fail-on-error-switch-field";
 import { GasLimitMultiplierField } from "@/components/workflow/config/gas-limit-multiplier-field";
+import { PagerDutyPreviewField } from "@/components/workflow/config/pagerduty-preview-field";
+import {
+  PagerDutyBackupConnectionField,
+  PagerDutyEscalationPolicyField,
+  PagerDutyFromEmailNotice,
+  PagerDutyPriorityField,
+  PagerDutyServiceField,
+  PagerDutyTestNodeButton,
+  PagerDutyTriggerNodeField,
+} from "@/components/workflow/config/pagerduty-resource-field";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
+import { integrationsAtom } from "@/lib/integrations-store";
 import {
   registerBranding,
   registerFieldRenderer,
   registerIntegrationFormHandler,
 } from "@/lib/workflow/editor/extension-registry";
+import { nodesAtom } from "@/lib/workflow/store";
 
 // ============================================================================
 // Register Custom Field Renderers
@@ -149,6 +163,42 @@ registerFieldRenderer(
         <AbiEventSelectField
           abiValue={abiValue}
           disabled={disabled}
+          field={field}
+          onChange={(val: unknown) => onUpdateConfig(field.key, val)}
+          value={value}
+        />
+      </div>
+    );
+  }
+);
+
+/**
+ * ABI Event Args Field
+ * One input per indexed parameter of the selected event, with the ones no
+ * topic can match on disabled rather than offered and left to fail at the RPC.
+ */
+registerFieldRenderer(
+  "abi-event-args",
+  ({ field, config, onUpdateConfig, disabled }) => {
+    const rawAbi = config[field.abiField || "abi"];
+    const abiValue = typeof rawAbi === "string" ? rawAbi : "";
+    const rawEvent = config[field.abiEventField || "eventName"];
+    const eventValue = typeof rawEvent === "string" ? rawEvent : "";
+    // Passed through as stored: the step accepts the filter as a JSON string
+    // or as an object, and the field reads both.
+    const rawValue = config[field.key];
+    const value =
+      rawValue === undefined || rawValue === null || rawValue === ""
+        ? (field.defaultValue ?? "")
+        : rawValue;
+
+    return (
+      <div className="space-y-2" key={field.key}>
+        <ProtocolFieldLabel field={field} />
+        <AbiEventArgsField
+          abiValue={abiValue}
+          disabled={disabled}
+          eventValue={eventValue}
           field={field}
           onChange={(val: unknown) => onUpdateConfig(field.key, val)}
           value={value}
@@ -587,7 +637,7 @@ registerFieldRenderer(
   "fail-on-error-switch",
   ({ field, config, onUpdateConfig, disabled }) => (
     <FailOnErrorSwitchField
-      description={field.helpTip}
+      description={field.helpTip ?? field.helpText}
       disabled={disabled}
       id={field.key}
       key={field.key}
@@ -633,3 +683,249 @@ registerBranding({
 
 // Export a flag to indicate extensions are loaded
 export const KEEPERHUB_EXTENSIONS_LOADED = true;
+
+/** Narrow an unknown config value to the string the pickers expect. */
+function configString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * PagerDuty pickers and preview.
+ *
+ * All three read `config.integrationId` - the connection selected on the node
+ * - and fetch through the server, so no PagerDuty credential reaches the
+ * browser. The node stores ids only; the names shown come from PagerDuty on
+ * every load, so a renamed service or policy needs no migration.
+ */
+registerFieldRenderer(
+  "pagerduty-service-select",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <div className="space-y-2" key={field.key}>
+      <Label className="ml-1" htmlFor={field.key}>
+        {field.label}
+        {field.required && <span className="ml-0.5 text-red-500">*</span>}
+      </Label>
+      <PagerDutyServiceField
+        disabled={disabled}
+        integrationId={configString(config.integrationId) || undefined}
+        onChange={(value) => onUpdateConfig(field.key, value)}
+        value={configString(config[field.key])}
+      />
+      {field.helpText && (
+        <p className="text-muted-foreground text-xs">{field.helpText}</p>
+      )}
+    </div>
+  )
+);
+
+registerFieldRenderer(
+  "pagerduty-escalation-policy-select",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <div className="space-y-2" key={field.key}>
+      <Label className="ml-1" htmlFor={field.key}>
+        {field.label}
+      </Label>
+      <PagerDutyEscalationPolicyField
+        disabled={disabled}
+        integrationId={configString(config.integrationId) || undefined}
+        onChange={(value) => onUpdateConfig(field.key, value)}
+        value={configString(config[field.key])}
+      />
+      {field.helpText && (
+        <p className="text-muted-foreground text-xs">{field.helpText}</p>
+      )}
+    </div>
+  )
+);
+
+registerFieldRenderer("pagerduty-test-node", ({ field, config, disabled }) => (
+  <div className="space-y-2" key={field.key}>
+    <Label className="ml-1">{field.label}</Label>
+    <PagerDutyTestNodeButton
+      disabled={disabled}
+      integrationId={configString(config.integrationId) || undefined}
+      serviceId={configString(config.pagerdutyServiceId) || undefined}
+    />
+  </div>
+));
+
+registerFieldRenderer("pagerduty-from-email-notice", ({ field, config }) => (
+  <PagerDutyFromEmailNotice
+    integrationId={configString(config.integrationId) || undefined}
+    key={field.key}
+    nodeFromEmail={configString(config.fromEmail) || undefined}
+  />
+));
+
+registerFieldRenderer("pagerduty-preview", ({ field, config, disabled }) => (
+  <div className="space-y-2" key={field.key}>
+    <Label className="ml-1">{field.label}</Label>
+    <PagerDutyPreviewFieldConnected config={config} disabled={disabled} />
+  </div>
+));
+
+/**
+ * The explicit dedup keys every Trigger Incident node on this canvas uses.
+ *
+ * Two nodes sharing a key share one PagerDuty alert, and a Resolve on either
+ * closes it for both. That is occasionally what somebody wants and usually a
+ * copy-paste, and it is invisible at run time because PagerDuty merges the
+ * events rather than complaining.
+ */
+function PagerDutyPreviewFieldConnected({
+  config,
+  disabled,
+}: {
+  config: Record<string, unknown>;
+  disabled?: boolean;
+}) {
+  // Every Trigger Incident node's explicit key, this one included: the config
+  // a field renderer gets carries no node id, so there is nothing to exclude
+  // itself by. The preview counts a key as shared once it appears twice.
+  const nodes = useAtomValue(nodesAtom);
+  const siblingDedupKeys = nodes
+    .filter(
+      (node) => node.data?.config?.actionType === "pagerduty/trigger-incident"
+    )
+    .map((node) => configString(node.data?.config?.dedupKey).trim())
+    .filter(Boolean);
+
+  return (
+    <PagerDutyPreviewField
+      config={config}
+      disabled={disabled}
+      siblingDedupKeys={siblingDedupKeys}
+    />
+  );
+}
+
+registerFieldRenderer(
+  "pagerduty-backup-connection-select",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <div className="space-y-2" key={field.key}>
+      <Label className="ml-1" htmlFor={field.key}>
+        {field.label}
+      </Label>
+      <PagerDutyBackupConnectionFieldConnected
+        disabled={disabled}
+        onChange={(value) => onUpdateConfig(field.key, value)}
+        value={configString(config[field.key])}
+      />
+      {field.helpText && (
+        <p className="text-muted-foreground text-xs">{field.helpText}</p>
+      )}
+    </div>
+  )
+);
+
+/** Reads the org's connections from the store the editor already keeps loaded. */
+function PagerDutyBackupConnectionFieldConnected({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  const connections = useAtomValue(integrationsAtom);
+  return (
+    <PagerDutyBackupConnectionField
+      connections={connections.map((connection) => ({
+        id: connection.id,
+        name: connection.name,
+        type: connection.type,
+      }))}
+      disabled={disabled}
+      onChange={onChange}
+      value={value}
+    />
+  );
+}
+
+registerFieldRenderer(
+  "pagerduty-priority-select",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <div className="space-y-2" key={field.key}>
+      <Label className="ml-1" htmlFor={field.key}>
+        {field.label}
+      </Label>
+      <PagerDutyPriorityField
+        disabled={disabled}
+        integrationId={configString(config.integrationId) || undefined}
+        onChange={(value) => onUpdateConfig(field.key, value)}
+        value={configString(config[field.key])}
+      />
+      {field.helpText && (
+        <p className="text-muted-foreground text-xs">{field.helpText}</p>
+      )}
+    </div>
+  )
+);
+
+registerFieldRenderer(
+  "pagerduty-trigger-node-select",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <div className="space-y-2" key={field.key}>
+      <Label className="ml-1" htmlFor={field.key}>
+        {field.label}
+      </Label>
+      <PagerDutyTriggerNodeFieldConnected
+        currentDedupKey={configString(config.dedupKey)}
+        currentServiceId={configString(config.pagerdutyServiceId)}
+        disabled={disabled}
+        onChange={(value) => onUpdateConfig(field.key, value)}
+        value={configString(config[field.key])}
+      />
+      {field.helpText && (
+        <p className="text-muted-foreground text-xs">{field.helpText}</p>
+      )}
+    </div>
+  )
+);
+
+/**
+ * The Trigger Incident nodes on this canvas.
+ *
+ * Their ids are what the dedup key is derived from, so the acknowledge or
+ * resolve closes the alert that trigger opened even on a branch where the
+ * trigger node never ran.
+ */
+function PagerDutyTriggerNodeFieldConnected({
+  value,
+  disabled,
+  currentServiceId,
+  currentDedupKey,
+  onChange,
+}: {
+  value: string;
+  disabled?: boolean;
+  currentServiceId?: string;
+  currentDedupKey?: string;
+  onChange: (value: string) => void;
+}) {
+  const nodes = useAtomValue(nodesAtom);
+  const triggerNodes = nodes
+    .filter(
+      (node) => node.data?.config?.actionType === "pagerduty/trigger-incident"
+    )
+    .map((node) => ({
+      id: node.id,
+      label: node.data?.label || "Trigger Incident",
+      // Carried so the picker can catch a service or dedup key that will not
+      // match what that trigger opened.
+      serviceId: configString(node.data?.config?.pagerdutyServiceId),
+      dedupKey: configString(node.data?.config?.dedupKey),
+    }));
+
+  return (
+    <PagerDutyTriggerNodeField
+      currentDedupKey={currentDedupKey}
+      currentServiceId={currentServiceId}
+      disabled={disabled}
+      nodes={triggerNodes}
+      onChange={onChange}
+      value={value}
+    />
+  );
+}
