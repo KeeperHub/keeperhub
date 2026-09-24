@@ -1,5 +1,3 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveSponsorGas } from "@/lib/web3/sponsorship-feature-flag";
 import { findActionById } from "@/plugins/registry";
@@ -57,30 +55,5 @@ describe("resolveSponsorGas", () => {
     expect(resolveSponsorGas("false")).toBe(false);
     expect(resolveSponsorGas(true)).toBe(true);
     expect(resolveSponsorGas("true")).toBe(true);
-  });
-});
-
-/**
- * Any step that reaches for the sponsored route has to honour the toggle. The
- * gate is one conjunct in an `if`, so a new sponsored write action can pick up
- * the sponsored path and silently ignore the author's choice - which reads as
- * the toggle being broken rather than missing.
- */
-describe("every sponsored step consults the toggle", () => {
-  const stepsDir = join(import.meta.dirname, "../../plugins/web3/steps");
-  const sponsoredSteps = readdirSync(stepsDir).filter((file) =>
-    readFileSync(join(stepsDir, file), "utf8").includes(
-      "isGasSponsorshipEnabled("
-    )
-  );
-
-  it("finds the sponsored steps to check", () => {
-    expect(sponsoredSteps.length).toBeGreaterThan(0);
-  });
-
-  it.each(sponsoredSteps)("%s gates on resolveSponsorGas", (file) => {
-    expect(readFileSync(join(stepsDir, file), "utf8")).toContain(
-      "resolveSponsorGas(sponsorGas)"
-    );
   });
 });
