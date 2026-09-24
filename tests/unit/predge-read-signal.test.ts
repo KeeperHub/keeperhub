@@ -649,6 +649,28 @@ describe("readSignalStep", () => {
       expect(out.success).toBe(false);
       expect(out.error).toMatch(/expected "conviction:/);
     });
+
+    it("blames the operator for a foreign resource only when they repointed the host", async () => {
+      // A real Predge signature over another product is the same mistake as a
+      // body that was never a Predge response, one layer in, so it is filed on
+      // the same side of the fence.
+      mockFetchCredentials.mockResolvedValue({
+        PREDGE_SIGNER_KEY_ID: signer.keyIdHex,
+      });
+      respondWith(
+        await signSignal(signer, {
+          resource: `track-record:${WALLET.toLowerCase()}`,
+          issuedAt: new Date().toISOString(),
+        })
+      );
+      expect((await runStep()).errorClass).toBe(ExecutionErrorType.EXTERNAL);
+
+      mockFetchCredentials.mockResolvedValue({
+        PREDGE_SIGNER_KEY_ID: signer.keyIdHex,
+        PREDGE_SIGNAL_URL: "https://signals.example.com",
+      });
+      expect((await runStep()).errorClass).toBe(ExecutionErrorType.USER);
+    });
   });
 
   // Every non-200 branch of fetchSignedSignal, which the suite used to leave

@@ -9,6 +9,7 @@ import {
 import type { PredgeCredentials } from "../credentials";
 import {
   blameForBadBody,
+  RESOURCE_MISMATCH_REASON,
   fetchSignedSignal,
   parseConvictionPayload,
   type PredgeAction,
@@ -74,12 +75,15 @@ function parseMaxAgeSeconds(raw?: string): number | undefined {
 // Who to blame for a verification failure, for attribution only: this changes
 // no retry behaviour, it changes which side of the fence the run is filed on.
 //
-// Two of the reasons are only reachable because the operator configured
+// Two kinds of reason are only reachable because the operator configured
 // something, and only then. A pinned-key mismatch is Predge rotating its signer
 // unless the operator supplied their own key id, in which case a typo there
-// produces exactly this. A malformed body is Predge serving garbage unless the
+// produces exactly this. A bad body is Predge serving garbage unless the
 // operator repointed the host, in which case they are parsing something that
-// was never a Predge response. Everything else is the upstream's doing.
+// was never a Predge response -- and an envelope signed for a different
+// resource is that same mistake one layer in, a real Predge signature over
+// another product, so it is attributed the same way. Everything else is the
+// upstream's doing.
 function classifyVerificationFailure(
   reason: string | undefined,
   credentials: PredgeCredentials
@@ -88,7 +92,7 @@ function classifyVerificationFailure(
   if (reason === "signer is not the pinned Predge key" && operatorSetKeyId) {
     return ExecutionErrorType.USER;
   }
-  if (reason === "malformed attestation") {
+  if (reason === "malformed attestation" || reason?.startsWith(RESOURCE_MISMATCH_REASON)) {
     return blameForBadBody(credentials);
   }
   return ExecutionErrorType.EXTERNAL;
