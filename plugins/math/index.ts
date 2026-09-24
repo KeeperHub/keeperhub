@@ -269,6 +269,123 @@ const mathPlugin: IntegrationPlugin = {
       ],
     },
     {
+      slug: "treasury-runway",
+      label: "Treasury Runway",
+      description:
+        "Calculate reserve-adjusted treasury runway, recovery funding and a machine-readable treasury status using precision-safe arithmetic.",
+      category: "Math",
+      stepFunction: "treasuryRunwayStep",
+      stepImportPath: "treasury-runway",
+      requiresCredentials: false,
+      outputFields: [
+        { field: "success", description: "Whether the calculation succeeded" },
+        {
+          field: "reserveAdjustedBalance",
+          description:
+            "Treasury balance minus protected reserve, preserved as a signed decimal string",
+        },
+        {
+          field: "reserveBreached",
+          description:
+            "True when the treasury balance is below the protected reserve",
+        },
+        {
+          field: "netBurnRate",
+          description:
+            "Outgoing rate minus incoming rate in the selected rate period",
+        },
+        {
+          field: "runwayDays",
+          description:
+            "Remaining runway in days with up to six decimal places, or null when the treasury is not depleting",
+        },
+        {
+          field: "requiredRecoveryAmount",
+          description:
+            "Final top-up required to reach minimum runway, rounded upward at the supplied amount precision",
+        },
+        {
+          field: "status",
+          description: "Treasury status: safe, warning or critical",
+        },
+        {
+          field: "ratePeriod",
+          description: "The fixed period used by the incoming and outgoing rates",
+        },
+        {
+          field: "error",
+          description: "Error message if the calculation failed",
+        },
+      ],
+      configFields: [
+        {
+          key: "treasuryBalance",
+          label: "Treasury Balance",
+          type: "template-input",
+          required: true,
+          placeholder: "{{@node1:Read Balance.result}}",
+          helpTip:
+            "Current treasury balance. Use the same amount unit and precision for all balance and rate inputs.",
+          example: "530",
+        },
+        {
+          key: "incomingRate",
+          label: "Incoming Rate",
+          type: "template-input",
+          required: true,
+          placeholder: "100",
+          helpTip: "Amount entering the treasury during each rate period.",
+          example: "100",
+        },
+        {
+          key: "outgoingRate",
+          label: "Outgoing Rate",
+          type: "template-input",
+          required: true,
+          placeholder: "920",
+          helpTip: "Amount leaving the treasury during each rate period.",
+          example: "920",
+        },
+        {
+          key: "protectedReserve",
+          label: "Protected Reserve",
+          type: "template-input",
+          required: true,
+          placeholder: "0",
+          helpTip:
+            "Balance reserved from ordinary spending. A balance below this value sets reserveBreached to true.",
+          example: "0",
+        },
+        {
+          key: "minimumRunwayDays",
+          label: "Minimum Runway Days",
+          type: "template-input",
+          required: true,
+          placeholder: "30",
+          helpTip:
+            "Required minimum runway in days. Reported runway uses up to six decimal places.",
+          example: "30",
+        },
+        {
+          key: "ratePeriod",
+          label: "Rate Period",
+          type: "select",
+          required: true,
+          helpTip:
+            "Fixed period represented by both incoming and outgoing rates.",
+          options: [
+            { value: "second", label: "Per second" },
+            { value: "minute", label: "Per minute" },
+            { value: "hour", label: "Per hour" },
+            { value: "day", label: "Per day" },
+            { value: "week", label: "Per week (7 days)" },
+            { value: "month", label: "Per month (30 days)" },
+            { value: "year", label: "Per year (365 days)" },
+          ],
+        },
+      ],
+    },
+    {
       slug: "format-number",
       label: "Format Number",
       description:

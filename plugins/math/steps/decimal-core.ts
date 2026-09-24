@@ -90,3 +90,25 @@ export function divideScaled(
 ): bigint {
   return (numerator * pow10(decimals)) / denominator;
 }
+
+/** Divide two BigInts and round the mathematical result toward positive infinity. */
+export function divideCeil(
+  numerator: bigint,
+  denominator: bigint
+): bigint {
+  if (denominator === BigInt(0)) {
+    throw new Error("Cannot divide by zero.");
+  }
+
+  const quotient = numerator / denominator;
+  const remainder = numerator % denominator;
+  if (remainder === BigInt(0)) {
+    return quotient;
+  }
+
+  const sameSign =
+    (numerator > BigInt(0) && denominator > BigInt(0)) ||
+    (numerator < BigInt(0) && denominator < BigInt(0));
+
+  return sameSign ? quotient + BigInt(1) : quotient;
+}

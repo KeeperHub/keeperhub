@@ -15,6 +15,7 @@ No credentials or setup required -- this is a pure computation node.
 | --------------------- | ---------------------------------------------------------------------------------- |
 | Aggregate             | Reduce multiple values into one via sum, count, average, median, min, max, product |
 | Compare With Tolerance | Compare an actual value against an expected value with a percentage or absolute tolerance |
+| Treasury Runway       | Calculate reserve-adjusted runway, recovery funding and treasury status             |
 | Format Number         | Turn a raw integer or decimal into a readable string                               |
 
 ## Aggregate
