@@ -41,4 +41,5 @@ export default {
   webhook: "Webhook",
   hyperliquid: "Hyperliquid",
   robinhood: "Robinhood",
+  hedera: "Hedera",
 };
