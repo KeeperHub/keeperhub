@@ -316,6 +316,7 @@ function setupMocks(): void {
 
 const MOCK_EXECUTED_CALL = {
   contractAddress: "0x6b175474e89094c44da98b954eedeac495271d0f",
+  from: "0x00000000000000000000000000000000000000d1",
   functionName: "approve",
   functionSignature: "approve(address,uint256)",
   args: {

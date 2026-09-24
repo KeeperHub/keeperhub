@@ -312,6 +312,72 @@ conclude nothing happened even though the transaction succeeded. Check the
 `sponsored` field on the status response and treat `transactionHash` /
 `transactionLink` as the authoritative proof, not EOA-level state.
 
+### Who acted
+
+On a sponsored execution the transaction's `from` is the sponsor's fee payer,
+not your wallet, and its `to` is the sponsor's entry contract, not the target.
+Your wallet acts inside that transaction. `result.executedCall.from` names it:
+the sender of the traced call frame that actually hit the target contract.
+
+A sponsored `approve` on Base Sepolia, as returned by
+`GET /api/execute/{executionId}/status` and trimmed to the relevant fields:
+
+```json
+{
+  "executionId": "4k4qm0kkjrkfc095jubo9",
+  "status": "completed",
+  "sponsored": true,
+  "result": {
+    "sponsored": true,
+    "executedCall": {
+      "contractAddress": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+      "from": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+      "functionName": "approve",
+      "functionSignature": "approve(address,uint256)",
+      "args": { "spender": "0xd36E12a5b2926A5cbE6B4DE42a0D60Fd35d3cb04", "amount": "1" },
+      "sponsored": true,
+      "topLevelTo": "0x5af5194b4b0909eb978e3cf1e25333852277f07d",
+      "reverted": false
+    }
+  }
+}
+```
+
+Here the transaction was sent by the fee payer to `topLevelTo`, the sponsor's
+entry contract, which called the organization's wallet, which called `approve`
+on the token: `from` is that wallet, `0x742d...`, not the fee payer and not
+`topLevelTo`. The capture is a real Base Sepolia execution with the
+organization's wallet replaced by the placeholder used elsewhere on this page.
+`args` keys are the parameter names of the ABI the call was decoded with: the
+ABI supplied here named the second parameter `amount`; the platform's own
+ERC-20 ABI names it `value`.
+
+`from` is the sender of the first frame, in execution order, that called the
+target with the decoded function; the trace is walked depth-first, so that is
+the call that ran first, not the shallowest one. When your organization calls
+the target directly, which is every case above, that frame is the direct call,
+and the field is the acting address under every routing mode: your
+organization's wallet on a direct send, that same wallet when a sponsor paid the
+gas, and the Safe on a Safe-routed organization, where the wallet signs the
+outer transaction but `msg.sender` at the target is the Safe. If a contract the
+transaction calls reaches the target before your direct call does, the earlier
+frame is the one reported and `from` is that contract.
+
+One precision: `from` is the sender of the trace frame that hit the target,
+which is not always the Solidity-level `msg.sender`. When the target is called
+directly, which is every case above, the two are the same. If the address you
+passed as the target is an implementation reached by `DELEGATECALL`, `from` is
+the contract that issued the `DELEGATECALL` (the proxy), because that is what
+the trace frame records. The `msg.sender` seen inside the delegated code is a
+different value: it is inherited unchanged from the proxy's own caller, and is
+not what this field reports.
+
+`executedCall` is best-effort. It is omitted entirely when the transaction
+cannot be traced (an RPC without `debug_traceTransaction`, or no call frame
+matching the target), and `from` alone is omitted when the trace records no
+sender for the matched frame, so read both defensively rather than assuming
+they are there.
+
 ## Transfer Funds
 
 ```http
