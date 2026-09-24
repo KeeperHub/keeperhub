@@ -110,7 +110,7 @@ async function fetchUnclassifiedBatch(args: {
 
 type Summary = Record<
   string,
-  Record<string, { user: number; system: number; external: number }>
+  Record<string, Record<ExecutionErrorType, number>>
 >;
 
 function recordInSummary(
@@ -123,7 +123,15 @@ function recordInSummary(
     summary[orgSlug] = {};
   }
   if (!summary[orgSlug][errorCategory]) {
-    summary[orgSlug][errorCategory] = { user: 0, system: 0, external: 0 };
+    summary[orgSlug][errorCategory] = {
+      user: 0,
+      system: 0,
+      external: 0,
+      // KEEP-1080 added a fourth fault domain. Counting it keeps the totals
+      // honest; leaving it out would silently drop policy denials from the
+      // report rather than showing them as zero.
+      policy: 0,
+    };
   }
   summary[orgSlug][errorCategory][errorType] += 1;
 }
@@ -131,16 +139,16 @@ function recordInSummary(
 function formatSummary(summary: Summary): string {
   const lines: string[] = [];
   lines.push(
-    "org_slug              | error_category       |   user |  system | external | total"
+    "org_slug              | error_category       |   user |  system | external | policy | total"
   );
   lines.push(
-    "----------------------+----------------------+--------+---------+----------+-------"
+    "----------------------+----------------------+--------+---------+----------+--------+-------"
   );
   for (const orgSlug of Object.keys(summary).sort()) {
     for (const cat of Object.keys(summary[orgSlug]).sort()) {
-      const { user, system, external } = summary[orgSlug][cat];
+      const { user, system, external, policy } = summary[orgSlug][cat];
       lines.push(
-        `${orgSlug.padEnd(22)}| ${cat.padEnd(21)}| ${String(user).padStart(6)} | ${String(system).padStart(7)} | ${String(external).padStart(8)} | ${String(user + system + external).padStart(5)}`
+        `${orgSlug.padEnd(22)}| ${cat.padEnd(21)}| ${String(user).padStart(6)} | ${String(system).padStart(7)} | ${String(external).padStart(8)} | ${String(policy).padStart(6)} | ${String(user + system + external + policy).padStart(5)}`
       );
     }
   }

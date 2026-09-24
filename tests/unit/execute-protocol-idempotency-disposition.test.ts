@@ -4,6 +4,26 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("@/protocols", () => ({}));
 
+// The policy store reads tables this suite does not model, so it is stubbed to
+// "this organization has no policies". That is a real state, and it keeps these
+// tests about idempotency disposition rather than about policy. The guard's own
+// behaviour when the store cannot be read is covered by
+// tests/unit/policy-guard-failclosed.test.ts.
+vi.mock("@/lib/policy/store", () => ({
+  getCompiledPolicySet: vi.fn(() =>
+    Promise.resolve({
+      organizationId: "org_1",
+      version: "empty",
+      policies: [],
+      compiledAt: Date.now(),
+    })
+  ),
+  loadGrants: vi.fn(() => Promise.resolve([])),
+  grantCovers: vi.fn(() => null),
+  invalidateOrgPolicies: vi.fn(),
+  invalidateAllPolicies: vi.fn(),
+}));
+
 vi.mock("../../app/api/execute/_lib/auth", () => ({
   validateApiKey: vi
     .fn()

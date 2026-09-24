@@ -18,6 +18,7 @@ import {
 } from "@/lib/idempotency";
 import { SCOPE_MCP_READ, SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
+import { enforceDirectNodePolicy } from "@/lib/policy/direct-execution";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { getErrorMessage } from "@/lib/utils";
 import { normalizeErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
@@ -467,6 +468,23 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json(checkFunctionOutputError, {
       status: HttpStatus.BAD_REQUEST,
     });
+  }
+
+  // The read decides whether the action runs, so it is a governed act in its
+  // own right. It never reaches a signer, which is why the signing check
+  // cannot stand behind it.
+  const readRefusal = await enforceDirectNodePolicy({
+    organizationId: apiKeyCtx.organizationId,
+    apiKeyId: apiKeyCtx.apiKeyId,
+    actionType: "web3/read-contract",
+    config: {
+      network,
+      contractAddress: body.contractAddress as string,
+      abiFunction: body.functionName as string,
+    },
+  });
+  if (readRefusal) {
+    return readRefusal;
   }
 
   const readResult = await readContractCore({

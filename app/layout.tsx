@@ -15,6 +15,7 @@ import { MobileWarningDialog } from "@/components/mobile-warning-dialog";
 import { EditorWalkthrough } from "@/components/onboarding/editor-walkthrough";
 import { OrgDataSync } from "@/components/org-data-sync";
 import { OverlayProvider } from "@/components/overlays/overlay-provider";
+import { PolicyDenialNotifier } from "@/components/policy/policy-denial-notifier";
 import { PendingScanRunner } from "@/components/scan/pending-scan-runner";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
@@ -152,6 +153,7 @@ const RootLayout = async ({ children }: RootLayoutProps) => {
             <AuthProvider>
               <OrgDataSync />
               <FeatureSessionInvalidator />
+              <PolicyDenialNotifier />
               <PendingTemplateRunner />
               <PendingScanRunner />
               <WalletProvisioningTrigger />

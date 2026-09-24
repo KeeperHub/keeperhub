@@ -53,6 +53,15 @@ Owners and admins can view the organization's security audit trail. It records s
 
 Sensitive owner actions such as withdrawing funds, exporting the wallet key, and exporting the audit trail require step-up verification (a second factor) in addition to the role check.
 
+## Policies
+
+Roles answer whether a role may do something. Policies answer whether it may be
+done at all, under these conditions, by anyone. They compose in that order, and
+a policy can only subtract: it never grants a member something their role
+refuses, and a policy refusal overrides even an owner's role.
+
+See [Policies](/api/policies) for how to write one.
+
 ## Security Considerations
 
 - Organization members share access to workflows, which can execute transactions from the organization wallet. Be cautious about who you invite to organizations with funded wallets.

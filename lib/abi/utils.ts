@@ -46,11 +46,24 @@ export function computeSelector(
   name: string,
   inputs: Array<AbiInput | string>
 ): string {
+  return ethers.id(canonicalSignature(name, inputs)).slice(0, 10);
+}
+
+/**
+ * Build the canonical signature string a selector is hashed from, e.g.
+ * "supply(address,uint256,address,uint16)".
+ *
+ * Shared with `computeSelector` so a displayed signature and the selector it
+ * compiles to are always derived from the same normalization.
+ */
+export function canonicalSignature(
+  name: string,
+  inputs: Array<AbiInput | string>
+): string {
   const types = inputs.map((input) =>
     typeof input === "string" ? input : canonicalType(input)
   );
-  const signature = `${name}(${types.join(",")})`;
-  return ethers.id(signature).slice(0, 10);
+  return `${name}(${types.join(",")})`;
 }
 
 export type AbiItem = {
@@ -69,8 +82,12 @@ export type AbiItem = {
 export type AbiFunctionItem = AbiItem & { name: string };
 
 /**
- * Canonical signature of a function entry, e.g.
+ * Canonical signature of a whole ABI entry, e.g.
  * `send((uint32,bytes32),address)`. This is the spelling `ethers` accepts.
+ *
+ * Distinct from the exported `canonicalSignature(name, inputs)` above, which
+ * builds the same string from a name and its inputs: that one is what a
+ * selector is hashed from, this one reads an entry that may be malformed.
  *
  * Returns undefined when the entry cannot be canonicalised at all -- the ABI
  * is user-pasted JSON, so an input may be missing its `type` or carry a
@@ -78,7 +95,7 @@ export type AbiFunctionItem = AbiItem & { name: string };
  * match" and keep looking, rather than failing the whole lookup: one broken
  * entry must not hide the healthy functions next to it.
  */
-function canonicalSignature(item: AbiItem): string | undefined {
+function canonicalEntrySignature(item: AbiItem): string | undefined {
   try {
     const inputs = Array.isArray(item.inputs) ? item.inputs : [];
     return `${item.name}(${inputs.map((i) => canonicalType(i)).join(",")})`;
@@ -149,14 +166,14 @@ export function resolveAbiFunction(
       ? {
           status: "found",
           entry,
-          canonicalKey: canonicalSignature(entry) ?? key,
+          canonicalKey: canonicalEntrySignature(entry) ?? key,
         }
       : { status: "not_found" };
   }
 
   // Every canonical match spells the same signature, so however many entries
   // repeat it -- merged facet ABIs do -- they are one function, not overloads.
-  const canonical = named.find((item) => canonicalSignature(item) === key);
+  const canonical = named.find((item) => canonicalEntrySignature(item) === key);
   if (canonical) {
     return { status: "found", entry: canonical, canonicalKey: key };
   }
@@ -169,7 +186,7 @@ export function resolveAbiFunction(
     return {
       status: "found",
       entry,
-      canonicalKey: canonicalSignature(entry) ?? key,
+      canonicalKey: canonicalEntrySignature(entry) ?? key,
     };
   }
   if (legacy.length > 1) {
@@ -188,7 +205,8 @@ function distinctBySignature(entries: AbiFunctionItem[]): AbiFunctionItem[] {
   const seen = new Set<string>();
   const distinct: AbiFunctionItem[] = [];
   for (const entry of entries) {
-    const signature = canonicalSignature(entry) ?? legacySignature(entry) ?? "";
+    const signature =
+      canonicalEntrySignature(entry) ?? legacySignature(entry) ?? "";
     if (!seen.has(signature)) {
       seen.add(signature);
       distinct.push(entry);
@@ -209,7 +227,7 @@ export function describeAmbiguousKey(
   candidates: AbiFunctionItem[]
 ): string {
   const options = candidates
-    .map((c) => canonicalSignature(c) ?? legacySignature(c) ?? c.name)
+    .map((c) => canonicalEntrySignature(c) ?? legacySignature(c) ?? c.name)
     .join(", ");
   return `Function '${key}' matches ${candidates.length} overloads in this ABI, so the one to call cannot be determined. Re-select the function to store its full signature: ${options}`;
 }

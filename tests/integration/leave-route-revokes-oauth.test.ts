@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+// Policy has its own suites, including one against a real database. Here it
+// must not stand between the request and the behaviour under test.
+vi.mock("@/lib/security/org-role", () => ({
+  getOrgRole: async () => "owner",
+}));
+vi.mock("@/lib/policy/control-plane", () => ({
+  enforceControlPlane: async () => null,
+  decideControlPlane: async () => ({ blocked: false, reason: "unmanaged" }),
+}));
 
 const USER_ID = "user-1";
 const ORG_ID = "org-1";

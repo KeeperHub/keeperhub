@@ -4,6 +4,7 @@
  * Helper functions to instrument workflow execution with golden signal metrics.
  */
 
+import { triggerTypeOf } from "@/lib/workflow/trigger-type";
 import { createTimer, getMetricsCollector } from "../index";
 import { LabelKeys, MetricNames, type TriggerType } from "../types";
 
@@ -172,21 +173,8 @@ export function recordStepMetrics(options: {
 export function detectTriggerType(
   nodes: Array<{ data: { type: string; config?: Record<string, unknown> } }>
 ): TriggerType {
-  const triggerNode = nodes.find((n) => n.data.type === "trigger");
-  if (!triggerNode) {
-    return "manual";
-  }
-
-  const triggerType = triggerNode.data.config?.triggerType as
-    | string
-    | undefined;
-
-  if (triggerType === "Webhook") {
-    return "webhook";
-  }
-  if (triggerType === "Scheduled" || triggerType === "Schedule") {
-    return "scheduled";
-  }
-
-  return "manual";
+  // A label has to be something, so an unrecognised trigger stays "manual"
+  // here and the metric keeps the shape it has always had. Authorization does
+  // not get the same courtesy: see triggerTypeOf.
+  return triggerTypeOf(nodes) ?? "manual";
 }
