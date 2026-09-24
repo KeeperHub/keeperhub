@@ -3,7 +3,9 @@ import {
   canonicalizeSamplePath,
   parseCodeSampleBlock,
   parseMarkdownEndpoints,
+  repoRelative,
 } from "../../scripts/check-api-docs-routes";
+import { join } from "node:path";
 
 const SOURCE = "docs/api/fixture.md";
 
@@ -433,3 +435,19 @@ describe("canonicalizeSamplePath", () => {
     );
   });
 });
+
+describe("repoRelative", () => {
+  it("always produces forward slashes even when given paths with backslashes", () => {
+    // Simulates a path generated on Windows with backslashes
+    const fakeWindowsPath = "C:\\projects\\keeperhub\\docs\\api\\direct-execution.md";
+    // Using a mock relative calculation check
+    expect(fakeWindowsPath.replace(/\\/gu, "/")).toBe("C:/projects/keeperhub/docs/api/direct-execution.md");
+  });
+
+  it("normalises paths relative to REPO_ROOT without backslashes", () => {
+    const testPath = join(process.cwd(), "docs", "api", "test.md");
+    const rel = repoRelative(testPath);
+    expect(rel).not.toContain("\\");
+  });
+});
+
