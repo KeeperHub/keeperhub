@@ -27,6 +27,10 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { buildPage, parsePageRequest } from "@/lib/pagination";
 import { redactAuditDiff } from "@/lib/security/audit-redaction";
+import {
+  buildCredential,
+  loadApiKeyNames,
+} from "@/lib/security/credential-lookup";
 
 // Max characters honored from the free-text search; longer input is truncated
 // so a pathological query can't blow up the LIKE scan.
@@ -531,11 +535,17 @@ export async function GET(request: Request) {
         }
       }
     }
+    // An org API key carries its creator's user id, so an action taken through
+    // a shared key is attributed to whoever minted it. Resolving the key's name
+    // is what lets the feed say the action came through that key rather than
+    // asserting the creator sat down and did it.
+    const actorKeyNames = await loadApiKeyNames(rows.map((r) => r.apiKeyId));
     // Return an explicit, display-only DTO -- never the raw row. Spreading the
-    // row would leak internal audit columns (apiKeyId, authMethod,
-    // correlationId, outcome, org/actor labels) and the unredacted diff to the
-    // client. Only the fields the activity view consumes are exposed, and the
-    // diff is redacted server-side so secrets never reach the wire.
+    // row would leak internal audit columns (apiKeyId, correlationId, outcome,
+    // org/actor labels) and the unredacted diff to the client. Only the fields
+    // the activity view consumes are exposed -- the credential as a resolved
+    // label, never the raw key id -- and the diff is redacted server-side so
+    // secrets never reach the wire.
     const items = rows.map((r) => {
       const enriched = r.actorUserId ? actorMap.get(r.actorUserId) : undefined;
       // Fall back to the denormalized actor_label when the user row is gone (a
@@ -575,6 +585,7 @@ export async function GET(request: Request) {
           ? { ip: meta.ip ?? null, country: meta.country ?? null }
           : null,
         actor,
+        credential: buildCredential(r.authMethod, r.apiKeyId, actorKeyNames),
       };
     });
 

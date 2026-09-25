@@ -9,6 +9,7 @@ import {
   describeAuditAction,
 } from "@/lib/security/audit-actions";
 import { SENSITIVE_FIELD } from "@/lib/security/audit-redaction";
+import { credentialLabel } from "@/lib/security/credential-label";
 import { ActorAvatarBadge, ActorIdentity, actorLabel } from "./actor-avatar";
 
 const KIND_ICON: Record<AuditActionKind, typeof Plus> = {
@@ -261,6 +262,9 @@ export function ActivityRow({
   const meta = metadataLine(event);
   const actor = event.actor;
   const role = roleLabel(actor?.role);
+  // An org API key is recorded against whoever created it, so name the key
+  // rather than letting the row read as that person having done this.
+  const via = credentialLabel(event.credential);
   // Show the email on its own line only when we also have a name -- otherwise
   // actorLabel already falls back to the email.
   const email = actor?.name ? actor.email : null;
@@ -274,6 +278,11 @@ export function ActivityRow({
           <span className="font-medium">{actorLabel(actor)}</span>
           {role && (
             <span className="ml-1 text-muted-foreground text-xs">· {role}</span>
+          )}
+          {via && (
+            <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 font-medium text-[10px] text-foreground">
+              {via}
+            </span>
           )}
         </span>
         <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground">
