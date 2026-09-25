@@ -32,6 +32,14 @@ const blockscoutNode = {
   actionType: "blockscout/get-address-balance",
 };
 
+// The OpenClaw hook step takes the same route as blockscout: the connection
+// itself is ungated, but the destination is user-supplied, so the egress
+// classification puts it behind action.external-request on the free plan.
+const openclawHookNode = {
+  id: "node-oc-1",
+  actionType: "openclaw/trigger-agent",
+};
+
 // Pro-gated plugin actions with explicit feature entries (action.code /
 // action.webhook). These are the plugin actions that used to collapse into a
 // generic INVALID_ACTION_CONFIG when their config was incomplete, because
@@ -113,6 +121,25 @@ describe("enforceWorkflowFeatures", () => {
     expect(body.violations[0].featureId).toBe("action.external-request");
     expect(body.violations[0].requiredPlan).toBe("pro");
     expect(body.violations[0].nodeIds).toEqual(["node-bs-1"]);
+  });
+
+  it("blocks the OpenClaw agent hook on the free plan via the egress gate", async () => {
+    vi.mocked(isBillingEnabled).mockReturnValue(true);
+    vi.mocked(getOrgPlan).mockResolvedValue("free");
+
+    const result = await enforceWorkflowFeatures([openclawHookNode], "org_1");
+
+    expect(result.blocked).toBe(true);
+    if (!result.blocked) {
+      return;
+    }
+    expect(result.response.status).toBe(402);
+    const body = await result.response.json();
+    expect(body.code).toBe("upgrade_required");
+    expect(body.violations[0].featureId).toBe("action.external-request");
+    expect(body.violations[0].requiredPlan).toBe("pro");
+    expect(body.violations[0].actionType).toBe("openclaw/trigger-agent");
+    expect(body.violations[0].nodeIds).toEqual(["node-oc-1"]);
   });
 
   it("blocks the Run Code action on the free plan with a plan-specific 402", async () => {
