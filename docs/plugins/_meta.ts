@@ -8,6 +8,7 @@ export default {
   data: "Data",
   safe: "Safe",
   blockscout: "Blockscout",
+  "agent-gateway": "Agent Gateway",
   "aave-v3": "Aave V3",
   "aave-v4": "Aave V4",
   aerodrome: "Aerodrome",
