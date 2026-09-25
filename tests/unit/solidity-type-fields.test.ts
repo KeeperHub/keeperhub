@@ -21,6 +21,11 @@ describe("solidityTypeToFieldType", () => {
     expect(solidityTypeToFieldType("uint128")).toBe("protocol-uint");
   });
 
+  it("maps scalar Solidity arrays to protocol-array", () => {
+    expect(solidityTypeToFieldType("uint256[]")).toBe("protocol-array");
+    expect(solidityTypeToFieldType("address[2]")).toBe("protocol-array");
+  });
+
   it("maps int types to protocol-int", () => {
     expect(solidityTypeToFieldType("int256")).toBe("protocol-int");
     expect(solidityTypeToFieldType("int8")).toBe("protocol-int");
@@ -42,7 +47,7 @@ describe("solidityTypeToFieldType", () => {
 
   it("falls back to template-input for unknown types", () => {
     expect(solidityTypeToFieldType("tuple")).toBe("template-input");
-    expect(solidityTypeToFieldType("tuple[]")).toBe("template-input");
+    expect(solidityTypeToFieldType("tuple[]")).toBe("protocol-array");
     expect(solidityTypeToFieldType("unknown")).toBe("template-input");
   });
 });

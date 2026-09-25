@@ -36,6 +36,7 @@ const RESERVED_CONFIG_KEYS = new Set([
 
 const TEMPLATE_VALUE_PATTERN = /\{\{[^}]+}}/;
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/;
+const FIXED_ARRAY_LENGTH_PATTERN = /\[(\d+)]$/;
 // The `nodes[N]` prefix the validator writes into every issue path, used to
 // tell two nodes apart when neither carries an id.
 const NODE_PATH_PREFIX_PATTERN = /^nodes\[\d+]/;
@@ -78,6 +79,37 @@ function sanitiseSummaryText(text: string, maxChars: number): string {
     return `${stripped.slice(0, maxChars - 3)}...`;
   }
   return stripped;
+}
+
+function fixedArrayLength(
+  solidityType: string | undefined
+): number | undefined {
+  if (!solidityType) {
+    return undefined;
+  }
+  const match = solidityType.match(FIXED_ARRAY_LENGTH_PATTERN);
+  return match ? Number(match[1]) : undefined;
+}
+
+function arrayValueHasExpectedLength(
+  value: unknown,
+  solidityType: string | undefined
+): boolean {
+  const expectedLength = fixedArrayLength(solidityType);
+  if (expectedLength === undefined || valueContainsTemplate(value)) {
+    return true;
+  }
+  const parsed =
+    typeof value === "string"
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return value;
+          }
+        })()
+      : value;
+  return Array.isArray(parsed) && parsed.length === expectedLength;
 }
 
 function sanitiseNodeLabel(label: string): string {
@@ -488,14 +520,26 @@ function validateFieldValue(
         (valueContainsTemplate(value) || DECIMAL_PATTERN.test(value))
         ? { valid: true }
         : { valid: false, expected: "decimal ETH amount", received: value };
+    case "protocol-array":
     case "protocol-tuple-array":
-      return Array.isArray(value) ||
-        valueContainsTemplate(value) ||
-        isJsonArrayString(value)
+      if (
+        !(
+          Array.isArray(value) ||
+          valueContainsTemplate(value) ||
+          isJsonArrayString(value)
+        )
+      ) {
+        return {
+          valid: false,
+          expected: field.solidityType ?? "tuple[]",
+          received: value,
+        };
+      }
+      return arrayValueHasExpectedLength(value, field.solidityType)
         ? { valid: true }
         : {
             valid: false,
-            expected: field.solidityType ?? "tuple[]",
+            expected: `${field.solidityType} with ${fixedArrayLength(field.solidityType)} items`,
             received: value,
           };
     case "json-editor":

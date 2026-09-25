@@ -12,6 +12,11 @@ type ArrayItem = {
   value: unknown;
 };
 
+type ParsedArrayValue = {
+  items: ArrayItem[];
+  shouldMigrateLegacyValue: boolean;
+};
+
 type ArrayInputFieldProps = {
   itemType: string;
   value: unknown;
@@ -21,36 +26,107 @@ type ArrayInputFieldProps = {
   components?: AbiComponent[];
 };
 
-function parseArrayValue(
+function isTemplateValue(value: string): boolean {
+  return /^\{\{[^{}]+\}\}$/.test(value.trim());
+}
+
+function makeArrayItem(value: unknown, nextId: () => number): ArrayItem {
+  return { id: nextId(), value: value ?? "" };
+}
+
+function parseArrayValueWithMigration(
   value: unknown,
-  nextId: () => number
-): ArrayItem[] {
+  nextId: () => number,
+  components?: AbiComponent[]
+): ParsedArrayValue {
   if (Array.isArray(value) && value.length > 0) {
-    return value.map((v) => ({
-      id: nextId(),
-      value: v ?? "",
-    }));
+    return {
+      items: value.map((item) => makeArrayItem(item, nextId)),
+      shouldMigrateLegacyValue: false,
+    };
   }
 
   if (typeof value === "string" && value.trim() !== "") {
     try {
       const parsed: unknown = JSON.parse(value);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map((v) => ({
-          id: nextId(),
-          value: v ?? "",
-        }));
+      if (Array.isArray(parsed)) {
+        return {
+          items: parsed.map((item) => makeArrayItem(item, nextId)),
+          shouldMigrateLegacyValue: false,
+        };
       }
+
+      // Before scalar arrays had a structured editor, a single scalar could be
+      // stored directly. Keep it visible as one row rather than presenting a
+      // misleading empty array. Only tuple arrays can edit parsed objects;
+      // scalar arrays must show and preserve the original JSON text.
+      const itemValue =
+        typeof parsed === "object" && parsed !== null && components?.length
+          ? parsed
+          : value.trim();
+      return {
+        items: [makeArrayItem(itemValue, nextId)],
+        shouldMigrateLegacyValue: false,
+      };
     } catch {
-      return [{ id: nextId(), value }];
+      if (isTemplateValue(value)) {
+        return {
+          items: [makeArrayItem(value.trim(), nextId)],
+          shouldMigrateLegacyValue: false,
+        };
+      }
+
+      // Before scalar arrays had a structured editor, protocol inputs such as
+      // Aerodrome gauge lists were entered as comma-separated text. Preserve
+      // those saved values when the workflow is opened in the new editor. A
+      // single legacy value stays visible but is not rewritten just by opening
+      // the configuration panel.
+      const items = value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .map((item) => makeArrayItem(item, nextId));
+      return {
+        items,
+        shouldMigrateLegacyValue: value.includes(","),
+      };
     }
   }
 
-  return [];
+  return { items: [], shouldMigrateLegacyValue: false };
+}
+
+export function parseArrayValue(
+  value: unknown,
+  nextId: () => number,
+  components?: AbiComponent[]
+): ArrayItem[] {
+  return parseArrayValueWithMigration(value, nextId, components).items;
 }
 
 function serializeItems(items: ArrayItem[]): unknown[] {
   return items.map((item) => item.value);
+}
+
+function haveEqualValues(current: ArrayItem[], incoming: ArrayItem[]): boolean {
+  return (
+    JSON.stringify(serializeItems(current)) ===
+    JSON.stringify(serializeItems(incoming))
+  );
+}
+
+function preserveRowIds(
+  current: ArrayItem[],
+  incoming: ArrayItem[]
+): ArrayItem[] {
+  if (haveEqualValues(current, incoming)) {
+    return current;
+  }
+
+  return incoming.map((item, index) => ({
+    ...item,
+    id: current[index]?.id ?? item.id,
+  }));
 }
 
 function makeEmptyValue(components?: AbiComponent[]): unknown {
@@ -73,21 +149,31 @@ export function ArrayInputField({
   components,
 }: ArrayInputFieldProps): React.ReactNode {
   const idCounter = useRef(0);
+  const migratedLegacyValue = useRef<string | null>(null);
   const nextId = (): number => {
     idCounter.current += 1;
     return idCounter.current;
   };
 
   const [items, setItems] = useState<ArrayItem[]>(() =>
-    parseArrayValue(value, nextId)
+    parseArrayValue(value, nextId, components)
   );
 
   useEffect(() => {
-    const incoming = parseArrayValue(value, nextId);
-    if (incoming.length > 0 && items.length === 0) {
-      setItems(incoming);
+    const parsed = parseArrayValueWithMigration(value, nextId, components);
+    const incoming = parsed.items;
+    setItems((current) => preserveRowIds(current, incoming));
+
+    if (
+      !disabled &&
+      parsed.shouldMigrateLegacyValue &&
+      incoming.length > 0 &&
+      migratedLegacyValue.current !== value
+    ) {
+      migratedLegacyValue.current = String(value);
+      onChange(serializeItems(incoming));
     }
-  }, [value]);
+  }, [components, disabled, value]);
 
   function updateItems(updated: ArrayItem[]): void {
     setItems(updated);

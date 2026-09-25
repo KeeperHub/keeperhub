@@ -9,14 +9,21 @@
  */
 
 import { useAtomValue } from "jotai";
+import { Info } from "lucide-react";
 import { KeeperHubLogo } from "@/components/icons/keeperhub-logo";
 import { SendGridConnectionSection } from "@/components/settings/sendgrid-connection-section";
 import { Web3WalletSection } from "@/components/settings/web3-wallet-section";
 import { Label } from "@/components/ui/label";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { AbiEventArgsField } from "@/components/workflow/config/abi-event-args-field";
 import { AbiEventSelectField } from "@/components/workflow/config/abi-event-select-field";
 import { AbiWithAutoFetchField } from "@/components/workflow/config/abi-with-auto-fetch-field";
 import { ArgsListField } from "@/components/workflow/config/args-list-field";
+import { ArrayInputField } from "@/components/workflow/config/array-input-field";
 import { CallListField } from "@/components/workflow/config/call-list-field";
 import {
   ChainSelectField,
@@ -44,6 +51,8 @@ import {
   registerIntegrationFormHandler,
 } from "@/lib/workflow/editor/extension-registry";
 import { nodesAtom } from "@/lib/workflow/store";
+
+const ARRAY_SUFFIX_RE = /\[\d*\]$/;
 
 // ============================================================================
 // Register Custom Field Renderers
@@ -360,10 +369,6 @@ function ProtocolFieldLabel({
     docUrl?: string;
   };
 }): React.ReactNode {
-  const { Tooltip, TooltipTrigger, TooltipContent } =
-    require("@/components/ui/tooltip") as typeof import("@/components/ui/tooltip");
-  const { Info } = require("lucide-react") as typeof import("lucide-react");
-
   const hasDocUrl = Boolean(field.docUrl);
 
   const infoIcon = (
@@ -573,6 +578,41 @@ registerFieldRenderer(
           onChange={(val: unknown) => onUpdateConfig(field.key, val)}
           placeholder={field.placeholder}
           solidityType={solidityType}
+          value={value}
+        />
+      </div>
+    );
+  }
+);
+
+/** Protocol scalar-array field with one typed editor row per item. */
+registerFieldRenderer(
+  "protocol-array",
+  ({ field, config, onUpdateConfig, disabled }) => {
+    const rawValue = config[field.key];
+    let value: unknown = rawValue;
+    if (typeof rawValue === "string" && rawValue.trim() !== "") {
+      try {
+        const parsedValue: unknown = JSON.parse(rawValue);
+        value = Array.isArray(parsedValue) ? parsedValue : rawValue;
+      } catch {
+        value = rawValue;
+      }
+    }
+
+    const itemType =
+      field.solidityType?.replace(ARRAY_SUFFIX_RE, "") ?? "value";
+
+    return (
+      <div className="space-y-2" key={field.key}>
+        <ProtocolFieldLabel field={field} />
+        <ArrayInputField
+          disabled={disabled}
+          fieldKey={field.key}
+          itemType={itemType}
+          onChange={(val: unknown[]) =>
+            onUpdateConfig(field.key, JSON.stringify(val))
+          }
           value={value}
         />
       </div>

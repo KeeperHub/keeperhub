@@ -63,6 +63,7 @@ export type ActionConfigFieldBase = {
     | "protocol-bool" // Boolean select (true/false) with template variable support
     | "protocol-bytes" // Hex input with 0x-prefix validation
     | "protocol-eth-value" // Decimal ETH value input (e.g. 0.1, 1.5)
+    | "protocol-array" // Structured scalar array (e.g. uint256[])
     | "protocol-tuple-array" // Structured array of tuple items (e.g. tokenAmounts)
     | "pagerduty-service-select" // Services read live from the node's PagerDuty connection
     | "pagerduty-escalation-policy-select" // Escalation policies read live from that connection
