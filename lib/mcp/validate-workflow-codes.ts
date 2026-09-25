@@ -24,6 +24,9 @@ export const VALIDATION_WARNING_CODES = {
   // Configure-time hint: write-contract uses an allowance-consuming method
   // (transferFrom / redeem / withdrawFrom) with no check-allowance node.
   MISSING_ALLOWANCE_PREFLIGHT: "missing-allowance-preflight",
+  // Configure-time hint: an approve (approve-token, or write-contract calling
+  // approve) with no check-allowance node upstream. Not a redundancy claim.
+  APPROVE_WITHOUT_ALLOWANCE_CHECK: "approve-without-allowance-check",
 } as const;
 
 export type ValidationErrorCode =
