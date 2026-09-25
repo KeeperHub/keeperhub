@@ -42,7 +42,11 @@ export async function GET(request: Request): Promise<NextResponse> {
 
     // Annotate each invoice with the executions used during its own billing
     // period, so usage reconciles with the period the customer was billed on.
-    const limits = getPlanLimits(
+    // A closed period comes back from its stored record, carrying the limit
+    // that was in force at the time; the current plan is only a fallback for a
+    // period that has no record yet, and using it for a closed period would let
+    // a later plan change rewrite the limit shown on every past invoice.
+    const currentLimits = getPlanLimits(
       parsePlanName(sub.plan),
       parseTierKey(sub.tier),
       sub.planOverrides
@@ -54,11 +58,15 @@ export async function GET(request: Request): Promise<NextResponse> {
         periodEnd: invoice.periodEnd,
       }))
     );
-    const invoices = result.invoices.map((invoice, index) => ({
-      ...invoice,
-      executionsUsed: usage[index] ?? 0,
-      executionLimit: limits.maxExecutionsPerMonth,
-    }));
+    const invoices = result.invoices.map((invoice, index) => {
+      const periodUsage = usage[index];
+      return {
+        ...invoice,
+        executionsUsed: periodUsage?.executionsUsed ?? 0,
+        executionLimit:
+          periodUsage?.executionLimit ?? currentLimits.maxExecutionsPerMonth,
+      };
+    });
 
     return NextResponse.json({ invoices, hasMore: result.hasMore });
   } catch (error) {
