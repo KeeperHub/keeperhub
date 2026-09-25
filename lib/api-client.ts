@@ -10,6 +10,7 @@ import type {
   WorkflowExecutionStatus,
 } from "@/lib/errors/execution-status";
 import type { Page } from "@/lib/pagination";
+import type { ActorCredential } from "@/lib/security/credential-label";
 import type { HeldPaymentView } from "@/lib/tempo/held-payment-view";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
 import type { WorkflowExportV1 } from "@/lib/workflow/export-schema";
@@ -99,6 +100,9 @@ export type WorkflowVersionSummary = {
   change: unknown;
   createdAt: string;
   changedBy: WorkflowVersionActor | null;
+  // How the edit authenticated. An edit made through a shared org API key is
+  // recorded against the key's creator, so this is what tells the two apart.
+  credential: ActorCredential | null;
 };
 
 export type WorkflowHistoryResponse = Page<WorkflowVersionSummary>;
@@ -1098,6 +1102,8 @@ export type SecurityAuditEvent = {
     email?: string | null;
     role?: string | null;
   } | null;
+  // See WorkflowVersionSummary.credential.
+  credential: ActorCredential | null;
 };
 
 export const securityApi = {
