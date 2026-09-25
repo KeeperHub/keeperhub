@@ -78,3 +78,39 @@ shortfall, then retry. For a write that sends no native value, restoring the
 sponsorship conditions (gas credits, supported network, direct-wallet sender,
 public mempool) can also fix the run without funding. A write that sends native
 value always needs that value in the wallet; sponsorship covers the fee only.
+
+### `insufficient_allowance` (simulate responses)
+
+**What happened**: the simulated call attempted an ERC-20 transfer or spend that exceeds the current spending allowance. The response carries `allowance`, `neededAllowance`, and `spender`.
+
+**What to do**: grant additional spending allowance for the spender address on the token contract before retrying.
+
+### `insufficient_token_balance` (simulate responses)
+
+**What happened**: the simulated sender lacks sufficient ERC-20 token balance to complete the transfer.
+
+**What to do**: fund the sender account with additional tokens before retrying.
+
+### `contract_paused` / `contract_not_paused` (simulate responses)
+
+**What happened**: `contract_paused` indicates the target contract is currently paused (e.g. OpenZeppelin `EnforcedPause`). `contract_not_paused` indicates an action requires the contract to be paused, but it is currently unpaused (`ExpectedPause`).
+
+**What to do**: for `contract_paused`, wait for the contract owner to unpause the contract. For `contract_not_paused`, pause the contract or verify execution prerequisites.
+
+### `unauthorized` (simulate responses)
+
+**What happened**: the simulated sender is not the contract owner or lacks the required AccessControl role.
+
+**What to do**: switch to an authorized wallet or request the required role permissions.
+
+### `reentrancy_blocked` (simulate responses)
+
+**What happened**: the call triggered a reentrancy guard (`ReentrancyGuardReentrantCall`).
+
+**What to do**: avoid nested or reentrant calls to the function within the same transaction.
+
+### Safe execution error codes (simulate responses)
+
+**What happened**: Safe multisig preflight failed. Codes include `safe_signature_invalid` (signatures invalid or unordered), `safe_insufficient_gas` (Safe execution ran out of gas), and `safe_not_authorized` (caller is not an owner or enabled module).
+
+**What to do**: inspect Safe threshold, signatures, gas limits, and module authorizations.

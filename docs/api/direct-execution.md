@@ -716,7 +716,7 @@ No row is inserted into the execution audit table, no funds are reserved against
 
 A deterministic failed simulation answers with HTTP `400`. Do not classify every such body as an EVM
 revert: read a string `code` first, then `failureKind`, then `wouldRevert`. A `code` is an
-attributed preflight failure such as `insufficient_balance`; `failureKind: "revert"`
+attributed preflight failure such as `insufficient_balance` or `insufficient_allowance`; `failureKind: "revert"`
 with `wouldRevert: true` is a confirmed call revert; an uncoded
 `failureKind: "validation"` is not. Route-level parameter errors may carry none of these
 fields. This ordering keeps a generic "non-2xx means the request is malformed" wrapper
@@ -893,7 +893,16 @@ A node asked to estimate gas for a transfer the sender cannot pay for rejects it
 
 - `failureKind`: `"validation"` here means no EVM revert was decoded. It does not mean
   the request data is malformed; inspect `code` before interpreting this discriminator
-- `code`: `"insufficient_balance"` — branch on this rather than string-matching `revertReason`. Absent when the simulator has no more specific machine-readable cause
+- `code`: machine-readable cause — branch on this rather than string-matching `revertReason`. Absent when the simulator has no more specific machine-readable cause. Supported non-panic codes include:
+  - `insufficient_balance`: the funding wallet cannot cover the native value the call sends
+  - `insufficient_allowance`: current ERC-20 allowance is less than needed (surfaces `allowance`, `neededAllowance`, `spender`)
+  - `insufficient_token_balance`: sender ERC-20 token balance is less than the transfer amount
+  - `contract_paused`: target contract is paused (`EnforcedPause`, `Pausable: paused`)
+  - `contract_not_paused`: operation requires target contract to be paused, but it is currently unpaused (`ExpectedPause`)
+  - `unauthorized`: caller is not owner or lacks required role (`OwnableUnauthorizedAccount`, `AccessControlUnauthorizedAccount`)
+  - `reentrancy_blocked`: reentrancy guard triggered
+  - `safe_signature_invalid`, `safe_insufficient_gas`, `safe_not_authorized`: Safe execution failures
+  - `role_condition_violation`: Zodiac Roles modifier condition failed
 - `balanceWei` / `requiredWei` / `shortfallWei`: the sender's native balance, the native value the call would move, and the difference, all in wei
 - `nativeSymbol`: the chain's native currency symbol (`ETH`, `BNB`, `POL`); falls back to `native` if the chain is not seeded
 - `originalError`: the node's own message, kept verbatim. Attribution only ever adds — nothing the chain said is discarded
