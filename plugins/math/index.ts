@@ -34,12 +34,12 @@ const mathPlugin: IntegrationPlugin = {
         {
           field: "result",
           description:
-            "The aggregation result as a string (preserves precision for large integers)",
+            "The aggregation result as a string (exact on the fixed-point path), or null when divide or modulo had a zero operand",
         },
         {
           field: "resultType",
           description:
-            'Whether the result used "number" (standard) or "bigint" (large integer) arithmetic',
+            '"bigint" when the result is a whole number computed in fixed point, "number" otherwise',
         },
         {
           field: "operation",
@@ -48,6 +48,11 @@ const mathPlugin: IntegrationPlugin = {
         {
           field: "inputCount",
           description: "Number of values that were aggregated",
+        },
+        {
+          field: "divisionByZero",
+          description:
+            "true when the divide or modulo post-operation had a zero operand; result is then null and the step succeeds so a Condition can branch on it",
         },
         { field: "error", description: "Error message if aggregation failed" },
       ],
