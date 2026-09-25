@@ -7,6 +7,7 @@ import { STEP_UP_ACTIONS } from "@/lib/mfa/step-up-policy";
 import { authorizeAction } from "@/lib/middleware/authorize-action";
 import { getActiveOrgId } from "@/lib/middleware/org-context";
 import { redactAuditDiff } from "@/lib/security/audit-redaction";
+import { loadApiKeyNames } from "@/lib/security/credential-lookup";
 import { toCsvCell } from "@/lib/security/csv";
 import { DAY_MS } from "@/lib/utils/duration";
 
@@ -33,6 +34,8 @@ const COLUMNS = [
   "actor_name",
   "actor_email",
   "actor_role",
+  "auth_method",
+  "api_key_name",
   "ip",
   "country",
   "resource_type",
@@ -127,6 +130,9 @@ export async function POST(request: Request): Promise<Response> {
           .where(inArray(users.id, actorIds))
       : [];
     const actorMap = new Map(actors.map((a) => [a.id, a]));
+    // Which key an action came through, so an export can tell a person's own
+    // edit apart from one made with a key they happen to have created.
+    const keyNames = await loadApiKeyNames(rows.map((r) => r.apiKeyId));
 
     const lines: string[] = [COLUMNS.join(",")];
     for (const r of rows) {
@@ -138,6 +144,8 @@ export async function POST(request: Request): Promise<Response> {
           toCsvCell(actor?.name ?? r.actorLabel ?? null),
           toCsvCell(actor?.email ?? null),
           toCsvCell(actor?.role ?? null),
+          toCsvCell(r.authMethod),
+          toCsvCell(r.apiKeyId ? (keyNames.get(r.apiKeyId) ?? null) : null),
           toCsvCell((r.metadata as { ip?: unknown } | null)?.ip ?? null),
           toCsvCell(
             (r.metadata as { country?: unknown } | null)?.country ?? null

@@ -71,6 +71,8 @@ describe("recordWorkflowSnapshot", () => {
       change: null,
       previousVersion: null,
       previousHash: null,
+      authMethod: "session",
+      apiKeyId: null,
     });
     expect(row.contentHash).toMatch(SHA256_HEX);
     expect(row.snapshot.nodes).toEqual(wf.nodes);
@@ -100,6 +102,25 @@ describe("recordWorkflowSnapshot", () => {
         after: "Renamed",
       })
     );
+  });
+
+  it("records the API key an edit came through", async () => {
+    mockLimit.mockResolvedValue([{ version: 1, contentHash: "prevhash" }]);
+
+    await recordWorkflowSnapshot({
+      workflowId: "wf1",
+      before: wf,
+      after: { ...wf, name: "Renamed" },
+      actor: { ...actor, authMethod: "api-key", apiKeyId: "key1" },
+      source: "update",
+    });
+
+    // The key's creator stays the actor; the key id is what tells a shared-key
+    // edit apart from that person's own.
+    const row = mockInsertValues.mock.calls[0][0];
+    expect(row.changedByUserId).toBe("u1");
+    expect(row.authMethod).toBe("api-key");
+    expect(row.apiKeyId).toBe("key1");
   });
 
   it("does not record a version for a cosmetic-only change", async () => {

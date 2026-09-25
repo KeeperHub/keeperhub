@@ -18,6 +18,8 @@ export type WorkflowSnapshotActor = {
   userId: string | null;
   organizationId: string | null;
   authMethod: string;
+  /** The API key the edit came through, when it did. */
+  apiKeyId?: string | null;
 };
 
 // The subset of a workflow row we snapshot. Loosely typed so callers can pass
@@ -96,6 +98,7 @@ export async function recordWorkflowSnapshot(args: {
       version,
       changedByUserId: actor.userId,
       authMethod: actor.authMethod,
+      apiKeyId: actor.apiKeyId ?? null,
       source,
       snapshot: buildSnapshot(after),
       change,
