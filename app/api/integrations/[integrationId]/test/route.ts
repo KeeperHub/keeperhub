@@ -30,14 +30,27 @@ async function parseJsonBody(
   if (!contentType.includes("application/json")) {
     return {};
   }
-  try {
-    return await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: "Invalid JSON in request body" },
-      { status: 400 }
-    );
+  // Testing an unchanged connection sends nothing to override, and the shared
+  // client stamps the JSON content type on every request regardless, so an
+  // empty body is a valid "test what is stored" rather than malformed input.
+  const raw = (await request.text()).trim();
+  if (raw.length === 0) {
+    return {};
   }
+  const invalid = NextResponse.json(
+    { error: "Invalid JSON in request body" },
+    { status: 400 }
+  );
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return invalid;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return invalid;
+  }
+  return parsed as TestRequestBody;
 }
 
 export async function POST(
