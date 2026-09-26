@@ -65,6 +65,14 @@ vi.mock("@/lib/execute/value-ledger", () => ({
     mockWithStepValueCap(...(args as [unknown, () => Promise<unknown>])),
 }));
 
+// Pass-through spy: every call here is allowed, so the step's behaviour is
+// unchanged, but the arguments the step hands the guard are observable.
+const mockCheckProtocolOnchainGuards = vi.fn(async () => ({ ok: true }));
+vi.mock("@/lib/protocol-input-guards-onchain", () => ({
+  checkProtocolOnchainGuards: (...args: unknown[]) =>
+    mockCheckProtocolOnchainGuards(...(args as [])),
+}));
+
 // ── Import under test ────────────────────────────────────────────────
 
 import { parseEther } from "ethers";
@@ -372,6 +380,25 @@ describe("protocolWriteStep", () => {
         ethValue: undefined,
         _context: { executionId: "exec-456" },
       });
+    });
+
+    // The ownership guard's ownerOf read resolves its RPC provider from the
+    // execution, the same way writeContractCore does. Dropping executionId
+    // here would silently put the read on the chain default while the write
+    // it guards uses the user's preferred RPC.
+    it("hands the on-chain guard the execution id", async () => {
+      mockResolveProtocolMeta.mockReturnValue(COMPOUND_SUPPLY_META);
+      mockGetProtocol.mockReturnValue(COMPOUND_PROTOCOL);
+      mockResolveAbi.mockResolvedValue({
+        abi: COMPOUND_PROTOCOL.contracts.comet.abi,
+      });
+      mockWriteContractCore.mockResolvedValue({ success: true });
+
+      await protocolWriteStep(makeInput());
+
+      expect(mockCheckProtocolOnchainGuards).toHaveBeenCalledWith(
+        expect.objectContaining({ executionId: "exec-456" })
+      );
     });
 
     it("propagates writeContractCore failure result", async () => {

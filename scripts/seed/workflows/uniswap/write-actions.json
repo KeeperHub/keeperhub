@@ -9,18 +9,26 @@
     {
       "id": "node-1",
       "type": "trigger",
-      "position": { "x": 100, "y": 300 },
+      "position": {
+        "x": 100,
+        "y": 300
+      },
       "data": {
         "label": "Manual Trigger",
         "type": "trigger",
-        "config": { "triggerType": "Manual" },
+        "config": {
+          "triggerType": "Manual"
+        },
         "status": "idle"
       }
     },
     {
       "id": "uniswap-swap-exact-input",
       "type": "action",
-      "position": { "x": 450, "y": 0 },
+      "position": {
+        "x": 450,
+        "y": 0
+      },
       "data": {
         "label": "Swap Exact Input",
         "description": "Swap exact input tokens (Sepolia)",
@@ -31,7 +39,7 @@
           "tokenIn": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
           "tokenOut": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
           "fee": "3000",
-          "recipient": "0x0000000000000000000000000000000000000001",
+          "recipient": "",
           "amountIn": "1000000000000000",
           "amountOutMinimum": "0",
           "sqrtPriceLimitX96": "0"
@@ -42,7 +50,10 @@
     {
       "id": "uniswap-swap-exact-output",
       "type": "action",
-      "position": { "x": 450, "y": 150 },
+      "position": {
+        "x": 450,
+        "y": 150
+      },
       "data": {
         "label": "Swap Exact Output",
         "description": "Swap for exact output tokens (Sepolia)",
@@ -53,7 +64,7 @@
           "tokenIn": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
           "tokenOut": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
           "fee": "3000",
-          "recipient": "0x0000000000000000000000000000000000000001",
+          "recipient": "",
           "amountOut": "1000000",
           "amountInMaximum": "1000000000000000000",
           "sqrtPriceLimitX96": "0"
@@ -64,7 +75,10 @@
     {
       "id": "uniswap-approve-position",
       "type": "action",
-      "position": { "x": 450, "y": 300 },
+      "position": {
+        "x": 450,
+        "y": 300
+      },
       "data": {
         "label": "Approve Position Transfer",
         "description": "Approve address to manage position NFT (Sepolia)",
@@ -81,7 +95,10 @@
     {
       "id": "uniswap-transfer-position",
       "type": "action",
-      "position": { "x": 450, "y": 450 },
+      "position": {
+        "x": 450,
+        "y": 450
+      },
       "data": {
         "label": "Transfer Position NFT",
         "description": "Transfer position NFT to another address (Sepolia)",
@@ -99,7 +116,10 @@
     {
       "id": "uniswap-burn-position",
       "type": "action",
-      "position": { "x": 450, "y": 600 },
+      "position": {
+        "x": 450,
+        "y": 600
+      },
       "data": {
         "label": "Burn Empty Position",
         "description": "Burn an empty position NFT (Sepolia)",
@@ -108,6 +128,75 @@
           "actionType": "uniswap/burn-position",
           "network": "11155111",
           "tokenId": "1"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-collect-fees",
+      "type": "action",
+      "position": {
+        "x": 600,
+        "y": 150
+      },
+      "data": {
+        "label": "Collect Fees",
+        "description": "Collect position fees (Sepolia). Recipient is left blank on purpose so this step will not run until you set the wallet that should receive the fees.",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/collect-fees",
+          "network": "11155111",
+          "tokenId": "1",
+          "recipient": "",
+          "amount0Max": "340282366920938463463374607431768211455",
+          "amount1Max": "340282366920938463463374607431768211455"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-decrease-liquidity",
+      "type": "action",
+      "position": {
+        "x": 750,
+        "y": 150
+      },
+      "data": {
+        "label": "Decrease Liquidity",
+        "description": "Remove liquidity from a position (Sepolia). Testnet placeholders: zero minimums and a far deadline are unsafe on mainnet - use a real minimum from a recent price and a short deadline you refresh.",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/decrease-liquidity",
+          "network": "11155111",
+          "tokenId": "1",
+          "liquidity": "1000",
+          "amount0Min": "0",
+          "amount1Min": "0",
+          "deadline": "4102444800"
+        },
+        "status": "idle"
+      }
+    },
+    {
+      "id": "uniswap-increase-liquidity",
+      "type": "action",
+      "position": {
+        "x": 900,
+        "y": 150
+      },
+      "data": {
+        "label": "Increase Liquidity",
+        "description": "Add liquidity to a position (Sepolia). Testnet placeholders: zero minimums and a far deadline are unsafe on mainnet - use a real minimum from a recent price and a short deadline you refresh.",
+        "type": "action",
+        "config": {
+          "actionType": "uniswap/increase-liquidity",
+          "network": "11155111",
+          "tokenId": "1",
+          "amount0Desired": "1000000",
+          "amount1Desired": "1000000000000000",
+          "amount0Min": "0",
+          "amount1Min": "0",
+          "deadline": "4102444800"
         },
         "status": "idle"
       }
@@ -142,6 +231,24 @@
       "id": "e-trigger-to-uniswap-burn-position",
       "source": "node-1",
       "target": "uniswap-burn-position",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-collect-fees",
+      "source": "node-1",
+      "target": "uniswap-collect-fees",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-decrease-liquidity",
+      "source": "node-1",
+      "target": "uniswap-decrease-liquidity",
+      "type": "animated"
+    },
+    {
+      "id": "e-trigger-to-uniswap-increase-liquidity",
+      "source": "node-1",
+      "target": "uniswap-increase-liquidity",
       "type": "animated"
     }
   ]
