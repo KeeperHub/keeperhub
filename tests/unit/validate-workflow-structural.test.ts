@@ -535,6 +535,38 @@ describe("validateWorkflow — write-action-on-read-workflow (VALID-04)", () => 
     expect(warn?.parameterPath).toBe("workflowType");
   });
 
+  it("tells an unlisted workflow that one save derives the type", () => {
+    const result = validateWorkflow(
+      makeWorkflow({
+        workflowType: "read",
+        isListed: false,
+        nodes: [triggerNode(), writeActionNode()],
+        edges: [edge("e1", "trigger-1", "write-1")],
+      })
+    );
+    const warn = result.warnings.find(
+      (w) => w.code === "write-action-on-read-workflow"
+    );
+    expect(warn?.message).toContain("saving the workflow once");
+    expect(warn?.message).not.toContain("WORKFLOW_TYPE_FROZEN");
+  });
+
+  it("does not tell a listed workflow to save, because that save is refused", () => {
+    const result = validateWorkflow(
+      makeWorkflow({
+        workflowType: "read",
+        isListed: true,
+        nodes: [triggerNode(), writeActionNode()],
+        edges: [edge("e1", "trigger-1", "write-1")],
+      })
+    );
+    const warn = result.warnings.find(
+      (w) => w.code === "write-action-on-read-workflow"
+    );
+    expect(warn?.message).toContain("WORKFLOW_TYPE_FROZEN");
+    expect(warn?.message).not.toContain("saving the workflow once");
+  });
+
   it("does not warn when workflowType=read and no write node is present", () => {
     const result = validateWorkflow(makeWorkflow({ workflowType: "read" }));
     const warn = result.warnings.find(
