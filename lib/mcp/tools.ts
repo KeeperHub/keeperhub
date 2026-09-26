@@ -2057,12 +2057,12 @@ export function registerTools(
         .min(1)
         .max(100)
         .optional()
-        .describe("Page size (default 20, max 100)"),
+        .describe("Page size (default 50, max 100)"),
       status: z
         .string()
         .optional()
         .describe(
-          "Filter by status: pending, running, success, error, system_error, external_error, cancelled"
+          "Filter by status: pending, running, success, error, system_error, external_error, skipped, cancelled"
         ),
       source: z
         .enum(["workflow", "direct"])
