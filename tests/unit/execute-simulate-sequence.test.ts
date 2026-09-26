@@ -473,6 +473,119 @@ describe("simulateCallSequence on a node without eth_simulateV1", () => {
       spies.send.mock.calls.filter(([m]) => m === "eth_call")
     ).toHaveLength(0);
   });
+
+  it("reports a transport failure on eth_call as unavailable, not a revert (#2542)", async () => {
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call" || method === "eth_estimateGas") {
+        return Promise.reject(new Error("connection reset"));
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    const result = await run();
+
+    expect(result.mechanism).toBe("state-overrides");
+    expect(result.wouldRevert).toBe(false);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "unavailable",
+      wouldRevert: false,
+    });
+  });
+
+  it("still reports an eth_call CALL_EXCEPTION as a revert (#2542)", async () => {
+    const { makeError } = await import("ethers");
+    const revertErr = makeError(
+      "execution reverted: ERC20: transfer amount exceeds allowance",
+      "CALL_EXCEPTION",
+      {
+        action: "call",
+        data: null,
+        reason: "ERC20: transfer amount exceeds allowance",
+        transaction: { to: TOKEN, data: "0x" },
+        invocation: null,
+        revert: null,
+      }
+    );
+
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call" || method === "eth_estimateGas") {
+        return Promise.reject(revertErr);
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    const result = await run();
+
+    expect(result.mechanism).toBe("state-overrides");
+    expect(result.wouldRevert).toBe(true);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "revert",
+      wouldRevert: true,
+    });
+  });
+  it("reports a permanent BAD_DATA on eth_call as validation, matching the single-call path (#2542)", async () => {
+    const { makeError } = await import("ethers");
+    const badData = makeError("could not decode result data", "BAD_DATA", {
+      value: "0x1234",
+    });
+
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call" || method === "eth_estimateGas") {
+        return Promise.reject(badData);
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    const result = await run();
+
+    expect(result.mechanism).toBe("state-overrides");
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "validation",
+    });
+    expect(result.results[0]).toMatchObject({
+      error: expect.stringMatching(/^Simulation failed: /),
+    });
+  });
+
+  it("treats a codeless failover wrapper mentioning 'execution reverted' as unavailable, matching the single-call path (#2542)", async () => {
+    // executeWithFailover's failoverError is a plain Error with no ethers
+    // code; a genuine CALL_EXCEPTION is rethrown as-is (non-retryable), so a
+    // codeless error is a transport outcome even if its text mentions a revert.
+    const wrapped = new Error(
+      "All RPC endpoints failed: execution reverted (upstream timeout)"
+    );
+
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call" || method === "eth_estimateGas") {
+        return Promise.reject(wrapped);
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    const result = await run();
+
+    expect(result.wouldRevert).toBe(false);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "unavailable",
+      wouldRevert: false,
+    });
+  });
 });
 
 describe("simulateCallSequence validation", () => {

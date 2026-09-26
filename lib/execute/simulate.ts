@@ -268,7 +268,12 @@ export function simulationUnavailable(
   };
 }
 
-function classifySimulationError(error: unknown): SimulationFailureKind {
+/**
+ * Classify an error thrown while simulating a call. Shared by the single-call
+ * path and the sequence path (simulate-sequence.ts) so both answer the same
+ * way for the same node response.
+ */
+export function classifySimulationError(error: unknown): SimulationFailureKind {
   if (isError(error, "CALL_EXCEPTION")) {
     return "revert";
   }

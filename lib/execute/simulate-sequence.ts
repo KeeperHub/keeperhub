@@ -2,11 +2,13 @@ import "server-only";
 
 import { ethers } from "ethers";
 import {
+  classifySimulationError,
   getRpcManagerForChain,
   type PreparedSimulationCall,
   prepareSimulationCall,
   resolveSimulationWallet,
   type SimulateResult,
+  type SimulationFailureKind,
   simulationFailure,
   simulationUnavailable,
 } from "@/lib/execute/simulate";
@@ -73,6 +75,12 @@ type EncodedCall = {
 
 type RawCallResult = {
   status?: string;
+  /**
+   * Set only by the state-overrides path, where the answer comes from a thrown
+   * error rather than a node-reported status. Absent means the node itself
+   * reported the outcome (eth_simulateV1).
+   */
+  failureKind?: SimulationFailureKind;
   gasUsed?: string;
   returnData?: string;
   error?: { code?: number; message?: string; data?: string };
@@ -242,8 +250,13 @@ async function runWithStateOverrides(
       );
       results.push({ status: "0x1", gasUsed: gasHex, returnData });
     } catch (err) {
+      // A transport / node failure is not a reverting call. Agents treat
+      // status "0x0" as "do not broadcast"; reporting "we could not find out"
+      // the same way makes them abandon transactions that would have worked.
+      // Classified with the single-call path's classifier so the two agree.
       results.push({
         status: "0x0",
+        failureKind: classifySimulationError(err),
         error: {
           message: getErrorMessage(err),
           data: extractDataFromError(err),
@@ -542,12 +555,30 @@ export async function simulateCallSequence(
         answer.returnData
       );
     }
-    if (!answer.status && answer.error) {
+    if (
+      answer.failureKind === "unavailable" ||
+      (!answer.status && answer.error)
+    ) {
       return notRun(
         from,
         call.to,
-        `Simulation unavailable: ${answer.error.message}`
+        `Simulation unavailable: ${answer.error?.message ?? "the node did not answer"}`
       );
+    }
+    if (answer.failureKind === "validation") {
+      // Same shape the single-call path returns for a permanent, non-revert
+      // failure (bad argument, numeric fault, malformed decode, ...).
+      const originalError = answer.error?.message ?? "The call failed";
+      return {
+        ...simulationFailure(
+          from,
+          call.to,
+          call.value,
+          `Simulation failed: ${originalError}`,
+          "validation"
+        ),
+        originalError,
+      };
     }
     return reverted(
       from,
