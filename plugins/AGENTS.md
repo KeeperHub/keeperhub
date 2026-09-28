@@ -498,6 +498,8 @@ const credentials = input.integrationId
 const apiKey = credentials.API_KEY || process.env.DEFAULT_API_KEY;
 ```
 
+Set `requiresCredentials: false` on such a plugin. If its `formFields` hold real settings a step reads when a connection is chosen (a custom instance URL, an API key override), also set `optionalConnection: true`: the connection form is then offered in the service picker and in the node's Connection block, with None as the default. Without it the form is unreachable from the UI.
+
 ### Error Handling
 
 Always return structured errors, never throw:

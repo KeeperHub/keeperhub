@@ -126,6 +126,7 @@ function mapFieldType(field: ActionConfigFieldBase): string {
         : `string (${options})`;
     }
     case "fail-on-error-switch":
+    case "gas-sponsorship-switch":
       return "boolean";
     case "template-input":
     case "template-textarea":

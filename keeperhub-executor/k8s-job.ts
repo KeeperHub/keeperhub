@@ -213,6 +213,26 @@ export async function createWorkflowJob(params: {
     labels["schedule-id"] = scheduleId;
   }
 
+  // The cluster autoscaler drains nodes on its own - to consolidate capacity,
+  // to move the fleet onto a newer node image, or when a node reaches its age
+  // limit. A runner pod has backoffLimit 0 and restartPolicy Never, so an
+  // evicted pod fails its Job outright and the execution is lost with no
+  // retry. do-not-disrupt makes the autoscaler leave the pod alone while it
+  // drains the rest of the node, so the run finishes instead of dying
+  // mid-flight.
+  //
+  // This cannot wedge a node. The node pool sets a termination grace period
+  // well above activeDeadlineSeconds, and once a node starts draining the
+  // annotation only holds a pod until that grace period is nearly spent. A
+  // run ends long before then, on its own deadline.
+  const podAnnotations: Record<string, string> = {
+    "karpenter.sh/do-not-disrupt": "true",
+  };
+
+  if (!CONFIG.workflowRunnerCollectMonitoring) {
+    podAnnotations["keeperhub.com/monitoring.exclude"] = "true";
+  }
+
   const job: V1Job = {
     apiVersion: "batch/v1",
     kind: "Job",
@@ -232,11 +252,7 @@ export async function createWorkflowJob(params: {
             "workflow-id": workflowId,
             "execution-id": executionId,
           },
-          ...(!CONFIG.workflowRunnerCollectMonitoring && {
-            annotations: {
-              "keeperhub.com/monitoring.exclude": "true",
-            },
-          }),
+          annotations: podAnnotations,
         },
         spec: {
           restartPolicy: "Never",

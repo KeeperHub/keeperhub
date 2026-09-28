@@ -35,6 +35,7 @@ import {
   PagerDutyTestNodeButton,
   PagerDutyTriggerNodeField,
 } from "@/components/workflow/config/pagerduty-resource-field";
+import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
 import { integrationsAtom } from "@/lib/integrations-store";
 import {
@@ -637,6 +638,28 @@ registerFieldRenderer(
   "fail-on-error-switch",
   ({ field, config, onUpdateConfig, disabled }) => (
     <FailOnErrorSwitchField
+      description={field.helpTip ?? field.helpText}
+      disabled={disabled}
+      id={field.key}
+      key={field.key}
+      label={field.label}
+      onChange={(checked) => onUpdateConfig(field.key, checked)}
+      value={config[field.key]}
+    />
+  )
+);
+
+/**
+ * Gas Sponsorship Switch Field
+ * The "Sponsor gas" toggle on a web3 write action. Like the fail-on-error
+ * switch it is default-on and resolves through its own helper
+ * (resolveSponsorGas) rather than field.defaultValue, so the form and the
+ * step can never disagree about what an unset value means.
+ */
+registerFieldRenderer(
+  "gas-sponsorship-switch",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <SponsorGasField
       description={field.helpTip ?? field.helpText}
       disabled={disabled}
       id={field.key}

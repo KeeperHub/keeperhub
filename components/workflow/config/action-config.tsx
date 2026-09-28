@@ -28,7 +28,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TemplateCodeEditor } from "@/components/workflow/config/template-code-editor";
-import { actionRequiresCredentials } from "@/lib/integration-helpers";
+import { actionConnectionMode } from "@/lib/integration-helpers";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import { ConditionQueryBuilder } from "@/components/workflow/condition-query-builder";
 import type { ConditionGroup } from "@/lib/workflow/nodes/condition/builder-types";
@@ -957,11 +957,26 @@ export function ActionConfig({
     return (action?.credentialIntegrationType ?? action?.integration) as IntegrationType | undefined;
   }, [actionType]);
 
-  // Check if action requires credentials (some like web3 read-only actions don't)
-  const requiresCredentials = useMemo(
-    () => actionRequiresCredentials(actionType),
+  // Check if action requires credentials (some like web3 read-only actions don't),
+  // or only offers a connection to override the plugin's defaults
+  const connectionMode = useMemo(
+    () => actionConnectionMode(actionType),
     [actionType]
   );
+  const requiresCredentials = connectionMode === "required";
+  const optionalConnection = connectionMode === "optional";
+
+  let connectionLabel = "Connection";
+  let connectionHelp = "API key or OAuth credentials for this service";
+  if (integrationType === "web3") {
+    connectionLabel = "Web3 Connection";
+    connectionHelp =
+      "Which wallet is the sender (msg.sender) for this transaction. Your EOA always signs the outer tx and pays gas.";
+  } else if (optionalConnection) {
+    connectionLabel = "Connection (optional)";
+    connectionHelp =
+      "Optional settings for this service. Choose None to use the defaults.";
+  }
 
   // Check if there are existing connections for this integration type
   const hasExistingConnections = useMemo(() => {
@@ -1075,7 +1090,9 @@ export function ActionConfig({
 
       {integrationType &&
         isOwner &&
-        (requiresCredentials || SYSTEM_ACTION_INTEGRATIONS[actionType]) &&
+        (requiresCredentials ||
+          SYSTEM_ACTION_INTEGRATIONS[actionType] ||
+          (optionalConnection && !isAnonymous)) &&
         (isAnonymous && requiresCredentials ? (
           <div className="rounded-lg border bg-muted/50 p-3">
             <p className="text-muted-foreground text-sm">
@@ -1086,20 +1103,14 @@ export function ActionConfig({
           <div className="space-y-2">
             <div className="ml-1 flex items-center justify-between">
               <div className="flex items-center gap-1">
-                <Label>
-                  {integrationType === "web3" ? "Web3 Connection" : "Connection"}
-                </Label>
+                <Label>{connectionLabel}</Label>
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <HelpCircle className="size-3.5 text-muted-foreground" />
                     </TooltipTrigger>
                     <TooltipContent>
-                      <p>
-                        {integrationType === "web3"
-                          ? "Which wallet is the sender (msg.sender) for this transaction. Your EOA always signs the outer tx and pays gas."
-                          : "API key or OAuth credentials for this service"}
-                      </p>
+                      <p>{connectionHelp}</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -1130,6 +1141,7 @@ export function ActionConfig({
                 disabled={disabled}
                 integrationType={integrationType}
                 onChange={(id) => onUpdateConfig("integrationId", id)}
+                optional={optionalConnection}
                 value={(config?.integrationId as string) || ""}
               />
             )}

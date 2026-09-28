@@ -41,6 +41,7 @@ export const PUBLIC_RPCS = {
   ETH_MAINNET: "https://ethereum-rpc.publicnode.com",
   ETH_MAINNET_FALLBACK: "https://1rpc.io/eth",
   SEPOLIA: "https://ethereum-sepolia-rpc.publicnode.com",
+  HOODI: "https://ethereum-hoodi-rpc.publicnode.com",
   BASE_MAINNET: "https://mainnet.base.org",
   BASE_SEPOLIA: "https://sepolia.base.org",
   TEMPO_TESTNET: "https://rpc.testnet.tempo.xyz",
@@ -72,6 +73,12 @@ export const PUBLIC_RPCS = {
   AVAX_MAINNET_FALLBACK: "https://avalanche-c-chain-rpc.publicnode.com",
   AVAX_FUJI: "https://api.avax-test.network/ext/bc/C/rpc",
   AVAX_FUJI_FALLBACK: "https://avalanche-fuji-c-chain-rpc.publicnode.com",
+  SOMNIA_MAINNET: "https://api.infra.mainnet.somnia.network",
+  SOMNIA_MAINNET_FALLBACK: "https://somnia-rpc.publicnode.com",
+  SOMNIA_MAINNET_WSS: "wss://api.infra.mainnet.somnia.network/ws",
+  SOMNIA_SHANNON: "https://dream-rpc.somnia.network",
+  SOMNIA_SHANNON_FALLBACK: "https://rpc.ankr.com/somnia_testnet",
+  SOMNIA_SHANNON_WSS: "wss://dream-rpc.somnia.network/ws",
   PLASMA_MAINNET: "https://rpc.plasma.to",
   PLASMA_MAINNET_FALLBACK: "https://plasma.drpc.org",
   PLASMA_TESTNET: "https://testnet-rpc.plasma.to",
@@ -197,6 +204,13 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     envKey: "CHAIN_SEPOLIA_PRIMARY_RPC",
     fallbackEnvKey: "CHAIN_SEPOLIA_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.SEPOLIA,
+  },
+  // Hoodi Testnet
+  560048: {
+    jsonKey: "eth-hoodi",
+    envKey: "CHAIN_HOODI_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_HOODI_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.HOODI,
   },
   // Base Mainnet
   8453: {
@@ -325,6 +339,24 @@ export const CHAIN_CONFIG: Record<number, ChainConfigEntry> = {
     fallbackEnvKey: "CHAIN_AVAX_FUJI_FALLBACK_RPC",
     publicDefault: PUBLIC_RPCS.AVAX_FUJI,
     publicFallback: PUBLIC_RPCS.AVAX_FUJI_FALLBACK,
+  },
+  // Somnia Mainnet
+  5031: {
+    jsonKey: "somnia-mainnet",
+    envKey: "CHAIN_SOMNIA_MAINNET_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_SOMNIA_MAINNET_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.SOMNIA_MAINNET,
+    publicFallback: PUBLIC_RPCS.SOMNIA_MAINNET_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.SOMNIA_MAINNET_WSS,
+  },
+  // Somnia Shannon Testnet
+  50312: {
+    jsonKey: "somnia-shannon",
+    envKey: "CHAIN_SOMNIA_SHANNON_PRIMARY_RPC",
+    fallbackEnvKey: "CHAIN_SOMNIA_SHANNON_FALLBACK_RPC",
+    publicDefault: PUBLIC_RPCS.SOMNIA_SHANNON,
+    publicFallback: PUBLIC_RPCS.SOMNIA_SHANNON_FALLBACK,
+    publicWssDefault: PUBLIC_RPCS.SOMNIA_SHANNON_WSS,
   },
   // Plasma Mainnet
   9745: {

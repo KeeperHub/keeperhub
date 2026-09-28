@@ -17,7 +17,7 @@ import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { Label } from "@/components/ui/label";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
-import { integrationRequiresCredentials } from "@/lib/integration-helpers";
+import { integrationOffersConnection } from "@/lib/integration-helpers";
 import { useSession } from "@/lib/auth-client";
 import {
   DatabaseConnectionForm,
@@ -84,9 +84,9 @@ export function ConnectionTypePicker({
 
   // Most plugins are protocols and utility nodes that hold no credentials, so
   // there is nothing to connect: listing them here only buried the handful of
-  // services that do take credentials.
+  // services that do take credentials, or optional connection settings.
   const connectableTypes = useMemo(
-    () => getIntegrationTypes().filter(integrationRequiresCredentials),
+    () => getIntegrationTypes().filter(integrationOffersConnection),
     []
   );
 

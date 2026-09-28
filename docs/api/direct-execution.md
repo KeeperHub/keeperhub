@@ -349,6 +349,72 @@ conclude nothing happened even though the transaction succeeded. Check the
 `sponsored` field on the status response and treat `transactionHash` /
 `transactionLink` as the authoritative proof, not EOA-level state.
 
+### Who acted
+
+On a sponsored execution the transaction's `from` is the sponsor's fee payer,
+not your wallet, and its `to` is the sponsor's entry contract, not the target.
+Your wallet acts inside that transaction. `result.executedCall.from` names it:
+the sender of the traced call frame that actually hit the target contract.
+
+A sponsored `approve` on Base Sepolia, as returned by
+`GET /api/execute/{executionId}/status` and trimmed to the relevant fields:
+
+```json
+{
+  "executionId": "4k4qm0kkjrkfc095jubo9",
+  "status": "completed",
+  "sponsored": true,
+  "result": {
+    "sponsored": true,
+    "executedCall": {
+      "contractAddress": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+      "from": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+      "functionName": "approve",
+      "functionSignature": "approve(address,uint256)",
+      "args": { "spender": "0xd36E12a5b2926A5cbE6B4DE42a0D60Fd35d3cb04", "amount": "1" },
+      "sponsored": true,
+      "topLevelTo": "0x5af5194b4b0909eb978e3cf1e25333852277f07d",
+      "reverted": false
+    }
+  }
+}
+```
+
+Here the transaction was sent by the fee payer to `topLevelTo`, the sponsor's
+entry contract, which called the organization's wallet, which called `approve`
+on the token: `from` is that wallet, `0x742d...`, not the fee payer and not
+`topLevelTo`. The capture is a real Base Sepolia execution with the
+organization's wallet replaced by the placeholder used elsewhere on this page.
+`args` keys are the parameter names of the ABI the call was decoded with: the
+ABI supplied here named the second parameter `amount`; the platform's own
+ERC-20 ABI names it `value`.
+
+`from` is the sender of the first frame, in execution order, that called the
+target with the decoded function; the trace is walked depth-first, so that is
+the call that ran first, not the shallowest one. When your organization calls
+the target directly, which is every case above, that frame is the direct call,
+and the field is the acting address under every routing mode: your
+organization's wallet on a direct send, that same wallet when a sponsor paid the
+gas, and the Safe on a Safe-routed organization, where the wallet signs the
+outer transaction but `msg.sender` at the target is the Safe. If a contract the
+transaction calls reaches the target before your direct call does, the earlier
+frame is the one reported and `from` is that contract.
+
+One precision: `from` is the sender of the trace frame that hit the target,
+which is not always the Solidity-level `msg.sender`. When the target is called
+directly, which is every case above, the two are the same. If the address you
+passed as the target is an implementation reached by `DELEGATECALL`, `from` is
+the contract that issued the `DELEGATECALL` (the proxy), because that is what
+the trace frame records. The `msg.sender` seen inside the delegated code is a
+different value: it is inherited unchanged from the proxy's own caller, and is
+not what this field reports.
+
+`executedCall` is best-effort. It is omitted entirely when the transaction
+cannot be traced (an RPC without `debug_traceTransaction`, or no call frame
+matching the target), and `from` alone is omitted when the trace records no
+sender for the matched frame, so read both defensively rather than assuming
+they are there.
+
 ## Transfer Funds
 
 ```http
@@ -719,7 +785,7 @@ No row is inserted into the execution audit table, no funds are reserved against
 
 A deterministic failed simulation answers with HTTP `400`. Do not classify every such body as an EVM
 revert: read a string `code` first, then `failureKind`, then `wouldRevert`. A `code` is an
-attributed preflight failure such as `insufficient_balance`; `failureKind: "revert"`
+attributed preflight failure such as `insufficient_balance` or `insufficient_allowance`; `failureKind: "revert"`
 with `wouldRevert: true` is a confirmed call revert; an uncoded
 `failureKind: "validation"` is not. Route-level parameter errors may carry none of these
 fields. This ordering keeps a generic "non-2xx means the request is malformed" wrapper
@@ -896,7 +962,18 @@ A node asked to estimate gas for a transfer the sender cannot pay for rejects it
 
 - `failureKind`: `"validation"` here means no EVM revert was decoded. It does not mean
   the request data is malformed; inspect `code` before interpreting this discriminator
-- `code`: `"insufficient_balance"` — branch on this rather than string-matching `revertReason`. Absent when the simulator has no more specific machine-readable cause
+- `code`: machine-readable cause — branch on this rather than string-matching `revertReason`. Absent when the simulator has no more specific machine-readable cause. The set is closed:
+  - `insufficient_balance`: the funding wallet cannot cover the native value the call sends
+  - `insufficient_allowance`: current ERC-20 allowance is less than needed. When the token reverts with `ERC20InsufficientAllowance`, the response also carries `allowance`, `neededAllowance` and `spender`
+  - `insufficient_token_balance`: sender ERC-20 token balance is less than the transfer amount
+  - `contract_paused`: target contract is paused (`EnforcedPause`, `Pausable: paused`)
+  - `contract_not_paused`: operation requires target contract to be paused, but it is currently unpaused (`ExpectedPause`)
+  - `caller_not_authorized`: the simulated sender is not the owner or lacks the required role (`OwnableUnauthorizedAccount`, `AccessControlUnauthorizedAccount`). This is an on-chain revert, distinct from the API auth code `unauthorized`
+  - `reentrancy_blocked`: reentrancy guard triggered
+  - `safe_signature_invalid`, `safe_insufficient_gas`, `safe_not_authorized`: Safe execution failures
+  - `role_condition_violation`: Zodiac Roles modifier condition failed
+  - `panic`: the contract hit a Solidity `Panic(uint256)`. `panicCode` carries the exact panic number as a hex string (for example `"0x11"` for arithmetic overflow), and `revertReason` carries the readable name
+- `remediation`: set alongside a decoded-revert `code`. A plain-English diagnosis of what is wrong, with the numbers and addresses behind it. It may point at request inputs you control (amount, arguments, gas limit, signer mode); it never tells you to make an on-chain call
 - `balanceWei` / `requiredWei` / `shortfallWei`: the sender's native balance, the native value the call would move, and the difference, all in wei
 - `nativeSymbol`: the chain's native currency symbol (`ETH`, `BNB`, `POL`); falls back to `native` if the chain is not seeded
 - `originalError`: the node's own message, kept verbatim. Attribution only ever adds — nothing the chain said is discarded
@@ -961,7 +1038,7 @@ return `{ executed, conditionResult }` exactly as before.
 
 The `from` address used during simulation is the org's wallet (`getOrganizationWalletAddress`). Organizations that route writes through a Safe will see a simulation that reflects the EOA sending the call, not the Safe. Most config-bug categories (bad ABI, bad args, allowance mismatches) still surface; Safe-routed `msg.sender` semantics do not.
 
-This also applies to the underfunded-sender response above. The balance is read from `from`, but a Safe-routed org funds the transfer from the Safe, so `code`, `balanceWei`, `shortfallWei` and the "Fund `<address>`" sentence describe the EOA rather than the address the broadcast actually spends from. If your organization routes writes through a Safe, do not act on those fields without resolving the signer mode first.
+This also applies to the underfunded-sender response above. The balance is read from `from`, but a Safe-routed org funds the transfer from the Safe, so `code`, `balanceWei`, `shortfallWei` and the "Fund `<address>`" sentence describe the EOA rather than the address the broadcast actually spends from. The same holds for the decoded-revert codes `insufficient_token_balance`, `insufficient_allowance` and `caller_not_authorized`, and for their `remediation`: the token balance, the allowance owner and the caller they describe are the EOA, not the Safe. If your organization routes writes through a Safe, do not act on those fields without resolving the signer mode first.
 
 ## Get Execution Status
 

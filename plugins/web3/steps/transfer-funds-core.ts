@@ -59,7 +59,7 @@ import {
 } from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { executeSponsoredTransaction } from "@/lib/web3/sponsored-transaction-manager";
-import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
+import { shouldTrySponsorship } from "@/lib/web3/sponsorship-eligibility";
 import {
   type TransactionContext,
   withNonceSession,
@@ -74,6 +74,10 @@ export type TransferFundsCoreInput = {
   amount: string;
   recipientAddress: string;
   gasLimitMultiplier?: string;
+  // Per-node "Sponsor gas" toggle. Defaults on; false skips the gas-sponsored
+  // route outright so the transaction is signed and paid for by the org's own
+  // wallet. Resolved through resolveSponsorGas so an unset value stays on.
+  sponsorGas?: boolean;
   // KEEP-137: Route through private mempool (Flashbots Protect). Skips
   // Turnkey-sponsored execution -- mutually exclusive.
   usePrivateMempool?: boolean;
@@ -140,6 +144,7 @@ async function transferFundsCoreImpl(
     amount,
     recipientAddress,
     gasLimitMultiplier,
+    sponsorGas,
     usePrivateMempool,
     strict,
     web3Connection,
@@ -304,16 +309,16 @@ async function transferFundsCoreImpl(
     rpcManager,
   };
 
-  // KEEP-137: skip sponsorship when routing through a private mempool --
-  // Turnkey broadcasts via its own infrastructure, which bypasses Flashbots Protect.
-  // Also skip in Safe mode: the sponsored path sends from the org's EOA wallet,
-  // which would change msg.sender away from the Safe.
+  // Try gas-sponsored execution first via Turnkey Gas Station (KEEP-464).
+  // shouldTrySponsorship holds every reason the route can be declined.
   if (
-    !usePrivateMempool &&
-    signerMode.kind === SIGNER_MODE.EOA &&
-    isGasSponsorshipEnabled()
+    shouldTrySponsorship({
+      chainId,
+      signerMode,
+      sponsorGas,
+      usePrivateMempool,
+    })
   ) {
-    // Try gas-sponsored execution first via Turnkey Gas Station (KEEP-464)
     try {
       const sponsoredResult = await executeSponsoredTransaction({
         organizationId,

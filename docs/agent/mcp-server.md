@@ -442,10 +442,13 @@ A `400` from `execute_transfer`, `execute_contract_call`, or
 `execute_check_and_execute` with `simulate: true` is not always a bad request. Classify
 the body in this order:
 
-1. A string `code` together with `wouldRevert: true` is an attributed preflight failure. Currently
-   `insufficient_balance` means the simulated sender lacks the native value needed for
-   the call. This remains `failureKind: "validation"` because preflight did not produce
-   a decoded EVM revert.
+1. A string `code` together with `wouldRevert: true` is an attributed preflight failure. Attributed
+   codes are a closed set: `insufficient_balance` (native shortfall), `insufficient_allowance`, `insufficient_token_balance`,
+   `contract_paused`, `contract_not_paused`, `caller_not_authorized`, `reentrancy_blocked`, `role_condition_violation`,
+   `safe_signature_invalid`, `safe_insufficient_gas`, `safe_not_authorized`, and `panic` (with the exact panic number
+   in `panicCode`, for example `"0x11"`). `caller_not_authorized` is an on-chain revert, not the API auth code `unauthorized`.
+   A native shortfall remains `failureKind: "validation"` because preflight did not produce
+   a decoded EVM revert; true reverts carry `failureKind: "revert"`.
 2. Both `failureKind: "revert"` and `wouldRevert: true` mean the simulated call reverted.
 3. Other `failureKind: "validation"` bodies are deterministic simulation failures
    without an attributed code. They can reflect call construction or chain state, and

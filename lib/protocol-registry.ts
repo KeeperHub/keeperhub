@@ -7,6 +7,7 @@ import { solidityTypeToFieldType } from "@/lib/solidity-type-fields";
 import type { IntegrationType } from "@/lib/types/integration";
 import { getReadContractOutputFields } from "@/lib/workflow/editor/action-output-fields";
 
+import { sponsorGasField } from "@/plugins/field-fragments";
 import {
   createProtocolIconComponent,
   ProtocolIcon,
@@ -469,6 +470,7 @@ function buildConfigFieldsFromAction(
         ? { defaultValue: action.gasLimitDefault }
         : {}),
     });
+    advancedFields.push(sponsorGasField());
   }
 
   if (advancedFields.length > 0) {

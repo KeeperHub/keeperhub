@@ -41,6 +41,7 @@ export type ActionConfigFieldBase = {
     | "text" // Regular text input
     | "number" // Number input
     | "fail-on-error-switch" // "Fail workflow on error" toggle, shares HTTP Request's default-on resolution; not a generic boolean switch, ignores defaultValue in the renderer
+    | "gas-sponsorship-switch" // "Sponsor gas" toggle on a write action; default-on, skips the sponsored route entirely when off
     | "datetime" // Native date + time picker (stores an ISO 8601 string)
     | "select" // Dropdown select
     | "chain-select" // Dynamic chain selector that fetches from /api/chains
@@ -345,6 +346,12 @@ export type IntegrationPlugin = {
   // Set to false for plugins that don't need authentication (e.g., webhook)
   // Defaults to true for backward compatibility
   requiresCredentials?: boolean;
+
+  // Set alongside requiresCredentials: false when formFields hold real,
+  // optional settings (a custom instance URL, an API key override) that steps
+  // read when a connection is chosen. Offers the connection form in the picker
+  // and the node's Connection block without requiring one before a run.
+  optionalConnection?: boolean;
 
   // Whether only one connection is allowed per user
   // Set to true for integrations with unique constraints (e.g., web3 wallet)

@@ -1327,8 +1327,8 @@ export type NewSecurityAuditLog = typeof securityAuditLog.$inferInsert;
  * table keeps a lightweight cross-resource "who did what" event for each
  * workflow change; this table holds the heavy per-version payload needed to
  * load, diff, and restore a past version. It mirrors the audit-log actor
- * capture (changedByUserId, authMethod, createdAt) so "who did it" is
- * answerable here too.
+ * capture (changedByUserId, authMethod, apiKeyId, createdAt) so "who did it"
+ * is answerable here too.
  *
  * `snapshot` stores the full definition (incl. edges, which are structural --
  * the executor builds its run graph from them). `change` is the deep-diff
@@ -1356,6 +1356,9 @@ export const workflowHistory = pgTable(
       onDelete: "set null",
     }),
     authMethod: text("auth_method").notNull(),
+    // No FK: the key can be revoked or deleted later, and the attribution
+    // has to survive that. Mirrors security_audit_log.api_key_id.
+    apiKeyId: text("api_key_id"),
     source: text("source").notNull(), // create | update | listing
     // biome-ignore lint/suspicious/noExplicitAny: JSONB - full workflow snapshot, shape is the workflow definition
     snapshot: jsonb("snapshot").$type<any>(),

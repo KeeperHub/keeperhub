@@ -42,6 +42,36 @@ describe("MCP agent utility tool handlers", () => {
     );
   });
 
+  it("list_executions describes the limit default and statuses the route applies", async () => {
+    const { server, tools } = makeMockServer();
+    const { registerTools } = await import("@/lib/mcp/tools");
+    const { parseRunFilters } = await import(
+      "@/lib/analytics/parse-run-filters"
+    );
+    registerTools(
+      server as unknown as McpServer,
+      "http://localhost:3000",
+      "Bearer oauth-token"
+    );
+    const tool = tools.find((t) => t.name === "list_executions");
+    if (!tool) {
+      throw new Error("list_executions not registered");
+    }
+
+    // getUnifiedRuns defaults limit to 50 when the tool sends none.
+    expect(tool.schema.limit.description).toContain("default 50");
+
+    const listed = (tool.schema.status.description ?? "")
+      .replace("Filter by status:", "")
+      .split(",")
+      .map((s) => s.trim());
+    expect(listed).toContain("skipped");
+    for (const status of listed) {
+      const params = new URLSearchParams({ status });
+      expect(parseRunFilters(params).statuses).toEqual([status]);
+    }
+  });
+
   it("list_executions surfaces 401 from analytics runs", async () => {
     vi.stubGlobal(
       "fetch",
@@ -130,6 +160,7 @@ describe("MCP agent utility tool handlers", () => {
 
 type CapturedTool = {
   name: string;
+  schema: Record<string, { description?: string }>;
   handler: (...args: unknown[]) => unknown;
 };
 
@@ -143,11 +174,11 @@ function makeMockServer(): {
       (
         name: string,
         _description: string,
-        _schema: unknown,
+        schema: Record<string, { description?: string }>,
         _options: unknown,
         handler: (...args: unknown[]) => unknown
       ) => {
-        tools.push({ name, handler });
+        tools.push({ name, schema, handler });
       }
     ),
   };

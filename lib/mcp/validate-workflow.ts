@@ -17,6 +17,11 @@ import {
   type ValidationWarningCode,
 } from "@/lib/mcp/validate-workflow-codes";
 import {
+  type ChainWebsockets,
+  eventTriggerRegistration,
+  type ProtocolEventAddressResolver,
+} from "@/lib/mcp/validate-workflow-trigger";
+import {
   chainExists,
   tokenAddressFormat,
 } from "@/lib/mcp/validate-workflow-web3";
@@ -55,6 +60,20 @@ export type ValidateWorkflowOptions = {
    * entirely (no false errors).
    */
   chainIds?: Set<number>;
+  /**
+   * Pre-fetched `chains.default_primary_wss` keyed by chain ID. Same contract
+   * as `chainIds`: the caller does the query, and omitting it SKIPS the
+   * Event-trigger WebSocket check rather than reporting every trigger as
+   * unregisterable.
+   */
+  chainWebsockets?: ChainWebsockets;
+  /**
+   * Resolves a protocol event's contract address the way the events route
+   * does before the tracker sees the node. Same contract again: omitting it
+   * SKIPS the check on triggers built from a protocol event, rather than
+   * reporting them all as missing an address.
+   */
+  resolveProtocolEventAddress?: ProtocolEventAddressResolver;
 };
 
 export function validateWorkflow(
@@ -94,6 +113,18 @@ export function validateWorkflow(
 
   // VALID-06: token / contract address format (always runs — no DB needed)
   for (const issue of tokenAddressFormat(workflow.nodes)) {
+    errors.push(issue);
+  }
+
+  // Event-trigger registration: the conditions under which the event tracker
+  // declines to register the workflow and nothing reaches the user. The
+  // WebSocket check inside needs opts.chainWebsockets and the protocol-event
+  // address check needs opts.resolveProtocolEventAddress; the rest need nothing.
+  for (const issue of eventTriggerRegistration(
+    workflow.nodes,
+    opts.chainWebsockets,
+    opts.resolveProtocolEventAddress
+  )) {
     errors.push(issue);
   }
 
@@ -327,10 +358,16 @@ function runWriteActionCheck(
   }
 
   if (workflow.workflowType === "read" && hasWriteAction) {
+    // The stored type can lag the nodes (create, duplicate and import do not
+    // derive it), so the fix an agent is told to make has to work: an unlisted
+    // save derives the type, but on a listed row update_workflow will not
+    // change it, and an edit that keeps a write node is refused with
+    // WORKFLOW_TYPE_FROZEN.
     warnings.push({
       code: VALIDATION_WARNING_CODES.WRITE_ACTION_ON_READ_WORKFLOW,
-      message:
-        'workflowType is "read" but workflow contains a write-action node. Confirm this is intentional.',
+      message: workflow.isListed
+        ? 'workflowType is "read" but workflow contains a write-action node. The workflow is listed, so update_workflow will not change its type: an edit that keeps a write-action node is refused with WORKFLOW_TYPE_FROZEN. Remove the write-action node, or unlist the workflow and save it to derive "write".'
+        : 'workflowType is "read" but workflow contains a write-action node. The stored type is derived from nodes on save, so saving the workflow once sets it to "write".',
       parameterPath: "workflowType",
     });
   }

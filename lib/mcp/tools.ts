@@ -297,6 +297,8 @@ function is400Error(message: string): boolean {
 // decoded custom errors are routinely longer than addresses. The original
 // callApi message remains verbatim as the first line for compatibility.
 const MAX_SIMULATION_REASON_CHARS = 200;
+// Remediation advice contains spender addresses and parameter amounts so it needs a wider cap
+const MAX_SIMULATION_REMEDIATION_CHARS = 500;
 
 type SimulateFailureShape = {
   success?: unknown;
@@ -308,6 +310,7 @@ type SimulateFailureShape = {
   code?: unknown;
   from?: unknown;
   to?: unknown;
+  remediation?: unknown;
 };
 
 /**
@@ -401,6 +404,15 @@ function buildSimulationFailureHint(originalMessage: string): string | null {
   if (typeof parsed.to === "string") {
     lines.push(
       `Simulated call target: ${sanitiseUpstreamField(parsed.to, MAX_ACCEPT_FIELD_CHARS, "unknown")}`
+    );
+  }
+
+  if (
+    typeof parsed.remediation === "string" &&
+    parsed.remediation.trim().length > 0
+  ) {
+    lines.push(
+      `Remediation: ${sanitiseUpstreamField(parsed.remediation, MAX_SIMULATION_REMEDIATION_CHARS, "")}`
     );
   }
 
@@ -2057,12 +2069,12 @@ export function registerTools(
         .min(1)
         .max(100)
         .optional()
-        .describe("Page size (default 20, max 100)"),
+        .describe("Page size (default 50, max 100)"),
       status: z
         .string()
         .optional()
         .describe(
-          "Filter by status: pending, running, success, error, system_error, external_error, cancelled"
+          "Filter by status: pending, running, success, error, system_error, external_error, skipped, cancelled"
         ),
       source: z
         .enum(["workflow", "direct"])
@@ -2774,6 +2786,7 @@ export function registerMetaTools(
     [
       "Validate a workflow's structural and Web3-specific correctness before calling create_workflow or executing it.",
       "Fast tier (default): structural checks (empty nodes, edge references, trigger config, bare-@ literals), listing-eligibility checks (inputSchema present for listed workflows, outputMapping references real nodes), write-action consistency, plus Web3 cheap checks (chain ID in chains table, contract address format via ethers.isAddress). Zero network calls; <300ms p95.",
+      "Fast tier also covers Event-trigger registration: the conditions under which the event tracker silently never registers the workflow, so it reports Enabled and never runs. Codes are prefixed `trigger-` and cover a missing network, a chain with no WebSocket endpoint configured, a missing contractAddress, eventName or contractABI, an ABI that is not JSON or not an array or carries no event fragments, an event fragment with no inputs array, an eventName the ABI does not declare, and a bare eventName that matches more than one overload.",
       "Deep tier (deepCheck=true): in addition, runs best-effort ABI bytecode match via resolveAbi against every contract reference. Mismatches on abi-with-auto-fetch fields are emitted as WARNINGS, never errors, so proxy contracts (Aave V3, Uniswap V3, WETH) never produce false positives. Capped at 3s aggregate + 2s per-call + 5 concurrent RPC calls.",
       "Return shape: { ok: true, result: { valid: boolean, nodeCount: number, errors?: Array<{ code, message, parameterPath }>, warnings?: Array<{ code, message, parameterPath }> } }. The errors and warnings keys are OMITTED when empty (not present as []). Error codes are kebab-case stable identifiers; parameterPath is a dot-path like 'nodes[2].config.contractAddress'.",
     ].join(" "),

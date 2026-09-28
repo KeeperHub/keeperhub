@@ -8,11 +8,13 @@ import {
   evmPrivateNetworkField,
   executedCallArgsOutput,
   executedCallContractAddressOutput,
+  executedCallFromOutput,
   executedCallRevertedOutput,
   executedCallSponsoredOutput,
   readFailOnErrorField,
   receiptChainIdOutput,
   solanaNetworkField,
+  sponsorGasField,
   tokenConfigField,
   tokenSymbolOutput,
   transactionLinkOutput,
@@ -279,6 +281,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "transfer-funds",
             },
+            sponsorGasField(),
           ],
         },
 
@@ -313,6 +316,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         transferErrorOutput(),
@@ -341,6 +345,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "transfer-token",
             },
+            sponsorGasField(),
           ],
         },
 
@@ -1651,6 +1656,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         {
@@ -1689,6 +1695,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "approve-token",
             },
+            sponsorGasField(),
           ],
         },
 
@@ -1839,6 +1846,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         {
@@ -1910,6 +1918,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "write-contract",
             },
+            sponsorGasField(),
           ],
         },
 

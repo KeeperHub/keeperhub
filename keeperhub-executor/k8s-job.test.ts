@@ -100,6 +100,7 @@ describe("createWorkflowJob", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (CONFIG as Record<string, unknown>).etherscanApiKey = "test-etherscan-key";
+    delete (CONFIG as Record<string, unknown>).workflowRunnerCollectMonitoring;
     delete process.env.METRICS_COLLECTOR;
     delete process.env.EXECUTOR_METRICS_INGEST_URL;
     delete process.env.METRICS_INGEST_TOKEN;
@@ -439,6 +440,42 @@ describe("createWorkflowJob", () => {
     });
 
     expect(getSubmittedJob().spec?.ttlSecondsAfterFinished).toBe(300);
+  });
+
+  it("opts a runner pod out of voluntary node disruption", async () => {
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const job = getSubmittedJob();
+    const annotations = job.spec?.template?.metadata?.annotations;
+
+    // backoffLimit 0 means an evicted pod fails the Job outright and loses the
+    // execution, so the pod must not be drained out from under a live run.
+    expect(job.spec?.backoffLimit).toBe(0);
+    expect(annotations?.["karpenter.sh/do-not-disrupt"]).toBe("true");
+    // The monitoring opt-out rides in the same annotation map; it is on by
+    // default here because the mocked config leaves collection disabled.
+    expect(annotations?.["keeperhub.com/monitoring.exclude"]).toBe("true");
+  });
+
+  it("keeps the disruption opt-out when monitoring collection is enabled", async () => {
+    (CONFIG as Record<string, unknown>).workflowRunnerCollectMonitoring = true;
+
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const annotations = getSubmittedJob().spec?.template?.metadata?.annotations;
+
+    expect(annotations?.["karpenter.sh/do-not-disrupt"]).toBe("true");
+    expect(annotations?.["keeperhub.com/monitoring.exclude"]).toBeUndefined();
   });
 
   it("gives the drain watchdog a budget that expires before the pod is killed", async () => {
