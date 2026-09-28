@@ -112,4 +112,16 @@ describe("known fixtures", () => {
     expect(isFeatureEnabled("action.external-request", "free")).toBe(false);
     expect(isFeatureEnabled("action.external-request", "pro")).toBe(true);
   });
+
+  // The OpenClaw hook step is the case a screenshot cannot hold on its own:
+  // the connection is ungated, but the destination is user-supplied, so the
+  // step resolves to the same gated feature as blockscout. Pinning it here
+  // means the free-plan outcome is asserted on every run, not observed once.
+  it("classifies the openclaw agent hook as user-destination and gates it for free", () => {
+    expect(getActionEgress("openclaw/trigger-agent")).toBe("user-destination");
+    const feature = resolveActionFeature("openclaw/trigger-agent");
+    expect(feature?.id).toBe("action.external-request");
+    expect(isFeatureEnabled("action.external-request", "free")).toBe(false);
+    expect(isFeatureEnabled("action.external-request", "pro")).toBe(true);
+  });
 });
