@@ -18,7 +18,10 @@ import {
   type FunctionAbiEntry,
   reshapeArgsForAbi,
 } from "@/lib/abi/struct-args";
-import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
+import {
+  applyEncodeTransformsNamed,
+  getEncodeTransform,
+} from "@/lib/protocol-encode-transforms";
 import {
   getProtocol,
   type ProtocolAction,
@@ -226,7 +229,23 @@ export function encodeFromConfig(
       chainId,
       (config.contractAddress as string | undefined) ?? undefined
     ) ?? "";
-  const ethValue = config.ethValue as string | undefined;
+  // ethValue is a virtual field, so applyEncodeTransformsNamed above never
+  // sees it - it only walks declared ABI inputs. Look the transform up
+  // separately, exactly as protocol-write.ts does before resolveEthValue.
+  // Without this the harness would parseEther a raw wei integer and every
+  // golden and on-chain check would silently carry 10^18 times the value
+  // the runtime sends, which is the one mistake this harness exists to
+  // catch.
+  const rawEthValue = config.ethValue as string | undefined;
+  const ethValueTransform = getEncodeTransform(
+    protocol.slug,
+    action.slug,
+    "ethValue"
+  );
+  const ethValue =
+    rawEthValue && ethValueTransform
+      ? String(ethValueTransform(rawEthValue.trim()))
+      : rawEthValue;
   return {
     to,
     data,

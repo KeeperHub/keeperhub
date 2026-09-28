@@ -29,8 +29,11 @@ import {
 import {
   assertResolved,
   createTracker,
+  liftConditionFields,
+  restoreConditionFields,
   TemplateResolutionError,
 } from "@/lib/workflow/executor/template-resolution";
+import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
 
 const UNRESOLVED_REF_MESSAGE = /Unresolved template reference/;
 
@@ -74,6 +77,126 @@ describe("processTemplate tracker (lib/utils/template)", () => {
     );
     expect(out).toBe("1715000000");
     expect(tracker.unresolved).toHaveLength(0);
+  });
+});
+
+/**
+ * Field access over an array cursor is the one shape that rendered a value the
+ * gate never saw. The walkers map the key across every element and bail only
+ * on `undefined` or `null`; an array of holes is neither, so a mistyped
+ * sub-path under an array-typed output recorded nothing and `formatValue`
+ * joined the holes into ", ". The assertion that matters is not the rendered
+ * string but that the tracker now carries the miss all the way to
+ * `assertResolved`.
+ */
+describe("array-cursor misses reach assertResolved", () => {
+  const arrayOutputs = {
+    step: {
+      label: "Step",
+      data: { success: true, result: { owners: ["0xaaa", "0xbbb", "0xccc"] } },
+    },
+  };
+
+  const spellings = [
+    "{{@step:Step.result.owners.typo}}",
+    "{{$step.result.owners.typo}}",
+    "{{Step.result.owners.typo}}",
+  ];
+
+  for (const token of spellings) {
+    it(`fails the step for ${token}`, () => {
+      const tracker = createTracker();
+      const rendered = processTemplate(token, arrayOutputs, tracker);
+
+      expect(rendered).toBe("");
+      expect(tracker.unresolved).toHaveLength(1);
+      expect(tracker.unresolved[0]?.reason).toBe("no-path");
+      expect(() => assertResolved(tracker, { field: rendered }, {})).toThrow(
+        UNRESOLVED_REF_MESSAGE
+      );
+    });
+  }
+
+  it("fails the step for a key only a builtin would answer", () => {
+    const tracker = createTracker();
+    const rendered = processTemplate(
+      "{{@step:Step.result.owners.length}}",
+      arrayOutputs,
+      tracker
+    );
+
+    // The elements are strings, so the map contributes holes rather than
+    // each string's own length, and the gate sees the miss.
+    expect(rendered).toBe("");
+    expect(tracker.unresolved).toHaveLength(1);
+    expect(tracker.unresolved[0]?.reason).toBe("no-path");
+    expect(() => assertResolved(tracker, { field: rendered }, {})).toThrow(
+      UNRESOLVED_REF_MESSAGE
+    );
+  });
+
+  it("leaves a partially populated array binding alone", () => {
+    const tracker = createTracker();
+    const rendered = processTemplate(
+      "{{@fees:Fees.fees.amt}}",
+      { fees: { label: "Fees", data: { fees: [{ amt: 1 }, {}, { amt: 2 }] } } },
+      tracker
+    );
+
+    expect(rendered).toBe("1, , 2");
+    expect(tracker.unresolved).toHaveLength(0);
+    expect(() =>
+      assertResolved(tracker, { field: rendered }, {})
+    ).not.toThrow();
+  });
+});
+
+describe("renderTemplateValue depth against the post-scan's limit", () => {
+  // scanForLeftoverLiterals returns at depth > 10; renderTemplateValue has no
+  // limit. Nothing recorded which was intended, so both halves are asserted
+  // here: rendering reaches the leaf, and an unresolved token that deep still
+  // fails the step through the tracker rather than through the post-scan.
+  const nest = (depth: number, leaf: unknown): unknown =>
+    depth === 0 ? leaf : [nest(depth - 1, leaf)];
+
+  const leafOf = (value: unknown): unknown => {
+    let cursor = value;
+    while (Array.isArray(cursor)) {
+      cursor = cursor[0];
+    }
+    return cursor;
+  };
+
+  it("renders a reference nested well past depth 10", () => {
+    const tracker = createTracker();
+    const rendered = processTemplates(
+      { functionArgs: nest(14, "{{@trigger:Trigger.ts}}") } as Record<
+        string,
+        unknown
+      >,
+      baseOutputs,
+      tracker
+    );
+    expect(leafOf(rendered.functionArgs)).toBe("1715000000");
+    expect(tracker.unresolved).toHaveLength(0);
+    expect(() =>
+      assertResolved(tracker, rendered, { actionType: "web3/write-contract" })
+    ).not.toThrow();
+  });
+
+  it("fails the step for an unresolved token that deep", () => {
+    const tracker = createTracker();
+    const rendered = processTemplates(
+      {
+        functionArgs: nest(14, "{{@trigger:Trigger.does.not.exist}}"),
+      } as Record<string, unknown>,
+      baseOutputs,
+      tracker
+    );
+    expect(tracker.unresolved.map((u) => u.reason)).toContain("no-path");
+    expect(() =>
+      assertResolved(tracker, rendered, { actionType: "web3/write-contract" })
+    ).toThrow(UNRESOLVED_REF_MESSAGE);
   });
 });
 
@@ -696,5 +819,379 @@ describe("extractTemplateParameters strict integration", () => {
     );
     expect(paramValues).toEqual([null]);
     expect(tracker.unresolved[0]?.reason).toBe("no-path");
+  });
+});
+
+describe("processTemplates renders tokens inside arrays (#2359)", () => {
+  // scanForLeftoverLiterals walks arrays, so as long as the renderer skipped
+  // them a token in an array was never rendered and then always reported, and
+  // the error named a reference that was correct. Both halves have to agree
+  // on what a container is; these pin that they do.
+  const WHO = "0x4F256eD4420136dfD1e595044626F0dDb9Ac2503";
+  const outputs = {
+    trigger: {
+      label: "Trigger",
+      data: { who: WHO, amount: "250000", note: "payroll" },
+    },
+  };
+  const render = (config: Record<string, unknown>) => {
+    const tracker = createTracker();
+    const processed = processTemplates(config, outputs, tracker);
+    return { tracker, processed };
+  };
+
+  it("renders a token that is an array element", () => {
+    const { tracker, processed } = render({
+      functionArgs: ["{{@trigger:Trigger.who}}"],
+    });
+    expect(processed.functionArgs).toEqual([WHO]);
+    expect(tracker.unresolved).toHaveLength(0);
+    expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+  });
+
+  it("renders a token inside an object inside an array", () => {
+    const { tracker, processed } = render({
+      calls: [
+        {
+          contractAddress: "{{@trigger:Trigger.who}}",
+          abi: "[]",
+          abiFunction: "transfer",
+        },
+      ],
+    });
+    expect(processed.calls).toEqual([
+      { contractAddress: WHO, abi: "[]", abiFunction: "transfer" },
+    ]);
+    expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+  });
+
+  it("renders a token inside an array inside an object inside an array", () => {
+    const { tracker, processed } = render({
+      calls: [
+        { args: ["{{@trigger:Trigger.who}}", "{{@trigger:Trigger.amount}}"] },
+      ],
+    });
+    expect(processed.calls).toEqual([{ args: [WHO, "250000"] }]);
+    expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+  });
+
+  it("passes non-string elements through and keeps their order", () => {
+    const { processed } = render({
+      list: [1, true, null, "{{@trigger:Trigger.note}}", { n: 2 }, [3]],
+    });
+    expect(processed.list).toEqual([1, true, null, "payroll", { n: 2 }, [3]]);
+  });
+
+  it("still reports an unresolved token inside an array", () => {
+    // Rendering arrays must not make the scan blind to them: a reference that
+    // does not resolve is recorded by the tracker exactly as a scalar one is,
+    // and the gate still closes.
+    const { tracker, processed } = render({
+      functionArgs: ["{{@trigger:Trigger.missing}}"],
+    });
+    expect(tracker.unresolved[0]?.reason).toBe("no-path");
+    expect(() => assertResolved(tracker, processed, {})).toThrow(
+      UNRESOLVED_REF_MESSAGE
+    );
+  });
+
+  it("leaves scalar and nested-object rendering as it was", () => {
+    const { processed } = render({
+      to: "{{@trigger:Trigger.who}}",
+      meta: { to: "{{@trigger:Trigger.who}}", keep: 7 },
+    });
+    expect(processed.to).toBe(WHO);
+    expect(processed.meta).toEqual({ to: WHO, keep: 7 });
+  });
+
+  describe("the step inputs that accept a native array", () => {
+    // These three declare `string | unknown[]` and are the cases where the
+    // array shape is supported end to end, so the renderer skipping them was
+    // a functional hole rather than a shape mismatch: a token in `payouts`
+    // was a literal {{...}} where a recipient address belongs, and the
+    // KEEP-468 gate was the only thing stopping it.
+
+    it("calls on web3/batch-write-contract", () => {
+      const { tracker, processed } = render({
+        network: "ethereum",
+        calls: [
+          {
+            contractAddress: "{{@trigger:Trigger.who}}",
+            abi: "[]",
+            abiFunction: "transfer",
+            args: ["{{@trigger:Trigger.who}}", "{{@trigger:Trigger.amount}}"],
+          },
+        ],
+      });
+      expect(processed.calls).toEqual([
+        {
+          contractAddress: WHO,
+          abi: "[]",
+          abiFunction: "transfer",
+          args: [WHO, "250000"],
+        },
+      ]);
+      expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+    });
+
+    it("functionArgs on web3/query-transactions", () => {
+      const { tracker, processed } = render({
+        abiFunction: "transfer",
+        functionArgs: ["{{@trigger:Trigger.who}}", ""],
+      });
+      expect(processed.functionArgs).toEqual([WHO, ""]);
+      expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+    });
+
+    it("payouts on tempo/batch-payout", () => {
+      const { tracker, processed } = render({
+        network: "tempo",
+        payouts: [
+          {
+            recipient: "{{@trigger:Trigger.who}}",
+            amount: "{{@trigger:Trigger.amount}}",
+            memo: "{{@trigger:Trigger.note}}",
+          },
+          { recipient: WHO, amount: "1" },
+        ],
+      });
+      expect(processed.payouts).toEqual([
+        { recipient: WHO, amount: "250000", memo: "payroll" },
+        { recipient: WHO, amount: "1" },
+      ]);
+      expect(() => assertResolved(tracker, processed, {})).not.toThrow();
+    });
+  });
+});
+
+describe("leftover literals name the field that carried them", () => {
+  // Issue #2305: a config key the renderer never reaches keeps its tokens, and the
+  // scan then reports the reference as unresolved. The reference is usually spelled
+  // correctly and the key above it is the fault, so the message has to say where.
+  const conditionConfigWithStaleGroup = {
+    actionType: "Condition",
+    condition: "resolved by its own path",
+    group: {
+      id: "group-1",
+      logic: "AND",
+      rules: [
+        {
+          id: "rule-1",
+          leftOperand: "{{@step-1:Get Aave Health Factor.healthFactor}}",
+          operator: "<",
+          rightOperand: "1500000000000000000",
+        },
+      ],
+    },
+  };
+
+  it("names the path through an array-valued key", () => {
+    const tracker = createTracker();
+    let message = "";
+    try {
+      assertResolved(tracker, conditionConfigWithStaleGroup, {
+        nodeId: "step-2",
+        nodeLabel: "Condition",
+        actionType: "Condition",
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(UNRESOLVED_REF_MESSAGE);
+    expect(message).toContain("group.rules[0].leftOperand");
+    expect(message).toContain(
+      "{{@step-1:Get Aave Health Factor.healthFactor}}"
+    );
+  });
+
+  it("records the path on the ref itself", () => {
+    const tracker = createTracker();
+    let thrown: TemplateResolutionError | undefined;
+    try {
+      assertResolved(tracker, conditionConfigWithStaleGroup, {});
+    } catch (error) {
+      thrown = error as TemplateResolutionError;
+    }
+    // Without this the case passes when nothing throws at all.
+    expect(thrown).toBeInstanceOf(TemplateResolutionError);
+    expect(thrown?.unresolved[0]?.path).toBe("group.rules[0].leftOperand");
+    expect(thrown?.unresolved[0]?.reason).toBe("literal-leftover");
+  });
+
+  it("omits the path clause when the token sits at the root", () => {
+    const tracker = createTracker();
+    let thrown: TemplateResolutionError | undefined;
+    try {
+      assertResolved(tracker, "{{@step-1:Node.field}}", {});
+    } catch (error) {
+      thrown = error as TemplateResolutionError;
+    }
+    expect(thrown).toBeInstanceOf(TemplateResolutionError);
+    // The path clause, when there is one, follows the token directly. Pinning
+    // that spot rather than the absence of " at " anywhere in the message keeps
+    // the assertion off the trailing prose, which can be reworded freely.
+    expect(thrown?.message).toContain("{{@step-1:Node.field}}");
+    expect(thrown?.message).not.toContain("{{@step-1:Node.field}} at ");
+    expect(thrown?.unresolved[0]?.path).toBeUndefined();
+  });
+});
+
+describe("liftConditionFields keeps the Condition-owned keys out of the scan", () => {
+  // processActionConfig calls this, and so does the block below. These are the
+  // assertions that make the sharing mean something: one per key, each failing
+  // if that key stops being lifted, and a control that fails if the scan is not
+  // running at all.
+  const outputs = {
+    "step-1": { label: "Present", data: { field: "ok" } },
+  };
+  const UNRESOLVABLE = "{{@step-9:Missing.field}}";
+
+  const scan = (config: Record<string, unknown>): void => {
+    const { rest } = liftConditionFields(config);
+    const tracker = createTracker();
+    const processed = processTemplates(rest, outputs, tracker);
+    assertResolved(tracker, processed, { actionType: "Condition" });
+  };
+
+  it("does not report a token in condition that cannot resolve", () => {
+    expect(() =>
+      scan({ actionType: "Condition", condition: `${UNRESOLVABLE} < 1` })
+    ).not.toThrow();
+  });
+
+  it("does not report a token in conditionConfig that cannot resolve", () => {
+    expect(() =>
+      scan({
+        actionType: "Condition",
+        conditionConfig: {
+          group: {
+            id: "g",
+            logic: "AND",
+            rules: [{ leftOperand: UNRESOLVABLE }],
+          },
+        },
+      })
+    ).not.toThrow();
+  });
+
+  it("reports the same token under any other key, so the scan is live", () => {
+    expect(() =>
+      scan({ actionType: "Condition", headers: { auth: UNRESOLVABLE } })
+    ).toThrow(UNRESOLVED_REF_MESSAGE);
+  });
+
+  it("puts back what it took, and nothing that was not there", () => {
+    const { rest, lifted } = liftConditionFields({
+      actionType: "Condition",
+      condition: "a < 1",
+      conditionConfig: { group: { id: "g" } },
+    });
+    expect(rest.condition).toBeUndefined();
+    expect(rest.conditionConfig).toBeUndefined();
+
+    const restored = restoreConditionFields({ ...rest }, lifted);
+    expect(restored.condition).toBe("a < 1");
+    expect(restored.conditionConfig).toEqual({ group: { id: "g" } });
+
+    // restoreConditionFields adds back only what it lifted, so a config that
+    // carried neither key gets neither from it. That is a claim about restore
+    // alone. On the executor path the two keys do reach the step as undefined:
+    // liftConditionFields sets them on `rest` unconditionally and
+    // processTemplates copies every key of its input. The code before the
+    // refactor did the same, so this is not a change in behaviour.
+    const bare = liftConditionFields({ actionType: "Condition" });
+    const untouched = restoreConditionFields(
+      { actionType: "Condition" },
+      bare.lifted
+    );
+    expect(Object.keys(untouched)).toEqual(["actionType"]);
+  });
+});
+
+describe("a rule group under conditionConfig is not scanned", () => {
+  // processActionConfig (executor.workflow.ts) is a closure, so this walks its
+  // three steps with the same exported pieces it uses: lift `condition` and
+  // `conditionConfig` out of the copy, render the rest with processTemplates,
+  // then assertResolved on the result. The fixture's group carries the same
+  // unrendered token as the stale-group case above; the only difference
+  // between the two cases is which key holds it.
+  const group = {
+    id: "group-1",
+    logic: "AND",
+    rules: [
+      {
+        id: "rule-1",
+        leftOperand: "{{@step-1:Get Aave Health Factor.healthFactor}}",
+        operator: "<",
+        rightOperand: "1500000000000000000",
+      },
+    ],
+  };
+  const outputs = {
+    "step-1": {
+      label: "Get Aave Health Factor",
+      data: { healthFactor: "1200000000000000000" },
+    },
+  };
+  // The lift is the executor's own, imported rather than rebuilt, so a
+  // change to which keys it takes moves this test too.
+  const liftAndScan = (config: Record<string, unknown>): void => {
+    const { rest } = liftConditionFields(config);
+    const tracker = createTracker();
+    const processed = processTemplates(rest, outputs, tracker);
+    assertResolved(tracker, processed, {
+      nodeId: "step-2",
+      nodeLabel: "Condition",
+      actionType: "Condition",
+    });
+  };
+
+  it("passes the repaired shape through to the node", () => {
+    expect(() =>
+      liftAndScan({
+        actionType: "Condition",
+        condition:
+          "{{@step-1:Get Aave Health Factor.healthFactor}} < 1500000000000000000",
+        conditionConfig: { group },
+      })
+    ).not.toThrow();
+  });
+
+  // This used to abort, and that abort is what made the misplaced group
+  // visible. #2359 changed it: renderTemplateValue walks into arrays and
+  // objects now, so the token inside `group.rules[0].leftOperand` renders and
+  // the scan has nothing to report.
+  //
+  // Nothing about the fault itself changed. resolveConditionExpression reads
+  // `conditionConfig.group` or `condition`, never a top-level `group`, so the
+  // rules in it are still not the rules that run. What changed is that the
+  // node no longer says so. A loud failure became a quiet one, which is why
+  // the migration matters more after #2359 than before it, not less.
+  it("no longer aborts on the shape the builder used to emit", () => {
+    expect(() =>
+      liftAndScan({
+        actionType: "Condition",
+        condition:
+          "{{@step-1:Get Aave Health Factor.healthFactor}} < 1500000000000000000",
+        group,
+      })
+    ).not.toThrow();
+  });
+
+  it("renders the group's token rather than reporting it", () => {
+    // Same shape with no expression beside it. The group renders, the scan is
+    // clean, and resolveConditionExpression still returns undefined for this
+    // config, so the node evaluates with no rules at all.
+    const tracker = createTracker();
+    const { rest } = liftConditionFields({
+      actionType: "Condition",
+      group,
+    });
+    const processed = processTemplates(rest, outputs, tracker) as {
+      group: { rules: Array<{ leftOperand: string }> };
+    };
+    expect(processed.group.rules[0].leftOperand).toBe("1200000000000000000");
+    expect(tracker.unresolved).toHaveLength(0);
+    expect(resolveConditionExpression(processed)).toBeUndefined();
   });
 });

@@ -841,6 +841,11 @@ describe("POST /api/mcp/workflows/[slug]/call: write workflow returns calldata",
     mockAuthenticateApiKey,
     mockAuthenticateOAuthToken,
     mockBuildCallCompletionResponse,
+    mockBeginIdempotentFromRequest,
+    mockIdempotencyEarlyResponse,
+    mockRecordIdempotentResponse,
+    mockSafeRecordIdempotentResponse,
+    mockWithIdempotencyHeartbeat,
   } = vi.hoisted(() => ({
     mockDbSelect: vi.fn(),
     mockDbInsert: vi.fn(),
@@ -861,6 +866,23 @@ describe("POST /api/mcp/workflows/[slug]/call: write workflow returns calldata",
     mockAuthenticateApiKey: vi.fn(),
     mockAuthenticateOAuthToken: vi.fn(),
     mockBuildCallCompletionResponse: vi.fn(),
+    mockBeginIdempotentFromRequest: vi.fn(),
+    mockIdempotencyEarlyResponse: vi.fn(),
+    mockRecordIdempotentResponse: vi.fn(
+      (_idem: unknown, response: Response, _disposition?: string) =>
+        Promise.resolve(response)
+    ),
+    mockSafeRecordIdempotentResponse: vi.fn(
+      (
+        _idem: unknown,
+        response: Response,
+        _disposition?: string,
+        _context?: string
+      ) => Promise.resolve(response)
+    ),
+    mockWithIdempotencyHeartbeat: vi.fn((_idem: unknown, work: () => unknown) =>
+      work()
+    ),
   }));
 
   vi.mock("@/lib/db", () => ({
@@ -907,6 +929,10 @@ describe("POST /api/mcp/workflows/[slug]/call: write workflow returns calldata",
     recordPayment: mockRecordPayment,
     resolveCreatorWallet: mockResolveCreatorWallet,
     extractPayerAddress: mockExtractPayerAddress,
+  }));
+
+  vi.mock("@/lib/payments/mpp/server", () => ({
+    hashMppCredential: (value: string) => `mpp-hash-${value}`,
   }));
 
   vi.mock("@/lib/payments/x402/reconcile", () => ({
@@ -968,6 +994,28 @@ describe("POST /api/mcp/workflows/[slug]/call: write workflow returns calldata",
   }));
   vi.mock("@/lib/errors/finalize-error", () => ({
     recordExecutionErrorFinalized: vi.fn().mockResolvedValue(undefined),
+  }));
+
+  vi.mock("server-only", () => ({}));
+
+  vi.mock("@/lib/idempotency", () => ({
+    beginIdempotentFromRequest: (...args: unknown[]) =>
+      mockBeginIdempotentFromRequest(...args),
+    idempotencyEarlyResponse: (...args: unknown[]) =>
+      mockIdempotencyEarlyResponse(...args),
+    recordIdempotentResponse: (
+      idem: unknown,
+      response: Response,
+      disposition?: string
+    ) => mockRecordIdempotentResponse(idem, response, disposition),
+    safeRecordIdempotentResponse: (
+      idem: unknown,
+      response: Response,
+      disposition?: string,
+      context?: string
+    ) => mockSafeRecordIdempotentResponse(idem, response, disposition, context),
+    withIdempotencyHeartbeat: (idem: unknown, work: () => unknown) =>
+      mockWithIdempotencyHeartbeat(idem, work),
   }));
 
   const WRITE_WORKFLOW = {
@@ -1069,6 +1117,15 @@ describe("POST /api/mcp/workflows/[slug]/call: write workflow returns calldata",
       organizationId: "caller-org-1",
       apiKeyId: "key-1",
     });
+    mockBeginIdempotentFromRequest.mockResolvedValue({ kind: "proceed" });
+    mockIdempotencyEarlyResponse.mockReturnValue(null);
+    mockRecordIdempotentResponse.mockImplementation(
+      (_idem: unknown, response: Response, _disposition?: string) =>
+        Promise.resolve(response)
+    );
+    mockWithIdempotencyHeartbeat.mockImplementation(
+      (_idem: unknown, work: () => unknown) => work()
+    );
   });
 
   it("Test 26: write workflow returns {type: 'calldata', to, data, value} instead of executing", async () => {
@@ -1148,17 +1205,20 @@ describe("search_protocol_actions: query filtering", () => {
       label: "Uniswap V3: Swap Exact Input",
       description:
         "Swap an exact amount of input tokens for as many output tokens as possible (single-hop)",
+      protocolDirectExecution: true,
     },
     "web3/approve-token": {
       actionType: "web3/approve-token",
       label: "Approve ERC20 Token",
       description:
         "Approve a spender contract to spend ERC20 tokens on behalf of your wallet (required before swaps and DeFi interactions)",
+      protocolDirectExecution: false,
     },
     "web3/check-balance": {
       actionType: "web3/check-balance",
       label: "Get Native Token Balance",
       description: "Get native token balance (ETH, MATIC, etc.) of any address",
+      protocolDirectExecution: false,
     },
   };
 
@@ -1190,7 +1250,10 @@ describe("search_protocol_actions: query filtering", () => {
     };
     return JSON.parse(result.content[0].text) as {
       count: number;
-      actions: Array<{ actionType: string }>;
+      actions: Array<{
+        actionType: string;
+        protocolDirectExecution: boolean;
+      }>;
       hint?: string;
     };
   }
@@ -1243,5 +1306,23 @@ describe("search_protocol_actions: query filtering", () => {
     const body = await invokeSearch({});
     expect(body.count).toBe(3);
     expect(body.hint).toBeUndefined();
+  });
+
+  it("Test 36: reports protocol direct execution support from the shared schema", async () => {
+    const body = await invokeSearch({});
+
+    expect(
+      body.actions.find(
+        (action) => action.actionType === "uniswap/swap-exact-input"
+      )?.protocolDirectExecution
+    ).toBe(true);
+    expect(
+      body.actions.find((action) => action.actionType === "web3/approve-token")
+        ?.protocolDirectExecution
+    ).toBe(false);
+    expect(
+      body.actions.find((action) => action.actionType === "web3/check-balance")
+        ?.protocolDirectExecution
+    ).toBe(false);
   });
 });

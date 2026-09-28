@@ -1,0 +1,19 @@
+{
+  "1": {
+    "exchange-rate": {
+      "to": "0xBe9895146f7AF43049ca1c1AE358B0541Ea49704",
+      "data": "0x3ba0b9a9",
+      "skipped": false
+    },
+    "balance-of": {
+      "to": "0xBe9895146f7AF43049ca1c1AE358B0541Ea49704",
+      "data": "0x70a082310000000000000000000000001111111111111111111111111111111111111111",
+      "skipped": false
+    },
+    "total-supply": {
+      "to": "0xBe9895146f7AF43049ca1c1AE358B0541Ea49704",
+      "data": "0x18160ddd",
+      "skipped": false
+    }
+  }
+}

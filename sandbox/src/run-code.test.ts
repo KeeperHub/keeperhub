@@ -1,5 +1,28 @@
 import { serialize } from "node:v8";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const { spawnedEnvs } = vi.hoisted(() => ({
+  spawnedEnvs: [] as Array<NodeJS.ProcessEnv | undefined>,
+}));
+
+vi.mock("node:child_process", async () => {
+  const actual =
+    await vi.importActual<typeof import("node:child_process")>(
+      "node:child_process"
+    );
+  return {
+    ...actual,
+    spawn: (
+      command: string,
+      args: readonly string[],
+      options: { env?: NodeJS.ProcessEnv }
+    ) => {
+      spawnedEnvs.push(options?.env);
+      return actual.spawn(command, args, options as never);
+    },
+  };
+});
+
 import {
   decodeSandboxResult,
   SANDBOX_RESULT_FD,
@@ -78,38 +101,53 @@ describe("runCode — sandbox child_process runner", () => {
     }
   });
 
-  it("scrubs the child environment to the CHILD_ENV_ALLOWLIST only", async () => {
-    // Canonical escape payload: Error.constructor("return process")() reaches
-    // the host `process` object inside the vm context. Because the child was
-    // spawned with execve and a scrubbed env, process.env contains ONLY the
-    // allowlist keys.
+  it("keeps user code inside the sandbox realm, away from process", async () => {
+    // The context used to be populated with host intrinsics, so
+    // Error.constructor("return process")() compiled a function in the host
+    // realm and reached the child's process object. The context is now a
+    // fresh realm whose intrinsics lead nowhere.
     const SECRET_KEY = "SANDBOX_TEST_FAKE_SECRET_XYZ";
-    const SECRET_VALUE = "leaked-value-must-not-appear";
-    process.env[SECRET_KEY] = SECRET_VALUE;
+    process.env[SECRET_KEY] = "leaked-value-must-not-appear";
 
     try {
       const outcome = await runCode({
-        code: `const p = Error.constructor("return process")(); return Object.keys(p.env);`,
+        code: 'return String(Error.constructor("return typeof process")());',
         timeoutMs: 5000,
       });
       expect(outcome.ok).toBe(true);
       if (outcome.ok) {
-        const envKeys = outcome.result as string[];
-        // The allowlist is: NODE_ENV, NODE_EXTRA_CA_CERTS, PATH, TZ, LANG, LC_ALL.
-        // The fake secret we injected must NOT be present — this is the
-        // load-bearing security property. Individual OSes may inject their
-        // own system-level vars (e.g. macOS __CF_USER_TEXT_ENCODING); those
-        // are harmless and not under CHILD_ENV_ALLOWLIST control.
-        expect(envKeys).not.toContain(SECRET_KEY);
-        // Every key that IS under our control (from CHILD_ENV_ALLOWLIST)
-        // may legitimately appear. Assert no non-allowlisted KeeperHub-style
-        // variable leaked (anything matching uppercase APP/SECRET/KEY names).
-        const leaked = envKeys.filter((k) =>
-          /^(DATABASE|WALLET|STRIPE|GITHUB|GOOGLE|AGENTIC|INTEGRATION|BETTER_AUTH|OAUTH|TURNKEY|CDP|AWS|KUBERNETES)_/i.test(
-            k
-          )
-        );
-        expect(leaked).toEqual([]);
+        expect(outcome.result).toBe("undefined");
+      }
+    } finally {
+      delete process.env[SECRET_KEY];
+    }
+  });
+
+  // Second line of defence behind the realm containment above: the child is
+  // spawned with an env cut down to CHILD_ENV_ALLOWLIST, so even a future
+  // escape reads an environ holding no secrets. Asserted at the spawn boundary
+  // because user code can no longer observe the child's process object.
+  it("spawns the child with an env cut down to the allowlist", async () => {
+    const SECRET_KEY = "SANDBOX_TEST_ENV_SCRUB_SENTINEL";
+    process.env[SECRET_KEY] = "leaked-value-must-not-appear";
+    spawnedEnvs.length = 0;
+    try {
+      const outcome = await runCode({ code: "return 1;", timeoutMs: 5000 });
+      expect(outcome.ok).toBe(true);
+      expect(spawnedEnvs).toHaveLength(1);
+      const childEnv = spawnedEnvs[0] ?? {};
+      expect(Object.hasOwn(childEnv, SECRET_KEY)).toBe(false);
+      // Only the allowlist may reach the child.
+      const allowed = new Set([
+        "NODE_ENV",
+        "NODE_EXTRA_CA_CERTS",
+        "PATH",
+        "TZ",
+        "LANG",
+        "LC_ALL",
+      ]);
+      for (const key of Object.keys(childEnv)) {
+        expect(allowed.has(key)).toBe(true);
       }
     } finally {
       delete process.env[SECRET_KEY];

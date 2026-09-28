@@ -378,6 +378,46 @@ jobs:
         if: always()
         run: docker stop sandbox || true
 
+  # Suites whose subject is which rows the SQL selects, so they need a real
+  # database rather than the global @/lib/db stub. Ungated on purpose: the code
+  # they cover lives in lib/, not in drizzle/, so a migration-relevant filter
+  # like migrate-check's would skip exactly the changes that can break them.
+  # The database is this job's alone -- the retention purge reads every
+  # organization in it, so a shared or pre-seeded one makes its counts
+  # unassertable.
+  test-db:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: keeperhub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/keeperhub_test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          discover-plugins: "true"
+
+      - name: Apply migrations to a fresh database
+        run: pnpm db:migrate
+
+      - name: Run database tests
+        run: pnpm test:db
+
   test-integration:
     # Join the staging environment so CHAIN_RPC_CONFIG resolves to the staging
     # value (single source of truth) rather than the repo-level fallback copy.

@@ -87,6 +87,24 @@ A transaction is sponsored only when all of the following are true. Otherwise it
 - **Direct wallet sender (no Safe)**: the active Sender is the wallet itself.
 - **Public mempool**: transactions routed through a private mempool are not sponsored.
 - **Gas credits available**: your organization still has gas credits for the current period.
+- **Sponsor gas is on for the node**: the action's own toggle, described below.
+
+### Sponsor gas toggle
+
+Each write action decides for itself whether to use sponsorship:
+
+1. Open the action node configuration (Transfer Native Token, Transfer ERC20 Token, Approve ERC20 Token, Write Contract, or any protocol write action)
+2. Pick a network that gas sponsorship covers, listed above
+3. Expand the **Advanced** section
+4. Set **Sponsor gas**
+
+The toggle appears only once the node points at a network sponsorship covers. On any other network there is nothing for it to turn off, so it stays hidden and the wallet pays gas as usual.
+
+The toggle is on by default, which is the behavior every existing workflow already had: the action tries sponsorship first and falls back to your own wallet when any eligibility condition above is not met.
+
+Turn it off to keep the action on your own wallet. Sponsorship is then not attempted at all, so the action spends no gas credits and the sending wallet must hold enough native token for both the gas fee and any value the transaction sends. Use it when you want a predictable sender and fee source for one action, for example a transaction whose gas you want billed to the wallet rather than your gas credit allowance.
+
+The toggle only removes sponsorship. Turning it on does not override the conditions above: an unsupported network, a Safe sender, a private mempool route, or an exhausted credit allowance still pays gas from the wallet.
 
 ### Safe wallets
 
@@ -95,6 +113,46 @@ Workflows that route through a Safe (Sender ON) are not gas sponsored. The spons
 ### Gas credits
 
 Sponsored gas is metered in USD against your plan's monthly gas credit cap (shown on the billing page). Mainnet usage counts against the cap; testnet usage is not charged. When the cap is reached, sponsorship pauses for the rest of the period and transactions pay gas from the wallet.
+
+### When sponsorship falls back
+
+Sponsorship is attempted first and falls back to direct signing (your wallet pays
+the gas) whenever any eligibility condition above is not met. Sponsorship can
+also be unavailable for a specific organization or wallet even when all of them
+hold: Turnkey can reject an activity at submission time, and the step then falls
+back the same way.
+
+The Runs panel shows a **Gas sponsored** badge on each sponsored step; a step
+that fell back has no badge. The badge is per step, so a run with one sponsored
+step and one fallback step still shows it on the sponsored step. The run-level
+**Sponsored** filter (under **Used gas**) lists runs that drew on gas credits.
+The run output does not say why sponsorship was skipped.
+
+What the fallback does next depends on the wallet balance:
+
+- **Wallet holds native gas**: the run completes, paid from your wallet.
+- **Wallet has no native gas**: the gas preflight runs before the transaction is
+  broadcast and fails the step with:
+
+  ```
+  Insufficient ETH balance. Have: 0.0, Need: 0.000000231. Fund
+  0x...orgWallet with at least 0.000000231 ETH on this chain and retry.
+  ```
+
+  Nothing was broadcast at this point, so there is no transaction hash to look
+  up. Fund the address named in the message and retry. The preflight caches the
+  balance and the gas price for about ten seconds, so a retry started right
+  after the funds land can repeat the same error; give it a few seconds.
+
+The preflight runs in the Web3 plugin's EVM write actions and in the protocol
+actions built on them. Actions on chains with their own transaction path, such
+as Tempo, do not run it. Reaching the preflight means the wallet is paying gas
+itself -- either the step was never eligible for sponsorship, or a sponsored
+attempt fell back -- and funding the address fixes the run either way. For a
+write that sends no native value, restoring the eligibility conditions above can
+also fix it without funding. A write that sends native value always needs that
+value in the wallet, because sponsorship covers the fee only (see
+[What sponsorship covers](#what-sponsorship-covers)).
 
 ## FAQ
 

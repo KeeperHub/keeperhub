@@ -13,7 +13,7 @@ description: "The response shape of the get_execution MCP tool: the nested statu
 {
   "tool": "get_execution",
   "arguments": {
-    "executionId": "exec_abc123"
+    "executionId": "pbp1zfywpli532cykjobk"
   }
 }
 ```
@@ -60,8 +60,8 @@ description: "The response shape of the get_execution MCP tool: the nested statu
   },
   "logs": {
     "execution": {
-      "id": "exec_abc123",
-      "workflowId": "wf_456",
+      "id": "pbp1zfywpli532cykjobk",
+      "workflowId": "3l2m4fzvbq3ekj2q69e76",
       "status": "success",
       "totalSteps": "2",
       "completedSteps": "2",

@@ -40,7 +40,7 @@ The v1.2 Protocol Registry milestone shipped these components that F-008 imports
 ## Acceptance Criteria
 
 - [x] `POST /api/execute/transfer` accepts `{ recipientAddress, amount, tokenAddress?, tokenConfig?, network }`, returns `{ executionId, status }` with 202. Routes to `transferFundsCore()` (native) or `transferTokenCore()` (ERC-20) based on `tokenAddress`/`tokenConfig` presence.
-- [x] `POST /api/execute/contract-call` accepts `{ contractAddress, abi?, functionName, functionArgs?, network, value?, gasLimitMultiplier? }`, returns `{ executionId, status, transactionHash?, transactionLink?, error? }` (202 for writes) or `{ result }` (200 for reads). `transactionHash` is present whenever the call produced one, including a broadcast that then reverted; `transactionLink` only on success. Auto-detects read vs write via ABI `stateMutability`. When `abi` omitted, uses `resolveAbi()`. Returns 400 if contract unverified and no ABI provided.
+- [x] `POST /api/execute/contract-call` accepts `{ contractAddress, abi?, functionName, functionArgs?, network, value?, gasLimitMultiplier? }`, returns `{ executionId, status, transactionHash?, transactionLink?, error? }` (202 for writes) or `{ result }` (200 for reads). `transactionHash` is present whenever the call produced one, including a broadcast that then reverted; `transactionLink` whenever the write step produced an explorer URL (including revert / unreadable broadcast). Auto-detects read vs write via ABI `stateMutability`. When `abi` omitted, uses `resolveAbi()`. Returns 400 if contract unverified and no ABI provided.
 - [x] `POST /api/execute/swap` returns `{ error: "Swap execution is not yet implemented" }` with 501 status.
 - [x] `POST /api/execute/check-and-execute` accepts `{ contractAddress, network, functionName, abi?, functionArgs?, condition: { operator, value }, action: { contractAddress, functionName, functionArgs?, abi?, gasLimitMultiplier? } }`. Returns 202 with `{ executionId, status }` if condition met, or 200 with `{ executed: false, conditionResult }` if not met. Supports operators: `eq`, `neq`, `gt`, `lt`, `gte`, `lte`.
 - [x] `GET /api/execute/{executionId}/status` returns `{ executionId, type, status, result?, error?, transactionHash?, transactionLink?, createdAt, completedAt? }`. Returns 404 if not found. Scoped to the authenticated organization.
@@ -228,6 +228,6 @@ The check-and-execute gate evaluates conditions against contract read results:
 
 - All custom code in `keeperhub/` per fork policy
 - Step files with `"use step"` cannot export functions -- use `-core.ts` pattern
-- No Node.js-only SDKs in step files -- use `fetch()` directly
+- No Node.js-only SDKs in step files - use `safeFetch()` from `@/lib/safe-fetch` for HTTP calls, not the raw `fetch` global
 - Biome lint: block statements, cognitive complexity max 15, top-level regex
 - Database migrations: `pnpm drizzle-kit generate`, never `db:push`

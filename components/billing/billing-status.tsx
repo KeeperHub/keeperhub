@@ -24,6 +24,7 @@ import {
   parseTierKey,
   type TierKey,
 } from "@/lib/billing/plans";
+import { retentionAfterPlanEndsNotice } from "@/lib/billing/retention-copy";
 import {
   SPONSORSHIP_MAINNET_NAMES,
   SPONSORSHIP_TESTNET_NAMES,
@@ -144,14 +145,14 @@ function getRenewalMessage(
 
   if (cancelAtPeriodEnd) {
     return {
-      text: `Access stays active until ${formattedDate}.`,
+      text: `Access stays active until ${formattedDate}. After that, ${retentionAfterPlanEndsNotice()}.`,
       className: "text-muted-foreground",
     };
   }
 
   if (status === "trialing") {
     return {
-      text: `Your trial ends on ${formattedDate}. After that, your subscription will begin.`,
+      text: `Your trial ends on ${formattedDate}. After that, your subscription will begin. If it does not, ${retentionAfterPlanEndsNotice()}.`,
       className: "text-muted-foreground",
     };
   }

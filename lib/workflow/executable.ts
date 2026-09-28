@@ -44,7 +44,11 @@ export function workflowReachableConditions(): SQL {
   return and(
     workflowNotDeleted(),
     isNull(workflows.deactivatedAt),
-    isNull(organization.deactivatedAt)
+    isNull(organization.deactivatedAt),
+    // Org incident circuit breaker: a halted org dispatches no new runs. The
+    // per-write value gate (reserveOrgValue) is the authoritative stop for
+    // in-flight value moves; this keeps new runs from starting at all.
+    isNull(organization.haltedAt)
   ) as SQL;
 }
 
@@ -69,26 +73,37 @@ export type WorkflowExecutabilityInput = {
   // The owning org's deactivation timestamp. Org is the owner, so this is the
   // owner-deactivation gate (the creator user is not an authority).
   orgDeactivatedAt?: Date | null;
+  // The owning org's circuit-breaker timestamp. A reversible incident halt,
+  // ranked below the two permanent "gone" states and above `disabled`.
+  orgHaltedAt?: Date | null;
 };
 
 export type WorkflowExecutability =
   | { executable: true }
   | {
       executable: false;
-      reason: "deleted" | "deactivated" | "org_deactivated" | "disabled";
+      reason:
+        | "deleted"
+        | "deactivated"
+        | "org_deactivated"
+        | "halted"
+        | "disabled";
     };
 
 /**
  * In-memory gate for the fetch-then-gate sites. The reason lets callers map to
  * their existing HTTP semantics (the webhook surfaces "disabled" as 410 and
  * everything else as 404). Precedence is fixed here - deleted, then the two
- * "fully off" deactivation states, then disabled.
+ * "fully off" deactivation states, then the reversible incident halt, then
+ * disabled.
  *
- * `deactivated` and `org_deactivated` rank ABOVE `disabled` on purpose: a
- * workflow can be both deactivated and disabled, and the manual-execute path
- * lets `disabled` through (a disabled workflow is still runnable from the
- * editor) while a deactivated one must be blocked. Reporting the stronger
- * reason keeps that block intact. `deleted` still wins overall because a
+ * `deactivated`, `org_deactivated`, and `halted` all rank ABOVE `disabled` on
+ * purpose: a workflow can be both blocked and disabled, and the manual-execute
+ * path lets `disabled` through (a disabled workflow is still runnable from the
+ * editor) while a halted or deactivated one must be blocked even there.
+ * Reporting the stronger reason keeps that block intact. `halted` ranks below
+ * the deactivation states because those are permanent ops off-states while an
+ * incident halt is reversible. `deleted` still wins overall because a
  * soft-deleted workflow can still be enabled (`softDeleteValues()` clears
  * `isListed` but not `enabled`) and "gone" is the most accurate signal.
  */
@@ -103,6 +118,9 @@ export function getWorkflowExecutability(
   }
   if ((workflow.orgDeactivatedAt ?? null) !== null) {
     return { executable: false, reason: "org_deactivated" };
+  }
+  if ((workflow.orgHaltedAt ?? null) !== null) {
+    return { executable: false, reason: "halted" };
   }
   if (!workflow.enabled) {
     return { executable: false, reason: "disabled" };

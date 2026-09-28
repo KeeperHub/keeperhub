@@ -74,26 +74,46 @@ describe("Lido Protocol Definition", () => {
     }
   });
 
-  it("has exactly 10 actions", () => {
-    expect(lidoDef.actions).toHaveLength(10);
+  it("has exactly 12 actions", () => {
+    expect(lidoDef.actions).toHaveLength(12);
   });
 
-  it("has 3 write actions and 7 read actions", () => {
+  it("has 3 write actions and 9 read actions", () => {
     const readActions = lidoDef.actions.filter((a) => a.type === "read");
     const writeActions = lidoDef.actions.filter((a) => a.type === "write");
     expect(writeActions).toHaveLength(3);
-    expect(readActions).toHaveLength(7);
+    expect(readActions).toHaveLength(9);
   });
 
-  it("has 2 contracts", () => {
-    expect(Object.keys(lidoDef.contracts)).toHaveLength(2);
+  it("has 3 contracts", () => {
+    expect(Object.keys(lidoDef.contracts)).toHaveLength(3);
   });
 
-  it("wsteth contract is available on Mainnet, Base, and Sepolia", () => {
+  it("wsteth contract is available on Mainnet and Sepolia", () => {
+    // Length-checked, not just membership. Re-adding "8453" here is the exact
+    // regression the L2 split exists to prevent. A bare toContain pair stays
+    // green through it.
     const chains = Object.keys(lidoDef.contracts.wsteth.addresses);
+    expect(chains).toHaveLength(2);
     expect(chains).toContain("1");
-    expect(chains).toContain("8453");
     expect(chains).toContain("11155111");
+  });
+
+  it("wstethL2 contract is available on Base", () => {
+    const chains = Object.keys(lidoDef.contracts.wstethL2.addresses);
+    expect(chains).toEqual(["8453"]);
+  });
+
+  it("wstethL2 exposes only the two read-only ERC-20 actions", () => {
+    // Pins the contract's own action set, so a third function added to the
+    // shared L2 ABI fails here rather than only moving the total count.
+    const slugs = lidoDef.actions
+      .filter((a) => a.contract === "wstethL2")
+      .map((a) => a.slug);
+    expect(slugs).toEqual([
+      "get-wsteth-balance-l2",
+      "get-wsteth-total-supply-l2",
+    ]);
   });
 
   it("steth contract is available on Mainnet and Sepolia", () => {

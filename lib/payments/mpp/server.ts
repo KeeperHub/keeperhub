@@ -1,16 +1,8 @@
 import { createHash } from "node:crypto";
 import { railForProtocol } from "@/lib/payments/rails";
+import { resolveRealm } from "@/lib/payments/realm";
 
 const MPP_RAIL = railForProtocol("mpp");
-const RE_PROTOCOL = /^https?:\/\//;
-const RE_TRAILING_SLASH = /\/$/;
-
-function resolveRealm(): string {
-  return (process.env.NEXT_PUBLIC_APP_URL ?? "app.keeperhub.com")
-    .replace(RE_PROTOCOL, "")
-    .replace(RE_TRAILING_SLASH, "");
-}
-
 async function createMppServer(): Promise<unknown> {
   const { Mppx, tempo } = await import("mppx/server");
   return Mppx.create({

@@ -205,6 +205,14 @@ export async function POST(
       if (loaded.reason === "disabled") {
         return failResponse(workflowId, timer, HttpStatus.GONE, "Workflow is disabled");
       }
+      if (loaded.reason === "halted") {
+        return failResponse(
+          workflowId,
+          timer,
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "Workflow temporarily halted"
+        );
+      }
       return failResponse(workflowId, timer, HttpStatus.NOT_FOUND, "Workflow not found");
     }
     const { workflow } = loaded;

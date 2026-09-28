@@ -1,4 +1,5 @@
 import type { Commitment } from "@solana/web3.js";
+import type { Endpoint } from "./ingest/solana-connection";
 
 /**
  * The in-memory registration shapes the reconciler builds from discovery and
@@ -30,6 +31,13 @@ export interface SolanaBlockTrigger {
 
 export interface ChainRegistration {
   chainId: number;
+  /**
+   * Carried purely for observability: it labels the chain's metrics so the
+   * Grafana rules can page at P2 for mainnet and P3 for testnet without a
+   * hardcoded chain-id list that rots the moment a chain is added. Not part of
+   * `configHash`, so it can never trigger a spurious ingestor restart.
+   */
+  isTestnet: boolean;
   rpcUrl: string;
   fallbackRpcUrl?: string;
   wssUrl: string;
@@ -56,4 +64,27 @@ export interface ChainRegistration {
    * restarts a chain's ingestor when this changes.
    */
   configHash: string;
+}
+
+/**
+ * The endpoint list a chain's connection rotates through: primary first, then
+ * the fallback when one is configured.
+ *
+ * Shared so the reconciler can describe a chain that failed to start using the
+ * same endpoints the ingestor would have used, rather than duplicating the
+ * fallback logic and drifting from it.
+ */
+export function registrationEndpoints(
+  registration: ChainRegistration,
+): Endpoint[] {
+  const endpoints: Endpoint[] = [
+    { rpcUrl: registration.rpcUrl, wssUrl: registration.wssUrl },
+  ];
+  if (registration.fallbackWssUrl) {
+    endpoints.push({
+      rpcUrl: registration.fallbackRpcUrl ?? registration.rpcUrl,
+      wssUrl: registration.fallbackWssUrl,
+    });
+  }
+  return endpoints;
 }

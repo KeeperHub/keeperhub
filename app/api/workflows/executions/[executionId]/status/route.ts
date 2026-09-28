@@ -139,6 +139,8 @@ export async function GET(
         eq(workflowExecutionLogs.executionId, executionId),
         executionLogNotDeleted()
       ),
+      // Only the two fields the payload reads; the step bodies can be large.
+      columns: { nodeId: true, status: true },
     });
 
     const nodeStatuses: NodeStatus[] = logs.map((log) => ({

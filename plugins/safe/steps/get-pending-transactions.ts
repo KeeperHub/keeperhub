@@ -9,10 +9,10 @@ import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-hand
 import { safeFetch } from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
 import type { SafeCredentials } from "../credentials";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
 const PLUGIN_NAME = "safe";
 const ACTION_NAME = "get-pending-transactions";
-const ETH_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 
 type SafeConfirmation = {
   owner: string;
@@ -64,6 +64,11 @@ type PendingTransaction = {
   confirmationsRequired: number;
   confirmationsCollected: number;
   dataDecoded: unknown;
+  safeTxGas: number;
+  baseGas: number;
+  gasPrice: string;
+  gasToken: string;
+  refundReceiver: string;
   submissionDate: string;
   safe: string;
 };
@@ -146,7 +151,7 @@ async function stepHandler(
   }
 
   const rawAddress = input.safeAddress.trim();
-  if (!ETH_ADDRESS_REGEX.test(rawAddress)) {
+  if (!EVM_ADDRESS_RE.test(rawAddress)) {
     logUserError(
       ErrorCategory.VALIDATION,
       "[Safe] Invalid Safe address format",
@@ -270,6 +275,11 @@ async function stepHandler(
       confirmationsRequired: tx.confirmationsRequired,
       confirmationsCollected: tx.confirmations.length,
       dataDecoded: tx.dataDecoded,
+      safeTxGas: tx.safeTxGas,
+      baseGas: tx.baseGas,
+      gasPrice: tx.gasPrice,
+      gasToken: tx.gasToken,
+      refundReceiver: tx.refundReceiver,
       submissionDate: tx.submissionDate,
       safe: tx.safe,
     }));

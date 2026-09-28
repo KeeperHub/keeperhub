@@ -32,6 +32,20 @@ const blockscoutNode = {
   actionType: "blockscout/get-address-balance",
 };
 
+// Pro-gated plugin actions with explicit feature entries (action.code /
+// action.webhook). These are the plugin actions that used to collapse into a
+// generic INVALID_ACTION_CONFIG when their config was incomplete, because
+// action-config validation ran ahead of this gate.
+const runCodeNode = {
+  id: "node-code-1",
+  actionType: "code/run-code",
+};
+
+const sendWebhookNode = {
+  id: "node-wh-1",
+  actionType: "webhook/send-webhook",
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -99,6 +113,46 @@ describe("enforceWorkflowFeatures", () => {
     expect(body.violations[0].featureId).toBe("action.external-request");
     expect(body.violations[0].requiredPlan).toBe("pro");
     expect(body.violations[0].nodeIds).toEqual(["node-bs-1"]);
+  });
+
+  it("blocks the Run Code action on the free plan with a plan-specific 402", async () => {
+    vi.mocked(isBillingEnabled).mockReturnValue(true);
+    vi.mocked(getOrgPlan).mockResolvedValue("free");
+
+    const result = await enforceWorkflowFeatures([runCodeNode], "org_1");
+
+    expect(result.blocked).toBe(true);
+    if (!result.blocked) {
+      return;
+    }
+    expect(result.response.status).toBe(402);
+    const body = await result.response.json();
+    expect(body.code).toBe("upgrade_required");
+    expect(body.error).toBe(
+      "This workflow uses features that require a paid plan."
+    );
+    expect(body.violations[0].featureId).toBe("action.code");
+    expect(body.violations[0].requiredPlan).toBe("pro");
+    expect(body.violations[0].actionType).toBe("code/run-code");
+    expect(body.violations[0].nodeIds).toEqual(["node-code-1"]);
+  });
+
+  it("blocks the Send Webhook action on the free plan with a plan-specific 402", async () => {
+    vi.mocked(isBillingEnabled).mockReturnValue(true);
+    vi.mocked(getOrgPlan).mockResolvedValue("free");
+
+    const result = await enforceWorkflowFeatures([sendWebhookNode], "org_1");
+
+    expect(result.blocked).toBe(true);
+    if (!result.blocked) {
+      return;
+    }
+    expect(result.response.status).toBe(402);
+    const body = await result.response.json();
+    expect(body.code).toBe("upgrade_required");
+    expect(body.violations[0].featureId).toBe("action.webhook");
+    expect(body.violations[0].requiredPlan).toBe("pro");
+    expect(body.violations[0].actionType).toBe("webhook/send-webhook");
   });
 
   it("allows the user-destination action on a paid plan", async () => {

@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { NextResponse } from "next/server";
+import { combineAbis } from "@/lib/abi/combine-abis";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { apiError } from "@/lib/api-error";
 import { db } from "@/lib/db";
@@ -309,98 +310,6 @@ async function getDiamondFacets(
     // If we get here, it's not a Diamond or doesn't implement the loupe interface
     throw new Error("Not a Diamond contract or loupe interface not available");
   });
-}
-
-/**
- * Get function selector for an ABI item
- */
-function getFunctionSelector(abiItem: {
-  type: string;
-  name?: string;
-  inputs?: Array<{ type: string; name?: string }>;
-}): string | null {
-  if (abiItem.type !== "function" || !abiItem.name || !abiItem.inputs) {
-    return null;
-  }
-  const signature = `${abiItem.name}(${abiItem.inputs.map((i) => i.type).join(",")})`;
-  return ethers.id(signature).slice(0, 10); // First 4 bytes
-}
-
-/**
- * Parse and process a single ABI string
- */
-function processAbiString(
-  abiStr: string,
-  seenSelectors: Set<string>
-): unknown[] {
-  try {
-    const abi = JSON.parse(abiStr) as unknown[];
-    const items: unknown[] = [];
-    let functionCount = 0;
-    let duplicateCount = 0;
-
-    for (const item of abi) {
-      const abiItem = item as {
-        type: string;
-        name?: string;
-        inputs?: Array<{ type: string; name?: string }>;
-      };
-
-      // For functions, check for duplicates by selector
-      const selector = getFunctionSelector(abiItem);
-      if (selector) {
-        functionCount += 1;
-        if (seenSelectors.has(selector)) {
-          duplicateCount += 1;
-          console.log(
-            `[Diamond] Skipping duplicate function: ${abiItem.name} (selector: ${selector})`
-          );
-          continue;
-        }
-        seenSelectors.add(selector);
-      }
-
-      // Include all items (functions, events, errors, etc.)
-      items.push(item);
-    }
-
-    if (functionCount > 0) {
-      const uniqueFunctions = items.filter(
-        (i) => (i as { type?: string }).type === "function"
-      ).length;
-      console.log(
-        `[Diamond] Processed ${functionCount} functions (${duplicateCount} duplicates skipped, ${uniqueFunctions} unique)`
-      );
-    }
-
-    return items;
-  } catch (error) {
-    logUserError(
-      ErrorCategory.EXTERNAL_SERVICE,
-      "[Diamond] Failed to parse facet ABI from Etherscan",
-      error instanceof Error ? error : new Error(String(error)),
-      {
-        service: "etherscan",
-        component: "diamond-proxy",
-      }
-    );
-    return [];
-  }
-}
-
-/**
- * Combine multiple ABIs into one, removing duplicates
- */
-function combineAbis(abis: string[]): string {
-  const allItems: unknown[] = [];
-  const seenSelectors = new Set<string>();
-
-  for (const abiStr of abis) {
-    const items = processAbiString(abiStr, seenSelectors);
-    allItems.push(...items);
-  }
-
-  return JSON.stringify(allItems);
 }
 
 type DiamondFacetResult = {

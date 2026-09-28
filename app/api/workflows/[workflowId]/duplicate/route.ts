@@ -11,7 +11,8 @@ import { extractActionTypeNodes } from "@/lib/features";
 import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
 import { syncPersistedWorkflowSchedule } from "@/lib/schedule-service";
 import { generateId } from "@/lib/utils/id";
-import { remapTemplateRefsInString } from "@/lib/utils/template";
+import { remapNodeReferencesInConfig } from "@/lib/utils/template";
+import { findActionById, flattenConfigFields } from "@/plugins/registry";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
@@ -29,39 +30,30 @@ type WorkflowNodeLike = {
   [key: string]: unknown;
 };
 
-/** Recursively rewrite a single value (string, object, or array) using old->new node ID map */
-function remapTemplateRefsInValue(
-  value: unknown,
-  idMap: Map<string, string>
-): unknown {
-  if (typeof value === "string") {
-    return remapTemplateRefsInString(value, idMap);
+/**
+ * Config keys on this action that hold a node id on its own rather than inside
+ * a `{{@nodeId:...}}` template, so duplication knows which bare values to
+ * rewrite. Derived from the field type, so a plugin adding a node picker is
+ * covered without touching this file.
+ */
+function nodeReferenceKeys(actionType: unknown): ReadonlySet<string> {
+  if (typeof actionType !== "string") {
+    return new Set();
   }
-  if (Array.isArray(value)) {
-    return value.map((item) => remapTemplateRefsInValue(item, idMap));
+  const action = findActionById(actionType);
+  if (!action?.configFields) {
+    return new Set();
   }
-  if (typeof value === "object" && value !== null) {
-    return remapTemplateRefsInConfig(value as Record<string, unknown>, idMap);
+  const keys = new Set<string>();
+  for (const field of flattenConfigFields(action.configFields)) {
+    if (field.type?.endsWith("-node-select")) {
+      keys.add(field.key);
+    }
   }
-  return value;
+  return keys;
 }
 
-/** Recursively rewrite {{@nodeId:...}} template refs in config using old->new node ID map */
-function remapTemplateRefsInConfig(
-  config: Record<string, unknown> | undefined,
-  idMap: Map<string, string>
-): Record<string, unknown> | undefined {
-  if (!config || typeof config !== "object") {
-    return config;
-  }
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(config)) {
-    result[key] = remapTemplateRefsInValue(value, idMap);
-  }
-  return result;
-}
-
-/** Duplicate nodes with new IDs, strip integration IDs, and remap template refs in config */
+/** Duplicate nodes with new IDs, strip integration IDs, and remap node refs in config */
 function duplicateNodes(
   oldNodes: WorkflowNodeLike[],
   idMap: Map<string, string>
@@ -73,9 +65,10 @@ function duplicateNodes(
       const data = { ...newNode.data };
       if (data.config) {
         const { integrationId: _, ...configWithoutIntegration } = data.config;
-        data.config = remapTemplateRefsInConfig(
+        data.config = remapNodeReferencesInConfig(
           configWithoutIntegration,
-          idMap
+          idMap,
+          nodeReferenceKeys(data.config.actionType)
         );
       }
       data.status = "idle";

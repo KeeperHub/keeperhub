@@ -1,5 +1,11 @@
 import { ethers } from "ethers";
 import { NextResponse } from "next/server";
+import { normalizeAbiEntries } from "@/lib/abi/normalize";
+import {
+  type AbiItem,
+  describeAmbiguousKey,
+  resolveAbiFunction,
+} from "@/lib/abi/utils";
 import { apiError } from "@/lib/api-error";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
 import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
@@ -153,6 +159,25 @@ function estimateWriteContract(
     return badRequest("Invalid ABI JSON");
   }
 
+  if (!Array.isArray(parsedAbi)) {
+    return badRequest("ABI must be a JSON array");
+  }
+  // ethers also accepts human-readable fragments in the array; the resolver
+  // needs them as objects.
+  parsedAbi = normalizeAbiEntries(parsedAbi) as ethers.InterfaceAbi;
+  const resolution = resolveAbiFunction(
+    parsedAbi as AbiItem[],
+    config.abiFunction
+  );
+  if (resolution.status === "ambiguous") {
+    return badRequest(
+      describeAmbiguousKey(config.abiFunction, resolution.candidates)
+    );
+  }
+  if (resolution.status !== "found") {
+    return badRequest(`Function '${config.abiFunction}' not found in ABI`);
+  }
+
   let args: unknown[] = [];
   if (config.functionArgs && config.functionArgs.trim() !== "") {
     try {
@@ -173,9 +198,9 @@ function estimateWriteContract(
   // instead of the inherited method (which lacks `.estimateGas`).
   let fn: ethers.BaseContractMethod;
   try {
-    fn = contract.getFunction(config.abiFunction);
+    fn = contract.getFunction(resolution.canonicalKey);
   } catch {
-    return badRequest(`Function '${config.abiFunction}' not found in ABI`);
+    return badRequest(`Invalid ABI function '${config.abiFunction}'`);
   }
 
   return fn.estimateGas(...args, { from: walletAddress });

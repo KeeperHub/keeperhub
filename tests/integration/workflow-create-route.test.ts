@@ -81,7 +81,9 @@ vi.mock("@/lib/security/audit-log", () => ({
   recordAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
+import { NextResponse } from "next/server";
 import { POST } from "@/app/api/workflows/create/route";
+import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
 
 function request(body: Record<string, unknown>): Request {
   return new Request("http://localhost:3000/api/workflows/create", {
@@ -273,6 +275,113 @@ describe("POST /api/workflows/create action config validation", () => {
     );
 
     expect(response.status).not.toBe(422);
+    expect(mockInsert).toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/workflows/create plan-gating precedence", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-123",
+      organizationId: "org-123",
+      authMethod: "session",
+    });
+    mockValidateWorkflowIntegrations.mockResolvedValue({ valid: true });
+  });
+
+  it("returns the plan-gate 402 (not the generic 422) when a plan-gated action is also missing required config", async () => {
+    // The node is a plan-gated action whose config is ALSO invalid (required
+    // `code` missing; `timeout` present so it is not a skipped draft). Action-
+    // config validation would reject it with INVALID_ACTION_CONFIG/422, so a
+    // 402 here proves the plan-gate now runs first.
+    vi.mocked(enforceWorkflowFeatures).mockResolvedValueOnce({
+      blocked: true,
+      response: NextResponse.json(
+        {
+          error: "This workflow uses features that require a paid plan.",
+          code: "upgrade_required",
+          violations: [
+            {
+              featureId: "action.code",
+              featureName: "Code action",
+              requiredPlan: "pro",
+              actionType: "code/run-code",
+              nodeIds: ["node-1"],
+            },
+          ],
+        },
+        { status: 402 }
+      ),
+    });
+
+    const response = await POST(
+      request(
+        workflowBody([
+          baseActionNode({
+            actionType: "code/run-code",
+            timeout: "30",
+          }),
+        ])
+      )
+    );
+
+    const body = await response.json();
+
+    expect(response.status).toBe(402);
+    expect(body.code).toBe("upgrade_required");
+    expect(body.violations[0].requiredPlan).toBe("pro");
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("still returns INVALID_ACTION_CONFIG/422 for a permitted action with invalid config", async () => {
+    // Guard is not blocked (permitted action / paid plan); the generic config
+    // validation must still fire for a genuinely malformed non-gated action.
+    const response = await POST(
+      request(
+        workflowBody([
+          baseActionNode({
+            actionType: "discord/send-message",
+            Message: "hello",
+          }),
+        ])
+      )
+    );
+
+    const body = await response.json();
+
+    expect(response.status).toBe(422);
+    expect(body.error).toBe("INVALID_ACTION_CONFIG");
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("saves a permitted action with valid config", async () => {
+    const mockReturning = vi.fn().mockResolvedValue([
+      {
+        id: "wf-ok",
+        name: "Untitled Workflow",
+        enabled: false,
+        createdAt: new Date("2024-01-01"),
+        updatedAt: new Date("2024-01-01"),
+      },
+    ]);
+    mockInsert.mockReturnValue({
+      values: vi.fn().mockReturnValue({ returning: mockReturning }),
+    });
+
+    const response = await POST(
+      request(
+        workflowBody([
+          baseActionNode({
+            actionType: "discord/send-message",
+            discordMessage: "hello",
+          }),
+        ])
+      )
+    );
+
+    expect(response.status).not.toBe(422);
+    expect(response.status).not.toBe(402);
     expect(mockInsert).toHaveBeenCalled();
   });
 });

@@ -177,6 +177,287 @@ const mathPlugin: IntegrationPlugin = {
         },
       ],
     },
+    {
+      slug: "compare-tolerance",
+      label: "Compare With Tolerance",
+      description:
+        "Compare an actual value against an expected value with a percentage or absolute tolerance. BigInt-safe, so RAD and WAD magnitude values compare without float precision loss.",
+      category: "Math",
+      stepFunction: "compareToleranceStep",
+      stepImportPath: "compare-tolerance",
+      requiresCredentials: false,
+      outputFields: [
+        { field: "success", description: "Whether the comparison ran" },
+        {
+          field: "withinTolerance",
+          description: "True when the difference is inside the tolerance",
+        },
+        {
+          field: "breached",
+          description:
+            "True when the difference is outside the tolerance - wire this to an alert branch",
+        },
+        {
+          field: "direction",
+          description: "above, below or equal, relative to the expected value",
+        },
+        {
+          field: "difference",
+          description: "Actual minus expected, as a signed decimal string",
+        },
+        {
+          field: "absoluteDifference",
+          description: "The difference without its sign",
+        },
+        {
+          field: "percentDifference",
+          description:
+            "Signed percentage difference from expected, or null when expected is zero",
+        },
+        { field: "actual", description: "The normalised actual value" },
+        { field: "expected", description: "The normalised expected value" },
+        { field: "tolerance", description: "The tolerance that was applied" },
+        { field: "mode", description: "percent or absolute" },
+        { field: "error", description: "Error message if the comparison failed" },
+      ],
+      configFields: [
+        {
+          key: "actual",
+          label: "Actual",
+          type: "template-input",
+          required: true,
+          placeholder: "{{@node1:Read Contract.result}}",
+          example: "1000000000000000000",
+        },
+        {
+          key: "expected",
+          label: "Expected",
+          type: "template-input",
+          required: true,
+          placeholder: "{{@node2:Previous Value.result}}",
+          example: "1000000000000000000",
+        },
+        {
+          key: "mode",
+          label: "Tolerance Mode",
+          type: "select",
+          required: true,
+          options: [
+            { value: "percent", label: "Percentage of expected" },
+            { value: "absolute", label: "Absolute difference" },
+          ],
+          defaultValue: "percent",
+        },
+        {
+          key: "tolerance",
+          label: "Tolerance",
+          type: "template-input",
+          required: true,
+          placeholder: "0.5",
+          helpTip:
+            "In percent mode this is a percentage, so 0.5 means half a percent. In absolute mode it is in the same units as the values.",
+          example: "0.5",
+        },
+        {
+          key: "precision",
+          label: "Percent Decimal Places",
+          type: "number",
+          min: 0,
+          defaultValue: "6",
+          helpTip: "Decimal places used when formatting percentDifference.",
+        },
+      ],
+    },
+    {
+      slug: "treasury-runway",
+      label: "Treasury Runway",
+      description:
+        "Calculate reserve-adjusted treasury runway, recovery funding and a machine-readable treasury status using precision-safe arithmetic.",
+      category: "Math",
+      stepFunction: "treasuryRunwayStep",
+      stepImportPath: "treasury-runway",
+      requiresCredentials: false,
+      outputFields: [
+        { field: "success", description: "Whether the calculation succeeded" },
+        {
+          field: "reserveAdjustedBalance",
+          description:
+            "Treasury balance minus protected reserve, preserved as a signed decimal string",
+        },
+        {
+          field: "reserveBreached",
+          description:
+            "True when the treasury balance is below the protected reserve",
+        },
+        {
+          field: "netBurnRate",
+          description:
+            "Outgoing rate minus incoming rate in the selected rate period",
+        },
+        {
+          field: "runwayDays",
+          description:
+            "Remaining runway in days with up to six decimal places, or null when the treasury is not depleting",
+        },
+        {
+          field: "requiredRecoveryAmount",
+          description:
+            "Final top-up required to reach minimum runway, rounded upward at the supplied amount precision",
+        },
+        {
+          field: "status",
+          description: "Runway status: safe, warning or critical. A safe result can still have reserveBreached set to true.",
+        },
+        {
+          field: "ratePeriod",
+          description: "The fixed period used by the incoming and outgoing rates",
+        },
+        {
+          field: "error",
+          description: "Error message if the calculation failed",
+        },
+      ],
+      configFields: [
+        {
+          key: "treasuryBalance",
+          label: "Treasury Balance",
+          type: "template-input",
+          required: true,
+          placeholder: "{{@node1:Read Balance.result}}",
+          helpTip:
+            "Current treasury balance. Use the same amount unit and precision for all balance and rate inputs.",
+          example: "530",
+        },
+        {
+          key: "incomingRate",
+          label: "Incoming Rate",
+          type: "template-input",
+          required: true,
+          placeholder: "100",
+          helpTip: "Amount entering the treasury during each rate period.",
+          example: "100",
+        },
+        {
+          key: "outgoingRate",
+          label: "Outgoing Rate",
+          type: "template-input",
+          required: true,
+          placeholder: "920",
+          helpTip: "Amount leaving the treasury during each rate period.",
+          example: "920",
+        },
+        {
+          key: "protectedReserve",
+          label: "Protected Reserve",
+          type: "template-input",
+          required: true,
+          placeholder: "0",
+          helpTip:
+            "Balance reserved from ordinary spending. A balance below this value sets reserveBreached to true.",
+          example: "0",
+        },
+        {
+          key: "minimumRunwayDays",
+          label: "Minimum Runway Days",
+          type: "template-input",
+          required: true,
+          placeholder: "30",
+          helpTip:
+            "Required minimum runway in days. Reported runway uses up to six decimal places.",
+          example: "30",
+        },
+        {
+          key: "ratePeriod",
+          label: "Rate Period",
+          type: "select",
+          required: true,
+          helpTip:
+            "Fixed period represented by both incoming and outgoing rates.",
+          options: [
+            { value: "second", label: "Per second" },
+            { value: "minute", label: "Per minute" },
+            { value: "hour", label: "Per hour" },
+            { value: "day", label: "Per day" },
+            { value: "week", label: "Per week (7 days)" },
+            { value: "month", label: "Per month (30 days)" },
+            { value: "year", label: "Per year (365 days)" },
+          ],
+        },
+      ],
+    },
+    {
+      slug: "format-number",
+      label: "Format Number",
+      description:
+        "Turn a raw integer or decimal into a readable string - scale down token decimals, group thousands, or shorten to compact K/M/B/T notation with an optional unit.",
+      category: "Math",
+      stepFunction: "formatNumberStep",
+      stepImportPath: "format-number",
+      requiresCredentials: false,
+      outputFields: [
+        { field: "success", description: "Whether formatting succeeded" },
+        {
+          field: "formatted",
+          description: 'The display string, e.g. "1.23M SKY"',
+        },
+        {
+          field: "value",
+          description:
+            "The full scaled value as a decimal string, with no rounding applied",
+        },
+        {
+          field: "magnitude",
+          description: 'The compact suffix used: K, M, B, T or empty',
+        },
+        { field: "notation", description: "compact or plain" },
+        { field: "error", description: "Error message if formatting failed" },
+      ],
+      configFields: [
+        {
+          key: "value",
+          label: "Value",
+          type: "template-input",
+          required: true,
+          placeholder: "{{@node1:Read Contract.result}}",
+          example: "1230000000000000000000000",
+        },
+        {
+          key: "decimals",
+          label: "Token Decimals",
+          type: "number",
+          min: 0,
+          defaultValue: "0",
+          helpTip:
+            "Divides the value by 10 to this power before formatting. Use 18 for a wei amount, 6 for USDC, 0 for a plain number.",
+          example: "18",
+        },
+        {
+          key: "notation",
+          label: "Notation",
+          type: "select",
+          options: [
+            { value: "compact", label: "Compact (1.23M)" },
+            { value: "plain", label: "Plain (1,230,000.00)" },
+          ],
+          defaultValue: "compact",
+        },
+        {
+          key: "precision",
+          label: "Decimal Places",
+          type: "number",
+          min: 0,
+          defaultValue: "2",
+        },
+        {
+          key: "unit",
+          label: "Unit",
+          type: "template-input",
+          placeholder: "SKY",
+          helpTip: "Appended after the number, separated by a space.",
+          example: "SKY",
+        },
+      ],
+    },
   ],
 };
 

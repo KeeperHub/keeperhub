@@ -33,8 +33,8 @@ import {
   useWalletDigest,
   type WalletTotal,
 } from "@/lib/wallet/use-wallet-digest";
+import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
 
-const COPIED_FOR_MS = 1500;
 const ASSETS_SHOWN = 5;
 const SKELETON_ROWS = ["a", "b", "c"] as const;
 
@@ -77,7 +77,7 @@ function CopyButton({
   value: string;
   label: string;
 }): React.ReactElement {
-  const [copied, setCopied] = useState(false);
+  const [copied, markCopied] = useCopiedFlag();
   return (
     <button
       aria-label={label}
@@ -85,9 +85,7 @@ function CopyButton({
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        navigator.clipboard.writeText(value);
-        setCopied(true);
-        setTimeout(() => setCopied(false), COPIED_FOR_MS);
+        markCopied(value);
       }}
       type="button"
     >

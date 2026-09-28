@@ -20,7 +20,7 @@ const getPendingTransactionsAction = {
     {
       field: "transactions",
       description:
-        "Array of pending transactions with safeTxHash, to, value, data, operation, nonce, confirmations, confirmationsRequired, dataDecoded, and submissionDate",
+        "Array of pending transactions with safeTxHash, to, value, data, operation, operationLabel, nonce, confirmations, confirmationsRequired, confirmationsCollected, dataDecoded, safeTxGas, baseGas, gasPrice, gasToken, refundReceiver, submissionDate, and safe",
     },
     {
       field: "count",
@@ -56,7 +56,7 @@ const getPendingTransactionsAction = {
 const safeProtocol = getIntegration("safe" as IntegrationType);
 if (!safeProtocol) {
   throw new Error(
-    '[safe plugin] "safe" integration not found in registry. Ensure keeperhub/protocols is imported before keeperhub/plugins/safe.'
+    '[safe plugin] "safe" integration not found in registry. Ensure @/protocols is imported before @/plugins/safe.'
   );
 }
 

@@ -127,6 +127,15 @@ export type TimeSeriesBucket = {
   running: number;
 };
 
+/**
+ * Buckets plus the width each one covers, so the chart can label them at the
+ * granularity they were actually aggregated at.
+ */
+export type TimeSeriesResponse = {
+  buckets: TimeSeriesBucket[];
+  intervalMs: number;
+};
+
 export type NetworkBreakdown = {
   network: string;
   totalGasWei: string;
@@ -209,6 +218,14 @@ export type RunsResponse = {
   total: number;
   page: number;
   pageSize: number;
+  /**
+   * KEEP-1042: ISO instant before which this organization's step logs have been
+   * removed, per the retention its plan sells. A run older than this is listed
+   * with its status and duration but has no steps behind it, so the Gas and
+   * Network cells and the expanded view have to say that rather than render the
+   * same blank a run that never recorded anything produces.
+   */
+  stepLogRetentionCutoff?: string | null;
 };
 
 export type StepLog = {

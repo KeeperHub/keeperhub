@@ -25,6 +25,14 @@ When a workflow does not behave as expected, the Runs panel provides the informa
 3. For webhooks, test the URL directly
 4. For events, confirm the contract address and event signature
 
+For an Event trigger, validate the workflow rather than re-reading the config.
+A trigger the event tracker declines to register produces no error in the
+editor, so a misconfigured trigger and one that is simply waiting for a rare
+event look identical here. Validation reports the difference, including the one
+cause you cannot see from the trigger config at all: a chain with no WebSocket
+endpoint configured, which no Event trigger can fire on. The codes are prefixed
+`trigger-` and each names the field at fault.
+
 ### Node Execution Failure
 
 **Symptoms**: Run shows failed status; specific node shows error.
@@ -71,6 +79,15 @@ When a workflow does not behave as expected, the Runs panel provides the informa
 2. Review the error message for revert reason
 3. Verify contract function parameters
 4. Wait for pending transactions to clear
+
+> **Gas preflight failures**: if the error reads `Insufficient <token> balance
+> ... Fund <address> ...` -- where `<token>` is the chain's native gas token, so
+> the wording differs per network -- the gas preflight stopped the transaction
+> before broadcast, so there is no transaction hash to look up. It means the
+> funding address cannot cover gas. On a network where sponsorship applies it
+> may also mean a sponsored attempt fell back to direct signing, which the run
+> output does not distinguish. Fund the address named in the message and retry
+> (see [Gas Management](/wallet-management/gas)).
 
 ### Slow Execution Times
 

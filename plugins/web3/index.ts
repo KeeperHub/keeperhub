@@ -8,11 +8,13 @@ import {
   evmPrivateNetworkField,
   executedCallArgsOutput,
   executedCallContractAddressOutput,
+  executedCallFromOutput,
   executedCallRevertedOutput,
   executedCallSponsoredOutput,
   readFailOnErrorField,
   receiptChainIdOutput,
   solanaNetworkField,
+  sponsorGasField,
   tokenConfigField,
   tokenSymbolOutput,
   transactionLinkOutput,
@@ -279,6 +281,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "transfer-funds",
             },
+            sponsorGasField(),
           ],
         },
 
@@ -313,6 +316,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         transferErrorOutput(),
@@ -341,6 +345,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "transfer-token",
             },
+            sponsorGasField(),
           ],
         },
 
@@ -892,6 +897,15 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           abiFunctionField: "abiFunction",
         },
+        {
+          key: "callerAddress",
+          label: "Caller Address",
+          type: "template-input",
+          placeholder: "Optional - 0x... or {{NodeName.address}}",
+          helpTip:
+            "Optional. The address this read is made from - some contracts answer differently depending on who asks. Nothing is signed or sent from it, and a write is never sent from this address, so take care before gating a transfer on an answer obtained as someone else. Leave empty to keep the current behaviour.",
+          isAddressField: true,
+        },
         readFailOnErrorField(),
       ],
     },
@@ -1061,6 +1075,7 @@ const web3Plugin: IntegrationPlugin = {
               key: "abi",
               label: "ABI Override",
               type: "template-textarea",
+              valueFormat: "json",
               placeholder: "Paste ABI JSON to use instead of auto-fetching",
               rows: 4,
             },
@@ -1150,7 +1165,7 @@ const web3Plugin: IntegrationPlugin = {
       slug: "query-events",
       label: "Query Contract Events",
       description:
-        "Query historical smart contract events across a block range with automatic batching",
+        "Query historical smart contract events across a block range with automatic batching, optionally filtered by indexed argument values at the RPC",
       category: "Web3",
       stepFunction: "queryEventsStep",
       stepImportPath: "query-events",
@@ -1175,7 +1190,8 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           field: "eventCount",
-          description: "Number of events returned",
+          description:
+            "Number of events returned. Counts events matching the indexed argument filter when one is set, not every occurrence of the event.",
         },
         {
           field: "error",
@@ -1203,6 +1219,15 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           placeholder: "Select an event",
           required: true,
+        },
+        {
+          key: "eventArgs",
+          label: "Filter by Indexed Arguments",
+          type: "abi-event-args",
+          abiField: "abi",
+          abiEventField: "eventName",
+          helpTip:
+            "Optional. Filters at the RPC, so only matching logs are fetched. Only indexed parameters can be filtered this way. Omit a parameter to match any value for it.",
         },
         {
           type: "group",
@@ -1631,6 +1656,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         {
@@ -1669,6 +1695,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "approve-token",
             },
+            sponsorGasField(),
           ],
         },
 
@@ -1722,6 +1749,73 @@ const web3Plugin: IntegrationPlugin = {
       ],
     },
     {
+      slug: "check-approval-exploits",
+      label: "Check Known Approval Exploits",
+      description:
+        "Match supplied token and spender pairs against Revoke.cash's public known approval exploit list on the selected chain. This does not discover approvals, read allowances or Permit2 state, or certify safety; not_listed means only that no match exists in the retrieved list revision.",
+      category: "Web3",
+      stepFunction: "checkApprovalExploitsStep",
+      stepImportPath: "check-approval-exploits",
+      outputFields: [
+        {
+          field: "success",
+          description:
+            "Whether the lookup completed. Also true when failOnError is off and a failed lookup was softened; lookupStatus remains error and result fields remain null.",
+        },
+        {
+          field: "lookupStatus",
+          description:
+            "complete when the full source snapshot was checked, otherwise error",
+        },
+        {
+          field: "results",
+          description:
+            "One result per supplied pair with its input index, token, spender, matched or not_listed status, and every matching incident. Incident amount is historical source data, not the wallet's value at risk.",
+        },
+        {
+          field: "matchedPairCount",
+          description:
+            "Number of supplied pairs whose spender matched at least one incident on the selected chain",
+        },
+        {
+          field: "chainCoverage",
+          description:
+            "Coverage of the selected chain in the retrieved source revision: chainId, incidentCount, and unique listedAddressCount. Zero counts mean the source has no entries for that chain, so not_listed provides no chain-specific evidence.",
+        },
+        {
+          field: "source",
+          description:
+            "Revoke.cash exploit-list repository, exact commit revision, and retrieval time",
+        },
+        {
+          field: "coverage",
+          description:
+            "Explicit limits of the lookup, including that not_listed is not a safety verdict",
+        },
+        {
+          field: "error",
+          description:
+            "Error message when lookupStatus is error, including softened failures",
+        },
+      ],
+      configFields: [
+        evmNetworkField(),
+        {
+          key: "approvalPairs",
+          label: "Token and Spender Pairs",
+          type: "json-editor",
+          placeholder:
+            '[{"tokenAddress":"0x...","spenderAddress":"0x..."}]',
+          example:
+            '[{"tokenAddress":"0x6B175474E89094C44Da98b954EedeAC495271d0F","spenderAddress":"0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"}]',
+          helpTip:
+            "JSON array with 1 to 100 tokenAddress and spenderAddress pairs. Template references may be used inside the JSON string. Token addresses keep results tied to the approval being checked; exploit matching uses spender address plus the selected chain.",
+          required: true,
+        },
+        readFailOnErrorField(),
+      ],
+    },
+    {
       slug: "write-contract",
       label: "Write Contract",
       description: "Write data to a smart contract (state-changing functions)",
@@ -1752,6 +1846,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         {
@@ -1823,6 +1918,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "write-contract",
             },
+            sponsorGasField(),
           ],
         },
 

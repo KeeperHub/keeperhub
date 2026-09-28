@@ -5,6 +5,7 @@ import {
   getEncodeTransform,
   getEncodeTransformKind,
   registerEncodeTransform,
+  weiToEther,
 } from "@/lib/protocol-encode-transforms";
 
 afterEach(() => {
@@ -120,5 +121,48 @@ describe("applyEncodeTransformsNamed", () => {
       inputs
     );
     expect(result[0].value).toBe("0xABC");
+  });
+});
+
+describe("weiToEther", () => {
+  it("converts an integer wei string to a decimal ether string", () => {
+    expect(weiToEther("1000000000000000000")).toBe("1.0");
+    expect(weiToEther("218783648901826")).toBe("0.000218783648901826");
+  });
+
+  it("keeps full precision for one wei and for values above 2^53", () => {
+    expect(weiToEther("1")).toBe("0.000000000000000001");
+    const big = "123456789012345678901234567";
+    expect(weiToEther(big)).toBe("123456789.012345678901234567");
+  });
+
+  it("leaves an unresolved template untouched", () => {
+    expect(weiToEther("{{@quote:Quote.fee.nativeFee}}")).toBe(
+      "{{@quote:Quote.fee.nativeFee}}"
+    );
+  });
+
+  it("rejects a non-integer input with a clear error", () => {
+    expect(() => weiToEther("1.5")).toThrow(/integer wei/);
+    expect(() => weiToEther("abc")).toThrow(/integer wei/);
+    expect(() => weiToEther("1e18")).toThrow(/integer wei/);
+    expect(() => weiToEther("0x64")).toThrow(/integer wei/);
+  });
+
+  it("is registrable under the weiToEther kind", () => {
+    registerEncodeTransform(
+      "proto",
+      "send",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+    expect(getEncodeTransformKind("proto", "send", "ethValue")).toBe(
+      "weiToEther"
+    );
+    const out = applyEncodeTransformsNamed("proto", "send", [
+      { name: "ethValue", value: "2000000000000000000" },
+    ]);
+    expect(out[0].value).toBe("2.0");
   });
 });

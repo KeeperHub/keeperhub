@@ -128,8 +128,20 @@ beforeEach(() => {
 describe("A-07 / KEEP-793: protocol write actions are gated and recorded", () => {
   it("enforces the plan limit, wallet, spend cap, and records the execution", async () => {
     const response = await postSwap();
+    const body = (await response.json()) as {
+      executionId: string;
+      status: string;
+      transactionHash?: string;
+    };
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
+    expect(body).toEqual(
+      expect.objectContaining({
+        executionId: "exec_1",
+        status: "completed",
+        transactionHash: "0xtx",
+      })
+    );
     expect(enforceExecutionLimitMock).toHaveBeenCalledWith("org_1");
     expect(requireWalletMock).toHaveBeenCalledWith("org_1");
     expect(checkAndReserveExecutionMock).toHaveBeenCalledWith(

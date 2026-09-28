@@ -39,6 +39,23 @@ serviceAccount:
 podAnnotations:
   reloader.stakater.com/auto: "true"
 
+# Prod Alloy scrapes via ServiceMonitor CRDs, not prometheus.io/* annotations -
+# the same pattern block.serviceMonitors uses in deploy/keeperhub-stack. Without
+# this the /metrics endpoint on the health port is never scraped, the
+# keeperhub_solana_tracker_* series do not exist, and the Solana Grafana alerts
+# stay blind. That matters more than usual here: those alerts are the deliberate
+# replacement for the pod-restart signal the probe change above removes.
+# `port: http` is the chart's name for the single service port when
+# service.port is set.
+serviceMonitors:
+  enabled: true
+  monitors:
+    - name: solana-tracker-metrics
+      port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+
 resources:
   limits:
     memory: 1Gi
@@ -85,17 +102,25 @@ env:
 externalSecrets:
   clusterSecretStoreName: techops-prod
 
-# solana-tracker serves an HTTP health server on HEALTH_PORT (unlike
-# event-tracker, which has no server and uses a pgrep exec probe).
+# Both probes point at /livez, which reports process liveness only and never
+# reads chain state. /healthz returns 503 whenever ANY chain is degraded, so
+# when it backed the liveness probe a single silent Solana endpoint restarted
+# the whole pod and took the healthy chains down with it. /healthz is still
+# served, as the human diagnostic; nothing acts on it automatically.
+#
+# Readiness moves too, and not only for symmetry: this release deploys with
+# helm --atomic, so a chain degraded at rollout time would leave the new pod
+# permanently NotReady and roll the release back - a bad upstream blocking
+# deploys. Per-chain health is carried by the metrics below instead.
 livenessProbe:
   initialDelaySeconds: 30
   periodSeconds: 30
   httpGet:
-    path: /healthz
+    path: /livez
     port: 3001
 readinessProbe:
   initialDelaySeconds: 10
   periodSeconds: 10
   httpGet:
-    path: /healthz
+    path: /livez
     port: 3001

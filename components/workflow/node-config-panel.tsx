@@ -23,7 +23,9 @@ import { ProjectSelect } from "@/components/projects/project-select";
 import { TagSelect } from "@/components/tags/tag-select";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { api } from "@/lib/api-client";
+import { actionConnectionMode } from "@/lib/integration-helpers";
 import { integrationsAtom } from "@/lib/integrations-store";
+import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import type { IntegrationType } from "@/lib/types/integration";
 import { VersionHistoryContent } from "./version-history-content";
 import {
@@ -59,11 +61,6 @@ import { ActionGrid } from "./config/action-grid";
 
 import { TriggerConfig } from "./config/trigger-config";
 import { WorkflowRuns } from "./workflow-runs";
-
-// System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
-  "Database Query": "database",
-};
 
 // Multi-selection panel component
 const MultiSelectionPanel = ({
@@ -245,13 +242,14 @@ export const PanelInner = () => {
     };
     const checkExecutionsAndOpenOverlay = async () => {
       try {
-        const executions = await api.workflow.getExecutions(currentWorkflowId);
+        const { total } = await api.workflow.getExecutions(currentWorkflowId, {
+          limit: 1,
+        });
         if (cancelled) {
           return;
         }
         setShowDeleteDialog(false);
-        const executionList = Array.isArray(executions) ? executions : [];
-        if (executionList.length > 0) {
+        if (total > 0) {
           openHasExecutionsOverlay();
           return;
         }
@@ -466,7 +464,9 @@ export const PanelInner = () => {
         (action?.integration as IntegrationType | undefined) ||
         SYSTEM_ACTION_INTEGRATIONS[actionType];
 
-      if (!integrationType) {
+      // An optional connection overrides the plugin's defaults, so it is opted
+      // into per node rather than bound automatically
+      if (!integrationType || actionConnectionMode(actionType) === "optional") {
         // No integration needed, remove from pending
         setPendingIntegrationNodes((prev: Set<string>) => {
           const next = new Set(prev);

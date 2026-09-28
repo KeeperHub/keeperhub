@@ -206,6 +206,29 @@ describe("EvmChainAdapter Tempo receipt-poll timeout", () => {
     nowSpy?.mockRestore();
   });
 
+  it("keeps the hash on the error when the receipt poll itself throws", async () => {
+    // evm.ts review fix: a both-endpoints refusal inside fetchReceipt used to
+    // escape raw, ahead of the timeout branch, and its failover-rendered
+    // ECONNREFUSED text reads identically to a refused send downstream -- the
+    // reachable path to releasing a key for a transaction in the mempool.
+    const h = createHarness(TEMPO_TESTNET, badDataWait());
+    h.getTransactionReceipt
+      .mockRejectedValueOnce(
+        new Error(
+          "RPC failed on both endpoints. Primary: ECONNREFUSED. Fallback: ECONNREFUSED"
+        )
+      )
+      .mockResolvedValueOnce(buildReceipt());
+
+    const error = await send(h).then(
+      () => undefined,
+      (thrown: unknown) => thrown
+    );
+
+    expect(error).toBeUndefined();
+    expect(h.getTransactionReceipt).toHaveBeenCalledTimes(2);
+  });
+
   // Tempo is the one chain that polls precisely because wait() misbehaves
   // there, so it is the one chain whose broadcast-but-unread case never
   // reached the empty-receipt branch above. It needs its own carrier.

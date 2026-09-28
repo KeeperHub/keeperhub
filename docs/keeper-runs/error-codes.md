@@ -35,3 +35,88 @@ same: wait a few minutes and try the run again.
 
 If a coded error keeps happening for the same workflow, contact support and
 include the code and the time of the run.
+
+## Action failures with structured codes (simulate responses)
+
+Some action failures carry a machine-readable code alongside the message. This
+applies to the **simulate** surface only: `/api/execute/transfer`,
+`/api/execute/contract-call` and `/api/execute/check-and-execute` responses with
+`simulate: true` return it in the `code` field, and MCP simulate results surface
+it as a `Reason code:` line. Run steps carry the plain message with no code --
+when reading run logs or run webhooks, key on the message text.
+
+### `insufficient_balance` (simulate responses)
+
+**What happened**: the simulator found that the funding address could not cover
+the native value the call sends. The comparison is against that value only; the
+simulator adds no gas term. A call that sends no native value therefore never
+produces this code: when a wallet that cannot cover gas makes such a call fail,
+the node's own `insufficient funds` error comes back with no `code`, and with a
+`failureKind` of `validation` or `unavailable` rather than `revert`. See
+[Direct Execution](/api/direct-execution) for the full response shape.
+
+**Related message on the run path** (plain text, no code): before an EVM write
+action signs anything, a gas preflight checks that the funding address holds the
+native value plus the minimum gas any transaction costs. When it does not, the
+step fails before broadcast with:
+
+```
+Insufficient ETH balance. Have: 0.0, Need: 0.000000231. Fund
+0x...orgWallet with at least 0.000000231 ETH on this chain and retry.
+```
+
+The preflight runs in the Web3 plugin's EVM write actions and in the protocol
+actions built on them. Actions on chains with their own transaction path, such
+as Tempo, do not run it. Reaching the preflight means the wallet is paying gas
+itself -- either the step was never eligible for sponsorship, or a sponsored
+attempt fell back (see
+[Gas Management -- When sponsorship falls back](/wallet-management/gas)). The
+run output does not distinguish the two.
+
+**What to do**: fund the address named in the message with at least the stated
+shortfall, then retry. For a write that sends no native value, restoring the
+sponsorship conditions (gas credits, supported network, direct-wallet sender,
+public mempool) can also fix the run without funding. A write that sends native
+value always needs that value in the wallet; sponsorship covers the fee only.
+
+### `insufficient_allowance` (simulate responses)
+
+**What happened**: the simulated call attempted an ERC-20 transfer or spend that exceeds the current spending allowance. The allowance is read for the simulated sender. When the token reverts with `ERC20InsufficientAllowance`, the response also carries `allowance`, `neededAllowance`, and `spender`.
+
+**What to do**: compare `allowance` with `neededAllowance` for `spender`. KeeperHub does not change allowances; retry with an amount the current allowance covers, or once the allowance has been raised.
+
+### `insufficient_token_balance` (simulate responses)
+
+**What happened**: the simulated sender lacks sufficient ERC-20 token balance to complete the transfer. When the token reverts with `ERC20InsufficientBalance`, `remediation` states the required amount and the balance in the token's base units.
+
+**What to do**: retry with an amount the sender's balance covers, or once the sender holds enough of the token.
+
+### `contract_paused` / `contract_not_paused` (simulate responses)
+
+**What happened**: `contract_paused` indicates the target contract is currently paused (e.g. OpenZeppelin `EnforcedPause`). `contract_not_paused` indicates an action requires the contract to be paused, but it is currently unpaused (`ExpectedPause`).
+
+**What to do**: the caller cannot change the pause state. Retry once the contract's pause state allows the call.
+
+### `caller_not_authorized` (simulate responses)
+
+**What happened**: the simulated sender is not the contract owner or lacks the required AccessControl role. This is an on-chain revert, distinct from the API auth code `unauthorized`.
+
+**What to do**: check which signer the request resolves to. For a Safe-routed organization the simulated sender is the EOA, not the Safe, so resolve the signer mode before acting on this code.
+
+### `reentrancy_blocked` (simulate responses)
+
+**What happened**: the call triggered a reentrancy guard (`ReentrancyGuardReentrantCall`).
+
+**What to do**: change the call arguments so the function is not re-entered within the same transaction.
+
+### Safe execution error codes (simulate responses)
+
+**What happened**: Safe multisig preflight failed. Codes include `safe_signature_invalid` (signatures invalid or unordered), `safe_insufficient_gas` (Safe execution ran out of gas), and `safe_not_authorized` (caller is not an owner or enabled module).
+
+**What to do**: inspect Safe threshold, signatures, gas limits, and module authorizations.
+
+### `panic` (simulate responses)
+
+**What happened**: the contract hit a Solidity `Panic(uint256)`, for example an arithmetic overflow or a division by zero. `panicCode` carries the exact panic number as a hex string (`"0x11"`, `"0x12"`), and `revertReason` carries the readable name, for example `Panic(DivisionByZero)`.
+
+**What to do**: branch on `panicCode`, not on the name in `revertReason`. `remediation` states what the panic points at.

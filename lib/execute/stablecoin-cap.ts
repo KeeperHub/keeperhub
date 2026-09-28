@@ -19,6 +19,7 @@ import { getOrganizationWalletAddress } from "@/lib/web3/wallet-helpers";
 // saw an EMPTY allowlist and refused every over-cap approval, including the
 // max-uint-before-swap that protocol integrations depend on.
 import "@/protocols";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
 const MICRO_USD_DECIMALS = 6;
 
@@ -44,7 +45,6 @@ const ALLOWED = { kind: "allowed" } as const;
 
 const DECIMAL_INTEGER_RE = /^-?\d+$/;
 const HEX_INTEGER_RE = /^0x[0-9a-fA-F]+$/;
-const HEX_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 /**
  * The token entry points that let value leave the org's wallet. `transfer` and
@@ -72,7 +72,7 @@ function getErc20Interface(): ethers.Interface {
 }
 
 function isHexAddress(value: string): boolean {
-  return HEX_ADDRESS_RE.test(value);
+  return EVM_ADDRESS_RE.test(value);
 }
 
 type OutflowFn =
@@ -293,6 +293,79 @@ export async function checkStablecoinContractCall(params: {
     amountBase,
     fn,
   });
+}
+
+export type StablecoinCapSequenceDecision =
+  | { kind: "allowed" }
+  | { kind: "denied"; index: number; error: string };
+
+/**
+ * `checkStablecoinContractCall` over a sequence sharing one chain and one
+ * organization: each call decided on its own, the token list and org payers
+ * read once. No total, because a sequence is N transactions, not one batch.
+ */
+export async function checkStablecoinContractCallBatch(params: {
+  organizationId: string;
+  chainId: number;
+  context: string;
+  calls: readonly {
+    contractAddress: string;
+    functionName: string;
+    inputTypes: readonly string[];
+    args: readonly unknown[];
+  }[];
+}): Promise<StablecoinCapSequenceDecision> {
+  const chainTokens = await loadChainTokens(params.chainId);
+  let orgPayers: Set<string> | undefined;
+
+  for (const [index, call] of params.calls.entries()) {
+    const fn = matchOutflowFunction(call.functionName, call.inputTypes);
+    if (!fn) {
+      continue;
+    }
+    const token = isHexAddress(call.contractAddress)
+      ? matchStablecoin(chainTokens, call.contractAddress)
+      : null;
+    if (!token) {
+      continue;
+    }
+
+    const amountBase = toBaseUnits(call.args[OUTFLOW_SHAPES[fn].amountIndex]);
+    if (amountBase === null) {
+      return {
+        kind: "denied",
+        index,
+        error: `Could not read the ${token.symbol} amount from the ${fn} arguments`,
+      };
+    }
+
+    const firstArg =
+      typeof call.args[0] === "string" ? call.args[0] : undefined;
+    if (PAYER_IS_FIRST_ARG.has(fn)) {
+      orgPayers ??= await resolveOrgPayers(
+        params.organizationId,
+        params.chainId
+      );
+      if (!movesOrgFunds(fn, firstArg, orgPayers)) {
+        continue;
+      }
+    }
+
+    const decision = decide({
+      organizationId: params.organizationId,
+      chainId: params.chainId,
+      context: params.context,
+      spender: firstArg,
+      tokenAddress: call.contractAddress,
+      token,
+      amountBase,
+      fn,
+    });
+    if (decision.kind !== "allowed") {
+      return { ...decision, index };
+    }
+  }
+  return ALLOWED;
 }
 
 /**

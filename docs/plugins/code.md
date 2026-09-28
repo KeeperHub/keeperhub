@@ -55,7 +55,7 @@ const events = {{QueryEvents.events}};
 
 ### Available Globals
 
-- **I/O:** `console`, `fetch`
+- **I/O:** `console` (`log`, `warn`, `error`), `fetch`
 - **Core types:** `BigInt`, `JSON`, `Math`, `Date`, `Array`, `Object`, `String`, `Number`, `Boolean`, `RegExp`, `Symbol`, `Map`, `Set`, `WeakMap`, `WeakSet`, `Promise`
 - **Error types:** `Error`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `URIError`
 - **Numeric/parsing:** `parseInt`, `parseFloat`, `isNaN`, `isFinite`, `Infinity`, `NaN`
@@ -63,14 +63,28 @@ const events = {{QueryEvents.events}};
 - **Base64:** `atob`, `btoa`
 - **Text encoding:** `TextEncoder`, `TextDecoder`
 - **Binary/typed arrays:** `ArrayBuffer`, `DataView`, `Uint8Array`, `Uint16Array`, `Uint32Array`, `Int8Array`, `Int16Array`, `Int32Array`, `Float32Array`, `Float64Array`, `BigInt64Array`, `BigUint64Array`
-- **Fetch API:** `URL`, `URLSearchParams`, `Headers`, `Request`, `Response`, `AbortController`, `AbortSignal`
+- **URLs and headers:** `URL`, `URLSearchParams`, `Headers`, `AbortController`, `AbortSignal`
 - **Utilities:** `structuredClone`, `Intl`, `crypto.randomUUID`
 
-**Not available:** `require`, `import`, `process`, `fs`, `eval`, `Function` constructor, `setTimeout`, `setInterval`, or any Node.js built-in modules.
+**Not available:** `require`, `import`, `process`, `fs`, `setTimeout`, `setInterval`, the `Request` and `Response` constructors, or any Node.js built-in modules.
+
+### Working with a fetch response
+
+`fetch` resolves to a response object carrying `ok`, `status`, `statusText`, `url`, `redirected`, and `headers`, plus `text()`, `json()`, `arrayBuffer()`, `bytes()` and `clone()`. The body is read in full before the promise resolves, so there is no streaming `body` property; a response body larger than 96 MB fails the request.
+
+```javascript
+const response = await fetch("https://api.example.com/prices");
+if (!response.ok) {
+  throw new Error(`Request failed with ${response.status}`);
+}
+const prices = await response.json();
+```
+
+Request bodies accept a string, a `URLSearchParams`, an `ArrayBuffer` or a typed array. Pass request headers as a plain object or a `Headers` instance.
 
 ### Security
 
-The sandbox uses `node:vm` which prevents accidental access to Node.js internals but is not a security boundary against determined attackers. This is appropriate for a self-hosted platform where users are authenticated team members. `maxRetries` is set to 0 (fail-safe).
+User code runs in a separate, disposable process, inside a fresh `node:vm` context that owns its own set of JavaScript built-ins. Nothing from the surrounding process is shared into that context: `console`, `fetch` and `crypto.randomUUID` are bridged across the boundary as plain values, so the built-ins user code touches lead back to the sandbox rather than to the host. The child's environment is reduced to a short allowlist of variables, and `maxRetries` is set to 0 (fail-safe).
 
 `fetch` is wrapped with an `AbortController` deadline matching the configured timeout, so network requests cannot hang indefinitely. A wall-clock `Promise.race` timeout also guards the entire execution, covering any async operation (not just fetch). Only `crypto.randomUUID` is exposed (`crypto.subtle` and other methods are not available).
 

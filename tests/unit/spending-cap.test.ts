@@ -50,6 +50,17 @@ vi.mock("@/lib/db", () => ({
       const tx = {
         select: (fields: Record<string, unknown>) => {
           const columns = Object.keys(fields ?? {});
+          // isOrgHalted's read: {haltedAt} from organization, .where().limit(1).
+          // These cases are never halted; the halt path has its own test file.
+          if (columns.includes("haltedAt")) {
+            return {
+              from: () => ({
+                where: () => ({
+                  limit: () => Promise.resolve([{ haltedAt: null }]),
+                }),
+              }),
+            };
+          }
           if (
             columns.includes("dailyValueCapWei") ||
             columns.includes("dailySolanaValueCapLamports")

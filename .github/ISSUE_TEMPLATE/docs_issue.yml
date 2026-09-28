@@ -12,6 +12,10 @@ body:
         Use this form when the docs and the code genuinely disagree and it is
         not obvious which one should change, or when a page is missing entirely.
 
+        Search open and closed issues **and** open pull requests first. If one
+        already covers this page, comment on that thread instead of opening a
+        new issue - including when what you have is a disagreement with it.
+
   - type: input
     id: page
     attributes:

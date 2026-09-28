@@ -5,6 +5,10 @@ import { chargePaygIfBillable } from "@/lib/billing/payg/charge";
 import { db } from "@/lib/db";
 import { directExecutions } from "@/lib/db/schema";
 import {
+  isOrgHalted,
+  ORG_HALTED_REASON,
+} from "@/lib/execute/org-circuit-breaker";
+import {
   getDefaultDailySolanaValueCapLamports,
   getDefaultDailyValueCapWei,
 } from "@/lib/execute/spend-cap-defaults";
@@ -132,6 +136,20 @@ export async function checkAndReserveExecution(
     if (reserved === BigInt(0)) {
       await insertReservation();
       return { allowed: true, executionId: id } as const;
+    }
+
+    // Org incident circuit breaker: fail every value-moving direct execution
+    // closed while the org is halted, with the same fresh-read semantics as the
+    // value-ledger gate. Zero-value (read-only) executions returned above and
+    // keep running.
+    if (await isOrgHalted(tx, params.organizationId)) {
+      logSecurityEvent("org_circuit_breaker_blocked", {
+        organizationId: params.organizationId,
+        surface: "direct-execution",
+        chainFamily: isSolana ? "solana" : "evm",
+        reserved: reserved.toString(),
+      });
+      return { allowed: false, reason: ORG_HALTED_REASON } as const;
     }
 
     const cap = await lockOrgSpendCapRow(tx, params.organizationId);

@@ -27,14 +27,16 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { TemplateCodeEditor } from "@/components/ui/template-code-editor";
-import { actionRequiresCredentials } from "@/lib/integration-helpers";
+import { TemplateCodeEditor } from "@/components/workflow/config/template-code-editor";
+import { actionConnectionMode } from "@/lib/integration-helpers";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import { ConditionQueryBuilder } from "@/components/workflow/condition-query-builder";
 import type { ConditionGroup } from "@/lib/workflow/nodes/condition/builder-types";
 import {
   DEFAULT_HTTP_METHOD,
   HTTP_METHODS,
+  MAX_RETRY_ATTEMPTS,
+  MAX_RETRY_DELAY_SECONDS,
 } from "@/lib/workflow/nodes/http-request/constants";
 import {
   createEmptyGroup,
@@ -50,6 +52,7 @@ import {
   integrationsAtom,
   integrationsVersionAtom,
 } from "@/lib/integrations-store";
+import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import type { IntegrationType } from "@/lib/types/integration";
 import {
   ARRAY_SOURCE_RE,
@@ -71,6 +74,8 @@ import {
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { SchemaBuilder } from "./schema-builder";
 import { Web3ConnectionSelect } from "./web3-connection-select";
+
+const DIGITS_ONLY = /[^0-9]/g;
 
 type ConfigValue = string | boolean | Record<string, unknown> | undefined;
 
@@ -261,6 +266,49 @@ function HttpRequestFields({
           How long to wait for a response. Default 5 seconds, max 30.
         </p>
       </div>
+      <div className="space-y-2">
+        <Label htmlFor="retryAttempts">Retry attempts</Label>
+        <Input
+          disabled={disabled}
+          id="retryAttempts"
+          max={MAX_RETRY_ATTEMPTS}
+          min={0}
+          onChange={(e) => {
+            const raw = e.target.value.replace(DIGITS_ONLY, "");
+            onUpdateConfig("retryAttempts", raw);
+          }}
+          placeholder="0"
+          type="number"
+          value={(config?.retryAttempts as string) || ""}
+        />
+        <p className="text-muted-foreground text-xs">
+          Extra attempts after the first, for connection errors, timeouts and
+          retryable statuses (408, 425, 429, 5xx). Default 0, max{" "}
+          {MAX_RETRY_ATTEMPTS}.
+        </p>
+      </div>
+      {Number(config?.retryAttempts ?? 0) > 0 && (
+        <div className="space-y-2">
+          <Label htmlFor="retryDelay">Retry delay (seconds)</Label>
+          <Input
+            disabled={disabled}
+            id="retryDelay"
+            max={MAX_RETRY_DELAY_SECONDS}
+            min={0}
+            onChange={(e) => {
+              const raw = e.target.value.replace(DIGITS_ONLY, "");
+              onUpdateConfig("retryDelay", raw);
+            }}
+            placeholder="1"
+            type="number"
+            value={(config?.retryDelay as string) || ""}
+          />
+          <p className="text-muted-foreground text-xs">
+            Backs off linearly: attempt N waits this many seconds times N.
+            Default 1, max {MAX_RETRY_DELAY_SECONDS}.
+          </p>
+        </div>
+      )}
       <FailOnErrorSwitchField
         description="When off, a non-2xx response or timeout passes a soft error to the next node instead of failing the run."
         disabled={disabled}
@@ -700,11 +748,6 @@ const SYSTEM_ACTIONS: Array<{ id: string; label: string }> = [
 
 const SYSTEM_ACTION_IDS = SYSTEM_ACTIONS.map((a) => a.id);
 
-// System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
-  "Database Query": "database",
-};
-
 // Build category mapping dynamically from plugins + System
 function useCategoryData() {
   const nodes = useAtomValue(nodesAtom);
@@ -914,11 +957,26 @@ export function ActionConfig({
     return (action?.credentialIntegrationType ?? action?.integration) as IntegrationType | undefined;
   }, [actionType]);
 
-  // Check if action requires credentials (some like web3 read-only actions don't)
-  const requiresCredentials = useMemo(
-    () => actionRequiresCredentials(actionType),
+  // Check if action requires credentials (some like web3 read-only actions don't),
+  // or only offers a connection to override the plugin's defaults
+  const connectionMode = useMemo(
+    () => actionConnectionMode(actionType),
     [actionType]
   );
+  const requiresCredentials = connectionMode === "required";
+  const optionalConnection = connectionMode === "optional";
+
+  let connectionLabel = "Connection";
+  let connectionHelp = "API key or OAuth credentials for this service";
+  if (integrationType === "web3") {
+    connectionLabel = "Web3 Connection";
+    connectionHelp =
+      "Which wallet is the sender (msg.sender) for this transaction. Your EOA always signs the outer tx and pays gas.";
+  } else if (optionalConnection) {
+    connectionLabel = "Connection (optional)";
+    connectionHelp =
+      "Optional settings for this service. Choose None to use the defaults.";
+  }
 
   // Check if there are existing connections for this integration type
   const hasExistingConnections = useMemo(() => {
@@ -944,9 +1002,21 @@ export function ActionConfig({
     <>
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-2">
-          <Label className="ml-1" htmlFor="actionCategory">
-            Service
-          </Label>
+          <div className="flex items-center justify-between gap-2">
+            <Label className="ml-1" htmlFor="actionCategory">
+              Service
+            </Label>
+            {pluginAction?.docUrl && (
+              <a
+                className="mr-1 inline-flex items-center text-muted-foreground text-xs hover:text-primary"
+                href={pluginAction.docUrl}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                Docs &#x2197;
+              </a>
+            )}
+          </div>
           <Select
             disabled={disabled}
             onValueChange={handleCategoryChange}
@@ -1015,22 +1085,14 @@ export function ActionConfig({
                 })}
             </SelectContent>
           </Select>
-          {pluginAction?.docUrl && (
-            <a
-              className="ml-1 inline-flex items-center text-muted-foreground text-xs hover:text-primary"
-              href={pluginAction.docUrl}
-              rel="noopener noreferrer"
-              target="_blank"
-            >
-              Docs &#x2197;
-            </a>
-          )}
         </div>
       </div>
 
       {integrationType &&
         isOwner &&
-        (requiresCredentials || SYSTEM_ACTION_INTEGRATIONS[actionType]) &&
+        (requiresCredentials ||
+          SYSTEM_ACTION_INTEGRATIONS[actionType] ||
+          (optionalConnection && !isAnonymous)) &&
         (isAnonymous && requiresCredentials ? (
           <div className="rounded-lg border bg-muted/50 p-3">
             <p className="text-muted-foreground text-sm">
@@ -1041,20 +1103,14 @@ export function ActionConfig({
           <div className="space-y-2">
             <div className="ml-1 flex items-center justify-between">
               <div className="flex items-center gap-1">
-                <Label>
-                  {integrationType === "web3" ? "Web3 Connection" : "Connection"}
-                </Label>
+                <Label>{connectionLabel}</Label>
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <HelpCircle className="size-3.5 text-muted-foreground" />
                     </TooltipTrigger>
                     <TooltipContent>
-                      <p>
-                        {integrationType === "web3"
-                          ? "Which wallet is the sender (msg.sender) for this transaction. Your EOA always signs the outer tx and pays gas."
-                          : "API key or OAuth credentials for this service"}
-                      </p>
+                      <p>{connectionHelp}</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -1085,6 +1141,7 @@ export function ActionConfig({
                 disabled={disabled}
                 integrationType={integrationType}
                 onChange={(id) => onUpdateConfig("integrationId", id)}
+                optional={optionalConnection}
                 value={(config?.integrationId as string) || ""}
               />
             )}

@@ -21,7 +21,6 @@ import { getAuthenticatedToolsForDiscovery } from "@/lib/mcp/mcp-tool-catalog";
 // public ERC-8004 discovery payload and must return the canonical mainnet
 // registration regardless of how many other (chain, registry) rows exist in
 // the table.
-const MAINNET_CHAIN_ID = ETHEREUM_MAINNET_CHAIN_ID;
 const IDENTITY_REGISTRY_ADDRESS = ERC_8004_IDENTITY_REGISTRY_ADDRESS;
 
 export async function GET(request: Request): Promise<NextResponse> {
@@ -37,7 +36,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       .from(agentRegistrations)
       .where(
         and(
-          eq(agentRegistrations.chainId, MAINNET_CHAIN_ID),
+          eq(agentRegistrations.chainId, ETHEREUM_MAINNET_CHAIN_ID),
           eq(agentRegistrations.registryAddress, IDENTITY_REGISTRY_ADDRESS)
         )
       )

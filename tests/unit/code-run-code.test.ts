@@ -10,6 +10,28 @@ vi.mock("@/lib/metrics/instrumentation/plugin", async () =>
   (await import("../mocks/step-mocks")).pluginMetricsPassthrough()
 );
 
+const { spawnedEnvs } = vi.hoisted(() => ({
+  spawnedEnvs: [] as Array<NodeJS.ProcessEnv | undefined>,
+}));
+
+vi.mock("node:child_process", async () => {
+  const actual =
+    await vi.importActual<typeof import("node:child_process")>(
+      "node:child_process"
+    );
+  return {
+    ...actual,
+    spawn: (
+      command: string,
+      args: readonly string[],
+      options: { env?: NodeJS.ProcessEnv }
+    ) => {
+      spawnedEnvs.push(options?.env);
+      return actual.spawn(command, args, options as never);
+    },
+  };
+});
+
 vi.mock("@/lib/logging", () => ({
   ErrorCategory: { VALIDATION: "VALIDATION" },
   // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op mock
@@ -396,40 +418,86 @@ describe("code/run-code - sandbox globals", () => {
     expect(result.error).toContain("setTimeout is not defined");
   });
 
-  // --- Sandbox escape: env scrubbing ----------------------------------------
+  // --- Sandbox realm containment --------------------------------------------
   //
-  // node:vm is not a security boundary -- `Error.constructor("return process")()`
-  // reaches the host `process` via the primordial chain. The mitigation is to
-  // run user code in a separate child node process whose env is scrubbed, so
-  // the escape returns an empty env instead of pod secrets.
+  // The sandbox context used to be populated by copying host intrinsics into
+  // createContext(), so X.constructor.constructor resolved to the host
+  // Function and user code could compile a function that runs outside the
+  // sandbox -- from there process, process.env and process.binding("spawn_sync")
+  // were all reachable. The context is now a fresh realm that owns its own
+  // intrinsics, and the few bridged values hand back primitives only. These
+  // tests pin that: no global the sandbox exposes may lead back to the host.
 
-  it("Error.constructor escape returns a scrubbed env, not host secrets", async () => {
+  it("Array.constructor cannot compile a function that sees the host realm", async () => {
+    const result = await expectSuccess({
+      code: "return String(Array.constructor('return typeof process')());",
+    });
+    expect(result.result).toBe("undefined");
+  });
+
+  it.each([
+    ["Object", "Object"],
+    ["Error", "Error"],
+    ["JSON", "JSON"],
+    ["Math", "Math"],
+    ["Uint8Array", "Uint8Array"],
+    ["console.log", "console.log"],
+    ["fetch", "fetch"],
+    ["crypto.randomUUID", "crypto.randomUUID"],
+    ["structuredClone", "structuredClone"],
+    ["new URL", "new URL('https://example.com/')"],
+    ["new TextEncoder", "new TextEncoder()"],
+    ["new AbortController", "new AbortController()"],
+  ])("%s does not expose the host realm", async (_label, expression) => {
+    const result = await expectSuccess({
+      code: `
+        try {
+          const escape = (${expression}).constructor.constructor;
+          return String(escape("return typeof process")());
+        } catch (err) {
+          return "throws";
+        }
+      `,
+    });
+    expect(["undefined", "throws"]).toContain(result.result);
+  });
+
+  it("cannot reach the spawn_sync binding the escape used for network egress", async () => {
+    const result = await expectSuccess({
+      code: `
+        try {
+          const escape = Object.constructor("return process.binding('spawn_sync')");
+          return String(typeof escape());
+        } catch (err) {
+          return "throws";
+        }
+      `,
+    });
+    expect(["undefined", "throws"]).toContain(result.result);
+  });
+
+  // Second line of defence, unchanged by the realm fix: the child is spawned
+  // with a scrubbed env, so even a future escape sees an environ holding only
+  // the allowlist rather than pod secrets. Asserted at the spawn boundary
+  // because user code can no longer observe the child's process object.
+  //
+  // Local backend only. Under SANDBOX_BACKEND=remote this process spawns
+  // nothing: the code goes to the sandbox service over HTTP, and that service
+  // scrubs the env of the child IT spawns. sandbox/src/run-code.test.ts holds
+  // the matching assertion for that path.
+  const itLocalBackend =
+    process.env.SANDBOX_BACKEND === "remote" ? it.skip : it;
+
+  itLocalBackend("spawns the sandbox child with a scrubbed env", async () => {
     const marker = "KEEPERHUB_SCRUB_TEST_SECRET_SHOULD_NOT_LEAK";
-    const markerValue = `leaked-${Date.now().toString(36)}`;
-    process.env[marker] = markerValue;
+    process.env[marker] = `leaked-${Date.now().toString(36)}`;
+    spawnedEnvs.length = 0;
     try {
-      const result = await expectSuccess({
-        code: `
-          const proc = Error.constructor("return process")();
-          return {
-            hasMarker: Object.prototype.hasOwnProperty.call(proc.env, ${JSON.stringify(marker)}),
-            markerValue: proc.env[${JSON.stringify(marker)}] ?? null,
-            envKeyCount: Object.keys(proc.env).length,
-            envKeys: Object.keys(proc.env).sort(),
-          };
-        `,
-      });
-      const out = result.result as {
-        hasMarker: boolean;
-        markerValue: string | null;
-        envKeyCount: number;
-        envKeys: string[];
-      };
-      expect(out.hasMarker).toBe(false);
-      expect(out.markerValue).toBeNull();
-      // Sanity: none of the known high-value secret keys may appear.
-      const mustNotLeak = new Set([
-        marker,
+      await expectSuccess({ code: "return 1;" });
+      expect(spawnedEnvs).toHaveLength(1);
+      const childEnv = spawnedEnvs[0] ?? {};
+      expect(Object.hasOwn(childEnv, marker)).toBe(false);
+      const mustNotLeak = [
         "AGENTIC_WALLET_HMAC_KMS_KEY",
         "WALLET_ENCRYPTION_KEY",
         "INTEGRATION_ENCRYPTION_KEY",
@@ -444,68 +512,14 @@ describe("code/run-code - sandbox globals", () => {
         "STRIPE_SECRET_KEY",
         "GITHUB_CLIENT_SECRET",
         "GOOGLE_CLIENT_SECRET",
-      ]);
-      for (const key of out.envKeys) {
-        expect(mustNotLeak.has(key)).toBe(false);
+      ];
+      for (const key of mustNotLeak) {
+        expect(Object.hasOwn(childEnv, key)).toBe(false);
       }
     } finally {
       delete process.env[marker];
     }
   });
-
-  // A worker_threads.Worker shares the OS process with the parent, so
-  // /proc/self/environ still contains the parent's full env. A separate child
-  // process started via execve has an OS-level environ matching only the
-  // allowlist. This test exercises the deeper hole: fs.readFileSync on
-  // /proc/self/environ inside the escape must not leak the parent's env.
-  // Skipped on non-Linux because /proc/self/environ does not exist.
-  const maybeSkip = process.platform === "linux" ? it : it.skip;
-  maybeSkip(
-    "fs.readFileSync('/proc/self/environ') in the escape cannot see host env",
-    async () => {
-      const marker = "KEEPERHUB_PROC_ENVIRON_SENTINEL_SHOULD_NOT_LEAK";
-      const markerValue = `leaked-${Date.now().toString(36)}`;
-      process.env[marker] = markerValue;
-      try {
-        const result = await expectSuccess({
-          code: `
-            const proc = Error.constructor("return process")();
-            // mainModule.require is the canonical post-escape path to fs in
-            // script-mode node ('node -e ...'). If this ever starts returning
-            // a non-null value that contains the marker, the env scrub is
-            // broken at the OS level.
-            const mod = proc.mainModule;
-            const req = mod && typeof mod.require === "function" ? mod.require : null;
-            if (!req) {
-              return { reachedFs: false, hasMarker: false, environLen: 0 };
-            }
-            const fs = req("fs");
-            const environ = fs.readFileSync("/proc/self/environ", "utf8");
-            return {
-              reachedFs: true,
-              hasMarker: environ.indexOf(${JSON.stringify(marker)}) !== -1,
-              hasMarkerValue: environ.indexOf(${JSON.stringify(markerValue)}) !== -1,
-              environLen: environ.length,
-            };
-          `,
-        });
-        const out = result.result as {
-          reachedFs: boolean;
-          hasMarker: boolean;
-          hasMarkerValue?: boolean;
-          environLen: number;
-        };
-        // Either the escape could not reach fs (defence in depth) or the
-        // environ it read was the child's scrubbed one (our primary claim).
-        if (out.reachedFs) {
-          expect(out.hasMarker).toBe(false);
-          expect(out.hasMarkerValue).toBe(false);
-        }
-      } finally {
-        delete process.env[marker];
-      }
-    }
-  );
 
   it("blocks fetch to cloud metadata endpoints", async () => {
     const result = await expectFailure({

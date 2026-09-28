@@ -18,6 +18,7 @@
  * constructing the Better Auth config.
  */
 
+import { MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
 import { logSecurityEvent } from "@/lib/logging";
 
 export const KH001_SQLSTATE = "KH001";
@@ -25,8 +26,6 @@ export const KH001_SQLSTATE = "KH001";
 // Owned by migration 0090's RAISE EXCEPTION message. Keep in sync if the
 // trigger text changes.
 export const KH001_MESSAGE_FRAGMENT = "Session owner is deactivated";
-
-const MAX_CAUSE_DEPTH = 5;
 
 export function isKh001SessionBackstop(error: unknown): boolean {
   let current: unknown = error;

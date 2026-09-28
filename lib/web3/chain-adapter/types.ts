@@ -43,6 +43,12 @@ export type ReadContractRequest = {
   functionKey: string;
   args: unknown[];
   isView: boolean;
+  // The `from` of the eth_call. Some contracts answer differently depending on
+  // who asks: OptimismPortal2 reveals a failing withdrawal target only to
+  // address(1), and a toll-gated Chronicle feed reads only for an authed
+  // caller. Unset means no overrides object is built at all, so the call is
+  // the one this made before the field existed.
+  callerAddress?: string;
 };
 
 export interface ChainAdapter {

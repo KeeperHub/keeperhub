@@ -12,6 +12,8 @@ export const SYSTEM_ACTION_TYPES = [
   "Condition",
   "For Each",
   "Collect",
+  "Trip Circuit Breaker",
+  "Reset Circuit Breaker",
 ] as const;
 
 export type SystemActionType = (typeof SYSTEM_ACTION_TYPES)[number];

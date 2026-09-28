@@ -75,7 +75,14 @@ export function isSponsoredTxRevertError(
  */
 export class SponsoredTxPendingError extends Error {
   readonly kind = "sponsored-tx-pending" as const;
-  readonly sendTransactionStatusId: string;
+  /**
+   * Turnkey's activity id, when one was assigned. Absent when the send request
+   * itself threw with an undetermined outcome (a transport failure or timeout):
+   * Turnkey may or may not have accepted the activity, and no id came back to
+   * poll. Callers key their "never re-send" decision on the error kind, not on
+   * this field.
+   */
+  readonly sendTransactionStatusId?: string;
   /**
    * Set when Turnkey already handed back a hash, i.e. the send is on the
    * network but its outcome could not be read. Absent when the wait window
@@ -86,7 +93,7 @@ export class SponsoredTxPendingError extends Error {
 
   constructor(opts: {
     message: string;
-    sendTransactionStatusId: string;
+    sendTransactionStatusId?: string;
     txHash?: Hex;
   }) {
     super(opts.message);

@@ -167,6 +167,20 @@ export function recordTransactionHashIfPresent(
     }),
   };
   const list = txHashEntries.get(context.executionId) ?? [];
+  // One on-chain write, one entry. A step can be recorded more than once for
+  // the same node -- a replay that reuses a completed step records it so the
+  // tracker stays complete -- and resolveTransactionHashesForSuccess feeds
+  // this list straight into the run's transactionHashes, so a duplicate would
+  // be re-verified against the chain and counted twice in the digest.
+  const alreadyTracked = list.some(
+    (existing) =>
+      existing.hash === entry.hash &&
+      existing.nodeId === entry.nodeId &&
+      existing.iterationIndex === entry.iterationIndex
+  );
+  if (alreadyTracked) {
+    return;
+  }
   list.push(entry);
   txHashEntries.set(context.executionId, list);
 }

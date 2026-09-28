@@ -25,6 +25,11 @@ export const SYSTEM_ACTION_EGRESS: Record<SystemActionType, EgressTier> = {
   Condition: "none",
   "For Each": "none",
   Collect: "none",
+  // Circuit-breaker actions: an in-process DB write scoped to the executing
+  // workflow's own org. No outbound network, no user-chosen destination, so
+  // they carry no egress and are not swept into the user-destination plan gate.
+  "Trip Circuit Breaker": "none",
+  "Reset Circuit Breaker": "none",
 };
 
 const SYSTEM_ACTION_TYPE_SET: ReadonlySet<string> = new Set(

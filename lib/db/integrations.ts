@@ -4,7 +4,10 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { filterUnauthorizedIntegrationIds } from "@/lib/integrations/authorization";
-import { mergeSecretConfig } from "@/lib/integrations/secret-fields";
+import {
+  mergeSecretConfig,
+  removeClearedKeys,
+} from "@/lib/integrations/secret-fields";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import {
   getOrganizationWallet,
@@ -484,6 +487,16 @@ export async function updateIntegration(
   updates: {
     name?: string;
     config?: IntegrationConfig;
+    /**
+     * Keys to remove outright, for the case the merge below cannot express.
+     * A blank secret means "unchanged" there - it has to, because the client
+     * is never sent one to resend - so without this there is no way to take a
+     * stored credential away short of deleting the connection. That matters
+     * when the stored one has leaked: filling in the replacement and clearing
+     * the old field looked like a rotation and left the leaked value
+     * authorising every run.
+     */
+    clearedConfigKeys?: string[];
   },
   organizationId?: string | null,
   existingIntegration?: DecryptedIntegration | null
@@ -496,17 +509,27 @@ export async function updateIntegration(
     updateData.name = updates.name;
   }
 
-  if (updates.config !== undefined) {
+  // A clear needs something to remove keys from. Without the stored config
+  // there is nothing to merge against, and writing the result would replace
+  // every key rather than the named ones - so the clear is ignored instead,
+  // which is what it did before it was honoured at all.
+  const canClear = Boolean(existingIntegration);
+  if (
+    updates.config !== undefined ||
+    (updates.clearedConfigKeys?.length && canClear)
+  ) {
     // Clients never receive stored secrets back, so an unchanged secret
     // arrives blank. Merge for every type or the update would erase it.
+    const incoming = updates.config ?? {};
+    const merged = existingIntegration
+      ? mergeSecretConfig(
+          existingIntegration.config,
+          incoming,
+          existingIntegration.type
+        )
+      : { ...incoming };
     updateData.config = encryptConfig(
-      existingIntegration
-        ? mergeSecretConfig(
-            existingIntegration.config,
-            updates.config,
-            existingIntegration.type
-          )
-        : updates.config
+      removeClearedKeys(merged, updates.clearedConfigKeys ?? [], incoming)
     );
   }
 

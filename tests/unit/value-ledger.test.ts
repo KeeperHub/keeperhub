@@ -23,6 +23,8 @@ const state = vi.hoisted(() => ({
   updates: [] as Record<string, unknown>[],
   returningId: "res_1",
   reserveKind: "evm" as "evm" | "solana",
+  // Org circuit-breaker state served to isOrgHalted's read. Null = not halted.
+  orgHaltedAt: null as Date | null,
 }));
 
 // A cap-row insert carries nothing but the org id: lockOrgSpendCapRow creates
@@ -53,6 +55,18 @@ vi.mock("@/lib/db", () => ({
                   for: () => ({
                     limit: () => Promise.resolve(state.caps),
                   }),
+                }),
+              }),
+            };
+          }
+          // isOrgHalted's read: runs first in the transaction. Not counted as a
+          // SUM call so the two cap SUM selects keep their call ordering.
+          if (columns.includes("haltedAt")) {
+            return {
+              from: () => ({
+                where: () => ({
+                  limit: () =>
+                    Promise.resolve([{ haltedAt: state.orgHaltedAt }]),
                 }),
               }),
             };
@@ -120,6 +134,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
+import { ORG_HALTED_REASON } from "@/lib/execute/org-circuit-breaker";
 import {
   getDefaultDailySolanaValueCapLamports,
   getDefaultDailyValueCapWei,
@@ -149,6 +164,7 @@ beforeEach(() => {
   state.updates = [];
   state.returningId = "res_1";
   state.reserveKind = "evm";
+  state.orgHaltedAt = null;
 });
 
 describe("reserveOrgValue", () => {
@@ -231,6 +247,23 @@ describe("reserveOrgValue", () => {
       reason: "Daily spending cap exceeded",
     });
     expect(state.inserted).toHaveLength(0);
+  });
+
+  it("denies with the halt reason when the org circuit breaker is engaged, regardless of cap or usage", async () => {
+    state.orgHaltedAt = new Date();
+    // Generous cap and zero usage: a cap check would allow this. The halt must
+    // deny anyway, and before the cap row is even locked (no anchor created).
+    state.caps = [{ dailyValueCapWei: "1000000000000000000000" }];
+    state.directSum = [{ totalWei: "0" }];
+
+    const result = await reserveOrgValue({
+      organizationId: "org_1",
+      valueWei: "300",
+    });
+
+    expect(result).toEqual({ allowed: false, reason: ORG_HALTED_REASON });
+    expect(state.inserted).toHaveLength(0);
+    expect(state.capAnchors).toHaveLength(0);
   });
 
   it("creates the cap row so the FOR UPDATE lock has something to hold", async () => {
@@ -619,6 +652,23 @@ describe("reserveOrgSolanaValue", () => {
       reason: "Daily Solana spending cap exceeded",
     });
     expect(state.inserted).toHaveLength(0);
+  });
+
+  it("denies with the halt reason when the org circuit breaker is engaged, regardless of cap or usage", async () => {
+    state.orgHaltedAt = new Date();
+    state.caps = [
+      { dailyValueCapWei: null, dailySolanaValueCapLamports: "1000000000000" },
+    ];
+    state.directLamportsSum = [{ totalLamports: "0" }];
+
+    const result = await reserveOrgSolanaValue({
+      organizationId: "org_1",
+      valueLamports: ONE_SOL_LAMPORTS,
+    });
+
+    expect(result).toEqual({ allowed: false, reason: ORG_HALTED_REASON });
+    expect(state.inserted).toHaveLength(0);
+    expect(state.capAnchors).toHaveLength(0);
   });
 });
 

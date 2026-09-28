@@ -200,13 +200,67 @@ describe("condition evaluation edge cases", () => {
       expect(result.result).toBe(true);
     });
 
-    it("should not match BigInt value against quoted string literal", () => {
-      // BigInt mode triggers because balance exceeds MAX_SAFE_INTEGER.
-      // Left side (context var) becomes BigInt, but the right side is a quoted
-      // string literal which stays as a string. BigInt !== string -> false.
-      // For numeric comparisons, users should use unquoted literals.
+    it("should match BigInt value against the same number quoted", () => {
+      // BigInt mode triggers because balance exceeds MAX_SAFE_INTEGER, so the
+      // left side becomes a BigInt while the quoted literal stays a string.
+      // Both name the same number and === says so. It used to say false, and
+      // since < and > were false as well, an author who quoted the number had
+      // no branch that could ever run and no error to tell them why.
       const expression =
         '{{@node1:Contract.balance}} === "2000000000000000000"';
+      const outputs = {
+        node1: {
+          label: "Contract",
+          data: { balance: "2000000000000000000" },
+        },
+      };
+
+      const result = evaluateConditionExpression(expression, outputs);
+      expect(result.result).toBe(true);
+    });
+
+    it("should not match BigInt value against a different number", () => {
+      const expression =
+        '{{@node1:Contract.balance}} === "2000000000000000001"';
+      const outputs = {
+        node1: {
+          label: "Contract",
+          data: { balance: "2000000000000000000" },
+        },
+      };
+
+      const result = evaluateConditionExpression(expression, outputs);
+      expect(result.result).toBe(false);
+    });
+
+    it("should match a zero-padded rule against the id it spells", () => {
+      // The visual builder emits a value that looks like a number bare
+      // (wrapOperand in lib/workflow/nodes/condition/expression.ts), so a rule
+      // typed as `id === 00123` arrives here as a numeric literal against a
+      // resolved string. That pair was a string against a number and the rule
+      // never matched, whatever the id held. It matches the number now - and
+      // so does an id written without the padding, which is what it costs to
+      // read a digit field as a quantity rather than as a spelling.
+      const expression = "{{@node1:Order.id}} === 00123";
+
+      const padded = evaluateConditionExpression(expression, {
+        node1: { label: "Order", data: { id: "00123" } },
+      });
+      expect(padded.result).toBe(true);
+
+      const unpadded = evaluateConditionExpression(expression, {
+        node1: { label: "Order", data: { id: "123" } },
+      });
+      expect(unpadded.result).toBe(true);
+
+      const other = evaluateConditionExpression(expression, {
+        node1: { label: "Order", data: { id: "1230" } },
+      });
+      expect(other.result).toBe(false);
+    });
+
+    it("should not match BigInt value against a non-numeric string", () => {
+      const expression = '{{@node1:Contract.balance}} === "pending"';
       const outputs = {
         node1: {
           label: "Contract",
@@ -245,15 +299,19 @@ describe("condition evaluation edge cases", () => {
   });
 
   describe("type coercion pitfalls with == vs ===", () => {
-    it("should differentiate string '0' from number 0 with strict equality", () => {
+    it("should read string '0' and number 0 as the same number", () => {
       const expression = "{{@node1:API.value}} === 0";
       const outputs = {
         node1: { label: "API", data: { value: "0" } },
       };
 
       const result = evaluateConditionExpression(expression, outputs);
-      // "0" === 0 is false (different types)
-      expect(result.result).toBe(false);
+      // This is the shape of an ordinary "equals" rule: the visual builder
+      // emits a typed number bare, and template resolution hands the other
+      // side over as a string. Both operators read a numeric pair by
+      // magnitude. What still separates === from == is every pair that is not
+      // two numbers, which the cases below cover.
+      expect(result.result).toBe(true);
     });
 
     it("should equate string '0' and number 0 with loose equality", () => {

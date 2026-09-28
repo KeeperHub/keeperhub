@@ -5,11 +5,11 @@
  * advisory validation functions for client-side input checking.
  */
 
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
 
 const TEMPLATE_VARIABLE_RE = /^\{\{.+\}\}$/;
 const HEX_RE = /^0x[0-9a-fA-F]*$/;
-const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const DECIMAL_NUMBER_RE = /^\d+(\.\d+)?$/;
 
 export type ValidationResult =
@@ -94,7 +94,7 @@ export function validateSolidityValue(
 }
 
 export function validateAddress(value: string): ValidationResult {
-  if (!ADDRESS_RE.test(value)) {
+  if (!EVM_ADDRESS_RE.test(value)) {
     return {
       valid: false,
       message: "Invalid address (expected 0x + 40 hex characters)",

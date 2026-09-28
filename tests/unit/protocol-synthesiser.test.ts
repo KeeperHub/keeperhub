@@ -244,3 +244,52 @@ describe("synthesiseProtocolTemplate", () => {
     });
   });
 });
+
+describe("synthesiseProtocolTemplate: a renamed slug on an L2", () => {
+  // The generated code is the workflow the user is told they could run
+  // themselves, so it has to target what the step targets. Before the context
+  // became alias-aware, an old slug on an L2 emitted the zero address with a
+  // "no deployment recorded" comment for a workflow that runs correctly.
+  it("emits the bridged contract's address for an aliased node", () => {
+    const out = synthesiseProtocolTemplate("sky/vault-balance", {
+      network: "8453",
+    });
+
+    expect(out).not.toBeNull();
+    const code = out as string;
+
+    expect(code).toContain(
+      'const CONTRACT_ADDRESS = "0x5875eEE11Cf8398102FdAd704C9E96607675467a" as const'
+    );
+    expect(code).toContain('import { base } from "viem/chains"');
+    expect(code).toContain("process.env.BASE_RPC_URL");
+    expect(code).not.toContain("no deployment recorded");
+    expect(code).not.toContain("is not in viem/chains");
+  });
+
+  it("still emits the mainnet address off the renamed chains", () => {
+    const out = synthesiseProtocolTemplate("sky/vault-balance", {
+      network: "1",
+    });
+
+    expect(out).toContain(
+      'const CONTRACT_ADDRESS = "0xa3931d71877C0E7a3148CB7Eb4463524FEc27fbD" as const'
+    );
+  });
+
+  it("names the real reason when a chain viem knows carries no deployment", () => {
+    // Arbitrum is not one of wstETH's renamed chains, so nothing resolves
+    // there. The comment must say the deployment is missing, not that viem
+    // has never heard of chain 42161 - it ships it.
+    const out = synthesiseProtocolTemplate("lido/get-wsteth-balance", {
+      network: "42161",
+    });
+
+    expect(out).not.toBeNull();
+    const code = out as string;
+
+    expect(code).toContain("// no deployment recorded for chain id 42161");
+    expect(code).not.toContain("is not in viem/chains");
+    expect(code).toContain('import { arbitrum } from "viem/chains"');
+  });
+});

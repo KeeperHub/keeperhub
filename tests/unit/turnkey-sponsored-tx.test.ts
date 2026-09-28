@@ -29,6 +29,7 @@ vi.mock("@/lib/web3/turnkey-sponsorship-config", () => ({
 
 // turnkey-revert is intentionally NOT mocked so `instanceof` works against the
 // real error classes.
+import { TurnkeyRequestError } from "@turnkey/sdk-server";
 import {
   SponsoredTxPendingError,
   SponsoredTxRevertError,
@@ -111,14 +112,58 @@ describe("submitTurnkeySponsoredTransaction", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null when ethSendTransaction rejects", async () => {
+  it("returns null when ethSendTransaction rejects before accepting the activity", async () => {
     mockEthSend.mockRejectedValue(
-      new Error("Turnkey error 5: Could not find any resource to sign with")
+      new TurnkeyRequestError({
+        code: 5, // NOT_FOUND: no signing resource for this wallet
+        message: "Could not find any resource to sign with",
+        details: null,
+      })
     );
 
     const result = await submitTurnkeySponsoredTransaction(baseParams());
 
     expect(result).toBeNull();
+  });
+
+  it("throws SponsoredTxPendingError when ethSendTransaction fails with an unknown outcome", async () => {
+    // A transport failure or timeout cannot distinguish "not received" from
+    // "received and executing", so it must not be reported as pre-broadcast.
+    mockEthSend.mockRejectedValue(new Error("fetch failed"));
+
+    await expect(
+      submitTurnkeySponsoredTransaction(baseParams())
+    ).rejects.toBeInstanceOf(SponsoredTxPendingError);
+  });
+
+  it("throws SponsoredTxPendingError when the send fails with a retryable Turnkey code", async () => {
+    // UNAVAILABLE (14) is not a refusal: the activity may have been accepted.
+    mockEthSend.mockRejectedValue(
+      new TurnkeyRequestError({
+        code: 14,
+        message: "service unavailable",
+        details: null,
+      })
+    );
+
+    await expect(
+      submitTurnkeySponsoredTransaction(baseParams())
+    ).rejects.toBeInstanceOf(SponsoredTxPendingError);
+  });
+
+  it("throws SponsoredTxPendingError on an error flag without a terminal status", async () => {
+    // The activity was accepted (a status id came back) and no hash is known
+    // yet, so an error flag alone must not be read as "nothing happened".
+    mockEthSend.mockResolvedValue({ sendTransactionStatusId: "sid-flag" });
+    mockGetStatus.mockResolvedValue({
+      txStatus: "BROADCASTING",
+      txError: "transient",
+      eth: {},
+    });
+
+    await expect(
+      submitTurnkeySponsoredTransaction(baseParams(), FAST_POLL)
+    ).rejects.toBeInstanceOf(SponsoredTxPendingError);
   });
 
   it("returns the hash as soon as Turnkey assigns one, before a terminal-success status", async () => {

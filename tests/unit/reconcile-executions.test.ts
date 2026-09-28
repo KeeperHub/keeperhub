@@ -17,12 +17,14 @@ vi.mock("server-only", () => ({}));
 const {
   mockVerify,
   mockRecordFinished,
+  mockRecordError,
   mockLogInfo,
   mockLogWarn,
   mockLogSystemWarn,
 } = vi.hoisted(() => ({
   mockVerify: vi.fn(),
   mockRecordFinished: vi.fn(),
+  mockRecordError: vi.fn(),
   mockLogInfo: vi.fn(),
   mockLogWarn: vi.fn(),
   mockLogSystemWarn: vi.fn(),
@@ -100,6 +102,7 @@ vi.mock("@/lib/web3/verify-receipt", () => ({
 
 vi.mock("@/lib/metrics/collectors/prometheus", () => ({
   recordWorkflowExecutionFinished: mockRecordFinished,
+  recordWorkflowExecutionError: mockRecordError,
 }));
 
 vi.mock("@/lib/metrics/org-slug.server", () => ({
@@ -427,6 +430,110 @@ describe("workflow runs", () => {
       expect.any(Error),
       { execution_id: "we_1" }
     );
+  });
+});
+
+/**
+ * KEEP-1281 opened a second route into `unconfirmed`: a run that failed on its
+ * own and is held open only because a failed step left a transaction in
+ * flight. Such a row carries a classification (error_type), and the whole
+ * point of that column here is that verifying its hashes must never promote it
+ * to success -- the steps after the failure never ran, so the run did not
+ * succeed no matter what the chain says about the transaction.
+ */
+describe("workflow runs held open by their own failure", () => {
+  const failureRow = (overrides: Row = {}) =>
+    workflowRow({
+      errorType: "system",
+      errorCategory: "workflow_engine",
+      error: "Step 3 rejected the payload",
+      ...overrides,
+    });
+
+  it("settles as error with the original failure even when every hash verifies", async () => {
+    verifyResolves("success");
+
+    const report = await run([], [failureRow()]);
+
+    expect(report.workflows.completed).toBe(0);
+    expect(report.workflows.failed).toBe(1);
+    // system_error, not plain error: the finalizer would have written the
+    // split, and passing through `unconfirmed` must not flatten it.
+    expect(workflowUpdates()[0].values).toEqual({
+      status: "system_error",
+      error: "Step 3 rejected the payload",
+      completedAt: expect.any(Date),
+    });
+    expect(mockRecordFinished).toHaveBeenCalledWith({
+      status: "system_error",
+      orgSlug: "org-a",
+      errorType: "system",
+    });
+    // The finalizer skips this counter for every unconfirmed row, so it is
+    // emitted here instead - once, when the row reaches a terminal state.
+    expect(mockRecordError).toHaveBeenCalledWith({
+      orgSlug: "org-a",
+      errorCategory: "workflow_engine",
+      errorType: "system",
+    });
+  });
+
+  it("settles a user-classified failure as plain error, not system_error", () => {
+    verifyResolves("success");
+
+    return run([], [failureRow({ errorType: "user" })]).then(() => {
+      expect(workflowUpdates()[0].values).toEqual({
+        status: "error",
+        error: "Step 3 rejected the payload",
+        completedAt: expect.any(Date),
+      });
+    });
+  });
+
+  it("keeps a young run open while its broadcast is unreadable", async () => {
+    verifyResolves("timeout");
+
+    const report = await run([], [failureRow()]);
+
+    expect(report.workflows.stillUnconfirmed).toBe(1);
+    expect(workflowUpdates()).toHaveLength(0);
+  });
+
+  it("keeps the original failure when an aged broadcast is written off as dropped", async () => {
+    verifyResolves("not_found");
+
+    const report = await run(
+      [],
+      [failureRow({ startedAt: new Date(NOW.getTime() - 25 * HOUR_MS) })]
+    );
+
+    expect(report.workflows.failed).toBe(1);
+    expect(workflowUpdates()[0].values).toEqual({
+      status: "system_error",
+      error: "Step 3 rejected the payload",
+      completedAt: expect.any(Date),
+    });
+  });
+
+  it("settles with the original failure when no hash can be verified", async () => {
+    const report = await run(
+      [],
+      [
+        failureRow({
+          transactionHashes: [
+            { hash: HASH, nodeId: "n1", nodeName: "Transfer" },
+          ],
+        }),
+      ]
+    );
+
+    expect(report.workflows.failed).toBe(1);
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(workflowUpdates()[0].values).toEqual({
+      status: "system_error",
+      error: "Step 3 rejected the payload",
+      completedAt: expect.any(Date),
+    });
   });
 });
 

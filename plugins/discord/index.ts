@@ -59,6 +59,28 @@ const discordPlugin: IntegrationPlugin = {
           example: "Hello from my workflow!",
           required: true,
         },
+        {
+          key: "retryAttempts",
+          label: "Retry attempts",
+          type: "number",
+          min: 0,
+          max: 5,
+          placeholder: "0",
+          example: "0",
+          helpText:
+            "Extra attempts after the first, for connection failures before the request is sent and retryable statuses (408, 425, 429, 5xx). A retry can post the message twice if Discord received the first request but the response was lost. Default 0, max 5.",
+        },
+        {
+          key: "retryDelay",
+          label: "Retry delay (seconds)",
+          type: "number",
+          min: 0,
+          max: 15,
+          placeholder: "1",
+          example: "1",
+          helpText:
+            "Backs off linearly: attempt N waits this many seconds times N. A 429 waits for the time Discord reports instead, and the step stops retrying when that is over 15 seconds. Default 1, max 15.",
+        },
       ],
     },
   ],

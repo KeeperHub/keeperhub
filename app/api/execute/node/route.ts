@@ -9,6 +9,7 @@ import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { integrations } from "@/lib/db/schema";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   PROCESSING_TTL_MS as IDEMPOTENCY_PROCESSING_TTL_MS,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
@@ -31,17 +32,20 @@ import {
   markRunning,
   redactInput,
   setRetryCount,
-  withRejectedSignerOverride,
+  withRejectedConfig,
 } from "../_lib/execution-service";
 import { checkRateLimit } from "../_lib/rate-limit";
 import { parseNodeNativeValueWei } from "../_lib/reserved-value";
 import {
+  capRetriesByDeclaration,
   DEFAULT_TIMEOUT_MS as DEFAULT_RETRY_TIMEOUT_MS,
+  effectiveMaxRetries,
   executeWithRetry,
   genericRetryOptions,
   type TransactionResult,
   transactionRetryOptions,
 } from "../_lib/retry";
+import { refuseSimulateBody, rejectSimulateQuery } from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import type { NodeExecuteRequest, RetryConfig } from "../_lib/types";
 import { requireWallet } from "../_lib/wallet-check";
@@ -186,15 +190,43 @@ function isTransactionResult(output: unknown): output is {
   );
 }
 
+/**
+ * A step function, with the retry ceiling a step may declare on itself.
+ *
+ * `maxRetries` is optional because most steps do not set it; when a step does,
+ * it is an upper bound the caller cannot raise (see capRetriesByDeclaration).
+ */
 // biome-ignore lint/suspicious/noExplicitAny: Step functions have varying signatures
-type StepFn = (input: any) => Promise<unknown>;
+type StepFn = ((input: any) => Promise<unknown>) & { maxRetries?: number };
 
+/**
+ * What the route has to answer with, whether the step succeeded or not.
+ *
+ * `maxRetriesApplied` is the budget in force for THIS request: the caller's
+ * `retry.maxRetries`, defaulted by `resolveConfig` and capped by the step's own
+ * declaration. It is absent when the request sent no `retry` config at all, since
+ * then no retries were applied and there is no budget to report - which is why it
+ * does not read as "the retry ceiling this step declares": a step declaring 0
+ * against a request that sent no retry reports nothing here, and the declaration
+ * is read only to cap what the caller asked for.
+ */
 type InvokeResult =
-  | { ok: true; result: unknown; retryCount: number }
-  | { ok: false; error: string; retryCount: number };
+  | {
+      ok: true;
+      result: unknown;
+      retryCount: number;
+      maxRetriesApplied?: number;
+    }
+  | {
+      ok: false;
+      error: string;
+      retryCount: number;
+      maxRetriesApplied?: number;
+    };
 
 function unwrapRetryResult<T>(
-  retryResult: Awaited<ReturnType<typeof executeWithRetry<T>>>
+  retryResult: Awaited<ReturnType<typeof executeWithRetry<T>>>,
+  maxRetriesApplied: number
 ): InvokeResult {
   if (
     retryResult.outcome === "timeout" ||
@@ -204,12 +236,14 @@ function unwrapRetryResult<T>(
       ok: false,
       error: retryResult.error,
       retryCount: retryResult.retryCount,
+      maxRetriesApplied,
     };
   }
   return {
     ok: true,
     result: retryResult.result,
     retryCount: retryResult.retryCount,
+    maxRetriesApplied,
   };
 }
 
@@ -219,21 +253,33 @@ async function invokeStep(
   retry: RetryConfig | undefined,
   isWeb3: boolean
 ): Promise<InvokeResult> {
-  if (retry) {
+  // The step's own declaration caps what the caller may ask for. A step that
+  // declares it must never be retried runs once, whatever the request asked for,
+  // which is what makes the declaration worth setting on a step that spends
+  // money: the retryable-looking failures such a step can produce (a reset after
+  // the server settled the payment) are otherwise retried and charged twice.
+  const effectiveRetry = capRetriesByDeclaration(retry, stepFn.maxRetries);
+  if (effectiveRetry) {
+    // The budget the caller is actually held to, reported back so a request whose
+    // retries the step's declaration nullified is not indistinguishable from one
+    // that never asked to retry. The number is 0 for a step that declares
+    // `maxRetries = 0`, and it is the caller's own when the declaration is absent
+    // or higher.
+    const maxRetriesApplied = effectiveMaxRetries(effectiveRetry);
     if (isWeb3) {
       const retryResult = await executeWithRetry<TransactionResult>(
         async () => (await stepFn(stepInput)) as TransactionResult,
-        retry,
+        effectiveRetry,
         transactionRetryOptions
       );
-      return unwrapRetryResult(retryResult);
+      return unwrapRetryResult(retryResult, maxRetriesApplied);
     }
     const retryResult = await executeWithRetry<unknown>(
       async () => stepFn(stepInput),
-      retry,
+      effectiveRetry,
       genericRetryOptions
     );
-    return unwrapRetryResult(retryResult);
+    return unwrapRetryResult(retryResult, maxRetriesApplied);
   }
   const result = await stepFn(stepInput);
   return { ok: true, result, retryCount: 0 };
@@ -243,6 +289,7 @@ async function handleResult(
   executionId: string,
   result: unknown,
   retryCount: number,
+  maxRetriesApplied: number | undefined,
   idem: IdempotencyOutcome | null
 ): Promise<NextResponse> {
   const output = result as Record<string, unknown> | undefined;
@@ -268,12 +315,25 @@ async function handleResult(
         : undefined;
     const chainId =
       output && typeof output.chainId === "number" ? output.chainId : undefined;
+    const broadcastAttempted =
+      output && typeof output.broadcastAttempted === "boolean"
+        ? output.broadcastAttempted
+        : undefined;
     const settled = await failExecution(executionId, errorMsg, {
       transactionHash,
       chainId,
+      broadcastAttempted,
     });
-    // The step ran (possibly broadcasting): finalize as failed so a retry
-    // replays the failure instead of re-executing.
+    // A hash is only adjudicable together with its numeric chain id. Without
+    // that pair, failExecution cannot verify a receipt and this arbitrary node
+    // may already have produced a side effect, so the idempotency key stays
+    // held. broadcastAttempted is still forwarded above so a hashless attempted
+    // chain send fails closed as unconfirmed. The reconciler requires a hash,
+    // so this shape is intentionally held rather than described as reconcilable.
+    const disposition =
+      transactionHash && chainId !== undefined
+        ? dispositionForExecutionOutcome(settled.status, { transactionHash })
+        : "failed";
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
@@ -283,10 +343,11 @@ async function handleResult(
           error: errorMsg,
           ...(transactionHash ? { transactionHash } : {}),
           ...(retryCount > 0 ? { retryCount } : {}),
+          ...(maxRetriesApplied === undefined ? {} : { maxRetriesApplied }),
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }
       ),
-      "failed"
+      disposition
     );
   }
 
@@ -314,6 +375,16 @@ async function handleResult(
   // assert an outcome we do not have. It is non-terminal, so the caller polls
   // the status endpoint and the reconciler settles the row.
   if (outcome.status !== "completed") {
+    // Mirror the failure branch above: only a hash+chain pair could have been
+    // independently verified by completeExecution. A hash without a numeric
+    // chain id is evidence of a possible send, not evidence of a conclusive
+    // failure, so keep the key held.
+    const disposition =
+      completeParams.transactionHash && completeParams.chainId !== undefined
+        ? dispositionForExecutionOutcome(outcome.status, {
+            transactionHash: completeParams.transactionHash,
+          })
+        : "failed";
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
@@ -322,10 +393,11 @@ async function handleResult(
           status: outcome.status,
           error: outcome.error ?? "On-chain verification failed",
           ...(retryCount > 0 ? { retryCount } : {}),
+          ...(maxRetriesApplied === undefined ? {} : { maxRetriesApplied }),
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }
       ),
-      "failed"
+      disposition
     );
   }
 
@@ -337,6 +409,7 @@ async function handleResult(
         status: "completed",
         result: output,
         ...(retryCount > 0 ? { retryCount } : {}),
+        ...(maxRetriesApplied === undefined ? {} : { maxRetriesApplied }),
       },
       {
         status: isTransactionResult(output)
@@ -350,14 +423,19 @@ async function handleResult(
 
 // Caller-supplied config keys the route must own, not the caller. `network`
 // and `integrationId` are resolved and gated by the route itself; `_context`
-// is injected server-side. `web3Connection` selects the signer mode in
+// and `_actionType` are injected server-side from the resolved action.
+// `_protocolMeta` is a builder-persisted snapshot of the same thing: a
+// caller-supplied one is already inert at execution because a derivable
+// `_actionType` always wins in resolveProtocolMeta, but leaving it in the
+// config would put it in the audit input at the top level, beside fields that
+// did take effect. `web3Connection` selects the signer mode in
 // resolveSignerForNode (lib/safe/signer-resolver.ts): a direct-execution
 // caller must NOT be able to set web3Connection='eoa' to short-circuit to the
 // org's Turnkey EOA and bypass the org Safe's Zodiac Roles policy on
 // org-custodied writes. With it absent, resolveSignerForNode falls back to the
 // "default" branch (resolveSignerMode org-policy path), honouring the Safe +
 // active Role. The sibling execute routes never forward web3Connection either,
-// so this keeps /api/execute/node no weaker. Stripping all four in one place
+// so this keeps /api/execute/node no weaker. Stripping them all in one place
 // keeps the step input and the persisted audit input in lockstep.
 function stripReservedConfig(
   config: Record<string, unknown>
@@ -367,10 +445,22 @@ function stripReservedConfig(
     integrationId: _ignoredIntegrationId,
     web3Connection: _ignoredWeb3Connection,
     _context: _ignoredContext,
+    _actionType: _ignoredActionType,
+    _protocolMeta: _ignoredProtocolMeta,
     ...rest
   } = config;
   return rest;
 }
+
+// Reserved keys the route rejects outright rather than resolving. Each is kept
+// out of the audit input's top level and preserved under `_rejectedConfig`, so
+// a smuggled value stays visible to a reader without being mistaken for one
+// that took effect.
+const REJECTED_AUDIT_KEYS = [
+  "web3Connection",
+  "_actionType",
+  "_protocolMeta",
+] as const;
 
 async function executeNode(
   data: NodeExecuteRequest,
@@ -391,9 +481,10 @@ async function executeNode(
     executionId = preCreatedExecutionId;
   } else {
     const redactedInput = redactInput(
-      withRejectedSignerOverride(
+      withRejectedConfig(
         { actionType: data.actionType, ...safeConfig },
-        config
+        config,
+        REJECTED_AUDIT_KEYS
       )
     );
     const created = await createExecution({
@@ -412,6 +503,23 @@ async function executeNode(
     ...safeConfig,
     ...(integrationId ? { integrationId } : {}),
     ...(network ? { network } : {}),
+    // The request's action type is the node's identity, and the protocol
+    // steps only apply the chain-scoped L2 slug aliases on the `_actionType`
+    // branch of resolveProtocolMeta. Without it a caller that carries a
+    // `_protocolMeta` snapshot in its config (the builder persists one) is
+    // resolved from that stale snapshot instead, and an aliased slug fails on
+    // the L2 here while the same call succeeds through the workflow executor.
+    // Forwarding it also makes `_actionType` authoritative over any
+    // caller-supplied `_protocolMeta`, which is the precedence
+    // resolveProtocolMeta documents and every other caller already gets.
+    //
+    // `resolved.actionType`, not the request string: resolveAction accepts a
+    // legacy id or an exact label ("Sky: Vault Share Balance") and hands back
+    // the canonical `<protocol>/<slug>` id. The raw string derives nothing in
+    // resolveProtocolMeta, so a label-form call would run the right step and
+    // then fall through to the caller's `_protocolMeta` anyway. It is also
+    // what createExecution records as the execution's type.
+    _actionType: resolved.actionType,
     _context: {
       executionId,
       nodeId: executionId,
@@ -456,7 +564,10 @@ async function executeNode(
 
     if (!invokeResult.ok) {
       await failExecution(executionId, invokeResult.error);
-      // The step ran (possibly broadcasting): finalize as failed.
+      // Deliberately NOT dispositionForExecutionOutcome: there is no hash to
+      // adjudicate here, so failExecution would answer "failed" from the mere
+      // absence of one and the key would be released. The step ran and may
+      // have broadcast, which is the unknown case -- hold the key.
       return recordIdempotentResponse(
         idem,
         NextResponse.json(
@@ -467,6 +578,9 @@ async function executeNode(
             ...(invokeResult.retryCount > 0
               ? { retryCount: invokeResult.retryCount }
               : {}),
+            ...(invokeResult.maxRetriesApplied === undefined
+              ? {}
+              : { maxRetriesApplied: invokeResult.maxRetriesApplied }),
           },
           { status: HttpStatus.UNPROCESSABLE_ENTITY }
         ),
@@ -478,12 +592,14 @@ async function executeNode(
       executionId,
       invokeResult.result,
       invokeResult.retryCount,
+      invokeResult.maxRetriesApplied,
       idem
     );
   } catch (err: unknown) {
     const errorMsg = getErrorMessage(err);
     await failExecution(executionId, errorMsg);
-    // A thrown error may have left a tx mid-broadcast: finalize as failed.
+    // Also deliberately held: a throw can land between broadcast and hash
+    // capture, so "no hash" here does not mean "nothing was sent".
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
@@ -502,6 +618,13 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: apiKeyCtx.error },
       { status: apiKeyCtx.status }
     );
+  }
+
+  // #2004: ?simulate= is refused on every /api/execute/* route rather than
+  // silently ignored.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
   }
 
   const scopeError = requireScope(apiKeyCtx.scope, SCOPE_MCP_WRITE, {
@@ -541,6 +664,19 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: "Invalid JSON body" },
       { status: HttpStatus.BAD_REQUEST }
     );
+  }
+
+  // #2004: this route has no dry-run support. A top-level `simulate` used to
+  // be dropped by validateRequest's fixed whitelist and the step broadcast
+  // for real -- the same accept-and-broadcast defect as the protocol route,
+  // reached through a different mechanism. `config.simulate` survives the
+  // whitelist and stripReservedConfig and reaches the step, which ignores it.
+  // Refuse both loudly, before the whitelist and before the idempotency key
+  // is reserved.
+  const simulateBody =
+    refuseSimulateBody(body) ?? refuseSimulateBody(body, "config");
+  if (simulateBody) {
+    return simulateBody;
   }
 
   const validation = validateRequest(body);
@@ -649,15 +785,16 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     // Strip the same reserved keys executeNode removes so the persisted audit
     // input matches what the step actually received (see stripReservedConfig),
-    // but preserve a non-honored web3Connection under _rejectedConfig so the
-    // audit log still shows the attempt (see withRejectedSignerOverride).
+    // but preserve the non-honored ones under _rejectedConfig so the audit log
+    // still shows the attempt (see withRejectedConfig).
     const redactedInput = redactInput(
-      withRejectedSignerOverride(
+      withRejectedConfig(
         {
           actionType: validation.data.actionType,
           ...stripReservedConfig(validation.data.config),
         },
-        validation.data.config
+        validation.data.config,
+        REJECTED_AUDIT_KEYS
       )
     );
     const reserve = await checkAndReserveExecution({

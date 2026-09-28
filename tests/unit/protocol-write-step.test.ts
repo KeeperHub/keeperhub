@@ -1,4 +1,12 @@
-import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 // ── Mocks (before imports) ───────────────────────────────────────────
 
@@ -49,8 +57,22 @@ vi.mock("@/plugins/web3/steps/write-contract-core", () => ({
   writeContractCore: (...args: unknown[]) => mockWriteContractCore(...args),
 }));
 
+const mockWithStepValueCap = vi.fn(
+  async (_opts: unknown, fn: () => Promise<unknown>) => await fn()
+);
+vi.mock("@/lib/execute/value-ledger", () => ({
+  withStepValueCap: (...args: unknown[]) =>
+    mockWithStepValueCap(...(args as [unknown, () => Promise<unknown>])),
+}));
+
 // ── Import under test ────────────────────────────────────────────────
 
+import { parseEther } from "ethers";
+import {
+  clearEncodeTransforms,
+  registerEncodeTransform,
+  weiToEther,
+} from "@/lib/protocol-encode-transforms";
 import { protocolWriteStep } from "@/plugins/protocol/steps/protocol-write";
 import type { ProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
 
@@ -493,7 +515,18 @@ describe("protocolWriteStep", () => {
               },
             },
           },
-          actions: [],
+          // Carries the action the meta above names; see the note on
+          // UNISWAP_PROTOCOL / WRAPPED_PROTOCOL below.
+          actions: [
+            {
+              slug: "wrap",
+              label: "Wrap Native Token",
+              type: "write" as const,
+              contract: "weth",
+              function: "deposit",
+              inputs: [],
+            },
+          ],
         });
         mockResolveAbi.mockResolvedValue({ abi: PAYABLE_ABI });
         mockWriteContractCore.mockResolvedValue({
@@ -672,6 +705,15 @@ describe("protocolWriteStep", () => {
       },
     ]);
 
+    // These two fixtures carry the action their metas name. They used to
+    // declare `actions: []` while mockResolveProtocolMeta returned a meta
+    // saying "you are executing uniswap/exactInputSingle" - an internally
+    // inconsistent fixture that nothing read, because the only consumer of
+    // `actions` was the args builder these tests do not exercise. The
+    // payable value now resolves through the same lookup and refuses to
+    // proceed when it misses, so the inconsistency became load-bearing.
+    // Slugs, contract keys and function names below match the real
+    // definitions in protocols/uniswap-v3.ts and protocols/wrapped.ts.
     const UNISWAP_PROTOCOL = {
       name: "Uniswap V3",
       slug: "uniswap",
@@ -684,7 +726,16 @@ describe("protocolWriteStep", () => {
           },
         },
       },
-      actions: [],
+      actions: [
+        {
+          slug: "swap-exact-input",
+          label: "Swap Exact Input",
+          type: "write" as const,
+          contract: "swapRouter",
+          function: "exactInputSingle",
+          inputs: [],
+        },
+      ],
     };
 
     const WRAPPED_PROTOCOL = {
@@ -699,7 +750,16 @@ describe("protocolWriteStep", () => {
           },
         },
       },
-      actions: [],
+      actions: [
+        {
+          slug: "wrap",
+          label: "Wrap Native Token",
+          type: "write" as const,
+          contract: "weth",
+          function: "deposit",
+          inputs: [],
+        },
+      ],
     };
 
     function setupUniswapSwap(): void {
@@ -947,5 +1007,208 @@ describe("protocolWriteStep", () => {
         expect(result.error).toContain("Missing contract address");
       }
     });
+  });
+});
+
+describe("ethValue encode transforms", () => {
+  const PAYABLE_ABI =
+    '[{"name":"supply","type":"function","stateMutability":"payable","inputs":[{"name":"asset","type":"address"},{"name":"amount","type":"uint256"}],"outputs":[]}]';
+
+  afterEach(() => {
+    clearEncodeTransforms();
+  });
+
+  function arrange(): void {
+    mockResolveProtocolMeta.mockReturnValue(COMPOUND_SUPPLY_META);
+    mockGetProtocol.mockReturnValue(COMPOUND_PROTOCOL);
+    mockResolveAbi.mockResolvedValue({ abi: PAYABLE_ABI });
+    mockWriteContractCore.mockResolvedValue({
+      success: true,
+      transactionHash: "0xdef",
+      transactionLink: "",
+      gasUsed: "21000",
+    });
+  }
+
+  it("applies a registered weiToEther transform before the core call and the value cap", async () => {
+    arrange();
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+
+    await protocolWriteStep(makeInput({ ethValue: "1500000000000000000" }));
+
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBe("1.5");
+    const capOpts = (mockWithStepValueCap as Mock).mock.calls[0][0] as {
+      config: { ethValue?: string };
+    };
+    expect(capOpts.config.ethValue).toBe("1.5");
+    // Both consumers get the same string, but "same string" is only half the
+    // property that matters: withStepValueCap is mocked to a passthrough
+    // here, so nothing above proves the string means the intended amount.
+    // Parse it the way both real consumers do and compare against the wei
+    // that went in - this is what fails if the transform is ever dropped,
+    // doubled, or applied in the wrong direction.
+    expect(parseEther(coreCall.ethValue as string)).toBe(
+      BigInt("1500000000000000000")
+    );
+    expect(parseEther(capOpts.config.ethValue as string)).toBe(
+      parseEther(coreCall.ethValue as string)
+    );
+  });
+
+  it("refuses to send a payable value when the action cannot be resolved", async () => {
+    arrange();
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+    // A stale _protocolMeta: resolve-protocol-meta.ts casts it out of an
+    // unvalidated JSON.parse, so a functionName that no longer matches a
+    // registered action reaches this step intact and findProtocolAction
+    // returns undefined. Passing the raw value through here would hand
+    // parseEther a wei integer and send 10^18 times the intended amount,
+    // and the daily-value cap does not always catch it (value-ledger.ts
+    // runs uncapped when a reservation is held or organizationId is absent).
+    mockResolveProtocolMeta.mockReturnValue({
+      ...COMPOUND_SUPPLY_META,
+      functionName: "supplyRenamedUpstream",
+    });
+
+    const result = await protocolWriteStep(
+      makeInput({ ethValue: "1500000000000000000" })
+    );
+
+    expect(result.success).toBe(false);
+    expect((result as { error: string }).error).toMatch(
+      /Refusing to send a payable value/
+    );
+    expect(mockWriteContractCore).not.toHaveBeenCalled();
+    expect(mockWithStepValueCap).not.toHaveBeenCalled();
+    // The log is the half that makes affected nodes findable rather than
+    // only visible when a user reports a failure, so it is asserted rather
+    // than left to the implementation.
+    expect(mockLogUserError).toHaveBeenCalledTimes(1);
+    const [category, message, , labels] = (mockLogUserError as Mock).mock
+      .calls[0];
+    expect(category).toBe("configuration");
+    expect(message).toContain("Refused a payable value");
+    expect(labels).toMatchObject({
+      plugin_name: "protocol",
+      action_name: "protocol-write",
+      protocol_slug: "compound",
+      function_name: "supplyRenamedUpstream",
+      contract_key: "comet",
+    });
+  });
+
+  it.each([
+    ["an empty ethValue", ""],
+    ["no ethValue at all", undefined],
+  ])(
+    "still runs an unresolvable action with %s, short-circuiting before the lookup",
+    async (_label, ethValue) => {
+      arrange();
+      // Both cases return at the typeof/trim check above findProtocolAction,
+      // so neither reaches the lookup - which is the whole scoping claim:
+      // a step that sends nothing cannot be misread by 10^18, so it is not
+      // worth refusing over, and an unresolvable action without a value is
+      // exactly the pre-existing behaviour of the args builder. There is no
+      // third case: any value that does reach the lookup is non-empty and
+      // is covered by the refusal test above.
+      mockResolveProtocolMeta.mockReturnValue({
+        ...COMPOUND_SUPPLY_META,
+        functionName: "supplyRenamedUpstream",
+      });
+
+      const result = await protocolWriteStep(makeInput({ ethValue }));
+
+      expect(result.success).toBe(true);
+      expect(mockWriteContractCore).toHaveBeenCalled();
+    }
+  );
+
+  it("reserves nothing against the cap when the transform throws", async () => {
+    arrange();
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+
+    // "1.5" is not an integer wei string, so weiToEther throws. The throw has
+    // to happen before withStepValueCap, or a failed step would leave a
+    // reservation held against the org's daily cap.
+    await expect(
+      protocolWriteStep(makeInput({ ethValue: "1.5" }))
+    ).rejects.toThrow(/integer wei/);
+
+    expect(mockWithStepValueCap).not.toHaveBeenCalled();
+    expect(mockWriteContractCore).not.toHaveBeenCalled();
+  });
+
+  it("is byte-identical for an action with no registered ethValue transform", async () => {
+    arrange();
+    // Populate the registry with a different action of the same protocol, so
+    // this proves a lookup miss leaves the value alone rather than merely
+    // proving an empty registry does nothing.
+    registerEncodeTransform(
+      "compound",
+      "withdraw",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+
+    await protocolWriteStep(makeInput({ ethValue: "0.25" }));
+
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBe("0.25");
+  });
+
+  it("does not invoke the transform on an empty ethValue", async () => {
+    arrange();
+    const spy = vi.fn(weiToEther);
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      spy,
+      "weiToEther"
+    );
+
+    await protocolWriteStep(makeInput({ ethValue: "" }));
+
+    expect(spy).not.toHaveBeenCalled();
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBeUndefined();
+  });
+
+  it("leaves an unresolved template for the executor", async () => {
+    arrange();
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+
+    await protocolWriteStep(
+      makeInput({ ethValue: "{{@quote:Quote.fee.nativeFee}}" })
+    );
+
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBe("{{@quote:Quote.fee.nativeFee}}");
   });
 });

@@ -18,7 +18,12 @@ import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import type { ErrorStatus } from "@/lib/errors/execution-status";
 import { ErrorCategory, logSystemWarn, logWarn } from "@/lib/logging";
 import type { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
-import type { ErrorContext, MetricLabels, MetricsCollector } from "../types";
+import {
+  type ErrorContext,
+  type MetricLabels,
+  type MetricsCollector,
+  TRIGGER_TYPES,
+} from "../types";
 
 // Use global singletons to prevent duplicate registration during hot reload
 // This is safe because each pod has its own Node.js process
@@ -197,6 +202,42 @@ const executionsUnconfirmed = getOrCreateGauge(
   "keeperhub_executions_unconfirmed",
   "Executions currently in the unconfirmed state (transaction broadcast, receipt not yet readable), by kind (workflow or direct)",
   ["kind"]
+);
+
+// KEEP-1042: how far back the step-log table reaches, and how much disk the
+// execution tables hold. Both prod failures this job exists to prevent were
+// size-driven -- the volume alarm on 2026-09-01 and the CPU saturation on
+// 2026-09-02, where analytics de-TOASTed jsonb out of a table nothing pruned.
+// DB-sourced (see getExecutionRetentionStatsFromDb) so one collector reports
+// them rather than every pod.
+const executionLogOldestAgeSeconds = getOrCreateGauge(
+  dbRegistry,
+  "keeperhub_execution_log_oldest_age_seconds",
+  "Age in seconds of the oldest row in workflow_execution_logs",
+  []
+);
+
+const executionTableBytes = getOrCreateGauge(
+  dbRegistry,
+  "keeperhub_execution_table_bytes",
+  "Total on-disk size (heap, indexes and TOAST) of an execution table, by table",
+  ["table"]
+);
+
+// pending_transactions rows still in `pending` between 15 minutes and 24 hours
+// after submission, by chain. An unreferenced same-nonce fee-escalation path
+// was deleted from lib/web3/gas-strategy.ts; nothing bumps a stuck transaction
+// automatically, so this gauge is the whole response - it makes a backlog page
+// a human instead of failing silently. The 24-hour ceiling is what lets it
+// recover: see getStuckPendingTransactionCountsFromDb. DB-sourced, so the
+// value is the same on every scrape rather than depending on which pod last
+// handled a request. Cardinality is bounded by the number of configured
+// chains.
+const web3PendingTransactionsStuck = getOrCreateGauge(
+  dbRegistry,
+  "keeperhub_web3_pending_transactions_stuck",
+  "Pending transactions unconfirmed between 15 minutes and 24 hours after submission, by chain_id",
+  ["chain_id"]
 );
 
 // KEEP-545: the previous DB-sourced gauge `keeperhub_workflow_execution_errors_total`
@@ -752,6 +793,79 @@ const aiDuration = getOrCreateHistogram(
   [500, 1000, 2000, 5000, 10_000, 20_000]
 );
 
+// Executor pipeline latency histograms (issue #2289) -> apiRegistry (per-pod,
+// scrape all pods). The executor records these in its own process for the
+// receive->dispatch hand-off and for in-process runs end-to-end.
+//
+// Runtime histograms are the right choice here despite the note above
+// histogramMap saying workflow execution/step metrics moved to DB-sourced
+// gauges: that decision covers workflow.execution.duration_ms and
+// workflow.step.duration_ms, whose per-row data the database already holds.
+// These two measure the SQS queue leg and the dispatch hand-off - intervals
+// between stages that happen in memory and leave no database timestamps - so
+// a DB-sourced gauge cannot reconstruct them. Deliberate exception, not an
+// oversight.
+const EXECUTOR_LATENCY_LABELS = ["trigger_type", "dispatch_target", "stage"];
+
+const executorDispatchLatency = getOrCreateHistogram(
+  apiRegistry,
+  "keeperhub_executor_dispatch_latency_ms",
+  "Time from SQS receive to the dispatch hand-off (or to engine start for in-process runs), split by trigger, dispatch target and stage",
+  EXECUTOR_LATENCY_LABELS,
+  [50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000]
+);
+
+const executorExecutionLatency = getOrCreateHistogram(
+  apiRegistry,
+  "keeperhub_executor_execution_latency_ms",
+  "Full executor-visible execution lifetime (SQS receive to terminal state) for in-process runs, split by trigger, dispatch target and stage",
+  EXECUTOR_LATENCY_LABELS,
+  [100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 300_000]
+);
+
+// The headline measurement issue #2289 asks for: the distribution of time
+// from the trigger event being observed by the tracker to the transaction
+// actually being broadcast to the chain. Populated where both endpoints are
+// known: in-process runs (sidecar marker read back after the run) and k8s-job
+// runs (the runner ships point observations over the counter-delta ingest,
+// which the executor folds into this histogram - see
+// keeperhub-executor/lib/metrics-shipping.ts and observation-applier.ts).
+const executorBroadcastLatency = getOrCreateHistogram(
+  apiRegistry,
+  "keeperhub_executor_broadcast_latency_ms",
+  "Time from trigger observed by the tracker to the transaction broadcast to the chain, split by trigger and dispatch target",
+  ["trigger_type", "dispatch_target"],
+  [250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 120_000, 300_000]
+);
+
+// Broadcast attempts, bumped by the process that performed the broadcast and
+// merged into the executor's registry via the counter-delta ingest. The
+// workflow.executions counters on Job pods use the same channel; the delta
+// ingest deliberately avoids re-scaling fleet-wide rates from per-pod totals,
+// so broadcast visibility is additive here rather than approximate.
+// Exported for the executor's pod-side shipping path (metrics-shipping), which
+// increments it locally before sending deltas over the ingest.
+export const executorBroadcastsTotal = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_executor_broadcasts_total",
+  "Transactions broadcast to the chain by executor-dispatched runs, merged from pod counter deltas",
+  []
+);
+
+// Broadcast marker writes that failed with something other than the expected
+// first-wins EEXIST (issue #2289 review). A sustained rise means the sidecar
+// filesystem is unavailable and the executor.broadcast.latency_ms histogram
+// is silently losing every sample; this counter is what tells "no broadcasts
+// happened" apart from "broadcasts happened and none could be recorded".
+// Same channel as broadcasts_total: bumped by the process that performed the
+// write and merged into the executor's registry via the counter-delta ingest.
+export const executorBroadcastWriteFailuresTotal = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_executor_broadcast_write_failures_total",
+  "Broadcast marker writes failed for a reason other than the first-wins EEXIST race",
+  []
+);
+
 // Sponsorship counters
 const SPONSORSHIP_LABELS = ["chain_id", "organization_id"];
 
@@ -869,6 +983,17 @@ const workflowExecutionsStartedTotal = getOrCreateCounter(
   ["trigger_type"]
 );
 
+// prom-client only materialises a labelled child series on its first inc(),
+// so a low-volume label like webhook can go its entire lifetime without ever
+// being observed at 0 (it is "born" already at 1 or 2). increase() over any
+// window then reads 0 even though real executions happened, because there
+// is no earlier sample to diff against. Pre-registering every known
+// trigger_type at 0 on module load (every pod, on every start) guarantees
+// Prometheus always has a starting point to compute increase() from.
+for (const triggerType of TRIGGER_TYPES) {
+  workflowExecutionsStartedTotal.inc({ trigger_type: triggerType }, 0);
+}
+
 // KEEP-612 detection signal. lib/safe-fetch.ts increments this every time
 // a SSRF-blocklisted destination (or DNS-resolve-mismatch) is refused. The
 // `shadow` label distinguishes enforce-mode rejects (shadow=false, the
@@ -893,6 +1018,19 @@ const mcpRateLimitDegraded = getOrCreateCounter(
   "keeperhub_mcp_rate_limit_degraded_total",
   "MCP rate-limit decisions served from the per-pod fallback because the shared Redis window was unavailable, labelled by reason",
   ["reason"]
+);
+
+// Retirement evidence for the chain-scoped protocol action-slug aliases in
+// lib/protocol-action-aliases.ts. Each alias entry exists only so workflows
+// saved against a slug whose contract left an L2 keep running there; an entry
+// whose series stays at zero across a full schedule cycle has no traffic left
+// and can be deleted. Cardinality is bounded by the table (four action types
+// over three chain ids today).
+const protocolAliasRedirects = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_protocol_alias_redirects_total",
+  "Protocol action types resolved onto a renamed replacement slug by the chain-scoped alias table, labelled by action_type and chain_id",
+  ["action_type", "chain_id"]
 );
 
 // Error counters
@@ -1201,6 +1339,82 @@ export function recordWorkflowExecutionErrorByWorkflow(labels: {
   });
 }
 
+// ─── KEEP-1042 execution retention ───────────────────────────────────────────
+// Emitted by the `retention` CronJob's route. The job runs in whichever app pod
+// the service picks, so these live in apiRegistry: the counter is summed across
+// pods, and the freshness gauge must be read with max() -- pods that never
+// served a run export the initial 0.
+
+const retentionRowsPurged = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_execution_retention_rows_purged_total",
+  "Execution rows deleted (or output_raw nulled) by the retention job, by pass",
+  ["pass"]
+);
+
+const retentionRuns = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_execution_retention_runs_total",
+  "Retention job runs by result",
+  ["result"]
+);
+
+// Seconds since the retention job last completed a run. This is the health
+// signal for the job, NOT the oldest-row age: enterprise orgs keep a year of
+// logs, so min(started_at) is pinned by them and would not move at all if the
+// short-window passes silently stopped working.
+const retentionLastSuccess = getOrCreateGauge(
+  apiRegistry,
+  "keeperhub_execution_retention_last_success_timestamp_seconds",
+  "Unix timestamp of the last successful retention run (read with max() across pods)",
+  []
+);
+
+export function recordRetentionRowsPurged(pass: string, rows: number): void {
+  if (rows > 0) {
+    retentionRowsPurged.inc({ pass }, rows);
+  }
+}
+
+export function recordRetentionRun(result: "success" | "failure"): void {
+  retentionRuns.inc({ result });
+  if (result === "success") {
+    retentionLastSuccess.set(Date.now() / 1000);
+  }
+}
+
+// How many organizations the job resolved onto each retention window. This is
+// the check that the window an organization gets is the window it pays for:
+// most organizations have no subscription row and fall back to the default, and
+// until this job nothing ever read `logRetentionDays`, so a wrong or missing
+// plan value cost nothing and could be sitting there unnoticed. Bounded
+// cardinality -- one series per distinct window, four today.
+const retentionWindowOrganizations = getOrCreateGauge(
+  apiRegistry,
+  "keeperhub_execution_retention_window_organizations",
+  "Organizations resolved onto each step-log retention window, by window length in days",
+  ["retention_days"]
+);
+
+const retentionWindowRows = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_execution_retention_window_rows_total",
+  "Step-log rows purged by the plan-window pass, by window length in days",
+  ["retention_days"]
+);
+
+export function recordRetentionWindow(
+  retentionDays: number,
+  organizationCount: number,
+  rows: number
+): void {
+  const label = { retention_days: String(retentionDays) };
+  retentionWindowOrganizations.set(label, organizationCount);
+  if (rows > 0) {
+    retentionWindowRows.inc(label, rows);
+  }
+}
+
 const slowQueries = getOrCreateCounter(
   apiRegistry,
   "keeperhub_db_query_slow_total",
@@ -1422,9 +1636,17 @@ const histogramMap: Record<string, Histogram> = {
   "api.status.latency_ms": statusLatency,
   "plugin.action.duration_ms": pluginDuration,
   "ai.generation.duration_ms": aiDuration,
+  // Executor pipeline latency (issue #2289). See the registration above for
+  // why these are runtime histograms rather than DB-sourced gauges.
+  "executor.dispatch.latency_ms": executorDispatchLatency,
+  "executor.execution.latency_ms": executorExecutionLatency,
+  "executor.broadcast.latency_ms": executorBroadcastLatency,
 };
 
 const counterMap: Record<string, Counter> = {
+  "executor.broadcasts.total": executorBroadcastsTotal,
+  "executor.broadcast.write_failures.total":
+    executorBroadcastWriteFailuresTotal,
   "plugin.invocations.total": pluginInvocations,
   "workflow.executions.started.total": workflowExecutionsStartedTotal,
   "db.query.slow_count": slowQueries,
@@ -1444,6 +1666,7 @@ const counterMap: Record<string, Counter> = {
   // KEEP-612: see safeFetchBlocks definition above for rationale.
   "safe_fetch.blocks.total": safeFetchBlocks,
   "ratelimit.mcp.degraded.total": mcpRateLimitDegraded,
+  "protocol.alias.redirect.total": protocolAliasRedirects,
 };
 
 const errorCounterMap: Record<string, Counter> = {
@@ -1778,6 +2001,8 @@ async function refreshDbMetricsNow(): Promise<void> {
       getWorkflowStatsFromDb,
       getLastFinishedExecutionAgeSecondsFromDb,
       getUnconfirmedExecutionCountsFromDb,
+      getExecutionRetentionStatsFromDb,
+      getStuckPendingTransactionCountsFromDb,
       getWorkflowErrorsByWorkflowFromDb,
       getSystemErrorsByCategoryFromDb,
       getStepStatsFromDb,
@@ -1797,6 +2022,8 @@ async function refreshDbMetricsNow(): Promise<void> {
       workflowStats,
       lastFinishedAgeSeconds,
       unconfirmedCounts,
+      retentionStats,
+      stuckPendingTxCounts,
       errorsByWorkflow,
       systemErrorsByCategoryRows,
       stepStats,
@@ -1815,6 +2042,8 @@ async function refreshDbMetricsNow(): Promise<void> {
       getWorkflowStatsFromDb(),
       getLastFinishedExecutionAgeSecondsFromDb(),
       getUnconfirmedExecutionCountsFromDb(),
+      getExecutionRetentionStatsFromDb(),
+      getStuckPendingTransactionCountsFromDb(),
       getWorkflowErrorsByWorkflowFromDb(),
       getSystemErrorsByCategoryFromDb(),
       getStepStatsFromDb(),
@@ -1861,6 +2090,36 @@ async function refreshDbMetricsNow(): Promise<void> {
         unconfirmedCounts.workflow
       );
       executionsUnconfirmed.set({ kind: "direct" }, unconfirmedCounts.direct);
+    }
+
+    // Same null handling again: on a query error keep the last real reading
+    // rather than reporting a table that suddenly holds nothing.
+    if (retentionStats !== null) {
+      if (retentionStats.oldestLogAgeSeconds !== null) {
+        executionLogOldestAgeSeconds.set(retentionStats.oldestLogAgeSeconds);
+      }
+      executionTableBytes.set(
+        { table: "workflow_execution_logs" },
+        retentionStats.logTableBytes
+      );
+      executionTableBytes.set(
+        { table: "workflow_executions" },
+        retentionStats.executionTableBytes
+      );
+    }
+
+    // Reset before populating so a chain that has drained its
+    // backlog goes back to reporting nothing rather than pinning its last
+    // non-zero value forever. On a query error skip the reset entirely and
+    // keep the previous reading, matching the null handling above.
+    if (stuckPendingTxCounts !== null) {
+      web3PendingTransactionsStuck.reset();
+      for (const row of stuckPendingTxCounts) {
+        web3PendingTransactionsStuck.set(
+          { chain_id: String(row.chainId) },
+          row.count
+        );
+      }
     }
 
     // KEEP-545: the per-org error gauge that used to live here was removed.

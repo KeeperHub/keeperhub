@@ -20,6 +20,8 @@ const {
   mockChargePaygIfBillable,
   mockExecuteWorkflowInBackground,
   mockResolveExecutionOrgMetadata,
+  mockGetDualAuthContext,
+  mockGetWorkflowAccess,
 } = vi.hoisted(() => ({
   mockAuthenticateInternalService: vi.fn(),
   mockLoadWorkflowForExecution: vi.fn(),
@@ -34,6 +36,8 @@ const {
   mockChargePaygIfBillable: vi.fn(),
   mockExecuteWorkflowInBackground: vi.fn(),
   mockResolveExecutionOrgMetadata: vi.fn(),
+  mockGetDualAuthContext: vi.fn(),
+  mockGetWorkflowAccess: vi.fn(),
 }));
 
 vi.mock("@/lib/internal-service-auth", () => ({
@@ -125,14 +129,15 @@ vi.mock("@/lib/metrics/types", () => ({
 vi.mock("@/lib/logging", () => ({
   ErrorCategory: { WORKFLOW_ENGINE: "workflow_engine" },
   logSystemError: vi.fn(),
+  logSecurityEvent: vi.fn(),
 }));
 
 vi.mock("@/lib/middleware/auth-helpers", () => ({
-  getDualAuthContext: vi.fn(),
+  getDualAuthContext: mockGetDualAuthContext,
 }));
 
 vi.mock("@/lib/workflow/access", () => ({
-  getWorkflowAccess: vi.fn(),
+  getWorkflowAccess: mockGetWorkflowAccess,
 }));
 
 vi.mock("@/lib/auth-anonymous-guard", () => ({
@@ -228,6 +233,8 @@ describe("workflow execute redispatch guard", () => {
     mockFindExecution.mockResolvedValue({
       id: "exec_term",
       status: "success",
+      workflowId: "wf_1",
+      organizationId: "org_1",
     });
 
     const response = await callExecute({ executionId: "exec_term" });
@@ -272,7 +279,12 @@ describe("workflow execute redispatch guard", () => {
         async (_idem: unknown, response: Response): Promise<Response> =>
           response
       );
-      mockFindExecution.mockResolvedValue({ id: `exec_${status}`, status });
+      mockFindExecution.mockResolvedValue({
+        id: `exec_${status}`,
+        status,
+        workflowId: "wf_1",
+        organizationId: "org_1",
+      });
 
       const response = await callExecute({ executionId: `exec_${status}` });
       expect(response.status).toBe(409);
@@ -285,6 +297,8 @@ describe("workflow execute redispatch guard", () => {
     mockFindExecution.mockResolvedValue({
       id: "exec_run",
       status: "running",
+      workflowId: "wf_1",
+      organizationId: "org_1",
     });
 
     const response = await callExecute({ executionId: "exec_run" });
@@ -305,6 +319,8 @@ describe("workflow execute redispatch guard", () => {
     mockFindExecution.mockResolvedValue({
       id: "exec_pend",
       status: "pending",
+      workflowId: "wf_1",
+      organizationId: "org_1",
     });
 
     const response = await callExecute({ executionId: "exec_pend" });
@@ -342,6 +358,94 @@ describe("workflow execute redispatch guard", () => {
     expect(body.status).toBe("running");
     expect(mockFindExecution).not.toHaveBeenCalled();
     expect(mockChargePaygIfBillable).toHaveBeenCalled();
+    expect(mockExecuteWorkflowInBackground).toHaveBeenCalled();
+  });
+  it("refuses a caller-supplied executionId from an external caller", async () => {
+    mockAuthenticateInternalService.mockResolvedValue({ authenticated: false });
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user_1",
+      organizationId: "org_1",
+      authMethod: "session",
+      isAnonymous: false,
+      scope: "mcp:write",
+    });
+    mockGetWorkflowAccess.mockResolvedValue({ hasFullAccess: true });
+
+    const response = await callExecute({ executionId: "exec_foreign" });
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("execution_id_not_allowed");
+    expect(mockFindExecution).not.toHaveBeenCalled();
+    expect(mockChargePaygIfBillable).not.toHaveBeenCalled();
+    expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+  });
+
+  it("still creates a row for an external caller that supplies no id", async () => {
+    mockAuthenticateInternalService.mockResolvedValue({ authenticated: false });
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user_1",
+      organizationId: "org_1",
+      authMethod: "session",
+      isAnonymous: false,
+      scope: "mcp:write",
+    });
+    mockGetWorkflowAccess.mockResolvedValue({ hasFullAccess: true });
+
+    const response = await callExecute({});
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.executionId).toBe("exec_new");
+    expect(mockExecuteWorkflowInBackground).toHaveBeenCalled();
+  });
+
+  it("refuses a pending row that belongs to another organization", async () => {
+    mockFindExecution.mockResolvedValue({
+      id: "exec_victim",
+      status: "pending",
+      workflowId: "wf_other",
+      organizationId: "org_2",
+    });
+
+    const response = await callExecute({ executionId: "exec_victim" });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.code).toBe("execution_id_mismatch");
+    expect(mockChargePaygIfBillable).not.toHaveBeenCalled();
+    expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+    expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("refuses a row of another workflow inside the same organization", async () => {
+    mockFindExecution.mockResolvedValue({
+      id: "exec_sibling",
+      status: "pending",
+      workflowId: "wf_2",
+      organizationId: "org_1",
+    });
+
+    const response = await callExecute({ executionId: "exec_sibling" });
+
+    expect(response.status).toBe(409);
+    expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+    expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("adopts a legacy row with a null organizationId on the same workflow", async () => {
+    mockFindExecution.mockResolvedValue({
+      id: "exec_legacy",
+      status: "pending",
+      workflowId: "wf_1",
+      organizationId: null,
+    });
+
+    const response = await callExecute({ executionId: "exec_legacy" });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ executionId: "exec_legacy", status: "running" });
     expect(mockExecuteWorkflowInBackground).toHaveBeenCalled();
   });
 });

@@ -8,7 +8,7 @@
  * This ensures the protocol registry is populated when the Next.js
  * server starts (via the plugin import chain).
  *
- * Registered protocols: aave-v3, aave-v4, aerodrome, ajna, chainlink, chronicle, compound, cowswap, curve, ethena, frax-ether-v2, hyperliquid, lido, morpho, pendle, robinhood, rocket-pool, safe, sky, spark, superfluid, uniswap, wrapped, yearn
+ * Registered protocols: aave-v3, aave-v4, aerodrome, ajna, chainlink, chronicle, coinbase-cbeth, compound, cowswap, curve, ethena, euler-v2, frax-ether-v2, hyperliquid, layerzero, lido, morpho, pendle, pyth, renzo, robinhood, rocket-pool, safe, sky, spark, superfluid, uniswap, wrapped, yearn
  */
 
 import { protocolToPlugin, registerProtocol } from "@/lib/protocol-registry";
@@ -20,15 +20,20 @@ import aerodromeDef from "./aerodrome";
 import ajnaDef from "./ajna";
 import chainlinkDef from "./chainlink";
 import chronicleDef from "./chronicle";
+import coinbaseCbethDef from "./coinbase-cbeth";
 import compoundDef from "./compound-v3";
 import cowswapDef from "./cowswap";
 import curveDef from "./curve";
 import ethenaDef from "./ethena";
+import eulerV2Def from "./euler-v2";
 import fraxEtherV2Def from "./frax-ether-v2";
 import hyperliquidDef from "./hyperliquid";
+import layerzeroDef from "./layerzero";
 import lidoDef from "./lido";
 import morphoDef from "./morpho";
 import pendleDef from "./pendle";
+import pythDef from "./pyth";
+import renzoDef from "./renzo";
 import robinhoodDef from "./robinhood";
 import rocketPoolDef from "./rocket-pool";
 import safeDef from "./safe";
@@ -51,6 +56,8 @@ registerProtocol(chainlinkDef);
 registerIntegration(protocolToPlugin(chainlinkDef));
 registerProtocol(chronicleDef);
 registerIntegration(protocolToPlugin(chronicleDef));
+registerProtocol(coinbaseCbethDef);
+registerIntegration(protocolToPlugin(coinbaseCbethDef));
 registerProtocol(compoundDef);
 registerIntegration(protocolToPlugin(compoundDef));
 registerProtocol(cowswapDef);
@@ -59,15 +66,23 @@ registerProtocol(curveDef);
 registerIntegration(protocolToPlugin(curveDef));
 registerProtocol(ethenaDef);
 registerIntegration(protocolToPlugin(ethenaDef));
+registerProtocol(eulerV2Def);
+registerIntegration(protocolToPlugin(eulerV2Def));
 registerProtocol(fraxEtherV2Def);
 registerIntegration(protocolToPlugin(fraxEtherV2Def));
 registerProtocol(hyperliquidDef);
+registerProtocol(layerzeroDef);
+registerIntegration(protocolToPlugin(layerzeroDef));
 registerProtocol(lidoDef);
 registerIntegration(protocolToPlugin(lidoDef));
 registerProtocol(morphoDef);
 registerIntegration(protocolToPlugin(morphoDef));
 registerProtocol(pendleDef);
 registerIntegration(protocolToPlugin(pendleDef));
+registerProtocol(pythDef);
+registerIntegration(protocolToPlugin(pythDef));
+registerProtocol(renzoDef);
+registerIntegration(protocolToPlugin(renzoDef));
 registerProtocol(robinhoodDef);
 registerProtocol(rocketPoolDef);
 registerIntegration(protocolToPlugin(rocketPoolDef));

@@ -20,8 +20,8 @@ Returns execution history for a workflow.
 ```json
 [
   {
-    "id": "exec_123",
-    "workflowId": "wf_456",
+    "id": "n5lyy066zzplv64gijm0y",
+    "workflowId": "2mp0ybcgj03t0ybqlngyb",
     "status": "success",
     "input": {...},
     "output": {...},
@@ -39,6 +39,40 @@ Returns execution history for a workflow.
   }
 ]
 ```
+
+A run's `input` or `output` larger than 1 MiB is returned as `{ "_truncated": true, "originalSize": <bytes>, "preview": "<first 1024 characters>" }` in place of the value.
+
+### Summary view and pagination
+
+Add `view=summary` for a lighter, paginated list. Each run omits `input`, `output` and `executionTrace`; read those per run from the [logs](#get-execution-logs) endpoint. The default response grows with the size of every run's output, so prefer this view when you only need status and progress.
+
+| Parameter | Description |
+|-----------|-------------|
+| `view` | `summary` |
+| `limit` | Runs per page, 1 to 100. Default 20. |
+| `cursor` | The `nextCursor` value from the previous page. Omit for the first page. |
+
+```json
+{
+  "executions": [
+    {
+      "id": "n5lyy066zzplv64gijm0y",
+      "workflowId": "2mp0ybcgj03t0ybqlngyb",
+      "status": "success",
+      "startedAt": "2024-01-01T00:00:00Z",
+      "completedAt": "2024-01-01T00:00:05Z",
+      "totalSteps": 3,
+      "completedSteps": 3,
+      "transactionHashes": [...],
+      "ranVersion": 2
+    }
+  ],
+  "nextCursor": "WyIyMDI0LTAxLTAxIDAwOjAwOjAwIiwibjVseXkwNjZ6enBsdjY0Z2lqbTB5Il0",
+  "total": 46
+}
+```
+
+`nextCursor` is opaque and `null` on the last page. `total` counts the workflow's runs across all pages; it is exact up to 10,000 and reported as 10,000 for a workflow with more. Summary responses carry an `ETag`; send it back in `If-None-Match` to receive `304 Not Modified` when nothing has changed.
 
 ## Get Execution Status
 
@@ -137,7 +171,7 @@ Blocks until the execution reaches a terminal state (`success`, `error`, or `can
 
 ```json
 {
-  "executionId": "exec_123",
+  "executionId": "n5lyy066zzplv64gijm0y",
   "status": "success",
   "completed": true,
   "transactionHashes": [
@@ -176,13 +210,15 @@ Returns detailed per-node logs for an execution along with the execution row its
 
 `logs` is ordered by `timestamp` descending (most recent first).
 
+A step's `input`, `output` or `outputRaw` larger than 1 MiB is returned as `{ "_truncated": true, "originalSize": <bytes>, "preview": "<first 1024 characters>" }` in place of the value; the same limit applies when the step runs, so a step whose result would exceed it fails with an error naming the size.
+
 ### Response
 
 ```json
 {
   "execution": {
-    "id": "exec_123",
-    "workflowId": "wf_456",
+    "id": "n5lyy066zzplv64gijm0y",
+    "workflowId": "2mp0ybcgj03t0ybqlngyb",
     "userId": "user_789",
     "status": "success",
     "input": {...},
@@ -195,7 +231,7 @@ Returns detailed per-node logs for an execution along with the execution row its
   "logs": [
     {
       "id": "log_001",
-      "executionId": "exec_123",
+      "executionId": "n5lyy066zzplv64gijm0y",
       "nodeId": "transfer-1",
       "nodeName": "First transfer",
       "nodeType": "web3/transfer-funds",

@@ -25,6 +25,10 @@ import {
   type PlanName,
   type TierKey,
 } from "@/lib/billing/plans";
+import {
+  formatLogRetention,
+  retentionDowngradeWarning,
+} from "@/lib/billing/retention-copy";
 import { cn } from "@/lib/utils";
 import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
 import type { GasCreditCapsMap } from "./pricing-table/types";
@@ -73,13 +77,6 @@ function formatExecutions(count: number): string {
     return "Unlimited";
   }
   return count.toLocaleString();
-}
-
-function formatLogRetention(days: number): string {
-  if (days >= 365) {
-    return "1 year";
-  }
-  return `${days} days`;
 }
 
 function formatCurrency(amountCents: number, currency: string): string {
@@ -531,6 +528,10 @@ export function ConfirmPlanChangeDialog({
   );
 
   const hasDowngrades = changes.some((c) => c.direction === "downgrade");
+  const retentionWarning = retentionDowngradeWarning(
+    currentFeatures.logRetentionDays,
+    newFeatures.logRetentionDays
+  );
 
   return (
     <AlertDialog onOpenChange={onOpenChange} open={open}>
@@ -603,6 +604,10 @@ export function ConfirmPlanChangeDialog({
                   This change reduces some features compared to your current
                   plan.
                 </p>
+              )}
+
+              {retentionWarning && (
+                <p className="text-xs text-destructive">{retentionWarning}</p>
               )}
             </div>
           </AlertDialogDescription>

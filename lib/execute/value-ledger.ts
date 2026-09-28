@@ -7,6 +7,10 @@ import {
   organizationSpendCaps,
   orgValueReservations,
 } from "@/lib/db/schema-extensions";
+import {
+  isOrgHalted,
+  ORG_HALTED_REASON,
+} from "@/lib/execute/org-circuit-breaker";
 import { parseNodeNativeValueWei } from "@/lib/execute/reserved-value";
 import {
   getDefaultDailySolanaValueCapLamports,
@@ -243,6 +247,16 @@ export async function reserveOrgValue(
   params: ReserveParams
 ): Promise<ReserveResult> {
   return await db.transaction(async (tx) => {
+    if (await isOrgHalted(tx, params.organizationId)) {
+      logSecurityEvent("org_circuit_breaker_blocked", {
+        organizationId: params.organizationId,
+        surface: params.source ?? "value-ledger",
+        chainFamily: "evm",
+        reserved: params.valueWei,
+      });
+      return { allowed: false, reason: ORG_HALTED_REASON } as const;
+    }
+
     const cap = await lockOrgSpendCapRow(tx, params.organizationId);
 
     const usingDefault = cap.dailyValueCapWei === null;
@@ -301,6 +315,16 @@ export async function reserveOrgSolanaValue(
   params: ReserveSolanaParams
 ): Promise<ReserveResult> {
   return await db.transaction(async (tx) => {
+    if (await isOrgHalted(tx, params.organizationId)) {
+      logSecurityEvent("org_circuit_breaker_blocked", {
+        organizationId: params.organizationId,
+        surface: params.source ?? "value-ledger",
+        chainFamily: "solana",
+        reserved: params.valueLamports,
+      });
+      return { allowed: false, reason: ORG_HALTED_REASON } as const;
+    }
+
     const cap = await lockOrgSpendCapRow(tx, params.organizationId);
 
     const usingDefault = cap.dailySolanaValueCapLamports === null;

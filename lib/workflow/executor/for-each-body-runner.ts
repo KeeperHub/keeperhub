@@ -26,7 +26,10 @@
  *    actions or conditions came before it in the iteration body.
  */
 import type { EdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-utils";
-import { resolveBodyConditionTargets } from "@/lib/workflow/executor/executor.workflow";
+import {
+  type ForEachIterationSummary,
+  resolveBodyConditionTargets,
+} from "@/lib/workflow/executor/executor.workflow";
 import {
   EXCEEDED_MAX_RETRIES_REGEX,
   FAILED_AFTER_RETRIES_REGEX,
@@ -70,7 +73,7 @@ export type NestedForEachHandler = (params: {
   scopedOutputs: BodyNodeOutputs;
   bodyResults: Record<string, BodyExecutionResult>;
   bodyVisited: Set<string>;
-}) => Promise<void>;
+}) => Promise<ForEachIterationSummary>;
 
 /** KEEP-543: Resolver for spurious-max-retries inside iteration bodies. When
  *  the Workflow DevKit throws "exceeded max retries" because it lost the
@@ -188,7 +191,7 @@ async function routeAfterSuccess(params: {
 
   if (actionType === "For Each") {
     if (ctx.handleNestedForEach) {
-      await ctx.handleNestedForEach({
+      const summary = await ctx.handleNestedForEach({
         forEachNodeId: nodeId,
         forEachNode: node,
         processedConfig,
@@ -196,6 +199,14 @@ async function routeAfterSuccess(params: {
         bodyResults: ctx.bodyResults,
         bodyVisited: ctx.bodyVisited,
       });
+      if (summary.failedIterations > 0) {
+        ctx.bodyResults[nodeId] = {
+          success: false,
+          error: summary.firstFailureError ?? "For Each iteration body failed",
+          data: summary,
+        };
+        return;
+      }
     }
     const downstream = ctx.bodyEdgesBySource.get(nodeId) ?? [];
     await recurseInto(downstream, ctx);

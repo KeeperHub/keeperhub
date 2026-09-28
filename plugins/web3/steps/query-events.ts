@@ -13,8 +13,10 @@ import {
   type BlockRange,
   resolveBlockRange,
 } from "./block-range-helpers";
+import { buildEventArgTopics } from "./event-arg-filter-core";
 import {
   type AbiEntry,
+  type EventTopicFilter,
   isNearHeadBatch,
   queryBatchWithRetry,
 } from "./query-events-core";
@@ -61,6 +63,7 @@ export type QueryEventsCoreInput = ReadFailOnErrorInput & {
   contractAddress: string;
   abi: string;
   eventName: string;
+  eventArgs?: string | Record<string, unknown>;
   fromBlock?: string;
   toBlock?: string;
   blockCount?: number | string;
@@ -115,7 +118,8 @@ async function queryEventBatches(
   parsedAbi: AbiEntry[],
   eventName: string,
   eventFragment: ethers.EventFragment,
-  range: BlockRange
+  range: BlockRange,
+  topics: EventTopicFilter
 ): Promise<EventBatchesResult> {
   const batchSize = DEFAULT_BATCH_SIZE;
   const allEvents: DecodedEvent[] = [];
@@ -137,7 +141,8 @@ async function queryEventBatches(
       eventName,
       start,
       end,
-      isTipBatch
+      isTipBatch,
+      topics
     );
 
     for (const event of batchEvents) {
@@ -236,6 +241,19 @@ async function stepHandler(
     };
   }
 
+  // Compile the argument filter before any RPC work. A filter naming a
+  // parameter that is not indexed, or one the topics cannot express, would
+  // otherwise spend a full scan to return nothing and read as "no activity".
+  const topicResult = buildEventArgTopics(input.eventArgs, eventFragment);
+  if (!topicResult.success) {
+    return { success: false, error: topicResult.error };
+  }
+  if (topicResult.applied.length > 0) {
+    console.log(
+      `[Query Events] Filtering on indexed ${topicResult.applied.join(", ")}`
+    );
+  }
+
   let rpcManager: RpcProviderManager;
   try {
     rpcManager = await getRpcProvider({ chainId, userId });
@@ -284,7 +302,8 @@ async function stepHandler(
       abiResult.parsed,
       eventName,
       eventFragment,
-      range
+      range,
+      topicResult.topics
     );
 
     console.log("[Query Events] Query complete. Events found:", events.length);

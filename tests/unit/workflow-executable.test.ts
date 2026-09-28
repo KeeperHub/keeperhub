@@ -12,7 +12,11 @@ vi.mock("@/lib/db/schema", () => ({
     organizationId: "organization_id",
     userId: "user_id",
   },
-  organization: { id: "id", deactivatedAt: "deactivated_at" },
+  organization: {
+    id: "id",
+    deactivatedAt: "deactivated_at",
+    haltedAt: "halted_at",
+  },
 }));
 
 import {
@@ -108,6 +112,49 @@ describe("getWorkflowExecutability", () => {
         orgDeactivatedAt: new Date(),
       })
     ).toEqual({ executable: false, reason: "org_deactivated" });
+  });
+
+  it("reports 'halted' when the owning org's circuit breaker is engaged", () => {
+    expect(
+      getWorkflowExecutability({
+        enabled: true,
+        deletedAt: null,
+        deactivatedAt: null,
+        orgDeactivatedAt: null,
+        orgHaltedAt: new Date(),
+      })
+    ).toEqual({ executable: false, reason: "halted" });
+  });
+
+  it("prefers 'halted' over 'disabled' so a disabled workflow in a halted org reports the incident", () => {
+    expect(
+      getWorkflowExecutability({
+        enabled: false,
+        orgHaltedAt: new Date(),
+      })
+    ).toEqual({ executable: false, reason: "halted" });
+  });
+
+  it("prefers 'org_deactivated' over 'halted' because deactivation is the permanent state", () => {
+    expect(
+      getWorkflowExecutability({
+        enabled: true,
+        orgDeactivatedAt: new Date(),
+        orgHaltedAt: new Date(),
+      })
+    ).toEqual({ executable: false, reason: "org_deactivated" });
+  });
+
+  it("is executable when the org halt is cleared (null) and otherwise live", () => {
+    expect(
+      getWorkflowExecutability({
+        enabled: true,
+        deletedAt: null,
+        deactivatedAt: null,
+        orgDeactivatedAt: null,
+        orgHaltedAt: null,
+      })
+    ).toEqual({ executable: true });
   });
 
   it("reports 'disabled' when not enabled and otherwise live", () => {

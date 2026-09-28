@@ -94,16 +94,23 @@ const recordIdempotentResponseMock = vi.fn(
   (_outcome: unknown, response: Response, _disposition?: string) =>
     Promise.resolve(response)
 );
-vi.mock("@/lib/idempotency", () => ({
-  beginIdempotentFromRequest: vi.fn().mockResolvedValue({ kind: "proceed" }),
-  idempotencyEarlyResponse: vi.fn().mockReturnValue(null),
-  recordIdempotentResponse: (
-    outcome: unknown,
-    response: Response,
-    disposition?: string
-  ) => recordIdempotentResponseMock(outcome, response, disposition),
-  withIdempotencyHeartbeat: (_outcome: unknown, fn: () => unknown) => fn(),
-}));
+vi.mock("@/lib/idempotency", async () => {
+  const { dispositionForExecutionOutcome } = await vi.importActual<
+    typeof import("@/lib/idempotency-disposition")
+  >("@/lib/idempotency-disposition");
+
+  return {
+    beginIdempotentFromRequest: vi.fn().mockResolvedValue({ kind: "proceed" }),
+    dispositionForExecutionOutcome,
+    idempotencyEarlyResponse: vi.fn().mockReturnValue(null),
+    recordIdempotentResponse: (
+      outcome: unknown,
+      response: Response,
+      disposition?: string
+    ) => recordIdempotentResponseMock(outcome, response, disposition),
+    withIdempotencyHeartbeat: (_outcome: unknown, fn: () => unknown) => fn(),
+  };
+});
 
 function protocolWithSupplyInputs(
   inputs: Array<{
@@ -432,7 +439,7 @@ describe("POST /api/execute/{protocol}/{action} required params", () => {
       amount: "1000",
     });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(writeContractCoreMock).toHaveBeenCalledWith(
       expect.objectContaining({
         functionArgs: JSON.stringify(["0xToken", "1000", "0"]),
