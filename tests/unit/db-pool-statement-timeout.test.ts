@@ -63,7 +63,7 @@ function queryPool(options: PoolOptions[]): PoolOptions {
   return pool;
 }
 
-const ANALYTICS_POOL_MAX = 5;
+const ANALYTICS_POOL_MAX = 20;
 
 /**
  * The analytics pool, found by its size.
@@ -142,11 +142,11 @@ describe("analytics pool", () => {
     process.env = originalEnv;
   });
 
-  it("caps the dashboard at 5 connections per pod", async () => {
+  it("sizes the pool to one full refresh pass", async () => {
     const options = await loadPoolOptions();
 
-    // The cap is the isolation. Whatever the dashboard does, it cannot reach
-    // the app pool's 10 and starve the writes that keep runs alive.
+    // One pass peaks at 18 connections and a stream tick adds 1, so a single
+    // viewer never waits on its own queries.
     expect(analyticsPool(options).max).toBe(ANALYTICS_POOL_MAX);
   });
 

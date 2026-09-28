@@ -176,23 +176,20 @@ export const metricsDb =
 
 // Dedicated pool for the /analytics read path, for the same reason the metrics
 // collector has one: its queries are the heaviest the request path issues, and
-// on the shared pool they compete with the writes that keep runs alive. A
-// dashboard fans out five requests per pass and its slowest are unbounded in
-// the range they scan, so on max:10 a couple of viewers can hold every
-// connection a pod has. The executor then cannot record progress, the reaper
-// files those runs as system errors, and a slow page becomes dropped runs.
+// on the shared pool they compete with the writes that keep runs alive. On the
+// app pool's max:10 a single viewer's refresh pass could hold every connection
+// a pod has, the executor could not record progress, and the reaper filed those
+// runs as system errors.
 //
-// max:5 caps that at 5 connections per pod whatever the dashboard does, and
-// leaves the app pool's 10 for work that must not queue behind a chart. The
-// trade is deliberate: analytics requests queue and the page feels slow, rather
-// than the platform degrading with it.
-//
-// 5 is the fan-out of one refresh pass, so a single viewer never queues against
-// itself. Below that the wait is invisible to statement_timeout, which starts
-// only once a connection is held, and a queue that outlives the request shows
-// up as an edge timeout with no server-side signal. getAnalyticsChecksum runs
-// its arms sequentially for the same reason: one stream tick must cost one
-// connection, not three.
+// A separate pool keeps the app pool's 10 for work that must not queue behind a
+// chart, whatever the dashboard does. Its size is set by one refresh pass: at
+// peak the summary holds 10 connections (six arms, one of which runs the four
+// previous-period queries), runs 4, networks 2, time-series 1 and facets 1, and
+// a stream tick adds 1. max:20 covers that, so a single viewer never queues
+// against itself. A queue is invisible to statement_timeout, which starts only
+// once a connection is held, and one that outlives the request shows up as an
+// edge timeout with no server-side signal. getAnalyticsChecksum runs its arms
+// sequentially so a stream tick costs one connection, not three.
 //
 // 15s rather than the app pool's 30s because the client abandons a pass long
 // before then - it polls on a 10s rearm and aborts the previous pass - and an
@@ -211,7 +208,7 @@ const ANALYTICS_STATEMENT_TIMEOUT_MS =
 const analyticsClient =
   globalForDb.analyticsClient ??
   postgres(connectionString, {
-    max: 5,
+    max: 20,
     idle_timeout: 20,
     connection: { statement_timeout: ANALYTICS_STATEMENT_TIMEOUT_MS },
   });
