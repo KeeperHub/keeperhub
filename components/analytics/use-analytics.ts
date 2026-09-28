@@ -1,6 +1,6 @@
 "use client";
 
-import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import { useCallback, useEffect, useRef } from "react";
 import {
   createPollScheduler,
@@ -32,6 +32,7 @@ import {
   analyticsProjectIdAtom,
   analyticsRangeAtom,
   analyticsRunsAtom,
+  analyticsRunsPageAtom,
   analyticsSearchAtom,
   analyticsSourceFiltersAtom,
   analyticsStatusFiltersAtom,
@@ -118,6 +119,9 @@ export function useAnalytics(): UseAnalyticsReturn {
   const setRuns = useSetAtom(analyticsRunsAtom);
   const setFacets = useSetAtom(analyticsFacetsAtom);
   const setLastUpdated = useSetAtom(analyticsLastUpdatedAtom);
+  // Read at call time, not subscribed, so paging does not rebuild fetchData
+  // and restart the refresh.
+  const store = useStore();
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const pollSchedulerRef = useRef<PollScheduler | null>(null);
@@ -160,7 +164,8 @@ export function useAnalytics(): UseAnalyticsReturn {
       customStart,
       customEnd,
     };
-    const runsQuery = buildRunsQuery(filters);
+    const runsPage = store.get(analyticsRunsPageAtom);
+    const runsQuery = buildRunsQuery({ ...filters, page: runsPage });
     // The status counts sit under every filter except status itself, so the
     // facets request carries the same query with that one dimension lifted.
     // Status only. The network and gas counts read the step logs, and this
@@ -270,6 +275,11 @@ export function useAnalytics(): UseAnalyticsReturn {
       ),
       wrapSection(
         processSection<WireRunsResponse>(runsPromise, "Runs", ctx, (data) => {
+          // The user paged while this pass was in flight, so its rows are
+          // for a page no longer on screen.
+          if (store.get(analyticsRunsPageAtom) !== runsPage) {
+            return;
+          }
           setRuns(normalizeRunsResponse(data));
         })
       ),
@@ -306,6 +316,7 @@ export function useAnalytics(): UseAnalyticsReturn {
     setRuns,
     setFacets,
     setLastUpdated,
+    store,
   ]);
 
   const cleanupSSE = useCallback((): void => {
@@ -397,8 +408,10 @@ export function useAnalytics(): UseAnalyticsReturn {
     setLastUpdated,
   ]);
 
-  // Fetch on mount and when range/filters change
+  // Fetch on mount and when range/filters change. A new filter set starts the
+  // listing again at page 1.
   useEffect(() => {
+    store.set(analyticsRunsPageAtom, 1);
     fetchData().catch(() => {
       /* initial fetch errors handled in fetchData */
     });
@@ -407,7 +420,7 @@ export function useAnalytics(): UseAnalyticsReturn {
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
     };
-  }, [fetchData]);
+  }, [fetchData, store]);
 
   // Re-fetch when org switches
   const prevOrgIdRef = useRef(activeOrgId);
