@@ -31,6 +31,7 @@ import {
   workflowSchedules,
   workflows,
 } from "../lib/db/schema";
+import { describeErrorCauses } from "../lib/errors/cause-chain";
 import { buildExecutorInput } from "../lib/workflow/executor/build-executor-input";
 import { executeWorkflow } from "../lib/workflow/executor/executor.workflow";
 import { SHUTDOWN_TIMEOUT_MS } from "../lib/workflow/executor/runner-constants";
@@ -371,6 +372,13 @@ async function main(): Promise<void> {
       error instanceof Error ? error.message : "Unknown error";
 
     console.error(`[Runner] Fatal error after ${duration}ms${correlationSuffix}:`, errorMessage);
+    // The message of a wrapped driver error ("Failed query: ...") does not say
+    // why the query failed; the driver error sits on `cause`. Logged only: the
+    // stored error text stays as-is so its classification does not change.
+    const causes = describeErrorCauses(error);
+    if (causes) {
+      console.error(`[Runner] Cause${correlationSuffix}: ${causes}`);
+    }
 
     let dbUpdateSucceeded = false;
     try {

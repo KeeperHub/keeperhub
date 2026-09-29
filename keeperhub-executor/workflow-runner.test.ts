@@ -1,3 +1,4 @@
+import { DrizzleQueryError } from "drizzle-orm/errors";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SHUTDOWN_TIMEOUT_MS } from "../lib/workflow/executor/runner-constants";
 
@@ -239,5 +240,101 @@ describe("handleGracefulShutdown", () => {
     await vi.advanceTimersByTimeAsync(SHUTDOWN_TIMEOUT_MS);
 
     expect(process.exit).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("main() fatal error path", () => {
+  beforeEach(() => {
+    for (const fn of Object.values(mocks)) {
+      fn.mockReset();
+    }
+    mocks.updateScheduleStatus.mockResolvedValue(undefined);
+    mocks.shipMetricsToExecutor.mockResolvedValue(undefined);
+    mocks.queryClientEnd.mockResolvedValue(undefined);
+    process.env.DATABASE_URL =
+      "postgresql://runner:runner@localhost:5432/runner";
+    process.env.WORKFLOW_ID = "wf-1";
+    process.env.EXECUTION_ID = "exec-1";
+    process.env.SCHEDULE_ID = "sched-1";
+    delete process.env.KH_CORRELATION_ID;
+    vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("logs the driver error behind a failed first status write and stores the message unchanged", async () => {
+    const driverError = Object.assign(
+      new AggregateError(
+        [
+          Object.assign(new Error("connect ETIMEDOUT 192.0.2.10:5432"), {
+            code: "ETIMEDOUT",
+            address: "192.0.2.10",
+            port: 5432,
+          }),
+          Object.assign(new Error("connect ENETUNREACH 2001:db8::1:5432"), {
+            code: "ENETUNREACH",
+            address: "2001:db8::1",
+            port: 5432,
+          }),
+        ],
+        ""
+      ),
+      { code: "ETIMEDOUT" }
+    );
+    const queryError = new DrizzleQueryError(
+      'update "workflow_executions" set "status" = $1',
+      ["running", "exec-1"],
+      driverError
+    );
+    // The "running" write fails; the "error" write that records it succeeds.
+    mocks.updateExecutionStatus
+      .mockRejectedValueOnce(queryError)
+      .mockResolvedValue(undefined);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    vi.resetModules();
+    await import("./workflow-runner");
+    await vi.waitFor(() => expect(process.exit).toHaveBeenCalled());
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "[Runner] Cause: AggregateError ETIMEDOUT [ETIMEDOUT 192.0.2.10:5432 | ENETUNREACH 2001:db8::1:5432]"
+    );
+    // The stored text is the wrapper's message only, so the error classifier
+    // sees exactly what it saw before the cause was logged.
+    expect(mocks.updateExecutionStatus).toHaveBeenLastCalledWith(
+      expect.anything(),
+      "exec-1",
+      "error",
+      { error: queryError.message }
+    );
+    expect(mocks.executeWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("logs no cause line for an error without a cause", async () => {
+    mocks.updateExecutionStatus
+      .mockRejectedValueOnce(new Error("plain failure"))
+      .mockResolvedValue(undefined);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    vi.resetModules();
+    await import("./workflow-runner");
+    await vi.waitFor(() => expect(process.exit).toHaveBeenCalled());
+
+    const causeLines = consoleError.mock.calls.filter(
+      ([first]) => typeof first === "string" && first.startsWith("[Runner] Cause")
+    );
+    expect(causeLines).toHaveLength(0);
+    expect(mocks.updateExecutionStatus).toHaveBeenLastCalledWith(
+      expect.anything(),
+      "exec-1",
+      "error",
+      { error: "plain failure" }
+    );
   });
 });

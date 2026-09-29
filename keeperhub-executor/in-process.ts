@@ -1,6 +1,7 @@
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { takeBroadcastMarker } from "./lib/broadcast-marker";
 import { validateWorkflowIntegrations } from "../lib/db/integrations";
+import { describeErrorCauses } from "../lib/errors/cause-chain";
 import { getMetricsCollector } from "../lib/metrics";
 import { LabelKeys, MetricNames } from "../lib/metrics/types";
 import { buildExecutorInput } from "../lib/workflow/executor/build-executor-input";
@@ -203,6 +204,14 @@ export async function executeInProcess(params: {
       `[Executor:InProcess] Fatal error after ${duration}ms correlationId=${latency.correlationId}:`,
       errorMessage
     );
+    // Same as the runner: log the driver error behind a wrapped DB error,
+    // without changing the stored error text.
+    const causes = describeErrorCauses(error);
+    if (causes) {
+      console.error(
+        `[Executor:InProcess] Cause correlationId=${latency.correlationId}: ${causes}`
+      );
+    }
 
     try {
       await updateExecutionStatus(db, executionId, "error", {

@@ -36,6 +36,7 @@ vi.mock("./config", () => ({
     imagePullPolicy: "Never",
     runnerEphemeralStorageRequest: "64Mi",
     runnerEphemeralStorageLimit: "1Gi",
+    runnerExtraNodeOptions: "",
     jobTtlSeconds: 300,
     jobActiveDeadline: 600,
     jobDrainTimeoutMs: 400_000,
@@ -100,6 +101,7 @@ describe("createWorkflowJob", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (CONFIG as Record<string, unknown>).etherscanApiKey = "test-etherscan-key";
+    (CONFIG as Record<string, unknown>).runnerExtraNodeOptions = "";
     delete (CONFIG as Record<string, unknown>).workflowRunnerCollectMonitoring;
     delete process.env.METRICS_COLLECTOR;
     delete process.env.EXECUTOR_METRICS_INGEST_URL;
@@ -595,5 +597,35 @@ describe("createWorkflowJob", () => {
     // off-heap allocations that sit alongside it, not merely undercut the limit.
     expect(heapCapMib).toBeLessThan(limitMib);
     expect(limitMib - heapCapMib).toBeGreaterThanOrEqual(256);
+  });
+
+  it("sets only the heap cap in NODE_OPTIONS when no extra options are configured", async () => {
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const envVars = getJobEnvVars(getSubmittedJob());
+    expect(getEnvVar(envVars, "NODE_OPTIONS")).toBe("--max-old-space-size=512");
+  });
+
+  it("appends the configured extra options to the runner NODE_OPTIONS", async () => {
+    (CONFIG as Record<string, unknown>).runnerExtraNodeOptions =
+      " --no-network-family-autoselection ";
+
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const envVars = getJobEnvVars(getSubmittedJob());
+    expect(getEnvVar(envVars, "NODE_OPTIONS")).toBe(
+      "--max-old-space-size=512 --no-network-family-autoselection"
+    );
+    expect(envVars.filter((v) => v.name === "NODE_OPTIONS")).toHaveLength(1);
   });
 });

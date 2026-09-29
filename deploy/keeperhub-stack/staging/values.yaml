@@ -1137,6 +1137,17 @@ executor:
     RUNNER_EPHEMERAL_STORAGE_LIMIT:
       type: kv
       value: "1Gi"
+    # Connect to the first resolved address instead of racing IPv4 and IPv6.
+    # With the race on, an event-loop stall of 250 ms after connect() aborts
+    # the IPv4 attempt even when it has already connected. The executor's own
+    # NODE_OPTIONS never reaches runner pods, so RUNNER_EXTRA_NODE_OPTIONS
+    # carries the same flag to them.
+    NODE_OPTIONS:
+      type: kv
+      value: "--no-network-family-autoselection"
+    RUNNER_EXTRA_NODE_OPTIONS:
+      type: kv
+      value: "--no-network-family-autoselection"
     EXECUTION_MODE:
       type: kv
       value: "isolated"

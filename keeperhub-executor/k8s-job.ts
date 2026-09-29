@@ -7,6 +7,7 @@ import {
 import { CONFIG } from "./config";
 import { isSafeCorrelationId } from "./latency";
 import { getRunnerSystemEnvVars } from "./runner-env";
+import { buildRunnerNodeOptions } from "./runner-node-options";
 
 const kc = new KubeConfig();
 kc.loadFromDefault();
@@ -159,7 +160,13 @@ export async function createWorkflowJob(params: {
     // on the heap: a step that parses a large API response holds the response
     // buffer off-heap while the parsed objects sit on it, so the gap has to
     // cover both. Raise the two together or not at all.
-    { name: "NODE_OPTIONS", value: "--max-old-space-size=512" },
+    //
+    // The heap cap is RUNNER_BASE_NODE_OPTIONS; RUNNER_EXTRA_NODE_OPTIONS on the
+    // executor appends deployment-specific flags.
+    {
+      name: "NODE_OPTIONS",
+      value: buildRunnerNodeOptions(CONFIG.runnerExtraNodeOptions),
+    },
     // Derived from activeDeadlineSeconds so the drain watchdog always fires
     // while the pod is alive. See resolveDrainTimeoutMs in config.ts.
     {

@@ -90,6 +90,10 @@ export const CONFIG = {
     process.env.RUNNER_EPHEMERAL_STORAGE_REQUEST || "64Mi",
   runnerEphemeralStorageLimit:
     process.env.RUNNER_EPHEMERAL_STORAGE_LIMIT || "1Gi",
+  // Extra Node flags appended to the runner pods' NODE_OPTIONS (see
+  // runner-node-options.ts). Empty by default, so runner pods keep the base
+  // flags only. Validated at executor startup.
+  runnerExtraNodeOptions: process.env.RUNNER_EXTRA_NODE_OPTIONS || "",
   // Finished runner pods hold their /tmp emptyDir + logs on the node until the
   // TTL controller deletes them. Kept short so a busy node reclaims that disk in
   // minutes rather than accumulating an hour of churn (the DiskPressure flap on

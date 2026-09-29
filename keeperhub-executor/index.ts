@@ -89,6 +89,7 @@ import { toJsonSafe } from "./lib/serialize";
 // executionId guard when the marker is read back.
 import "./lib/workflow-error-context-bootstrap";
 import { executorMessageSchema } from "./message-schema";
+import { assertRunnerNodeOptions } from "./runner-node-options";
 import {
   assertHmacSecretSet,
   assertTurnkeyEnvForActiveWallets,
@@ -1070,6 +1071,7 @@ async function listen(): Promise<void> {
   }
 
   assertHmacSecretSet();
+  assertRunnerNodeOptions(CONFIG.runnerExtraNodeOptions);
   await assertTurnkeyEnvForActiveWallets(db);
 
   // Latency instrumentation (issue #2289): clear broadcast markers left by a

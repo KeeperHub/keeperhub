@@ -7,10 +7,12 @@
  * and every satellite service. Import this module FIRST at the service
  * entrypoint, before any module that logs.
  *
- * Self-contained by design: satellites are separate packages and cannot import
- * the app's `@/lib/*`. Keep in sync with the app's lib/log/core.ts +
- * lib/logger.ts.
+ * Imports nothing that logs (only the dependency-free cause-chain helper), so
+ * it is safe to install before everything else. Keep in sync with the app's
+ * lib/log/core.ts + lib/logger.ts.
  */
+
+import { describeErrorCauses } from "../lib/errors/cause-chain";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -64,10 +66,14 @@ function emit(
   };
   const error = args.find((a): a is Error => a instanceof Error);
   if (error) {
+    // A wrapped driver error keeps the real failure on `cause`, which neither
+    // the message nor the stack carries.
+    const cause = describeErrorCauses(error);
     payload.err = {
       message: error.message,
       name: error.name,
       stack: error.stack,
+      ...(cause ? { cause } : {}),
     };
   }
   write(JSON.stringify(payload));
