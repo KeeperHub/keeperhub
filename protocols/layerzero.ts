@@ -485,7 +485,7 @@ export default defineAbiProtocol({
             nativeFee: {
               label: "Native Fee (wei)",
               helpTip:
-                "The messaging fee in wei of this chain's gas token, as returned by OFT Quote Send as fee.nativeFee. Enter the same value in Messaging Fee (wei): the OFT reverts if msg.value differs from this by any amount. Any excess over the fee actually required is refunded to the Refund Address.",
+                "The messaging fee in wei of this chain's gas token, as returned by OFT Quote Send as fee.nativeFee. Enter the same value in Messaging Fee (wei): the OFT reverts if msg.value differs from this by any amount. The endpoint refunds anything above the required fee to the Refund Address.",
               docUrl: LAYERZERO_OFT_DOCS,
             },
             lzTokenFee: {
@@ -499,7 +499,7 @@ export default defineAbiProtocol({
             refundAddress: {
               label: "Refund Address",
               helpTip:
-                "Receives any native fee paid above what the send actually required. Usually the sending wallet.",
+                "Receives any native fee paid above what the send required. Usually the sending wallet. A contract here must be able to receive native tokens.",
               docUrl: LAYERZERO_OFT_DOCS,
             },
           },
