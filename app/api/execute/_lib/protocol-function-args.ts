@@ -10,13 +10,8 @@ import {
   getEncodeTransformKind,
 } from "@/lib/protocol-encode-transforms";
 import { getProtocol, type ProtocolActionInput } from "@/lib/protocol-registry";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
-// A 20-byte hex address, checksum-insensitive. Checked BEFORE the encode
-// transforms run: padAddressToBytes left-pads whatever it is given to 32
-// bytes, so a 39-character typo or a bare "0x" would come out as a
-// well-formed bytes32 (a wrong address, or the zero address) and broadcast,
-// where the untransformed value would have been rejected by the ABI encoder.
-const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 // An already-encoded bytes32. Before this route applied any transform, a
 // bytes32 param could only be satisfied by sending the 32-byte value
 // itself (ethers rejects a 20-byte value for a bytes32 slot), so every
@@ -125,7 +120,7 @@ export function buildProtocolFunctionArgs(
       "padAddressToBytes";
     const value = resolved.value;
     if (isPadded && value !== "") {
-      if (!(HEX_ADDRESS.test(value) || HEX_BYTES32.test(value))) {
+      if (!(EVM_ADDRESS_RE.test(value) || HEX_BYTES32.test(value))) {
         return {
           ok: false,
           field: inp.name,
@@ -135,7 +130,7 @@ export function buildProtocolFunctionArgs(
     } else if (
       inp.type === "address" &&
       value !== "" &&
-      !HEX_ADDRESS.test(value)
+      !EVM_ADDRESS_RE.test(value)
     ) {
       return {
         ok: false,

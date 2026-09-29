@@ -561,11 +561,17 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
     }
     const newArgs = JSON.parse(result.functionArgs ?? "[]") as string[];
     // What origin/staging forwarded: every input verbatim, in order (an
-    // array input as its JSON string, as resolveInputValue has always done).
-    const stagingArgs = send.inputs.map((inp) => {
-      const v = encoded[inp.name];
-      return typeof v === "object" ? JSON.stringify(v) : String(v);
-    });
+    // array input as its JSON string, as resolveInputValue has always
+    // done). Written out by hand rather than derived from the inputs so a
+    // regression in the builder cannot be mirrored into the expectation.
+    const stagingArgs = [
+      "1",
+      PADDED_WALLET,
+      "0x",
+      "[]",
+      WALLET,
+      "0x97a657c90000000000000000000000000000000000000000000000000000000000000000",
+    ];
     expect(newArgs).toEqual(stagingArgs);
 
     // And through the same reshape/coerce/encode pipeline
