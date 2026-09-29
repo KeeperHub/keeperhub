@@ -9,7 +9,7 @@ Discover a [Lucid](https://www.npmjs.com/package/@lucid-agents/core) agent and c
 
 This plugin never signs or pays. Paying is a separate, explicit step you add to the workflow, which is where your spending policy lives.
 
-No credentials required. The agent URL is set on each action.
+No credentials required. The agent URL is set on each action. It must be a public http(s) address: private, loopback and link-local addresses are refused, and redirects are not followed.
 
 ## Actions
 

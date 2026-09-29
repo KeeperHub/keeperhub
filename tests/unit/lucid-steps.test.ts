@@ -6,11 +6,16 @@ vi.mock("@/lib/workflow/executor/step-handler", async () =>
   (await import("../mocks/step-mocks")).stepHandlerPassthrough()
 );
 
-const { safeFetch, SsrfBlockedError } = vi.hoisted(() => ({
+const { assertUrlIsPublic, safeFetch, SsrfBlockedError } = vi.hoisted(() => ({
+  assertUrlIsPublic: vi.fn(),
   safeFetch: vi.fn(),
   SsrfBlockedError: class SsrfBlockedError extends Error {},
 }));
-vi.mock("@/lib/safe-fetch", () => ({ safeFetch, SsrfBlockedError }));
+vi.mock("@/lib/safe-fetch", () => ({
+  assertUrlIsPublic,
+  safeFetch,
+  SsrfBlockedError,
+}));
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { callEntrypointStep } from "@/plugins/lucid/steps/call-entrypoint";
@@ -225,6 +230,7 @@ describe("readPaymentTerms", () => {
 describe("discoverAgentStep", () => {
   beforeEach(() => {
     safeFetch.mockReset();
+    assertUrlIsPublic.mockReset();
   });
 
   it("fetches the well-known card without following redirects", async () => {
@@ -285,11 +291,32 @@ describe("discoverAgentStep", () => {
       errorClass: ExecutionErrorType.USER,
     });
   });
+
+  it("checks the URL is public before fetching", async () => {
+    respond(200, SERVED_CARD);
+    await discoverAgentStep({ agentUrl: AGENT });
+    expect(assertUrlIsPublic).toHaveBeenCalledWith(
+      `${AGENT}/.well-known/agent-card.json`
+    );
+  });
+
+  it("blocks an internal agent URL without fetching", async () => {
+    assertUrlIsPublic.mockRejectedValueOnce(
+      new SsrfBlockedError("private address")
+    );
+    const result = await discoverAgentStep({ agentUrl: "http://10.0.0.5" });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+    });
+    expect(safeFetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("callEntrypointStep", () => {
   beforeEach(() => {
     safeFetch.mockReset();
+    assertUrlIsPublic.mockReset();
   });
 
   it("returns the output of a free entrypoint", async () => {
@@ -438,6 +465,22 @@ describe("callEntrypointStep", () => {
       success: false,
       errorClass: ExecutionErrorType.USER,
     });
+  });
+
+  it("never sends a payment header to an internal address", async () => {
+    assertUrlIsPublic.mockRejectedValueOnce(
+      new SsrfBlockedError("private address")
+    );
+    const result = await callEntrypointStep({
+      agentUrl: "http://169.254.169.254",
+      entrypoint: "health",
+      paymentHeader: "signed-payload",
+    });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+    });
+    expect(safeFetch).not.toHaveBeenCalled();
   });
 
   it("is never retried automatically", () => {

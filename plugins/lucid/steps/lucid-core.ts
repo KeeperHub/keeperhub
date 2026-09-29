@@ -1,7 +1,11 @@
 import "server-only";
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import { SsrfBlockedError, safeFetch } from "@/lib/safe-fetch";
+import {
+  assertUrlIsPublic,
+  SsrfBlockedError,
+  safeFetch,
+} from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
 import { stripTrailingSlashes } from "@/lib/utils/url";
 
@@ -341,9 +345,10 @@ export function readPaymentTerms(envelope: unknown): PaymentTerms | null {
 }
 
 /**
- * Wraps safeFetch with the connector's two fixed rules: never follow a
- * redirect (a redirect points the call, and any payment header, at a host
- * nobody named) and bound every call with a timeout.
+ * Wraps safeFetch with the connector's fixed rules: the agent URL must be
+ * public, never follow a redirect (a redirect points the call, and any
+ * payment header, at a host nobody named), and bound every call with a
+ * timeout.
  */
 export async function lucidFetch(
   url: string,
@@ -352,6 +357,11 @@ export async function lucidFetch(
 ): Promise<Response | LucidFailure> {
   let response: Response;
   try {
+    // The agent URL is user-supplied. `assertUrlIsPublic` is always-on -- it
+    // ignores `SAFE_FETCH_SHADOW` -- so an agent URL pointing at an internal
+    // address is blocked here even where `safeFetch` would only log. Mirrors
+    // plugins/blockscout/steps/blockscout-core.ts.
+    await assertUrlIsPublic(url);
     response = await safeFetch(url, {
       ...init,
       plugin: "lucid",
