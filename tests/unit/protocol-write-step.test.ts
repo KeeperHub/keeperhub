@@ -1318,11 +1318,47 @@ describe("ethValue encode transforms", () => {
     expect(coreCall.ethValue).toBe("0.25");
   });
 
-  it("takes the payable value from the declared input when the action sets payableValue.fromInput", async () => {
+  it("refuses a payable value taken from an input that registers no weiToEther", async () => {
     arrange();
     // Same shape as layerzero/oft-send: a payable action whose value is
     // one of its ABI inputs (the amount here stands in for nativeFee), so
-    // there is no separate value field to disagree with it.
+    // there is no separate value field to disagree with it. Without the
+    // weiToEther registration on ethValue the raw wei integer would reach
+    // the core's ether field, 10^18 times the intended amount, so the
+    // read refuses outright.
+    mockGetProtocol.mockReturnValue({
+      ...COMPOUND_PROTOCOL,
+      actions: [
+        {
+          ...COMPOUND_PROTOCOL.actions[0],
+          payable: true,
+          payableValue: { fromInput: "amount" },
+        },
+      ],
+    });
+
+    const result = await protocolWriteStep(makeInput());
+
+    expect(result.success).toBe(false);
+    expect((result as { error: string }).error).toMatch(
+      /registers no weiToEther conversion/
+    );
+    expect(mockWriteContractCore).not.toHaveBeenCalled();
+    expect(mockWithStepValueCap).not.toHaveBeenCalled();
+  });
+
+  it("converts the declared input's wei value to ether when the action registers weiToEther", async () => {
+    arrange();
+    // The legal pairing the refusal above exists to force: fromInput on a
+    // wei-typed input plus the weiToEther conversion on ethValue - the
+    // same registration layerzero/oft-send carries.
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
     mockGetProtocol.mockReturnValue({
       ...COMPOUND_PROTOCOL,
       actions: [
@@ -1337,15 +1373,24 @@ describe("ethValue encode transforms", () => {
     await protocolWriteStep(makeInput());
 
     const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
-    expect(coreCall.ethValue).toBe("1000000");
+    expect(coreCall.ethValue).toBe("0.000000000001");
     const capOpts = (mockWithStepValueCap as Mock).mock.calls[0][0] as {
       config: { ethValue?: string };
     };
-    expect(capOpts.config.ethValue).toBe("1000000");
+    expect(capOpts.config.ethValue).toBe("0.000000000001");
   });
 
   it("refuses the write when a separate ethValue disagrees with the declared input", async () => {
     arrange();
+    // Registered so the run reaches the disagreement check: without it the
+    // read is refused for the missing transform before the values compare.
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
     mockGetProtocol.mockReturnValue({
       ...COMPOUND_PROTOCOL,
       actions: [
@@ -1369,6 +1414,13 @@ describe("ethValue encode transforms", () => {
 
   it("accepts a separate ethValue that equals the declared input", async () => {
     arrange();
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
     mockGetProtocol.mockReturnValue({
       ...COMPOUND_PROTOCOL,
       actions: [
@@ -1384,7 +1436,7 @@ describe("ethValue encode transforms", () => {
 
     expect(result.success).toBe(true);
     const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
-    expect(coreCall.ethValue).toBe("1000000");
+    expect(coreCall.ethValue).toBe("0.000000000001");
   });
 
   it("does not invoke the transform on an empty ethValue", async () => {

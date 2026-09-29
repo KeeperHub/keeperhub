@@ -26,6 +26,11 @@ import {
   findProtocolAction,
   readPayableValue,
 } from "@/lib/execute/protocol-eth-value";
+import {
+  registerEncodeTransform,
+  unregisterEncodeTransform,
+  weiToEther,
+} from "@/lib/protocol-encode-transforms";
 import { OFT_SEND_FIXTURE_FEE_WEI } from "@/protocols/layerzero";
 
 const OFT_SEND = {
@@ -97,6 +102,31 @@ describe("readPayableValue", () => {
     expect(
       readPayableValue({ nativeFee: "999", ethValue: "0.25" }, WRAP)
     ).toEqual({ ok: true, value: "0.25" });
+  });
+
+  it("refuses a fromInput action that registers no weiToEther on ethValue", () => {
+    // The fromInput value is an integer in wei and the core's field reads
+    // ether, so the pairing is only safe when the action registers the
+    // weiToEther conversion. Nothing at registration time forces it - the
+    // invariants file checks the registry in CI - so the read is the
+    // runtime guard of last resort. Drop the production registration for
+    // one call to put oft-send in the state being refused.
+    unregisterEncodeTransform("layerzero", "oft-send", "ethValue");
+    try {
+      const out = readPayableValue({ nativeFee: FEE }, OFT_SEND);
+      expect(out.ok).toBe(false);
+      expect((out as { error: string }).error).toMatch(
+        /registers no weiToEther conversion/
+      );
+    } finally {
+      registerEncodeTransform(
+        "layerzero",
+        "oft-send",
+        "ethValue",
+        weiToEther,
+        "weiToEther"
+      );
+    }
   });
 });
 

@@ -13,6 +13,7 @@
 import { describe, expect, it } from "vitest";
 import "@/protocols";
 import {
+  getEncodeTransformKind,
   listEncodeTransforms,
   orphanEncodeTransforms,
   type RegisteredEncodeTransform,
@@ -126,6 +127,30 @@ describe("encode transform registry invariants", () => {
     ).toThrow(/declared ABI input/);
     // The refusal must not leave a partial entry behind.
     expect(weiToEtherOnDeclaredAbiInputs(listEncodeTransforms())).toEqual([]);
+  });
+
+  it("every action that takes msg.value from an input registers weiToEther on ethValue", () => {
+    // readPayableValue refuses this pairing at run time, so this is the
+    // definition-time backstop: an action whose fromInput is an integer in
+    // wei but whose ethValue has no weiToEther conversion would hand the
+    // core a wei figure in an ether field - 10^18 times the intent - and
+    // every send against it fails until the transform is registered.
+    const missing: string[] = [];
+    for (const protocol of getRegisteredProtocols()) {
+      for (const action of protocol.actions) {
+        if (
+          action.payableValue?.fromInput &&
+          getEncodeTransformKind(
+            protocol.slug,
+            action.slug,
+            "ethValue"
+          ) !== "weiToEther"
+        ) {
+          missing.push(`${protocol.slug}/${action.slug}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });
 

@@ -14,7 +14,10 @@
  */
 
 import { ErrorCategory, logUserError } from "@/lib/logging";
-import { getEncodeTransform } from "@/lib/protocol-encode-transforms";
+import {
+  getEncodeTransform,
+  getEncodeTransformKind,
+} from "@/lib/protocol-encode-transforms";
 import { getProtocol, type ProtocolAction } from "@/lib/protocol-registry";
 
 /** The identity every entrance resolves before it can look the action up. */
@@ -45,14 +48,30 @@ export function findProtocolAction(
  * and the declared fee cannot disagree. A caller that still sends a
  * separate ethValue must send the same number, or the write is refused.
  * Every other action reads ethValue as before.
+ *
+ * The fromInput pairing is only safe when the action also registers the
+ * weiToEther conversion on the virtual ethValue field: the input is an
+ * integer in wei and the field reads ether, so without the transform the
+ * core would be handed 10^18 times the intent. An action in that state is
+ * refused here rather than paid.
  */
 export function readPayableValue(
   source: Record<string, unknown>,
   meta: ProtocolActionRef
 ): { ok: true; value: unknown } | { ok: false; error: string } {
-  const fromInput = findProtocolAction(meta)?.payableValue?.fromInput;
-  if (!fromInput) {
+  const action = findProtocolAction(meta);
+  const fromInput = action?.payableValue?.fromInput;
+  if (!action || !fromInput) {
     return { ok: true, value: source.ethValue };
+  }
+  if (
+    getEncodeTransformKind(meta.protocolSlug, action.slug, "ethValue") !==
+    "weiToEther"
+  ) {
+    return {
+      ok: false,
+      error: `Refusing to send a payable value: this action takes its value from "${fromInput}", an integer input, but registers no weiToEther conversion for it, so the value cannot be converted to ether safely.`,
+    };
   }
   const derived = source[fromInput];
   const explicit = source.ethValue;
