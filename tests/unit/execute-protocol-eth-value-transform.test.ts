@@ -443,15 +443,17 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
     if (!send) {
       throw new Error("chainlink/ccip-send not in definition");
     }
+    const placeholderFor = (inp: (typeof send.inputs)[number]): unknown => {
+      if (inp.type === "address") {
+        return WALLET;
+      }
+      if (inp.type.endsWith("[]")) {
+        return [];
+      }
+      return inp.default ?? "1";
+    };
     const inputs = Object.fromEntries(
-      send.inputs.map((inp) => [
-        inp.name,
-        inp.type === "address"
-          ? WALLET
-          : inp.type.endsWith("[]")
-            ? []
-            : (inp.default ?? "1"),
-      ])
+      send.inputs.map((inp) => [inp.name, placeholderFor(inp)])
     );
     const encoded: Record<string, unknown> = {
       ...inputs,
