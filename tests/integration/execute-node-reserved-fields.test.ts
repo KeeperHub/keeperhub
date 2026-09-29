@@ -219,7 +219,6 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
       minAmountLD: "990000",
       nativeFee,
       lzTokenFee: "0",
-      refundAddress: WALLET,
     };
   }
 
