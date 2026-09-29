@@ -1106,6 +1106,27 @@ describe("protocolWriteStep", () => {
       ]);
     });
 
+    it("returns Invalid ethValue when the fee input cannot be converted", async () => {
+      arrangeOftSend();
+
+      const result = await protocolWriteStep(
+        makeInput({
+          _actionType: "layerzero/oft-send",
+          // Ether typed into the wei-typed fee input: weiToEther throws
+          // and the step returns it as a failure instead of letting it
+          // escape "use step", matching the execute routes.
+          nativeFee: "0.001",
+        })
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toMatch(/Invalid ethValue/);
+      }
+      expect(mockWriteContractCore).not.toHaveBeenCalled();
+      expect(mockWithStepValueCap).not.toHaveBeenCalled();
+    });
+
     it("passes no payerParam for an action without a payer input", async () => {
       mockResolveProtocolMeta.mockReturnValue(COMPOUND_SUPPLY_META);
       mockGetProtocol.mockReturnValue(COMPOUND_PROTOCOL);
@@ -1288,13 +1309,15 @@ describe("ethValue encode transforms", () => {
       "weiToEther"
     );
 
-    // "1.5" is not an integer wei string, so weiToEther throws. The throw has
-    // to happen before withStepValueCap, or a failed step would leave a
-    // reservation held against the org's daily cap.
-    await expect(
-      protocolWriteStep(makeInput({ ethValue: "1.5" }))
-    ).rejects.toThrow(/integer wei/);
+    // "1.5" is not an integer wei string, so weiToEther throws and the
+    // step returns the conversion failure as Invalid ethValue. The
+    // conversion has to happen before withStepValueCap either way, or a
+    // failed step would leave a reservation held against the org's daily
+    // cap.
+    const result = await protocolWriteStep(makeInput({ ethValue: "1.5" }));
 
+    expect(result.success).toBe(false);
+    expect((result as { error: string }).error).toMatch(/Invalid ethValue/);
     expect(mockWithStepValueCap).not.toHaveBeenCalled();
     expect(mockWriteContractCore).not.toHaveBeenCalled();
   });

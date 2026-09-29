@@ -314,10 +314,19 @@ export async function protocolWriteStep(
     if (!payableValue.ok) {
       return { success: false, error: payableValue.error };
     }
-    const transformedEthValue = applyEthValueTransform(
-      payableValue.value,
-      meta
-    );
+    // The transform throws when the resolved value is in the wrong unit -
+    // ether typed into a wei-labelled field - which is the caller's
+    // mistake, so it comes back as a step error like the execute routes
+    // return it rather than escaping "use step".
+    let transformedEthValue: ReturnType<typeof applyEthValueTransform>;
+    try {
+      transformedEthValue = applyEthValueTransform(payableValue.value, meta);
+    } catch (err) {
+      return {
+        success: false,
+        error: `Invalid ethValue: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
     if (!transformedEthValue.ok) {
       return { success: false, error: transformedEthValue.error };
     }
