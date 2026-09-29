@@ -471,7 +471,8 @@ async function handleResult(
  */
 function protocolReservationConfig(
   stepFunction: string,
-  actionType: string,
+  resolvedActionType: string,
+  network: string | undefined,
   config: Record<string, unknown>
 ): Promise<
   { ok: true; config: Record<string, unknown> } | { ok: false; error: string }
@@ -479,18 +480,17 @@ function protocolReservationConfig(
   if (stepFunction !== "protocolWriteStep") {
     return Promise.resolve({ ok: true, config });
   }
-  // Resolved from the config alone, exactly as the step will resolve it:
-  // executeNode passes the step only the config, never the route's
-  // actionType, so a fallback to the latter here would reserve the cap and
-  // create an execution for a step that then fails on missing metadata.
+  // Resolved from exactly what the step will receive: executeNode strips
+  // _actionType, _protocolMeta and network from the caller's config
+  // (stripReservedConfig) and hands the step the route's resolved action id
+  // and effective network instead. Reading the caller's config keys here
+  // would let a config that names a different action than the request steer
+  // the reservation: a wei-typed action's transform applied to an
+  // ether-typed action's value reserves 10^18 times less than the step
+  // broadcasts, and the step skips its own charge.
   const meta = resolveProtocolMeta({
-    _protocolMeta:
-      typeof config._protocolMeta === "string"
-        ? config._protocolMeta
-        : undefined,
-    _actionType:
-      typeof config._actionType === "string" ? config._actionType : undefined,
-    network: typeof config.network === "string" ? config.network : undefined,
+    _actionType: resolvedActionType,
+    network,
   });
   if (!meta) {
     // The same rule as the step's own refusal (#2322): a non-empty string
@@ -502,7 +502,7 @@ function protocolReservationConfig(
       hasValue
         ? {
             ok: false,
-            error: `Refusing to reserve a payable value: the config for "${actionType}" carries no resolvable _actionType or _protocolMeta, so whether ethValue needs a unit conversion cannot be determined. Include _actionType (e.g. "${actionType}") in the config.`,
+            error: `Refusing to reserve a payable value: "${resolvedActionType}" does not resolve to a registered protocol action, so whether ethValue needs a unit conversion cannot be determined.`,
           }
         : { ok: true, config }
     );
@@ -864,12 +864,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     // the step not to reserve again (valueCapReserved below), so the
     // reservation has to run the same transform or it charges the raw wei
     // figure as ether - 10^18 times what is broadcast - while the step's
-    // correct charge is skipped. Resolved from the config the way the step
-    // resolves it, and fails closed when the action cannot be found and a
-    // string value is present.
+    // correct charge is skipped. Resolved from the same action id and
+    // network the step is handed, and fails closed when the action cannot
+    // be found and a string value is present.
     const reservationConfig = await protocolReservationConfig(
       resolved.importer.stepFunction,
-      actionType,
+      resolved.actionType,
+      effectiveNetwork,
       validation.data.config
     );
     if (!reservationConfig.ok) {

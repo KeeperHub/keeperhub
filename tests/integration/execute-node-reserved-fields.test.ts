@@ -224,6 +224,48 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
     };
   }
 
+  it("reserves by the request's action, not an action the config names", async () => {
+    protocolWrite();
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "wrapped/wrap",
+        config: {
+          network: "1",
+          _actionType: "layerzero/oft-send",
+          ethValue: "1",
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    // wrapped/wrap takes ether: "1" is 1 ETH, and the reservation must say so.
+    expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reserved: { kind: "evm", valueWei: "1000000000000000000" },
+      })
+    );
+  });
+
+  it("converts by the request's action even when the config names an ether action", async () => {
+    protocolWrite();
+    const { _actionType: _omitted, ...rest } = sendConfig(FEE_WEI);
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "layerzero/oft-send",
+        config: { ...rest, _actionType: "wrapped/wrap" },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reserved: { kind: "evm", valueWei: FEE_WEI },
+      })
+    );
+  });
+
   it("reserves exactly the wei an OFT Send's value field holds", async () => {
     protocolWrite();
 
@@ -270,7 +312,7 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
     expect(mocks.capturedInput?.ethValue).toBe("100000000000000");
   });
 
-  it("resolves from _protocolMeta alone, the older node shape, and reserves the converted value", async () => {
+  it("ignores a caller's _protocolMeta and resolves from the request's action", async () => {
     protocolWrite();
     const { _actionType: _omitted, ...config } = sendConfig(FEE_WEI);
 
@@ -297,11 +339,10 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
     );
   });
 
-  it("refuses a value when the config carries no metadata, instead of reserving for a step that will fail", async () => {
-    // executeNode hands the step only the config, so a config without
-    // _actionType/_protocolMeta fails inside the step ("Invalid
-    // _protocolMeta"). Resolving from the route's actionType here would
-    // reserve the cap and create an execution for exactly that failure.
+  it("reserves the converted value when the config carries no metadata, because the step resolves from the request", async () => {
+    // executeNode strips _actionType and _protocolMeta from the config and
+    // hands the step the request's resolved action, so a config carrying no
+    // metadata still resolves - the reservation resolves the same way.
     protocolWrite();
     const { _actionType: _omitted, ...config } = sendConfig(FEE_WEI);
 
@@ -309,10 +350,12 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
       postRequest({ actionType: "layerzero/oft-send", config })
     );
 
-    expect(response.status).toBe(400);
-    expect((await response.json()).error).toMatch(/no resolvable _actionType/);
-    expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
-    expect(mocks.stepFn).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reserved: { kind: "evm", valueWei: FEE_WEI },
+      })
+    );
   });
 
   it("reserves zero for a numeric value on an unresolvable action, exactly as before", async () => {
