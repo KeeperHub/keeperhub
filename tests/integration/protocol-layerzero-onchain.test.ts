@@ -145,7 +145,9 @@ function fundedSenderOverride(
   usdtUnits: bigint
 ): StateOverride {
   return {
-    [sender]: { balance: ethers.toBeHex(nativeWei) },
+    // A QUANTITY: JSON-RPC forbids leading zeros, and geth-based endpoints
+    // reject toBeHex's even-length padding ("0x0de0...") as an override.
+    [sender]: { balance: ethers.toQuantity(nativeWei) },
     [USDT]: {
       stateDiff: {
         [mappingSlot(sender, USDT_BALANCES_SLOT)]: ethers.toBeHex(
@@ -533,7 +535,7 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
             from: SENDER,
             to: tx.to,
             data: tx.data,
-            value: ethers.toBeHex(value),
+            value: ethers.toQuantity(value),
           },
           "latest",
           override,
