@@ -165,7 +165,7 @@ async function post(slug: string[], body: Record<string, unknown>) {
   return POST(req, { params: Promise.resolve({ slug }) });
 }
 
-function sendBody(ethValue: unknown): Record<string, unknown> {
+function sendBody(nativeFee: unknown): Record<string, unknown> {
   return {
     chainId: 1,
     contractAddress: ADAPTER,
@@ -173,10 +173,9 @@ function sendBody(ethValue: unknown): Record<string, unknown> {
     to: WALLET,
     amountLD: "1000000",
     minAmountLD: "990000",
-    nativeFee: FEE_WEI,
+    nativeFee,
     lzTokenFee: "0",
     refundAddress: WALLET,
-    ethValue,
   };
 }
 
@@ -301,17 +300,77 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
   it("fails closed with a named error when the action cannot be resolved and a value is present", async () => {
     getProtocolMock.mockReturnValue(layerzeroDef);
     // Stale metadata: the function no longer matches a registered action.
+    // With the action unresolvable there is no declared value source, so
+    // the only value left to refuse on is a separate ethValue.
     resolveProtocolMetaMock.mockReturnValue({
       ...OFT_SEND_META,
       functionName: "sendRenamedUpstream",
     });
 
-    const response = await post(["layerzero", "oft-send"], sendBody(FEE_WEI));
+    const response = await post(["layerzero", "oft-send"], {
+      ...sendBody(FEE_WEI),
+      ethValue: FEE_WEI,
+    });
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toMatch(
       /Refusing to send a payable value/
     );
+    expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
+    expect(writeContractCoreMock).not.toHaveBeenCalled();
+    expect(recordIdempotentResponseMock.mock.calls[0][2]).toBe("release");
+  });
+
+  it("refuses a separate ethValue that disagrees with nativeFee, before reserving or broadcasting", async () => {
+    getProtocolMock.mockReturnValue(layerzeroDef);
+    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
+
+    const response = await post(["layerzero", "oft-send"], {
+      ...sendBody(FEE_WEI),
+      ethValue: "1",
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(
+      /takes its value from "nativeFee"/
+    );
+    expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
+    expect(writeContractCoreMock).not.toHaveBeenCalled();
+    expect(recordIdempotentResponseMock.mock.calls[0][2]).toBe("release");
+  });
+
+  it("still accepts a legacy caller's ethValue when it equals nativeFee", async () => {
+    getProtocolMock.mockReturnValue(layerzeroDef);
+    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
+
+    const response = await post(["layerzero", "oft-send"], {
+      ...sendBody(FEE_WEI),
+      ethValue: FEE_WEI,
+    });
+
+    expect(response.status).toBe(202);
+    expect(checkAndReserveExecutionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reserved: { kind: "evm", valueWei: FEE_WEI },
+      })
+    );
+    const core = writeContractCoreMock.mock.calls[0][0] as {
+      ethValue: string;
+    };
+    expect(core.ethValue).toBe("0.000218756042576226");
+  });
+
+  it("rejects the write when nativeFee is missing, before the core is called", async () => {
+    getProtocolMock.mockReturnValue(layerzeroDef);
+    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
+
+    const { nativeFee: _dropped, ...body } = sendBody(FEE_WEI);
+    const response = await post(["layerzero", "oft-send"], body);
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.field).toBe("nativeFee");
+    expect(data.error).toMatch(/nativeFee/);
     expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
     expect(writeContractCoreMock).not.toHaveBeenCalled();
     expect(recordIdempotentResponseMock.mock.calls[0][2]).toBe("release");
@@ -601,11 +660,19 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
     expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
   });
 
-  it("sends no value and reserves zero when the value is absent, on either kind of action", async () => {
-    getProtocolMock.mockReturnValue(layerzeroDef);
-    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
+  it("sends no value and reserves zero when the value is absent on an action without a declared source", async () => {
+    // On oft-send "absent" is no longer a case: nativeFee is a required
+    // input, so it cannot be missing without failing validation upstream
+    // (covered above). An action declaring no fromInput can still carry no
+    // value at all, and that path is unchanged: no ethValue, zero reserved.
+    getProtocolMock.mockReturnValue(SUPPLY_PROTOCOL);
+    resolveProtocolMetaMock.mockReturnValue(SUPPLY_META);
 
-    const response = await post(["layerzero", "oft-send"], sendBody(undefined));
+    const response = await post(["test-protocol", "supply"], {
+      chainId: 1,
+      asset: WALLET,
+      amount: "1000",
+    });
 
     expect(response.status).toBe(202);
     expect(checkAndReserveExecutionMock).toHaveBeenCalledWith(

@@ -60,12 +60,30 @@ describe("encodeFromConfig: layerzero/oft-send (production registration)", () =>
     expect(sendParam.to).toBe(`0x${"0".repeat(24)}${WALLET.slice(2)}`);
     expect(sendParam.dstEid).toBe(BigInt(30_110));
 
-    // Ether typed where wei belongs: weiToEther throws rather than
-    // silently sending 0.01 wei (a certain on-chain revert) or 0.01 ether.
-    // Every ABI input is supplied so the only thing that can throw is the
-    // value transform. Same `it` as above on purpose: this file's
+    // Ether typed where wei belongs is refused, not sent as 0.01 wei (a
+    // certain on-chain revert) or 0.01 ether. With fromInput the wei-typed
+    // field IS the nativeFee argument, so it is ethers' uint256 arg
+    // encoder that refuses "0.01" - upstream of the value selection and
+    // transform, which is exactly the order the runtime's arg validation
+    // would refuse it too. Same `it` as above on purpose: this file's
     // afterEach clears the registry, so a second test would run against
     // an empty one and fail on the missing pad instead.
+    expect(() =>
+      encodeFromConfig(protocol, action, "1", {
+        contractAddress: protocol.contracts.oft.addresses["1"],
+        dstEid: "30110",
+        to: WALLET,
+        amountLD: "1000000",
+        minAmountLD: "990000",
+        nativeFee: "0.01",
+        lzTokenFee: "0",
+        refundAddress: WALLET,
+      })
+    ).toThrow(/Cannot convert 0\.01 to a BigInt/);
+
+    // A legacy separate ethValue that disagrees with nativeFee is refused
+    // at source selection, before the value transform ever runs; an equal
+    // one is still accepted.
     expect(() =>
       encodeFromConfig(protocol, action, "1", {
         contractAddress: protocol.contracts.oft.addresses["1"],
@@ -76,9 +94,22 @@ describe("encodeFromConfig: layerzero/oft-send (production registration)", () =>
         nativeFee: OFT_SEND_FIXTURE_FEE_WEI,
         lzTokenFee: "0",
         refundAddress: WALLET,
-        ethValue: "0.01",
+        ethValue: "1",
       })
-    ).toThrow(/integer wei/);
+    ).toThrow(/takes its value from "nativeFee"/);
+    expect(
+      encodeFromConfig(protocol, action, "1", {
+        contractAddress: protocol.contracts.oft.addresses["1"],
+        dstEid: "30110",
+        to: WALLET,
+        amountLD: "1000000",
+        minAmountLD: "990000",
+        nativeFee: OFT_SEND_FIXTURE_FEE_WEI,
+        lzTokenFee: "0",
+        refundAddress: WALLET,
+        ethValue: OFT_SEND_FIXTURE_FEE_WEI,
+      }).value
+    ).toBe(BigInt(OFT_SEND_FIXTURE_FEE_WEI));
   });
 });
 

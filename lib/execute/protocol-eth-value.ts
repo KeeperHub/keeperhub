@@ -38,6 +38,38 @@ export function findProtocolAction(
   );
 }
 
+/**
+ * The raw payable value a protocol write carries, before any unit
+ * transform. An action that declares payableValue.fromInput (LayerZero's
+ * OFT send takes msg.value from nativeFee) reads that input, so the value
+ * and the declared fee cannot disagree. A caller that still sends a
+ * separate ethValue must send the same number, or the write is refused.
+ * Every other action reads ethValue as before.
+ */
+export function readPayableValue(
+  source: Record<string, unknown>,
+  meta: ProtocolActionRef
+): { ok: true; value: unknown } | { ok: false; error: string } {
+  const fromInput = findProtocolAction(meta)?.payableValue?.fromInput;
+  if (!fromInput) {
+    return { ok: true, value: source.ethValue };
+  }
+  const derived = source[fromInput];
+  const explicit = source.ethValue;
+  const blank = (v: unknown) =>
+    v === undefined || v === null || (typeof v === "string" && v.trim() === "");
+  if (
+    !blank(explicit) &&
+    String(explicit).trim() !== String(derived ?? "").trim()
+  ) {
+    return {
+      ok: false,
+      error: `Refusing to send a payable value: this action takes its value from "${fromInput}", and the separate ethValue (${String(explicit)}) differs from it. Remove ethValue or make it equal to ${fromInput}.`,
+    };
+  }
+  return { ok: true, value: derived };
+}
+
 export type EthValueTransformResult =
   | { ok: true; value: unknown }
   | { ok: false; error: string };

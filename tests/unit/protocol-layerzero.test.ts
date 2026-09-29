@@ -233,37 +233,32 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     }
   });
 
-  // The value field is wei on this action and ether on every other payable
-  // action in the registry, so its label is the one thing standing between
-  // the user and a 10^18 mistake. Checked through the same plugin-action
-  // builder the editor uses, not through the override object.
-  it("labels the send's value field as wei, with the quote reference in its help", () => {
-    const plugin = protocolActionToPluginAction(
-      layerzeroDef,
-      action("oft-send")
+  // The send declares payableValue.fromInput, so it renders no separate
+  // value field at all: msg.value is taken from the same nativeFee the OFT
+  // checks it against, and the two cannot disagree. Checked through the
+  // same plugin-action builder the editor uses, not through the override
+  // object.
+  it("renders no separate value field on the send; nativeFee carries the fee", () => {
+    const send = action("oft-send");
+    expect(send.payableValue).toEqual({ fromInput: "nativeFee" });
+    const plugin = protocolActionToPluginAction(layerzeroDef, send);
+    const keys = plugin.configFields.flatMap((f) =>
+      "key" in f ? [f.key] : []
     );
-    const field = plugin.configFields.find(
-      (f) => "key" in f && f.key === "ethValue"
+    expect(keys).not.toContain("ethValue");
+    const nativeFee = plugin.configFields.find(
+      (f) => "key" in f && f.key === "nativeFee"
     );
-    expect(field).toBeDefined();
-    if (!(field && "key" in field)) {
-      throw new Error("ethValue field missing");
+    if (!(nativeFee && "key" in nativeFee)) {
+      throw new Error("nativeFee field missing");
     }
-    // Validated as an integer (uint256), not as a decimal ether amount: the
-    // field takes wei because the action registers weiToEther on it, and
-    // "0.001" typed here must be refused at validation rather than sent.
-    expect(field.type).toBe("protocol-uint");
-    expect(field.solidityType).toBe("uint256");
-    expect(field.label).toBe("Messaging Fee (wei)");
-    expect(field.label).not.toMatch(/ETH Value/);
-    expect(field.placeholder).toBe("0");
-    expect(field.helpTip).toContain("fee.nativeFee");
-    expect(field.helpTip).toContain("Native Fee (wei)");
-    expect(field.docUrl).toBe(LAYERZERO_OFT_DOCS);
-    // Required, unlike the value field of other payable actions with
-    // arguments: a blank here is not "send nothing", it is a zero fee the
-    // OFT rejects with NotEnoughNative after the gas has been spent.
-    expect(field.required).toBe(true);
+    // Validated as an integer (uint256): the field takes wei and is
+    // required, because it is the whole fee - a blank here is a zero fee
+    // the OFT rejects with NotEnoughNative after the gas has been spent.
+    expect(nativeFee.type).toBe("protocol-uint");
+    expect(nativeFee.solidityType).toBe("uint256");
+    expect(nativeFee.required).toBe(true);
+    expect(nativeFee.helpTip).toContain("msg.value");
   });
 
   it("quote-oft has seven inputs and three named tuple outputs", () => {
@@ -365,14 +360,14 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     ]);
   });
 
-  // The fixture is the one place the two fee fields are typed by hand, so
-  // pin the rule the contract enforces (msg.value == fee.nativeFee) and the
-  // unit the field takes (wei, an integer string).
-  it("binds the same wei fee to nativeFee and to the value field in the fixture", () => {
+  // The fixture binds the fee once, to nativeFee: msg.value is taken from
+  // it (payableValue.fromInput), so the fee and the value paid cannot
+  // disagree. Pin the unit too (wei, an integer string).
+  it("binds the fee once, to nativeFee", () => {
     const fixture = layerzeroDef.testData?.["1"]?.actions["oft-send"];
     expect(fixture).toBeDefined();
     expect(fixture?.nativeFee).toBe(OFT_SEND_FIXTURE_FEE_WEI);
-    expect(fixture?.ethValue).toBe(OFT_SEND_FIXTURE_FEE_WEI);
+    expect(fixture?.ethValue).toBeUndefined();
     expect(OFT_SEND_FIXTURE_FEE_WEI).toMatch(/^\d+$/);
     expect(fixture?.lzTokenFee).toBe("0");
     // The fabricated allowance equals the send amount exactly, so the send

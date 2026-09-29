@@ -39,7 +39,10 @@ import { checkRateLimit } from "../_lib/rate-limit";
 // which is populated by this side-effect import (the catch-all protocol
 // route does the same).
 import "@/protocols";
-import { applyEthValueTransform } from "@/lib/execute/protocol-eth-value";
+import {
+  applyEthValueTransform,
+  readPayableValue,
+} from "@/lib/execute/protocol-eth-value";
 import { resolveProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
 import { parseNodeNativeValueWei } from "../_lib/reserved-value";
 import {
@@ -507,9 +510,17 @@ function protocolReservationConfig(
         : { ok: true, config }
     );
   }
+  // Pick the value source the action declares (the OFT send's nativeFee,
+  // every other action's ethValue) before converting it; a separate
+  // ethValue that disagrees with that source is refused here, before any
+  // reservation, so the cap and the broadcast cannot disagree either.
+  const payableValue = readPayableValue(config, meta);
+  if (!payableValue.ok) {
+    return Promise.resolve({ ok: false, error: payableValue.error });
+  }
   let transformed: ReturnType<typeof applyEthValueTransform>;
   try {
-    transformed = applyEthValueTransform(config.ethValue, meta);
+    transformed = applyEthValueTransform(payableValue.value, meta);
   } catch (err) {
     // Wrong unit (ether typed into a wei field): the caller's mistake.
     transformed = {

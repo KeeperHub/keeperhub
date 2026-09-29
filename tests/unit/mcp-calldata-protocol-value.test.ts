@@ -44,7 +44,7 @@ describe("generateCalldataForWorkflow: a protocol write's value field", () => {
       [
         node("protocol/protocol-write", {
           _actionType: "layerzero/oft-send",
-          ethValue: "100000000000000",
+          nativeFee: "100000000000000",
         }),
       ],
       {}
@@ -68,7 +68,21 @@ describe("generateCalldataForWorkflow: a protocol write's value field", () => {
       [
         node("protocol/protocol-write", {
           _actionType: "layerzero/oft-send",
-          ethValue: "0.001",
+          nativeFee: "0.001",
+        }),
+      ],
+      {}
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("refuses a separate ethValue that disagrees with the OFT Send's nativeFee", () => {
+    const result = generateCalldataForWorkflow(
+      [
+        node("protocol/protocol-write", {
+          _actionType: "layerzero/oft-send",
+          nativeFee: "100000000000000",
+          ethValue: "1",
         }),
       ],
       {}
@@ -102,7 +116,7 @@ describe("generateCalldataForWorkflow: a protocol write's value field", () => {
       [
         node("protocol/protocol-write", {
           _actionType: "layerzero/oft-send",
-          ethValue: "{{@quote:OFT Quote Send.fee.nativeFee}}",
+          nativeFee: "{{@quote:OFT Quote Send.fee.nativeFee}}",
         }),
       ],
       {}

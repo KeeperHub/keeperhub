@@ -46,7 +46,10 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 // otherwise throw under vitest's Node runtime.
 vi.mock("server-only", () => ({}));
 
-import { getEncodeTransform } from "@/lib/protocol-encode-transforms";
+import {
+  applyEthValueTransform,
+  readPayableValue,
+} from "@/lib/execute/protocol-eth-value";
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import {
@@ -514,15 +517,26 @@ describe("LayerZero OFT and EndpointV2 on-chain integration", () => {
       return { to, data };
     }
 
-    // What the write step would attach for a value field holding `wei`.
+    // What the write step attaches for a send whose fee input holds `wei`:
+    // readPayableValue takes the value from nativeFee (payableValue.fromInput),
+    // then the action's registered transform converts it to ether.
     function msgValueFor(wei: string): bigint {
-      const transform = getEncodeTransform("layerzero", "oft-send", "ethValue");
-      if (!transform) {
+      const meta = {
+        protocolSlug: "layerzero",
+        contractKey: "oft",
+        functionName: "send",
+      };
+      const source = readPayableValue({ nativeFee: wei }, meta);
+      if (!source.ok) {
+        throw new Error(source.error);
+      }
+      const transformed = applyEthValueTransform(source.value, meta);
+      if (!transformed.ok || typeof transformed.value !== "string") {
         throw new Error(
-          "layerzero/oft-send/ethValue has no registered transform"
+          "layerzero/oft-send value selection or transform failed"
         );
       }
-      return ethers.parseEther(transform(wei));
+      return ethers.parseEther(transformed.value);
     }
 
     async function simulateSend(

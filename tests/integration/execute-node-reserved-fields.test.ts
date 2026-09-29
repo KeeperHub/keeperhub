@@ -208,7 +208,7 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
     }));
   }
 
-  function sendConfig(ethValue: unknown): Record<string, unknown> {
+  function sendConfig(nativeFee: unknown): Record<string, unknown> {
     return {
       network: "1",
       _actionType: "layerzero/oft-send",
@@ -217,10 +217,9 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
       to: WALLET,
       amountLD: "1000000",
       minAmountLD: "990000",
-      nativeFee: FEE_WEI,
+      nativeFee,
       lzTokenFee: "0",
       refundAddress: WALLET,
-      ethValue,
     };
   }
 
@@ -266,7 +265,7 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
     );
   });
 
-  it("reserves exactly the wei an OFT Send's value field holds", async () => {
+  it("reserves exactly the wei an OFT Send's nativeFee holds", async () => {
     protocolWrite();
 
     const response = await nodePOST(
@@ -283,17 +282,19 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
         reserved: { kind: "evm", valueWei: FEE_WEI },
       })
     );
-    // The step receives the raw wei string and converts it itself, exactly
-    // as it does on the workflow path; what changed is only what the route
-    // reserved. And it is still told not to reserve a second time.
-    expect(mocks.capturedInput?.ethValue).toBe(FEE_WEI);
+    // The step receives the raw wei string in nativeFee and converts it
+    // itself, exactly as it does on the workflow path; what changed is only
+    // what the route reserved. And it is still told not to reserve a second
+    // time. There is no separate value field any more.
+    expect(mocks.capturedInput?.nativeFee).toBe(FEE_WEI);
+    expect(mocks.capturedInput?.ethValue).toBeUndefined();
     expect(
       (mocks.capturedInput as { _context: { valueCapReserved: boolean } })
         ._context.valueCapReserved
     ).toBe(true);
   });
 
-  it("reserves 0.0001 ETH for a 1e14-wei fee and hands the step the raw wei", async () => {
+  it("reserves 0.0001 ETH for a 1e14-wei nativeFee and hands the step the raw wei", async () => {
     protocolWrite();
 
     const response = await nodePOST(
@@ -309,7 +310,8 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
         reserved: { kind: "evm", valueWei: "100000000000000" },
       })
     );
-    expect(mocks.capturedInput?.ethValue).toBe("100000000000000");
+    expect(mocks.capturedInput?.nativeFee).toBe("100000000000000");
+    expect(mocks.capturedInput?.ethValue).toBeUndefined();
   });
 
   it("ignores a caller's _protocolMeta and resolves from the request's action", async () => {
@@ -380,7 +382,7 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
     expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
       expect.objectContaining({ reserved: { kind: "evm", valueWei: "0" } })
     );
-    expect(mocks.capturedInput?.ethValue).toBe(218_756_042_576_226);
+    expect(mocks.capturedInput?.nativeFee).toBe(218_756_042_576_226);
   });
 
   it("refuses to reserve a value for a protocol write it cannot resolve", async () => {
@@ -391,6 +393,9 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
         actionType: "layerzero/no-such-action",
         config: {
           ...sendConfig(FEE_WEI),
+          // The action cannot be resolved, so nothing declares a value
+          // source; the non-empty string ethValue is the value refused on.
+          ethValue: FEE_WEI,
           _actionType: "layerzero/no-such-action",
         },
       })
@@ -398,6 +403,24 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toMatch(/Refusing to reserve/);
+    expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(mocks.stepFn).not.toHaveBeenCalled();
+  });
+
+  it("refuses the reservation when a separate ethValue disagrees with nativeFee", async () => {
+    protocolWrite();
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "layerzero/oft-send",
+        config: { ...sendConfig(FEE_WEI), ethValue: "1" },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(
+      /takes its value from "nativeFee"/
+    );
     expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
     expect(mocks.stepFn).not.toHaveBeenCalled();
   });

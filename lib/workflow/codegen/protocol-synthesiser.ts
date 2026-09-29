@@ -597,8 +597,12 @@ function buildWriteParts(inputs: SynthesisInputs): TemplateParts {
   const frame = buildSharedFrame(inputs);
   const { ctx, chainEmission, argsList } = frame;
 
+  // An action that declares payableValue.fromInput takes msg.value from
+  // that input (the OFT send's nativeFee), so the generated SDK reads it
+  // rather than a separate ethValue the template does not render.
+  const valueSource = ctx.action.payableValue?.fromInput ?? "ethValue";
   const valueLine = ctx.action.payable
-    ? "      value: input.ethValue ? BigInt(input.ethValue) : undefined,"
+    ? `      value: input.${valueSource} ? BigInt(input.${valueSource}) : undefined,`
     : null;
 
   const simulateLines: string[] = [

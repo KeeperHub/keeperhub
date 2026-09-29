@@ -15,7 +15,10 @@ import { buildCallsWithMeta } from "@/plugins/web3/steps/batch-write-contract-co
 // which this side-effect import populates (the node and catch-all routes do
 // the same).
 import "@/protocols";
-import { applyEthValueTransform } from "@/lib/execute/protocol-eth-value";
+import {
+  applyEthValueTransform,
+  readPayableValue,
+} from "@/lib/execute/protocol-eth-value";
 import { resolveProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
 
 export type CalldataResult =
@@ -176,8 +179,12 @@ function protocolWriteEtherValue(
         }
       : { ok: true, value: config.ethValue };
   }
+  const payableValue = readPayableValue(config, meta);
+  if (!payableValue.ok) {
+    return { ok: false, error: payableValue.error };
+  }
   try {
-    return applyEthValueTransform(config.ethValue, meta);
+    return applyEthValueTransform(payableValue.value, meta);
   } catch (err) {
     // Wrong unit (ether typed into a wei field): the caller's mistake.
     return {

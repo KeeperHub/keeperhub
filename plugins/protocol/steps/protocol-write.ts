@@ -17,6 +17,7 @@ import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
 import {
   applyEthValueTransform,
   findProtocolAction,
+  readPayableValue,
 } from "@/lib/execute/protocol-eth-value";
 import {
   type ProtocolMeta,
@@ -289,7 +290,14 @@ export async function protocolWriteStep(
     const functionArgs = buildFunctionArgs(input, meta);
 
     // 6. Delegate to writeContractCore
-    const transformedEthValue = applyEthValueTransform(input.ethValue, meta);
+    const payableValue = readPayableValue(input, meta);
+    if (!payableValue.ok) {
+      return { success: false, error: payableValue.error };
+    }
+    const transformedEthValue = applyEthValueTransform(
+      payableValue.value,
+      meta
+    );
     if (!transformedEthValue.ok) {
       return { success: false, error: transformedEthValue.error };
     }

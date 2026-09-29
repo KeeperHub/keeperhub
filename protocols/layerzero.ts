@@ -208,9 +208,10 @@ const SEND_PARAM_INPUT_OVERRIDES: Record<string, AbiInputOverride> = {
   },
 };
 
-// Fee the send fixture attaches, in wei: 0.01 ETH. Bound to BOTH the
-// `nativeFee` argument and the value field, because the OFT requires the
-// two to be equal (see the oft-send override below). It is deliberately
+// Fee the send fixture attaches, in wei: 0.01 ETH. Bound to `nativeFee`
+// alone: the send takes msg.value from it (payableValue.fromInput), and
+// the OFT requires the two to be equal (see the oft-send override below).
+// It is deliberately
 // far above the live quote rather than equal to it: the Tier 1 harness has
 // no way to feed a read's output into a write binding, and a fixed value
 // only stays runnable if it clears every future quote. The endpoint refunds
@@ -278,13 +279,7 @@ const TEST_DATA: ProtocolTestData = {
         composeMsg: "0x",
         oftCmd: "0x",
       },
-      // The same SendParam the quotes use, so the three encode the same
-      // tuple. nativeFee and ethValue carry the SAME wei string: the OFT
-      // reverts with NotEnoughNative when msg.value differs from
-      // fee.nativeFee by even one wei (checked on mainnet 2026-09-15
-      // through eth_call state overrides: +1 and -1 wei both revert).
-      // ethValue is wei here, not ether, because oft-send registers
-      // weiToEther on it.
+      // The same SendParam the quotes use, so the three encode the same tuple. The fee is nativeFee alone: the send takes msg.value from it (payableValue.fromInput), so the two cannot disagree.
       "oft-send": {
         contractAddress: OFT_REFERENCE_ADDRESSES["1"],
         dstEid: "30110",
@@ -297,7 +292,6 @@ const TEST_DATA: ProtocolTestData = {
         nativeFee: OFT_SEND_FIXTURE_FEE_WEI,
         lzTokenFee: "0",
         refundAddress: wallet(),
-        ethValue: OFT_SEND_FIXTURE_FEE_WEI,
       },
       "oft-approval-required": {
         contractAddress: OFT_REFERENCE_ADDRESSES["1"],
@@ -463,17 +457,18 @@ export default defineAbiProtocol({
         },
         // The SendParam tuple and the MessagingFee tuple are both flattened
         // by the deriver, so the form fields are dstEid..oftCmd, nativeFee,
-        // lzTokenFee, refundAddress, plus the virtual value field.
+        // lzTokenFee, refundAddress. There is no separate value field:
+        // payableValue.fromInput takes msg.value from nativeFee itself.
         //
-        // Two fields carry the fee, and they must match exactly. The OFT's
-        // fee check is equality: OAppSender._payNative reverts with
-        // NotEnoughNative when msg.value differs from fee.nativeFee in
-        // either direction (LayerZero docs describe the batch-send override
-        // as changing the check "from equivalency to <", and mainnet
-        // eth_call with +1/-1 wei reverts with that selector, 2026-09-15).
-        // Only after that does the endpoint compare the fee against the
-        // live quote and refund any excess to refundAddress. So: same
-        // number in both fields; a number at or above the quote.
+        // That indirection exists because the OFT's fee check is equality:
+        // OAppSender._payNative reverts with NotEnoughNative when msg.value
+        // differs from fee.nativeFee in either direction (LayerZero docs
+        // describe the batch-send override as changing the check "from
+        // equivalency to <", and mainnet eth_call with +1/-1 wei reverts
+        // with that selector, 2026-09-15). Sourcing msg.value from
+        // nativeFee makes a mismatch unrepresentable. Only after that does
+        // the endpoint compare the fee against the live quote and refund
+        // any excess to refundAddress. So: a number at or above the quote.
         send: {
           slug: "oft-send",
           label: "OFT Send",
@@ -503,13 +498,7 @@ export default defineAbiProtocol({
               docUrl: LAYERZERO_OFT_DOCS,
             },
           },
-          payableValue: {
-            label: "Messaging Fee (wei)",
-            placeholder: "0",
-            helpTip:
-              "The native fee to attach to the transaction, in wei, not ether. Reference the quote's output here, for example {{@quote:OFT Quote Send.fee.nativeFee}}, and pass the same value to Native Fee (wei). The two must be equal or the send reverts.",
-            docUrl: LAYERZERO_OFT_DOCS,
-          },
+          payableValue: { fromInput: "nativeFee" },
         },
         quoteOFT: {
           slug: "oft-quote-oft",

@@ -12,7 +12,12 @@
 import { describe, expect, it } from "vitest";
 import "@/protocols";
 import { deriveActionsFromAbi } from "@/lib/abi/protocol-derive";
-import { getEncodeTransformKind } from "@/lib/protocol-encode-transforms";
+import {
+  clearEncodeTransforms,
+  getEncodeTransformKind,
+  registerEncodeTransform,
+  weiToEther,
+} from "@/lib/protocol-encode-transforms";
 import {
   type AbiFunctionOverride,
   defineAbiProtocol,
@@ -100,18 +105,28 @@ describe("payable value field label hook", () => {
   it("leaves every payable action in the registry that declares nothing unchanged", () => {
     // Registry-wide, so a future override cannot quietly relabel a field
     // whose unit did not change. Only actions carrying a declaration are
-    // allowed to differ from the historical shape.
+    // allowed to differ from the historical shape - and one declaring
+    // payableValue.fromInput is allowed to differ in the biggest way: no
+    // value field at all, because the value is taken from a declared input.
     const declared: string[] = [];
     for (const def of getRegisteredProtocols()) {
       for (const action of def.actions) {
         if (!action.payable) {
           continue;
         }
-        const field = ethValueField(def, action);
         if (action.payableValue) {
           declared.push(`${def.slug}/${action.slug}`);
+          if (action.payableValue.fromInput) {
+            const keys = configFieldKeys(
+              protocolActionToPluginAction(def, action).configFields
+            );
+            expect(keys, `${def.slug}/${action.slug}`).not.toContain(
+              "ethValue"
+            );
+          }
           continue;
         }
+        const field = ethValueField(def, action);
         expect(field, `${def.slug}/${action.slug}`).toEqual({
           key: "ethValue",
           label: "ETH Value",
@@ -127,16 +142,37 @@ describe("payable value field label hook", () => {
   });
 
   it("applies a declared label, placeholder, help text and docUrl", () => {
-    const layerzero = requireProtocol("layerzero");
-    const send = layerzero.actions.find((a) => a.slug === "oft-send");
-    if (!send) {
-      throw new Error("layerzero/oft-send not registered");
+    const def = defineAbiProtocol({
+      name: "Synthetic Label",
+      slug: "zz-synthetic-label",
+      description: "fixture",
+      contracts: {
+        c: {
+          label: "C",
+          abi: PAYABLE_ABI,
+          addresses: { "1": "0x0000000000000000000000000000000000000001" },
+          overrides: {
+            deposit: {
+              payableValue: {
+                label: "Deposit (wei)",
+                placeholder: "0",
+                helpTip: "In wei.",
+                docUrl: "https://example.com/docs",
+              },
+            },
+          },
+        },
+      },
+    });
+    const action = def.actions.find((a) => a.slug === "deposit");
+    if (!action) {
+      throw new Error("deposit not derived");
     }
-    const field = ethValueField(layerzero, send);
-    expect(field.label).toBe(send.payableValue?.label);
-    expect(field.placeholder).toBe(send.payableValue?.placeholder);
-    expect(field.helpTip).toBe(send.payableValue?.helpTip);
-    expect(field.docUrl).toBe(send.payableValue?.docUrl);
+    const field = ethValueField(def, action);
+    expect(field.label).toBe("Deposit (wei)");
+    expect(field.placeholder).toBe("0");
+    expect(field.helpTip).toBe("In wei.");
+    expect(field.docUrl).toBe("https://example.com/docs");
   });
 
   it("validates a wei value field as a required uint256, keyed off the transform", () => {
@@ -144,21 +180,52 @@ describe("payable value field label hook", () => {
     // action with weiToEther on ethValue gets integer validation and is
     // required. Checked here through the registry builder and below through
     // the workflow validator, which is what a save actually runs.
-    const layerzero = requireProtocol("layerzero");
-    const send = layerzero.actions.find((a) => a.slug === "oft-send");
-    if (!send) {
-      throw new Error("layerzero/oft-send not registered");
-    }
-    expect(getEncodeTransformKind("layerzero", "oft-send", "ethValue")).toBe(
+    registerEncodeTransform(
+      "zz-synthetic-wei",
+      "deposit",
+      "ethValue",
+      weiToEther,
       "weiToEther"
     );
-    const field = ethValueField(layerzero, send);
-    expect(field.type).toBe("protocol-uint");
-    expect(field.solidityType).toBe("uint256");
-    expect(field.required).toBe(true);
+    try {
+      const def = defineAbiProtocol({
+        name: "Synthetic Wei",
+        slug: "zz-synthetic-wei",
+        description: "fixture",
+        contracts: {
+          c: {
+            label: "C",
+            abi: PAYABLE_ABI,
+            addresses: {
+              "1": "0x0000000000000000000000000000000000000001",
+            },
+            overrides: {
+              deposit: { payableValue: { label: "Deposit (wei)" } },
+            },
+          },
+        },
+      });
+      const action = def.actions.find((a) => a.slug === "deposit");
+      if (!action) {
+        throw new Error("deposit not derived");
+      }
+      expect(
+        getEncodeTransformKind("zz-synthetic-wei", "deposit", "ethValue")
+      ).toBe("weiToEther");
+      const field = ethValueField(def, action);
+      expect(field.type).toBe("protocol-uint");
+      expect(field.solidityType).toBe("uint256");
+      expect(field.required).toBe(true);
+      expect(field.label).toBe("Deposit (wei)");
+    } finally {
+      clearEncodeTransforms();
+    }
   });
 
-  it("refuses a decimal or blank fee on the wei field and accepts integers and templates", () => {
+  it("refuses a decimal or blank fee on the uint256 fee field and accepts integers and templates", () => {
+    // The OFT send takes msg.value from nativeFee, so the wei-typed field
+    // the validator has to police is the fee input itself: the same
+    // protocol-uint rules the removed value field carried.
     const wallet = "0x1111111111111111111111111111111111111111";
     const base = {
       actionType: "layerzero/oft-send",
@@ -168,10 +235,9 @@ describe("payable value field label hook", () => {
       to: wallet,
       amountLD: "1000000",
       minAmountLD: "990000",
-      nativeFee: "218756042576226",
       refundAddress: wallet,
     };
-    const issuesFor = (ethValue: unknown) =>
+    const issuesFor = (nativeFee: unknown) =>
       validateWorkflowActionConfigs([
         {
           id: "send-1",
@@ -179,14 +245,13 @@ describe("payable value field label hook", () => {
           data: {
             type: "action",
             label: "OFT Send",
-            config: ethValue === undefined ? base : { ...base, ethValue },
+            config: nativeFee === undefined ? base : { ...base, nativeFee },
           },
         },
-      ]).issues.filter((issue) => issue.field === "ethValue");
+      ]).issues.filter((issue) => issue.field === "nativeFee");
 
-    // Ether typed into the wei field. The decimal field would accept this
-    // and the step would then refuse it at run time; the validator now
-    // refuses it at save time.
+    // Ether typed into the wei field: refused at save time rather than at
+    // run time.
     expect(issuesFor("0.001").map((i) => i.code)).not.toEqual([]);
     expect(issuesFor("").map((i) => i.code)).toEqual([
       "MISSING_REQUIRED_FIELD",

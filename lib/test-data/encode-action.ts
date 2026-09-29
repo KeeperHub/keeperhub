@@ -18,7 +18,10 @@ import {
   type FunctionAbiEntry,
   reshapeArgsForAbi,
 } from "@/lib/abi/struct-args";
-import { applyEthValueTransform } from "@/lib/execute/protocol-eth-value";
+import {
+  applyEthValueTransform,
+  readPayableValue,
+} from "@/lib/execute/protocol-eth-value";
 import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
 import {
   getProtocol,
@@ -237,11 +240,18 @@ export function encodeFromConfig(
   // action through the registry, so a definition passed in here that is
   // not registered fails loudly on a value rather than skipping the
   // conversion.
-  const valueResult = applyEthValueTransform(config.ethValue, {
+  const meta = {
     protocolSlug: protocol.slug,
     contractKey: action.contract,
     functionName: action.function,
-  });
+  };
+  // The value may live on a declared input rather than the virtual field
+  // (the OFT send's nativeFee), so select the source before converting.
+  const payableValue = readPayableValue(config, meta);
+  if (!payableValue.ok) {
+    throw new Error(`${protocol.slug}/${action.slug}: ${payableValue.error}`);
+  }
+  const valueResult = applyEthValueTransform(payableValue.value, meta);
   if (!valueResult.ok) {
     throw new Error(`${protocol.slug}/${action.slug}: ${valueResult.error}`);
   }

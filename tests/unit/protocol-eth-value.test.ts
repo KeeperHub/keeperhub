@@ -24,6 +24,7 @@ vi.mock("@/lib/logging", async (importActual) => {
 import {
   applyEthValueTransform,
   findProtocolAction,
+  readPayableValue,
 } from "@/lib/execute/protocol-eth-value";
 import { OFT_SEND_FIXTURE_FEE_WEI } from "@/protocols/layerzero";
 
@@ -49,6 +50,53 @@ describe("findProtocolAction", () => {
     expect(
       findProtocolAction({ ...OFT_SEND, contractKey: "oftToken" })
     ).toBeUndefined();
+  });
+});
+
+describe("readPayableValue", () => {
+  const FEE = "218756042576226";
+
+  it("reads the declared input on an action with payableValue.fromInput", () => {
+    // The OFT send declares payableValue.fromInput: "nativeFee", so the
+    // payable value is the fee argument itself and no ethValue is needed.
+    expect(readPayableValue({ nativeFee: FEE }, OFT_SEND)).toEqual({
+      ok: true,
+      value: FEE,
+    });
+  });
+
+  it("accepts an ethValue equal to the declared input, and blank ones", () => {
+    // Legacy callers that still send a separate ethValue are tolerated
+    // when it says the same number, or when it is absent/blank.
+    expect(
+      readPayableValue({ nativeFee: FEE, ethValue: FEE }, OFT_SEND)
+    ).toEqual({ ok: true, value: FEE });
+    for (const blank of [undefined, null, "", "   "]) {
+      expect(
+        readPayableValue({ nativeFee: FEE, ethValue: blank }, OFT_SEND)
+      ).toEqual({ ok: true, value: FEE });
+    }
+  });
+
+  it("refuses an ethValue that differs from the declared input", () => {
+    const out = readPayableValue({ nativeFee: FEE, ethValue: "1" }, OFT_SEND);
+    expect(out.ok).toBe(false);
+    expect((out as { error: string }).error).toMatch(
+      /takes its value from "nativeFee"/
+    );
+  });
+
+  it("reads ethValue, and nothing else, on an action without fromInput", () => {
+    expect(readPayableValue({ ethValue: "0.25" }, WRAP)).toEqual({
+      ok: true,
+      value: "0.25",
+    });
+    // A config key spelled like the send's fee input is not a value source
+    // here: without fromInput the only source is ethValue, exactly as
+    // before the hook existed.
+    expect(
+      readPayableValue({ nativeFee: "999", ethValue: "0.25" }, WRAP)
+    ).toEqual({ ok: true, value: "0.25" });
   });
 });
 

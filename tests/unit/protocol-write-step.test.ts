@@ -1203,6 +1203,75 @@ describe("ethValue encode transforms", () => {
     expect(coreCall.ethValue).toBe("0.25");
   });
 
+  it("takes the payable value from the declared input when the action sets payableValue.fromInput", async () => {
+    arrange();
+    // Same shape as layerzero/oft-send: a payable action whose value is
+    // one of its ABI inputs (the amount here stands in for nativeFee), so
+    // there is no separate value field to disagree with it.
+    mockGetProtocol.mockReturnValue({
+      ...COMPOUND_PROTOCOL,
+      actions: [
+        {
+          ...COMPOUND_PROTOCOL.actions[0],
+          payable: true,
+          payableValue: { fromInput: "amount" },
+        },
+      ],
+    });
+
+    await protocolWriteStep(makeInput());
+
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBe("1000000");
+    const capOpts = (mockWithStepValueCap as Mock).mock.calls[0][0] as {
+      config: { ethValue?: string };
+    };
+    expect(capOpts.config.ethValue).toBe("1000000");
+  });
+
+  it("refuses the write when a separate ethValue disagrees with the declared input", async () => {
+    arrange();
+    mockGetProtocol.mockReturnValue({
+      ...COMPOUND_PROTOCOL,
+      actions: [
+        {
+          ...COMPOUND_PROTOCOL.actions[0],
+          payable: true,
+          payableValue: { fromInput: "amount" },
+        },
+      ],
+    });
+
+    const result = await protocolWriteStep(makeInput({ ethValue: "999" }));
+
+    expect(result.success).toBe(false);
+    expect((result as { error: string }).error).toMatch(
+      /takes its value from "amount"/
+    );
+    expect(mockWriteContractCore).not.toHaveBeenCalled();
+    expect(mockWithStepValueCap).not.toHaveBeenCalled();
+  });
+
+  it("accepts a separate ethValue that equals the declared input", async () => {
+    arrange();
+    mockGetProtocol.mockReturnValue({
+      ...COMPOUND_PROTOCOL,
+      actions: [
+        {
+          ...COMPOUND_PROTOCOL.actions[0],
+          payable: true,
+          payableValue: { fromInput: "amount" },
+        },
+      ],
+    });
+
+    const result = await protocolWriteStep(makeInput({ ethValue: "1000000" }));
+
+    expect(result.success).toBe(true);
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBe("1000000");
+  });
+
   it("does not invoke the transform on an empty ethValue", async () => {
     arrange();
     const spy = vi.fn(weiToEther);
