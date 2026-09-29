@@ -279,7 +279,7 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     expect(nativeFee.type).toBe("protocol-uint");
     expect(nativeFee.solidityType).toBe("uint256");
     expect(nativeFee.required).toBe(true);
-    expect(nativeFee.helpTip).toContain("msg.value");
+    expect(nativeFee.helpTip).toContain("transaction's value");
   });
 
   it("quote-oft has seven inputs and three named tuple outputs", () => {

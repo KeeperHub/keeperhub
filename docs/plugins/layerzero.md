@@ -33,7 +33,7 @@ The OFT actions and the underlying-token actions take the contract address as an
 
 Every read action works without credentials. The two write actions, OFT Approve and OFT Send, need a connected wallet.
 
-The send pays the LayerZero messaging fee as the transaction's native value, and a standard OFT, built on LayerZero's OApp, reverts unless that value equals the fee you declare in the call. OFT Quote Send returns that fee in wei, so OFT Send's value field takes wei too, and a workflow can pass the quote's `fee.nativeFee` through unchanged. This is the one place in the platform where a value field is not in whole ether; the label "Messaging Fee (wei)" says so.
+The send pays the LayerZero messaging fee as the transaction's native value, and a standard OFT, built on LayerZero's OApp, reverts unless that value equals the fee you declare in the call. OFT Send takes both from one input, Native Fee (wei), so they always match. OFT Quote Send returns the fee in wei, so the input takes wei too, and a workflow can pass the quote's `fee.nativeFee` through unchanged. This is the one place in the platform where a fee is not in whole ether; the label "Native Fee (wei)" says so.
 
 ## Endpoint IDs
 
@@ -62,7 +62,7 @@ None of the reads below is interesting on its own. What they are for is the sequ
 5. OFT Quote Transfer, to see the amount that will actually arrive after dust removal rather than the amount you asked for.
 6. OFT Quote Send with the exact options you intend to use, to get the native fee the send will have to pay, and to fail early if the options are wrong.
 7. Endpoint Get Send Library and Endpoint Get Config, compared against a stored baseline, to confirm the parties verifying the lane are still the ones you agreed to.
-8. OFT Send, with the same SendParam values as the quotes and the quote's `fee.nativeFee` in both Native Fee (wei) and Messaging Fee (wei).
+8. OFT Send, with the same SendParam values as the quotes and the quote's `fee.nativeFee` in Native Fee (wei).
 
 Steps one through six each catch a revert or a shortfall before you send. Step seven catches a change nothing else reports. Step eight is the only one that moves anything.
 
@@ -167,16 +167,14 @@ Send an OFT to another chain, paying the LayerZero messaging fee quoted by OFT Q
 | extraOptions | bytes | Extra Options. Advanced. Defaults to `0x00030100110100000000000000000000000000030d40` |
 | composeMsg | bytes | Compose Message. Advanced. Defaults to `0x` |
 | oftCmd | bytes | OFT Command. Advanced. Defaults to `0x` |
-| nativeFee | uint256 | Native Fee (wei). The quote's `fee.nativeFee` |
+| nativeFee | uint256 | Native Fee (wei). The quote's `fee.nativeFee`. KeeperHub attaches the same amount as the transaction's native value |
 | lzTokenFee | uint256 | LZ Token Fee. Advanced. Defaults to `0`; paying in ZRO is not supported here |
-| refundAddress | address | Refund Address. Receives any native fee paid above what the send required; usually the sending wallet. A contract here must be able to receive native tokens |
-| Messaging Fee (wei) | value | The native value attached to the transaction, in wei. The same number as `nativeFee` |
 
 **Outputs:** `transactionHash` and `transactionLink`, as for every write. The action does not expose the receipts the contract returns (`msgReceipt.guid`, `oftReceipt.amountSentLD`, `oftReceipt.amountReceivedLD`) as template fields; run OFT Quote Transfer beforehand for the amounts.
 
-The fee appears twice, and the two must be identical. The first is `nativeFee`, an argument in the call: it is what you tell the OFT you are paying. The second is the value field: it is what the transaction carries. LayerZero's `OAppSender` checks the two for equality and reverts with `NotEnoughNative` when they differ by any amount, in either direction, so overpaying in the value field fails the same way as underpaying. After that check, the endpoint compares your fee against the live quote: if it is short, the send reverts with `LZ_InsufficientFee`; if it is above the quote, the endpoint refunds the excess to `refundAddress`. So put the same number in both fields, at or above the quote. The quote is an estimate that moves with gas prices and with the pricing of the DVNs and Executor that carry the message, so quote as close to the send as you can. If the send may run a while after the quote, put the same higher amount in both fields: the endpoint charges the fee it needs and refunds the rest to `refundAddress`.
+The fee is one input. `nativeFee` is what you tell the OFT you are paying, and KeeperHub attaches the same amount as the transaction's native value, because LayerZero's `OAppSender` reverts with `NotEnoughNative` when the two differ by any amount, in either direction. The endpoint then compares your fee against the live quote: if it is short, the send reverts with `LZ_InsufficientFee`; if it is above the quote, the endpoint refunds the excess to the refund address. You do not choose the refund address. KeeperHub sets it to the address that pays for the send: your organization's Safe when the workflow signs through one, and its wallet otherwise, so an overpaid fee comes back to whoever paid it. The quote is an estimate that moves with gas prices and with the pricing of the DVNs and Executor that carry the message, so quote as close to the send as you can. If the send may run a while after the quote, enter a higher fee: the endpoint charges the fee it needs and refunds the rest.
 
-Both fields are in wei. This is the one action in the platform whose value field is not in whole ether, and the quote is the reason: OFT Quote Send returns `fee.nativeFee` in wei, and templates have no unit arithmetic, so the send has to accept the number the quote produced. A reference such as `{{@quote:OFT Quote Send.fee.nativeFee}}` works in both fields. If you type an ether amount such as `0.001` into either one, KeeperHub rejects it before sending anything, instead of misreading it as wei.
+The fee is in wei. This is the one action in the platform whose fee is not in whole ether, and the quote is the reason: OFT Quote Send returns `fee.nativeFee` in wei, and templates have no unit arithmetic, so the send has to accept the number the quote produced. A reference such as `{{@quote:OFT Quote Send.fee.nativeFee}}` works here. If you type an ether amount such as `0.001`, KeeperHub rejects it before sending anything, instead of misreading it as wei.
 
 The SendParam inputs are the same seven the quotes take, so a workflow passes one set of values to OFT Quote Transfer, OFT Quote Send and OFT Send. If the OFT reports Approval Required, run OFT Approve on the underlying token first, for at least `amountLD`; a lock-and-unlock Adapter pulls the tokens with `transferFrom` inside the send and reverts without the allowance. `minAmountLD` works here as it does in the quotes: set it below `amountLD` to leave headroom for dust removal.
 
@@ -459,7 +457,7 @@ Then point your local dev server at the same fork by overriding the Ethereum mai
 CHAIN_ETH_MAINNET_PRIMARY_RPC=http://localhost:8545 pnpm dev
 ```
 
-Any wallet you connect needs funds on the fork. Use one of anvil's pre-funded private keys for gas and for the messaging fee, and to get USDT into it, impersonate a large holder with `anvil_impersonateAccount` and transfer some across. That is enough to run OFT Approve, watch OFT Check Allowance change, then run OFT Send with the quote's `fee.nativeFee` in both fee fields and watch the allowance drop back by the amount sent. Workflows targeting chain ID 1 hit the forked bytecode instead of real mainnet. The message goes nowhere on a fork because there is no destination chain, so the source-side receipt is all you can observe.
+Any wallet you connect needs funds on the fork. Use one of anvil's pre-funded private keys for gas and for the messaging fee, and to get USDT into it, impersonate a large holder with `anvil_impersonateAccount` and transfer some across. That is enough to run OFT Approve, watch OFT Check Allowance change, then run OFT Send with the quote's `fee.nativeFee` in Native Fee (wei) and watch the allowance drop back by the amount sent. Workflows targeting chain ID 1 hit the forked bytecode instead of real mainnet. The message goes nowhere on a fork because there is no destination chain, so the source-side receipt is all you can observe.
 
 ### A testnet pair
 

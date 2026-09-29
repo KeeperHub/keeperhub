@@ -475,14 +475,14 @@ export default defineAbiProtocol({
           slug: "oft-send",
           label: "OFT Send",
           description:
-            "Send an OFT to another chain, paying the LayerZero messaging fee quoted by OFT Quote Send. Pass the same SendParam values as the quote, and pass the quote's fee.nativeFee (in wei) to both Native Fee and Messaging Fee (wei): the OFT reverts unless the two are equal. On an OFT Adapter that reports Approval Required, run OFT Approve first.",
+            "Send an OFT to another chain, paying the LayerZero messaging fee quoted by OFT Quote Send. Pass the same SendParam values as the quote, and the quote's fee.nativeFee (in wei) as Native Fee; KeeperHub attaches the same amount as the transaction's value. On an OFT Adapter that reports Approval Required, run OFT Approve first.",
           docUrl: LAYERZERO_OFT_DOCS,
           inputs: {
             ...SEND_PARAM_INPUT_OVERRIDES,
             nativeFee: {
               label: "Native Fee (wei)",
               helpTip:
-                "The messaging fee in wei of this chain's gas token, as returned by OFT Quote Send as fee.nativeFee. Enter the same value in Messaging Fee (wei): the OFT reverts if msg.value differs from this by any amount. The endpoint refunds anything above the required fee to the Refund Address.",
+                "The messaging fee in wei of this chain's gas token, as OFT Quote Send returns it in fee.nativeFee. KeeperHub attaches the same amount as the transaction's value. Enter more than the quote for headroom: the endpoint refunds the excess to the address that pays for the send.",
               docUrl: LAYERZERO_OFT_DOCS,
             },
             lzTokenFee: {
