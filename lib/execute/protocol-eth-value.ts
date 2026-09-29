@@ -61,7 +61,7 @@ export function readPayableValue(
 ): { ok: true; value: unknown } | { ok: false; error: string } {
   const action = findProtocolAction(meta);
   const fromInput = action?.payableValue?.fromInput;
-  if (!action || !fromInput) {
+  if (!(action && fromInput)) {
     return { ok: true, value: source.ethValue };
   }
   if (

@@ -140,11 +140,8 @@ describe("encode transform registry invariants", () => {
       for (const action of protocol.actions) {
         if (
           action.payableValue?.fromInput &&
-          getEncodeTransformKind(
-            protocol.slug,
-            action.slug,
-            "ethValue"
-          ) !== "weiToEther"
+          getEncodeTransformKind(protocol.slug, action.slug, "ethValue") !==
+            "weiToEther"
         ) {
           missing.push(`${protocol.slug}/${action.slug}`);
         }
