@@ -233,6 +233,25 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
     ]);
   });
 
+  it("reserves and sends 0.0001 ETH for a 1e14-wei fee", async () => {
+    getProtocolMock.mockReturnValue(layerzeroDef);
+    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
+
+    const response = await post(
+      ["layerzero", "oft-send"],
+      sendBody("100000000000000")
+    );
+
+    expect(response.status).toBe(202);
+    expect(checkAndReserveExecutionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reserved: { kind: "evm", valueWei: "100000000000000" },
+      })
+    );
+    const core = writeContractCoreMock.mock.calls[0][0] as { ethValue: string };
+    expect(core.ethValue).toBe("0.0001");
+  });
+
   it("accepts the wei value as a JSON number when it is a safe integer", async () => {
     getProtocolMock.mockReturnValue(layerzeroDef);
     resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);

@@ -251,6 +251,25 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
     ).toBe(true);
   });
 
+  it("reserves 0.0001 ETH for a 1e14-wei fee and hands the step the raw wei", async () => {
+    protocolWrite();
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "layerzero/oft-send",
+        config: sendConfig("100000000000000"),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.checkAndReserveExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reserved: { kind: "evm", valueWei: "100000000000000" },
+      })
+    );
+    expect(mocks.capturedInput?.ethValue).toBe("100000000000000");
+  });
+
   it("resolves from _protocolMeta alone, the older node shape, and reserves the converted value", async () => {
     protocolWrite();
     const { _actionType: _omitted, ...config } = sendConfig(FEE_WEI);
