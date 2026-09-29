@@ -46,6 +46,8 @@ export type ProtocolActionInput = {
   helpTip?: string;
   docUrl?: string;
   components?: ProtocolActionInputComponent[];
+  /** The input is not a user field. writeContractCore sets this top-level address argument to the address that pays for the call (the Safe in safe modes, the org wallet otherwise). */
+  payer?: boolean;
 };
 
 export type ProtocolActionOutput = {
@@ -96,10 +98,12 @@ export type ProtocolAction = {
 };
 
 export type PayableValueField = {
-  label: string;
+  label?: string;
   helpTip?: string;
   docUrl?: string;
   placeholder?: string;
+  /** Name of an action input whose value the transaction carries as msg.value. When set, no separate value field is rendered and every entrance reads the value from this input. */
+  fromInput?: string;
 };
 
 export type ProtocolDefinition = {
@@ -224,6 +228,22 @@ export function defineProtocol(def: ProtocolDefinition): ProtocolDefinition {
       throw new Error(
         `Action "${action.slug}" of protocol "${def.slug}" declares payableValue but is not payable, so no value field exists to label`
       );
+    }
+    const fromInput = action.payableValue?.fromInput;
+    if (fromInput !== undefined) {
+      const target = action.inputs.find((input) => input.name === fromInput);
+      if (!(target && !target.payer)) {
+        throw new Error(
+          `payableValue.fromInput "${fromInput}" must name a user input of ${action.slug}`
+        );
+      }
+    }
+    for (const input of action.inputs) {
+      if (input.payer && input.type !== "address") {
+        throw new Error(
+          `payer input "${input.name}" must be an address parameter, got ${input.type}`
+        );
+      }
     }
   }
 
@@ -502,7 +522,7 @@ function buildConfigFieldsFromAction(
     });
   }
 
-  if (action.payable) {
+  if (action.payable && !action.payableValue?.fromInput) {
     // ETH Value is required only when it is the action's sole meaningful input
     // (e.g. WETH.deposit() takes no args - the native value IS the action).
     // For payable functions that also take arguments, the native value is
@@ -516,6 +536,9 @@ function buildConfigFieldsFromAction(
   const advancedFields: ActionConfigFieldBase[] = [];
 
   for (const input of action.inputs) {
+    if (input.payer) {
+      continue;
+    }
     const field = buildInputField(input);
     if (input.advanced) {
       advancedFields.push(field);

@@ -34,6 +34,8 @@ export type AbiInputOverride = {
   advanced?: boolean;
   decimals?: boolean | number;
   fieldType?: string;
+  /** The input is not a user field. writeContractCore sets this top-level address argument to the address that pays for the call (the Safe in safe modes, the org wallet otherwise). */
+  payer?: boolean;
 };
 
 export type AbiOutputOverride = {
@@ -55,10 +57,12 @@ export type AbiOutputOverride = {
  * nothing keeps the default "ETH Value" field unchanged.
  */
 export type PayableValueOverride = {
-  label: string;
+  label?: string;
   helpTip?: string;
   docUrl?: string;
   placeholder?: string;
+  /** Name of an action input whose value the transaction carries as msg.value. When set, no separate value field is rendered and every entrance reads the value from this input. */
+  fromInput?: string;
 };
 
 /**
@@ -187,6 +191,19 @@ function deriveInput(
   if (override?.decimals !== undefined) {
     input.decimals = override.decimals;
   }
+  if (override?.payer) {
+    if (param.type !== "address") {
+      throw new Error(
+        `payer input "${rawName}" must be an address parameter, got ${param.type}`
+      );
+    }
+    if (override.name !== undefined && override.name !== rawName) {
+      throw new Error(
+        `payer input "${rawName}" cannot be renamed: writeContractCore sets it by its ABI parameter name`
+      );
+    }
+    input.payer = true;
+  }
 
   const components = toInputComponents(param.components);
   if (components) {
@@ -204,7 +221,13 @@ function deriveTupleInputs(
   const components = param.components ?? [];
   for (let i = 0; i < components.length; i++) {
     const comp = components[i];
-    const compOverride = overrides?.[comp.name || defaultInputName(i)];
+    const compName = comp.name || defaultInputName(i);
+    const compOverride = overrides?.[compName];
+    if (compOverride?.payer) {
+      throw new Error(
+        `payer is supported on top-level parameters only ("${compName}")`
+      );
+    }
     const derived = deriveInput(comp, i, compOverride);
     if (derived) {
       inputs.push(derived);
@@ -311,6 +334,15 @@ function deriveAction(
       );
     }
     action.payableValue = { ...override.payableValue };
+    const fromInput = override.payableValue.fromInput;
+    if (fromInput !== undefined) {
+      const target = inputs.find((i) => i.name === fromInput);
+      if (!(target && !target.payer)) {
+        throw new Error(
+          `payableValue.fromInput "${fromInput}" must name a user input of ${slug}`
+        );
+      }
+    }
   }
 
   return action;

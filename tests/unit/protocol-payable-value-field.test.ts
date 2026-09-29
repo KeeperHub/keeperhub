@@ -14,6 +14,8 @@ import "@/protocols";
 import { deriveActionsFromAbi } from "@/lib/abi/protocol-derive";
 import { getEncodeTransformKind } from "@/lib/protocol-encode-transforms";
 import {
+  type AbiFunctionOverride,
+  defineAbiProtocol,
   defineProtocol,
   getProtocol,
   getRegisteredProtocols,
@@ -52,6 +54,18 @@ function ethValueField(
     throw new Error(`${def.slug}/${action.slug} has no ethValue field`);
   }
   return field;
+}
+
+function configFieldKeys(fields: ActionConfigField[]): string[] {
+  const keys: string[] = [];
+  for (const field of fields) {
+    if ("key" in field) {
+      keys.push(field.key);
+    } else {
+      keys.push(...configFieldKeys(field.fields));
+    }
+  }
+  return keys;
 }
 
 function requireProtocol(slug: string): ProtocolDefinition {
@@ -270,5 +284,109 @@ describe("payable value field label hook", () => {
         ],
       })
     ).toThrow(/declares payableValue but is not payable/);
+  });
+});
+
+describe("payer input and payableValue.fromInput hooks", () => {
+  // A payable function whose native value is carried by one of its declared
+  // inputs (msg.value === amount) rather than by a separate value field, and
+  // whose refund address argument is set by the write core to the address
+  // that pays instead of being typed by the user.
+  const PAYER_ABI = JSON.stringify([
+    {
+      type: "function",
+      name: "pay",
+      stateMutability: "payable",
+      inputs: [
+        { name: "amount", type: "uint256" },
+        { name: "refund", type: "address" },
+      ],
+      outputs: [],
+    },
+  ]);
+
+  function syntheticDefinition(
+    payOverride: AbiFunctionOverride = {
+      payableValue: { fromInput: "amount" },
+      inputs: { refund: { payer: true } },
+    }
+  ): ProtocolDefinition {
+    return defineAbiProtocol({
+      name: "Synthetic Pay",
+      slug: "zz-synthetic-pay",
+      description: "fixture",
+      contracts: {
+        c: {
+          label: "C",
+          abi: PAYER_ABI,
+          addresses: { "1": "0x0000000000000000000000000000000000000001" },
+          overrides: { pay: payOverride },
+        },
+      },
+    });
+  }
+
+  function syntheticAction(def: ProtocolDefinition): ProtocolAction {
+    const action = def.actions.find((a) => a.slug === "pay");
+    if (!action) {
+      throw new Error("pay action not derived");
+    }
+    return action;
+  }
+
+  it("derives payableValue.fromInput and marks the payer input", () => {
+    const pay = syntheticAction(syntheticDefinition());
+    expect(pay.payableValue?.fromInput).toBe("amount");
+    expect(pay.inputs.find((i) => i.name === "refund")?.payer).toBe(true);
+    expect(pay.inputs.find((i) => i.name === "amount")?.payer).toBeUndefined();
+  });
+
+  it("renders neither the ethValue field nor the payer input", () => {
+    const def = syntheticDefinition();
+    const keys = configFieldKeys(
+      protocolActionToPluginAction(def, syntheticAction(def)).configFields
+    );
+    expect(keys).not.toContain("ethValue");
+    expect(keys).not.toContain("refund");
+    expect(keys).toContain("amount");
+  });
+
+  it("refuses a fromInput that names no user input", () => {
+    expect(() =>
+      syntheticDefinition({ payableValue: { fromInput: "missing" } })
+    ).toThrow(/payableValue\.fromInput "missing" must name a user input/);
+    // Naming the payer input is refused the same way: it is not a user field.
+    expect(() =>
+      syntheticDefinition({
+        payableValue: { fromInput: "refund" },
+        inputs: { refund: { payer: true } },
+      })
+    ).toThrow(/payableValue\.fromInput "refund" must name a user input/);
+  });
+
+  it("refuses payer on a non-address input", () => {
+    expect(() =>
+      syntheticDefinition({ inputs: { amount: { payer: true } } })
+    ).toThrow(/payer input "amount" must be an address parameter, got uint256/);
+  });
+
+  it("refuses a rename on a payer input", () => {
+    expect(() =>
+      syntheticDefinition({
+        inputs: { refund: { payer: true, name: "refundTo" } },
+      })
+    ).toThrow(/payer input "refund" cannot be renamed/);
+  });
+
+  it("keeps the historical ethValue field on a payable action declaring neither hook", () => {
+    const def = syntheticDefinition({});
+    const field = ethValueField(def, syntheticAction(def));
+    expect(field).toEqual({
+      key: "ethValue",
+      label: "ETH Value",
+      type: "protocol-eth-value",
+      placeholder: "0.0",
+      required: false,
+    });
   });
 });
