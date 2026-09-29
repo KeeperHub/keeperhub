@@ -10,6 +10,7 @@ import {
 } from "@/lib/mcp/validate-workflow";
 import { validateWorkflowDeep } from "@/lib/mcp/validate-workflow-deep";
 import { getWorkflowAccess } from "@/lib/workflow/access";
+import { resolveProtocolEventAddress } from "@/lib/workflow/protocol-event-address";
 
 export async function GET(
   request: Request,
@@ -54,12 +55,21 @@ export async function GET(
   const { searchParams } = new URL(request.url);
   const deepCheck = searchParams.get("deepCheck") === "true";
 
-  // Pre-fetch enabled chain IDs ONCE per request — validator stays pure.
+  // Pre-fetch enabled chain rows ONCE per request — validator stays pure.
+  // default_primary_wss rides along on the query that was already being made:
+  // an Event trigger on a chain without a WebSocket endpoint is never
+  // registered, and that is the one condition a user cannot self-diagnose.
   const enabledChainRows = await db
-    .select({ chainId: chains.chainId })
+    .select({
+      chainId: chains.chainId,
+      defaultPrimaryWss: chains.defaultPrimaryWss,
+    })
     .from(chains)
     .where(eq(chains.isEnabled, true));
   const chainIds = new Set(enabledChainRows.map((r) => r.chainId));
+  const chainWebsockets = new Map(
+    enabledChainRows.map((r) => [r.chainId, r.defaultPrimaryWss])
+  );
 
   const workflow: ValidatorWorkflow = {
     id: row.id,
@@ -73,9 +83,14 @@ export async function GET(
     workflowType: (row.workflowType ?? "read") as "read" | "write",
   };
 
+  const options = {
+    chainIds,
+    chainWebsockets,
+    resolveProtocolEventAddress,
+  };
   const result: ValidationResult = deepCheck
-    ? await validateWorkflowDeep(workflow, { chainIds })
-    : validateWorkflow(workflow, { chainIds });
+    ? await validateWorkflowDeep(workflow, options)
+    : validateWorkflow(workflow, options);
 
   return NextResponse.json({
     ok: true,

@@ -162,10 +162,47 @@ address a wallet user signed in with - see
 
 ### Experimental
 
-| Network | chainId | Status |
-|---|---|---|
-| 0G | `16661` | experimental |
-| 0G Galileo (testnet) | `16602` | experimental |
+| Network | chainId | USDC | Status |
+|---|---|---|---|
+| 0G | `16661` | - | experimental |
+| 0G Galileo (testnet) | `16602` | - | experimental |
+| Arc (Circle) | `5042` | `0x3600000000000000000000000000000000000000` | experimental |
+| Arc Testnet (Circle) | `5042002` | `0x3600000000000000000000000000000000000000` | experimental |
+| HyperEVM | `999` | `0xb88339cb7199b77e23db6e890353e22632ba630f` | experimental |
+| Unichain | `130` | `0x078D782b760474a361dDA0AF3839290b0EF57AD6` | experimental |
+| Unichain Sepolia (testnet) | `1301` | `0x31d0220469e10c4E71834a79b1f276d740d3768F` | experimental |
+| Somnia | `5031` | - | experimental |
+| Somnia Shannon (testnet) | `50312` | `0x0ED782B8079529f7385c3eDA9fAf1EaA0DbC6a17` | experimental |
+
+HyperEVM's regular blocks cap at 3,000,000 gas, and the node rejects a
+transaction above that before it is sent, so KeeperHub sizes gas limits with a
+1.5x multiplier there rather than the default 2x. A transaction that genuinely
+needs more than 3,000,000 gas cannot be sent from KeeperHub today: larger blocks
+on HyperEVM require an opt-in made on HyperCore. HyperEVM also carries USDT0 at
+`0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`. Mainnet only; the testnet has no
+working explorer API.
+
+The 1.5x multiplier is a workaround, not a ceiling: an estimate above roughly
+2,000,000 gas can still exceed the block limit once the multiplier is applied,
+and blocks routinely reach 0.7 to 0.9 of the limit. Size such a transaction down
+rather than relying on the multiplier.
+
+Chain id 999 is registered as HyperEVM by Etherscan and the node itself, but
+`chainid.network` still lists 999 as Wanchain Testnet, so third-party tooling
+keyed off that registry may label the chain Wanchain.
+
+Arc's USDC is also its native gas token. The Arc address above is the fixed
+ERC-20-interface precompile Circle documents for programmatic balance and
+transfer access; it reports balances at 6 decimals, distinct from the
+18-decimal native currency accounting used for gas. The same precompile is at
+the same address on both Arc networks.
+
+Arc mainnet has one limitation the testnet does not: contract ABIs cannot be
+fetched automatically, so supply the ABI directly when configuring a contract
+action. Transaction and address links work normally - Circle's mainnet
+explorer went live at explorer.arc.io, but its API is still gated, which is
+what ABI auto-fetch depends on. Event and block triggers work normally on
+both networks.
 
 The live source of truth for chains is `GET /api/chains`; agents can read the
 same list (including per-chain `status`) from the `list_action_schemas` MCP

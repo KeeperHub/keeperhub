@@ -69,7 +69,9 @@ describe("resolveConditionExpression", () => {
     expect(result).toBeUndefined();
   });
 
-  it("should return 'true' for conditionConfig with empty rules", () => {
+  // A group with no usable rule generates "true". That is what an empty builder looks
+  // like, so it must not become a gate that lets everything through.
+  it("should return undefined for conditionConfig with empty rules", () => {
     const config: Record<string, unknown> = {
       conditionConfig: {
         group: makeGroup("AND", []),
@@ -77,14 +79,63 @@ describe("resolveConditionExpression", () => {
     };
 
     const result = resolveConditionExpression(config);
-    expect(result).toBe("true");
+    expect(result).toBeUndefined();
   });
 
-  it("should return 'true' for conditionConfig with all-empty rules", () => {
+  it("should return undefined for conditionConfig with all-empty rules", () => {
     const config: Record<string, unknown> = {
       conditionConfig: {
         group: makeGroup("AND", [makeRule("", "==", "")]),
       },
+    };
+
+    const result = resolveConditionExpression(config);
+    expect(result).toBeUndefined();
+  });
+
+  // The editor writes `condition` from the group it is showing, so an always-true string
+  // beside a degenerate group is that group's own output, not a gate anyone authored.
+  it("should return undefined for a degenerate group beside a derived 'true'", () => {
+    const config: Record<string, unknown> = {
+      conditionConfig: {
+        group: makeGroup("AND", []),
+      },
+      condition: "true",
+    };
+
+    const result = resolveConditionExpression(config);
+    expect(result).toBeUndefined();
+  });
+
+  it("should return undefined for a half-typed rule beside a derived 'true'", () => {
+    const config: Record<string, unknown> = {
+      conditionConfig: {
+        group: makeGroup("AND", [makeRule("{{@n:L.a}}", "===", "")]),
+      },
+      condition: "true",
+    };
+
+    const result = resolveConditionExpression(config);
+    expect(result).toBeUndefined();
+  });
+
+  it("should fall through to a real expression when the group is degenerate", () => {
+    const config: Record<string, unknown> = {
+      conditionConfig: {
+        group: makeGroup("AND", []),
+      },
+      condition: "{{@n:L.a}} === 1",
+    };
+
+    const result = resolveConditionExpression(config);
+    expect(result).toBe("{{@n:L.a}} === 1");
+  });
+
+  // handleModeSwitch clears conditionConfig when the author moves to expression mode, so a
+  // bare "true" with no group beside it was typed on purpose and still counts.
+  it("should keep an authored 'true' that has no group beside it", () => {
+    const config: Record<string, unknown> = {
+      condition: "true",
     };
 
     const result = resolveConditionExpression(config);

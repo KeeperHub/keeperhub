@@ -7,6 +7,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -832,6 +833,19 @@ export const workflowExecutions = pgTable(
     deletedAt: timestamp("deleted_at"),
   },
   (table) => [
+    /**
+     * Created by migration 0024 and, until now, declared nowhere: invisible to
+     * anyone reading this file and absent from a database bootstrapped with
+     * `db:push`, which builds only from here.
+     *
+     * It is the index the PagerDuty consecutive-runs guard leans on - one
+     * lookup per paging run of "the finished runs of this workflow before this
+     * one, newest first" - and the same shape the analytics queries use.
+     */
+    index("idx_workflow_executions_workflow_started").on(
+      table.workflowId,
+      table.startedAt.desc()
+    ),
     index("idx_workflow_executions_status").on(table.status),
     index("idx_workflow_executions_user_id").on(table.userId),
     // Backs the FK to organization: without it the RI check on an organization
@@ -925,11 +939,97 @@ export const workflowExecutionLogs = pgTable(
   ]
 );
 
+/**
+ * One row per step a pod has taken responsibility for running.
+ *
+ * The durability layer replays the whole workflow body on whichever replica
+ * picks up the next step, so a single node is walked dozens of times per run
+ * across every pod. Completed steps are normally read back from the event log,
+ * but two replays that reach the same unfinished step at the same moment both
+ * see "not done" and both run it. That is what produced duplicate step rows
+ * (and duplicate side effects) for the same node in one execution.
+ *
+ * Winning the insert is what grants the right to run. Redis holds the same
+ * claim and answers first; this table is the fallback for when Redis is
+ * unreachable, so the guarantee does not disappear with it.
+ *
+ * Keyed on the node alone. Steps inside a For Each body are not claimed at
+ * all: the executor names only the innermost loop of an iteration, so a node
+ * in a nested body would carry the same key under every outer iteration and
+ * the second one would reuse the first one's output. Claiming loop bodies
+ * needs the executor to carry the full nesting path first.
+ */
+export const workflowStepClaims = pgTable(
+  "workflow_step_claims",
+  {
+    executionId: text("execution_id")
+      .notNull()
+      .references(() => workflowExecutions.id, { onDelete: "cascade" }),
+    nodeId: text("node_id").notNull(),
+    claimedAt: timestamp("claimed_at").notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: "workflow_step_claims_pk",
+      columns: [table.executionId, table.nodeId],
+    }),
+  ]
+);
+
 export {
   type AgenticWalletCredit,
   agenticWalletCredits,
   type NewAgenticWalletCredit,
 } from "./schema-agentic-wallet-credits";
+// Workflow-scoped key-value state that survives a run (#2288).
+// A per-workflow store for the values a workflow computes and needs on its
+// next run - the monitor cursor pattern ("last block I scanned", "the
+// transactions I have already alerted on"). Backed by the Postgres the app
+// already operates (not the best-effort Redis tier, which documents itself as
+// "never a source of truth"; a lost cursor is the visible-failure case this
+// table exists to prevent).
+//
+// Isolation is structural: every read and write scopes by workflow_id, which
+// step callers take from the execution context, never from node config. The
+// org is deliberately not stored: it is already on the workflow, and a copy
+// here would go stale when a workflow changes org (account linking re-parents
+// an anonymous user's workflows), orphaning its state. Workflow deletion
+// cascades, and so does org deletion through the workflow;
+// duplicated and imported workflows get a new id and therefore start with
+// empty state; state is runtime data and is not part of workflow export.
+export const workflowState = pgTable(
+  "workflow_state",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => generateId()),
+    workflowId: text("workflow_id")
+      .notNull()
+      .references(() => workflows.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
+    value: jsonb("value").notNull().$type<any>(),
+    // Bumped on every write. state/get returns it; state/set accepts it as
+    // expectedVersion for compare-and-set - the atomic read-modify-write path
+    // for two overlapping executions of the same workflow.
+    version: integer("version").notNull().default(1),
+    // Null = no expiry. Reads filter on it; an expired row stays until the
+    // next write to its key overwrites it. Nothing sweeps expired rows, so the
+    // column is not indexed until a sweeper exists.
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // Which run last wrote the row - the debuggability hook for the "opaque
+    // cursor" problem the issue describes.
+    updatedByExecutionId: text("updated_by_execution_id"),
+  },
+  (table) => [
+    // The isolation constraint: one row per (workflow, key).
+    uniqueIndex("idx_workflow_state_scope_key").on(table.workflowId, table.key),
+  ]
+);
+
 export {
   type AgenticWallet,
   type AgenticWalletDailySpend,

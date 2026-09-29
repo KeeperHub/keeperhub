@@ -28,6 +28,18 @@ function allPluginSchemas(): ReturnType<typeof transformPluginAction>[] {
 }
 
 describe("ActionSchema plan-gate disclosure", () => {
+  it("discloses protocol direct execution capability in the shared schema", () => {
+    const protocolAction = allPluginSchemas().find((schema) =>
+      schema.actionType.startsWith("aave-v3/")
+    );
+    const nonProtocolAction = allPluginSchemas().find(
+      (schema) => schema.actionType === "web3/approve-token"
+    );
+
+    expect(protocolAction?.protocolDirectExecution).toBe(true);
+    expect(nonProtocolAction?.protocolDirectExecution).toBe(false);
+  });
+
   it("marks explicitly gated plugin actions with their plan", () => {
     const codeAction = allPluginSchemas().find(
       (schema) => schema.actionType === "code/run-code"

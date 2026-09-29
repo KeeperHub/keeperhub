@@ -1,14 +1,14 @@
 import "server-only";
 
 import { daysBefore, getRetentionConfig } from "@/lib/retention/config";
+import { DAY_MS, HOUR_MS, MINUTE_MS } from "@/lib/utils/duration";
 import type { TimeRange } from "./types";
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const PRESET_OFFSETS: Record<Exclude<TimeRange, "custom">, number> = {
-  "1h": 60 * 60 * 1000,
-  "24h": MS_PER_DAY,
-  "7d": 7 * MS_PER_DAY,
-  "30d": 30 * MS_PER_DAY,
+  "1h": HOUR_MS,
+  "24h": DAY_MS,
+  "7d": 7 * DAY_MS,
+  "30d": 30 * DAY_MS,
 };
 const DEFAULT_RANGE: Exclude<TimeRange, "custom"> = "24h";
 
@@ -120,10 +120,6 @@ export type BucketInterval = {
   intervalMs: number;
   sqlInterval: BucketSqlInterval;
 };
-
-const MINUTE_MS = 60 * 1000;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
 
 /**
  * Bucket width from the width of the window itself, not from the range name.

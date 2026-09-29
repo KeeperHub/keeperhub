@@ -36,6 +36,31 @@ type AuthContext = {
 };
 
 /**
+ * Whether an integration's creator has been deactivated, which freezes the
+ * credentials they added for everyone.
+ *
+ * The runtime gets this through `filterUnauthorizedIntegrationIds`, which
+ * authorizes as the owning organization. Editor-facing routes cannot use that
+ * principal - it deliberately refuses a private or specific_members
+ * integration, which is exactly what a person configuring their own
+ * connection has - but they must still honour the freeze, because a
+ * deactivation is an offboarding or a compromise and it has to stop the
+ * credential being used from anywhere, not only from a run.
+ */
+export async function isIntegrationCreatorDeactivated(
+  createdBy: string
+): Promise<boolean> {
+  if (!createdBy) {
+    return false;
+  }
+  const rows = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(inArray(users.id, [createdBy]), isNotNull(users.deactivatedAt)));
+  return rows.length > 0;
+}
+
+/**
  * Pure authorization decision for a single (integration, principal) pair.
  * No I/O - the caller resolves the AuthContext via batched queries. Kept pure
  * so the rule table is unit-testable without a database.

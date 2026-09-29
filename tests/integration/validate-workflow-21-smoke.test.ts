@@ -42,6 +42,23 @@ const EXPECTED_WORKFLOW_COUNT = 21;
 // satisfy TEST-01.
 const KNOWN_LEGACY_BROKEN_WORKFLOWS: string[] = [];
 
+// Recorded workflows the validator is RIGHT to reject: true positives, not
+// false ones, pinned to the exact codes so the assertion still fails on any
+// other error. Each entry names the recorded config that makes it broken.
+//
+// erc20-transfer-monitor: its Event trigger stores the token under `address`
+// with no `contractAddress` and no `contractABI`. buildRegistration in
+// keeperhub-events/event-tracker/src/listener/workflow-mapper.ts refuses a
+// trigger with no contractAddress, so as recorded its trigger was never
+// registered and never fired. It is no longer listed in production
+// (/api/mcp/workflows/erc20-transfer-monitor/listing returns 404, 2026-09-28).
+const EXPECTED_TRUE_POSITIVES: Record<string, string[]> = {
+  "erc20-transfer-monitor": [
+    "trigger-missing-contract-address",
+    "trigger-missing-abi",
+  ],
+};
+
 // Hardcoded chainIds — common KH-supported chains. Avoids depending on
 // the chains table being seeded in CI. Refresh if a new chain is added
 // to the chains table that is referenced by any listed workflow.
@@ -88,9 +105,9 @@ describe("validate_workflow smoke (TEST-01)", () => {
       // Surface the full result in the failure message so CI logs are
       // immediately diagnosable without re-running locally.
       expect(
-        result.errors,
+        result.errors.map((e) => e.code),
         `validate_workflow produced errors for listed workflow "${wf.slug}":\n${JSON.stringify(result, null, 2)}`
-      ).toHaveLength(0);
+      ).toEqual(EXPECTED_TRUE_POSITIVES[wf.slug] ?? []);
 
       if (result.warnings.length > 0) {
         // Warnings are allowed — log for visibility so reviewers can see

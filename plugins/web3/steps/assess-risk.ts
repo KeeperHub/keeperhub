@@ -7,6 +7,7 @@ import {
   type DecodedParameter,
   decodeCalldata,
 } from "./decode-calldata-core";
+import { ZERO_ADDRESS } from "@/lib/web3/address";
 
 // -- Module-level constants --
 
@@ -16,7 +17,6 @@ const MAX_UINT256_DECIMAL =
   "115792089237316195423570985008687907853269984665640564039457584007913129639935";
 const MAX_UINT256_HEX =
   "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const LARGE_VALUE_THRESHOLD = 10;
 
 const CRITICAL_FUNCTIONS = new Set([

@@ -16,6 +16,7 @@ import "server-only";
 import { ErrorCategory, logInfo, logSystemWarn } from "@/lib/logging";
 import {
   claimHeldPayment,
+  deferBroadcastReconcile,
   expireDueHeldPayments,
   markBroadcast,
   markConfirmed,
@@ -24,6 +25,7 @@ import {
   selectDueHeldPayments,
 } from "@/lib/tempo/held-payments";
 import { getErrorMessage } from "@/lib/utils";
+import { isOnChainPendingError } from "@/lib/web3/onchain-revert";
 import {
   broadcastStoredTempoTx,
   checkTempoReceipt,
@@ -62,6 +64,16 @@ async function broadcastDueRows(limit: number): Promise<{
       await markBroadcast(claimed.id, hash);
       broadcast += 1;
     } catch (error) {
+      // Match the manual release route (lib/tempo/release-held-payment.ts):
+      // an unreadable send outcome is not a failure -- the transaction may
+      // still land -- so the row stays in `broadcast` with its hash and the
+      // reconcile phase below keeps watching. Stamping it terminal here
+      // would discard the hash with no reconciliation path.
+      if (isOnChainPendingError(error)) {
+        await markBroadcast(claimed.id, error.transactionHash);
+        broadcast += 1;
+        continue;
+      }
       await markFailed(claimed.id, getErrorMessage(error));
       failed += 1;
     }
@@ -98,6 +110,9 @@ async function reconcileBroadcastRows(limit: number): Promise<{
         );
         failed += 1;
       } else {
+        // Keep unknown outcomes open, but rotate them behind newer rows so a
+        // bounded batch cannot be pinned forever by the same 25 hashes.
+        await deferBroadcastReconcile(row.id);
         stillPending += 1;
       }
     } catch (error) {
@@ -107,6 +122,9 @@ async function reconcileBroadcastRows(limit: number): Promise<{
         error,
         { payment_id: row.id }
       );
+      // A read failure is still not evidence that the send failed. Rotate the
+      // row rather than terminalising it or letting it starve the queue.
+      await deferBroadcastReconcile(row.id);
       stillPending += 1;
     }
   }

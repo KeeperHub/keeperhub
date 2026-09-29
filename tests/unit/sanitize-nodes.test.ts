@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
+import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
+
+/** Run one Condition node through the real sanitizer and return what it would store */
+function sanitizeConditionConfig(
+  config: Record<string, unknown>
+): Record<string, unknown> {
+  const { nodes } = sanitizeWorkflowData(
+    [
+      {
+        id: "c1",
+        type: "action",
+        data: { label: "Condition", type: "action", config },
+      },
+    ],
+    []
+  );
+  const data = nodes[0].data as Record<string, unknown>;
+  return data.config as Record<string, unknown>;
+}
+
+function storedGroup(config: Record<string, unknown>): Record<string, unknown> {
+  const conditionConfig = config.conditionConfig as Record<string, unknown>;
+  return conditionConfig.group as Record<string, unknown>;
+}
 
 describe("sanitizeWorkflowData", () => {
   describe("React Flow UI state stripping", () => {
@@ -463,6 +487,392 @@ describe("sanitizeWorkflowData", () => {
       expect(rules[0].id).toBe("rule-1");
       expect(rules[0].operator).toBe("===");
       expect(rules[1].operator).toBe(">=");
+    });
+
+    // KEEP-2305: some producers emit `group` at the config root instead of
+    // nested under `conditionConfig` (matching the ConditionConfig type's
+    // own `{ group }` shape). Previously this was silently dropped because
+    // the function bailed out whenever `conditionConfig` didn't already
+    // exist, leaving the condition to resolve as `undefined` with no
+    // signal pointing at the real cause.
+    it("folds a root-level group into conditionConfig instead of dropping it", () => {
+      const { nodes } = sanitizeWorkflowData(
+        [
+          {
+            id: "c1",
+            type: "action",
+            data: {
+              label: "Condition",
+              type: "action",
+              config: {
+                actionType: "Condition",
+                group: {
+                  rules: [
+                    {
+                      leftOperand: "{{@a:B.x}}",
+                      operator: "===",
+                      rightOperand: "1",
+                    },
+                  ],
+                  logic: "AND",
+                },
+              },
+            },
+          },
+        ],
+        []
+      );
+
+      const data = nodes[0].data as Record<string, unknown>;
+      const config = data.config as Record<string, unknown>;
+
+      // The stray root-level copy should not survive normalization.
+      expect(config.group).toBeUndefined();
+
+      const conditionConfig = config.conditionConfig as Record<string, unknown>;
+      expect(conditionConfig).toBeDefined();
+      const group = conditionConfig.group as Record<string, unknown>;
+      expect(group.id).toBeDefined();
+      expect(group.logic).toBe("AND");
+      const rules = group.rules as Record<string, unknown>[];
+      expect(rules[0].leftOperand).toBe("{{@a:B.x}}");
+      expect(rules[0].operator).toBe("===");
+    });
+
+    it("prefers an existing conditionConfig over a stray root-level group", () => {
+      const { nodes } = sanitizeWorkflowData(
+        [
+          {
+            id: "c1",
+            type: "action",
+            data: {
+              label: "Condition",
+              type: "action",
+              config: {
+                actionType: "Condition",
+                conditionConfig: {
+                  group: {
+                    id: "real-group",
+                    logic: "OR",
+                    rules: [
+                      {
+                        id: "r1",
+                        leftOperand: "a",
+                        operator: "==",
+                        rightOperand: "b",
+                      },
+                    ],
+                  },
+                },
+                // A stray leftover that should be ignored, not merged in.
+                group: { logic: "AND", rules: [] },
+              },
+            },
+          },
+        ],
+        []
+      );
+
+      const data = nodes[0].data as Record<string, unknown>;
+      const config = data.config as Record<string, unknown>;
+      const conditionConfig = config.conditionConfig as Record<string, unknown>;
+      const group = conditionConfig.group as Record<string, unknown>;
+      expect(group.id).toBe("real-group");
+      expect(group.logic).toBe("OR");
+    });
+
+    // The array-shaped root-group producer emits `logicalOperator` as a
+    // sibling of `group`, not nested under it. Folding the array without
+    // carrying `logicalOperator` along silently defaults to "AND" and can
+    // invert the branch's actual logic.
+    it("preserves logicalOperator when folding an array-shaped root-level group", () => {
+      const { nodes } = sanitizeWorkflowData(
+        [
+          {
+            id: "c1",
+            type: "action",
+            data: {
+              label: "Condition",
+              type: "action",
+              config: {
+                actionType: "Condition",
+                group: [
+                  { leftOperand: "a", operator: "==", rightOperand: "1" },
+                  { leftOperand: "b", operator: "==", rightOperand: "2" },
+                ],
+                logicalOperator: "OR",
+              },
+            },
+          },
+        ],
+        []
+      );
+
+      const data = nodes[0].data as Record<string, unknown>;
+      const config = data.config as Record<string, unknown>;
+      expect(config.logicalOperator).toBeUndefined();
+
+      const conditionConfig = config.conditionConfig as Record<string, unknown>;
+      const group = conditionConfig.group as Record<string, unknown>;
+      expect(group.logic).toBe("OR");
+      const rules = group.rules as Record<string, unknown>[];
+      expect(rules).toHaveLength(2);
+    });
+
+    // A nested `conditionConfig` that exists but has no usable `group`
+    // (e.g. `{}` or `{ logicalOperator: "OR" }`) is truthy, so checking
+    // only "does conditionConfig exist" treats it as authoritative and
+    // discards a real root-level group sitting right next to it - the
+    // same data loss as the original bug, one shape over.
+    it("falls through to a root-level group when the nested conditionConfig has no usable group", () => {
+      const { nodes } = sanitizeWorkflowData(
+        [
+          {
+            id: "c1",
+            type: "action",
+            data: {
+              label: "Condition",
+              type: "action",
+              config: {
+                actionType: "Condition",
+                conditionConfig: { logicalOperator: "OR" },
+                group: {
+                  id: "real-group",
+                  logic: "AND",
+                  rules: [
+                    {
+                      id: "r1",
+                      leftOperand: "a",
+                      operator: "==",
+                      rightOperand: "b",
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+        []
+      );
+
+      const data = nodes[0].data as Record<string, unknown>;
+      const config = data.config as Record<string, unknown>;
+      const conditionConfig = config.conditionConfig as Record<string, unknown>;
+      const group = conditionConfig.group as Record<string, unknown>;
+      expect(group).toBeDefined();
+      expect(group.id).toBe("real-group");
+    });
+  });
+
+  // The sanitizer runs on every autosave, including one taken mid-edit, so it moves rule
+  // groups between keys but never removes one it has not copied somewhere else first.
+  describe("Condition save path keeps the author's rules", () => {
+    it("keeps a half-typed rule and still refuses to open the gate", () => {
+      const config = sanitizeConditionConfig({
+        actionType: "Condition",
+        conditionConfig: {
+          group: {
+            id: "g1",
+            logic: "AND",
+            rules: [
+              {
+                id: "r1",
+                leftOperand: "{{@a:B.x}}",
+                operator: "===",
+                rightOperand: "",
+              },
+            ],
+          },
+        },
+        condition: "true",
+      });
+
+      const rules = storedGroup(config).rules as Record<string, unknown>[];
+      expect(rules).toHaveLength(1);
+      expect(rules[0].leftOperand).toBe("{{@a:B.x}}");
+      expect(config.condition).toBe("true");
+      expect(resolveConditionExpression(config)).toBeUndefined();
+    });
+
+    it("keeps an empty group rather than dropping it", () => {
+      const config = sanitizeConditionConfig({
+        actionType: "Condition",
+        conditionConfig: { group: { id: "g1", logic: "AND", rules: [] } },
+        condition: "true",
+      });
+
+      expect(config.conditionConfig).toBeDefined();
+      expect(storedGroup(config).rules).toEqual([]);
+      expect(resolveConditionExpression(config)).toBeUndefined();
+    });
+
+    it("keeps a root-level group beside a nested one instead of deleting it", () => {
+      const config = sanitizeConditionConfig({
+        actionType: "Condition",
+        conditionConfig: {
+          group: {
+            id: "real-group",
+            logic: "AND",
+            rules: [
+              {
+                id: "r1",
+                leftOperand: "{{@a:B.x}}",
+                operator: "===",
+                rightOperand: "1",
+              },
+            ],
+          },
+        },
+        group: {
+          id: "root-group",
+          logic: "AND",
+          rules: [
+            {
+              id: "r2",
+              leftOperand: "{{@a:B.y}}",
+              operator: "===",
+              rightOperand: "2",
+            },
+          ],
+        },
+      });
+
+      expect(storedGroup(config).id).toBe("real-group");
+      expect(config.group).toBeDefined();
+      expect(resolveConditionExpression(config)).toBe("{{@a:B.x}} === 1");
+    });
+
+    // Migration 0158 deleted the stale key here because it ran once, over rows that already
+    // existed. A save path cannot tell a stale group from the only copy of someone's rules,
+    // so it leaves both keys and lets the expression keep deciding, as it already did.
+    it("leaves a root-level group alone when an expression already decides the node", () => {
+      const config = sanitizeConditionConfig({
+        actionType: "Condition",
+        group: {
+          id: "root-group",
+          logic: "AND",
+          rules: [
+            {
+              id: "r1",
+              leftOperand: "{{@a:B.stale}}",
+              operator: "===",
+              rightOperand: "1",
+            },
+          ],
+        },
+        condition: "{{@a:B.authored}} === 9",
+      });
+
+      expect(config.group).toBeDefined();
+      expect(config.conditionConfig).toBeUndefined();
+      expect(resolveConditionExpression(config)).toBe(
+        "{{@a:B.authored}} === 9"
+      );
+    });
+
+    it("folds a root-level group when there is no expression to outrank", () => {
+      const config = sanitizeConditionConfig({
+        actionType: "Condition",
+        group: {
+          id: "root-group",
+          logic: "AND",
+          rules: [
+            {
+              id: "r1",
+              leftOperand: "{{@a:B.x}}",
+              operator: "===",
+              rightOperand: "1",
+            },
+          ],
+        },
+        condition: "   ",
+      });
+
+      expect(config.group).toBeUndefined();
+      expect(storedGroup(config).id).toBe("root-group");
+      expect(resolveConditionExpression(config)).toBe("{{@a:B.x}} === 1");
+    });
+  });
+
+  // groupToExpression joins on "&&" only for an exact "AND", so every other spelling already
+  // evaluates as OR. Matching "or" without regard to case keeps the author's operator;
+  // anything unrecognised still lands on the stricter AND.
+  describe("Condition logic casing", () => {
+    it("reads a lowercase group logic as OR", () => {
+      const config = sanitizeConditionConfig({
+        actionType: "Condition",
+        conditionConfig: {
+          group: {
+            id: "g1",
+            logic: "or",
+            rules: [
+              {
+                id: "r1",
+                leftOperand: "{{@a:B.x}}",
+                operator: "===",
+                rightOperand: "1",
+              },
+              {
+                id: "r2",
+                leftOperand: "{{@a:B.y}}",
+                operator: "===",
+                rightOperand: "2",
+              },
+            ],
+          },
+        },
+      });
+
+      expect(storedGroup(config).logic).toBe("OR");
+      expect(resolveConditionExpression(config)).toBe(
+        "{{@a:B.x}} === 1 || {{@a:B.y}} === 2"
+      );
+    });
+
+    it("reads a lowercase logicalOperator as OR when folding an array-shaped group", () => {
+      const config = sanitizeConditionConfig({
+        actionType: "Condition",
+        group: [
+          { leftOperand: "{{@a:B.x}}", operator: "===", rightOperand: "1" },
+          { leftOperand: "{{@a:B.y}}", operator: "===", rightOperand: "2" },
+        ],
+        logicalOperator: "or",
+      });
+
+      expect(storedGroup(config).logic).toBe("OR");
+      expect(resolveConditionExpression(config)).toBe(
+        "{{@a:B.x}} === 1 || {{@a:B.y}} === 2"
+      );
+    });
+
+    it("leaves an unrecognised logic on the stricter AND", () => {
+      const config = sanitizeConditionConfig({
+        actionType: "Condition",
+        conditionConfig: {
+          group: {
+            id: "g1",
+            rules: [
+              {
+                id: "r1",
+                leftOperand: "{{@a:B.x}}",
+                operator: "===",
+                rightOperand: "1",
+              },
+              {
+                id: "r2",
+                leftOperand: "{{@a:B.y}}",
+                operator: "===",
+                rightOperand: "2",
+              },
+            ],
+          },
+        },
+      });
+
+      expect(storedGroup(config).logic).toBe("AND");
+      expect(resolveConditionExpression(config)).toBe(
+        "{{@a:B.x}} === 1 && {{@a:B.y}} === 2"
+      );
     });
   });
 

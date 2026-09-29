@@ -52,7 +52,7 @@ export type CallSolanaProgramResult =
       effectiveGasPrice: string;
       instruction: string;
     }
-  | { success: false; error: string };
+  | { success: false; error: string; broadcastAttempted?: boolean };
 
 /**
  * Parses the args/accounts fields. The json-editor UI field emits a JSON
@@ -83,7 +83,7 @@ function parseJsonObject(
   return { value: parsed };
 }
 
-export async function callSolanaProgramCore(
+async function callSolanaProgramCoreImpl(
   input: CallSolanaProgramCoreInput
 ): Promise<CallSolanaProgramResult> {
   const { network, _context } = input;
@@ -223,6 +223,25 @@ export async function callSolanaProgramCore(
         chain_id: String(chainId),
       }
     );
-    return { success: false, error: getErrorMessage(error) };
+    return {
+      success: false,
+      error: getErrorMessage(error),
+      broadcastAttempted: true,
+    };
   }
+}
+
+/**
+ * Marks every failure returned before submit as definite pre-broadcast evidence.
+ * Any path after submit begins must set broadcastAttempted itself, otherwise the
+ * wrapper would incorrectly convert an ambiguous send into releasable evidence.
+ */
+export async function callSolanaProgramCore(
+  input: CallSolanaProgramCoreInput
+): Promise<CallSolanaProgramResult> {
+  const result = await callSolanaProgramCoreImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }

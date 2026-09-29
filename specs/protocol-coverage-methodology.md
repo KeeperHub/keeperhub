@@ -61,8 +61,11 @@ Rules for writing expectations:
   with them, so CI runs a single anvil fork. The orphaned aave-v3
   Sepolia testData remains and is reachable only through the local
   Tier 1 sim path (`scripts/protocol-local.sh sim sepolia`).
-- Base (ajna) is live Base mainnet, reads only; every write is skipped and
-  the gas preflight short-circuits, so no real ETH is spent.
+- Live-chain suites, reads only: ajna on Base, sky on Base and Arbitrum One,
+  and lido on Base. Every write is skipped and the gas preflight
+  short-circuits, so no real ETH is spent. The sky and lido L2 suites cover
+  the bridged sUSDS and wstETH tokens, which implement the ERC-20 surface
+  only.
 - Tier 1 also sweeps L2 forks: Base (8453) and Arbitrum One (42161) run as
   anvil forks of a public upstream, gated on `PROTOCOL_SIM_RPC_8453` /
   `PROTOCOL_SIM_RPC_42161`. Simulations read forked state and never mine
@@ -278,11 +281,13 @@ code.
   uncovered is the poll-and-fire loop that consumes that decoded shape.
 - Partial multi-chain coverage. Tier 1 now sweeps Base and Arbitrum One
   forks, but only for protocols with L2 testData (chainlink price feeds on
-  both; ajna reads on Base). Most protocols with declared L2 contract
-  addresses (aave-v3, uniswap-v3, pendle, sky, etc.) still lack L2 testData
-  and are exercised on the mainnet fork only. Extending them needs per-chain
-  `FORK_WHALES`/`FAUCETS` before write fixtures with `requiredTokens` can
-  run on those chains (read-only additions need neither).
+  both; ajna reads on Base; sky's bridged sUSDS and USDS reads on both, and
+  lido's bridged wstETH reads on Base, all read-only). Most protocols with
+  declared L2 contract addresses (aave-v3, uniswap-v3, pendle, etc.) still
+  lack L2 testData and are exercised on the mainnet fork only. Extending
+  them needs per-chain `FORK_WHALES`/`FAUCETS` before write fixtures with
+  `requiredTokens` can run on those chains (read-only additions need
+  neither, which is why the sky and lido L2 blocks declare no writes).
 - Actions with unmet on-chain prerequisites (vault/pool addresses, open
   auctions, cooldowns) are skipped with reasons. Skip reasons must name
   the real constraint - "payable" was wrong for frax/rocket-pool (the

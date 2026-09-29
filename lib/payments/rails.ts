@@ -19,6 +19,8 @@
  * the CDP-specific timeout behaviour in `reconcile.ts` stay on KEEP-1089.
  */
 
+import { BASE_CHAIN_ID } from "@/lib/chains/ids";
+
 /** Payment protocols a rail can settle under. */
 export type PaymentProtocol = "x402" | "mpp";
 
@@ -47,7 +49,7 @@ export interface PaymentRail {
 
 export const BASE_RAIL: PaymentRail = {
   network: "eip155:8453",
-  chainId: 8453,
+  chainId: BASE_CHAIN_ID,
   asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
   assetDecimals: 6,
   domain: { name: "USD Coin", version: "2" },

@@ -81,8 +81,8 @@ Pay many recipients in one atomic transaction. All payments settle together or n
 **Inputs:**
 - Network - Required
 - Token - Required
-- Payouts - Required. A JSON array of `{ recipient, amount, memo? }` entries.
-- Shared Memo - Optional. Applied to any payment that does not set its own memo (for example, a pay-run id).
+- Payouts - Required. A JSON array of `{ recipient, amount, memo? }` entries. Each entry's memo follows the same encoding as Shared Memo below: plain text (up to 31 bytes) is encoded to a 32-byte memo; a `0x` + 64-hex value is used verbatim (for example, a receipt hash).
+- Shared Memo - Optional. Applied to any payment that does not set its own memo (for example, a pay-run id). Plain text (up to 31 bytes) is encoded to a 32-byte memo; a `0x` + 64-hex value is used verbatim (for example, a receipt hash).
 
 **Outputs:** `success`, `transactionHash`, `transactionLink`, `from`, `payoutCount`, `totalAmount`, `chainId`, `error`
 
@@ -97,7 +97,7 @@ Sign a stablecoin payment now and hold the signed transaction to broadcast later
 - Token - Required
 - Amount - Required
 - Recipient Address - Required
-- Memo - Optional. Attached on-chain as an indexed 32-byte topic.
+- Memo - Optional. Plain text (up to 31 bytes) is encoded to a 32-byte memo; a `0x` + 64-hex value is used verbatim (for example, a receipt hash).
 - Release - Required. `Manually` releases the payment from the Held Payments page (organization owner only); `At a scheduled time` broadcasts it automatically at the broadcast time.
 - Broadcast At - Required when Release is scheduled (Scheduling group). A fixed date and timezone, a relative offset (for example `+2h` from the run), or a value from another step.
 - Valid Before - Optional (Scheduling group). The on-chain deadline after which the payment can no longer settle. Defaults to 24 hours from now for manual holds, or 1 hour past the broadcast time for scheduled holds.

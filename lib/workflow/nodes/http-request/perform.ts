@@ -18,9 +18,20 @@ import {
   SsrfBlockedError,
   safeFetch,
 } from "@/lib/safe-fetch";
+import { sleep } from "@/lib/sleep";
 import { getErrorMessage, resolveFailOnError } from "@/lib/utils";
 import { extractTemplateTokens } from "@/lib/utils/template";
 import type { StepInput } from "@/lib/workflow/executor/step-handler";
+import {
+  formatStoredBytes,
+  MAX_STORED_OUTPUT_BYTES,
+} from "@/lib/workflow/output-limits";
+import {
+  isRetryableHttpStatus,
+  linearBackoffMs,
+  resolveRetryAttempts as resolveRetryAttemptsWithLimits,
+  resolveRetryDelayMs as resolveRetryDelayMsWithLimits,
+} from "@/lib/workflow/retry-policy";
 import {
   DEFAULT_HTTP_METHOD,
   DEFAULT_RETRY_ATTEMPTS,
@@ -157,55 +168,121 @@ function parseBody(httpMethod: string, httpBody?: string): string | undefined {
   }
 }
 
-const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
-
 /**
- * Resolve the retry count. Accepts numbers from MCP callers and strings from
- * the visual editor, and clamps to [0, 5]. Anything unparseable means "no
- * retries" rather than an error, so a stale config never blocks a request.
+ * Resolve the retry count with this node's limits (default 0, max 5).
  * Exported for tests.
  */
 export function resolveRetryAttempts(retryAttempts: unknown): number {
-  if (
-    retryAttempts === undefined ||
-    retryAttempts === null ||
-    retryAttempts === ""
-  ) {
-    return DEFAULT_RETRY_ATTEMPTS;
-  }
-  const requested =
-    typeof retryAttempts === "number" ? retryAttempts : Number(retryAttempts);
-  if (!Number.isFinite(requested)) {
-    return DEFAULT_RETRY_ATTEMPTS;
-  }
-  return Math.min(Math.max(0, Math.trunc(requested)), MAX_RETRY_ATTEMPTS);
+  return resolveRetryAttemptsWithLimits(retryAttempts, {
+    defaultAttempts: DEFAULT_RETRY_ATTEMPTS,
+    maxAttempts: MAX_RETRY_ATTEMPTS,
+  });
 }
 
 /** Resolve the base backoff delay in milliseconds, clamped to [0, 30]s. */
 export function resolveRetryDelayMs(retryDelay: unknown): number {
-  if (retryDelay === undefined || retryDelay === null || retryDelay === "") {
-    return DEFAULT_RETRY_DELAY_SECONDS * 1000;
-  }
-  const requested =
-    typeof retryDelay === "number" ? retryDelay : Number(retryDelay);
-  if (!Number.isFinite(requested)) {
-    return DEFAULT_RETRY_DELAY_SECONDS * 1000;
-  }
-  return Math.min(Math.max(0, requested), MAX_RETRY_DELAY_SECONDS) * 1000;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+  return resolveRetryDelayMsWithLimits(retryDelay, {
+    defaultDelaySeconds: DEFAULT_RETRY_DELAY_SECONDS,
+    maxDelaySeconds: MAX_RETRY_DELAY_SECONDS,
   });
 }
 
-function parseResponse(response: Response): Promise<unknown> {
-  const contentType = response.headers.get("content-type");
-  if (contentType?.includes("application/json")) {
-    return response.json();
+type BoundedBody = { ok: true; text: string } | { ok: false; bytes: number };
+
+const UTF8 = new TextDecoder("utf-8");
+
+/**
+ * Read a response body up to the stored-output limit and stop there.
+ *
+ * The step could not store a larger result anyway, and buffering the rest
+ * is exactly what lets one upstream response take the executor's memory. A
+ * declared Content-Length above the limit is refused before any read; a
+ * chunked body is refused as soon as it crosses the limit and the stream is
+ * cancelled. Callers handle a response without a body stream themselves.
+ */
+async function readBoundedBody(
+  response: Response & { body: ReadableStream<Uint8Array> },
+  maxBytes: number
+): Promise<BoundedBody> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    return { ok: false, bytes: declared };
   }
-  return response.text();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    received += value.byteLength;
+    if (received > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return { ok: false, bytes: received };
+    }
+    chunks.push(value);
+  }
+  // TextDecoder, like Response.text(), drops a leading UTF-8 byte-order mark;
+  // Buffer#toString keeps it, and JSON.parse then rejects the body.
+  return { ok: true, text: UTF8.decode(Buffer.concat(chunks)) };
+}
+
+function oversizeBodyError(bytes: number): string {
+  return `HTTP request failed: response body of ${formatStoredBytes(bytes)} exceeds the ${formatStoredBytes(MAX_STORED_OUTPUT_BYTES)} limit for step output. Request less data (filter, page or narrow the endpoint) so the result can be stored and passed to the next step.`;
+}
+
+function hasBodyStream(
+  response: Response
+): response is Response & { body: ReadableStream<Uint8Array> } {
+  return response.body !== null && response.body !== undefined;
+}
+
+function isJsonResponse(response: Response): boolean {
+  return (
+    response.headers.get("content-type")?.includes("application/json") ?? false
+  );
+}
+
+type ResponseData = { ok: true; data: unknown } | { ok: false; bytes: number };
+
+/**
+ * The parsed body of a successful response, or the size that made it
+ * unreadable. A response without a body stream (test doubles, some runtimes)
+ * is parsed the way it always was.
+ */
+async function readResponseData(response: Response): Promise<ResponseData> {
+  if (!hasBodyStream(response)) {
+    const data = isJsonResponse(response)
+      ? await response.json()
+      : await response.text();
+    return { ok: true, data };
+  }
+  const body = await readBoundedBody(response, MAX_STORED_OUTPUT_BYTES);
+  if (!body.ok) {
+    return body;
+  }
+  return {
+    ok: true,
+    data: isJsonResponse(response) ? JSON.parse(body.text) : body.text,
+  };
+}
+
+/** The text of an error response, withheld past the limit. */
+async function readErrorText(response: Response): Promise<string> {
+  if (!hasBodyStream(response)) {
+    return response.text().catch(() => "Unknown error");
+  }
+  const body = await readBoundedBody(response, MAX_STORED_OUTPUT_BYTES).catch(
+    () => null
+  );
+  if (body === null) {
+    return "Unknown error";
+  }
+  return body.ok
+    ? body.text
+    : `response body of ${formatStoredBytes(body.bytes)} withheld`;
 }
 
 /**
@@ -243,7 +320,7 @@ async function attemptHttpRequest(
     });
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => "Unknown error");
+      const errorText = await readErrorText(response);
       return {
         kind: "http-error",
         status: response.status,
@@ -251,9 +328,17 @@ async function attemptHttpRequest(
       };
     }
 
+    // An oversized body is a property of the endpoint, not a transient miss:
+    // it is never retried and, like an SSRF block, not soft-failed into a
+    // null-data success that a downstream step would carry on with.
+    const body = await readResponseData(response);
+    if (!body.ok) {
+      return { kind: "fatal", error: oversizeBodyError(body.bytes) };
+    }
+
     return {
       kind: "success",
-      data: await parseResponse(response),
+      data: body.data,
       status: response.status,
     };
   } catch (error) {
@@ -297,7 +382,7 @@ function isRetryable(outcome: AttemptOutcome): boolean {
   if (outcome.kind === "network-error") {
     return true;
   }
-  return outcome.kind === "http-error" && RETRYABLE_STATUS.has(outcome.status);
+  return outcome.kind === "http-error" && isRetryableHttpStatus(outcome.status);
 }
 
 function toResult(
@@ -346,8 +431,9 @@ export async function httpRequest(
     if (!isRetryable(outcome)) {
       break;
     }
-    if (retryDelayMs > 0) {
-      await delay(retryDelayMs * attempt);
+    const waitMs = linearBackoffMs(retryDelayMs, attempt);
+    if (waitMs > 0) {
+      await sleep(waitMs);
     }
     outcome = await attemptHttpRequest(endpoint, httpMethod, input);
   }

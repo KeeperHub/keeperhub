@@ -61,7 +61,7 @@
       "path": "/api/workflows/{workflowId}/executions",
       "route_file": "app/api/workflows/[workflowId]/executions/route.ts",
       "source": "docs/api/executions.md",
-      "line": 315
+      "line": 351
     },
     {
       "method": "GET",
@@ -75,28 +75,28 @@
       "path": "/api/analytics/networks",
       "route_file": "app/api/analytics/networks/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 103
+      "line": 123
     },
     {
       "method": "GET",
       "path": "/api/analytics/runs",
       "route_file": "app/api/analytics/runs/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 134
+      "line": 155
     },
     {
       "method": "GET",
       "path": "/api/analytics/runs/{executionId}/steps",
       "route_file": "app/api/analytics/runs/[id]/steps/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 185
+      "line": 281
     },
     {
       "method": "GET",
       "path": "/api/analytics/spend-cap",
       "route_file": "app/api/analytics/spend-cap/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 211
+      "line": 330
     },
     {
       "method": "GET",
@@ -104,7 +104,7 @@
       "route_file": "app/api/analytics/stream/route.ts",
       "streaming": true,
       "source": "docs/api/analytics.md",
-      "line": 236
+      "line": 355
     },
     {
       "method": "GET",
@@ -118,7 +118,7 @@
       "path": "/api/analytics/time-series",
       "route_file": "app/api/analytics/time-series/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 61
+      "line": 81
     },
     {
       "method": "GET",
@@ -139,21 +139,21 @@
       "path": "/api/chains/{chainId}/abi",
       "route_file": "app/api/chains/[chainId]/abi/route.ts",
       "source": "docs/api/chains.md",
-      "line": 142
+      "line": 144
     },
     {
       "method": "GET",
       "path": "/api/execute/{executionId}/status",
       "route_file": "app/api/execute/[executionId]/status/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 927
+      "line": 1043
     },
     {
       "method": "GET",
       "path": "/api/features",
       "route_file": "app/api/features/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 476
+      "line": 480
     },
     {
       "method": "GET",
@@ -258,21 +258,21 @@
       "path": "/api/workflows/executions/{executionId}/logs",
       "route_file": "app/api/workflows/executions/[executionId]/logs/route.ts",
       "source": "docs/api/executions.md",
-      "line": 172
+      "line": 206
     },
     {
       "method": "GET",
       "path": "/api/workflows/executions/{executionId}/status",
       "route_file": "app/api/workflows/executions/[executionId]/status/route.ts",
       "source": "docs/api/executions.md",
-      "line": 46
+      "line": 80
     },
     {
       "method": "GET",
       "path": "/api/workflows/executions/{executionId}/wait",
       "route_file": "app/api/workflows/executions/[executionId]/wait/route.ts",
       "source": "docs/api/executions.md",
-      "line": 129
+      "line": 163
     },
     {
       "method": "GET",
@@ -391,21 +391,21 @@
       "path": "/api/execute/check-and-execute",
       "route_file": "app/api/execute/check-and-execute/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 584
+      "line": 689
     },
     {
       "method": "POST",
       "path": "/api/execute/contract-call",
       "route_file": "app/api/execute/contract-call/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 386
+      "line": 486
     },
     {
       "method": "POST",
       "path": "/api/execute/transfer",
       "route_file": "app/api/execute/transfer/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 318
+      "line": 418
     },
     {
       "method": "POST",
@@ -545,7 +545,7 @@
       "path": "/api/workflows/{workflowId}/simulate",
       "route_file": "app/api/workflows/[workflowId]/simulate/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 1101
+      "line": 1228
     },
     {
       "method": "POST",

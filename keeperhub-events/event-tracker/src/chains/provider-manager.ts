@@ -347,6 +347,15 @@ export interface ChainHealth {
   lastBlockAt: number | null;
   subscriberCount: number;
   /**
+   * Active state-threshold subscribers, the counterpart to `subscriberCount`
+   * on the log path. Reported separately because a chain can hold subscribers
+   * of one kind and none of the other. `checkBlockStaleness` treats either
+   * kind as reason to reconnect, so a state-only chain being torn down and
+   * rebuilt shows `reconnecting: true` with `subscriberCount: 0`. Without this
+   * field that row reads as the idle provider the staleness check skips.
+   */
+  stateSubscriberCount: number;
+  /**
    * Smoothed inter-block interval in milliseconds, or null before the
    * current connection has observed enough intervals to estimate one.
    * Per connection, like the estimate that drives batching.
@@ -931,6 +940,7 @@ export class ChainProviderManager {
       reconnecting: entry.isReconnecting,
       lastBlockAt: entry.lastBlockAt,
       subscriberCount: entry.subscribers.size,
+      stateSubscriberCount: entry.stateSubscribers.size,
       blockIntervalMs: entry.blockIntervalEwmaMs,
       blocksBehindHead:
         entry.headBlock !== null && entry.lastProcessedBlock !== null
@@ -1643,7 +1653,7 @@ export class ChainProviderManager {
     }
     // Blocks are only expected while a subscriber (and thus a block
     // listener) is attached; an idle provider is legitimately silent.
-    if (entry.subscribers.size === 0) {
+    if (entry.subscribers.size === 0 && entry.stateSubscribers.size === 0) {
       return;
     }
     // Measure from the most recent of the last delivered block and the
@@ -1780,6 +1790,17 @@ export class ChainProviderManager {
       // still set. Scheduled rather than awaited: a drain dispatches to
       // handlers that may each sleep seconds of jitter, and awaiting it would
       // hold the chain reconnecting long after the socket was healthy.
+      //
+      // Log-scoped on purpose, unlike the guards in `detachIfIdle` and
+      // `reconnect`. Only the log path accrues an owed range: it is
+      // `lastProcessedBlock` that survives the drop and has to be caught up.
+      // A state-only chain owes nothing - its mark advances unconditionally
+      // in `drain` (`served` is `true` for it), and the only rewind runs off
+      // a re-announced block, which cannot fire while the socket is down. So
+      // by the time this timer would arm, such a chain has `behind === 0`;
+      // arming it buys a timer and a `drain` that returns at the `behind <= 0`
+      // check before it reads any logs or samples any state. Nothing to gain,
+      // so it stays log-scoped.
       if (!this.isDestroyed && entry.provider && entry.subscribers.size > 0) {
         this.armCatchUp(entry, GETLOGS_MIN_INTERVAL_MS);
       }
@@ -1848,10 +1869,10 @@ export class ChainProviderManager {
 
     this.attachErrorListener(entry);
     // Block listener and heartbeat only if this chain has subscribers.
-    // Both are subscriber-scoped; if every subscriber unsubscribed
-    // during the reconnect, the new provider stays quiet until someone
-    // subscribes again.
-    if (entry.subscribers.size > 0) {
+    // Both listeners are subscriber-scoped; if every subscriber of either
+    // kind unsubscribed during the reconnect, the new provider stays quiet
+    // until someone subscribes again.
+    if (entry.subscribers.size > 0 || entry.stateSubscribers.size > 0) {
       this.attachBlockListener(entry);
       this.startHeartbeat(entry);
       // The catch-up for anything owed from before the drop is armed by

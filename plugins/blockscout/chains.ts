@@ -21,6 +21,9 @@ export const BLOCKSCOUT_INSTANCES: Record<number, string> = {
   100: "https://gnosis.blockscout.com",
   137: "https://polygon.blockscout.com",
   4663: "https://robinhoodchain.blockscout.com",
+  5031: "https://explorer.somnia.network",
+  50_312: "https://shannon-explorer.somnia.network",
+  5_042_002: "https://explorer.testnet.arc.io",
 };
 
 // Chain IDs (as strings) with a hosted instance, for chain-select allowlists.

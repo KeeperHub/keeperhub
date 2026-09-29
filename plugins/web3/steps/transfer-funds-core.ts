@@ -6,6 +6,7 @@
  * exporting functions from "use step" files (which breaks the workflow bundler).
  */
 import "server-only";
+import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
@@ -58,7 +59,7 @@ import {
 } from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { executeSponsoredTransaction } from "@/lib/web3/sponsored-transaction-manager";
-import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
+import { shouldTrySponsorship } from "@/lib/web3/sponsorship-eligibility";
 import {
   type TransactionContext,
   withNonceSession,
@@ -73,6 +74,10 @@ export type TransferFundsCoreInput = {
   amount: string;
   recipientAddress: string;
   gasLimitMultiplier?: string;
+  // Per-node "Sponsor gas" toggle. Defaults on; false skips the gas-sponsored
+  // route outright so the transaction is signed and paid for by the org's own
+  // wallet. Resolved through resolveSponsorGas so an unset value stays on.
+  sponsorGas?: boolean;
   // KEEP-137: Route through private mempool (Flashbots Protect). Skips
   // Turnkey-sponsored execution -- mutually exclusive.
   usePrivateMempool?: boolean;
@@ -121,6 +126,7 @@ export type TransferFundsResult =
       // True when the terminal failure came from the gas-sponsored path, so
       // the finalizer can report the route accurately on a failed execution.
       sponsored?: boolean;
+      broadcastAttempted?: boolean;
     };
 
 /**
@@ -130,7 +136,7 @@ export type TransferFundsResult =
  * When _context.organizationId is provided, skips workflowExecutions lookup.
  */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Transfer handler with sponsorship attempt + fallback + validation
-export async function transferFundsCore(
+async function transferFundsCoreImpl(
   input: TransferFundsCoreInput
 ): Promise<TransferFundsResult> {
   const {
@@ -138,6 +144,7 @@ export async function transferFundsCore(
     amount,
     recipientAddress,
     gasLimitMultiplier,
+    sponsorGas,
     usePrivateMempool,
     strict,
     web3Connection,
@@ -302,16 +309,16 @@ export async function transferFundsCore(
     rpcManager,
   };
 
-  // KEEP-137: skip sponsorship when routing through a private mempool --
-  // Turnkey broadcasts via its own infrastructure, which bypasses Flashbots Protect.
-  // Also skip in Safe mode: the sponsored path sends from the org's EOA wallet,
-  // which would change msg.sender away from the Safe.
+  // Try gas-sponsored execution first via Turnkey Gas Station (KEEP-464).
+  // shouldTrySponsorship holds every reason the route can be declined.
   if (
-    !usePrivateMempool &&
-    signerMode.kind === SIGNER_MODE.EOA &&
-    isGasSponsorshipEnabled()
+    shouldTrySponsorship({
+      chainId,
+      signerMode,
+      sponsorGas,
+      usePrivateMempool,
+    })
   ) {
-    // Try gas-sponsored execution first via Turnkey Gas Station (KEEP-464)
     try {
       const sponsoredResult = await executeSponsoredTransaction({
         organizationId,
@@ -367,6 +374,7 @@ export async function transferFundsCore(
           // in-flight send into success.
           errorClass: decision.errorClass,
           sponsored: true,
+          broadcastAttempted: decision.broadcastAttempted,
           ...(decision.transactionHash
             ? { transactionHash: decision.transactionHash, chainId }
             : {}),
@@ -436,6 +444,7 @@ export async function transferFundsCore(
       };
     }
 
+    let receivedTransactionHash: string | undefined;
     try {
       let receipt: Awaited<ReturnType<typeof adapter.sendTransaction>>;
       if (signerMode.kind === SIGNER_MODE.SAFE_ROLE) {
@@ -488,6 +497,7 @@ export async function transferFundsCore(
         );
       }
 
+      receivedTransactionHash = receipt.hash;
       const gasUsedUnits = receipt.gasUsed.toString();
       const effectiveGasPrice = receipt.effectiveGasPrice.toString();
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
@@ -514,6 +524,8 @@ export async function transferFundsCore(
         }
       );
       const rejection = classifyRevert(error);
+      const broadcastHash =
+        broadcastTransactionHash(error) ?? receivedTransactionHash;
       // Attributed as a system fault so the execution log records a fault
       // domain for it; a relay-determined class is more specific, so it wins.
       const errorClass =
@@ -524,9 +536,13 @@ export async function transferFundsCore(
         error: formatContractError(error, undefined, "Transaction failed"),
         ...(errorClass ? { errorClass } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
-        ...(broadcastTransactionHash(error)
-          ? { transactionHash: broadcastTransactionHash(error), chainId }
-          : {}),
+        broadcastAttempted:
+          broadcastHash ? true
+            : rejection.kind !== "unknown" ||
+                isPreBroadcastNetworkError(error)
+              ? false
+              : true,
+        ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
       };
     }
   });
@@ -687,6 +703,17 @@ async function transferFundsSolana(args: {
     return {
       success: false,
       error: getErrorMessage(error),
+      broadcastAttempted: true,
     };
   }
+}
+
+export async function transferFundsCore(
+  input: TransferFundsCoreInput
+): Promise<TransferFundsResult> {
+  const result = await transferFundsCoreImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }

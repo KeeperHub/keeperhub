@@ -19,13 +19,10 @@ import {
   integrationsAtom,
   integrationsVersionAtom,
 } from "@/lib/integrations-store";
+import { SYSTEM_INTEGRATION_LABELS } from "@/lib/integrations/system";
 import type { IntegrationType } from "@/lib/types/integration";
 import { cn } from "@/lib/utils";
 import { getIntegration } from "@/plugins/registry";
-
-const SYSTEM_INTEGRATION_LABELS: Partial<Record<IntegrationType, string>> = {
-  database: "Database",
-};
 
 type IntegrationSelectorProps = {
   integrationType: IntegrationType;
@@ -34,6 +31,9 @@ type IntegrationSelectorProps = {
   onOpenSettings?: () => void;
   disabled?: boolean;
   onAddConnection?: () => void;
+  // The connection only overrides the plugin's defaults: never auto-select
+  // one, offer a None choice, and do not flag an empty state as missing.
+  optional?: boolean;
 };
 
 export function IntegrationSelector({
@@ -43,6 +43,7 @@ export function IntegrationSelector({
   onOpenSettings,
   disabled,
   onAddConnection,
+  optional,
 }: IntegrationSelectorProps) {
   const { push } = useOverlay();
   const [globalIntegrations, setGlobalIntegrations] = useAtom(integrationsAtom);
@@ -84,11 +85,13 @@ export function IntegrationSelector({
   // from the freshly-loaded list (deleted, or not in the active org) must not be
   // silently rebound to a different one, since that change autosaves and can
   // repoint a running workflow at the wrong database.
+  // An optional connection is skipped: choosing None would otherwise be undone
+  // on the next render.
   useEffect(() => {
-    if (integrations.length > 0 && !disabled && !value) {
+    if (integrations.length > 0 && !disabled && !value && !optional) {
       onChange(integrations[0].id);
     }
-  }, [integrations, value, disabled, onChange]);
+  }, [integrations, value, disabled, onChange, optional]);
 
   const selectedMissing =
     Boolean(value) &&
@@ -162,6 +165,22 @@ export function IntegrationSelector({
     </div>
   ) : null;
 
+  if (integrations.length === 0 && optional) {
+    return (
+      <Button
+        className="w-full justify-start gap-2 text-muted-foreground"
+        disabled={disabled}
+        onClick={handleAddConnection}
+        variant="outline"
+      >
+        <span className="flex-1 text-left">
+          Add {integrationLabel} connection
+        </span>
+        <Plus className="size-4" />
+      </Button>
+    );
+  }
+
   if (integrations.length === 0) {
     return (
       <Button
@@ -179,7 +198,7 @@ export function IntegrationSelector({
     );
   }
 
-  if (integrations.length === 1) {
+  if (integrations.length === 1 && !optional) {
     const integration = integrations[0];
     const displayName = integration.name || `${integrationLabel} API Key`;
     const isSelected = value === integration.id;
@@ -223,6 +242,25 @@ export function IntegrationSelector({
   return (
     <div className="flex flex-col gap-1">
       {missingSelectionWarning}
+      {optional && (
+        <button
+          className={cn(
+            "flex w-full items-center gap-2 rounded-md px-[13px] py-1.5 text-left text-sm transition-colors",
+            value ? "hover:bg-muted/50" : "bg-primary/10 text-primary",
+            disabled && "cursor-not-allowed opacity-50"
+          )}
+          disabled={disabled}
+          onClick={() => onChange("")}
+          type="button"
+        >
+          {value ? (
+            <Circle className="size-4 shrink-0 text-muted-foreground" />
+          ) : (
+            <Check className="size-4 shrink-0" />
+          )}
+          <span className="truncate">None - use defaults</span>
+        </button>
+      )}
       {integrations.map((integration) => {
         const isSelected = value === integration.id;
         const displayName = integration.name || `${integrationLabel} API Key`;

@@ -5,6 +5,7 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 import type { ethers } from "ethers";
+import { markBroadcast } from "@/keeperhub-executor/lib/broadcast-marker";
 import { logWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import type { RpcOperationType } from "@/lib/rpc/providers/index";
@@ -327,6 +328,9 @@ export class SolanaChainAdapter implements ChainAdapter {
             : { delayMs: this.timings.reconcileDelayMs }
         );
         signature = submitResult.signature;
+        // Issue #2289: the transaction is on the wire - record the broadcast
+        // stage (sidecar marker + process-local counter, best-effort).
+        markBroadcast();
         break;
       } catch (error) {
         if (attempt === 0 && isSolanaBlockhashExpiryError(error)) {

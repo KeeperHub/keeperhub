@@ -34,6 +34,7 @@ vi.mock("@/lib/analytics/queries", () => ({
 
 import { GET } from "@/app/api/analytics/runs/route";
 import { getUnifiedRuns } from "@/lib/analytics/queries";
+import { MAX_RUN_LIMIT } from "@/lib/analytics/runs-query";
 
 function oauthRequest(status: string): NextRequest {
   return {
@@ -118,6 +119,230 @@ describe("GET /api/analytics/runs status filter", () => {
         statuses: ["error", "external_error", "system_error"],
       })
     );
+  });
+});
+
+describe("GET /api/analytics/runs pagination parsing", () => {
+  function paginationRequest(query: Record<string, string>): NextRequest {
+    return {
+      method: "GET",
+      headers: new Headers({ Authorization: "Bearer fake-jwt" }),
+      nextUrl: { searchParams: new URLSearchParams(query) },
+    } as unknown as NextRequest;
+  }
+
+  // An assertion that page is undefined also passes when getUnifiedRuns was
+  // never called, since mock.calls[0] is then absent and options reads as
+  // undefined. Falling back to the default and refusing the request is the
+  // distinction under test, so the helper asserts the query ran.
+  async function optionsFor(
+    query: Record<string, string>
+  ): Promise<Record<string, unknown> | undefined> {
+    vi.mocked(getUnifiedRuns).mockClear();
+    await GET(paginationRequest(query));
+    expect(getUnifiedRuns, JSON.stringify(query)).toHaveBeenCalledTimes(1);
+    const [, , options] = vi.mocked(getUnifiedRuns).mock.calls[0] ?? [];
+    return options as Record<string, unknown> | undefined;
+  }
+
+  it("drops a non-numeric page rather than forwarding NaN", async () => {
+    // Math.max(1, NaN) is NaN, so the old parse reached the query as NaN: the
+    // offset became NaN, slice(NaN, NaN) returned nothing, and the echoed page
+    // serialized as null. The response was zero runs beside a non-zero total,
+    // which reads as data loss rather than as a rejected parameter.
+    const options = await optionsFor({ page: "abc" });
+
+    expect(options?.page).toBeUndefined();
+    expect(options?.page).not.toBeNaN();
+  });
+
+  it("drops a non-numeric limit, which Math.min does not cap either", async () => {
+    // Math.min(NaN, 100) is also NaN, so limit had the same failure despite
+    // the cap downstream.
+    const options = await optionsFor({ limit: "abc" });
+
+    expect(options?.limit).toBeUndefined();
+    expect(options?.limit).not.toBeNaN();
+  });
+
+  it("forwards a valid page and limit unchanged", async () => {
+    const options = await optionsFor({ page: "3", limit: "25" });
+
+    expect(options?.page).toBe(3);
+    expect(options?.limit).toBe(25);
+  });
+
+  it("drops a fractional page rather than reinterpreting it", async () => {
+    // parseInt would read "2.7" as 2, which is not the page the caller wrote.
+    // The exact round-trip rejects it, so it falls back to the default.
+    const options = await optionsFor({ page: "2.7" });
+
+    expect(options?.page).toBeUndefined();
+  });
+
+  it("drops notations Number() would silently reinterpret", async () => {
+    // Number() reads these as 16, 3 and 1e+302. None is what a caller writing
+    // a page number meant, and 1e302 reaches Postgres as a bigint cast error.
+    for (const page of ["0x10", " 3 ", "1e302", "12abc"]) {
+      const options = await optionsFor({ page });
+      expect(options?.page, `page=${page}`).toBeUndefined();
+    }
+  });
+
+  it("clamps a page past the ceiling instead of unbounding the SQL LIMIT", async () => {
+    // getUnifiedRuns turns the page into
+    // fetchLimit = (page - 1) * pageLimit + pageLimit + 1, and that becomes the
+    // LIMIT on both source queries. page=999999999 asks for 49999999951 rows -
+    // every run in range - then slices an empty window out of them.
+    for (const page of ["999999999", "201"]) {
+      const options = await optionsFor({ page });
+      expect(options?.page, `page=${page}`).toBe(200);
+    }
+  });
+
+  it("clamps rather than dropping, so the pager and the rows agree", async () => {
+    // Dropping is indistinguishable from absent, so getUnifiedRuns would fall
+    // back to page 1 and echo it. The table computes totalPages from the real
+    // total and keeps Next enabled past the ceiling, so an org with more than
+    // 10000 runs in range would page to 201 and silently receive rows 1-50
+    // while the pager still read 10001-10050.
+    const options = await optionsFor({ page: "201" });
+
+    expect(options?.page).not.toBe(1);
+    expect(options?.page).toBe(200);
+  });
+
+  it("drops a page too large to round-trip rather than clamping a value the caller never wrote", async () => {
+    // 9007199254740993 parses to ...992, so the string does not round-trip and
+    // the value is not the one that was sent.
+    const options = await optionsFor({ page: "9007199254740993" });
+
+    expect(options?.page).toBeUndefined();
+  });
+
+  it("accepts the largest page it will honour", async () => {
+    const options = await optionsFor({ page: "200" });
+
+    expect(options?.page).toBe(200);
+  });
+
+  it("clamps a limit to the figure the query actually honours", async () => {
+    // getUnifiedRuns computes pageLimit as Math.min(limit, 100), so validating
+    // against anything larger admits a value it then halves: ?limit=150 was
+    // accepted and served 100.
+    for (const limit of ["100000", "150", "200"]) {
+      const options = await optionsFor({ limit });
+      expect(options?.limit, `limit=${limit}`).toBe(100);
+    }
+  });
+
+  it("keeps the worst-case fetchLimit at the figure the comment claims", async () => {
+    // fetchLimit = (page - 1) * pageLimit + pageLimit + 1, with pageLimit
+    // capped at 100 by the query. The ceilings only agree when limit is bound
+    // at 100 too; bound at 200 the arithmetic in the comment was wrong.
+    const options = await optionsFor({ page: "999999", limit: "250" });
+    const page = options?.page as number;
+    const pageLimit = Math.min((options?.limit as number) ?? 50, MAX_RUN_LIMIT);
+
+    expect((page - 1) * pageLimit + pageLimit + 1).toBe(20_001);
+  });
+
+  it("drops a page below the first one instead of clamping silently", async () => {
+    // params.get returns the string "0", which is truthy, so this went through
+    // and Math.max carried it to 1. Both now read as absent, so the query
+    // applies its own default.
+    for (const page of ["0", "-3"]) {
+      const options = await optionsFor({ page });
+      expect(options?.page).toBeUndefined();
+    }
+  });
+
+  it("keeps a limit of zero, which is a count probe rather than a typo", async () => {
+    // pageLimit 0 makes offset 0 and fetchLimit 1, so ?limit=0 reads one row
+    // and returns an empty page beside an accurate total. Dropping it would
+    // fall back to the default and serve a full 50-row page.
+    const options = await optionsFor({ limit: "0" });
+
+    expect(options?.limit).toBe(0);
+  });
+
+  it("drops a limit below zero", async () => {
+    const options = await optionsFor({ limit: "-5" });
+
+    expect(options?.limit).toBeUndefined();
+  });
+
+  it("treats an empty page parameter as absent", async () => {
+    // A templated client can render `?page=` with nothing in it.
+    const options = await optionsFor({ page: "" });
+
+    expect(options?.page).toBeUndefined();
+  });
+
+  it("leaves pagination unset when neither parameter is sent", async () => {
+    const options = await optionsFor({});
+
+    expect(options?.page).toBeUndefined();
+    expect(options?.limit).toBeUndefined();
+  });
+
+  // Every value the guard is asked about, beside whether the query sees it.
+  // The listing mints cursors with Date#toISOString(), so only that exact
+  // shape is forwarded and everything else reads as absent.
+  const CURSOR_CASES: [string, boolean][] = [
+    ["0", false],
+    ["1", false],
+    ["100", false],
+    ["-1", false],
+    ["abc", false],
+    ["2026", false],
+    ["Jan 1 2026", false],
+    ["not-a-date", false],
+    ["2026-13-45T00:00:00.000Z", false],
+    ["2026-09-01T00:00:00", false],
+    ["-271821-04-20T00:00:00.000Z", false],
+    ["+275760-09-13T00:00:00.000Z", false],
+    ["", false],
+    ["2026-09-01T12:34:56.789Z", true],
+  ];
+
+  it("forwards only a cursor of the shape the listing mints", async () => {
+    // A value Date.parse accepts is not a cursor. "1" reads as 2001-01-01,
+    // which the range floor excludes: zero runs beside the real total, the
+    // same data-loss reading the page parameter is guarded against.
+    for (const [cursor, forwarded] of CURSOR_CASES) {
+      const options = await optionsFor({ cursor });
+      expect(options?.cursor, `cursor=${cursor}`).toBe(
+        forwarded ? cursor : undefined
+      );
+    }
+  });
+
+  it("forwards a cursor the listing itself minted", async () => {
+    // nextCursor is the last row's startedAt, a Date#toISOString() string.
+    const cursor = new Date("2026-09-01T12:34:56.789Z").toISOString();
+    const options = await optionsFor({ cursor });
+
+    expect(options?.cursor).toBe(cursor);
+  });
+
+  it("keeps every forwarded cursor inside the range Postgres holds", async () => {
+    // queries.ts does lt(startedAt, new Date(cursor)). An Invalid Date and an
+    // ISO extended year both reach Postgres as a value it rejects, and
+    // lib/api-error.ts reports that as a 500.
+    const accepted = CURSOR_CASES.filter(([, forwarded]) => forwarded).map(
+      ([cursor]) => cursor
+    );
+    expect(accepted.length).toBeGreaterThan(0);
+
+    for (const cursor of accepted) {
+      const forwarded = (await optionsFor({ cursor }))?.cursor as string;
+      const asDate = new Date(forwarded);
+      expect(Number.isNaN(asDate.getTime()), `cursor=${cursor}`).toBe(false);
+      expect(asDate.getUTCFullYear(), `cursor=${cursor}`).toBeGreaterThan(0);
+      expect(asDate.getUTCFullYear(), `cursor=${cursor}`).toBeLessThan(10_000);
+      expect(asDate.toISOString(), `cursor=${cursor}`).toBe(forwarded);
+    }
   });
 });
 

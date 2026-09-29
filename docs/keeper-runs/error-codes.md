@@ -78,3 +78,45 @@ shortfall, then retry. For a write that sends no native value, restoring the
 sponsorship conditions (gas credits, supported network, direct-wallet sender,
 public mempool) can also fix the run without funding. A write that sends native
 value always needs that value in the wallet; sponsorship covers the fee only.
+
+### `insufficient_allowance` (simulate responses)
+
+**What happened**: the simulated call attempted an ERC-20 transfer or spend that exceeds the current spending allowance. The allowance is read for the simulated sender. When the token reverts with `ERC20InsufficientAllowance`, the response also carries `allowance`, `neededAllowance`, and `spender`.
+
+**What to do**: compare `allowance` with `neededAllowance` for `spender`. KeeperHub does not change allowances; retry with an amount the current allowance covers, or once the allowance has been raised.
+
+### `insufficient_token_balance` (simulate responses)
+
+**What happened**: the simulated sender lacks sufficient ERC-20 token balance to complete the transfer. When the token reverts with `ERC20InsufficientBalance`, `remediation` states the required amount and the balance in the token's base units.
+
+**What to do**: retry with an amount the sender's balance covers, or once the sender holds enough of the token.
+
+### `contract_paused` / `contract_not_paused` (simulate responses)
+
+**What happened**: `contract_paused` indicates the target contract is currently paused (e.g. OpenZeppelin `EnforcedPause`). `contract_not_paused` indicates an action requires the contract to be paused, but it is currently unpaused (`ExpectedPause`).
+
+**What to do**: the caller cannot change the pause state. Retry once the contract's pause state allows the call.
+
+### `caller_not_authorized` (simulate responses)
+
+**What happened**: the simulated sender is not the contract owner or lacks the required AccessControl role. This is an on-chain revert, distinct from the API auth code `unauthorized`.
+
+**What to do**: check which signer the request resolves to. For a Safe-routed organization the simulated sender is the EOA, not the Safe, so resolve the signer mode before acting on this code.
+
+### `reentrancy_blocked` (simulate responses)
+
+**What happened**: the call triggered a reentrancy guard (`ReentrancyGuardReentrantCall`).
+
+**What to do**: change the call arguments so the function is not re-entered within the same transaction.
+
+### Safe execution error codes (simulate responses)
+
+**What happened**: Safe multisig preflight failed. Codes include `safe_signature_invalid` (signatures invalid or unordered), `safe_insufficient_gas` (Safe execution ran out of gas), and `safe_not_authorized` (caller is not an owner or enabled module).
+
+**What to do**: inspect Safe threshold, signatures, gas limits, and module authorizations.
+
+### `panic` (simulate responses)
+
+**What happened**: the contract hit a Solidity `Panic(uint256)`, for example an arithmetic overflow or a division by zero. `panicCode` carries the exact panic number as a hex string (`"0x11"`, `"0x12"`), and `revertReason` carries the readable name, for example `Panic(DivisionByZero)`.
+
+**What to do**: branch on `panicCode`, not on the name in `revertReason`. `remediation` states what the panic points at.

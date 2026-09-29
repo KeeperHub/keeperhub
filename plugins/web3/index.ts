@@ -8,11 +8,13 @@ import {
   evmPrivateNetworkField,
   executedCallArgsOutput,
   executedCallContractAddressOutput,
+  executedCallFromOutput,
   executedCallRevertedOutput,
   executedCallSponsoredOutput,
   readFailOnErrorField,
   receiptChainIdOutput,
   solanaNetworkField,
+  sponsorGasField,
   tokenConfigField,
   tokenSymbolOutput,
   transactionLinkOutput,
@@ -279,6 +281,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "transfer-funds",
             },
+            sponsorGasField(),
           ],
         },
 
@@ -313,6 +316,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         transferErrorOutput(),
@@ -341,6 +345,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "transfer-token",
             },
+            sponsorGasField(),
           ],
         },
 
@@ -1070,6 +1075,7 @@ const web3Plugin: IntegrationPlugin = {
               key: "abi",
               label: "ABI Override",
               type: "template-textarea",
+              valueFormat: "json",
               placeholder: "Paste ABI JSON to use instead of auto-fetching",
               rows: 4,
             },
@@ -1159,7 +1165,7 @@ const web3Plugin: IntegrationPlugin = {
       slug: "query-events",
       label: "Query Contract Events",
       description:
-        "Query historical smart contract events across a block range with automatic batching",
+        "Query historical smart contract events across a block range with automatic batching, optionally filtered by indexed argument values at the RPC",
       category: "Web3",
       stepFunction: "queryEventsStep",
       stepImportPath: "query-events",
@@ -1184,7 +1190,8 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           field: "eventCount",
-          description: "Number of events returned",
+          description:
+            "Number of events returned. Counts events matching the indexed argument filter when one is set, not every occurrence of the event.",
         },
         {
           field: "error",
@@ -1212,6 +1219,15 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           placeholder: "Select an event",
           required: true,
+        },
+        {
+          key: "eventArgs",
+          label: "Filter by Indexed Arguments",
+          type: "abi-event-args",
+          abiField: "abi",
+          abiEventField: "eventName",
+          helpTip:
+            "Optional. Filters at the RPC, so only matching logs are fetched. Only indexed parameters can be filtered this way. Omit a parameter to match any value for it.",
         },
         {
           type: "group",
@@ -1640,6 +1656,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         {
@@ -1678,6 +1695,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "approve-token",
             },
+            sponsorGasField(),
           ],
         },
 
@@ -1828,6 +1846,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         {
@@ -1899,6 +1918,7 @@ const web3Plugin: IntegrationPlugin = {
               networkField: "network",
               actionSlug: "write-contract",
             },
+            sponsorGasField(),
           ],
         },
 

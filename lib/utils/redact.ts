@@ -58,6 +58,11 @@ const SENSITIVE_KEYS = new Set([
   "social_security",
 ]);
 
+/** Compared against, so that how an entry above is capitalised cannot matter. */
+const SENSITIVE_KEYS_LOWER = new Set(
+  Array.from(SENSITIVE_KEYS, (key) => key.toLowerCase())
+);
+
 /**
  * Patterns that indicate a field contains sensitive data
  */
@@ -78,8 +83,9 @@ const SENSITIVE_PATTERNS = [
  * Check if a key name indicates sensitive data
  */
 function isSensitiveKey(key: string): boolean {
-  // Exact match
-  if (SENSITIVE_KEYS.has(key.toLowerCase())) {
+  // Case-insensitive on both sides: the list is written in the spellings
+  // people use, which includes camelCase.
+  if (SENSITIVE_KEYS_LOWER.has(key.toLowerCase())) {
     return true;
   }
 
