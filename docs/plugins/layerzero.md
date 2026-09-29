@@ -33,7 +33,7 @@ The OFT actions and the underlying-token actions take the contract address as an
 
 Every read action works without credentials. The two write actions, OFT Approve and OFT Send, need a connected wallet.
 
-The send pays the LayerZero messaging fee as the transaction's native value, and the OFT insists that value equals the fee you declare in the call. OFT Quote Send returns that fee in wei, so OFT Send's value field is typed in wei too, and a workflow can pass the quote's `fee.nativeFee` straight through. This is the one place in the platform where a value field is not in whole ether; the field is labelled "Messaging Fee (wei)" to say so.
+The send pays the LayerZero messaging fee as the transaction's native value, and a standard OFT, built on LayerZero's OApp, insists that value equals the fee you declare in the call. OFT Quote Send returns that fee in wei, so OFT Send's value field is typed in wei too, and a workflow can pass the quote's `fee.nativeFee` straight through. This is the one place in the platform where a value field is not in whole ether; the field is labelled "Messaging Fee (wei)" to say so.
 
 ## Endpoint IDs
 
@@ -169,12 +169,12 @@ Send an OFT to another chain, paying the LayerZero messaging fee quoted by OFT Q
 | oftCmd | bytes | OFT Command. Advanced. Defaults to `0x` |
 | nativeFee | uint256 | Native Fee (wei). The quote's `fee.nativeFee` |
 | lzTokenFee | uint256 | LZ Token Fee. Advanced. Defaults to `0`; paying in ZRO is not supported here |
-| refundAddress | address | Refund Address. Receives any native fee paid above what the send actually required; usually the sending wallet |
+| refundAddress | address | Refund Address. Receives any native fee paid above what the send actually required; usually the sending wallet. A contract here must be able to receive native tokens |
 | Messaging Fee (wei) | value | The native value attached to the transaction, in wei. The same number as `nativeFee` |
 
 **Outputs:** `transactionHash` and `transactionLink`, as for every write. The receipts the contract returns (`msgReceipt.guid`, `oftReceipt.amountSentLD`, `oftReceipt.amountReceivedLD`) are not surfaced as template fields; use OFT Quote Transfer beforehand for the amounts.
 
-The fee appears twice, and the two must be identical. The first is `nativeFee`, an argument in the call: it is what you tell the OFT you are paying. The second is the value field: it is what the transaction actually carries. LayerZero's `OAppSender` checks the two for equality and reverts with `NotEnoughNative` when they differ by any amount, in either direction, so overpaying in the value field is as fatal as underpaying. Only after that check does the endpoint compare your fee against the live quote: if it is short, the send reverts with `LZ_InsufficientFee`; if it is above the quote, the excess is refunded to `refundAddress`. So the working shape is: put the quote's `fee.nativeFee` in both fields, and quote as close to the send as you can, because the fee moves with gas prices and DVN pricing.
+The fee appears twice, and the two must be identical. The first is `nativeFee`, an argument in the call: it is what you tell the OFT you are paying. The second is the value field: it is what the transaction actually carries. LayerZero's `OAppSender` checks the two for equality and reverts with `NotEnoughNative` when they differ by any amount, in either direction, so overpaying in the value field is as fatal as underpaying. Only after that check does the endpoint compare your fee against the live quote: if it is short, the send reverts with `LZ_InsufficientFee`; if it is above the quote, the excess is refunded to `refundAddress`. So put the same number in both fields, at or above the quote. The quote is an estimate that moves with gas prices and DVN pricing, so quote as close to the send as you can. If the send may run a while after the quote, put the same higher amount in both fields: the endpoint charges the fee it actually needs and refunds the rest to `refundAddress`.
 
 Both fields are in wei. This is the one action in the platform whose value field is not typed in whole ether, and the reason is the quote: OFT Quote Send returns `fee.nativeFee` in wei, and there is no unit arithmetic in templates, so the send has to accept the number the quote produced. A reference such as `{{@quote:OFT Quote Send.fee.nativeFee}}` works in both fields. Typing an ether amount such as `0.001` into either one is rejected before anything is sent, rather than being misread as wei.
 
