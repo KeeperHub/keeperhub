@@ -490,6 +490,7 @@ function protocolReservationConfig(
         : undefined,
     _actionType:
       typeof config._actionType === "string" ? config._actionType : undefined,
+    network: typeof config.network === "string" ? config.network : undefined,
   });
   if (!meta) {
     // The same rule as the step's own refusal (#2322): a non-empty string
