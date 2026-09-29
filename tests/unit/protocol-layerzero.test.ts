@@ -10,6 +10,7 @@ import {
   protocolActionToPluginAction,
   registerProtocol,
 } from "@/lib/protocol-registry";
+import type { ActionConfigField } from "@/plugins/registry";
 import layerzeroErc20Abi from "@/protocols/abis/layerzero-erc20.json";
 import layerzeroOftAbi from "@/protocols/abis/layerzero-oft.json";
 import layerzeroDef, {
@@ -231,6 +232,26 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
       expect(inp?.default, name).toBeUndefined();
       expect(inp?.advanced, name).toBeUndefined();
     }
+  });
+
+  // refundAddress is payer-owned: it stays a declared input so its ABI
+  // arg keeps its position, but no caller-visible field renders for it -
+  // every entrance refuses it and writeContractCore writes the paying
+  // address over the placeholder after it resolves the signer.
+  it("marks refundAddress as payer-owned and renders no field for it", () => {
+    const refund = action("oft-send").inputs.find(
+      (i) => i.name === "refundAddress"
+    );
+    expect(refund?.type).toBe("address");
+    expect(refund?.payer).toBe(true);
+
+    const plugin = protocolActionToPluginAction(
+      layerzeroDef,
+      action("oft-send")
+    );
+    const collectKeys = (fields: ActionConfigField[]): string[] =>
+      fields.flatMap((f) => ("key" in f ? [f.key] : collectKeys(f.fields)));
+    expect(collectKeys(plugin.configFields)).not.toContain("refundAddress");
   });
 
   // The send declares payableValue.fromInput, so it renders no separate

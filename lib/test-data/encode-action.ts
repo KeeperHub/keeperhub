@@ -22,6 +22,7 @@ import {
   applyEthValueTransform,
   readPayableValue,
 } from "@/lib/execute/protocol-eth-value";
+import { PAYER_PLACEHOLDER } from "@/lib/execute/protocol-payer";
 import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
 import {
   getProtocol,
@@ -147,7 +148,7 @@ export function encodeBoundAction(
   });
   const actionNode = built.nodes.find((n) => n.id !== "trigger-1");
   const config = (actionNode?.data.config ?? {}) as Record<string, unknown>;
-  return encodeFromConfig(protocol, action, chainId, config);
+  return encodeFromConfig(protocol, action, chainId, config, walletAddress);
 }
 
 /**
@@ -185,7 +186,8 @@ export function encodeSetupSteps(
       stepProtocol,
       stepAction,
       chainId,
-      config
+      config,
+      walletAddress
     );
     steps.push({ to, data, value });
   }
@@ -196,9 +198,17 @@ export function encodeFromConfig(
   protocol: ProtocolDefinition,
   action: ProtocolAction,
   chainId: string,
-  config: Record<string, unknown>
+  config: Record<string, unknown>,
+  // A payer input (the OFT send's refundAddress) is not config-bound: the
+  // runtime core writes the paying address into its slot, so the harness
+  // takes the wallet that would pay and defaults to the same placeholder
+  // the runtime arg builders emit.
+  payerAddress?: string
 ): EncodedAction {
   const named = action.inputs.map((inp) => {
+    if (inp.payer) {
+      return { name: inp.name, value: payerAddress ?? PAYER_PLACEHOLDER };
+    }
     const raw = config[inp.name];
     let value: string;
     if (raw === undefined || raw === "") {

@@ -373,6 +373,12 @@ function buildProtocolActionNode(
   }
 
   for (const input of action.inputs) {
+    // Payer inputs (the OFT send's refundAddress) take no binding: the
+    // executor writes the paying address into that arg slot, so their
+    // absence from TEST_DATA is by design, not an unbound address input.
+    if (input.payer) {
+      continue;
+    }
     const bound = bindings[input.name];
     if (bound !== undefined) {
       // A skipped action is built but never executed; when its

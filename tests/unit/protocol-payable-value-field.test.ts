@@ -235,7 +235,6 @@ describe("payable value field label hook", () => {
       to: wallet,
       amountLD: "1000000",
       minAmountLD: "990000",
-      refundAddress: wallet,
     };
     const issuesFor = (nativeFee: unknown) =>
       validateWorkflowActionConfigs([

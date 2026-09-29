@@ -243,6 +243,40 @@ describe("synthesiseProtocolTemplate", () => {
       );
     });
   });
+
+  describe("layerzero/oft-send (payable, payer-owned refundAddress)", () => {
+    const actionId = "layerzero/oft-send";
+    // USDT0 OFT on mainnet.
+    const config = {
+      network: "1",
+      contractAddress: "0x6C96dE32CEa08842dcc4058c14d3aaAD7Fa41dee",
+    };
+
+    it("omits refundAddress from the Input type", () => {
+      const code = synthesiseProtocolTemplate(actionId, config) as string;
+      const inputType = /type Input = \{[\s\S]*?\};/.exec(code)?.[0];
+      expect(inputType).toBeDefined();
+      expect(inputType).not.toContain("refundAddress");
+      // Every other declared input is still typed.
+      expect(inputType).toContain("nativeFee: string;");
+    });
+
+    it("emits account.address for the payer arg, declared before its use", () => {
+      const code = synthesiseProtocolTemplate(actionId, config) as string;
+      expect(code).toContain(", account.address]");
+      // `account` comes from privateKeyToAccount before the simulation
+      // call reads the args list.
+      const accountAt = code.indexOf("privateKeyToAccount(");
+      const argsAt = code.indexOf("account.address");
+      expect(accountAt).toBeGreaterThanOrEqual(0);
+      expect(argsAt).toBeGreaterThan(accountAt);
+      // msg.value still reads the same nativeFee the OFT checks it
+      // against.
+      expect(code).toContain(
+        "value: input.nativeFee ? BigInt(input.nativeFee) : undefined"
+      );
+    });
+  });
 });
 
 describe("synthesiseProtocolTemplate: a renamed slug on an L2", () => {

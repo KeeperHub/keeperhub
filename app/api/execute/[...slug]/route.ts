@@ -206,7 +206,7 @@ async function executeProtocolAction(
       "release"
     );
   }
-  const { functionArgs } = argsResult;
+  const { functionArgs, payerParam } = argsResult;
 
   if (meta.actionType === "read") {
     const coreInput: ReadContractCoreInput = {
@@ -328,6 +328,7 @@ async function executeProtocolAction(
     abiFunction: meta.functionName,
     functionArgs,
     ethValue,
+    payerParam,
     _context: { organizationId },
   };
   const result = await withIdempotencyHeartbeat(idem, () =>

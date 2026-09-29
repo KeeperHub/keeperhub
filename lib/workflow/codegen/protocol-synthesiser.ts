@@ -175,6 +175,12 @@ function buildInputType(ctx: ProtocolActionContext): string {
   }
   const lines: string[] = ["type Input = {"];
   for (const inp of ctx.action.inputs) {
+    // A payer input is never caller-supplied: the write template emits
+    // the signing account's address for its arg, so the generated Input
+    // type carries no field for it.
+    if (inp.payer) {
+      continue;
+    }
     const annotation = decimalsAnnotation(inp.decimals);
     if (annotation) {
       lines.push(annotation);
@@ -301,8 +307,16 @@ function buildArgExpression(
 }
 
 function buildArgsList(ctx: ProtocolActionContext): string {
+  // A payer input's arg is the account paying for the call, not anything
+  // the caller supplied - the write template's `account` is declared
+  // before the simulation reads this list.
+  const payerNames = new Set(
+    ctx.action.inputs.filter((i) => i.payer).map((i) => i.name)
+  );
   const parts = ctx.abiFragment.inputs.map((p) =>
-    buildArgExpression(p, "input", ctx, true)
+    payerNames.has(p.name ?? "")
+      ? "account.address"
+      : buildArgExpression(p, "input", ctx, true)
   );
   return parts.join(", ");
 }

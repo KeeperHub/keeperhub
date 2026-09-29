@@ -20,6 +20,7 @@ import {
   type FunctionAbiEntry,
   reshapeArgsForAbi,
 } from "@/lib/abi/struct-args";
+import { PAYER_PLACEHOLDER } from "@/lib/execute/protocol-payer";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/protocols", () => ({}));
@@ -166,6 +167,9 @@ async function post(slug: string[], body: Record<string, unknown>) {
 }
 
 function sendBody(nativeFee: unknown): Record<string, unknown> {
+  // refundAddress is a payer input: the caller never supplies it, the route
+  // refuses a non-blank value for it, and the core writes the paying
+  // address in its place.
   return {
     chainId: 1,
     contractAddress: ADAPTER,
@@ -175,7 +179,6 @@ function sendBody(nativeFee: unknown): Record<string, unknown> {
     minAmountLD: "990000",
     nativeFee,
     lzTokenFee: "0",
-    refundAddress: WALLET,
   };
 }
 
@@ -212,12 +215,17 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
     const core = writeContractCoreMock.mock.calls[0][0] as {
       ethValue: string;
       functionArgs: string;
+      payerParam?: string;
     };
     expect(core.ethValue).toBe("0.000218756042576226");
     expect(parseEther(core.ethValue)).toBe(BigInt(FEE_WEI));
+    // The core overwrites the placeholder at this arg position with the
+    // resolved paying address after it picks the signer.
+    expect(core.payerParam).toBe("refundAddress");
     const args = JSON.parse(core.functionArgs) as string[];
-    // Flattened SendParam, then MessagingFee, then refundAddress; `to` is
-    // the padded bytes32 the OFT expects, and nativeFee is the raw wei.
+    // Flattened SendParam, then MessagingFee, then the payer placeholder
+    // in the refundAddress slot; `to` is the padded bytes32 the OFT
+    // expects, and nativeFee is the raw wei.
     expect(args).toEqual([
       "30110",
       PADDED_WALLET,
@@ -228,8 +236,27 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
       "0x",
       FEE_WEI,
       "0",
-      WALLET,
+      PAYER_PLACEHOLDER,
     ]);
+  });
+
+  it("refuses a supplied refundAddress before reserving or broadcasting", async () => {
+    getProtocolMock.mockReturnValue(layerzeroDef);
+    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
+
+    const response = await post(["layerzero", "oft-send"], {
+      ...sendBody(FEE_WEI),
+      refundAddress: WALLET,
+    });
+
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.field).toBe("refundAddress");
+    expect(data.error).toMatch(/refundAddress/);
+    expect(data.error).toMatch(/cannot be supplied/);
+    expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
+    expect(writeContractCoreMock).not.toHaveBeenCalled();
+    expect(recordIdempotentResponseMock.mock.calls[0][2]).toBe("release");
   });
 
   it("reserves and sends 0.0001 ETH for a 1e14-wei fee", async () => {
@@ -396,9 +423,12 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
     const core = writeContractCoreMock.mock.calls[0][0] as {
       ethValue: string;
       functionArgs: string;
+      payerParam?: string;
     };
     expect(core.ethValue).toBe("0.25");
     expect(JSON.parse(core.functionArgs)).toEqual([WALLET, "1000"]);
+    // No payer hook declared: the core is handed no payerParam at all.
+    expect(core.payerParam).toBeUndefined();
   });
 
   it("still forwards a numeric ether value on an action with no transforms as its string", async () => {
@@ -628,36 +658,6 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
     expect((await response.json()).field).toBe("to");
     expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
     expect(writeContractCoreMock).not.toHaveBeenCalled();
-  });
-
-  it("does not extend the bytes32 shape to an address input with no transform", async () => {
-    // refundAddress is a plain address param: the ABI encoder never took
-    // 32 bytes for it, so neither does the route.
-    getProtocolMock.mockReturnValue(layerzeroDef);
-    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
-
-    const response = await post(["layerzero", "oft-send"], {
-      ...sendBody(FEE_WEI),
-      refundAddress: PADDED_WALLET,
-    });
-
-    expect(response.status).toBe(400);
-    expect((await response.json()).field).toBe("refundAddress");
-    expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
-  });
-
-  it("refuses a malformed refundAddress too (an address input with no transform)", async () => {
-    getProtocolMock.mockReturnValue(layerzeroDef);
-    resolveProtocolMetaMock.mockReturnValue(OFT_SEND_META);
-
-    const response = await post(["layerzero", "oft-send"], {
-      ...sendBody(FEE_WEI),
-      refundAddress: "0x1234",
-    });
-
-    expect(response.status).toBe(400);
-    expect((await response.json()).field).toBe("refundAddress");
-    expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
   });
 
   it("sends no value and reserves zero when the value is absent on an action without a declared source", async () => {

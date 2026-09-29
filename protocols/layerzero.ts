@@ -291,7 +291,6 @@ const TEST_DATA: ProtocolTestData = {
         oftCmd: "0x",
         nativeFee: OFT_SEND_FIXTURE_FEE_WEI,
         lzTokenFee: "0",
-        refundAddress: wallet(),
       },
       "oft-approval-required": {
         contractAddress: OFT_REFERENCE_ADDRESSES["1"],
@@ -457,8 +456,11 @@ export default defineAbiProtocol({
         },
         // The SendParam tuple and the MessagingFee tuple are both flattened
         // by the deriver, so the form fields are dstEid..oftCmd, nativeFee,
-        // lzTokenFee, refundAddress. There is no separate value field:
-        // payableValue.fromInput takes msg.value from nativeFee itself.
+        // lzTokenFee. refundAddress is a declared input but payer-owned:
+        // no field renders for it, every entrance refuses a supplied value,
+        // and the core write sets it to the address paying for the call.
+        // There is no separate value field: payableValue.fromInput takes
+        // msg.value from nativeFee itself.
         //
         // That indirection exists because the OFT's fee check is equality:
         // OAppSender._payNative reverts with NotEnoughNative when msg.value
@@ -491,10 +493,12 @@ export default defineAbiProtocol({
                 "Fee in ZRO, in its smallest unit. Leave at 0: this action pays in the native gas token. Paying in ZRO needs a quote with Pay In LZ Token set to true and a ZRO allowance, and is not supported here.",
               docUrl: LAYERZERO_OFT_DOCS,
             },
+            // payer-owned: writeContractCore writes the paying address
+            // into this arg after resolving the signer (the org Safe in
+            // Safe modes, the org wallet otherwise). docUrl stays because
+            // the input remains declared; it just renders no field.
             refundAddress: {
-              label: "Refund Address",
-              helpTip:
-                "Receives any native fee paid above what the send required. Usually the sending wallet. A contract here must be able to receive native tokens.",
+              payer: true,
               docUrl: LAYERZERO_OFT_DOCS,
             },
           },

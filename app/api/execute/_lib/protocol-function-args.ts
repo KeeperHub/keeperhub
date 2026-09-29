@@ -1,6 +1,11 @@
 import "server-only";
 
 import {
+  PAYER_PLACEHOLDER,
+  payerParamOf,
+  refuseSuppliedPayer,
+} from "@/lib/execute/protocol-payer";
+import {
   applyEncodeTransformsNamed,
   getEncodeTransformKind,
 } from "@/lib/protocol-encode-transforms";
@@ -21,7 +26,7 @@ const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const HEX_BYTES32 = /^0x[0-9a-fA-F]{64}$/;
 
 export type BuildProtocolFunctionArgsResult =
-  | { ok: true; functionArgs: string | undefined }
+  | { ok: true; functionArgs: string | undefined; payerParam?: string }
   | { ok: false; error: string; field: string };
 
 function isBlank(value: unknown): boolean {
@@ -84,12 +89,26 @@ export function buildProtocolFunctionArgs(
     (a) => a.function === functionName && a.contract === contractKey
   );
 
+  // A payer argument (the OFT send's refundAddress) is assigned by the
+  // core write to the resolved paying address, so a caller-supplied value
+  // is refused rather than silently overwritten.
+  const refusedPayer = refuseSuppliedPayer(protocolAction, input);
+  if (refusedPayer) {
+    return { ok: false, error: refusedPayer.error, field: refusedPayer.field };
+  }
+
   if (!protocolAction || protocolAction.inputs.length === 0) {
     return { ok: true, functionArgs: undefined };
   }
 
   const named: Array<{ name: string; value: string }> = [];
   for (const inp of protocolAction.inputs) {
+    if (inp.payer) {
+      // The placeholder keeps the payer arg's position; writeContractCore
+      // writes the paying address over it after it resolves the signer.
+      named.push({ name: inp.name, value: PAYER_PLACEHOLDER });
+      continue;
+    }
     const resolved = resolveInputValue(inp, input[inp.name]);
     if (!resolved.ok) {
       return resolved;
@@ -136,5 +155,6 @@ export function buildProtocolFunctionArgs(
   return {
     ok: true,
     functionArgs: JSON.stringify(transformed.map((t) => t.value)),
+    payerParam: payerParamOf(protocolAction),
   };
 }

@@ -68,6 +68,7 @@ vi.mock("@/lib/execute/value-ledger", () => ({
 // ── Import under test ────────────────────────────────────────────────
 
 import { parseEther } from "ethers";
+import { PAYER_PLACEHOLDER } from "@/lib/execute/protocol-payer";
 import {
   clearEncodeTransforms,
   registerEncodeTransform,
@@ -1006,6 +1007,120 @@ describe("protocolWriteStep", () => {
       if (!result.success) {
         expect(result.error).toContain("Missing contract address");
       }
+    });
+  });
+
+  // A payable action may declare one of its address inputs as payer-owned
+  // (LayerZero's OFT send marks refundAddress): the caller never supplies
+  // it, the step puts a placeholder in its arg position, and
+  // writeContractCore overwrites it with the resolved paying address.
+  describe("payer input (ProtocolActionInput.payer)", () => {
+    const OFT_SEND_META: ProtocolMeta = {
+      protocolSlug: "layerzero",
+      contractKey: "oft",
+      functionName: "send",
+      actionType: "write",
+    };
+    const OFT_SEND_PROTOCOL = {
+      name: "LayerZero",
+      slug: "layerzero",
+      contracts: {
+        oft: {
+          label: "OFT",
+          userSpecifiedAddress: true,
+          addresses: {
+            "8453": "0xeab8fA7AB28F05D7600558b873d5C7F805412304",
+          },
+        },
+      },
+      actions: [
+        {
+          slug: "oft-send",
+          label: "OFT Send",
+          type: "write" as const,
+          contract: "oft",
+          function: "send",
+          payable: true,
+          payableValue: { fromInput: "nativeFee" },
+          inputs: [
+            { name: "nativeFee", type: "uint256", label: "Native Fee" },
+            {
+              name: "refundAddress",
+              type: "address",
+              label: "Refund Address",
+              payer: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    function arrangeOftSend(): void {
+      mockResolveProtocolMeta.mockReturnValue(OFT_SEND_META);
+      mockGetProtocol.mockReturnValue(OFT_SEND_PROTOCOL);
+      mockResolveAbi.mockResolvedValue({ abi: "[]" });
+      mockWriteContractCore.mockResolvedValue({
+        success: true,
+        transactionHash: "0xsend",
+        transactionLink: "",
+        gasUsed: "250000",
+      });
+    }
+
+    it("refuses a supplied refundAddress before reaching the core", async () => {
+      arrangeOftSend();
+
+      const result = await protocolWriteStep(
+        makeInput({
+          _actionType: "layerzero/oft-send",
+          nativeFee: "1000000",
+          refundAddress: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("refundAddress");
+        expect(result.error).toContain("cannot be supplied");
+      }
+      expect(mockWriteContractCore).not.toHaveBeenCalled();
+      expect(mockWithStepValueCap).not.toHaveBeenCalled();
+    });
+
+    it("passes payerParam and the placeholder at the payer arg position", async () => {
+      arrangeOftSend();
+
+      const result = await protocolWriteStep(
+        makeInput({
+          _actionType: "layerzero/oft-send",
+          nativeFee: "1000000",
+        })
+      );
+
+      expect(result.success).toBe(true);
+      const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+      expect(coreCall.payerParam).toBe("refundAddress");
+      expect(JSON.parse(coreCall.functionArgs as string)).toEqual([
+        "1000000",
+        PAYER_PLACEHOLDER,
+      ]);
+    });
+
+    it("passes no payerParam for an action without a payer input", async () => {
+      mockResolveProtocolMeta.mockReturnValue(COMPOUND_SUPPLY_META);
+      mockGetProtocol.mockReturnValue(COMPOUND_PROTOCOL);
+      mockResolveAbi.mockResolvedValue({ abi: "[]" });
+      mockWriteContractCore.mockResolvedValue({
+        success: true,
+        transactionHash: "0xdef",
+        transactionLink: "",
+        gasUsed: "21000",
+      });
+
+      await protocolWriteStep(makeInput());
+
+      const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+      expect(coreCall.payerParam).toBeUndefined();
     });
   });
 });

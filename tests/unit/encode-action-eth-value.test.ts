@@ -9,6 +9,7 @@
 import { parseEther } from "ethers";
 import { afterEach, describe, expect, it } from "vitest";
 import "@/protocols";
+import { PAYER_PLACEHOLDER } from "@/lib/execute/protocol-payer";
 import {
   clearEncodeTransforms,
   registerEncodeTransform,
@@ -55,6 +56,9 @@ describe("encodeFromConfig: layerzero/oft-send (production registration)", () =>
     const fee = decoded[1] as { nativeFee: bigint; lzTokenFee: bigint };
     expect(fee.nativeFee).toBe(encoded.value);
     expect(fee.lzTokenFee).toBe(BigInt(0));
+    // The payer slot carries the caller's wallet, keeping the golden
+    // calldata byte-identical to when refundAddress was a bound input.
+    expect(decoded[2]).toBe(WALLET);
     // `to` is the wallet, padded to bytes32 by the transform.
     const sendParam = decoded[0] as { to: string; dstEid: bigint };
     expect(sendParam.to).toBe(`0x${"0".repeat(24)}${WALLET.slice(2)}`);
@@ -77,7 +81,6 @@ describe("encodeFromConfig: layerzero/oft-send (production registration)", () =>
         minAmountLD: "990000",
         nativeFee: "0.01",
         lzTokenFee: "0",
-        refundAddress: WALLET,
       })
     ).toThrow(/Cannot convert 0\.01 to a BigInt/);
 
@@ -93,7 +96,6 @@ describe("encodeFromConfig: layerzero/oft-send (production registration)", () =>
         minAmountLD: "990000",
         nativeFee: OFT_SEND_FIXTURE_FEE_WEI,
         lzTokenFee: "0",
-        refundAddress: WALLET,
         ethValue: "1",
       })
     ).toThrow(/takes its value from "nativeFee"/);
@@ -106,10 +108,64 @@ describe("encodeFromConfig: layerzero/oft-send (production registration)", () =>
         minAmountLD: "990000",
         nativeFee: OFT_SEND_FIXTURE_FEE_WEI,
         lzTokenFee: "0",
-        refundAddress: WALLET,
         ethValue: OFT_SEND_FIXTURE_FEE_WEI,
       }).value
     ).toBe(BigInt(OFT_SEND_FIXTURE_FEE_WEI));
+  });
+});
+
+describe("encodeFromConfig: payer arg position", () => {
+  // Re-register the transform the production registration provided: the
+  // file-level afterEach clears the encode-transform registry after the
+  // first describe, which is the only case asserted against it.
+  function oftSendConfig() {
+    const { protocol, action } = layerzeroSend();
+    registerEncodeTransform(
+      "layerzero",
+      "oft-send",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+    return {
+      protocol,
+      action,
+      config: {
+        contractAddress: protocol.contracts.oft.addresses["1"],
+        dstEid: "30110",
+        // Pre-padded: the padAddressToBytes transform cleared with the
+        // registry and is not exported for re-registration.
+        to: `0x${"0".repeat(24)}${WALLET.slice(2)}`,
+        amountLD: "1000000",
+        minAmountLD: "990000",
+        nativeFee: OFT_SEND_FIXTURE_FEE_WEI,
+        lzTokenFee: "0",
+      },
+    };
+  }
+
+  it("encodes the placeholder when no payerAddress is given", () => {
+    const { protocol, action, config } = oftSendConfig();
+    const encoded = encodeFromConfig(protocol, action, "1", config);
+    const decoded = encoded.iface.decodeFunctionData("send", encoded.data);
+    expect(decoded[2]).toBe(PAYER_PLACEHOLDER);
+  });
+
+  it("encodes the given payerAddress over any config key of the same name", () => {
+    const { protocol, action, config } = oftSendConfig();
+    const encoded = encodeFromConfig(
+      protocol,
+      action,
+      "1",
+      {
+        ...config,
+        // Ignored: the payer arg comes from payerAddress, not config.
+        refundAddress: "0x2222222222222222222222222222222222222222",
+      },
+      WALLET
+    );
+    const decoded = encoded.iface.decodeFunctionData("send", encoded.data);
+    expect(decoded[2]).toBe(WALLET);
   });
 });
 

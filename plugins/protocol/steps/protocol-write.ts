@@ -20,6 +20,11 @@ import {
   readPayableValue,
 } from "@/lib/execute/protocol-eth-value";
 import {
+  PAYER_PLACEHOLDER,
+  payerParamOf,
+  refuseSuppliedPayer,
+} from "@/lib/execute/protocol-payer";
+import {
   type ProtocolMeta,
   resolveProtocolMeta,
 } from "./resolve-protocol-meta";
@@ -188,6 +193,12 @@ function buildFunctionArgs(
   }
 
   const rawInputs = protocolAction.inputs.map((inp) => {
+    if (inp.payer) {
+      // A payer argument is never caller-supplied: writeContractCore
+      // overwrites the placeholder with the paying address after it
+      // resolves the signer.
+      return { name: inp.name, value: PAYER_PLACEHOLDER };
+    }
     const raw = input[inp.name];
     if (raw === undefined || raw === "") {
       return { name: inp.name, value: inp.default ?? "" };
@@ -286,6 +297,15 @@ export async function protocolWriteStep(
       };
     }
 
+    // A payer argument (the OFT send's refundAddress) is assigned by the
+    // core write to the resolved paying address, so a caller-supplied
+    // value is refused rather than silently overwritten.
+    const protocolAction = findProtocolAction(meta);
+    const refusedPayer = refuseSuppliedPayer(protocolAction, input);
+    if (refusedPayer) {
+      return { success: false, error: refusedPayer.error };
+    }
+
     // 5. Build function arguments from named inputs ordered by action definition
     const functionArgs = buildFunctionArgs(input, meta);
 
@@ -315,6 +335,7 @@ export async function protocolWriteStep(
       abiFunction: meta.functionName,
       functionArgs,
       ethValue,
+      payerParam: payerParamOf(protocolAction),
       gasLimitMultiplier: input.gasLimitMultiplier,
       sponsorGas: input.sponsorGas,
       usePrivateMempool: input.usePrivateMempool,
