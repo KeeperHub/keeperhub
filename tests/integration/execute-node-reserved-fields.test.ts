@@ -321,10 +321,12 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
         actionType: "layerzero/oft-send",
         config: {
           ...config,
+          // An ether-typed action's metadata: if the route read this key it
+          // would parse FEE_WEI as ether and reserve ~2.19e32 wei.
           _protocolMeta: JSON.stringify({
-            protocolSlug: "layerzero",
-            contractKey: "oft",
-            functionName: "send",
+            protocolSlug: "wrapped",
+            contractKey: "weth",
+            functionName: "deposit",
             actionType: "write",
           }),
         },
