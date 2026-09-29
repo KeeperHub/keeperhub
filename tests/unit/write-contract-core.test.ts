@@ -230,6 +230,7 @@ vi.mock("@/lib/web3/sponsorship-feature-flag", async (importOriginal) => ({
 
 vi.mock("@/lib/safe/execute-as-safe", () => ({
   executeContractCallAsSafe: vi.fn(),
+  executeContractCallAsRole: vi.fn(),
   executeNativeTransferAsSafe: vi.fn(),
 }));
 
@@ -264,6 +265,11 @@ import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { RpcRelayTransportError } from "@/lib/rpc/providers/transport-error";
+import {
+  executeContractCallAsRole,
+  executeContractCallAsSafe,
+} from "@/lib/safe/execute-as-safe";
+import { resolveSignerForNode } from "@/lib/safe/signer-resolver";
 import { parsePriorityFeeGwei } from "@/lib/web3/gas-defaults";
 import { OnChainPendingError } from "@/lib/web3/onchain-revert";
 import { PreBroadcastNetworkError } from "@/lib/web3/submit-signed";
@@ -996,5 +1002,141 @@ describe("writeContractCore broadcastAttempted evidence", () => {
     if (!result.success) {
       expect(result.broadcastAttempted).toBe(true);
     }
+  });
+});
+
+describe("writeContractCore payerParam (#2470)", () => {
+  const PAYER_ABI = JSON.stringify([
+    {
+      type: "function",
+      name: "send",
+      stateMutability: "payable",
+      inputs: [
+        { name: "a", type: "uint256" },
+        { name: "refundAddress", type: "address" },
+      ],
+      outputs: [],
+    },
+  ]);
+  const PLACEHOLDER = "0x0000000000000000000000000000000000000000";
+  const SAFE_ADDRESS = "0x9999999999999999999999999999999999999999";
+  // Matches the getOrganizationWalletAddress mock above.
+  const ORG_WALLET = "0xwalletaddress1234567890123456789012345678";
+  const RECEIPT = {
+    hash: "0xhash",
+    gasUsed: BigInt(21_000),
+    effectiveGasPrice: BigInt(1_000_000_000),
+    blockNumber: 1,
+  };
+
+  const baseInput = {
+    contractAddress: "0x1234567890123456789012345678901234567890",
+    network: "ethereum",
+    abi: PAYER_ABI,
+    abiFunction: "send",
+    functionArgs: JSON.stringify(["1", PLACEHOLDER]),
+    _context: { organizationId: "org-1" },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+    mockExecuteContractCall.mockResolvedValue(RECEIPT);
+    vi.mocked(executeContractCallAsSafe).mockResolvedValue(RECEIPT);
+    vi.mocked(executeContractCallAsRole).mockResolvedValue(RECEIPT);
+    vi.mocked(resolveSignerForNode).mockResolvedValue({
+      kind: "eoa",
+      ownerAddress: "0xwalletaddress",
+    });
+  });
+
+  it("sets the payer argument to the org wallet in eoa mode", async () => {
+    const result = await writeContractCore({
+      ...baseInput,
+      payerParam: "refundAddress",
+    });
+
+    expect(result.success).toBe(true);
+    const sent = mockExecuteContractCall.mock.calls[0]?.[1] as {
+      args: unknown[];
+    };
+    expect(sent.args).toEqual(["1", ORG_WALLET]);
+  });
+
+  it("sets the payer argument to the Safe in safe mode", async () => {
+    vi.mocked(resolveSignerForNode).mockResolvedValue({
+      kind: "safe",
+      ownerAddress: "0xwalletaddress",
+      safeAddress: SAFE_ADDRESS,
+      safeWalletId: "safe-1",
+    });
+
+    const result = await writeContractCore({
+      ...baseInput,
+      payerParam: "refundAddress",
+    });
+
+    expect(result.success).toBe(true);
+    const sent = vi.mocked(executeContractCallAsSafe).mock.calls[0]?.[1] as {
+      args: unknown[];
+    };
+    expect(sent.args).toEqual(["1", SAFE_ADDRESS]);
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("sets the payer argument to the Safe in safe-role mode", async () => {
+    vi.mocked(resolveSignerForNode).mockResolvedValue({
+      kind: "safe-role",
+      ownerAddress: "0xwalletaddress",
+      safeAddress: SAFE_ADDRESS,
+      safeWalletId: "safe-1",
+      rolesModifierAddress: "0xrolesmodifier0000000000000000000000",
+      roleKey: "0xrolekey",
+      delegateAddress: "0xdelegate0000000000000000000000000000",
+    });
+
+    const result = await writeContractCore({
+      ...baseInput,
+      payerParam: "refundAddress",
+    });
+
+    expect(result.success).toBe(true);
+    const sent = vi.mocked(executeContractCallAsRole).mock.calls[0]?.[1] as {
+      args: unknown[];
+    };
+    expect(sent.args).toEqual(["1", SAFE_ADDRESS]);
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("fails without broadcasting when payerParam is not an address argument", async () => {
+    for (const bad of ["a", "notAParam"]) {
+      vi.clearAllMocks();
+      mockExecuteContractCall.mockResolvedValue(RECEIPT);
+      vi.mocked(resolveSignerForNode).mockResolvedValue({
+        kind: "eoa",
+        ownerAddress: "0xwalletaddress",
+      });
+
+      const result = await writeContractCore({
+        ...baseInput,
+        payerParam: bad,
+      });
+
+      expect([bad, result.success]).toEqual([bad, false]);
+      expect(mockExecuteContractCall).not.toHaveBeenCalled();
+      expect(executeContractCallAsSafe).not.toHaveBeenCalled();
+      expect(executeContractCallAsRole).not.toHaveBeenCalled();
+    }
+  });
+
+  it("leaves args untouched when payerParam is absent", async () => {
+    const result = await writeContractCore({ ...baseInput });
+
+    expect(result.success).toBe(true);
+    const sent = mockExecuteContractCall.mock.calls[0]?.[1] as {
+      args: unknown[];
+    };
+    expect(sent.args).toEqual(["1", PLACEHOLDER]);
   });
 });

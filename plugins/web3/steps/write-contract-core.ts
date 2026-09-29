@@ -101,6 +101,13 @@ export type WriteContractCoreInput = {
   // #2430: extra ABI documents whose error entries join the decode path, after
   // `abi`. Decoding only - `abi` still encodes the call.
   errorAbis?: string[];
+  // #2470: the name of a top-level address parameter that the core sets to
+  // the address paying for this call, after it resolves the signer: the Safe
+  // in safe and safe-role modes, the org wallet otherwise
+  // (resolveFundingHolder). The caller passes any non-empty placeholder in
+  // that position. LayerZero's OFT send uses it for refundAddress, so a fee
+  // refund can only go back to whoever paid it.
+  payerParam?: string;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -243,6 +250,7 @@ async function writeContractCoreImpl(
     strict,
     web3Connection,
     errorAbis,
+    payerParam,
     _context,
   } = input;
 
@@ -461,6 +469,25 @@ async function writeContractCoreImpl(
       error: `Failed to resolve Web3 Connection: ${getErrorMessage(error)}`,
       errorClass: ExecutionErrorType.SYSTEM,
     };
+  }
+
+  if (payerParam !== undefined) {
+    const functionInputs = functionAbi.inputs ?? [];
+    const payerIndex = functionInputs.findIndex(
+      (param) => param.name === payerParam
+    );
+    if (
+      payerIndex === -1 ||
+      functionInputs[payerIndex].type !== "address" ||
+      payerIndex >= args.length
+    ) {
+      return {
+        success: false,
+        error: `Cannot set the paying address: "${payerParam}" is not an address argument of ${abiFunction}`,
+        errorClass: ExecutionErrorType.SYSTEM,
+      };
+    }
+    args[payerIndex] = resolveFundingHolder(signerMode, walletAddress);
   }
 
   // Get workflow ID for transaction tracking. The executor already puts
