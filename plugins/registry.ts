@@ -347,6 +347,12 @@ export type IntegrationPlugin = {
   // Defaults to true for backward compatibility
   requiresCredentials?: boolean;
 
+  // Set alongside requiresCredentials: false when formFields hold real,
+  // optional settings (a custom instance URL, an API key override) that steps
+  // read when a connection is chosen. Offers the connection form in the picker
+  // and the node's Connection block without requiring one before a run.
+  optionalConnection?: boolean;
+
   // Whether only one connection is allowed per user
   // Set to true for integrations with unique constraints (e.g., web3 wallet)
   // When true, the "+" button to add more connections will be hidden

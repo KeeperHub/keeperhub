@@ -23,6 +23,7 @@ import { ProjectSelect } from "@/components/projects/project-select";
 import { TagSelect } from "@/components/tags/tag-select";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { api } from "@/lib/api-client";
+import { actionConnectionMode } from "@/lib/integration-helpers";
 import { integrationsAtom } from "@/lib/integrations-store";
 import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import type { IntegrationType } from "@/lib/types/integration";
@@ -463,7 +464,9 @@ export const PanelInner = () => {
         (action?.integration as IntegrationType | undefined) ||
         SYSTEM_ACTION_INTEGRATIONS[actionType];
 
-      if (!integrationType) {
+      // An optional connection overrides the plugin's defaults, so it is opted
+      // into per node rather than bound automatically
+      if (!integrationType || actionConnectionMode(actionType) === "optional") {
         // No integration needed, remove from pending
         setPendingIntegrationNodes((prev: Set<string>) => {
           const next = new Set(prev);

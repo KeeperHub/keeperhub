@@ -7,6 +7,7 @@ import {
   applyBigIntConversion,
   needsBigIntMode,
 } from "@/lib/bigint-condition-utils";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import {
   ErrorCategory,
   logSystemError,
@@ -31,6 +32,11 @@ import {
   type StepImporter,
 } from "@/lib/step-registry";
 import { deserializeTriggerInput, getErrorMessageAsync } from "@/lib/utils";
+import {
+  collectReachable,
+  isBackEdge,
+  partitionByBackEdges,
+} from "@/lib/workflow/editor/back-edges";
 import {
   BUILTIN_NODE_ID,
   BUILTIN_NODE_LABEL,
@@ -60,6 +66,11 @@ import {
   getCompletedStepOutput,
 } from "@/lib/workflow/executor/get-completed-step-output";
 import { awaitCompletedStepOutputStep } from "@/lib/workflow/executor/get-completed-step-output.step";
+import {
+  createLoopBackTracker,
+  findUnsupportedBackEdges,
+  resetLoopBodyState,
+} from "@/lib/workflow/executor/loop-back";
 import { createPendingTracker } from "@/lib/workflow/executor/pending-tasks";
 import {
   EXCEEDED_MAX_RETRIES_REGEX,
@@ -159,6 +170,18 @@ const SYSTEM_ACTIONS = {
       // biome-ignore lint/suspicious/noExplicitAny: Dynamic module import matches existing pattern
       import("@/lib/workflow/nodes/circuit-breaker-reset/step") as Promise<any>,
     stepFunction: "circuitBreakerResetStep",
+  },
+  "State Get": {
+    importer: () =>
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic module import matches existing pattern
+      import("@/lib/workflow/nodes/state-get/step") as Promise<any>,
+    stepFunction: "stateGetStep",
+  },
+  "State Set": {
+    importer: () =>
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic module import matches existing pattern
+      import("@/lib/workflow/nodes/state-set/step") as Promise<any>,
+    stepFunction: "stateSetStep",
   },
 } satisfies Record<SystemActionType, StepImporter>;
 
@@ -713,8 +736,9 @@ async function executeActionStep(input: {
 
   // Special handling for Condition action - needs template evaluation
   if (actionType === "Condition") {
-    const originalExpression =
-      resolveConditionExpression(stepInput) ?? stepInput.condition;
+    // resolveConditionExpression already reads `condition`; falling back to it here would
+    // re-admit the expression it refused, so it decides alone.
+    const originalExpression = resolveConditionExpression(stepInput);
 
     // KEEP-1284: Catch evaluation errors and pass to step so it gets logged
     let evaluatedCondition = false;
@@ -2546,11 +2570,22 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
 
   // Build node and edge maps
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+
+  // Edges that point back at an ancestor are the loop primitive and are held
+  // apart from the forward DAG. `edgesBySource` keeps them so routing still
+  // finds the loop entry; every map that answers "what has to happen before
+  // this node runs" is built from the forward edges only, or the loop entry
+  // waits on an arrival that its own execution has to produce first.
+  const { forwardEdges, backEdges, backEdgesBySource } = partitionByBackEdges(
+    nodes,
+    edges
+  );
   const edgesBySource = buildEdgesBySource(edges);
+  const forwardEdgesBySource = buildEdgesBySource(forwardEdges);
   const edgesBySourceHandle = buildEdgesBySourceHandle(edges);
   const conditionDecisions = new Map<string, ConditionDecision>();
 
-  const edgesByTarget = buildEdgesByTarget(edges);
+  const edgesByTarget = buildEdgesByTarget(forwardEdges);
   const convergenceArrivals = new Map<string, Set<string>>();
   // Skip-arrivals tracked apart from real arrivals so an OR-join whose every
   // incoming edge was skipped is itself skipped rather than executed.
@@ -2600,14 +2635,14 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     .map((n) => n.id);
   const orderedForEachNodeIds = orderForEachNodesOuterFirst(
     forEachNodeIds,
-    edgesBySource,
+    forwardEdgesBySource,
     nodeMap,
     edgesBySourceHandle
   );
   for (const forEachId of orderedForEachNodeIds) {
     const body = identifyLoopBody(
       forEachId,
-      edgesBySource,
+      forwardEdgesBySource,
       nodeMap,
       edgesBySourceHandle,
       claimedCollectOwners
@@ -2633,6 +2668,34 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       }
     }
   }
+
+  // Re-run scope of each loop entry, computed once: the entry plus everything it
+  // feeds over the forward DAG. Re-entering the entry runs all of it again.
+  const loopBodyCache = new Map<string, Set<string>>();
+  const loopBodyOf = (loopEntryNodeId: string): Set<string> => {
+    const cached = loopBodyCache.get(loopEntryNodeId);
+    if (cached) {
+      return cached;
+    }
+    const body = collectReachable(loopEntryNodeId, forwardEdgesBySource);
+    loopBodyCache.set(loopEntryNodeId, body);
+    return body;
+  };
+
+  const loopTracker = createLoopBackTracker({
+    labelOf: (nodeId: string) => {
+      const node = nodeMap.get(nodeId);
+      return node ? getNodeName(node) : nodeId;
+    },
+  });
+
+  // A back edge that touches a For Each body would be dropped in silence by the
+  // body runner's own dispatcher. Refuse the run rather than execute a graph
+  // that does not match what the canvas shows.
+  const unsupportedBackEdges = findUnsupportedBackEdges(
+    backEdges,
+    loopBodyNodeIds
+  );
 
   // Must complete before the first step runs: it invokes no steps itself, and
   // once it has, every step call downstream is reached synchronously, so the
@@ -2999,7 +3062,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       bodyEdgesBySourceHandle,
     } = identifyLoopBody(
       forEachNodeId,
-      edgesBySource,
+      forwardEdgesBySource,
       nodeMap,
       edgesBySourceHandle
     );
@@ -3300,9 +3363,19 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     nextNodeIds: string[],
     visited: Set<string>
   ): Promise<void> {
+    const forwardTargets: string[] = [];
+    const loopEntryTargets: string[] = [];
+    for (const nextId of nextNodeIds) {
+      if (isBackEdge(backEdgesBySource, fromNodeId, nextId)) {
+        loopEntryTargets.push(nextId);
+      } else {
+        forwardTargets.push(nextId);
+      }
+    }
+
     const readyIds = getReadyDownstreamIds(
       fromNodeId,
-      nextNodeIds,
+      forwardTargets,
       edgesByTarget,
       convergenceArrivals,
       visited
@@ -3314,6 +3387,62 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       );
       processSettledResults(settled, readyIds);
     }
+
+    for (const loopEntryId of loopEntryTargets) {
+      await runLoopIteration(fromNodeId, loopEntryId, visited);
+    }
+  }
+
+  /**
+   * Re-enter a loop entry so it and everything downstream of it runs again.
+   *
+   * The previous pass's traversal state for the loop body is cleared first --
+   * without that the entry reads as already visited and the loop is a no-op,
+   * which is what a back edge did before loops were supported. Refusing a pass
+   * on a cap records the failure against the node that asked to loop, so the run
+   * ends in error with a message naming the loop instead of quietly stopping
+   * with whichever pass happened to be last.
+   */
+  async function runLoopIteration(
+    fromNodeId: string,
+    loopEntryId: string,
+    visited: Set<string>
+  ): Promise<void> {
+    const bodyNodeIds = loopBodyOf(loopEntryId);
+    const admission = loopTracker.admit(fromNodeId, loopEntryId, bodyNodeIds);
+
+    if (!admission.admitted) {
+      logUserError(
+        ErrorCategory.WORKFLOW_ENGINE,
+        "[Workflow Executor] Loop iteration limit reached",
+        undefined,
+        { ...baseLogLabels, node_id: fromNodeId }
+      );
+      results[fromNodeId] = {
+        success: false,
+        error: admission.error,
+        errorClass: ExecutionErrorType.USER,
+      };
+      return;
+    }
+
+    console.log("[Workflow Executor] Looping back:", {
+      from: fromNodeId,
+      to: loopEntryId,
+      iteration: admission.iteration,
+    });
+
+    resetLoopBodyState(bodyNodeIds, {
+      visited,
+      convergenceArrivals,
+      convergenceSkipArrivals,
+      skippedNodes,
+    });
+
+    const settled = await pendingTasks.track(
+      Promise.allSettled([executeNode(loopEntryId, visited)])
+    );
+    processSettledResults(settled, [loopEntryId]);
   }
 
   /**
@@ -3343,6 +3472,10 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     const handleId = conditionResult === true ? "true" : "false";
     const notTakenHandle = conditionResult === true ? "false" : "true";
     const handleTargets = handleMap.get(handleId) ?? [];
+    // A not-taken back edge just means the loop is not repeated; its entry is
+    // not a skipped branch, and skipping it would mark the whole loop skipped.
+    const isForwardTarget = (targetId: string): boolean =>
+      !isBackEdge(backEdgesBySource, nodeId, targetId);
 
     // Record decision for branch-aware finalSuccess
     conditionDecisions.set(nodeId, {
@@ -3351,10 +3484,18 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         nodeId,
         notTakenHandle,
         edgesBySourceHandle
-      ),
+      ).filter(isForwardTarget),
       takenTargets: handleTargets,
     });
+    const reentriesBefore = loopTracker.reentriesOf(nodeId);
     await executeReadyDownstream(nodeId, handleTargets, visited);
+
+    // The taken branch looped back and a later pass ran this condition again.
+    // That pass has already routed both of its branches, so skipping here would
+    // mark nodes the later pass executed as skipped and hide their failures.
+    if (loopTracker.reentriesOf(nodeId) !== reentriesBefore) {
+      return;
+    }
 
     // Propagate skip signals for the not-taken branch so convergence nodes
     // downstream receive arrival signals from skipped sources. A convergence
@@ -3362,12 +3503,14 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     // skipped it is added to `skippedNodes` and the skip continues downstream.
     // This both unblocks genuine convergence and stops an all-skipped OR-join
     // from firing.
-    const skippedTargets = handleMap.get(notTakenHandle) ?? [];
+    const skippedTargets = (handleMap.get(notTakenHandle) ?? []).filter(
+      isForwardTarget
+    );
     if (skippedTargets.length > 0) {
       const unblockedIds = propagateConvergenceSkips(
         nodeId,
         skippedTargets,
-        edgesBySource,
+        forwardEdgesBySource,
         edgesByTarget,
         convergenceArrivals,
         convergenceSkipArrivals,
@@ -3800,10 +3943,17 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       // whose tracker is empty, leaving the in-catch branch unable to
       // recover and forcing reliance on post-drain. Reading the DB-backed
       // authority here makes the recovery uniform across both paths.
+      //
+      // A node the loop has already re-entered is excluded: the tracker and the
+      // log row are keyed by node, so every pass overwrites the last one and the
+      // recovery would hand back an earlier pass's output as if it were this
+      // one's. For a loop that moves value that is worse than failing, so a
+      // second or later pass takes the normal failure path.
       const isSpuriousMaxRetries =
-        EXCEEDED_MAX_RETRIES_REGEX.test(errorMessage) ||
-        FAILED_AFTER_RETRIES_REGEX.test(errorMessage) ||
-        NO_STEP_COMPLETION_REGEX.test(errorMessage);
+        (EXCEEDED_MAX_RETRIES_REGEX.test(errorMessage) ||
+          FAILED_AFTER_RETRIES_REGEX.test(errorMessage) ||
+          NO_STEP_COMPLETION_REGEX.test(errorMessage)) &&
+        loopTracker.iterationOf(nodeId) === 0;
       let recordedOutput =
         isSpuriousMaxRetries && executionId
           ? (await getCompletedStepOutput(executionId, nodeId))?.output
@@ -3957,7 +4107,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           ? (node.data.config?.actionType as string | undefined)
           : undefined;
       if (failedActionType !== "Condition") {
-        const nextNodes = edgesBySource.get(nodeId) ?? [];
+        const nextNodes = forwardEdgesBySource.get(nodeId) ?? [];
         const unblockedIds = signalConvergenceArrival(
           nodeId,
           nextNodes,
@@ -3979,6 +4129,18 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   try {
     console.log("[Workflow Executor] Starting execution from trigger nodes");
     const workflowStartTime = Date.now();
+
+    if (unsupportedBackEdges.length > 0) {
+      const [{ source, target }] = unsupportedBackEdges;
+      const sourceNode = nodeMap.get(source);
+      const targetNode = nodeMap.get(target);
+      throw new Error(
+        `The connection from "${sourceNode ? getNodeName(sourceNode) : source}" back to ` +
+          `"${targetNode ? getNodeName(targetNode) : target}" crosses a For Each loop body. ` +
+          "Looping back into or out of a For Each body is not supported. Move the " +
+          "connection outside the For Each, or use the For Each iteration itself to repeat the work."
+      );
+    }
 
     const triggerType = detectTriggerType(nodes);
     const metrics = getMetricsCollector();

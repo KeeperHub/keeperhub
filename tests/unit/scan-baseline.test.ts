@@ -11,6 +11,12 @@ const GAS_BALANCE_ID_RE = /^gas-balance-\d+$/;
 const DIGITS_RE = /^\d+$/;
 
 describe("buildBaselineSuggestions", () => {
+  it("keeps the production-chain gas suggestions stable", () => {
+    expect(
+      buildBaselineSuggestions(ADDRESS).map((item) => item.chainId)
+    ).toEqual([1, 42_161, 8453]);
+  });
+
   it("returns gas-balance monitors carrying the address prefill", () => {
     const suggestions = buildBaselineSuggestions(ADDRESS);
 

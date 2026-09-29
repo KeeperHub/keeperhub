@@ -59,6 +59,13 @@ export type DecodedCall = FlatCall & {
 export type ExecutedCall = {
   /** The contract the decoded call actually hit. */
   contractAddress: string;
+  /**
+   * `from` of the matched frame: msg.sender, except on a DELEGATECALL frame
+   * where it is the delegator. The matched frame is the first one in execution
+   * order that hit the target (see `resolveExecutedCall`). Omitted when the
+   * trace carries no sender for that frame.
+   */
+  from?: string;
   functionName: string;
   functionSignature: string;
   args: Record<string, string>;
@@ -288,6 +295,10 @@ export async function resolveExecutedCall(
     return null;
   }
 
+  // `findDecodedCalls` lists frames in execution order (depth-first pre-order
+  // of the trace), so the match taken here is the first call that hit the
+  // target, not the shallowest: a helper reached earlier in the tree that
+  // calls the target wins over a later, shallower call.
   const matches = findDecodedCalls(root, options);
   const decoded = matches[0];
   if (!decoded) {
@@ -297,6 +308,10 @@ export async function resolveExecutedCall(
   const topLevelTo = (root.to ?? "").toLowerCase();
   return {
     contractAddress: decoded.to,
+    // The frame's sender when the trace recorded one; a frame without a
+    // sender leaves the field absent rather than empty, so a caller's
+    // `=== wallet` check fails visibly instead of comparing against "".
+    ...(decoded.from ? { from: decoded.from } : {}),
     functionName: decoded.functionName,
     functionSignature: decoded.functionSignature,
     args: decoded.args,

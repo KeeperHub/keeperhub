@@ -19,8 +19,10 @@ import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { isNonRetryableError } from "@/lib/rpc/providers/error-classification";
 import { getErrorMessage } from "@/lib/utils";
 import {
+  classifyRevert,
   decodeRevertReason,
   extractRevertData,
+  getRemediationForRevert,
 } from "@/lib/web3/decode-revert-error";
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import {
@@ -97,14 +99,38 @@ export type SimulateSuccess = {
   wouldRevert: false;
 };
 
+export const INSUFFICIENT_ALLOWANCE_CODE = "insufficient_allowance";
+export const INSUFFICIENT_TOKEN_BALANCE_CODE = "insufficient_token_balance";
+export const CONTRACT_PAUSED_CODE = "contract_paused";
+export const CONTRACT_NOT_PAUSED_CODE = "contract_not_paused";
+export const CALLER_NOT_AUTHORIZED_CODE = "caller_not_authorized";
+export const REENTRANCY_CODE = "reentrancy_blocked";
+export const SAFE_SIGNATURE_INVALID_CODE = "safe_signature_invalid";
+export const SAFE_INSUFFICIENT_GAS_CODE = "safe_insufficient_gas";
+export const SAFE_NOT_AUTHORIZED_CODE = "safe_not_authorized";
+export const ROLE_CONDITION_VIOLATION_CODE = "role_condition_violation";
+export const PANIC_CODE = "panic";
+
 /**
  * Machine-readable causes the simulator can attribute a failure to.
  *
- * Named for the concept rather than its single current member: adding a
- * second code widens this union instead of replacing a one-literal alias,
- * so an exhaustive `switch` on the client keeps compiling.
+ * Widened with typed codes for allowances, pause gates, authorization,
+ * and Solidity panics so that API clients and autonomous AI agents can branch
+ * on deterministic machine-readable codes rather than string-matching error text.
  */
-export type SimulateFailureCode = typeof INSUFFICIENT_BALANCE_CODE;
+export type SimulateFailureCode =
+  | typeof INSUFFICIENT_BALANCE_CODE
+  | typeof INSUFFICIENT_ALLOWANCE_CODE
+  | typeof INSUFFICIENT_TOKEN_BALANCE_CODE
+  | typeof CONTRACT_PAUSED_CODE
+  | typeof CONTRACT_NOT_PAUSED_CODE
+  | typeof CALLER_NOT_AUTHORIZED_CODE
+  | typeof REENTRANCY_CODE
+  | typeof SAFE_SIGNATURE_INVALID_CODE
+  | typeof SAFE_INSUFFICIENT_GAS_CODE
+  | typeof SAFE_NOT_AUTHORIZED_CODE
+  | typeof ROLE_CONDITION_VIOLATION_CODE
+  | typeof PANIC_CODE;
 
 export type SimulationFailureKind = "validation" | "revert" | "unavailable";
 
@@ -121,6 +147,19 @@ type SimulateFailureBase = {
    * should branch on this rather than string-matching `revertReason`.
    */
   code?: SimulateFailureCode;
+  /**
+   * Plain-English diagnosis of the decoded revert: what is wrong, with the
+   * numbers and addresses behind it. It never instructs an on-chain call.
+   */
+  remediation?: string;
+  /** Set with `code: "panic"`: exact hex of the Panic(uint256) argument, e.g. "0x11". */
+  panicCode?: string;
+  /** Set with `code: "insufficient_allowance"`: current allowance, in wei / token units. */
+  allowance?: string;
+  /** Set with `code: "insufficient_allowance"`: needed allowance, in wei / token units. */
+  neededAllowance?: string;
+  /** Set with `code: "insufficient_allowance"`: spender address that requires approval. */
+  spender?: string;
   /** Set with `code: "insufficient_balance"`: `from`'s native balance, in wei. */
   balanceWei?: string;
   /** Set with `code: "insufficient_balance"`: native value needed, in wei. */
@@ -372,7 +411,37 @@ function simulationFailureFromError(
   const decodedReason = decodeRevertReason(error, contractInterface);
 
   if (decodedReason) {
-    return simulationFailure(from, to, value, decodedReason, "revert");
+    const classified = classifyRevert(error, contractInterface);
+    const remediationInfo = getRemediationForRevert(classified);
+
+    const code = remediationInfo?.reasonCode;
+    const baseFailure = simulationFailure(
+      from,
+      to,
+      value,
+      decodedReason,
+      "revert"
+    );
+
+    return {
+      ...baseFailure,
+      code,
+      remediation: remediationInfo?.remediation,
+      allowance:
+        classified.kind === "erc20-insufficient-allowance"
+          ? classified.allowance
+          : undefined,
+      neededAllowance:
+        classified.kind === "erc20-insufficient-allowance"
+          ? classified.needed
+          : undefined,
+      spender:
+        classified.kind === "erc20-insufficient-allowance"
+          ? classified.spender
+          : undefined,
+      panicCode: classified.kind === "panic" ? classified.panicCode : undefined,
+      originalError: getErrorMessage(error),
+    };
   }
 
   const failureKind = classifySimulationError(error);
@@ -425,11 +494,35 @@ async function failureFromPreflightError(input: {
 }): Promise<SimulateFailure> {
   const reason = decodeRevertReason(input.err, input.iface);
   if (reason) {
-    // Keep the node's message here too. Native sends previously returned it
-    // as the whole revertReason, so dropping it once decoding succeeded would
-    // make this one branch less informative than before.
+    const classified = classifyRevert(input.err, input.iface);
+    const remediationInfo = getRemediationForRevert(classified);
+
+    const code = remediationInfo?.reasonCode;
+    const baseFailure = simulationFailure(
+      input.from,
+      input.to,
+      input.value,
+      reason,
+      "revert"
+    );
+
     return {
-      ...simulationFailure(input.from, input.to, input.value, reason, "revert"),
+      ...baseFailure,
+      code,
+      remediation: remediationInfo?.remediation,
+      allowance:
+        classified.kind === "erc20-insufficient-allowance"
+          ? classified.allowance
+          : undefined,
+      neededAllowance:
+        classified.kind === "erc20-insufficient-allowance"
+          ? classified.needed
+          : undefined,
+      spender:
+        classified.kind === "erc20-insufficient-allowance"
+          ? classified.spender
+          : undefined,
+      panicCode: classified.kind === "panic" ? classified.panicCode : undefined,
       originalError: getErrorMessage(input.err),
     };
   }

@@ -5,6 +5,7 @@ vi.mock("server-only", () => ({}));
 import { buildEdgesBySourceHandle } from "@/lib/workflow/editor/edge-handle-utils";
 import { evaluateConditionExpression } from "@/lib/workflow/executor/executor.workflow";
 import { resolveConditionExpression } from "@/lib/workflow/nodes/condition/resolver";
+import { conditionStep } from "@/lib/workflow/nodes/condition/step";
 
 type EdgeLike = {
   source: string;
@@ -1062,5 +1063,54 @@ describe("condition branch routing", () => {
 
       expect(getRoutedTargets(result, edgeMap, "cond-1")).toEqual(["no"]);
     });
+  });
+});
+
+// The executor composes resolveConditionExpression with evaluateConditionExpression and
+// has no fallback to `condition`. A degenerate group must not reach a gate through either.
+describe("an unconfigured group fails the step rather than opening the gate", () => {
+  it("carries a degenerate group beside a derived true through to a failed step", async () => {
+    const config = {
+      actionType: "Condition",
+      conditionConfig: { group: { logic: "AND", rules: [] } },
+      condition: "true",
+    };
+
+    const expression = resolveConditionExpression(config);
+    expect(expression).toBeUndefined();
+
+    let evaluationError: string | undefined;
+    let evaluated = false;
+    try {
+      evaluated = evaluateConditionExpression(expression, {}).result;
+    } catch (error) {
+      evaluationError = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(evaluated).toBe(false);
+    expect(evaluationError).toContain("no expression configured");
+
+    const stepResult = await conditionStep({
+      condition: evaluated,
+      _evaluationError: evaluationError,
+    } as never);
+
+    expect(stepResult).toEqual({ success: false, error: evaluationError });
+  });
+
+  it("still routes a real expression to its branch", async () => {
+    const config = {
+      actionType: "Condition",
+      conditionConfig: {
+        group: {
+          logic: "AND",
+          rules: [{ leftOperand: "1", operator: "===", rightOperand: "1" }],
+        },
+      },
+    };
+
+    const expression = resolveConditionExpression(config);
+    expect(expression).toBe("1 === 1");
+    expect(evaluateConditionExpression(expression, {}).result).toBe(true);
   });
 });

@@ -88,6 +88,24 @@ const TOKEN_CONFIGS: TokenConfig[] = [
   // Note: USDS not yet deployed on Sepolia
 
   // ==========================================================================
+  // Ethereum Hoodi Testnet (chainId: 560048)
+  // ==========================================================================
+  {
+    chainId: 560_048,
+    tokenAddress: "0x3508a952176b3c15387c97be809eaffb1982176a", // Lido stETH
+    logoUrl: null,
+    isStablecoin: false,
+    sortOrder: 1,
+  },
+  {
+    chainId: 560_048,
+    tokenAddress: "0x7e99ee3c66636de415d2d7c880938f2f40f94de4", // Lido wstETH
+    logoUrl: null,
+    isStablecoin: false,
+    sortOrder: 2,
+  },
+
+  // ==========================================================================
   // Base Mainnet (chainId: 8453)
   // ==========================================================================
   {
@@ -295,6 +313,17 @@ const TOKEN_CONFIGS: TokenConfig[] = [
   {
     chainId: 43_113,
     tokenAddress: "0x5425890298aed601595a70ab815c96711a31bc65", // USDC (Circle testnet)
+    logoUrl: LOGOS.USDC,
+    isStablecoin: true,
+    sortOrder: 1,
+  },
+
+  // ==========================================================================
+  // Somnia Shannon Testnet (chainId: 50312)
+  // ==========================================================================
+  {
+    chainId: 50_312,
+    tokenAddress: "0x0ed782b8079529f7385c3eda9faf1eaa0dbc6a17", // USDC
     logoUrl: LOGOS.USDC,
     isStablecoin: true,
     sortOrder: 1,

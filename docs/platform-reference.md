@@ -171,6 +171,8 @@ address a wallet user signed in with - see
 | HyperEVM | `999` | `0xb88339cb7199b77e23db6e890353e22632ba630f` | experimental |
 | Unichain | `130` | `0x078D782b760474a361dDA0AF3839290b0EF57AD6` | experimental |
 | Unichain Sepolia (testnet) | `1301` | `0x31d0220469e10c4E71834a79b1f276d740d3768F` | experimental |
+| Somnia | `5031` | - | experimental |
+| Somnia Shannon (testnet) | `50312` | `0x0ED782B8079529f7385c3eDA9fAf1EaA0DbC6a17` | experimental |
 
 HyperEVM's regular blocks cap at 3,000,000 gas, and the node rejects a
 transaction above that before it is sent, so KeeperHub sizes gas limits with a

@@ -12,9 +12,13 @@
  * NOTE: fund-moving authorizations (EIP-2612 / Permit2 / DAI permits,
  * EIP-3009 transfer/receive authorizations, governance delegations) are
  * REFUSED here - see checkSignableTypedData / FUND_MOVING_PRIMARY_TYPES.
- * Those payloads are signed only via the separate, protected
- * agentic-wallet entrypoint (lib/agentic-wallet/sign.ts), not from
- * workflow steps.
+ * This step signs with the org's creator EOA, which carries no signing
+ * policy. Fund-moving payloads are signed only by the protected
+ * agentic-wallet entrypoint (lib/agentic-wallet/sign.ts via
+ * /api/agentic-wallet/sign), which binds payee and amount to a listed
+ * workflow, tiers risk and caps daily spend. Workflow steps may reach it
+ * over HMAC (plugins/agent-gateway); they must not sign these payloads
+ * with the creator EOA or call the agentic signer in-process.
  */
 import "server-only";
 

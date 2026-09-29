@@ -8,6 +8,7 @@ import {
   evmPrivateNetworkField,
   executedCallArgsOutput,
   executedCallContractAddressOutput,
+  executedCallFromOutput,
   executedCallRevertedOutput,
   executedCallSponsoredOutput,
   readFailOnErrorField,
@@ -315,6 +316,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         transferErrorOutput(),
@@ -1654,6 +1656,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         {
@@ -1843,6 +1846,7 @@ const web3Plugin: IntegrationPlugin = {
         },
         executedCallContractAddressOutput(),
         executedCallArgsOutput(),
+        executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         {

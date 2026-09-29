@@ -40,6 +40,7 @@ const blockscoutPlugin: IntegrationPlugin = {
   // Works against the public Ethereum mainnet instance without credentials.
   // Add an integration to point at a different instance or supply an API key.
   requiresCredentials: false,
+  optionalConnection: true,
 
   formFields: [
     {

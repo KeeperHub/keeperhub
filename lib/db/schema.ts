@@ -981,6 +981,55 @@ export {
   agenticWalletCredits,
   type NewAgenticWalletCredit,
 } from "./schema-agentic-wallet-credits";
+// Workflow-scoped key-value state that survives a run (#2288).
+// A per-workflow store for the values a workflow computes and needs on its
+// next run - the monitor cursor pattern ("last block I scanned", "the
+// transactions I have already alerted on"). Backed by the Postgres the app
+// already operates (not the best-effort Redis tier, which documents itself as
+// "never a source of truth"; a lost cursor is the visible-failure case this
+// table exists to prevent).
+//
+// Isolation is structural: every read and write scopes by workflow_id, which
+// step callers take from the execution context, never from node config. The
+// org is deliberately not stored: it is already on the workflow, and a copy
+// here would go stale when a workflow changes org (account linking re-parents
+// an anonymous user's workflows), orphaning its state. Workflow deletion
+// cascades, and so does org deletion through the workflow;
+// duplicated and imported workflows get a new id and therefore start with
+// empty state; state is runtime data and is not part of workflow export.
+export const workflowState = pgTable(
+  "workflow_state",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => generateId()),
+    workflowId: text("workflow_id")
+      .notNull()
+      .references(() => workflows.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
+    value: jsonb("value").notNull().$type<any>(),
+    // Bumped on every write. state/get returns it; state/set accepts it as
+    // expectedVersion for compare-and-set - the atomic read-modify-write path
+    // for two overlapping executions of the same workflow.
+    version: integer("version").notNull().default(1),
+    // Null = no expiry. Reads filter on it; an expired row stays until the
+    // next write to its key overwrites it. Nothing sweeps expired rows, so the
+    // column is not indexed until a sweeper exists.
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // Which run last wrote the row - the debuggability hook for the "opaque
+    // cursor" problem the issue describes.
+    updatedByExecutionId: text("updated_by_execution_id"),
+  },
+  (table) => [
+    // The isolation constraint: one row per (workflow, key).
+    uniqueIndex("idx_workflow_state_scope_key").on(table.workflowId, table.key),
+  ]
+);
+
 export {
   type AgenticWallet,
   type AgenticWalletDailySpend,
