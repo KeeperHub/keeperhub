@@ -16,12 +16,12 @@ import {
   users,
   workflowState,
   workflows,
-} from "../../../lib/db/schema";
+} from "../../lib/db/schema";
 import {
   getWorkflowStateValue,
   setWorkflowStateValue,
   WORKFLOW_STATE_LIMITS,
-} from "../../../lib/workflow/nodes/workflow-state/store";
+} from "../../lib/workflow/nodes/workflow-state/store";
 
 // tests/setup.ts globally mocks @/lib/db. The store takes its executor as a
 // parameter, so this suite passes its own real handle.
@@ -32,13 +32,11 @@ vi.mock("server-only", () => ({}));
 // a count guarded by an advisory lock), so they are exercised against a real
 // database rather than a mock.
 
-const SKIP =
-  !process.env.DATABASE_URL || process.env.SKIP_INFRA_TESTS === "true";
 const DATABASE_URL = process.env.DATABASE_URL ?? "";
 
 const PREFIX = "test_workflow_state_";
 
-describe.skipIf(SKIP)("workflow state store", () => {
+describe("workflow state store", () => {
   let queryClient: ReturnType<typeof postgres>;
   let db: ReturnType<typeof drizzle>;
 
