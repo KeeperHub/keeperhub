@@ -26,7 +26,6 @@ export type DiscoverAgentResult =
       description?: string;
       entrypoints: LucidEntrypoint[];
       pricedEntrypoints: string[];
-      extensions: string[];
     }
   | LucidFailure;
 
@@ -62,16 +61,15 @@ async function stepHandler(
     return httpFailure("Agent card unavailable", response, text);
   }
 
-  const payload = parseJson(text);
-  if (payload === null) {
+  const card = readAgentCard(parseJson(text));
+  if (!card) {
     return failure(
-      `Agent card at ${url} is not JSON`,
+      `${url} is not a Lucid agent card: it has no entrypoints object`,
       ExecutionErrorType.USER,
       response.status
     );
   }
 
-  const card = readAgentCard(payload);
   return {
     success: true,
     ...card,

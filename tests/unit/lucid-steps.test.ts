@@ -29,33 +29,44 @@ import {
 const ASSET = `0x${"a".repeat(40)}`;
 const PAYEE = `0x${"b".repeat(40)}`;
 const AGENT = "https://agent.example.com";
+const NETWORK = "eip155:84532";
 
 /**
- * The shape a running Lucid agent serves, abridged. It lists its capabilities
- * twice: an A2A `skills` array with no prices, and a keyed `entrypoints`
- * object that carries them. The asset appears once, under `payments`.
+ * The card @lucid-agents/core 5 and @lucid-agents/payments 5 serve, abridged:
+ * one free entrypoint, one priced in the canonical USD string form, and one
+ * priced as a token amount. The price's unit and asset live only under
+ * `payments[].extensions.x402`. The A2A `skills` list carries no prices.
  */
 const SERVED_CARD = {
+  protocolVersion: "1.0",
   name: "counterparty-oracle",
   version: "1.0.0",
   description: "Free health check, priced verdict.",
-  capabilities: {
-    extensions: [{ uri: "https://x402.org" }, "urn:erc-8004"],
-  },
+  capabilities: { streaming: false, pushNotifications: false },
   skills: [
     { id: "health", name: "health" },
+    { id: "quote", name: "quote" },
     { id: "counterparty-check", name: "counterparty-check" },
   ],
   entrypoints: {
     health: {
       description: "Liveness check. Free.",
+      streaming: false,
       input_schema: { type: "object", properties: {} },
+    },
+    quote: {
+      description: "Priced in USD.",
+      streaming: false,
+      payment_protocol: "x402",
+      network: NETWORK,
+      pricing: { invoke: "0.01" },
     },
     "counterparty-check": {
       description: "Vouch for a payee.",
+      streaming: false,
       input_schema: { type: "object", required: ["address"] },
       payment_protocol: "x402",
-      network: "eip155:84532",
+      network: NETWORK,
       pricing: { invoke: "10000" },
     },
   },
@@ -63,13 +74,28 @@ const SERVED_CARD = {
     {
       method: "x402",
       payee: PAYEE,
-      network: "eip155:84532",
+      network: NETWORK,
+      priceModel: { default: "10000" },
       extensions: {
         x402: {
           scheme: "exact",
-          network: "eip155:84532",
+          network: NETWORK,
           payTo: PAYEE,
           price: { amount: "10000", asset: ASSET },
+        },
+      },
+    },
+    {
+      method: "x402",
+      payee: PAYEE,
+      network: NETWORK,
+      priceModel: { default: "0.01" },
+      extensions: {
+        x402: {
+          scheme: "exact",
+          network: NETWORK,
+          price: "0.01",
+          payTo: PAYEE,
         },
       },
     },
@@ -83,7 +109,7 @@ const CHALLENGE = {
   accepts: [
     {
       scheme: "exact",
-      network: "eip155:84532",
+      network: NETWORK,
       amount: "10000",
       asset: ASSET,
       payTo: PAYEE,
@@ -123,102 +149,106 @@ function lastCall(): { url: string; init: FetchInit } {
   return { url: call?.[0] as string, init: call?.[1] as FetchInit };
 }
 
+function entrypoint(name: string): unknown {
+  return readAgentCard(SERVED_CARD)?.entrypoints.find(
+    (item) => item.name === name
+  );
+}
+
 describe("readAgentCard", () => {
-  it("prefers keyed entrypoints over the price-less skills array", () => {
+  it("lists the keyed entrypoints, not the skills array", () => {
     const card = readAgentCard(SERVED_CARD);
-    expect(card.entrypoints.map((e) => e.name)).toEqual([
+    expect(card?.name).toBe("counterparty-oracle");
+    expect(card?.entrypoints.map((item) => item.name)).toEqual([
       "health",
+      "quote",
       "counterparty-check",
     ]);
-    const paid = card.entrypoints[1];
-    expect(paid.priced).toBe(true);
-    expect(paid.price).toBe("10000");
   });
 
-  it("fills a priced entrypoint's asset and payee from the card's payments", () => {
-    const paid = readAgentCard(SERVED_CARD).entrypoints[1];
-    expect(paid.asset).toBe(ASSET);
-    expect(paid.payTo).toBe(PAYEE);
-    expect(paid.network).toBe("eip155:84532");
-    expect(paid.inputSchema).toEqual({ type: "object", required: ["address"] });
-  });
-
-  it("does not give a free entrypoint the card's price", () => {
-    const free = readAgentCard(SERVED_CARD).entrypoints[0];
-    expect(free.priced).toBe(false);
-    expect(free.price).toBeUndefined();
-    expect(free.asset).toBeUndefined();
-  });
-
-  it("reads extensions given as strings or objects", () => {
-    expect(readAgentCard(SERVED_CARD).extensions).toEqual([
-      "https://x402.org",
-      "urn:erc-8004",
-    ]);
-  });
-
-  it("treats a payment marker without terms as priced", () => {
-    const card = readAgentCard({
-      entrypoints: [{ key: "mystery", paymentProtocol: "x402" }],
-    });
-    expect(card.entrypoints[0].priced).toBe(true);
-  });
-
-  it("reads x402 offers and bare prices", () => {
-    const card = readAgentCard({
-      entrypoints: [
-        {
-          key: "offer",
-          x402: {
-            offers: [
-              {
-                network: "eip155:8453",
-                payTo: PAYEE,
-                price: { amount: "500", asset: ASSET },
-              },
-            ],
-          },
-        },
-        { key: "bare", price: 25 },
-      ],
-    });
-    expect(card.entrypoints[0]).toMatchObject({
+  it("reports a USD price as usd, with no asset", () => {
+    expect(entrypoint("quote")).toEqual({
+      name: "quote",
+      description: "Priced in USD.",
       priced: true,
-      price: "500",
-      asset: ASSET,
-      network: "eip155:8453",
+      price: "0.01",
+      priceUnit: "usd",
+      asset: undefined,
+      network: NETWORK,
+      payTo: PAYEE,
+      inputSchema: undefined,
     });
-    expect(card.entrypoints[1]).toMatchObject({ priced: true, price: "25" });
   });
 
-  it("falls back to skills and drops entries without a key", () => {
-    const card = readAgentCard({
-      name: "a2a-only",
-      skills: [{ id: "summarise" }, { description: "no key" }],
+  it("reports a token price in base units with its asset", () => {
+    expect(entrypoint("counterparty-check")).toMatchObject({
+      priced: true,
+      price: "10000",
+      priceUnit: "base_units",
+      asset: ASSET,
+      payTo: PAYEE,
     });
-    expect(card.entrypoints.map((e) => e.name)).toEqual(["summarise"]);
+  });
+
+  it("gives a free entrypoint no price", () => {
+    expect(entrypoint("health")).toEqual({
+      name: "health",
+      description: "Liveness check. Free.",
+      priced: false,
+      inputSchema: { type: "object", properties: {} },
+    });
+  });
+
+  it("leaves the unit unset when no payment method matches the price", () => {
+    const card = readAgentCard({
+      entrypoints: {
+        x: { payment_protocol: "x402", pricing: { invoke: "5" } },
+      },
+    });
+    expect(card?.entrypoints[0]).toMatchObject({
+      priced: true,
+      price: "5",
+      priceUnit: undefined,
+    });
+  });
+
+  it("treats a payment marker without a price as priced", () => {
+    const card = readAgentCard({
+      entrypoints: { x: { payment_protocol: "x402" } },
+    });
+    expect(card?.entrypoints[0]).toMatchObject({ priced: true });
+  });
+
+  it("uses the object key, not a key field inside the entry", () => {
+    const card = readAgentCard({
+      entrypoints: { "free-health": { key: "expensive-verdict" } },
+    });
+    expect(card?.entrypoints[0]?.name).toBe("free-health");
+  });
+
+  it("returns null for JSON that is not a Lucid card", () => {
+    expect(readAgentCard({ url: "https://httpbin.org/anything" })).toBeNull();
+    expect(readAgentCard({ skills: [{ id: "a" }] })).toBeNull();
+    expect(readAgentCard(null)).toBeNull();
   });
 });
 
 describe("readPaymentTerms", () => {
   it("reads the first accepted requirement and the envelope's resource url", () => {
-    expect(readPaymentTerms(CHALLENGE)).toEqual({
+    expect(readPaymentTerms(CHALLENGE)).toMatchObject({
       scheme: "exact",
-      network: "eip155:84532",
       amount: "10000",
       asset: ASSET,
       payTo: PAYEE,
       resource: `${AGENT}/entrypoints/counterparty-check/invoke`,
-      description: undefined,
       maxTimeoutSeconds: 300,
     });
   });
 
   it("reads the v1 maxAmountRequired name", () => {
     expect(
-      readPaymentTerms({ accepts: [{ maxAmountRequired: "7", payTo: PAYEE }] })
-        ?.amount
-    ).toBe("7");
+      readPaymentTerms({ accepts: [{ maxAmountRequired: "5", payTo: PAYEE }] })
+    ).toMatchObject({ amount: "5" });
   });
 
   it("returns null for something that is not payment terms", () => {
@@ -245,7 +275,16 @@ describe("discoverAgentStep", () => {
     expect(result).toMatchObject({
       success: true,
       name: "counterparty-oracle",
-      pricedEntrypoints: ["counterparty-check"],
+      pricedEntrypoints: ["quote", "counterparty-check"],
+    });
+  });
+
+  it("fails on JSON that is not an agent card", async () => {
+    respond(200, { url: "https://httpbin.org/anything", headers: {} });
+    const result = await discoverAgentStep({ agentUrl: AGENT });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
     });
   });
 
@@ -320,7 +359,11 @@ describe("callEntrypointStep", () => {
   });
 
   it("returns the output of a free entrypoint", async () => {
-    respond(200, { output: { ok: true } });
+    respond(200, {
+      run_id: "run-1",
+      status: "succeeded",
+      output: { ok: true },
+    });
 
     const result = await callEntrypointStep({
       agentUrl: AGENT,
@@ -333,16 +376,56 @@ describe("callEntrypointStep", () => {
     expect(init.method).toBe("POST");
     expect(init.redirect).toBe("manual");
     expect(JSON.parse(init.body ?? "")).toEqual({ input: { verbose: true } });
-    expect(init.headers?.["X-PAYMENT"]).toBeUndefined();
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       success: true,
       status: "completed",
+      httpStatus: 200,
       output: { ok: true },
-      paid: false,
+      runId: "run-1",
     });
   });
 
-  it("returns the terms of a 402 carried in a base64 header, without paying", async () => {
+  it("sends no payment headers", async () => {
+    respond(200, { output: {} });
+    await callEntrypointStep({ agentUrl: AGENT, entrypoint: "health" });
+    const { init } = lastCall();
+    expect(Object.keys(init.headers ?? {}).sort()).toEqual([
+      "Accept",
+      "Content-Type",
+    ]);
+  });
+
+  it("calls the agent with input that itself says success: false", async () => {
+    respond(200, { output: { recorded: true } });
+    const result = await callEntrypointStep({
+      agentUrl: AGENT,
+      entrypoint: "record-build",
+      input: '{"success": false, "note": "build failed"}',
+    });
+    expect(safeFetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(lastCall().init.body ?? "")).toEqual({
+      input: { success: false, note: "build failed" },
+    });
+    expect(result).toMatchObject({
+      success: true,
+      output: { recorded: true },
+    });
+  });
+
+  it("fails on a 2xx that is not an entrypoint result", async () => {
+    respond(200, { url: `${AGENT}/anything`, json: { input: {} } });
+    const result = await callEntrypointStep({
+      agentUrl: AGENT,
+      entrypoint: "health",
+    });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+      httpStatus: 200,
+    });
+  });
+
+  it("returns the terms of a 402 carried in a base64 header", async () => {
     respond(402, {}, { "payment-required": base64(CHALLENGE) });
 
     const result = await callEntrypointStep({
@@ -352,12 +435,16 @@ describe("callEntrypointStep", () => {
     });
 
     expect(safeFetch).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       success: true,
       status: "awaiting_payment",
       httpStatus: 402,
-      payment: { amount: "10000", asset: ASSET, payTo: PAYEE },
-      paymentRequired: CHALLENGE,
+      payment: expect.objectContaining({
+        amount: "10000",
+        asset: ASSET,
+        payTo: PAYEE,
+      }),
+      challenge: CHALLENGE,
     });
   });
 
@@ -383,55 +470,18 @@ describe("callEntrypointStep", () => {
       success: true,
       status: "awaiting_payment",
       payment: null,
-      paymentRequired: "pay up",
+      challenge: "pay up",
     });
   });
 
-  it("sends a payment header under both x402 names and returns the receipt", async () => {
-    const receipt = { success: true, transaction: "0x01" };
-    respond(
-      200,
-      { output: { vouched: true } },
-      { "payment-response": base64(receipt) }
-    );
-
+  it("does not follow a redirect", async () => {
+    respond(307, "", { location: "https://elsewhere.example.com" });
     const result = await callEntrypointStep({
       agentUrl: AGENT,
       entrypoint: "counterparty-check",
-      input: { address: PAYEE },
-      paymentHeader: " signed-payload ",
     });
-
-    const { init } = lastCall();
-    expect(init.headers?.["PAYMENT-SIGNATURE"]).toBe("signed-payload");
-    expect(init.headers?.["X-PAYMENT"]).toBe("signed-payload");
-    expect(result).toMatchObject({
-      success: true,
-      status: "completed",
-      paid: true,
-      paymentResponse: receipt,
-    });
-  });
-
-  it("fails when a paid call is answered with another 402", async () => {
-    respond(402, {}, { "payment-required": base64(CHALLENGE) });
-    const result = await callEntrypointStep({
-      agentUrl: AGENT,
-      entrypoint: "counterparty-check",
-      paymentHeader: "signed-payload",
-    });
-    expect(result).toMatchObject({ success: false, httpStatus: 402 });
-  });
-
-  it("does not follow a redirect that would carry the payment elsewhere", async () => {
-    respond(307, "", { location: "https://attacker.example.com" });
-    const result = await callEntrypointStep({
-      agentUrl: AGENT,
-      entrypoint: "counterparty-check",
-      paymentHeader: "signed-payload",
-    });
-    expect(safeFetch).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ success: false, httpStatus: 307 });
+    expect(safeFetch).toHaveBeenCalledTimes(1);
   });
 
   it("encodes the entrypoint key into the path", async () => {
@@ -467,14 +517,13 @@ describe("callEntrypointStep", () => {
     });
   });
 
-  it("never sends a payment header to an internal address", async () => {
+  it("blocks an internal agent URL without calling it", async () => {
     assertUrlIsPublic.mockRejectedValueOnce(
       new SsrfBlockedError("private address")
     );
     const result = await callEntrypointStep({
       agentUrl: "http://169.254.169.254",
       entrypoint: "health",
-      paymentHeader: "signed-payload",
     });
     expect(result).toMatchObject({
       success: false,

@@ -1,13 +1,13 @@
 ---
 title: "Lucid Agents Plugin"
-description: "Discover Lucid agents and call their entrypoints, free or x402-priced, with the payment decision left to your workflow."
+description: "Discover Lucid agents, call their free entrypoints, and read the x402 terms of priced ones."
 ---
 
 # Lucid Agents Plugin
 
-Discover a [Lucid](https://www.npmjs.com/package/@lucid-agents/core) agent and call its entrypoints from a workflow. Free entrypoints return their output. Priced entrypoints return their x402 payment terms instead, so a later step in your workflow can decide whether to pay.
+Discover a [Lucid](https://www.npmjs.com/package/@lucid-agents/core) agent and call its entrypoints from a workflow. Free entrypoints return their output. Priced entrypoints return their x402 payment terms instead of running, so a workflow can see what a call would cost.
 
-This plugin never signs or pays. Paying is a separate, explicit step you add to the workflow, which is where your spending policy lives.
+This plugin never signs or pays, and it cannot make a paid call.
 
 No credentials required. The agent URL is set on each action. It must be a public http(s) address: private, loopback and link-local addresses are refused, and redirects are not followed.
 
@@ -20,46 +20,41 @@ No credentials required. The agent URL is set on each action. It must be a publi
 
 ## Discover Agent
 
-Reads the agent card at `{agentUrl}/.well-known/agent-card.json`.
+Reads the agent card at `{agentUrl}/.well-known/agent-card.json`. The step fails if the response is not a Lucid agent card.
 
 **Inputs:** Agent URL
 
-**Outputs:** `success`, `name`, `description`, `entrypoints`, `pricedEntrypoints`, `extensions`, `error`
+**Outputs:** `success`, `name`, `description`, `entrypoints`, `pricedEntrypoints`, `error`
 
-Each item in `entrypoints` has `name`, `description`, `priced`, `price` (in the asset's base units, so 10000 is 0.01 USDC), `asset`, `network`, `payTo` and `inputSchema`. An entrypoint that is marked as paid but states no terms is still reported as `priced: true`.
+Each item in `entrypoints` has `name`, `description`, `priced` and `inputSchema`. A priced entrypoint also has:
+
+- `price`: the price exactly as the card states it.
+- `priceUnit`: `usd` when the price is a USD decimal string, so `"0.01"` is one cent. `base_units` when the entrypoint is priced as a token amount, so `"10000"` of a 6-decimal token is 0.01 of that token. Absent when the card does not say.
+- `asset`: the token contract, only when `priceUnit` is `base_units`.
+- `network` and `payTo`, when the card states them.
+
+An entrypoint that is marked as paid but states no price is still reported as `priced: true`.
 
 ## Call Entrypoint
 
 Sends `POST {agentUrl}/entrypoints/{entrypoint}/invoke` with `{ "input": ... }`.
 
-**Inputs:** Agent URL, Entrypoint, Input JSON (optional), Payment Header (optional)
+**Inputs:** Agent URL, Entrypoint, Input JSON (optional)
 
-**Outputs:** `success`, `status`, `output`, `payment`, `paymentRequired`, `paid`, `paymentResponse`, `httpStatus`, `error`
+**Outputs:** `success`, `status`, `output`, `runId`, `payment`, `challenge`, `httpStatus`, `error`
 
 What comes back depends on the entrypoint:
 
-- **Free entrypoint:** `status` is `completed` and `output` holds the result.
-- **Priced entrypoint, no Payment Header:** `status` is `awaiting_payment`. `payment` holds the first accepted requirement (`scheme`, `network`, `amount`, `asset`, `payTo`, `resource`) and `paymentRequired` holds the full challenge as the agent served it. This is a quote, not an error, so `success` is `true`. The terms are read from the `PAYMENT-REQUIRED` header (base64 or JSON) or from the response body.
-- **Priced entrypoint, with a Payment Header:** the signed payload is sent as both `PAYMENT-SIGNATURE` and `X-PAYMENT`, so it reaches x402 servers of either version. On success, `paid` is `true` and `paymentResponse` holds the decoded settlement receipt when the agent returns one. If the agent answers with another 402, the step fails.
+- **Free entrypoint:** `status` is `completed`, `output` holds the result and `runId` the agent's run id. The step fails if the agent answers without an entrypoint result.
+- **Priced entrypoint:** the entrypoint does not run. `status` is `awaiting_payment`. `payment` holds the first accepted requirement (`scheme`, `network`, `amount`, `asset`, `payTo`, `resource`), where `amount` is always in the asset's base units. `challenge` holds the full x402 challenge as the agent served it. This is a quote, not an error, so `success` is `true`. The terms are read from the `PAYMENT-REQUIRED` header (base64 or JSON) or from the response body.
 
-Redirects are never followed, because following one would send the request, and any payment, to a host you did not name. Point the action at the agent's final URL. The step is not retried automatically.
-
-## Adding a payment policy
-
-The step between the quote and the paid call is yours. It reads `payment` (or the full `paymentRequired`), decides whether this payment is acceptable, and only then lets a signed x402 payment reach the second call. Two common shapes:
-
-- **Policy in the workflow.** A Condition checks the quote against your rules, for example the payee and a price cap, and only its true branch continues to the paid call. The signed payment comes from wherever your signer lives, such as the trigger input of a workflow your treasury calls.
-- **Policy in your own service.** A Webhook sends `paymentRequired` to a service that applies your policy (allowlist, budgets, human approval) and returns a signed payment, which the paid call reads from the Webhook's response.
+Redirects are never followed. Point the action at the agent's final URL. The step is not retried automatically, because a retry would run the entrypoint again.
 
 **Example workflow:**
 ```
-Manual trigger (input: paymentHeader from your signer)
+Manual trigger
   -> Lucid Agents: Discover Agent
-  -> Lucid Agents: Call Entrypoint (no payment header)
-  -> Condition: {{CallEntrypoint.status}} === "awaiting_payment"
-       && {{CallEntrypoint.payment.payTo}} === "<approved payee>"
-       && {{CallEntrypoint.payment.amount}} <= 10000
-  -> (true) Lucid Agents: Call Entrypoint (Payment Header: {{ManualTrigger.paymentHeader}})
+  -> Lucid Agents: Call Entrypoint (Entrypoint: {{DiscoverAgent.entrypoints[0].name}})
+  -> Condition: {{CallEntrypoint.status}} === "completed"
+  -> (true) use {{CallEntrypoint.output}}
 ```
-
-If the policy says no, the workflow stops before the second call and nothing is paid.

@@ -19,8 +19,7 @@ import { stripTrailingSlashes } from "@/lib/utils/url";
  *
  * A priced entrypoint answers the invoke with HTTP 402 and x402 payment terms
  * instead of a result. The connector returns those terms as data and never
- * signs or pays: deciding whether to pay belongs to whatever the workflow puts
- * between the 402 and a second, paid call.
+ * signs or pays.
  */
 
 export const DISCOVER_TIMEOUT_MS = 10_000;
@@ -34,7 +33,6 @@ export const CHALLENGE_HEADERS = [
   "x-payment-requirements",
   "x-payment-required",
 ];
-export const SETTLEMENT_HEADERS = ["payment-response", "x-payment-response"];
 
 export type LucidEntrypoint = {
   /**
@@ -44,8 +42,14 @@ export type LucidEntrypoint = {
   name: string;
   description?: string;
   priced: boolean;
-  /** Price in the asset's base units, when the card states it. */
+  /** The price exactly as the card states it; see `priceUnit`. */
   price?: string;
+  /**
+   * "usd" for Lucid's canonical USD decimal string ("0.01" is one cent),
+   * "base_units" when the entrypoint is priced as a token amount (then
+   * `asset` names the token). Absent when the card does not say.
+   */
+  priceUnit?: "usd" | "base_units";
   asset?: string;
   network?: string;
   payTo?: string;
@@ -57,7 +61,6 @@ export type LucidAgentCard = {
   version?: string;
   description?: string;
   entrypoints: LucidEntrypoint[];
-  extensions: string[];
 };
 
 export type PaymentTerms = {
@@ -80,6 +83,10 @@ export type LucidFailure = {
 };
 
 type JsonObject = Record<string, unknown>;
+
+// Failures are recognised by identity, not by shape: user input or an agent
+// response can itself contain `success: false`.
+const failures = new WeakSet<object>();
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -111,7 +118,13 @@ export function failure(
   errorClass: ExecutionErrorType,
   httpStatus?: number
 ): LucidFailure {
-  return { success: false, error, errorClass, httpStatus };
+  const result: LucidFailure = { success: false, error, errorClass, httpStatus };
+  failures.add(result);
+  return result;
+}
+
+export function isFailure(value: unknown): value is LucidFailure {
+  return typeof value === "object" && value !== null && failures.has(value);
 }
 
 /**
@@ -135,142 +148,90 @@ export function normalizeAgentUrl(raw: string | undefined): string | undefined {
 }
 
 /**
- * Pricing on an entrypoint descriptor. Cards carry it as an `x402.offers[]`
- * array, a `pricing` object, a `payment_protocol` marker, or a bare `price`.
- * Anything that marks the entrypoint as paid without readable terms still
- * counts as priced: reading a paid entrypoint as free is the costly mistake.
+ * The card's `payments` list holds one x402 method per offer. Its
+ * `extensions.x402.price` is either the USD string the author wrote or a
+ * `{ amount, asset }` token amount, which is how the unit and asset of an
+ * entrypoint's `pricing.invoke` are told apart.
  */
-function readPricing(entry: JsonObject): Omit<LucidEntrypoint, "name"> {
-  const offers = isObject(entry.x402) ? entry.x402.offers : undefined;
-  if (Array.isArray(offers) && isObject(offers[0])) {
-    const offer = offers[0];
-    const amount = isObject(offer.price) ? offer.price : offer.maximum;
-    const terms = isObject(amount) ? amount : {};
-    return {
-      priced: true,
-      price: str(terms.amount),
-      asset: str(terms.asset),
-      network: str(offer.network),
-      payTo: str(offer.payTo),
-    };
-  }
-
-  if (isObject(entry.pricing)) {
-    const pricing = entry.pricing;
-    return {
-      priced: true,
-      price:
-        str(pricing.invoke) ??
-        str(pricing.amount) ??
-        str(pricing.price) ??
-        str(pricing.default),
-      asset: str(pricing.asset),
-      network: str(pricing.network) ?? str(entry.network),
-    };
-  }
-
-  if (str(entry.payment_protocol) || str(entry.paymentProtocol)) {
-    return { priced: true, network: str(entry.network) };
-  }
-
-  if (entry.price !== undefined && entry.price !== null) {
-    return { priced: true, price: str(entry.price) };
-  }
-
-  return { priced: false };
-}
-
-/**
- * A Lucid card keys `entrypoints` by name and also publishes an A2A `skills`
- * array without prices. The keyed object wins so prices are not lost; `skills`
- * is the fallback for cards that only speak A2A.
- */
-function findEntrypoints(card: JsonObject): JsonObject[] {
-  const direct = card.entrypoints;
-  if (isObject(direct)) {
-    return Object.entries(direct).map(([key, value]) => ({
-      key,
-      ...(isObject(value) ? value : {}),
-    }));
-  }
-  const list = Array.isArray(direct) ? direct : card.skills;
-  if (Array.isArray(list)) {
-    return list.filter(isObject);
-  }
-  return [];
-}
-
-/**
- * Card-level payment method. The asset an entrypoint is priced in is stated
- * once here rather than per entrypoint.
- */
-function findPaymentDefaults(card: JsonObject): Partial<LucidEntrypoint> {
-  const methods = card.payments;
-  if (!(Array.isArray(methods) && isObject(methods[0]))) {
-    return {};
-  }
-  const method = methods[0];
-  const extensions = isObject(method.extensions) ? method.extensions : {};
-  const x402 = isObject(extensions.x402) ? extensions.x402 : {};
-  const price = isObject(x402.price) ? x402.price : {};
-  return {
-    price: str(price.amount),
-    asset: str(price.asset),
-    network: str(x402.network) ?? str(method.network),
-    payTo: str(x402.payTo) ?? str(method.payee),
-  };
-}
-
-function readExtensions(card: JsonObject): string[] {
-  const caps = isObject(card.capabilities) ? card.capabilities : {};
-  if (!Array.isArray(caps.extensions)) {
-    return [];
-  }
-  const result: string[] = [];
-  for (const extension of caps.extensions) {
-    const uri = isObject(extension) ? str(extension.uri) : str(extension);
-    if (uri) {
-      result.push(uri);
-    }
-  }
-  return result;
-}
-
-export function readAgentCard(payload: unknown): LucidAgentCard {
-  const card = isObject(payload) ? payload : {};
-  const defaults = findPaymentDefaults(card);
-
-  const entrypoints: LucidEntrypoint[] = [];
-  for (const entry of findEntrypoints(card)) {
-    const key = str(entry.key) ?? str(entry.id) ?? str(entry.name);
-    if (!key) {
+function findPaymentMethod(
+  card: JsonObject,
+  price: string,
+  network: string | undefined
+): { unit: "usd" | "base_units"; asset?: string; payTo?: string } | undefined {
+  const methods = Array.isArray(card.payments) ? card.payments : [];
+  for (const method of methods) {
+    if (!isObject(method)) {
       continue;
     }
-    const pricing = readPricing(entry);
-    const entrypoint: LucidEntrypoint = {
-      name: key,
-      description: str(entry.description),
-      inputSchema:
-        entry.input_schema ?? entry.inputSchema ?? entry.input ?? undefined,
-      ...pricing,
-    };
-    // Only a priced entrypoint inherits the card's payment details; a free
-    // one must not pick up a price.
-    if (pricing.priced) {
-      entrypoint.price = pricing.price ?? defaults.price;
-      entrypoint.asset = pricing.asset ?? defaults.asset;
-      entrypoint.network = pricing.network ?? defaults.network;
-      entrypoint.payTo = pricing.payTo ?? defaults.payTo;
+    const extensions = isObject(method.extensions) ? method.extensions : {};
+    const offer = isObject(extensions.x402) ? extensions.x402 : {};
+    if (network && str(offer.network ?? method.network) !== network) {
+      continue;
     }
-    entrypoints.push(entrypoint);
+    const payTo = str(offer.payTo) ?? str(method.payee);
+    if (isObject(offer.price) && str(offer.price.amount) === price) {
+      return { unit: "base_units", asset: str(offer.price.asset), payTo };
+    }
+    if (str(offer.price) === price) {
+      return { unit: "usd", payTo };
+    }
   }
+  return;
+}
 
+function readEntrypoint(
+  card: JsonObject,
+  name: string,
+  entry: JsonObject
+): LucidEntrypoint {
+  const network = str(entry.network);
+  const pricing = isObject(entry.pricing) ? entry.pricing : undefined;
+  const price = pricing ? str(pricing.invoke) : undefined;
+  // A payment marker without readable terms still counts as priced: reading
+  // a paid entrypoint as free is the costly mistake.
+  const priced = Boolean(price) || Boolean(str(entry.payment_protocol));
+
+  const entrypoint: LucidEntrypoint = {
+    name,
+    description: str(entry.description),
+    priced,
+    inputSchema: entry.input_schema ?? undefined,
+  };
+  if (!priced) {
+    return entrypoint;
+  }
+  entrypoint.network = network;
+  if (price) {
+    entrypoint.price = price;
+    const method = findPaymentMethod(card, price, network);
+    entrypoint.priceUnit = method?.unit;
+    entrypoint.asset = method?.asset;
+    entrypoint.payTo = method?.payTo;
+  }
+  return entrypoint;
+}
+
+/**
+ * Reads a Lucid agent card. Returns null when the payload has no keyed
+ * `entrypoints` object, which every Lucid card carries: anything else is not
+ * an agent this plugin can call. The A2A `skills` list is not read, because
+ * the invoke route is Lucid's own.
+ */
+export function readAgentCard(payload: unknown): LucidAgentCard | null {
+  if (!(isObject(payload) && isObject(payload.entrypoints))) {
+    return null;
+  }
+  const entrypoints: LucidEntrypoint[] = [];
+  for (const [name, value] of Object.entries(payload.entrypoints)) {
+    if (isObject(value)) {
+      entrypoints.push(readEntrypoint(payload, name, value));
+    }
+  }
   return {
-    name: str(card.name) ?? "(unnamed)",
-    version: str(card.version),
-    description: str(card.description),
+    name: str(payload.name) ?? "(unnamed)",
+    version: str(payload.version),
+    description: str(payload.description),
     entrypoints,
-    extensions: readExtensions(card),
   };
 }
 
@@ -346,9 +307,8 @@ export function readPaymentTerms(envelope: unknown): PaymentTerms | null {
 
 /**
  * Wraps safeFetch with the connector's fixed rules: the agent URL must be
- * public, never follow a redirect (a redirect points the call, and any
- * payment header, at a host nobody named), and bound every call with a
- * timeout.
+ * public, never follow a redirect (a redirect points the call at a host
+ * nobody named), and bound every call with a timeout.
  */
 export async function lucidFetch(
   url: string,
@@ -390,10 +350,6 @@ export async function lucidFetch(
     );
   }
   return response;
-}
-
-export function isFailure(value: unknown): value is LucidFailure {
-  return isObject(value) && value.success === false;
 }
 
 export function httpFailure(

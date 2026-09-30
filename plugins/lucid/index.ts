@@ -29,7 +29,7 @@ const lucidPlugin: IntegrationPlugin = {
       slug: "discover-agent",
       label: "Discover Agent",
       description:
-        "Read a Lucid agent's card at /.well-known/agent-card.json and list its entrypoints, which ones are priced, and what they cost in the asset's base units",
+        "Read a Lucid agent's card at /.well-known/agent-card.json and list its entrypoints, which ones are priced, and what they cost",
       category: "Lucid Agents",
       stepFunction: "discoverAgentStep",
       stepImportPath: "discover-agent",
@@ -40,15 +40,11 @@ const lucidPlugin: IntegrationPlugin = {
         {
           field: "entrypoints",
           description:
-            "Entrypoints: name, description, priced, price (base units), asset, network, payTo, inputSchema",
+            "Entrypoints: name, description, priced, price, priceUnit (usd or base_units), asset, network, payTo, inputSchema",
         },
         {
           field: "pricedEntrypoints",
-          description: "Keys of the entrypoints that require payment",
-        },
-        {
-          field: "extensions",
-          description: "Protocol extensions the agent declares",
+          description: "Names of the priced entrypoints",
         },
         { field: "error", description: "Error message if the read failed" },
       ],
@@ -58,7 +54,7 @@ const lucidPlugin: IntegrationPlugin = {
       slug: "call-entrypoint",
       label: "Call Entrypoint",
       description:
-        "Invoke a Lucid agent entrypoint. A free entrypoint returns its output. A priced one returns status \"awaiting_payment\" with the x402 terms, so a later step can decide whether to pay; pass the signed payment back in Payment Header to make the paid call. This action never signs or pays on its own",
+        "Invoke a Lucid agent entrypoint. A free entrypoint returns its output. A priced one does not run: the agent answers with its x402 terms, returned with status \"awaiting_payment\". This action never signs or pays",
       category: "Lucid Agents",
       stepFunction: "callEntrypointStep",
       stepImportPath: "call-entrypoint",
@@ -75,14 +71,10 @@ const lucidPlugin: IntegrationPlugin = {
             "First x402 payment requirement when payment is required: scheme, network, amount (base units), asset, payTo, resource",
         },
         {
-          field: "paymentRequired",
-          description: "The full x402 challenge as served, to hand to a signer",
+          field: "challenge",
+          description: "The full x402 challenge as the agent served it",
         },
-        { field: "paid", description: "Whether a payment header was sent" },
-        {
-          field: "paymentResponse",
-          description: "Decoded x402 settlement receipt, when returned",
-        },
+        { field: "runId", description: "The agent's run id when completed" },
         { field: "httpStatus", description: "HTTP status from the agent" },
         { field: "error", description: "Error message if the call failed" },
       ],
@@ -101,15 +93,6 @@ const lucidPlugin: IntegrationPlugin = {
           label: "Input JSON",
           type: "template-input",
           placeholder: '{"text": "hello"}',
-          required: false,
-        },
-        {
-          key: "paymentHeader",
-          label: "Payment Header (Optional)",
-          type: "template-input",
-          placeholder: "{{PaymentPolicy.paymentHeader}}",
-          helpTip:
-            "A signed x402 payment payload produced by an earlier step that approved the payment. Sent as PAYMENT-SIGNATURE and X-PAYMENT. Leave empty to get the price without paying.",
           required: false,
         },
       ],

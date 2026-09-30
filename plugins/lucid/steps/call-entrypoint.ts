@@ -19,7 +19,6 @@ import {
   parseJson,
   readHeaderJson,
   readPaymentTerms,
-  SETTLEMENT_HEADERS,
 } from "./lucid-core";
 
 export type CallEntrypointResult =
@@ -28,9 +27,8 @@ export type CallEntrypointResult =
       status: "completed";
       httpStatus: number;
       output: unknown;
-      paid: boolean;
-      /** Decoded settlement receipt, when the agent returned one. */
-      paymentResponse: unknown;
+      /** The agent's id for this run, when it returns one. */
+      runId?: string;
     }
   | {
       success: true;
@@ -40,8 +38,8 @@ export type CallEntrypointResult =
       httpStatus: 402;
       /** First accepted payment requirement, or null if none could be read. */
       payment: PaymentTerms | null;
-      /** The full 402 challenge as served, for a signer or audit record. */
-      paymentRequired: unknown;
+      /** The full 402 challenge as served. */
+      challenge: unknown;
     }
   | LucidFailure;
 
@@ -49,7 +47,6 @@ export type CallEntrypointCoreInput = {
   agentUrl: string;
   entrypoint: string;
   input?: string | Record<string, unknown>;
-  paymentHeader?: string;
 };
 
 export type CallEntrypointInput = StepInput & CallEntrypointCoreInput;
@@ -77,6 +74,28 @@ function parseInput(
   }
 }
 
+/**
+ * A Lucid invoke answers 2xx with `{ run_id, status, output }`. Anything else
+ * is not an entrypoint result, however successful the HTTP status looks.
+ */
+function readInvokeResult(
+  parsed: unknown
+): { output: unknown; runId?: string } | undefined {
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    !("output" in parsed)
+  ) {
+    return;
+  }
+  const envelope = parsed as { output: unknown; run_id?: unknown };
+  return {
+    output: envelope.output,
+    runId: typeof envelope.run_id === "string" ? envelope.run_id : undefined,
+  };
+}
+
 async function stepHandler(
   input: CallEntrypointCoreInput
 ): Promise<CallEntrypointResult> {
@@ -96,22 +115,17 @@ async function stepHandler(
     return body;
   }
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Accept: "application/json",
-  };
-  const paymentHeader = input.paymentHeader?.trim();
-  if (paymentHeader) {
-    // x402 v2 reads PAYMENT-SIGNATURE, v1 reads X-PAYMENT. Sending both lets
-    // one signed payload reach either kind of server.
-    headers["PAYMENT-SIGNATURE"] = paymentHeader;
-    headers["X-PAYMENT"] = paymentHeader;
-  }
-
   const url = `${agentUrl}/entrypoints/${encodeURIComponent(entrypoint)}/invoke`;
   const response = await lucidFetch(
     url,
-    { method: "POST", headers, body: JSON.stringify({ input: body }) },
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ input: body }),
+    },
     INVOKE_TIMEOUT_MS
   );
   if (isFailure(response)) {
@@ -126,19 +140,12 @@ async function stepHandler(
     // other x402 servers put them in the body. Both are read.
     const challenge =
       readHeaderJson(response.headers, CHALLENGE_HEADERS) ?? parsed;
-    if (paymentHeader) {
-      return failure(
-        `Entrypoint ${entrypoint} rejected the payment: HTTP 402 ${text.slice(0, 300)}`,
-        ExecutionErrorType.USER,
-        402
-      );
-    }
     return {
       success: true,
       status: "awaiting_payment",
       httpStatus: 402,
       payment: readPaymentTerms(challenge),
-      paymentRequired: challenge ?? text,
+      challenge: challenge ?? text,
     };
   }
 
@@ -146,25 +153,28 @@ async function stepHandler(
     return httpFailure(`Entrypoint ${entrypoint} failed`, response, text);
   }
 
-  const output =
-    typeof parsed === "object" && parsed !== null && "output" in parsed
-      ? (parsed as { output: unknown }).output
-      : (parsed ?? text);
+  const result = readInvokeResult(parsed);
+  if (!result) {
+    return failure(
+      `${url} answered HTTP ${response.status} without an entrypoint result; is ${agentUrl} a Lucid agent?`,
+      ExecutionErrorType.USER,
+      response.status
+    );
+  }
 
   return {
     success: true,
     status: "completed",
     httpStatus: response.status,
-    output,
-    paid: Boolean(paymentHeader),
-    paymentResponse: readHeaderJson(response.headers, SETTLEMENT_HEADERS),
+    output: result.output,
+    runId: result.runId,
   };
 }
 
 /**
  * Call Lucid Entrypoint Step
- * Invokes one entrypoint. A priced entrypoint called without a payment header
- * returns its x402 terms as data; this step never signs or pays.
+ * Invokes one entrypoint. A priced entrypoint returns its x402 terms as data;
+ * this step never signs or pays.
  */
 export async function callEntrypointStep(
   input: CallEntrypointInput
@@ -178,8 +188,7 @@ export async function callEntrypointStep(
   );
 }
 
-// An automatic retry would call the agent again, and with a payment header
-// attached would re-present the same signed payment.
+// An invoke is not idempotent: a retry would run the entrypoint again.
 callEntrypointStep.maxRetries = 0;
 
 export const _integrationType = "lucid";
