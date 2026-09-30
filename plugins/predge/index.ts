@@ -26,7 +26,7 @@ const predgePlugin: IntegrationPlugin = {
   egress: "user-destination",
   label: "Predge",
   description:
-    "Read verifiable smart-money signals from Predge. Before the step succeeds, the signal's ed25519 signature is checked offline against a pinned key, the signed envelope is checked to be the conviction signal for the wallet asked for, and every field the step returns is checked against its documented type and range. A workflow therefore only ever acts on a verified conviction that is a number in 0-100, never on a numeric string, a missing field or an out-of-range value.",
+    "Read verifiable smart-money signals from Predge. Before the step succeeds, the signal's ed25519 signature is checked offline against a pinned key, the signed envelope is checked to be the conviction signal for the wallet asked for, and every field the step returns is checked against its documented type and range. A workflow therefore only ever acts on a verified conviction that is a number in 0-100, never on a numeric string, a missing field or an out-of-range value. Predge maintains this plugin and operates the default endpoint, https://api.predge.io.",
 
   icon: PredgeIcon,
 
