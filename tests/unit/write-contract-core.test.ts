@@ -148,6 +148,27 @@ vi.mock("@/lib/abi/function-key", () => ({
   getAbiFunctionKey: vi.fn().mockReturnValue("transfer"),
 }));
 
+// Snapshot the args the stablecoin ceiling read at the moment it ran. The
+// core mutates the same array in place when it writes the payer argument,
+// so reading the recorded params object afterwards would show the final
+// value whether the check ran before or after the overwrite and could prove
+// nothing about ordering. The check itself stays real so the token-rows
+// cases still exercise the real matcher.
+let stablecoinCeilingArgsAtCall: unknown[] | undefined;
+vi.mock("@/lib/execute/stablecoin-cap", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/execute/stablecoin-cap")>();
+  return {
+    ...actual,
+    checkStablecoinContractCall: (
+      params: Parameters<typeof actual.checkStablecoinContractCall>[0]
+    ) => {
+      stablecoinCeilingArgsAtCall = [...params.args];
+      return actual.checkStablecoinContractCall(params);
+    },
+  };
+});
+
 // Spy on executeContractCall so tests can inspect the gasOverrides arg.
 // Hoisted so the mock factory below sees an initialized value at module load.
 const { mockExecuteContractCall, mockGetTransactionUrl } = vi.hoisted(() => ({
@@ -345,7 +366,7 @@ describe("writeContractCore stablecoin ceiling", () => {
     if (!result.success) {
       expect(result.error).toContain("per-transaction limit");
     }
-    // Refused before the wallet is even resolved, so nothing is signed.
+    // Refused before the nonce session, so nothing is signed.
     expect(initializeWalletSigner).not.toHaveBeenCalled();
   });
 
@@ -1022,6 +1043,19 @@ describe("writeContractCore payerParam (#2470)", () => {
   const SAFE_ADDRESS = "0x9999999999999999999999999999999999999999";
   // Matches the getOrganizationWalletAddress mock above.
   const ORG_WALLET = "0xwalletaddress1234567890123456789012345678";
+  const TRANSFER_FROM_ABI = JSON.stringify([
+    {
+      type: "function",
+      name: "transferFrom",
+      stateMutability: "nonpayable",
+      inputs: [
+        { name: "from", type: "address" },
+        { name: "to", type: "address" },
+        { name: "amount", type: "uint256" },
+      ],
+      outputs: [],
+    },
+  ]);
   const RECEIPT = {
     hash: "0xhash",
     gasUsed: BigInt(21_000),
@@ -1042,6 +1076,7 @@ describe("writeContractCore payerParam (#2470)", () => {
     vi.clearAllMocks();
     capturedTxContext = null;
     registry.tokenRows = [];
+    stablecoinCeilingArgsAtCall = undefined;
     mockExecuteContractCall.mockResolvedValue(RECEIPT);
     vi.mocked(executeContractCallAsSafe).mockResolvedValue(RECEIPT);
     vi.mocked(executeContractCallAsRole).mockResolvedValue(RECEIPT);
@@ -1138,5 +1173,32 @@ describe("writeContractCore payerParam (#2470)", () => {
       args: unknown[];
     };
     expect(sent.args).toEqual(["1", PLACEHOLDER]);
+  });
+
+  it("runs the stablecoin ceiling on the payer-written args, not the caller's", async () => {
+    // transferFrom's first argument names whose tokens move: an outside
+    // address there reads to the ceiling as an inbound collection, so the
+    // outflow check passes it. If the ceiling ran before the payer write it
+    // vetted that outside address while the broadcast moved the org's funds
+    // -- a drain the ceiling never measured.
+    const OUTSIDE = "0x2222222222222222222222222222222222222222";
+    const RECIPIENT = "0x3333333333333333333333333333333333333333";
+
+    const result = await writeContractCore({
+      ...baseInput,
+      abi: TRANSFER_FROM_ABI,
+      abiFunction: "transferFrom",
+      functionArgs: JSON.stringify([OUTSIDE, RECIPIENT, "1000"]),
+      payerParam: "from",
+    });
+
+    expect(result.success).toBe(true);
+    // Snapshot taken at call time (see the module mock): a live reference to
+    // args would read the rewritten value even on the old ordering.
+    expect(stablecoinCeilingArgsAtCall?.[0]).toBe(ORG_WALLET);
+    const sent = mockExecuteContractCall.mock.calls[0]?.[1] as {
+      args: unknown[];
+    };
+    expect(sent.args).toEqual([ORG_WALLET, RECIPIENT, "1000"]);
   });
 });

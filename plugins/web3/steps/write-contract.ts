@@ -68,7 +68,13 @@ export async function writeContractStep(
             valueCapReserved: input._context?.valueCapReserved,
           },
           async () => {
-            coreResult = await writeContractCore(input);
+            // payerParam is an internal core option: only protocolWriteStep and
+            // the protocol execute route set it, and both build the core input
+            // themselves. A generic write-contract config must never reach it,
+            // or it could rewrite an argument after the stablecoin ceiling read it.
+            const { payerParam: _ignoredPayerParam, ...coreInput } =
+              input as typeof input & { payerParam?: unknown };
+            coreResult = await writeContractCore(coreInput);
             return coreResult;
           }
         );

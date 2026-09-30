@@ -419,28 +419,6 @@ async function writeContractCoreImpl(
     };
   }
 
-  // Stablecoin ceiling. An ERC-20 call carries no native value, so the daily
-  // value cap reserves 0 for it: a `transfer` on a USDC contract is invisible
-  // to it. Checked here rather than in any one route because every write
-  // entrance funnels through this core -- the contract-call API, the protocol
-  // action API, check-and-execute, node execution, and the workflow steps.
-  const stablecoinCap = await checkStablecoinContractCall({
-    organizationId,
-    chainId,
-    contractAddress,
-    functionName: functionAbi.name,
-    inputTypes: (functionAbi.inputs ?? []).map((i) => i.type),
-    args,
-    context: "write-contract",
-  });
-  if (stablecoinCap.kind !== "allowed") {
-    return {
-      success: false,
-      error: stablecoinCap.error,
-      errorClass: ExecutionErrorType.USER,
-    };
-  }
-
   // Get wallet address for nonce management
   let walletAddress: string;
   try {
@@ -488,6 +466,28 @@ async function writeContractCoreImpl(
       };
     }
     args[payerIndex] = resolveFundingHolder(signerMode, walletAddress);
+  }
+
+  // Stablecoin ceiling. An ERC-20 call carries no native value, so the daily
+  // value cap reserves 0 for it: a `transfer` on a USDC contract is invisible
+  // to it. Checked here rather than in any one route because every write
+  // entrance funnels through this core -- the contract-call API, the protocol
+  // action API, check-and-execute, node execution, and the workflow steps.
+  const stablecoinCap = await checkStablecoinContractCall({
+    organizationId,
+    chainId,
+    contractAddress,
+    functionName: functionAbi.name,
+    inputTypes: (functionAbi.inputs ?? []).map((i) => i.type),
+    args,
+    context: "write-contract",
+  });
+  if (stablecoinCap.kind !== "allowed") {
+    return {
+      success: false,
+      error: stablecoinCap.error,
+      errorClass: ExecutionErrorType.USER,
+    };
   }
 
   // Get workflow ID for transaction tracking. The executor already puts
