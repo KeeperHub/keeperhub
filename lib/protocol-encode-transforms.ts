@@ -294,10 +294,9 @@ export function weiToEther(value: string): string {
   return formatEther(BigInt(trimmed));
 }
 
-// LayerZero OFT quotes take the recipient as bytes32; the form collects an
-// EVM address. Both quote actions share the flattened SendParam tuple, so
-// each registers the pad on its own `to` field. The payable send actions
-// register here too once they exist.
+// LayerZero OFT quotes and the send take the recipient as bytes32; the form
+// collects an EVM address. All three share the flattened SendParam tuple, so
+// each registers the pad on its own `to` field.
 registerEncodeTransform(
   "layerzero",
   "oft-quote-send",
@@ -311,4 +310,30 @@ registerEncodeTransform(
   "to",
   padAddressToBytes,
   "padAddressToBytes"
+);
+registerEncodeTransform(
+  "layerzero",
+  "oft-send",
+  "to",
+  padAddressToBytes,
+  "padAddressToBytes"
+);
+
+// The send's value field is typed in wei, so a workflow can pass the
+// quote's `fee.nativeFee` straight into it; the write step converts to the
+// ether string the core write expects. This is the only weiToEther
+// registration, and it is on the virtual ethValue field on purpose: the
+// action's ABI inputs (nativeFee included) stay untransformed, and the
+// registration guard above refuses the kind on any declared input.
+//
+// Not registered on chainlink/ccip-send. That action has the same wei-quote
+// gap, but existing workflows type ether into its value field today, so
+// converting it would change what they send. It stays a separate change
+// with a migration story (#2470).
+registerEncodeTransform(
+  "layerzero",
+  "oft-send",
+  "ethValue",
+  weiToEther,
+  "weiToEther"
 );

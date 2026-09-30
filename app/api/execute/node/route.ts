@@ -35,6 +35,15 @@ import {
   withRejectedConfig,
 } from "../_lib/execution-service";
 import { checkRateLimit } from "../_lib/rate-limit";
+// The cap reservation below resolves protocol actions through the registry,
+// which is populated by this side-effect import (the catch-all protocol
+// route does the same).
+import "@/protocols";
+import {
+  applyEthValueTransform,
+  readPayableValue,
+} from "@/lib/execute/protocol-eth-value";
+import { resolveProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
 import { parseNodeNativeValueWei } from "../_lib/reserved-value";
 import {
   capRetriesByDeclaration,
@@ -458,6 +467,76 @@ async function handleResult(
 // active Role. The sibling execute routes never forward web3Connection either,
 // so this keeps /api/execute/node no weaker. Stripping them all in one place
 // keeps the step input and the persisted audit input in lockstep.
+/**
+ * The config the cap reservation should read for a step, with a protocol
+ * write's payable value already converted the way protocolWriteStep will
+ * convert it. Every other step gets its config back untouched.
+ */
+function protocolReservationConfig(
+  stepFunction: string,
+  resolvedActionType: string,
+  network: string | undefined,
+  config: Record<string, unknown>
+): Promise<
+  { ok: true; config: Record<string, unknown> } | { ok: false; error: string }
+> {
+  if (stepFunction !== "protocolWriteStep") {
+    return Promise.resolve({ ok: true, config });
+  }
+  // Resolved from exactly what the step will receive: executeNode strips
+  // _actionType, _protocolMeta and network from the caller's config
+  // (stripReservedConfig) and hands the step the route's resolved action id
+  // and effective network instead. Reading the caller's config keys here
+  // would let a config that names a different action than the request steer
+  // the reservation: a wei-typed action's transform applied to an
+  // ether-typed action's value reserves 10^18 times less than the step
+  // broadcasts, and the step skips its own charge.
+  const meta = resolveProtocolMeta({
+    _actionType: resolvedActionType,
+    network,
+  });
+  if (!meta) {
+    // The same rule as the step's own refusal (#2322): a non-empty string
+    // value with no resolvable action is refused; anything else is left
+    // for the step to handle as it always has.
+    const hasValue =
+      typeof config.ethValue === "string" && config.ethValue.trim() !== "";
+    return Promise.resolve(
+      hasValue
+        ? {
+            ok: false,
+            error: `Refusing to reserve a payable value: "${resolvedActionType}" does not resolve to a registered protocol action, so whether ethValue needs a unit conversion cannot be determined.`,
+          }
+        : { ok: true, config }
+    );
+  }
+  // Pick the value source the action declares (the OFT send's nativeFee,
+  // every other action's ethValue) before converting it; a separate
+  // ethValue that disagrees with that source is refused here, before any
+  // reservation, so the cap and the broadcast cannot disagree either.
+  const payableValue = readPayableValue(config, meta);
+  if (!payableValue.ok) {
+    return Promise.resolve({ ok: false, error: payableValue.error });
+  }
+  let transformed: ReturnType<typeof applyEthValueTransform>;
+  try {
+    transformed = applyEthValueTransform(payableValue.value, meta);
+  } catch (err) {
+    // Wrong unit (ether typed into a wei field): the caller's mistake.
+    transformed = {
+      ok: false,
+      error: `Invalid ${payableValue.field}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!transformed.ok) {
+    return Promise.resolve({ ok: false, error: transformed.error });
+  }
+  return Promise.resolve({
+    ok: true,
+    config: { ...config, ethValue: transformed.value },
+  });
+}
+
 function stripReservedConfig(
   config: Record<string, unknown>
 ): Record<string, unknown> {
@@ -789,9 +868,35 @@ export async function POST(request: Request): Promise<NextResponse> {
     // Charge native value moved against the daily cap: transfer-funds forwards
     // `amount`, a contract write forwards `ethValue`. Other actions (token
     // transfer/approve, off-chain steps) move no native value.
+    //
+    // A protocol write may register a transform on its value field (the
+    // LayerZero OFT send takes wei), and the step applies it before it
+    // broadcasts. This route reserves BEFORE the step runs and then tells
+    // the step not to reserve again (valueCapReserved below), so the
+    // reservation has to run the same transform or it charges the raw wei
+    // figure as ether - 10^18 times what is broadcast - while the step's
+    // correct charge is skipped. Resolved from the same action id and
+    // network the step is handed, and fails closed when the action cannot
+    // be found and a string value is present.
+    const reservationConfig = await protocolReservationConfig(
+      resolved.importer.stepFunction,
+      resolved.actionType,
+      effectiveNetwork,
+      validation.data.config
+    );
+    if (!reservationConfig.ok) {
+      return recordIdempotentResponse(
+        idem,
+        NextResponse.json(
+          { error: reservationConfig.error },
+          { status: HttpStatus.BAD_REQUEST }
+        ),
+        "release"
+      );
+    }
     const parsedValue = parseNodeNativeValueWei(
       resolved.importer.stepFunction,
-      validation.data.config
+      reservationConfig.config
     );
     if (!parsedValue.ok) {
       return recordIdempotentResponse(

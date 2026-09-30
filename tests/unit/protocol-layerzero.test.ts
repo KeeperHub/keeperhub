@@ -3,9 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   getEncodeTransform,
   getEncodeTransformKind,
+  listEncodeTransforms,
 } from "@/lib/protocol-encode-transforms";
-import { getProtocol, registerProtocol } from "@/lib/protocol-registry";
+import {
+  getProtocol,
+  protocolActionToPluginAction,
+  registerProtocol,
+} from "@/lib/protocol-registry";
+import type { ActionConfigField } from "@/plugins/registry";
 import layerzeroErc20Abi from "@/protocols/abis/layerzero-erc20.json";
+import layerzeroOftAbi from "@/protocols/abis/layerzero-oft.json";
 import layerzeroDef, {
   DEFAULT_EXTRA_OPTIONS,
   LAYERZERO_CONFIG_DOCS,
@@ -13,6 +20,7 @@ import layerzeroDef, {
   LAYERZERO_EIDS,
   LAYERZERO_OFT_DOCS,
   LAYERZERO_PROTOCOL_DOCS,
+  OFT_SEND_FIXTURE_FEE_WEI,
 } from "@/protocols/layerzero";
 
 const KEBAB_CASE_REGEX = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
@@ -39,7 +47,27 @@ const READ_SLUGS = [
   "endpoint-get-config",
   "endpoint-is-supported-eid",
 ];
-const WRITE_SLUGS = ["oft-approve"];
+const WRITE_SLUGS = ["oft-send", "oft-approve"];
+
+// send((uint32,bytes32,uint256,uint256,bytes,bytes,bytes),(uint256,uint256),address),
+// the selector the USDT0 adapter was called with in the mainnet transfer
+// the issue cites (0x23b8fd4b...). A renamed param or a re-typed tuple
+// member changes the selector and the deployed contract stops matching.
+const OFT_SEND_SELECTOR = "0xc7c7f5b3";
+// keccak256("OFTSent(bytes32,uint32,address,uint256,uint256)"), the topic0
+// of the OFTSent log that same transaction emitted (3 topics: guid and
+// fromAddress indexed).
+const OFT_SENT_TOPIC =
+  "0x85496b760a4b7f8d66384b9df21b381f5d1b1e79f229a47aaf4c232edc2fe59a";
+const SEND_PARAM_INPUT_NAMES = [
+  "dstEid",
+  "to",
+  "amountLD",
+  "minAmountLD",
+  "extraOptions",
+  "composeMsg",
+  "oftCmd",
+];
 
 function action(slug: string) {
   const found = layerzeroDef.actions.find((a) => a.slug === slug);
@@ -61,7 +89,7 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     }
   });
 
-  it("has exactly the twelve accepted actions: eleven reads and one write", () => {
+  it("has exactly the thirteen accepted actions: eleven reads and two writes", () => {
     const slugs = layerzeroDef.actions.map((a) => a.slug).sort();
     expect(slugs).toEqual([...READ_SLUGS, ...WRITE_SLUGS].sort());
     for (const slug of READ_SLUGS) {
@@ -156,16 +184,102 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     const q = action("oft-quote-send");
     expect(q.contract).toBe("oft");
     expect(q.inputs.map((i) => i.name)).toEqual([
-      "dstEid",
-      "to",
-      "amountLD",
-      "minAmountLD",
-      "extraOptions",
-      "composeMsg",
-      "oftCmd",
+      ...SEND_PARAM_INPUT_NAMES,
       "payInLzToken",
     ]);
     expect(q.outputs?.map((o) => o.name)).toEqual(["fee"]);
+  });
+
+  it("send flattens SendParam, MessagingFee and refundAddress into ten inputs", () => {
+    const s = action("oft-send");
+    expect(s.contract).toBe("oft");
+    expect(s.function).toBe("send");
+    expect(s.type).toBe("write");
+    expect(s.payable).toBe(true);
+    // The SendParam prefix is identical to the quote's, so a workflow can
+    // pass the same values to both.
+    expect(s.inputs.map((i) => i.name)).toEqual([
+      ...SEND_PARAM_INPUT_NAMES,
+      "nativeFee",
+      "lzTokenFee",
+      "refundAddress",
+    ]);
+    const quoteParams = action("oft-quote-send").inputs.slice(0, 7);
+    expect(s.inputs.slice(0, 7)).toEqual(quoteParams);
+  });
+
+  it("send's selector matches the deployed adapter and OFTSent has the expected topic", () => {
+    const iface = new ethers.Interface(layerzeroOftAbi);
+    expect(iface.getFunction("send")?.selector).toBe(OFT_SEND_SELECTOR);
+    const evt = iface.getEvent("OFTSent");
+    expect(evt?.topicHash).toBe(OFT_SENT_TOPIC);
+    expect(evt?.inputs.filter((i) => i.indexed).map((i) => i.name)).toEqual([
+      "guid",
+      "fromAddress",
+    ]);
+    const derived = layerzeroDef.events?.find((e) => e.slug === "oft-sent");
+    expect(derived?.contract).toBe("oft");
+    expect(derived?.eventName).toBe("OFTSent");
+  });
+
+  it("lzTokenFee defaults to 0 and is advanced; nativeFee and refundAddress are required", () => {
+    const s = action("oft-send");
+    const lz = s.inputs.find((i) => i.name === "lzTokenFee");
+    expect(lz?.default).toBe("0");
+    expect(lz?.advanced).toBe(true);
+    for (const name of ["nativeFee", "refundAddress"]) {
+      const inp = s.inputs.find((i) => i.name === name);
+      expect(inp?.default, name).toBeUndefined();
+      expect(inp?.advanced, name).toBeUndefined();
+    }
+  });
+
+  // refundAddress is payer-owned: it stays a declared input so its ABI
+  // arg keeps its position, but no caller-visible field renders for it -
+  // every entrance refuses it and writeContractCore writes the paying
+  // address over the placeholder after it resolves the signer.
+  it("marks refundAddress as payer-owned and renders no field for it", () => {
+    const refund = action("oft-send").inputs.find(
+      (i) => i.name === "refundAddress"
+    );
+    expect(refund?.type).toBe("address");
+    expect(refund?.payer).toBe(true);
+
+    const plugin = protocolActionToPluginAction(
+      layerzeroDef,
+      action("oft-send")
+    );
+    const collectKeys = (fields: ActionConfigField[]): string[] =>
+      fields.flatMap((f) => ("key" in f ? [f.key] : collectKeys(f.fields)));
+    expect(collectKeys(plugin.configFields)).not.toContain("refundAddress");
+  });
+
+  // The send declares payableValue.fromInput, so it renders no separate
+  // value field at all: msg.value is taken from the same nativeFee the OFT
+  // checks it against, and the two cannot disagree. Checked through the
+  // same plugin-action builder the editor uses, not through the override
+  // object.
+  it("renders no separate value field on the send; nativeFee carries the fee", () => {
+    const send = action("oft-send");
+    expect(send.payableValue).toEqual({ fromInput: "nativeFee" });
+    const plugin = protocolActionToPluginAction(layerzeroDef, send);
+    const keys = plugin.configFields.flatMap((f) =>
+      "key" in f ? [f.key] : []
+    );
+    expect(keys).not.toContain("ethValue");
+    const nativeFee = plugin.configFields.find(
+      (f) => "key" in f && f.key === "nativeFee"
+    );
+    if (!(nativeFee && "key" in nativeFee)) {
+      throw new Error("nativeFee field missing");
+    }
+    // Validated as an integer (uint256): the field takes wei and is
+    // required, because it is the whole fee - a blank here is a zero fee
+    // the OFT rejects with NotEnoughNative after the gas has been spent.
+    expect(nativeFee.type).toBe("protocol-uint");
+    expect(nativeFee.solidityType).toBe("uint256");
+    expect(nativeFee.required).toBe(true);
+    expect(nativeFee.helpTip).toContain("transaction's value");
   });
 
   it("quote-oft has seven inputs and three named tuple outputs", () => {
@@ -192,11 +306,11 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
   // Asserting the registered kind alone would pass against a padAddressToBytes
   // that returns its input unchanged, so each case applies the function the
   // registry hands back rather than trusting the label on it.
-  it("pads the recipient of both quote actions to bytes32", () => {
+  it("pads the recipient of both quotes and the send to bytes32", () => {
     const address = "0x1111111111111111111111111111111111111111";
     const padded = `0x${"0".repeat(24)}${address.slice(2)}`;
 
-    for (const slug of ["oft-quote-send", "oft-quote-oft"]) {
+    for (const slug of ["oft-quote-send", "oft-quote-oft", "oft-send"]) {
       expect(getEncodeTransformKind("layerzero", slug, "to")).toBe(
         "padAddressToBytes"
       );
@@ -217,6 +331,94 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     }
   });
 
+  // Same discipline as the pad test above: apply the function the registry
+  // hands back and check the number it returns. A registration that pointed
+  // at an identity function would pass a kind-only assertion and send
+  // 10^18 times the fee.
+  it("converts the send's value field from wei to ether, and nothing else", () => {
+    expect(getEncodeTransformKind("layerzero", "oft-send", "ethValue")).toBe(
+      "weiToEther"
+    );
+    const transform = getEncodeTransform("layerzero", "oft-send", "ethValue");
+    expect(transform).toBeDefined();
+
+    // The live quote observed on 2026-09-15 for the chain-1 USDT0 lane.
+    expect(transform?.("218756042576226")).toBe("0.000218756042576226");
+    // Round-trips exactly: parseEther of the output is the wei that went in.
+    expect(ethers.parseEther(transform?.("218756042576226") ?? "")).toBe(
+      BigInt("218756042576226")
+    );
+    expect(transform?.("1")).toBe("0.000000000000000001");
+    expect(transform?.(OFT_SEND_FIXTURE_FEE_WEI)).toBe("0.01");
+    // A template is left for the executor to resolve after the quote runs.
+    expect(transform?.("{{@quote:OFT Quote Send.fee.nativeFee}}")).toBe(
+      "{{@quote:OFT Quote Send.fee.nativeFee}}"
+    );
+    // Ether typed into the wei field is refused rather than sent as 0.01
+    // wei (which would revert on chain) or misread as 0.01 ether.
+    expect(() => transform?.("0.01")).toThrow(/integer wei/);
+
+    // The ABI inputs of the send keep their raw values: nativeFee is a
+    // uint256 in wei on the wire and must not be converted. Only `to` has
+    // a transform, and it is the pad.
+    for (const inp of action("oft-send").inputs) {
+      const kind = getEncodeTransformKind("layerzero", "oft-send", inp.name);
+      expect(kind, inp.name).toBe(
+        inp.name === "to" ? "padAddressToBytes" : undefined
+      );
+    }
+    // And no other LayerZero action converts its value field.
+    const weiToEtherEntries = listEncodeTransforms().filter(
+      (t) => t.protocolSlug === "layerzero" && t.kind === "weiToEther"
+    );
+    expect(weiToEtherEntries).toEqual([
+      {
+        protocolSlug: "layerzero",
+        actionSlug: "oft-send",
+        inputName: "ethValue",
+        kind: "weiToEther",
+      },
+    ]);
+  });
+
+  // The fixture binds the fee once, to nativeFee: msg.value is taken from
+  // it (payableValue.fromInput), so the fee and the value paid cannot
+  // disagree. Pin the unit too (wei, an integer string).
+  it("binds the fee once, to nativeFee", () => {
+    const fixture = layerzeroDef.testData?.["1"]?.actions["oft-send"];
+    expect(fixture).toBeDefined();
+    expect(fixture?.nativeFee).toBe(OFT_SEND_FIXTURE_FEE_WEI);
+    expect(fixture?.ethValue).toBeUndefined();
+    expect(OFT_SEND_FIXTURE_FEE_WEI).toMatch(/^\d+$/);
+    expect(fixture?.lzTokenFee).toBe("0");
+    // The fabricated allowance equals the send amount exactly, so the send
+    // drains it to zero and the later USDT approve (which rejects
+    // non-zero -> non-zero) can run. See the setup note in layerzero.ts.
+    const setup = layerzeroDef.testData?.["1"]?.setup;
+    const fabricated = setup?.fabricatedApprovals?.find(
+      (a) => a.token === "USDT"
+    );
+    expect(fabricated?.human).toBe("1");
+    expect(fixture?.amountLD).toBe("1000000");
+    expect(setup?.requiredTokens).toContainEqual({
+      symbol: "USDT",
+      human: "1",
+    });
+  });
+
+  it("derives the send before the approve, which the fixture ordering relies on", () => {
+    // Writes run in registry order. oft-send lives on the `oft` contract
+    // and oft-approve on `oftToken`, and the fixture fabricates exactly the
+    // allowance the send consumes so the approve then runs from zero.
+    // Swapping the contract order in the definition would make the approve
+    // revert on USDT's non-zero -> non-zero rule; this is the test that says
+    // why.
+    const slugs = layerzeroDef.actions.map((a) => a.slug);
+    expect(slugs.indexOf("oft-send")).toBeLessThan(
+      slugs.indexOf("oft-approve")
+    );
+  });
+
   it("every input carries an allowed docUrl", () => {
     for (const a of layerzeroDef.actions) {
       for (const inp of a.inputs) {
@@ -229,8 +431,9 @@ describe("LayerZero Protocol Definition (ABI-driven)", () => {
     }
   });
 
-  it("the approve write is not payable", () => {
+  it("the approve write is not payable and declares no value-field label", () => {
     expect(action("oft-approve").payable).toBeUndefined();
+    expect(action("oft-approve").payableValue).toBeUndefined();
   });
 
   // Chain 1's reference token is USDT, whose approve returns no data. The

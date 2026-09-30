@@ -8,11 +8,12 @@ import layerzeroOftAbi from "./abis/layerzero-oft.json";
 // LayerZero V2 OFT (Omnichain Fungible Token) read surface and the
 // EndpointV2 configuration reads a workflow needs before it trusts a lane.
 //
-// This first cut is read-only plus the ERC-20 approve an OFT Adapter
-// needs. The two payable send actions depend on the protocol write step
-// being able to convert a wei-denominated quote into the ether-denominated
-// ETH Value field, which is a separate change; they are added once that
-// lands.
+// Reads plus two writes: the ERC-20 approve an OFT Adapter needs, and the
+// payable send. The send's value field is typed in wei so a workflow can
+// pass the quote's `fee.nativeFee` straight into it; the conversion to the
+// ether string the core write expects is the weiToEther transform
+// registered on `oft-send/ethValue` in lib/protocol-encode-transforms.ts
+// (#2322 added the transform path, #2470 the action).
 //
 // Endpoint IDs (EIDs) are LayerZero's own chain identifiers and are not
 // EVM chain IDs. They are passed as call arguments, so they are plain
@@ -207,6 +208,18 @@ const SEND_PARAM_INPUT_OVERRIDES: Record<string, AbiInputOverride> = {
   },
 };
 
+// Fee the send fixture attaches, in wei: 0.01 ETH. Bound to `nativeFee`
+// alone: the send takes msg.value from it (payableValue.fromInput), and
+// the OFT requires the two to be equal (see the oft-send override below).
+// It is deliberately
+// far above the live quote rather than equal to it: the Tier 1 harness has
+// no way to feed a read's output into a write binding, and a fixed value
+// only stays runnable if it clears every future quote. The endpoint refunds
+// whatever exceeds the live quote to refundAddress, so overpaying here costs
+// the fixture nothing. Live quote for this lane on 2026-09-15 was
+// 218,756,042,576,226 wei (0.00022 ETH), about 46x below this figure.
+export const OFT_SEND_FIXTURE_FEE_WEI = "10000000000000000";
+
 const PAY_IN_LZ_TOKEN_OVERRIDE: AbiInputOverride = {
   label: "Pay In LZ Token",
   default: "false",
@@ -219,9 +232,26 @@ const PAY_IN_LZ_TOKEN_OVERRIDE: AbiInputOverride = {
 const TEST_DATA: ProtocolTestData = {
   "1": {
     setup: {
-      minNativeHuman: "0.01",
-      requiredTokens: [],
+      // 0.01 ETH of messaging fee for the send plus gas for two writes.
+      minNativeHuman: "0.02",
+      // One USDT for the send to lock. Chain 1 is a fork, so this is
+      // written straight into USDT's balances slot (no whale registered;
+      // see chain-test-data.ts).
+      requiredTokens: [{ symbol: "USDT", human: "1" }],
       approvals: [],
+      // The send needs an allowance and runs BEFORE oft-approve: actions
+      // derive in contract order (oft, then oftToken), and the sweep runs
+      // writes in registry order. So the allowance is fabricated here, and
+      // sized to exactly the amount the send pulls, for a reason that is
+      // USDT-specific: its approve reverts when moving a non-zero
+      // allowance to another non-zero value (see the writeExpectations
+      // note below). The send consumes this allowance to zero, which is
+      // what lets the later oft-approve fixture (0 -> 1,000,000) succeed.
+      // Reordering the two writes, or fabricating more than the send
+      // amount, makes oft-approve revert. A unit test pins the order.
+      fabricatedApprovals: [
+        { token: "USDT", spender: contract("oft"), human: "1" },
+      ],
     },
     // Every oft/oftToken action binds contractAddress explicitly: for a
     // userSpecifiedAddress contract the builder ignores the fallback map,
@@ -248,6 +278,19 @@ const TEST_DATA: ProtocolTestData = {
         extraOptions: DEFAULT_EXTRA_OPTIONS,
         composeMsg: "0x",
         oftCmd: "0x",
+      },
+      // The same SendParam the quotes use, so the three encode the same tuple. The fee is nativeFee alone: the send takes msg.value from it (payableValue.fromInput), so the two cannot disagree.
+      "oft-send": {
+        contractAddress: OFT_REFERENCE_ADDRESSES["1"],
+        dstEid: "30110",
+        to: wallet(),
+        amountLD: "1000000",
+        minAmountLD: "990000",
+        extraOptions: DEFAULT_EXTRA_OPTIONS,
+        composeMsg: "0x",
+        oftCmd: "0x",
+        nativeFee: OFT_SEND_FIXTURE_FEE_WEI,
+        lzTokenFee: "0",
       },
       "oft-approval-required": {
         contractAddress: OFT_REFERENCE_ADDRESSES["1"],
@@ -357,6 +400,15 @@ const TEST_DATA: ProtocolTestData = {
     // reason: writeExpectations must stay history-safe on a long-lived
     // fork.
     writeExpectations: {
+      // The send runs first (registry order, see the setup note) against
+      // the fabricated 1 USDT allowance. A mined receipt proves only that
+      // the adapter accepted the call; the allowance reading exactly zero
+      // afterwards proves it pulled the full amountLD through
+      // transferFrom, which is the debit a lock-and-unlock adapter has to
+      // make. `equals` rather than nonZero because a send that pulled
+      // nothing leaves the allowance at the fabricated 1,000,000, which
+      // nonZero would pass.
+      "oft-send": [{ read: "oft-check-allowance", expect: { equals: "0" } }],
       "oft-approve": [
         { read: "oft-check-allowance", expect: { nonZero: true } },
       ],
@@ -368,7 +420,7 @@ export default defineAbiProtocol({
   name: "LayerZero",
   slug: "layerzero",
   description:
-    "LayerZero V2 omnichain tokens (OFT) and endpoint configuration. Quote crosschain transfer fees, inspect an OFT's peers and approval needs, and read the send library and DVN configuration a lane will use before you trust it.",
+    "LayerZero V2 omnichain tokens (OFT) and endpoint configuration. Quote crosschain transfer fees, inspect an OFT's peers and approval needs, read the send library and DVN configuration a lane will use before you trust it, and send an OFT across chains paying the quoted fee.",
   website: "https://layerzero.network",
   icon: "/protocols/layerzero.png",
 
@@ -401,6 +453,56 @@ export default defineAbiProtocol({
                 "Messaging Fee (nativeFee, lzTokenFee, each in its token's smallest unit)",
             },
           },
+        },
+        // The SendParam tuple and the MessagingFee tuple are both flattened
+        // by the deriver, so the form fields are dstEid..oftCmd, nativeFee,
+        // lzTokenFee. refundAddress is a declared input but payer-owned:
+        // no field renders for it, every entrance refuses a supplied value,
+        // and the core write sets it to the address paying for the call.
+        // There is no separate value field: payableValue.fromInput takes
+        // msg.value from nativeFee itself.
+        //
+        // That indirection exists because the OFT's fee check is equality:
+        // OAppSender._payNative reverts with NotEnoughNative when msg.value
+        // differs from fee.nativeFee in either direction (LayerZero docs
+        // describe the batch-send override as changing the check "from
+        // equivalency to <", and mainnet eth_call with +1/-1 wei reverts
+        // with that selector, 2026-09-15). Sourcing msg.value from
+        // nativeFee makes a mismatch unrepresentable. Only after that does
+        // the endpoint compare the fee against the live quote and refund
+        // any excess to refundAddress. So: a number at or above the quote.
+        send: {
+          slug: "oft-send",
+          label: "OFT Send",
+          description:
+            "Send an OFT to another chain, paying the LayerZero messaging fee quoted by OFT Quote Send. Pass the same SendParam values as the quote, and the quote's fee.nativeFee (in wei) as Native Fee; KeeperHub attaches the same amount as the transaction's value. On an OFT Adapter that reports Approval Required, run OFT Approve first.",
+          docUrl: LAYERZERO_OFT_DOCS,
+          inputs: {
+            ...SEND_PARAM_INPUT_OVERRIDES,
+            nativeFee: {
+              label: "Native Fee (wei)",
+              helpTip:
+                "The messaging fee in wei of this chain's gas token, as OFT Quote Send returns it in fee.nativeFee. KeeperHub attaches the same amount as the transaction's value. Enter more than the quote for headroom: the endpoint refunds the excess to the address that pays for the send.",
+              docUrl: LAYERZERO_OFT_DOCS,
+            },
+            lzTokenFee: {
+              label: "LZ Token Fee",
+              default: "0",
+              advanced: true,
+              helpTip:
+                "Fee in ZRO, in its smallest unit. Leave at 0: this action pays in the native gas token. Paying in ZRO needs a quote with Pay In LZ Token set to true and a ZRO allowance, and is not supported here.",
+              docUrl: LAYERZERO_OFT_DOCS,
+            },
+            // payer-owned: writeContractCore writes the paying address
+            // into this arg after resolving the signer (the org Safe in
+            // Safe modes, the org wallet otherwise). docUrl stays because
+            // the input remains declared; it just renders no field.
+            refundAddress: {
+              payer: true,
+              docUrl: LAYERZERO_OFT_DOCS,
+            },
+          },
+          payableValue: { fromInput: "nativeFee" },
         },
         quoteOFT: {
           slug: "oft-quote-oft",

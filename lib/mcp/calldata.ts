@@ -11,6 +11,15 @@ import {
   isWriteActionType,
 } from "@/lib/mcp/action-type";
 import { buildCallsWithMeta } from "@/plugins/web3/steps/batch-write-contract-core";
+// The value conversion below resolves protocol actions through the registry,
+// which this side-effect import populates (the node and catch-all routes do
+// the same).
+import "@/protocols";
+import {
+  applyEthValueTransform,
+  readPayableValue,
+} from "@/lib/execute/protocol-eth-value";
+import { resolveProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
 
 export type CalldataResult =
   | { success: true; to: string; data: string; value: string }
@@ -134,15 +143,66 @@ function resolveArgsTemplates(
   return { args: resolved };
 }
 
+/**
+ * A protocol write's value field can be typed in wei (LayerZero's OFT Send
+ * registers weiToEther on it), so run the same conversion every other
+ * entrance runs (lib/execute/protocol-eth-value.ts) before parseEther reads
+ * it. Resolved from the config alone, as the node route and the step do.
+ * Any other write gets its value back untouched.
+ */
+function protocolWriteEtherValue(
+  actionType: string | undefined,
+  config: Record<string, unknown>
+): { ok: true; value: unknown } | { ok: false; error: string } {
+  if (!actionType?.includes("protocol-write")) {
+    return { ok: true, value: config.ethValue };
+  }
+  const meta = resolveProtocolMeta({
+    _protocolMeta:
+      typeof config._protocolMeta === "string"
+        ? config._protocolMeta
+        : undefined,
+    _actionType:
+      typeof config._actionType === "string" ? config._actionType : undefined,
+    // The step passes its whole input, network included, and staging's
+    // resolver uses the chain to bind renamed L2 action slugs.
+    network: typeof config.network === "string" ? config.network : undefined,
+  });
+  if (!meta) {
+    const hasValue =
+      typeof config.ethValue === "string" && config.ethValue.trim() !== "";
+    return hasValue
+      ? {
+          ok: false,
+          error:
+            "Refusing to build calldata with a payable value: the protocol write carries no resolvable _actionType or _protocolMeta, so whether ethValue needs a unit conversion cannot be determined.",
+        }
+      : { ok: true, value: config.ethValue };
+  }
+  const payableValue = readPayableValue(config, meta);
+  if (!payableValue.ok) {
+    return { ok: false, error: payableValue.error };
+  }
+  try {
+    return applyEthValueTransform(payableValue.value, meta);
+  } catch (err) {
+    // Wrong unit (ether typed into a wei field): the caller's mistake.
+    return {
+      ok: false,
+      error: `Invalid ${payableValue.field}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 function generateSingleWriteCalldata(
   config: Record<string, unknown>,
-  triggerInputs: Record<string, unknown>
+  triggerInputs: Record<string, unknown>,
+  actionType: string | undefined
 ): CalldataResult {
   const contractAddress = config.contractAddress;
   const abi = config.abi;
   const abiFunction = config.abiFunction;
   const functionArgs = config.functionArgs;
-  const ethValue = config.ethValue;
 
   // A write node with a missing, templated, or malformed contractAddress
   // used to serialize to a 200 whose `to` key was simply absent. A priced
@@ -228,6 +288,12 @@ function generateSingleWriteCalldata(
       error: `Failed to encode function call: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+
+  const etherValue = protocolWriteEtherValue(actionType, config);
+  if (!etherValue.ok) {
+    return { success: false, error: etherValue.error };
+  }
+  const ethValue = etherValue.value;
 
   // ethers.parseEther throws on non-numeric input ("abc", "1.5e18", etc).
   let value: string;
@@ -365,5 +431,9 @@ export function generateCalldataForWorkflow(
     return generateBatchCalldata(writeNode.config, triggerInputs);
   }
 
-  return generateSingleWriteCalldata(writeNode.config, triggerInputs);
+  return generateSingleWriteCalldata(
+    writeNode.config,
+    triggerInputs,
+    writeNode.actionType
+  );
 }

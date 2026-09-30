@@ -68,6 +68,7 @@ vi.mock("@/lib/execute/value-ledger", () => ({
 // ── Import under test ────────────────────────────────────────────────
 
 import { parseEther } from "ethers";
+import { PAYER_PLACEHOLDER } from "@/lib/execute/protocol-payer";
 import {
   clearEncodeTransforms,
   registerEncodeTransform,
@@ -1008,6 +1009,142 @@ describe("protocolWriteStep", () => {
       }
     });
   });
+
+  // A payable action may declare one of its address inputs as payer-owned
+  // (LayerZero's OFT send marks refundAddress): the caller never supplies
+  // it, the step puts a placeholder in its arg position, and
+  // writeContractCore overwrites it with the resolved paying address.
+  describe("payer input (ProtocolActionInput.payer)", () => {
+    const OFT_SEND_META: ProtocolMeta = {
+      protocolSlug: "layerzero",
+      contractKey: "oft",
+      functionName: "send",
+      actionType: "write",
+    };
+    const OFT_SEND_PROTOCOL = {
+      name: "LayerZero",
+      slug: "layerzero",
+      contracts: {
+        oft: {
+          label: "OFT",
+          userSpecifiedAddress: true,
+          addresses: {
+            "8453": "0xeab8fA7AB28F05D7600558b873d5C7F805412304",
+          },
+        },
+      },
+      actions: [
+        {
+          slug: "oft-send",
+          label: "OFT Send",
+          type: "write" as const,
+          contract: "oft",
+          function: "send",
+          payable: true,
+          payableValue: { fromInput: "nativeFee" },
+          inputs: [
+            { name: "nativeFee", type: "uint256", label: "Native Fee" },
+            {
+              name: "refundAddress",
+              type: "address",
+              label: "Refund Address",
+              payer: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    function arrangeOftSend(): void {
+      mockResolveProtocolMeta.mockReturnValue(OFT_SEND_META);
+      mockGetProtocol.mockReturnValue(OFT_SEND_PROTOCOL);
+      mockResolveAbi.mockResolvedValue({ abi: "[]" });
+      mockWriteContractCore.mockResolvedValue({
+        success: true,
+        transactionHash: "0xsend",
+        transactionLink: "",
+        gasUsed: "250000",
+      });
+    }
+
+    it("refuses a supplied refundAddress before reaching the core", async () => {
+      arrangeOftSend();
+
+      const result = await protocolWriteStep(
+        makeInput({
+          _actionType: "layerzero/oft-send",
+          nativeFee: "1000000",
+          refundAddress: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain("refundAddress");
+        expect(result.error).toContain("cannot be supplied");
+      }
+      expect(mockWriteContractCore).not.toHaveBeenCalled();
+      expect(mockWithStepValueCap).not.toHaveBeenCalled();
+    });
+
+    it("passes payerParam and the placeholder at the payer arg position", async () => {
+      arrangeOftSend();
+
+      const result = await protocolWriteStep(
+        makeInput({
+          _actionType: "layerzero/oft-send",
+          nativeFee: "1000000",
+        })
+      );
+
+      expect(result.success).toBe(true);
+      const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+      expect(coreCall.payerParam).toBe("refundAddress");
+      expect(JSON.parse(coreCall.functionArgs as string)).toEqual([
+        "1000000",
+        PAYER_PLACEHOLDER,
+      ]);
+    });
+
+    it("returns Invalid nativeFee when the fee input cannot be converted", async () => {
+      arrangeOftSend();
+
+      const result = await protocolWriteStep(
+        makeInput({
+          _actionType: "layerzero/oft-send",
+          // Ether typed into the wei-typed fee input: weiToEther throws
+          // and the step returns it as a failure instead of letting it
+          // escape "use step", matching the execute routes. The error
+          // names nativeFee because that is the field the caller typed.
+          nativeFee: "0.001",
+        })
+      );
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toMatch(/Invalid nativeFee/);
+      }
+      expect(mockWriteContractCore).not.toHaveBeenCalled();
+      expect(mockWithStepValueCap).not.toHaveBeenCalled();
+    });
+
+    it("passes no payerParam for an action without a payer input", async () => {
+      mockResolveProtocolMeta.mockReturnValue(COMPOUND_SUPPLY_META);
+      mockGetProtocol.mockReturnValue(COMPOUND_PROTOCOL);
+      mockResolveAbi.mockResolvedValue({ abi: "[]" });
+      mockWriteContractCore.mockResolvedValue({
+        success: true,
+        transactionHash: "0xdef",
+        transactionLink: "",
+        gasUsed: "21000",
+      });
+
+      await protocolWriteStep(makeInput());
+
+      const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+      expect(coreCall.payerParam).toBeUndefined();
+    });
+  });
 });
 
 describe("ethValue encode transforms", () => {
@@ -1110,6 +1247,33 @@ describe("ethValue encode transforms", () => {
     });
   });
 
+  it("drops a numeric ethValue on an unresolvable action exactly as before, without refusing", async () => {
+    arrange();
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+    mockResolveProtocolMeta.mockReturnValue({
+      ...COMPOUND_SUPPLY_META,
+      functionName: "supplyRenamedUpstream",
+    });
+
+    // Prior behaviour: resolveEthValue only forwards a string, so a number
+    // was dropped and the write went out with no value. The fail-closed
+    // refusal is scoped to a non-empty string value (the #2322 rule) and
+    // must not widen to this case.
+    const result = await protocolWriteStep(makeInput({ ethValue: 1.5 }));
+
+    expect(result.success).toBe(true);
+    expect(mockWriteContractCore).toHaveBeenCalled();
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBeUndefined();
+    expect(mockLogUserError).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["an empty ethValue", ""],
     ["no ethValue at all", undefined],
@@ -1146,13 +1310,15 @@ describe("ethValue encode transforms", () => {
       "weiToEther"
     );
 
-    // "1.5" is not an integer wei string, so weiToEther throws. The throw has
-    // to happen before withStepValueCap, or a failed step would leave a
-    // reservation held against the org's daily cap.
-    await expect(
-      protocolWriteStep(makeInput({ ethValue: "1.5" }))
-    ).rejects.toThrow(/integer wei/);
+    // "1.5" is not an integer wei string, so weiToEther throws and the
+    // step returns the conversion failure as Invalid ethValue. The
+    // conversion has to happen before withStepValueCap either way, or a
+    // failed step would leave a reservation held against the org's daily
+    // cap.
+    const result = await protocolWriteStep(makeInput({ ethValue: "1.5" }));
 
+    expect(result.success).toBe(false);
+    expect((result as { error: string }).error).toMatch(/Invalid ethValue/);
     expect(mockWithStepValueCap).not.toHaveBeenCalled();
     expect(mockWriteContractCore).not.toHaveBeenCalled();
   });
@@ -1174,6 +1340,127 @@ describe("ethValue encode transforms", () => {
 
     const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
     expect(coreCall.ethValue).toBe("0.25");
+  });
+
+  it("refuses a payable value taken from an input that registers no weiToEther", async () => {
+    arrange();
+    // Same shape as layerzero/oft-send: a payable action whose value is
+    // one of its ABI inputs (the amount here stands in for nativeFee), so
+    // there is no separate value field to disagree with it. Without the
+    // weiToEther registration on ethValue the raw wei integer would reach
+    // the core's ether field, 10^18 times the intended amount, so the
+    // read refuses outright.
+    mockGetProtocol.mockReturnValue({
+      ...COMPOUND_PROTOCOL,
+      actions: [
+        {
+          ...COMPOUND_PROTOCOL.actions[0],
+          payable: true,
+          payableValue: { fromInput: "amount" },
+        },
+      ],
+    });
+
+    const result = await protocolWriteStep(makeInput());
+
+    expect(result.success).toBe(false);
+    expect((result as { error: string }).error).toMatch(
+      /registers no weiToEther conversion/
+    );
+    expect(mockWriteContractCore).not.toHaveBeenCalled();
+    expect(mockWithStepValueCap).not.toHaveBeenCalled();
+  });
+
+  it("converts the declared input's wei value to ether when the action registers weiToEther", async () => {
+    arrange();
+    // The legal pairing the refusal above exists to force: fromInput on a
+    // wei-typed input plus the weiToEther conversion on ethValue - the
+    // same registration layerzero/oft-send carries.
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+    mockGetProtocol.mockReturnValue({
+      ...COMPOUND_PROTOCOL,
+      actions: [
+        {
+          ...COMPOUND_PROTOCOL.actions[0],
+          payable: true,
+          payableValue: { fromInput: "amount" },
+        },
+      ],
+    });
+
+    await protocolWriteStep(makeInput());
+
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBe("0.000000000001");
+    const capOpts = (mockWithStepValueCap as Mock).mock.calls[0][0] as {
+      config: { ethValue?: string };
+    };
+    expect(capOpts.config.ethValue).toBe("0.000000000001");
+  });
+
+  it("refuses the write when a separate ethValue disagrees with the declared input", async () => {
+    arrange();
+    // Registered so the run reaches the disagreement check: without it the
+    // read is refused for the missing transform before the values compare.
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+    mockGetProtocol.mockReturnValue({
+      ...COMPOUND_PROTOCOL,
+      actions: [
+        {
+          ...COMPOUND_PROTOCOL.actions[0],
+          payable: true,
+          payableValue: { fromInput: "amount" },
+        },
+      ],
+    });
+
+    const result = await protocolWriteStep(makeInput({ ethValue: "999" }));
+
+    expect(result.success).toBe(false);
+    expect((result as { error: string }).error).toMatch(
+      /takes its value from "amount"/
+    );
+    expect(mockWriteContractCore).not.toHaveBeenCalled();
+    expect(mockWithStepValueCap).not.toHaveBeenCalled();
+  });
+
+  it("accepts a separate ethValue that equals the declared input", async () => {
+    arrange();
+    registerEncodeTransform(
+      "compound",
+      "supply",
+      "ethValue",
+      weiToEther,
+      "weiToEther"
+    );
+    mockGetProtocol.mockReturnValue({
+      ...COMPOUND_PROTOCOL,
+      actions: [
+        {
+          ...COMPOUND_PROTOCOL.actions[0],
+          payable: true,
+          payableValue: { fromInput: "amount" },
+        },
+      ],
+    });
+
+    const result = await protocolWriteStep(makeInput({ ethValue: "1000000" }));
+
+    expect(result.success).toBe(true);
+    const coreCall = (mockWriteContractCore as Mock).mock.calls[0][0];
+    expect(coreCall.ethValue).toBe("0.000000000001");
   });
 
   it("does not invoke the transform on an empty ethValue", async () => {

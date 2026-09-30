@@ -84,7 +84,10 @@ function ActionRow({
         {action.inputs.length > 0 ? (
           <p className="mt-1 text-muted-foreground text-xs">
             Inputs:{" "}
-            {action.inputs.map((inp) => `${inp.name} (${inp.type})`).join(", ")}
+            {action.inputs
+              .filter((inp) => !inp.payer)
+              .map((inp) => `${inp.name} (${inp.type})`)
+              .join(", ")}
           </p>
         ) : (
           <p className="mt-1 text-muted-foreground text-xs">
