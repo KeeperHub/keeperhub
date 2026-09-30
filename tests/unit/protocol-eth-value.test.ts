@@ -67,6 +67,7 @@ describe("readPayableValue", () => {
     expect(readPayableValue({ nativeFee: FEE }, OFT_SEND)).toEqual({
       ok: true,
       value: FEE,
+      field: "nativeFee",
     });
   });
 
@@ -75,11 +76,11 @@ describe("readPayableValue", () => {
     // when it says the same number, or when it is absent/blank.
     expect(
       readPayableValue({ nativeFee: FEE, ethValue: FEE }, OFT_SEND)
-    ).toEqual({ ok: true, value: FEE });
+    ).toEqual({ ok: true, value: FEE, field: "nativeFee" });
     for (const blank of [undefined, null, "", "   "]) {
       expect(
         readPayableValue({ nativeFee: FEE, ethValue: blank }, OFT_SEND)
-      ).toEqual({ ok: true, value: FEE });
+      ).toEqual({ ok: true, value: FEE, field: "nativeFee" });
     }
   });
 
@@ -95,13 +96,22 @@ describe("readPayableValue", () => {
     expect(readPayableValue({ ethValue: "0.25" }, WRAP)).toEqual({
       ok: true,
       value: "0.25",
+      field: "ethValue",
     });
     // A config key spelled like the send's fee input is not a value source
     // here: without fromInput the only source is ethValue, exactly as
     // before the hook existed.
     expect(
       readPayableValue({ nativeFee: "999", ethValue: "0.25" }, WRAP)
-    ).toEqual({ ok: true, value: "0.25" });
+    ).toEqual({ ok: true, value: "0.25", field: "ethValue" });
+    // And on an unresolvable action the field is still ethValue, so a
+    // wrong-unit error names the field the caller typed it into.
+    expect(
+      readPayableValue(
+        { ethValue: "0.25" },
+        { ...OFT_SEND, functionName: "sendRenamed" }
+      )
+    ).toEqual({ ok: true, value: "0.25", field: "ethValue" });
   });
 
   it("refuses a fromInput action that registers no weiToEther on ethValue", () => {

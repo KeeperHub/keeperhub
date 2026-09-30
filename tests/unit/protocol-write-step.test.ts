@@ -1106,7 +1106,7 @@ describe("protocolWriteStep", () => {
       ]);
     });
 
-    it("returns Invalid ethValue when the fee input cannot be converted", async () => {
+    it("returns Invalid nativeFee when the fee input cannot be converted", async () => {
       arrangeOftSend();
 
       const result = await protocolWriteStep(
@@ -1114,14 +1114,15 @@ describe("protocolWriteStep", () => {
           _actionType: "layerzero/oft-send",
           // Ether typed into the wei-typed fee input: weiToEther throws
           // and the step returns it as a failure instead of letting it
-          // escape "use step", matching the execute routes.
+          // escape "use step", matching the execute routes. The error
+          // names nativeFee because that is the field the caller typed.
           nativeFee: "0.001",
         })
       );
 
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.error).toMatch(/Invalid ethValue/);
+        expect(result.error).toMatch(/Invalid nativeFee/);
       }
       expect(mockWriteContractCore).not.toHaveBeenCalled();
       expect(mockWithStepValueCap).not.toHaveBeenCalled();

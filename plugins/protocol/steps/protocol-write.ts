@@ -324,7 +324,7 @@ export async function protocolWriteStep(
     } catch (err) {
       return {
         success: false,
-        error: `Invalid ethValue: ${err instanceof Error ? err.message : String(err)}`,
+        error: `Invalid ${payableValue.field}: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
     if (!transformedEthValue.ok) {

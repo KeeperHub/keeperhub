@@ -314,11 +314,14 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
 
     // weiToEther throws on a non-integer; the route surfaces it as the
     // caller's error (400, key released) rather than a 500, and never
-    // sends 0.01 wei or 0.01 ether.
+    // sends 0.01 wei or 0.01 ether. The error names nativeFee, the field
+    // the caller typed the ether amount into.
     const response = await post(["layerzero", "oft-send"], sendBody("0.01"));
 
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toMatch(/integer wei/);
+    const data = await response.json();
+    expect(data.error).toMatch(/Invalid nativeFee/);
+    expect(data.error).toMatch(/integer wei/);
     expect(checkAndReserveExecutionMock).not.toHaveBeenCalled();
     expect(writeContractCoreMock).not.toHaveBeenCalled();
     expect(recordIdempotentResponseMock.mock.calls[0][2]).toBe("release");

@@ -63,7 +63,7 @@ describe("generateCalldataForWorkflow: a protocol write's value field", () => {
     });
   });
 
-  it("refuses ether typed into the OFT Send wei field", () => {
+  it("refuses ether typed into the OFT Send wei field, naming nativeFee", () => {
     const result = generateCalldataForWorkflow(
       [
         node("protocol/protocol-write", {
@@ -74,6 +74,7 @@ describe("generateCalldataForWorkflow: a protocol write's value field", () => {
       {}
     );
     expect(result.success).toBe(false);
+    expect((result as { error?: string }).error).toMatch(/Invalid nativeFee/);
   });
 
   it("refuses a separate ethValue that disagrees with the OFT Send's nativeFee", () => {

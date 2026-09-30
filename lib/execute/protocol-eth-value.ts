@@ -58,11 +58,11 @@ export function findProtocolAction(
 export function readPayableValue(
   source: Record<string, unknown>,
   meta: ProtocolActionRef
-): { ok: true; value: unknown } | { ok: false; error: string } {
+): { ok: true; value: unknown; field: string } | { ok: false; error: string } {
   const action = findProtocolAction(meta);
   const fromInput = action?.payableValue?.fromInput;
   if (!(action && fromInput)) {
-    return { ok: true, value: source.ethValue };
+    return { ok: true, value: source.ethValue, field: "ethValue" };
   }
   if (
     getEncodeTransformKind(meta.protocolSlug, action.slug, "ethValue") !==
@@ -86,7 +86,7 @@ export function readPayableValue(
       error: `Refusing to send a payable value: this action takes its value from "${fromInput}", and the separate ethValue (${String(explicit)}) differs from it. Remove ethValue or make it equal to ${fromInput}.`,
     };
   }
-  return { ok: true, value: derived };
+  return { ok: true, value: derived, field: fromInput };
 }
 
 export type EthValueTransformResult =

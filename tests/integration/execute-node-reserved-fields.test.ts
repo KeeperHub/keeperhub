@@ -435,7 +435,10 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
     );
 
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toMatch(/integer wei/);
+    const data = await response.json();
+    // The error names nativeFee, the field the caller typed the ether in.
+    expect(data.error).toMatch(/Invalid nativeFee/);
+    expect(data.error).toMatch(/integer wei/);
     expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
     expect(mocks.stepFn).not.toHaveBeenCalled();
   });

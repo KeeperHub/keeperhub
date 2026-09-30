@@ -189,7 +189,7 @@ function protocolWriteEtherValue(
     // Wrong unit (ether typed into a wei field): the caller's mistake.
     return {
       ok: false,
-      error: `Invalid ethValue: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Invalid ${payableValue.field}: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }

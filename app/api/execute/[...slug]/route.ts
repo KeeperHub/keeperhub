@@ -270,7 +270,7 @@ async function executeProtocolAction(
     // wei field). That is the caller's mistake, not a server fault.
     transformedEthValue = {
       ok: false,
-      error: `Invalid ethValue: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Invalid ${payableValue.field}: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
   if (!transformedEthValue.ok) {
