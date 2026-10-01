@@ -6,6 +6,7 @@ import {
   type ExecutionUsagePeriodSource,
   executionUsagePeriods,
   organizationSubscriptions,
+  overageBillingRecords,
 } from "@/lib/db/schema";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
 import { startOfCurrentMonthUtc } from "./execution-limit-core";
@@ -648,11 +649,19 @@ export async function getRecordedPeriodKeys(
 /**
  * The provider cycles that already account for usage inside a span.
  *
- * Two sources, because neither alone is complete. The `subscription` rows in
- * this table are the cycles actually recorded, which is what the close must
+ * Three sources, because no one of them is complete. The `subscription` rows
+ * in this table are the cycles actually recorded, which is what the close must
  * not duplicate. The live period columns cover the cycle currently open or
  * just closed, which `handleScan` is about to record but may not have yet, and
  * which is the exact window a churned organization keeps forever.
+ *
+ * `overage_billing_records` covers a cycle that was billed before this table
+ * recorded anything. Without it such a cycle is unknown here, the months
+ * around it read as predating every cycle the organization has, and the close
+ * writes a zero-charge month row straight across a window the customer was
+ * charged for. The status is deliberately not filtered: a pending or failed
+ * record is still a provider cycle with that exact window, and the billing
+ * path owns it.
  */
 export async function getProviderCoverage(
   organizationIds: string[],
@@ -663,7 +672,7 @@ export async function getProviderCoverage(
     return new Map();
   }
 
-  const [recorded, subs] = await Promise.all([
+  const [recorded, subs, billed] = await Promise.all([
     db
       .select({
         organizationId: executionUsagePeriods.organizationId,
@@ -689,6 +698,20 @@ export async function getProviderCoverage(
       .where(
         inArray(organizationSubscriptions.organizationId, organizationIds)
       ),
+    db
+      .select({
+        organizationId: overageBillingRecords.organizationId,
+        periodStart: overageBillingRecords.periodStart,
+        periodEnd: overageBillingRecords.periodEnd,
+      })
+      .from(overageBillingRecords)
+      .where(
+        and(
+          inArray(overageBillingRecords.organizationId, organizationIds),
+          lt(overageBillingRecords.periodStart, spanEnd),
+          gt(overageBillingRecords.periodEnd, spanStart)
+        )
+      ),
   ]);
 
   const coverage = new Map<string, CoveredInterval[]>();
@@ -708,6 +731,9 @@ export async function getProviderCoverage(
     if (row.periodStart !== null && row.periodEnd !== null) {
       add(row.organizationId, row.periodStart, row.periodEnd);
     }
+  }
+  for (const row of billed) {
+    add(row.organizationId, row.periodStart, row.periodEnd);
   }
   return coverage;
 }
