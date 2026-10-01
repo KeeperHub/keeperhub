@@ -1547,7 +1547,7 @@ export function registerTools(
 
   server.tool(
     "get_wallet_integration",
-    "Get details for a specific wallet integration. Call list_integrations first to find the integrationId; its response already tells you which integrations are type 'web3'. Required for web3 write actions like fund transfers and contract writes. Credential values are never included in the response.",
+    "Get details for a specific wallet integration. Call list_integrations first to find the integrationId; its response already tells you which integrations are type 'web3'. Use this to confirm the organization has a wallet configured before building a web3 write. Write actions never take an integrationId of their own: they resolve the signing wallet from organization policy, or from the node's web3Connection. Credential values are never included in the response.",
     {
       integrationId: z
         .string()

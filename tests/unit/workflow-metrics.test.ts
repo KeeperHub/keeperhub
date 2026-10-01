@@ -240,6 +240,14 @@ describe("Workflow Metrics Instrumentation", () => {
   });
 
   describe("detectTriggerType", () => {
+    it("attributes native Pyth workflow metrics to the upstream trigger", () => {
+      expect(
+        detectTriggerType([
+          { data: { type: "trigger", config: { triggerType: "Pyth Price" } } },
+        ])
+      ).toBe("upstream");
+    });
+
     it("should detect webhook trigger", () => {
       const nodes = [
         { data: { type: "trigger", config: { triggerType: "Webhook" } } },

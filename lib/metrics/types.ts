@@ -302,7 +302,8 @@ export type TriggerType =
   | "schedule"
   | "block"
   | "event"
-  | "transfer";
+  | "transfer"
+  | "upstream";
 
 export const TRIGGER_TYPES: ReadonlySet<TriggerType> = new Set<TriggerType>([
   "manual",
@@ -312,6 +313,7 @@ export const TRIGGER_TYPES: ReadonlySet<TriggerType> = new Set<TriggerType>([
   "block",
   "event",
   "transfer",
+  "upstream",
 ]);
 
 export function isTriggerType(value: unknown): value is TriggerType {

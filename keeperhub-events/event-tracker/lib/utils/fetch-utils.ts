@@ -25,11 +25,14 @@ export function signHmacHeaders(
   };
 }
 
-export async function fetchActiveWorkflows(): Promise<SyncData | null> {
+export async function fetchActiveWorkflows(
+  signal?: AbortSignal,
+): Promise<SyncData | null> {
   const url = `${KEEPERHUB_API_URL}/api/workflows/events?active=true`;
   try {
     const response = await fetch(url, {
       headers: signHmacHeaders("GET", url, ""),
+      signal,
     });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);

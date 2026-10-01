@@ -1,8 +1,15 @@
 import "server-only";
-import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
+import {
+  computeMedian,
+  failed,
+  parseJsonArray,
+  sortBigIntsAscending,
+  splitValueList,
+} from "./decimal-core";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -126,12 +133,6 @@ function isBinaryPostOperation(value: string): value is BinaryPostOperation {
   return BINARY_POST_OPS_SET.has(value);
 }
 
-// ─── Error helpers ──────────────────────────────────────────────────────────
-
-function failedAggregation(error: string): AggregateResult {
-  return { success: false, error, errorClass: ExecutionErrorType.USER };
-}
-
 // ─── Arithmetic implementations ─────────────────────────────────────────────
 
 const NUMBER_ARITHMETIC: ArithmeticOperations<number> = {
@@ -155,16 +156,7 @@ const BIGINT_ARITHMETIC: ArithmeticOperations<bigint> = {
   multiply: (a, b) => a * b,
   divide: (a, b) => a / b,
   lessThan: (a, b) => a < b,
-  sortAscending: (values) =>
-    [...values].sort((a, b) => {
-      if (a < b) {
-        return -1;
-      }
-      if (a > b) {
-        return 1;
-      }
-      return 0;
-    }),
+  sortAscending: sortBigIntsAscending,
   fromLength: (n) => BigInt(n),
   toString: (a) => a.toString(),
 };
@@ -236,25 +228,6 @@ function resolveFieldPath(obj: unknown, path: string): unknown {
 
 // ─── Value extraction ───────────────────────────────────────────────────────
 
-function parseJsonToArray(input: string): unknown[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(input);
-  } catch {
-    throw new Error(
-      "arrayInput is not valid JSON. Expected a JSON array, e.g. [1, 2, 3]."
-    );
-  }
-
-  if (Array.isArray(parsed)) {
-    return parsed;
-  }
-
-  throw new Error(
-    "arrayInput must be a JSON array. If your upstream node returns an object, reference the array field directly in your template variable, e.g. {{@node:Label.rows}} instead of {{@node:Label}}."
-  );
-}
-
 function collectNumericValues(
   items: unknown[],
   fieldPath: string | undefined
@@ -274,12 +247,12 @@ function extractArrayValues(
   arrayInput: string,
   fieldPath: string | undefined
 ): NumericValue[] {
-  const items = parseJsonToArray(arrayInput);
+  const items = parseJsonArray(arrayInput, "arrayInput");
   return collectNumericValues(items, fieldPath);
 }
 
 function extractExplicitValues(explicitValues: string): NumericValue[] {
-  const parts = explicitValues.split(EXPLICIT_SEPARATOR);
+  const parts = splitValueList(explicitValues, EXPLICIT_SEPARATOR);
   const values: NumericValue[] = [];
   for (const part of parts) {
     const numericValue = parseUnknownToNumericValue(part);
@@ -327,18 +300,6 @@ function findExtremeValue<T>(
     }
   }
   return extreme;
-}
-
-function computeMedian<T>(values: T[], arithmetic: ArithmeticOperations<T>): T {
-  const sorted = arithmetic.sortAscending(values);
-  const midIndex = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 0) {
-    return arithmetic.divide(
-      arithmetic.addition(sorted[midIndex - 1], sorted[midIndex]),
-      arithmetic.two
-    );
-  }
-  return sorted[midIndex];
 }
 
 function computeAggregation<T>(
@@ -463,7 +424,7 @@ function parseInputValues(
 ): NumericValue[] | AggregateResult {
   if (input.inputMode === "array") {
     if (!input.arrayInput) {
-      return failedAggregation(
+      return failed(
         "arrayInput is required in array mode. Reference an upstream node output containing a JSON array."
       );
     }
@@ -472,14 +433,14 @@ function parseInputValues(
 
   if (input.inputMode === "explicit") {
     if (!input.explicitValues) {
-      return failedAggregation(
+      return failed(
         "explicitValues is required in explicit mode. Provide comma-separated or newline-separated values."
       );
     }
     return extractExplicitValues(input.explicitValues);
   }
 
-  return failedAggregation(
+  return failed(
     `Invalid inputMode "${input.inputMode}". Must be "array" or "explicit".`
   );
 }
@@ -492,7 +453,7 @@ function validatePostOperation(
     return null;
   }
   if (!VALID_POST_OPERATIONS.has(postOperation)) {
-    return failedAggregation(
+    return failed(
       `Invalid postOperation "${postOperation}". Must be one of: ${ALL_POST_OPERATIONS.join(", ")}.`
     );
   }
@@ -507,7 +468,7 @@ function validatePostOperation(
         postOperation === "round-decimals"
           ? "postDecimalPlaces"
           : "postOperand";
-      return failedAggregation(
+      return failed(
         `${fieldName} is required and must be a valid number for "${postOperation}" post-operation.`
       );
     }
@@ -527,7 +488,7 @@ function buildOperationLabel(input: AggregateCoreInput): string {
 function stepHandler(input: AggregateCoreInput): AggregateResult {
   try {
     if (!isValidOperation(input.operation)) {
-      return failedAggregation(
+      return failed(
         `Invalid operation "${input.operation}". Must be one of: ${AGGREGATE_OPERATIONS.join(", ")}.`
       );
     }
@@ -605,7 +566,7 @@ function stepHandler(input: AggregateCoreInput): AggregateResult {
       inputCount: parsed.length,
     };
   } catch (error) {
-    return failedAggregation(`Aggregation failed: ${getErrorMessage(error)}`);
+    return failed(`Aggregation failed: ${getErrorMessage(error)}`);
   }
 }
 

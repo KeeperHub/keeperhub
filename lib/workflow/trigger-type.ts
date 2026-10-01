@@ -30,6 +30,12 @@ const BY_CONFIG_VALUE: Readonly<Record<string, TriggerType>> = {
   event: "event",
   block: "block",
   transfer: "transfer",
+  // The editor labels this one "Pyth Price"; the metric has always called the
+  // family "upstream". Naming it here rather than only in the metric is what
+  // lets a rule about it be written at all: an unmapped trigger is absent, and
+  // an absent fact cannot satisfy an allow, so every Pyth run would be refused
+  // by any policy that conditions on how a run started.
+  "pyth price": "upstream",
 };
 
 type TriggerNode = {

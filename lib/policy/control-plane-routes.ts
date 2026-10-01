@@ -269,6 +269,12 @@ export const CONTROL_PLANE_ROUTES: Readonly<
   "/api/internal/executions/[executionId]": {
     PATCH: ungoverned("internal service call"),
   },
+  // The observer calls this to report a price and start the run it triggers.
+  // The run itself is still checked node by node, so governing the trigger
+  // would decide the same question twice from worse facts.
+  "/api/internal/pyth-triggers": {
+    POST: ungoverned("internal service call"),
+  },
   "/api/internal/schedules/[scheduleId]": {
     PATCH: ungoverned("internal service call"),
   },

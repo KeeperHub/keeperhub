@@ -17,6 +17,7 @@ No credentials or setup required -- this is a pure computation node.
 | Compare With Tolerance | Compare an actual value against an expected value with a percentage or absolute tolerance |
 | Treasury Runway       | Calculate reserve-adjusted runway, recovery funding and treasury status             |
 | Format Number         | Turn a raw integer or decimal into a readable string                               |
+| Multi-Source Consensus Tolerance | Check that N oracle or price feed readings all agree within a tolerance |
 
 ## Aggregate
 
@@ -217,6 +218,66 @@ Turns a raw integer or decimal into a readable string: scales down token decimal
 
 ---
 
+## Multi-Source Consensus Tolerance
+
+Checks that several oracle or price feed readings agree. Every pair of sources is compared against the tolerance, so a single divergent feed breaks consensus wherever it sits in the list. All arithmetic is BigInt based, so WAD and RAD magnitude readings compare without float precision loss.
+
+### Inputs
+
+| Input | Required | Description |
+| ----- | -------- | ----------- |
+| values | Yes | One source value per line, or a JSON array. A comma inside a value is read as a thousands separator, so keep each source on its own line |
+| mode | Yes | `percent` (the default) or `absolute` |
+| tolerance | Yes | In percent mode a percentage, so `1` means one percent between any two sources. In absolute mode, the same units as the values |
+| minSources | No | How many sources the check requires. Two is the floor, so a lower value is treated as 2. Default 2 |
+| precision | No | Decimal places used when formatting `maxPercentDeviation`. Default 6 |
+
+### Outputs
+
+| Output | Description |
+| ------ | ----------- |
+| inConsensus | True when every pair of sources is inside the tolerance |
+| sourceCount | Number of sources evaluated |
+| maxDeviation | Largest difference found between any two sources |
+| maxPercentDeviation | Largest percentage difference between any pair, relative to the larger absolute value of that pair. Rounded up at the configured precision, so `0` means every source agreed exactly |
+| median | Median across all sources, including any that broke consensus |
+| values | The source values as they were read, in input order |
+| tolerance | The tolerance that was applied |
+| mode | `percent` or `absolute` |
+| error | Error message if the consensus check failed |
+
+### Notes
+
+- A pair is measured against the larger of its two absolute values, so for `-300` and `100` the base is 300. The verdict and `maxPercentDeviation` stay the same when the sources are reordered.
+- `maxPercentDeviation` is the largest ratio across every pair, which is not always the pair with the largest `maxDeviation` once the sources have mixed signs.
+- A difference exactly equal to the tolerance counts as in consensus.
+- Fewer sources than `minSources` is an error rather than a `false` verdict, so a feed that returned nothing fails the step instead of passing a one source check. Read `success` alongside `inConsensus` when a missing feed needs its own alert branch.
+- `median` covers every source, including ones outside the tolerance. Check `inConsensus` before you act on it.
+- An even number of sources returns the exact midpoint of the two middle readings, negative values included.
+
+### Example
+
+```
+Trigger (Schedule, every 5m)
+-> Read Contract (Chronicle): read the price
+-> Read Contract (Chainlink): latestAnswer
+-> Read Contract (Pyth): read the price
+
+-> Multi-Source Consensus Tolerance:
+     values:
+       {{@chronicle:Read Contract.result}}
+       {{@chainlink:Read Contract.result}}
+       {{@pyth:Read Contract.result}}
+     mode: percent
+     tolerance: 1
+     minSources: 3
+
+-> Condition: {{@consensus:Multi-Source Consensus Tolerance.inConsensus}} == false
+-> Discord: "Oracles diverged by {{@consensus:Multi-Source Consensus Tolerance.maxPercentDeviation}}% (median {{@consensus:Multi-Source Consensus Tolerance.median}})"
+```
+
+---
+
 ## Example Workflows
 
 ### Sum Token Balances Across Liquidity Pools (Explicit Mode)
@@ -332,7 +393,7 @@ Trigger (Schedule, daily)
 
 ### Median Price from Multiple Oracles
 
-Use median instead of average to filter outlier values from multiple on-chain price feeds.
+Take the median of several on-chain price feeds, and only use it when the feeds agree. Multi-Source Consensus Tolerance does both in one node: it checks every pair against the tolerance and returns the median of the readings.
 
 ```
 Trigger (Event: PriceUpdated)
@@ -342,19 +403,22 @@ Trigger (Event: PriceUpdated)
 -> Read Contract (Oracle 4): latestAnswer
 -> Read Contract (Oracle 5): latestAnswer
 
--> Aggregate:
-     operation: median
-     inputMode: explicit
-     explicitValues:
+-> Multi-Source Consensus Tolerance:
+     values:
        {{@o1:Read Contract.result}}
        {{@o2:Read Contract.result}}
        {{@o3:Read Contract.result}}
        {{@o4:Read Contract.result}}
        {{@o5:Read Contract.result}}
+     mode: percent
+     tolerance: 1
+     minSources: 5
 
--> Condition: |{{@med:Aggregate.result}} - {{@prev:State Recall.value}}| > threshold
--> Discord: "Median oracle price: {{@med:Aggregate.result}} (from {{@med:Aggregate.inputCount}} oracles)"
+-> Condition: {{@consensus:Multi-Source Consensus Tolerance.inConsensus}} == true
+-> Discord: "Median oracle price: {{@consensus:Multi-Source Consensus Tolerance.median}} (from {{@consensus:Multi-Source Consensus Tolerance.sourceCount}} oracles)"
 ```
+
+Aggregate with `operation: median` is still the simpler choice when you only want the middle value and do not need to know whether the feeds agree.
 
 ### Product for Compound Growth Factors
 

@@ -321,6 +321,88 @@ describe("workflow-codegen condition validation", () => {
       expect(result.code).not.toContain("stale");
     });
   });
+
+  describe("degenerate rule groups", () => {
+    // The editor writes both keys on every edit, so a builder with nothing usable in it
+    // reaches codegen as an empty group beside the "true" it generated. Branching on that
+    // would send every run down the true side of a gate nobody configured.
+    it("should refuse a group with no usable rule beside its derived 'true'", () => {
+      const nodes: WorkflowNode[] = [
+        createTriggerNode("trigger-1"),
+        {
+          id: "condition-1",
+          type: "action",
+          position: { x: 0, y: 100 },
+          data: {
+            label: "Empty Builder",
+            type: "action",
+            config: {
+              actionType: "Condition",
+              condition: "true",
+              conditionConfig: { group: { id: "g1", logic: "AND", rules: [] } },
+            },
+          },
+        },
+        createActionNode("action-1"),
+      ];
+
+      const edges: WorkflowEdge[] = [
+        createEdge("trigger-1", "condition-1"),
+        createEdge("condition-1", "action-1", "true"),
+      ];
+
+      const result = generateWorkflowCode(nodes, edges);
+      expect(result.validationErrors?.[0]).toMatch(
+        CONDITION_NOT_CONFIGURED_REGEX
+      );
+      expect(result.code).not.toContain("if (true)");
+    });
+
+    it("should refuse a half-typed rule beside its derived 'true'", () => {
+      const nodes: WorkflowNode[] = [
+        createTriggerNode("trigger-1"),
+        {
+          id: "condition-1",
+          type: "action",
+          position: { x: 0, y: 100 },
+          data: {
+            label: "Half Typed",
+            type: "action",
+            config: {
+              actionType: "Condition",
+              condition: "true",
+              conditionConfig: {
+                group: {
+                  id: "g1",
+                  logic: "AND",
+                  rules: [
+                    {
+                      id: "r1",
+                      leftOperand: "{{@trigger-1:Manual Trigger.value}}",
+                      operator: ">",
+                      rightOperand: "",
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+        createActionNode("action-1"),
+      ];
+
+      const edges: WorkflowEdge[] = [
+        createEdge("trigger-1", "condition-1"),
+        createEdge("condition-1", "action-1", "true"),
+      ];
+
+      const result = generateWorkflowCode(nodes, edges);
+      expect(result.validationErrors?.[0]).toMatch(
+        CONDITION_NOT_CONFIGURED_REGEX
+      );
+      expect(result.code).not.toContain("if (true)");
+    });
+  });
 });
 
 /**

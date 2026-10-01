@@ -305,7 +305,7 @@ and the authoritative safe first-write sequence.
 | Tool | Description |
 |------|-------------|
 | `list_integrations` | List configured integrations (credentials) for the organization. |
-| `get_wallet_integration` | Get details for a wallet integration, required for web3 write actions. |
+| `get_wallet_integration` | Get details for a wallet integration. Confirms the organization has a wallet configured; write action nodes never carry an integrationId of their own. |
 
 ### Documentation
 
@@ -413,6 +413,23 @@ Conditions reference previous node outputs using template syntax: `{{@nodeId:Lab
 `tokenConfig` is a token-select value (which token on which network), not a bare address. Write actions require the organization's wallet integration to be configured; there is no per-action `walletId` field. Use `get_wallet_integration` to confirm the wallet is set up.
 
 The `network` field accepts chain IDs as strings: `"1"` (Ethereum mainnet), `"11155111"` (Sepolia), `"8453"` (Base), `"42161"` (Arbitrum), `"137"` (Polygon).
+
+### `web3Connection` field
+
+Write actions take an optional `web3Connection` that selects which of the
+organization's signers the transaction is sent from:
+
+| Value | Signer |
+|-------|--------|
+| omitted, `""`, or `"default"` | Organization policy for that chain: the configured Safe with its active role, the configured Safe owner-signed when no role is active, or the organization EOA when no Safe is active there. All three values are the same branch. |
+| `"eoa"` | The Turnkey EOA directly, bypassing the organization's Safe policy. |
+| `"safe:<safeWalletId>"` | A specific Safe belonging to the organization. |
+
+Leave it unset unless you intend to override organization policy for that
+node. There is no other per-node signer field: `integrationId` is a database
+integration id and is **not** read by any web3 step, so setting it on a
+`web3/*` node has no effect on which wallet signs. `validate_workflow` warns
+when it is present on a write node.
 
 ### `abiFunction` field
 

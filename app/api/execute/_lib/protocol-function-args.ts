@@ -1,5 +1,9 @@
 import "server-only";
 
+import {
+  isSolidityArrayType,
+  normalizeProtocolArrayValue,
+} from "@/lib/protocol-array-value";
 import { getProtocol, type ProtocolActionInput } from "@/lib/protocol-registry";
 
 export type BuildProtocolFunctionArgsResult =
@@ -13,7 +17,7 @@ function isBlank(value: unknown): boolean {
 function resolveInputValue(
   inp: ProtocolActionInput,
   raw: unknown
-): { ok: true; value: string } | { ok: false; error: string; field: string } {
+): { ok: true; value: unknown } | { ok: false; error: string; field: string } {
   // Match buildInputField in lib/protocol-registry.ts:
   // isRequired = required ?? (default === undefined). Reject blank required
   // fields first; apply registry defaults only for optional blanks.
@@ -28,9 +32,18 @@ function resolveInputValue(
       };
     }
     if (inp.default !== undefined) {
-      return { ok: true, value: String(inp.default) };
+      return {
+        ok: true,
+        value: normalizeProtocolArrayValue(String(inp.default), inp.type),
+      };
     }
     return { ok: true, value: "" };
+  }
+
+  // An array input keeps its elements: flattening it to a string leaves
+  // ethers with text where it expects an array.
+  if (isSolidityArrayType(inp.type)) {
+    return { ok: true, value: normalizeProtocolArrayValue(raw, inp.type) };
   }
 
   if (typeof raw === "object") {
@@ -63,7 +76,7 @@ export function buildProtocolFunctionArgs(
     return { ok: true, functionArgs: undefined };
   }
 
-  const args: string[] = [];
+  const args: unknown[] = [];
   for (const inp of protocolAction.inputs) {
     const resolved = resolveInputValue(inp, input[inp.name]);
     if (!resolved.ok) {

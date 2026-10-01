@@ -8,6 +8,7 @@ import {
   Check,
   Clock,
   Play,
+  Radio,
   Webhook,
   XCircle,
 } from "lucide-react";
@@ -38,6 +39,7 @@ export const TriggerNode = memo(({ data, selected, id }: TriggerNodeProps) => {
 
   // Select icon based on trigger type
   const triggerIcons: Record<WorkflowTriggerType, ElementType> = {
+    [WorkflowTriggerEnum.PYTH_PRICE]: Radio,
     [WorkflowTriggerEnum.MANUAL]: Play,
     [WorkflowTriggerEnum.SCHEDULE]: Clock,
     [WorkflowTriggerEnum.WEBHOOK]: Webhook,
