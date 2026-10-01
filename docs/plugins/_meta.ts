@@ -9,6 +9,7 @@ export default {
   safe: "Safe",
   blockscout: "Blockscout",
   "agent-gateway": "Agent Gateway",
+  lucid: "Lucid Agents",
   "aave-v3": "Aave V3",
   "aave-v4": "Aave V4",
   aerodrome: "Aerodrome",
