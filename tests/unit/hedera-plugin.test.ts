@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { assertUrlIsPublic, SsrfBlockedError } from "@/lib/safe-fetch";
 
 const { safeFetchMock } = vi.hoisted(() => ({
@@ -14,7 +15,11 @@ vi.mock("@/lib/safe-fetch", () => ({
   assertUrlIsPublic: vi.fn().mockResolvedValue(undefined),
   SsrfBlockedError: class SsrfBlockedError extends Error {
     name = "SsrfBlockedError";
-    constructor(params: { hostname: string; reason: unknown; message: string }) {
+    constructor(params: {
+      hostname: string;
+      reason: unknown;
+      message: string;
+    }) {
       super(params.message);
     }
   },
@@ -328,7 +333,7 @@ describe("hedera plugin — verify-message", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toMatch(/expected submitter/i);
-      expect(result.errorClass).toBeDefined();
+      expect(result.errorClass).toBe(ExecutionErrorType.USER);
     }
     expect(safeFetchMock).not.toHaveBeenCalled();
   });
@@ -354,7 +359,7 @@ describe("hedera plugin — verify-message", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toMatch(/describes topic/i);
-      expect(result.errorClass).toBeDefined();
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
     }
   });
 
@@ -441,7 +446,7 @@ describe("hedera plugin — verify-message", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toMatch(/does not exist/i);
-      expect(result.errorClass).toBeDefined();
+      expect(result.errorClass).toBe(ExecutionErrorType.USER);
     }
   });
 
@@ -461,7 +466,7 @@ describe("hedera plugin — verify-message", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toMatch(/429/);
-      expect(result.errorClass).toBeDefined();
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
     }
   });
 
@@ -481,6 +486,7 @@ describe("hedera plugin — verify-message", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toMatch(/503/);
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
     }
   });
 
@@ -503,7 +509,7 @@ describe("hedera plugin — verify-message", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toMatch(/rejected the request/i);
-      expect(result.errorClass).toBeDefined();
+      expect(result.errorClass).toBe(ExecutionErrorType.USER);
     }
   });
 
@@ -527,7 +533,7 @@ describe("hedera plugin — verify-message", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toMatch(/not allowed/i);
-      expect(result.errorClass).toBeDefined();
+      expect(result.errorClass).toBe(ExecutionErrorType.USER);
     }
     expect(safeFetchMock).not.toHaveBeenCalled();
   });
@@ -571,7 +577,7 @@ describe("hedera plugin — verify-message", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toMatch(/could not confirm/i);
-      expect(result.errorClass).toBeDefined();
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
     }
   });
 
@@ -592,7 +598,7 @@ describe("hedera plugin — verify-message", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error).toMatch(/could not confirm/i);
-      expect(result.errorClass).toBeDefined();
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
     }
   });
 
@@ -609,6 +615,7 @@ describe("hedera plugin — verify-message", () => {
     const { verifyMessageStep } = await import(
       "@/plugins/hedera/steps/verify-message"
     );
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
     const result = await verifyMessageStep({
       topicId: TOPIC,
       sequenceNumber: "18",
@@ -620,10 +627,13 @@ describe("hedera plugin — verify-message", () => {
       "testnet.mirrornode.hedera.com/api/v1/topics/0.0.10590142/messages/18"
     );
     expect(init.plugin).toBe("hedera");
-    // The step builds the signal with AbortSignal.timeout(30_000); the delay
-    // itself is not introspectable on the signal, so assert the type here and
-    // exercise the timeout's catch path in the probe-failure cases above.
-    expect(init.signal).toBeInstanceOf(AbortSignal);
+    // Pin the 30s timeout: the spy proves the step arms exactly a 30-second
+    // abort, and the signal handed to safeFetch is the one AbortSignal.timeout
+    // produced — not merely an instance of AbortSignal.
+    expect(timeoutSpy).toHaveBeenCalledTimes(1);
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    expect(init.signal).toBe(timeoutSpy.mock.results[0]?.value);
+    timeoutSpy.mockRestore();
   });
 
   it("network selects which mirror host is queried", async () => {
