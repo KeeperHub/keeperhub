@@ -321,6 +321,12 @@ export const CONTROL_PLANE_ROUTES: Readonly<
     PATCH: ungoverned(POLICY_ESCAPE_HATCH),
     DELETE: ungoverned(POLICY_ESCAPE_HATCH),
   },
+  // Proving who you are in order to edit policy sits inside the same hatch as
+  // the edit. A rule able to refuse the challenge could lock an organization
+  // out of its own rules just as surely as one refusing the write.
+  "/api/organizations/[organizationId]/policies/step-up": {
+    POST: ungoverned(POLICY_ESCAPE_HATCH),
+  },
   "/api/organizations/[organizationId]/policies/simulate": {
     POST: ungoverned(READ_ONLY),
   },

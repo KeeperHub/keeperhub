@@ -7,15 +7,20 @@ import "server-only";
  * guardrail. So reads are admin or owner, and writes are owner only. That is
  * deliberately stricter than the rest of the settings surface.
  *
- * Built on getDualAuthContext so an API key or OAuth token is handled the same
- * way a session is, and a key scoped to a different organization is refused
- * rather than silently reading across the boundary.
+ * Built on getDualAuthContext so an API key or OAuth token can read, and a key
+ * scoped to a different organization is refused rather than silently reading
+ * across the boundary. Writing is narrower still: a session only, and only
+ * inside a window opened by a step-up challenge.
  */
 
 import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { member } from "@/lib/db/schema";
+import {
+  hasPolicyWriteWindow,
+  readPolicyWriteCookie,
+} from "@/lib/mfa/policy-write-window";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { PolicyRole } from "@/lib/policy";
 
@@ -85,6 +90,33 @@ export async function requireOrgPolicyAccess(
       "not_owner",
       "Only the organization owner can change policy"
     );
+  }
+
+  if (mode === "write") {
+    // A credential cannot answer a challenge. An agent holding a key issued by
+    // an owner would otherwise be able to edit the very rules that bound it,
+    // and no amount of step-up would help, because there is nobody to ask. So
+    // policy is changed by a person at a keyboard or not at all.
+    if (auth.authMethod !== "session") {
+      return deny(
+        403,
+        "session_required",
+        "Policy can only be changed from a signed-in session, not with an API key or token"
+      );
+    }
+
+    const open = await hasPolicyWriteWindow({
+      userId: auth.userId,
+      organizationId,
+      token: readPolicyWriteCookie(request),
+    });
+    if (!open) {
+      return deny(
+        403,
+        "step_up_required",
+        "Confirm it is you before changing policy"
+      );
+    }
   }
   if (
     mode === "read" &&
