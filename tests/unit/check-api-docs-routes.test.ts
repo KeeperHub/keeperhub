@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   canonicalizeSamplePath,
@@ -5,7 +7,6 @@ import {
   parseMarkdownEndpoints,
   repoRelative,
 } from "../../scripts/check-api-docs-routes";
-import { join } from "node:path";
 
 const SOURCE = "docs/api/fixture.md";
 
@@ -437,17 +438,23 @@ describe("canonicalizeSamplePath", () => {
 });
 
 describe("repoRelative", () => {
-  it("always produces forward slashes even when given paths with backslashes", () => {
-    // Simulates a path generated on Windows with backslashes
-    const fakeWindowsPath = "C:\\projects\\keeperhub\\docs\\api\\direct-execution.md";
-    // Using a mock relative calculation check
-    expect(fakeWindowsPath.replace(/\\/gu, "/")).toBe("C:/projects/keeperhub/docs/api/direct-execution.md");
+  it("rewrites the backslashes of a Windows-style path", () => {
+    expect(repoRelative("C:\\repo\\docs\\api\\x.md")).toBe(
+      "C:/repo/docs/api/x.md"
+    );
   });
 
-  it("normalises paths relative to REPO_ROOT without backslashes", () => {
-    const testPath = join(process.cwd(), "docs", "api", "test.md");
-    const rel = repoRelative(testPath);
-    expect(rel).not.toContain("\\");
+  it("leaves no backslash in the committed coverage artifact", () => {
+    // CI byte-compares this file against a regeneration, so a Windows-shaped
+    // path committed here is drift the drift check cannot explain.
+    const coverage = JSON.parse(
+      readFileSync(join(process.cwd(), "specs/api-coverage.json"), "utf8")
+    ) as { endpoints: { source: string; route_file: string }[] };
+
+    expect(coverage.endpoints.length).toBeGreaterThan(0);
+    for (const endpoint of coverage.endpoints) {
+      expect(endpoint.source).not.toContain("\\");
+      expect(endpoint.route_file).not.toContain("\\");
+    }
   });
 });
-
