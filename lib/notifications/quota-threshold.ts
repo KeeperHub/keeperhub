@@ -8,6 +8,7 @@ import { getPaygExecutionPriceRaw } from "@/lib/billing/payg/pricing";
 import { getPaygTreasuryOrNull } from "@/lib/billing/payg/treasury";
 import { usdcRawToDecimal } from "@/lib/billing/payg/usdc";
 import type { PlanLimits, PlanName, TierKey } from "@/lib/billing/plans";
+import { confirmQuotaStatus } from "@/lib/billing/quota-threshold";
 import {
   buildQuotaStatus,
   type QuotaStatus,
@@ -199,18 +200,28 @@ function paygAssetUrl(): string {
 /**
  * Send one org's quota warning if it has not already been sent this month.
  *
- * Claims before sending, so a delivery failure is not retried into a duplicate
- * on the next run. Returns null when the org is below every threshold,
- * has no reachable owner, or was already notified.
+ * Confirms the plan, then claims before sending, so a delivery failure is not
+ * retried into a duplicate on the next run. Returns null when the org is below
+ * every threshold on its confirmed plan, has no reachable owner, or was
+ * already notified.
  */
 export async function notifyOrgQuotaThreshold(
-  status: QuotaStatus,
+  candidate: QuotaStatus,
   appUrl: string
 ): Promise<QuotaNotificationResult | null> {
-  const { threshold } = status;
-  if (threshold === null) {
+  if (candidate.threshold === null) {
     return null;
   }
+
+  // Every send goes through here, so this is the one place that can hold the
+  // invariant: nothing is claimed or sent against a plan that was inferred
+  // rather than read. An org whose confirmed plan has no limit, or is no
+  // longer at a threshold, drops out before the claim row is written.
+  const status = await confirmQuotaStatus(candidate);
+  if (status === null || status.threshold === null) {
+    return null;
+  }
+  const { threshold } = status;
 
   const emails = await resolveOwnerEmails(status.organizationId);
   if (emails.length === 0) {

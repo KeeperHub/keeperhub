@@ -112,6 +112,23 @@ describe("Aerodrome Protocol Definition", () => {
     expect(aerodromeDef.events).toHaveLength(7);
   });
 
+  it("describes scalar-array actions using the structured item editor", () => {
+    const vote = aerodromeDef.actions.find((action) => action.slug === "vote");
+    const claimRewards = aerodromeDef.actions.find(
+      (action) => action.slug === "claim-rewards"
+    );
+
+    expect(
+      vote?.inputs.find((input) => input.name === "_poolVote")
+    ).toMatchObject({ label: "Pool Addresses", type: "address[]" });
+    expect(
+      vote?.inputs.find((input) => input.name === "_weights")
+    ).toMatchObject({ label: "Vote Weights", type: "uint256[]" });
+    expect(
+      claimRewards?.inputs.find((input) => input.name === "_gauges")
+    ).toMatchObject({ label: "Gauge Addresses", type: "address[]" });
+  });
+
   it("registers in the protocol registry and is retrievable", () => {
     registerProtocol(aerodromeDef);
     const retrieved = getProtocol("aerodrome");

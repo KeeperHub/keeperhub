@@ -61,6 +61,20 @@ export const FEATURES: Record<FeatureId, FeatureDefinition> = {
     upgradeCta:
       "Upgrade to use actions that call a destination of your choosing.",
   },
+  // Dedicated switch for the Predge plugin so it can be turned off without
+  // flipping the shared action.external-request gate. Predge is a
+  // user-destination action, so it stays at the same "pro" requirement that
+  // the egress fallback would otherwise apply.
+  "action.predge-read-signal": {
+    id: "action.predge-read-signal",
+    name: "Predge Read Signal action",
+    description:
+      "Read a Predge smart-money signal and verify its ed25519 signature inside a workflow.",
+    category: "workflow-action",
+    enabled: true,
+    requiredPlan: "pro",
+    actionTypes: ["predge/read-signal"],
+  },
   "notifications.execution-digest": {
     id: "notifications.execution-digest",
     name: "Execution digest",

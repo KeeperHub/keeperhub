@@ -45,6 +45,13 @@ describe("lido adapter", () => {
     expect(calls[0]?.allowFailure).toBe(true);
   });
 
+  it("lido: Hoodi builds 2 balanceOf calls — stETH and wstETH", () => {
+    const calls = buildLidoCalls(TEST_USER, 560_048);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.target).toBe("0x3508A952176b3c15387C97BE809eaffB1982176a");
+    expect(calls[1]?.target).toBe("0x7E99eE3C66636DE415D2d7C880938F2f40f94De4");
+  });
+
   it("lido: chainId 1 decode emits 2 suppliedAssets with stringified bigint amounts", () => {
     const stEthBalance = BigInt("500000000000000000"); // 0.5 stETH in wei
     const wstEthBalance = BigInt("300000000000000000"); // 0.3 wstETH in wei
@@ -93,6 +100,25 @@ describe("lido adapter", () => {
     expect(pos?.suppliedAssets[0]?.symbol).toBe("wstETH");
     expect(pos?.suppliedAssets[0]?.amount).toBe(String(wstEthBalance));
     expect(pos?.suppliedAssets[0]?.decimals).toBe(18);
+  });
+
+  it("lido: Hoodi decode emits stETH and wstETH assets", () => {
+    const stEthBalance = BigInt("500000000000000000");
+    const wstEthBalance = BigInt("300000000000000000");
+    const positions = decodeLidoResults(
+      [
+        { success: true, returnData: encodeBalance(stEthBalance) },
+        { success: true, returnData: encodeBalance(wstEthBalance) },
+      ],
+      TEST_USER,
+      560_048
+    );
+
+    expect(positions[0]?.chainId).toBe(560_048);
+    expect(positions[0]?.suppliedAssets).toMatchObject([
+      { symbol: "stETH", amount: String(stEthBalance) },
+      { symbol: "wstETH", amount: String(wstEthBalance) },
+    ]);
   });
 
   it("lido: failed sub-call (success: false) skips that token, does not drop others", () => {

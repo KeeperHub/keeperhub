@@ -12,6 +12,7 @@ vi.mock("@/lib/utils", async () =>
 
 const broker = {
   expireDueHeldPayments: vi.fn(),
+  deferBroadcastReconcile: vi.fn(),
   selectDueHeldPayments: vi.fn(),
   claimHeldPayment: vi.fn(),
   markBroadcast: vi.fn(),
@@ -22,6 +23,8 @@ const broker = {
 vi.mock("@/lib/tempo/held-payments", () => ({
   expireDueHeldPayments: (...a: unknown[]) =>
     broker.expireDueHeldPayments(...a),
+  deferBroadcastReconcile: (...a: unknown[]) =>
+    broker.deferBroadcastReconcile(...a),
   selectDueHeldPayments: (...a: unknown[]) =>
     broker.selectDueHeldPayments(...a),
   claimHeldPayment: (...a: unknown[]) => broker.claimHeldPayment(...a),
@@ -40,6 +43,7 @@ vi.mock("@/plugins/tempo/steps/tempo-tx-core", () => ({
 }));
 
 import { processDueHeldPayments } from "@/lib/tempo/broadcast-due";
+import { OnChainPendingError } from "@/lib/web3/onchain-revert";
 
 function row(over: Record<string, unknown> = {}) {
   return {
@@ -61,6 +65,7 @@ beforeEach(() => {
   broker.claimHeldPayment.mockImplementation((id: string) =>
     Promise.resolve(row({ id, status: "broadcasting" }))
   );
+  broker.deferBroadcastReconcile.mockResolvedValue({});
   broker.markBroadcast.mockResolvedValue({});
   broker.markConfirmed.mockResolvedValue({});
   broker.markFailed.mockResolvedValue({});
@@ -102,6 +107,25 @@ describe("processDueHeldPayments - broadcast phase", () => {
     expect(res.failed).toBe(1);
     expect(res.broadcast).toBe(0);
   });
+
+  it("keeps an unreadable send outcome in broadcast, matching the manual route", async () => {
+    // Aligned with releaseHeldPaymentNow: an OnChainPendingError means the
+    // transaction may still land, so the row keeps its hash and the
+    // reconcile phase keeps watching instead of stamping a terminal failure.
+    broker.selectDueHeldPayments.mockResolvedValue([row({ id: "p1" })]);
+    mockBroadcast.mockRejectedValue(
+      new OnChainPendingError({
+        message: "Tempo transaction send outcome could not be determined",
+        transactionHash: "0xhash",
+      })
+    );
+
+    const res = await processDueHeldPayments();
+    expect(broker.markBroadcast).toHaveBeenCalledWith("p1", "0xhash");
+    expect(broker.markFailed).not.toHaveBeenCalled();
+    expect(res.broadcast).toBe(1);
+    expect(res.failed).toBe(0);
+  });
 });
 
 describe("processDueHeldPayments - reconcile phase", () => {
@@ -138,6 +162,18 @@ describe("processDueHeldPayments - reconcile phase", () => {
 
     const res = await processDueHeldPayments();
     expect(broker.markConfirmed).not.toHaveBeenCalled();
+    expect(broker.markFailed).not.toHaveBeenCalled();
+    expect(broker.deferBroadcastReconcile).toHaveBeenCalledWith("p2");
+    expect(res.stillPending).toBe(1);
+  });
+
+  it("rotates an unreadable receipt behind newer broadcast rows", async () => {
+    broker.selectBroadcastToReconcile.mockResolvedValue([
+      row({ id: "p2", status: "broadcast", broadcastTxHash: "0xsent" }),
+    ]);
+    mockCheckReceipt.mockRejectedValue(new Error("rpc unavailable"));
+    const res = await processDueHeldPayments();
+    expect(broker.deferBroadcastReconcile).toHaveBeenCalledWith("p2");
     expect(broker.markFailed).not.toHaveBeenCalled();
     expect(res.stillPending).toBe(1);
   });

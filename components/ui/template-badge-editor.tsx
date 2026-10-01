@@ -185,6 +185,12 @@ export function TemplateBadgeEditor({
     toStringValue(value)
   );
   const shouldUpdateDisplay = useRef(true);
+  // Read from the blur timeout, which would otherwise close over the value and
+  // the internal text as they stood when focus left, 200 ms earlier.
+  const latestValueRef = useRef(value);
+  latestValueRef.current = value;
+  const internalValueRef = useRef(internalValue);
+  internalValueRef.current = internalValue;
   const [selectedNodeId] = useAtom(selectedNodeAtom);
   const [nodes] = useAtom(nodesAtom);
 
@@ -689,6 +695,18 @@ export function TemplateBadgeEditor({
     setTimeout(() => {
       const active = document.activeElement;
       if (active === contentRef.current) {
+        // Focus is back on the editor, so isFocused never goes false - and the
+        // effect that takes an outside value is gated on it, with no remaining
+        // dep that can change. Reconcile here instead. Anything that writes to
+        // the field while it is blurred lands in this window: the Beautify
+        // action does, and the caret restore below hands focus straight back
+        // inside it. Without this the field keeps showing the old text and the
+        // next keystroke serialises that stale DOM over the new value.
+        const pending = toStringValue(latestValueRef.current);
+        if (pending !== internalValueRef.current) {
+          setInternalValue(pending);
+          shouldUpdateDisplay.current = true;
+        }
         return;
       }
       // Focus moved into the autocomplete (search input or option button).

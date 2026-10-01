@@ -35,11 +35,11 @@ const wstEthIface = new ethers.Interface(LIDO_WSTETH_ABI as unknown as any[]);
 /**
  * Build Multicall3 aggregate3 call descriptors for Lido staking balances.
  *
- * On Ethereum (chainId 1): balanceOf for stETH and wstETH (2 calls in order).
- * On L2 chains: balanceOf for wstETH only (1 call).
+ * On chains with a registered stETH contract: balanceOf for stETH and wstETH
+ * (2 calls in order). On other supported chains: balanceOf for wstETH only.
  *
- * getStETHByWstETH is available on wstEthIface for Ethereum (chainId 1) but is
- * NOT called in Phase 51 — L2 wstETH bridges may not expose this function (A6).
+ * getStETHByWstETH is available on the Ethereum wstETH contract but is NOT
+ * called in Phase 51 — L2 wstETH bridges may not expose this function (A6).
  *
  * Returns an empty array if the chain has no registered Lido tokens.
  */
@@ -54,9 +54,9 @@ export function buildLidoCalls(
 
   const calls: AdapterCallDescriptor[] = [];
 
-  if (chainId === 1 && tokens.stETH) {
-    // Ethereum only: stETH is a rebasing ERC20 that exists only on mainnet.
-    // getStETHByWstETH is also available here (wstEthIface) for future use.
+  if (tokens.stETH) {
+    // stETH is available on Ethereum mainnet and Hoodi. getStETHByWstETH is
+    // also available on the Ethereum wstETH contract for future use.
     calls.push({
       target: tokens.stETH,
       allowFailure: true,
@@ -76,8 +76,8 @@ export function buildLidoCalls(
 /**
  * Decode aggregate3 results for Lido balances.
  *
- * On Ethereum (chainId 1), `results` must be aligned as [stETH, wstETH].
- * On L2 chains, `results` must be aligned as [wstETH].
+ * On chains with stETH, `results` must be aligned as [stETH, wstETH]. On
+ * other supported chains, `results` must be aligned as [wstETH].
  *
  * A failed sub-call (success: false) or a zero balance skips that token —
  * soft-miss semantics per SCAN-06. An empty ProtocolPosition is not emitted
@@ -99,10 +99,9 @@ export function decodeLidoResults(
   const suppliedAssets: PositionAsset[] = [];
   let idx = 0;
 
-  if (chainId === 1 && tokens.stETH) {
-    // Ethereum: first result is stETH balanceOf.
-    // Note: getStETHByWstETH is available on the Ethereum wstETH contract
-    // (wstEthIface) but not called here — raw wstETH balance only in Phase 51.
+  if (tokens.stETH) {
+    // First result is stETH balanceOf. getStETHByWstETH is not called here —
+    // raw wstETH balance only in Phase 51.
     const stEthResult = results[idx];
     idx += 1;
 
@@ -111,7 +110,7 @@ export function decodeLidoResults(
       if (balance !== null && balance > BigInt(0)) {
         suppliedAssets.push({
           symbol: "stETH",
-          // biome-ignore lint/style/noNonNullAssertion: guarded by chainId === 1 && tokens.stETH check above
+          // biome-ignore lint/style/noNonNullAssertion: guarded by tokens.stETH check above
           tokenAddress: tokens.stETH!,
           amount: String(balance),
           decimals: 18,

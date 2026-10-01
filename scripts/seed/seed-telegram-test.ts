@@ -30,8 +30,8 @@ import postgres from "postgres";
 import { getDatabaseUrl } from "../../lib/db/connection-utils";
 import { member, users, workflows } from "../../lib/db/schema";
 import { generateId } from "../../lib/utils/id";
+import { SEED_EMAIL } from "@/scripts/lib/dev-seed";
 
-const DEV_EMAIL = process.env.SEED_EMAIL ?? "dev@keeperhub.local";
 const WORKFLOW_NAME = "Telegram credential-fetcher test";
 
 const connectionString = getDatabaseUrl();
@@ -77,12 +77,12 @@ async function seed(): Promise<void> {
   const existingUser = await db
     .select({ id: users.id })
     .from(users)
-    .where(eq(users.email, DEV_EMAIL))
+    .where(eq(users.email, SEED_EMAIL))
     .limit(1);
 
   if (!existingUser[0]) {
     console.error(
-      `User "${DEV_EMAIL}" not found. Run 'pnpm tsx scripts/seed/seed-user.ts' first, or set SEED_EMAIL.`
+      `User "${SEED_EMAIL}" not found. Run 'pnpm tsx scripts/seed/seed-user.ts' first, or set SEED_EMAIL.`
     );
     process.exit(1);
   }
@@ -96,7 +96,7 @@ async function seed(): Promise<void> {
 
   if (!existingMember[0]) {
     console.error(
-      `User "${DEV_EMAIL}" has no organization. Sign in via the UI once to auto-create it, then re-run this script.`
+      `User "${SEED_EMAIL}" has no organization. Sign in via the UI once to auto-create it, then re-run this script.`
     );
     process.exit(1);
   }
@@ -134,7 +134,7 @@ async function seed(): Promise<void> {
     updatedAt: now,
   });
 
-  console.log(`User: ${DEV_EMAIL} (${userId})`);
+  console.log(`User: ${SEED_EMAIL} (${userId})`);
   console.log(`Org:  ${orgId}`);
   console.log(`Workflow created: ${WORKFLOW_NAME}`);
   console.log(`   http://localhost:3000/workflows/${id}`);

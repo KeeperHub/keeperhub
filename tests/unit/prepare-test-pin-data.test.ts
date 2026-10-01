@@ -13,6 +13,12 @@ vi.mock("@/plugins/registry", () => ({
     }
     return out;
   },
+  // A field that renders rather than collects is left out of the pin schema,
+  // since the schema is `additionalProperties: false` and an agent reads it to
+  // decide what it may set.
+  isDisplayOnlyField: (type?: string) =>
+    type !== undefined &&
+    (type.endsWith("-preview") || type.endsWith("-test-node")),
 }));
 
 import {

@@ -3,6 +3,7 @@ import "server-only";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { executionDebt, organizationSubscriptions } from "@/lib/db/schema";
+import { ErrorCategory, logSystemWarn } from "@/lib/logging";
 import {
   countMonthlyExecutionsForDisplay,
   startOfCurrentMonthUtc,
@@ -15,8 +16,8 @@ import {
   parseTierKey,
   type TierKey,
 } from "./plans";
-import { getOrgSubscription } from "./plans-server";
 import { buildQuotaStatus, type QuotaStatus } from "./quota-threshold-core";
+import { resolveOrgPlan } from "./subscription-read";
 
 export {
   buildQuotaStatus,
@@ -39,11 +40,17 @@ export async function getOrgQuotaStatus(
   organizationId: string,
   now: Date = new Date()
 ): Promise<QuotaStatus | null> {
-  const sub = await getOrgSubscription(organizationId);
-  const plan = parsePlanName(sub?.plan);
-  const tier = parseTierKey(sub?.tier);
+  const resolved = await resolveOrgPlan(organizationId);
+  // No banner rather than a free-plan bar drawn for an org whose plan we could
+  // not establish.
+  if (resolved === null) {
+    return null;
+  }
+  const { plan, tier } = resolved;
 
-  if (getPlanLimits(plan, tier, sub?.planOverrides).maxExecutionsPerMonth < 0) {
+  if (
+    getPlanLimits(plan, tier, resolved.planOverrides).maxExecutionsPerMonth < 0
+  ) {
     return null;
   }
 
@@ -57,7 +64,7 @@ export async function getOrgQuotaStatus(
     organizationId,
     plan,
     tier,
-    planOverrides: sub?.planOverrides,
+    planOverrides: resolved.planOverrides,
     used,
     debtExecutions,
     now,
@@ -77,6 +84,64 @@ async function getActiveDebtForOrg(organizationId: string): Promise<number> {
       )
     );
   return rows[0]?.total ?? 0;
+}
+
+/**
+ * Re-resolve the plan against the database and rebuild the status, or return
+ * null when the org is not actually at a threshold.
+ *
+ * Both notification paths build a status from a single subscription read, and
+ * a read that comes back empty is indistinguishable from an org that has no
+ * subscription row, and defaulting it to "free" applies that plan's 5,000
+ * included executions to an org that may have no limit at all. The
+ * Redis cooldown and the claim row are taken downstream of that, so one such
+ * read is enough to send an unlimited org the pay-per-execution email and then
+ * latch it for the rest of the quota month. This runs only on the path that is
+ * about to send, at most twice per org per month, so the extra point lookup is
+ * free.
+ */
+export async function confirmQuotaStatus(
+  status: QuotaStatus
+): Promise<QuotaStatus | null> {
+  const resolved = await resolveOrgPlan(status.organizationId);
+
+  // resolveOrgPlan already logged why. Nothing is claimed or sent against a
+  // plan we could not establish.
+  if (resolved === null) {
+    return null;
+  }
+  const { plan } = resolved;
+
+  // startOfCurrentMonthUtc(periodStart) is periodStart, so rebuilding against
+  // it keeps the confirmed status in the quota month the original was counted
+  // in even if the month turned over in between.
+  const confirmed = buildQuotaStatus({
+    organizationId: status.organizationId,
+    plan,
+    tier: resolved.tier,
+    planOverrides: resolved.planOverrides,
+    used: status.used,
+    debtExecutions: status.debtExecutions,
+    now: status.periodStart,
+  });
+
+  if (plan !== status.plan) {
+    logSystemWarn(
+      ErrorCategory.BILLING,
+      "[QuotaThreshold] Plan changed between counting and sending; using the confirmed plan",
+      undefined,
+      {
+        organization_id: status.organizationId,
+        counted_plan: status.plan,
+        confirmed_plan: plan,
+      }
+    );
+  }
+
+  if (!confirmed) {
+    return null;
+  }
+  return confirmed.threshold === null ? null : confirmed;
 }
 
 type OrgUsageRow = { organizationId: string; used: number };

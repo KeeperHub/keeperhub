@@ -17,6 +17,38 @@ contributor real work on this repo:
 None of those are review problems. They are all answerable in a sentence before
 any code is written.
 
+## Search before you open anything
+
+Search open **and** closed issues, and open pull requests, before you file.
+The pull request half is the one people skip (`is:pr is:open` plus your
+keywords), and it is the one that catches work already in flight.
+
+Three things you can find, none of which needs a new issue:
+
+- **An open issue covers it.** Comment there, and add what it is missing - your
+  reproduction, the surface you hit it on, the version you checked. A second
+  issue for the same fault splits the evidence across two threads.
+- **A closed issue covers it.** The reason is in the closing comment and often
+  still applies. If you have evidence it no longer does, say so on that issue;
+  reopening a thread with new evidence is more useful than a fresh report.
+- **An open pull request already changes it.** Comment on it or review it. A
+  competing pull request for the same lines wastes the other contributor's work
+  as surely as it wastes yours.
+
+**A disagreement with an existing issue belongs in a comment on that issue**,
+not in an issue of your own. Whether the scope is right, whether the plan is
+right, whether it should be fixed at all - that is what the thread is for, and
+it is where triage reads it. A second issue arguing with the first is closed as
+a duplicate, and the argument is lost with it.
+
+Open a new issue when yours is genuinely a different problem - a different root
+cause, or a different surface with its own reproduction - even where the symptom
+looks the same. Say what you found in the search and why yours is separate; that
+saves triage from repeating it.
+
+If an issue is `accepted` and unclaimed, say you are taking it before you start,
+so two people do not build the same thing.
+
 ## When an issue is required
 
 **Required** for anything that changes behaviour:
@@ -25,6 +57,8 @@ any code is written.
 - Database schema or migrations
 - Authentication, permissions, validation, or rate limiting
 - Dependencies added, removed, or upgraded
+- Protocol definitions, contract addresses, ABIs, or the chains a protocol is
+  offered on
 - CI, build, deployment, or environment configuration
 - Pricing, limits, plans, or anything a user is charged for
 - New features and new abstractions
@@ -84,6 +118,38 @@ have silently changed every existing caller's amount by a factor of 1e18,
 because the API's documented unit is ether and the misleading thing is the
 internal function name. That was caught by reading the plan. Unwritten, it would
 have been caught by reading the pull request.
+
+### Contract addresses carry their evidence
+
+An issue that adds a protocol, or adds a chain to one already here, is answered
+from its addresses. So they have to be in it, each with the authoritative source
+it came from - the protocol team's published addresses, their official
+repository, or a verified contract on the block explorer - and each ABI with the
+URL and the version it belongs to.
+
+This is the same standard the rest of this page asks for - *what told you to
+expect it* - applied to a claim about a chain. "Aave V3 is on Base" is an
+assertion; Aave's own deployed-addresses page naming that Pool contract on Base
+is the evidence. The two are not close to each other in value, because the first
+one is sometimes true and reads identically when it is not.
+
+An address is the one kind of mistake here that no reviewer catches by reading.
+It is forty hex digits, it is correct or it is not, and a wrong one is
+indistinguishable from a right one until it reverts on chain. A chain listed in
+a protocol's `addresses` map is a chain users can select
+(`lib/protocol-registry.ts:395`), so the failure is not latent - it belongs to
+whoever picks that chain from the dropdown, in production, holding real funds.
+
+Two specific things, because both have gone wrong here before:
+
+- **A chain the protocol is not deployed on never goes in the map**, including
+  to make local testing easier. If there is no testnet deployment, the tests
+  fork mainnet instead.
+- **Token decimals come from calling `decimals()` on the chain**, not from the
+  symbol and not from the explorer's metadata field. USDC is 6.
+
+The full requirements, including which ABI sources count and in what order, are
+in [CONTRIBUTING.md](CONTRIBUTING.md#protocols-and-contract-addresses).
 
 ### Already filed an issue
 
@@ -170,15 +236,6 @@ pull request saying what it found and what to do. The check reruns on every
 push and edit, but not when the issue's labels change: once `accepted` lands,
 edit the title or re-run the job. A maintainer can apply `no-issue-required` to
 exempt a pull request the rules did not anticipate.
-
-## Continuing an existing issue
-
-Someone may have filed it already. Search open **and** closed issues first - a
-closed one often carries the reason, and reopening that thread with new evidence
-is more useful than a fresh report.
-
-If an issue is `accepted` and unclaimed, say you are taking it before you start,
-so two people do not build the same thing.
 
 ## Security
 

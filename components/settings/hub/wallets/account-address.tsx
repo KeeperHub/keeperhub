@@ -1,7 +1,6 @@
 "use client";
 
 import { Check, Copy, ExternalLink } from "lucide-react";
-import { useState } from "react";
 import { getExplorerAddressUrl } from "@/components/safe/chain-prefixes";
 import {
   Tooltip,
@@ -9,9 +8,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { toChecksumAddress } from "@/lib/address-utils";
+import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
 import { cn } from "@/lib/utils";
-
-const COPIED_FOR_MS = 1500;
 
 /**
  * The full address under an account's name, with the two things anyone wants
@@ -34,15 +32,13 @@ export function AccountAddress({
   const reveal = always
     ? ""
     : "opacity-0 focus-visible:opacity-100 group-hover:opacity-100";
-  const [copied, setCopied] = useState(false);
+  const [copied, markCopied] = useCopiedFlag();
   const display = isEvm ? toChecksumAddress(address) : address;
   const explorerUrl = chainId ? getExplorerAddressUrl(chainId, display) : null;
 
   const copy = (event: React.MouseEvent): void => {
     event.stopPropagation();
-    navigator.clipboard.writeText(display);
-    setCopied(true);
-    setTimeout(() => setCopied(false), COPIED_FOR_MS);
+    markCopied(display);
   };
 
   return (

@@ -1,8 +1,6 @@
 import "server-only";
 
-import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { organizationSubscriptions } from "@/lib/db/schema";
 import { maybeNotifyQuotaThreshold } from "@/lib/notifications/quota-threshold";
 import { getActiveDebtExecutions } from "./execution-debt";
 import {
@@ -24,6 +22,11 @@ import {
   parseTierKey,
   type TierKey,
 } from "./plans";
+import { getOrgSubscription, resolveOrgPlan } from "./subscription-read";
+
+// Kept on this module so every existing importer, and the tests that mock
+// this module, keep working after the reader moved.
+export { getOrgSubscription } from "./subscription-read";
 
 // -- Price ID mapping (server-only, env vars not available in client bundles) --
 
@@ -138,17 +141,6 @@ export function resolveSubscriptionPlan(
   );
 }
 
-export async function getOrgSubscription(
-  organizationId: string
-): Promise<typeof organizationSubscriptions.$inferSelect | undefined> {
-  const rows = await db
-    .select()
-    .from(organizationSubscriptions)
-    .where(eq(organizationSubscriptions.organizationId, organizationId))
-    .limit(1);
-  return rows[0];
-}
-
 export async function getOrgPlan(organizationId: string): Promise<PlanName> {
   const sub = await getOrgSubscription(organizationId);
   if (!sub) {
@@ -258,10 +250,26 @@ export type ExecutionLimitResult =
 export async function checkExecutionLimit(
   organizationId: string
 ): Promise<ExecutionLimitResult> {
-  const sub = await getOrgSubscription(organizationId);
-  const plan = parsePlanName(sub?.plan);
-  const tier = parseTierKey(sub?.tier);
-  const limits = getPlanLimits(plan, tier, sub?.planOverrides);
+  const resolved = await resolveOrgPlan(organizationId);
+
+  // A plan we could not establish must not become the free plan here. That
+  // default gates an unlimited org at 5,000 executions and hands its runs to
+  // pay-as-you-go, which charges its wallet per execution. Admitting without a
+  // downgrade is the smaller error: the executor re-checks authoritatively
+  // before it claims a row, so a genuinely over-limit org is still caught, and
+  // resolveOrgPlan has already reported why the plan is unknown.
+  if (resolved === null) {
+    return {
+      allowed: true,
+      isOverage: false,
+      paygOverflow: false,
+      debtExecutions: 0,
+      effectiveLimit: -1,
+    };
+  }
+
+  const { plan, tier } = resolved;
+  const limits = getPlanLimits(plan, tier, resolved.planOverrides);
 
   if (limits.maxExecutionsPerMonth === -1) {
     // Unlimited plans are unaffected by debt -- skip the query intentionally
@@ -295,7 +303,7 @@ export async function checkExecutionLimit(
     organizationId,
     plan,
     tier,
-    planOverrides: sub?.planOverrides,
+    planOverrides: resolved.planOverrides,
     used,
     debtExecutions,
   });
@@ -305,7 +313,7 @@ export async function checkExecutionLimit(
     used,
     debtExecutions,
     overageEnabled: planDef.overage.enabled,
-    statusAllowsOverage: statusAllowsOverage(sub?.status),
+    statusAllowsOverage: statusAllowsOverage(resolved.status),
   });
 
   switch (outcome) {

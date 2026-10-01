@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const DIRECT_ID_PREFIX_REGEX = /^direct-/;
 
@@ -135,7 +135,11 @@ vi.mock("@/lib/explorer", () => ({
     mockExplorerGetTransactionUrl(...args),
 }));
 
-vi.mock("@/lib/abi/struct-args", () => ({
+// asRawFunctionArgs stays real: it is what decides whether functionArgs is
+// absent, an array or a string to parse, and stubbing it would leave that
+// decision untested. The two shaping helpers remain identity stubs.
+vi.mock("@/lib/abi/struct-args", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/abi/struct-args")>()),
   reshapeArgsForAbi: vi.fn().mockImplementation((args: unknown[]) => args),
   coerceArgsForAbi: vi.fn().mockImplementation((args: unknown[]) => args),
 }));
@@ -217,7 +221,10 @@ vi.mock("@/lib/web3/sponsored-send-error", () => ({
     mockResolveSponsoredSendError(...args),
 }));
 
-vi.mock("@/lib/web3/sponsorship-feature-flag", () => ({
+vi.mock("@/lib/web3/sponsorship-feature-flag", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/web3/sponsorship-feature-flag")
+  >()),
   isGasSponsorshipEnabled: () => mockIsGasSponsorshipEnabled(),
 }));
 
@@ -259,6 +266,7 @@ import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { RpcRelayTransportError } from "@/lib/rpc/providers/transport-error";
 import { parsePriorityFeeGwei } from "@/lib/web3/gas-defaults";
 import { OnChainPendingError } from "@/lib/web3/onchain-revert";
+import { PreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 // Import mocks for assertion
 import { initializeWalletSigner } from "@/lib/web3/wallet-helpers";
 // Import SUT after all mocks
@@ -282,6 +290,7 @@ const VALID_ABI = JSON.stringify([
 
 const MOCK_EXECUTED_CALL = {
   contractAddress: "0x1234567890123456789012345678901234567890",
+  from: "0x00000000000000000000000000000000000000d1",
   functionName: "transfer",
   functionSignature: "transfer(address,uint256)",
   args: { to: "0xrecipient", amount: "1000" },
@@ -662,6 +671,26 @@ describe("writeContractCore broadcast with an unreadable receipt", () => {
     }
     expect(applyFailOnError(result, false).success).toBe(true);
   });
+
+  it("retains the receipt hash when post-broadcast explorer decoration fails", async () => {
+    mockGetTransactionUrl.mockRejectedValueOnce(
+      new Error("explorer lookup unavailable")
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.transactionHash).toBe("0xhash");
+      expect(result.broadcastAttempted).toBe(true);
+    }
+  });
 });
 
 describe("writeContractCore sponsored-relay failure link", () => {
@@ -713,5 +742,259 @@ describe("writeContractCore sponsored-relay failure link", () => {
       "0xsponsored"
     );
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+});
+
+describe("writeContractCore Sponsor gas toggle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+    mockIsGasSponsorshipEnabled.mockReturnValue(true);
+    mockExecuteSponsoredContractTransaction.mockResolvedValue({
+      transactionHash: "0xsponsored",
+      gasUsed: "21000",
+      gasUsedUnits: "21000",
+      effectiveGasPrice: "1000000000",
+    });
+    mockResolveSponsoredSendError.mockReturnValue({ fallback: true });
+    mockFindExplorerConfig.mockResolvedValue(null);
+    mockExecuteContractCall.mockResolvedValue({
+      hash: "0xhash",
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+    });
+  });
+
+  // clearAllMocks keeps implementations, so the sponsored success set up here
+  // would follow the suite into every later describe.
+  afterEach(() => {
+    mockIsGasSponsorshipEnabled.mockReturnValue(false);
+    mockExecuteSponsoredContractTransaction.mockResolvedValue(null);
+  });
+
+  it("takes the sponsored route when the toggle is unset", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.sponsored).toBe(true);
+      expect(result.transactionHash).toBe("0xsponsored");
+    }
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("signs directly and spends no sponsorship credit when the toggle is off", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      sponsorGas: false,
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.transactionHash).toBe("0xhash");
+    }
+    expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
+    expect(mockExecuteContractCall).toHaveBeenCalled();
+  });
+
+  it('reads the "false" string the editor may persist as off', async () => {
+    await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      sponsorGas: "false" as unknown as boolean,
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
+    expect(mockExecuteContractCall).toHaveBeenCalled();
+  });
+});
+
+describe("writeContractCore functionArgs shape (#2359)", () => {
+  const SHAPE_ABI = JSON.stringify([
+    {
+      type: "function",
+      name: "transfer",
+      stateMutability: "nonpayable",
+      inputs: [
+        { name: "to", type: "address" },
+        { name: "amount", type: "uint256" },
+      ],
+      outputs: [{ name: "", type: "bool" }],
+    },
+    {
+      type: "function",
+      name: "pause",
+      stateMutability: "nonpayable",
+      inputs: [],
+      outputs: [],
+    },
+  ]);
+
+  const sendSucceeds = () => {
+    mockExecuteContractCall.mockResolvedValue({
+      hash: "0xhash",
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sendSucceeds();
+  });
+
+  it("takes a native array instead of throwing past the softener", async () => {
+    // The executor renders templates inside arrays, so a config authored over
+    // MCP reaches this step as an array rather than the JSON string the visual
+    // builder sends. The shape test used to sit in the condition guarding the
+    // try - `functionArgs && functionArgs.trim() !== ""` - so an array threw a
+    // TypeError from the condition itself. writeContractCore is awaited inside
+    // applyWriteFailOnError, so that rejection escaped the softener and
+    // failOnError: false could not turn it into a step result. On a path that
+    // broadcasts a transaction.
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "16602",
+      abi: SHAPE_ABI,
+      abiFunction: "transfer",
+      functionArgs: [
+        "0x1111111111111111111111111111111111111111",
+        "1000",
+      ] as unknown as string,
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockExecuteContractCall).toHaveBeenCalled();
+    const sent = mockExecuteContractCall.mock.calls[0]?.[1] as {
+      args: unknown[];
+    };
+    expect(sent.args).toEqual([
+      "0x1111111111111111111111111111111111111111",
+      "1000",
+    ]);
+  });
+
+  it("reads null, 0 and false as no arguments rather than a parse error", async () => {
+    for (const absent of [null, 0, false, "", "   "]) {
+      vi.clearAllMocks();
+      sendSucceeds();
+      const result = await writeContractCore({
+        contractAddress: "0x1234567890123456789012345678901234567890",
+        network: "16602",
+        abi: SHAPE_ABI,
+        abiFunction: "pause",
+        functionArgs: absent as unknown as string,
+        _context: { organizationId: "org-1" },
+      });
+      expect([String(absent), result.success]).toEqual([String(absent), true]);
+      const sent = mockExecuteContractCall.mock.calls[0]?.[1] as {
+        args: unknown[];
+      };
+      expect(sent.args).toEqual([]);
+    }
+  });
+
+  it("still rejects a JSON object as a user error", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "16602",
+      abi: SHAPE_ABI,
+      abiFunction: "pause",
+      functionArgs: '{"to":"0x1"}',
+      _context: { organizationId: "org-1" },
+    });
+    expect(result).toMatchObject({ success: false, errorClass: "user" });
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+});
+
+describe("writeContractCore broadcastAttempted evidence", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+  });
+
+  it("reports broadcastAttempted: false for a tagged pre-broadcast connection refusal", async () => {
+    // The marker is applied by submitSignedTransactionWithFailover at the
+    // broadcast boundary, where provenance is known. This is the evidence
+    // that lets the disposition layer release the key: nothing was sent.
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new PreBroadcastNetworkError(
+        "RPC failed on both endpoints. Primary: ECONNREFUSED. Fallback: ECONNREFUSED",
+        new Error("ECONNREFUSED")
+      )
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.broadcastAttempted).toBe(false);
+      expect(result.transactionHash).toBeUndefined();
+    }
+  });
+
+  it("reports broadcastAttempted: true for a generic send failure", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(new Error("boom"));
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.broadcastAttempted).toBe(true);
+    }
+  });
+
+  it("fails closed on an untagged error whose text matches a connection refusal", async () => {
+    // The blocker regression: an ECONNREFUSED rendered by executeWithFailover
+    // for the post-broadcast receipt poll or the nonce bookkeeping insert is
+    // text-identical to a refused send. Without the tag, the core must NOT
+    // read it as "nothing was sent" -- the transaction may be in the mempool.
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new Error(
+        "RPC failed on both endpoints. Primary: ECONNREFUSED. Fallback: ECONNREFUSED"
+      )
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.broadcastAttempted).toBe(true);
+    }
   });
 });

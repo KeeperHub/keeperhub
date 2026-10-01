@@ -5,6 +5,10 @@ import { users, workflowHistory, workflows } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { authFailureResponse, getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { buildPage, parsePageRequest } from "@/lib/pagination";
+import {
+  buildCredential,
+  loadApiKeyNames,
+} from "@/lib/security/credential-lookup";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 
 /**
@@ -121,6 +125,8 @@ export async function GET(
         createdAt: workflow.createdAt.toISOString(),
         changedBy:
           creator ?? (workflow.userId ? { id: workflow.userId } : null),
+        // Synthesized from the live workflow row, which records no credential.
+        credential: null,
       };
       return NextResponse.json(buildPage([synthetic], 1, req, url));
     }
@@ -133,6 +139,8 @@ export async function GET(
         previousVersion: workflowHistory.previousVersion,
         change: workflowHistory.change,
         changedByUserId: workflowHistory.changedByUserId,
+        authMethod: workflowHistory.authMethod,
+        apiKeyId: workflowHistory.apiKeyId,
         createdAt: workflowHistory.createdAt,
       })
       .from(workflowHistory)
@@ -152,6 +160,9 @@ export async function GET(
           .where(inArray(users.id, actorIds))
       : [];
     const actorMap = new Map(actors.map((a) => [a.id, a]));
+    // An org API key carries its creator's user id, so without the key label
+    // every edit made through one reads as that person having made it.
+    const apiKeyNames = await loadApiKeyNames(rows.map((r) => r.apiKeyId));
 
     const items = rows.map((r) => ({
       version: r.version,
@@ -163,6 +174,7 @@ export async function GET(
       changedBy: r.changedByUserId
         ? (actorMap.get(r.changedByUserId) ?? { id: r.changedByUserId })
         : null,
+      credential: buildCredential(r.authMethod, r.apiKeyId, apiKeyNames),
     }));
 
     return NextResponse.json(buildPage(items, total, req, url));

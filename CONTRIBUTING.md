@@ -14,12 +14,19 @@ it from your pull request - in the title (`fix: #1978 description`), as
 broken links, formatting, and docs corrected to match existing behaviour skip
 all of that.
 
+Search first. Before opening anything, search open and closed issues **and**
+open pull requests - someone may have filed or fixed it already. If an existing
+issue or pull request covers what you found, comment on that thread instead of
+opening a new one, including when what you have is a disagreement with it. See
+[Search before you open anything](ISSUES.md#search-before-you-open-anything).
+
 ## Table of Contents
 
 - [Development Setup](#development-setup)
 - [Development Workflow](#development-workflow)
 - [Pull Request Process](#pull-request-process)
 - [Plugin Development Guide](#plugin-development-guide)
+- [Protocols and Contract Addresses](#protocols-and-contract-addresses)
 - [Testing Guidelines](#testing-guidelines)
 
 ## Development Setup
@@ -115,10 +122,14 @@ make hybrid-down      # Teardown
 
 - The backing issue carries the `accepted` label, or the change is on the
   no-issue-required list in [ISSUES.md](ISSUES.md)
+- No open pull request already makes this change - search before you open one,
+  the same way you searched before filing the issue
 - All tests pass
 - Code passes lint (`pnpm check`) and type check (`pnpm type-check`)
 - Changes are tested thoroughly
 - No secrets, `.env` files, or credentials committed
+- Every on-chain address the pull request adds carries its evidence - see
+  [Protocols and Contract Addresses](#protocols-and-contract-addresses)
 
 ### PR Guidelines
 
@@ -178,7 +189,7 @@ The `"use step"` directive marks a file for workflow bundler processing. Critica
 
 1. **Never export functions from step files** other than the step function itself, `_integrationType`, and types
 2. **To share logic between steps**: extract into a `*-core.ts` file (no `"use step"`)
-3. **No Node.js-only SDKs** in step files -- use `fetch()` for HTTP calls
+3. **No Node.js-only SDKs** in step files -- use `safeFetch()` from `@/lib/safe-fetch` for HTTP calls, not the raw `fetch` global. Bare `fetch`, `axios`, and `http.request` under `plugins/` are rejected by the `Forbid raw network egress in plugins` check, which excludes `*.test.ts`, `plugins/*/test.ts`, `*.md` and `*.txt`. Connection tests and test files use the raw `fetch` global; connection tests are guarded instead by `assertUrlIsPublic`, which `handlePluginTest` applies to user-supplied URL fields before the test runs
 
 See `plugins/CLAUDE.md` for the complete step file specification.
 
@@ -195,6 +206,89 @@ This auto-generates `lib/step-registry.ts` and `lib/codegen-registry.ts` (both g
 ### Plugin Allowlist
 
 `plugins/plugin-allowlist.json` controls which plugins are enabled. If the file is absent, all discovered plugins are enabled.
+
+## Protocols and Contract Addresses
+
+A wrong contract address is not caught by anything else here.
+`tests/unit/protocol-<slug>.test.ts` asserts that an address matches
+`^0x[0-9a-fA-F]{40}$` - that it is well formed, not that code is deployed at it
+on the chain claimed. Type-check and lint have nothing to say about it either.
+
+The cost of getting it wrong is not a failed build. An action's `network` field
+takes its `allowedChainIds` straight from `Object.keys(contract.addresses)`
+(`lib/protocol-registry.ts:395`), so a chain listed there is a chain users can
+pick in the builder. If the protocol is not deployed on it, every call reverts,
+for every user who picks it, in production.
+
+So the evidence travels with the address.
+
+### What needs evidence
+
+- A new protocol in `protocols/`
+- A new chain added to an existing protocol's `addresses` map
+- A changed contract address, ABI, or protocol version
+- A new token in `lib/test-data/chain-test-data.ts`
+- An address named in docs, a plugin, or an example
+
+### What the evidence is
+
+**Every address**: where it came from, and it has to be somewhere
+authoritative - the protocol team's own documentation or published address list,
+their official repository, or a verified contract on the block explorer. Link
+that source in the pull request description. A blog post, a tutorial, an
+aggregator or a chat message is not a source. The page must be for the version
+you are adding - a V3 ABI taken from a V4 contract page compiles, passes unit
+tests, and fails on chain with `INVALID_ARGUMENT` or `BAD_DATA`.
+
+**Never add a chain the protocol is not deployed on.** Not to make local testing
+easier, not to fill out the map. If there is no testnet deployment, the
+integration test forks mainnet - it does not get a fabricated testnet entry.
+
+**Every ABI**: the exact source URL and the version it corresponds to. In order
+of preference: an npm package published by the protocol team for that version,
+a verified contract on the block explorer, the protocol's GitHub repository
+pinned to the version's tag (not `main`), the official docs. If no ABI source
+exists anywhere, say so in the description rather than hand-writing fragments.
+
+**Every version**: one version per protocol entry. Do not mix V3 and V4
+contracts. Where a version has sub-surfaces - Aave V4 Hub against Spoke,
+Uniswap V3 SwapRouter02 against SwapRouter - name the exact surface in the
+contract label.
+
+**Every token**: the address from a block explorer, and the decimals confirmed
+by calling the token contract's `decimals()` on the target chain. Do not infer
+decimals from the symbol or copy them from the explorer's metadata field. Both
+are wrong often enough to break every workflow that touches the token, and
+`chain-test-data.ts` is shared by every protocol that uses it. USDC is 6, not
+18.
+
+Updating an existing protocol is held to the same standard, for whatever the
+change touches. An address that is already in the repository has been through
+this once; one you are changing has not.
+
+### The contracts-checked gate
+
+`.github/workflows/contracts-checked.yml` scans the lines a pull request adds
+for Ethereum and Solana addresses and fails until a maintainer applies the
+`contracts-checked` label. The label is their attestation that each address
+matches the authoritative source cited for it. Making that call is their job;
+giving them a source to check it against is yours.
+
+See what it will find before you push:
+
+```bash
+node scripts/scan-contract-addresses.mjs --base origin/staging --head HEAD
+```
+
+The scan skips lockfiles and generated output, skips addresses that already
+exist on `staging`, and skips zero-dominated fixtures like
+`0x00000000000000000000000000000000000000a1`. A Solana candidate counts only if
+it base58-decodes to exactly 32 bytes.
+
+It fires on test fixtures and documentation examples too, which is intended -
+an address in a guide is one a reader may send funds to. If the addresses in
+your pull request are fixtures, say so in the description; that is all the
+reviewer needs to clear the label.
 
 ## Testing Guidelines
 

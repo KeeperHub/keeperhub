@@ -92,15 +92,19 @@ env:
 externalSecrets:
   clusterSecretStoreName: techops-staging
 
+# /livez reports process liveness only. /healthz returns 503 whenever any chain
+# is degraded, so pointing a probe at it lets one silent endpoint restart the
+# pod and take the healthy chains with it. Kept in sync with
+# deploy/solana-tracker/<env>/values.yaml.
 livenessProbe:
   initialDelaySeconds: 30
   periodSeconds: 30
   httpGet:
-    path: /healthz
+    path: /livez
     port: 3001
 readinessProbe:
   initialDelaySeconds: 10
   periodSeconds: 10
   httpGet:
-    path: /healthz
+    path: /livez
     port: 3001

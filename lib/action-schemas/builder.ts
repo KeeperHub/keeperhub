@@ -10,16 +10,19 @@ import {
   TEMPLATE_SYNTAX,
   TRIGGERS,
 } from "@/lib/mcp/workflow-schema-constants";
+import { isPythPriceTriggerEnabled } from "@/lib/pyth/feature-flag";
 import {
   BUILTIN_NODE_ID,
   BUILTIN_NODE_LABEL,
 } from "@/lib/workflow/editor/builtin-variables";
+import { isDirectExecutionSupported } from "@/plugins/protocol/steps/resolve-protocol-meta";
 import {
   type ActionConfigFieldBase,
   computeActionId,
   flattenConfigFields,
   getAllIntegrations,
   type IntegrationPlugin,
+  isDisplayOnlyField,
   type PluginAction,
 } from "@/plugins/registry";
 
@@ -71,6 +74,11 @@ export type ActionSchema = {
    * cannot express.
    */
   featureEnabled: boolean;
+  /**
+   * True when the action is routable through execute_protocol_action.
+   * Other actions may still be executable through a sibling tool or workflow.
+   */
+  protocolDirectExecution: boolean;
 };
 
 export type BuildActionSchemasOptions = {
@@ -107,13 +115,26 @@ function mapFieldType(field: ActionConfigFieldBase): string {
       return "string (JSON ABI - auto-fetched for verified contracts)";
     case "abi-event-select":
       return "string (event name from ABI)";
-    case "select":
-      return `string (${field.options?.map((o) => `"${o.value}"`).join(" | ") || "select"})`;
+    case "abi-event-args":
+      return 'string (JSON object of indexed event parameter name to value, e.g. {"from":"0x..."}) - omit a parameter to match any value for it; only indexed parameters can be filtered';
+    case "select": {
+      const options =
+        field.options?.map((o) => `"${o.value}"`).join(" | ") || "select";
+      // A field that takes a template says so, or an agent reads a closed
+      // enum and never offers the capability the field's help text does.
+      return field.allowTemplate
+        ? `string (${options}, or a {{@nodeId:Label.field}} template)`
+        : `string (${options})`;
+    }
     case "fail-on-error-switch":
+    case "gas-sponsorship-switch":
       return "boolean";
     case "template-input":
     case "template-textarea":
       return "string (supports {{@nodeId:Label.field}} templates)";
+    case "protocol-array":
+    case "protocol-tuple-array":
+      return 'string (JSON array, e.g. ["0x...","0x..."], or a {{@nodeId:Label.field}} template resolving to the whole array)';
     default:
       return "string";
   }
@@ -151,7 +172,18 @@ export function transformPluginAction(
   const optionalFields: Record<string, string> = {};
 
   for (const field of flatFields) {
-    const fieldDesc = `${mapFieldType(field)}${field.placeholder ? ` - ${field.placeholder}` : ""}`;
+    // A field that renders rather than collects has no value to publish, and
+    // the pin schema rejects a key set against one.
+    if (isDisplayOnlyField(field.type)) {
+      continue;
+    }
+    // The label is where an author states the unit - "Amount (wei)" - and
+    // protocol inputs carry no placeholder, so without it an agent sees
+    // "string" for a value that is wei on one action and whole tokens on the
+    // next. The type prefix and placeholder keep their positions.
+    const fieldDesc = [mapFieldType(field), field.label, field.placeholder]
+      .filter(Boolean)
+      .join(" - ");
     if (field.required) {
       requiredFields[field.key] = fieldDesc;
     } else {
@@ -179,6 +211,7 @@ export function transformPluginAction(
       action.requiresCredentials ?? plugin.requiresCredentials ?? false,
     requiredPlan: gate.requiredPlan,
     featureEnabled: gate.featureEnabled,
+    protocolDirectExecution: isDirectExecutionSupported(actionType),
     requiredFields,
     optionalFields,
     outputFields,
@@ -282,7 +315,13 @@ export async function buildActionSchemasResponse(
   const systemActions =
     !categoryFilter || categoryFilter === "system" ? SYSTEM_ACTIONS : {};
   const triggers =
-    !categoryFilter || categoryFilter === "triggers" ? TRIGGERS : {};
+    !categoryFilter || categoryFilter === "triggers"
+      ? Object.fromEntries(
+          Object.entries(TRIGGERS).filter(
+            ([key]) => key !== "Pyth Price" || isPythPriceTriggerEnabled()
+          )
+        )
+      : {};
 
   const chainList: ChainInfo[] = includeChains
     ? await fetchEnabledChains(opts.endpointLabel)
@@ -304,6 +343,7 @@ export async function buildActionSchemasResponse(
       ...(action as Record<string, unknown>),
       requiredPlan: gate.requiredPlan,
       featureEnabled: gate.featureEnabled,
+      protocolDirectExecution: false,
     };
   }
 
@@ -311,15 +351,41 @@ export async function buildActionSchemasResponse(
     ...pluginActions,
     ...enrichedSystemActions,
   };
+
+  // Whether the category matched, judged before the type filter narrows the
+  // map. `triggers` counts: category=triggers fills that key and leaves
+  // `actions` empty by design, so testing `actions` alone would tell a caller
+  // their correct category was unrecognised. Judging it after the type filter
+  // would instead blame the category whenever the actionType was the typo.
+  const categoryMatched =
+    Object.keys(actions).length > 0 || Object.keys(triggers).length > 0;
+
   if (typeFilter) {
     const matched = actions[typeFilter];
     actions = matched === undefined ? {} : { [typeFilter]: matched };
   }
 
+  // An unrecognised category otherwise returns an empty map with a 200, which
+  // reads as "this action does not exist" rather than "that is not a
+  // category". Name the valid ones so the caller can correct the filter. A
+  // `type` filter names an actionType, which this list would not correct, so
+  // it neither triggers nor suppresses the hint on its own.
+  const unmatchedFilter =
+    categoryFilter && !categoryMatched
+      ? {
+          availableCategories: [
+            ...allPlugins.map((plugin) => plugin.type),
+            "system",
+            "triggers",
+          ].sort(),
+        }
+      : {};
+
   return {
     version: "1.0.0",
     generatedAt: new Date().toISOString(),
     actions,
+    ...unmatchedFilter,
     triggers,
     chains: chainList,
     platform: platformCapabilities,

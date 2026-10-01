@@ -22,13 +22,14 @@ import type { MessageAttributeValue } from "@aws-sdk/client-sqs";
  * The proof travels as SQS MessageAttributes (X-KH-Caller / X-KH-Timestamp /
  * X-KH-Signature), leaving the message body byte-for-byte unchanged.
  *
- * NOTE: the scheduler and event-tracker are isolated packages that cannot import
- * root lib/, so the SIGN half of this module is copied verbatim into
- * keeperhub-scheduler/lib/sqs-message-auth.ts and
- * keeperhub-events/event-tracker/lib/sqs-message-auth.ts (same pattern as the
+ * NOTE: the scheduler, event-tracker and solana-tracker are isolated packages
+ * that cannot import root lib/, so the SIGN half of this module is copied
+ * verbatim into keeperhub-scheduler/lib/sqs-message-auth.ts,
+ * keeperhub-events/event-tracker/lib/sqs-message-auth.ts and
+ * keeperhub-events/solana-tracker/lib/sqs-message-auth.ts (same pattern as the
  * per-service signHmacHeaders / log-facade copies). Keep the signing string,
- * attribute names, and caller set in sync across all three files - the shared
- * anti-drift test vector guards this.
+ * attribute names, and caller set in sync across all four files - each package
+ * carries the shared anti-drift test vector to guard this.
  */
 
 export const SQS_HMAC_CALLERS = ["scheduler", "events", "app"] as const;

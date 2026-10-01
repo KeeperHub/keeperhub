@@ -56,7 +56,7 @@ const getPendingTransactionsAction = {
 const safeProtocol = getIntegration("safe" as IntegrationType);
 if (!safeProtocol) {
   throw new Error(
-    '[safe plugin] "safe" integration not found in registry. Ensure keeperhub/protocols is imported before keeperhub/plugins/safe.'
+    '[safe plugin] "safe" integration not found in registry. Ensure @/protocols is imported before @/plugins/safe.'
   );
 }
 

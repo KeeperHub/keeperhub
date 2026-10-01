@@ -57,6 +57,13 @@ vi.mock("@/lib/logging", () => ({
   logSystemError: vi.fn(),
 }));
 
+// The route selects the step payload columns through a size-guarded SQL
+// expression; the drizzle-orm mock above has no `sql`, and the shape of
+// the rows this file feeds back is what is under test, not the guard.
+vi.mock("@/lib/workflow/bounded-jsonb", () => ({
+  boundedJsonb: () => ({ as: () => ({}) }),
+}));
+
 import { GET } from "@/app/api/workflows/executions/[executionId]/logs/route";
 
 const FIXTURE_TIMESTAMP = new Date("2026-05-16T12:00:00.000Z");

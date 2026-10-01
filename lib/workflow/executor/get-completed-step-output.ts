@@ -1,5 +1,6 @@
 import "server-only";
 
+import { isStatementTimeout } from "@/lib/db/errors";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
 import {
@@ -22,21 +23,6 @@ import {
  */
 const DB_FALLBACK_ENABLED =
   process.env.KH_EXECUTOR_AUTHORITY_DB_FALLBACK !== "false";
-
-/**
- * Returns true when the error is a PostgreSQL statement timeout (SQLSTATE 57014).
- * Drizzle wraps the driver error in DrizzleQueryError with the original on
- * error.cause, so we check both levels.
- */
-function isStatementTimeout(err: unknown): boolean {
-  const candidates = [err, (err as { cause?: unknown })?.cause];
-  return candidates.some(
-    (e) =>
-      e !== null &&
-      typeof e === "object" &&
-      (e as { code?: unknown }).code === "57014"
-  );
-}
 
 export type CompletedStepOutput = {
   output: unknown;

@@ -19,6 +19,10 @@ import {
   reshapeArgsForAbi,
 } from "@/lib/abi/struct-args";
 import {
+  isSolidityArrayType,
+  normalizeProtocolArrayValue,
+} from "@/lib/protocol-array-value";
+import {
   applyEncodeTransformsNamed,
   getEncodeTransform,
 } from "@/lib/protocol-encode-transforms";
@@ -199,9 +203,11 @@ export function encodeFromConfig(
 ): EncodedAction {
   const named = action.inputs.map((inp) => {
     const raw = config[inp.name];
-    let value: string;
+    let value: unknown;
     if (raw === undefined || raw === "") {
-      value = inp.default ?? "";
+      value = normalizeProtocolArrayValue(inp.default ?? "", inp.type);
+    } else if (isSolidityArrayType(inp.type)) {
+      value = normalizeProtocolArrayValue(raw, inp.type);
     } else if (typeof raw === "object") {
       value = JSON.stringify(raw);
     } else {

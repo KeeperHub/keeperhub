@@ -39,10 +39,11 @@ import { db } from "@/lib/db";
 import { agenticWalletHmacSecrets } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
+import { DAY_MS } from "@/lib/utils/duration";
 
 export const dynamic = "force-dynamic";
 
-const GRACE_MS = 24 * 60 * 60 * 1000;
+const GRACE_MS = DAY_MS;
 const SECRET_BYTES = 32;
 
 export async function POST(request: Request): Promise<Response> {

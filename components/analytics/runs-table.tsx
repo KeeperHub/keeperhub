@@ -21,7 +21,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { buildRunsQuery } from "@/lib/analytics/runs-query";
+import { buildRunsQuery, runsPageCount } from "@/lib/analytics/runs-query";
 import {
   normalizeRunsResponse,
   type WireRunsResponse,
@@ -53,6 +53,7 @@ import {
   FALLBACK_CHAIN_DISPLAY,
   useChainDisplay,
 } from "@/lib/hooks/use-chain-display";
+import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
 import { cn } from "@/lib/utils";
 import { ProjectDrawer } from "./project-drawer";
 
@@ -300,19 +301,15 @@ function getStepStatusColor(status: string): string {
   return "bg-gray-400";
 }
 
-const COPIED_FOR_MS = 1500;
-
 function CopyErrorButton({ text }: { text: string }): ReactNode {
-  const [copied, setCopied] = useState(false);
+  const [copied, markCopied] = useCopiedFlag();
 
   const handleCopy = useCallback(
     (event: MouseEvent): void => {
       event.stopPropagation();
-      navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), COPIED_FOR_MS);
+      markCopied(text);
     },
-    [text]
+    [markCopied, text]
   );
 
   return (
@@ -654,7 +651,8 @@ function TableSkeleton(): ReactNode {
   );
 }
 
-function Pagination({
+// Exported for the unit test that pins the pager against the route's ceiling.
+export function Pagination({
   page,
   pageSize,
   total,
@@ -667,7 +665,8 @@ function Pagination({
   onPageChange: (page: number) => void;
   loading: boolean;
 }): ReactNode {
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  // Capped at the route's page ceiling, so Next stops where the server does.
+  const totalPages = runsPageCount(total, pageSize);
   if (total <= pageSize) {
     return null;
   }

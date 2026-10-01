@@ -29,6 +29,7 @@ import {
   applyRateLimitHeaders,
   rateLimitHeaders,
 } from "@/lib/rate-limit-headers";
+import { stripTrailingSlashes } from "@/lib/utils/url";
 
 export const dynamic = "force-dynamic";
 
@@ -42,8 +43,6 @@ const CORS_HEADERS = {
 
 // Start the local-cache cleanup interval once per process lifetime.
 startCleanupInterval();
-
-const TRAILING_SLASH = /\/$/;
 
 /**
  * Ensure the request carries the Accept header the MCP SDK requires.
@@ -82,7 +81,7 @@ function ensureMcpAcceptHeader(request: Request): Request {
 function getBaseUrl(request: Request): string {
   const envUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL;
   if (envUrl) {
-    return envUrl.replace(TRAILING_SLASH, "");
+    return stripTrailingSlashes(envUrl);
   }
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;

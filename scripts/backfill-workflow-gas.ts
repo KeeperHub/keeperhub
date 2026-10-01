@@ -41,6 +41,7 @@ import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { logOutputField } from "@/lib/db/execution-log-fields";
 import { workflowExecutions } from "@/lib/db/schema";
+import { isLocalDb } from "@/scripts/lib/local-db";
 
 const DEFAULT_BATCH_SIZE = 1000;
 
@@ -170,20 +171,6 @@ function dbHost(): string {
   }
 }
 
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "db", "postgres"]);
-
-function isLocalDb(): boolean {
-  try {
-    // URL.hostname drops the port; strip the IPv6 brackets it keeps.
-    const hostname = new URL(process.env.DATABASE_URL ?? "").hostname.replace(
-      /^\[|\]$/g,
-      ""
-    );
-    return LOCAL_HOSTS.has(hostname);
-  } catch {
-    return false;
-  }
-}
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));

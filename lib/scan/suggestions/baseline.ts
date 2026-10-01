@@ -1,6 +1,6 @@
 import { truncateAddress } from "@/lib/address-utils";
 import { getChainName } from "@/lib/chain-utils";
-import { SCAN_NETWORK_IDS } from "@/lib/scan/networks";
+import type { SCAN_NETWORK_IDS } from "@/lib/scan/networks";
 import type { SuggestionDescriptor } from "./types";
 
 /** 0.01 native token, in wei — matches the engine's gas-balance prefill. */
@@ -14,7 +14,9 @@ const RISK_NOTE_READ_ONLY =
  * the highest-traffic chains — so the empty state stays a short, scannable row
  * rather than one card per network.
  */
-const BASELINE_GAS_CHAINS = SCAN_NETWORK_IDS.slice(0, 3);
+const BASELINE_GAS_CHAINS = [
+  1, 42_161, 8453,
+] as const satisfies readonly (typeof SCAN_NETWORK_IDS)[number][];
 
 /**
  * Suggestions that are useful for an address with no detected DeFi positions.

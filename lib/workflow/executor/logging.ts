@@ -61,10 +61,12 @@ import {
   FAILED_AFTER_RETRIES_REGEX,
   NO_STEP_COMPLETION_REGEX,
 } from "@/lib/workflow/executor/runner-error-patterns";
+import { clearStepClaims } from "@/lib/workflow/executor/step-claim";
 import {
   getTransactionHashes,
   isRecordableTransactionHash,
 } from "@/lib/workflow/executor/step-success-tracker";
+import { boundStoredOutput } from "@/lib/workflow/executor/stored-output-cap";
 import { computeTrulyFailedNodes } from "@/lib/workflow/executor/truly-failed-nodes";
 
 // Statuses a late step write must never resurrect: the user stopped the run,
@@ -819,12 +821,33 @@ export async function logStepCompleteDb(
   const errorValue: string | null =
     params.status === "success" ? null : (params.error ?? null);
 
+  // The step wrapper fails an oversized result before it gets here; this is
+  // the backstop for writers that bypass it. A marker is stored for display,
+  // and output_raw is left empty rather than holding the marker: the resume
+  // path treats a row without raw output as not completed and re-runs the
+  // step, where the wrapper's cap fails it, instead of reusing the marker as
+  // the step's data.
+  const output = boundStoredOutput(params.output);
+  const outputRaw = boundStoredOutput(params.outputRaw);
+  if (output.oversize !== null || outputRaw.oversize !== null) {
+    logSystemWarn(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[Workflow Logging] Step output exceeded the stored-output limit; stored a marker",
+      null,
+      {
+        logId: params.logId,
+        executionId: params.executionId ?? "",
+        bytes: String(output.oversize ?? outputRaw.oversize),
+      }
+    );
+  }
+
   await db
     .update(workflowExecutionLogs)
     .set({
       status: params.status,
-      output: toJsonSafe(params.output),
-      outputRaw: toJsonSafe(params.outputRaw),
+      output: output.value,
+      outputRaw: outputRaw.oversize === null ? outputRaw.value : null,
       gasUsedWei: extractLogGasUsedWei(params.output),
       error: errorValue,
       completedAt: new Date(),
@@ -1226,7 +1249,10 @@ export async function logWorkflowCompleteDb(
     .update(workflowExecutions)
     .set({
       status: executionStatus,
-      output: toJsonSafe(params.output),
+      // The run's output is the last node's data, which the step wrapper has
+      // already capped; bounding it here is the backstop for any writer that
+      // reaches this function with an oversized value.
+      output: boundStoredOutput(params.output).value,
       error: resolvedError,
       errorCategory: persistedClassification?.errorCategory ?? null,
       errorType: persistedClassification?.errorType ?? null,
@@ -1258,6 +1284,15 @@ export async function logWorkflowCompleteDb(
       workflowId: workflowExecutions.workflowId,
       previousStatus: prevExecution.status,
     });
+
+  // Only once this UPDATE actually moved the row to a terminal state can no
+  // further replay legitimately claim one of its steps. An empty `updated`
+  // means the WHERE rejected the write -- a duplicate _workflowComplete on a
+  // run still draining steps, for one -- and clearing claims there would
+  // strip the guard from a run that is still executing.
+  if (updated.length > 0) {
+    await clearStepClaims(params.executionId);
+  }
 
   // KEEP-545: increment the counters only when this UPDATE performed the
   // first non-terminal -> terminal transition. The WHERE clause excludes

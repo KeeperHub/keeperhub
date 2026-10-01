@@ -1,8 +1,22 @@
 import "server-only";
-import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
+import {
+  absBigInt,
+  alignAll,
+  computeMedian,
+  type Decimal,
+  divideScaled,
+  failed,
+  formatScaled,
+  medianScaled,
+  parseDecimal,
+  parseJsonArray,
+  pow10,
+  splitValueList,
+} from "./decimal-core";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -41,6 +55,11 @@ const ALL_POST_OPERATIONS = [
 
 const INPUT_MODES = ["array", "explicit"] as const;
 const RESULT_TYPES = ["number", "bigint"] as const;
+// What a divide or modulo post-operation with a zero operand does. Failing is
+// the default so a workflow that never opted in still stops on a zero
+// denominator instead of handing an empty value to the next node.
+const ZERO_DIVISOR_BEHAVIOURS = ["fail", "null-result"] as const;
+const NULL_ON_ZERO_DIVISOR = "null-result";
 
 const BIGINT_ZERO = BigInt(0);
 const BIGINT_ONE = BigInt(1);
@@ -48,6 +67,27 @@ const BIGINT_TWO = BigInt(2);
 const EXPLICIT_SEPARATOR = /[,\n]+/;
 const COMMA_STRIP = /,/g;
 const INTEGER_PATTERN = /^-?\d+$/;
+// A fixed-point division that cannot be exact (average, the divide post-op)
+// keeps at least this many fractional digits and at least this many
+// significant digits, whichever needs more, then truncates. 18 covers a wei
+// amount divided by 1e18 exactly and a dust amount over a raw supply to 18
+// significant digits.
+const DIVISION_PRECISION = 18;
+// The text grammars that convert to fixed point exactly. Anything else that
+// Number() accepts ("0x10", "5.") is carried as the float's own digits.
+const DECIMAL_TEXT = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/;
+const EXPONENT_FORM = /^([+-]?(?:\d+(?:\.\d+)?|\.\d+))[eE]([+-]?\d+)$/;
+// Bounds on the fixed-point work, so ordinary input cannot make the step
+// spend seconds or memory on digits no on-chain unit has. Fractional digits
+// beyond MAX_SCALE are dropped wherever a scale is produced: on every parsed
+// value, and after each product, power and division. An integer power whose
+// result would pass MAX_DIGITS goes through float instead.
+const MAX_SCALE = 256;
+const MAX_DIGITS = 4096;
+const MAX_EXACT_POWER = 256;
+// Places past what the remaining factors of a product can lift: digits beyond
+// this reach neither MAX_SCALE nor the float floor (1e-324 and 17 digits).
+const PRODUCT_SCALE_HEADROOM = 350;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -57,20 +97,38 @@ type UnaryPostOperation = (typeof UNARY_POST_OPERATIONS)[number];
 type PostOperation = (typeof ALL_POST_OPERATIONS)[number];
 type InputMode = (typeof INPUT_MODES)[number];
 type ResultType = (typeof RESULT_TYPES)[number];
+type ZeroDivisorBehaviour = (typeof ZERO_DIVISOR_BEHAVIOURS)[number];
 
 type NumericValue =
-  | { kind: "number"; value: number }
-  | { kind: "bigint"; value: bigint };
+  | { kind: "number"; value: number; text: string }
+  | { kind: "bigint"; value: bigint; text: string };
 
 type AggregateResult =
   | {
       success: true;
-      result: string;
+      /**
+       * The aggregated value as a string, or null when a divide or modulo
+       * post-operation had a zero operand and the step opted into the
+       * null-result behaviour so a downstream Condition can branch on it.
+       */
+      result: string | null;
       resultType: ResultType;
       operation: string;
       inputCount: number;
+      /** Set alongside a null result: the divisor was zero as written. */
+      divisionByZero?: true;
     }
   | { success: false; error: string; errorClass?: ExecutionErrorType };
+
+// "float" carries an answer the fixed-point path handed to floating point
+// because the exact result would collapse at the scale bound; "belowPrecision"
+// is a divisor that is not zero as written but is zero to every precision this
+// step has, which is a failure on both paths.
+type PostResult<T> =
+  | { kind: "value"; value: T }
+  | { kind: "float"; value: number }
+  | { kind: "divisionByZero"; postOp: "divide" | "modulo" }
+  | { kind: "belowPrecision"; postOp: "divide" | "modulo" };
 
 export type AggregateCoreInput = {
   operation: AggregateOperation;
@@ -81,6 +139,7 @@ export type AggregateCoreInput = {
   postOperation?: PostOperation;
   postOperand?: string;
   postDecimalPlaces?: string;
+  zeroDivisorBehaviour?: ZeroDivisorBehaviour;
 };
 
 export type AggregateInput = StepInput & AggregateCoreInput;
@@ -128,8 +187,47 @@ function isBinaryPostOperation(value: string): value is BinaryPostOperation {
 
 // ─── Error helpers ──────────────────────────────────────────────────────────
 
-function failedAggregation(error: string): AggregateResult {
-  return { success: false, error, errorClass: ExecutionErrorType.USER };
+// The result of a post-operation that did not stay in fixed point: a float,
+// a zero divisor (null result with the flag), or a divisor below precision.
+function finishNumberResult(
+  post: PostResult<number>,
+  operation: string,
+  inputCount: number,
+  nullOnZeroDivisor: boolean
+): AggregateResult {
+  switch (post.kind) {
+    case "divisionByZero":
+      if (!nullOnZeroDivisor) {
+        throw new Error(
+          post.postOp === "divide" ? "Division by zero." : "Modulo by zero."
+        );
+      }
+      return {
+        success: true,
+        result: null,
+        resultType: "number",
+        operation,
+        inputCount,
+        divisionByZero: true,
+      };
+    case "belowPrecision":
+      return belowPrecision(post.postOp);
+    default:
+      return {
+        success: true,
+        result: String(post.value),
+        resultType: "number",
+        operation,
+        inputCount,
+      };
+  }
+}
+
+function belowPrecision(postOp: "divide" | "modulo"): AggregateResult {
+  const name = postOp === "divide" ? "Division" : "Modulo";
+  return failed(
+    `${name} by an operand that is not zero but is below the precision this step carries.`
+  );
 }
 
 // ─── Arithmetic implementations ─────────────────────────────────────────────
@@ -145,28 +243,6 @@ const NUMBER_ARITHMETIC: ArithmeticOperations<number> = {
   sortAscending: (values) => [...values].sort((a, b) => a - b),
   fromLength: (n) => n,
   toString: (a) => String(a),
-};
-
-const BIGINT_ARITHMETIC: ArithmeticOperations<bigint> = {
-  zero: BIGINT_ZERO,
-  one: BIGINT_ONE,
-  two: BIGINT_TWO,
-  addition: (a, b) => a + b,
-  multiply: (a, b) => a * b,
-  divide: (a, b) => a / b,
-  lessThan: (a, b) => a < b,
-  sortAscending: (values) =>
-    [...values].sort((a, b) => {
-      if (a < b) {
-        return -1;
-      }
-      if (a > b) {
-        return 1;
-      }
-      return 0;
-    }),
-  fromLength: (n) => BigInt(n),
-  toString: (a) => a.toString(),
 };
 
 // ─── Numeric parsing ────────────────────────────────────────────────────────
@@ -192,12 +268,16 @@ function parseStringToNumericValue(cleaned: string): NumericValue | null {
       bi > BigInt(Number.MAX_SAFE_INTEGER) ||
       bi < BigInt(-Number.MAX_SAFE_INTEGER)
     ) {
-      return { kind: "bigint", value: bi };
+      return { kind: "bigint", value: bi, text: cleaned };
     }
-    return { kind: "number", value: Number(bi) };
+    return { kind: "number", value: Number(bi), text: cleaned };
   }
   const num = Number(cleaned);
-  return Number.isFinite(num) ? { kind: "number", value: num } : null;
+  if (!Number.isFinite(num)) {
+    return null;
+  }
+  const exact = DECIMAL_TEXT.test(cleaned) || EXPONENT_FORM.test(cleaned);
+  return { kind: "number", value: num, text: exact ? cleaned : String(num) };
 }
 
 function parseUnknownToNumericValue(value: unknown): NumericValue | null {
@@ -236,25 +316,6 @@ function resolveFieldPath(obj: unknown, path: string): unknown {
 
 // ─── Value extraction ───────────────────────────────────────────────────────
 
-function parseJsonToArray(input: string): unknown[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(input);
-  } catch {
-    throw new Error(
-      "arrayInput is not valid JSON. Expected a JSON array, e.g. [1, 2, 3]."
-    );
-  }
-
-  if (Array.isArray(parsed)) {
-    return parsed;
-  }
-
-  throw new Error(
-    "arrayInput must be a JSON array. If your upstream node returns an object, reference the array field directly in your template variable, e.g. {{@node:Label.rows}} instead of {{@node:Label}}."
-  );
-}
-
 function collectNumericValues(
   items: unknown[],
   fieldPath: string | undefined
@@ -274,12 +335,12 @@ function extractArrayValues(
   arrayInput: string,
   fieldPath: string | undefined
 ): NumericValue[] {
-  const items = parseJsonToArray(arrayInput);
+  const items = parseJsonArray(arrayInput, "arrayInput");
   return collectNumericValues(items, fieldPath);
 }
 
 function extractExplicitValues(explicitValues: string): NumericValue[] {
-  const parts = explicitValues.split(EXPLICIT_SEPARATOR);
+  const parts = splitValueList(explicitValues, EXPLICIT_SEPARATOR);
   const values: NumericValue[] = [];
   for (const part of parts) {
     const numericValue = parseUnknownToNumericValue(part);
@@ -292,14 +353,385 @@ function extractExplicitValues(explicitValues: string): NumericValue[] {
 
 // ─── Type conversion ────────────────────────────────────────────────────────
 
-function convertNumericValuesToBigInts(values: NumericValue[]): bigint[] {
-  return values.map((v) =>
-    v.kind === "bigint" ? v.value : BigInt(Math.trunc(v.value))
+function convertNumericValuesToNumbers(values: NumericValue[]): number[] {
+  return values.map((v) => (v.kind === "number" ? v.value : Number(v.value)));
+}
+
+// ─── Fixed-point conversion ─────────────────────────────────────────────────
+
+// Drops fractional digits past `limit`.
+function capScale(d: Decimal, limit: number): Decimal {
+  if (d.decimals <= limit) {
+    return d;
+  }
+  return {
+    value: d.value / pow10(d.decimals - limit),
+    decimals: limit,
+  };
+}
+
+// Drops fractional digits past MAX_SCALE. Applied wherever a scale is made,
+// so no input or intermediate can push the whole set to an absurd scale.
+function boundScale(d: Decimal): Decimal {
+  return capScale(d, MAX_SCALE);
+}
+
+function digitCount(value: bigint): number {
+  return absBigInt(value).toString().length;
+}
+
+// "1.5e-3" is the decimal 1.5 shifted three places: exact, no float involved.
+// A shift far below MAX_SCALE lands on zero, as the float would.
+function parseExponentForm(text: string): Decimal | null {
+  const match = EXPONENT_FORM.exec(text);
+  if (match === null) {
+    return null;
+  }
+  const mantissa = parseDecimal(match[1], "value");
+  const exponent = Number(match[2]);
+  const decimals = mantissa.decimals - exponent;
+  if (decimals > MAX_SCALE) {
+    return { value: BIGINT_ZERO, decimals: 0 };
+  }
+  if (decimals >= 0) {
+    return { value: mantissa.value, decimals };
+  }
+  return { value: mantissa.value * pow10(-decimals), decimals: 0 };
+}
+
+// The value's own text is what gets parsed, so "0.1" stays 0.1 rather than
+// the nearest float. The text is always one of the two grammars above.
+function toDecimal(v: NumericValue): Decimal {
+  if (v.kind === "bigint") {
+    return { value: v.value, decimals: 0 };
+  }
+  return boundScale(
+    parseExponentForm(v.text) ?? parseDecimal(v.text, "value")
   );
 }
 
-function convertNumericValuesToNumbers(values: NumericValue[]): number[] {
-  return values.map((v) => (v.kind === "number" ? v.value : Number(v.value)));
+// Zero as written, judged from the digits rather than from the float, so
+// "1e-400" (which Number() reads as 0) is not zero and "0e5" is.
+function writtenAsZero(v: NumericValue): boolean {
+  if (v.kind === "bigint") {
+    return v.value === BIGINT_ZERO;
+  }
+  const mantissa = v.text.split(/e/i)[0].replace(/[+\-.]/g, "");
+  return mantissa.length > 0 && /^0*$/.test(mantissa);
+}
+
+// Round half up (toward +infinity, like Math.round) after dropping `drop`
+// decimal places.
+function roundDropping(value: bigint, drop: number): bigint {
+  if (drop <= 0) {
+    return value;
+  }
+  const p = pow10(drop);
+  const q = value / p;
+  const r = value - q * p;
+  if (r * BIGINT_TWO >= p) {
+    return q + BIGINT_ONE;
+  }
+  if (r * BIGINT_TWO < -p) {
+    return q - BIGINT_ONE;
+  }
+  return q;
+}
+
+function floorDropping(value: bigint, drop: number): bigint {
+  if (drop <= 0) {
+    return value;
+  }
+  const p = pow10(drop);
+  const q = value / p;
+  return value < BIGINT_ZERO && q * p !== value ? q - BIGINT_ONE : q;
+}
+
+function ceilDropping(value: bigint, drop: number): bigint {
+  if (drop <= 0) {
+    return value;
+  }
+  const p = pow10(drop);
+  const q = value / p;
+  return value > BIGINT_ZERO && q * p !== value ? q + BIGINT_ONE : q;
+}
+
+// The quotient keeps DIVISION_PRECISION fractional digits, and more when the
+// magnitudes call for it: a numerator far smaller than its denominator would
+// otherwise truncate to zero and be labelled whole. A quotient with no form at
+// the scale bound goes to float, as a product past the bound does.
+function decimalDivide(numerator: Decimal, denominator: Decimal): Aggregated {
+  const { values, scale } = alignAll([numerator, denominator]);
+  const [n, d] = values;
+  const magnitudeGap = digitCount(d) - digitCount(n);
+  const wanted = Math.max(
+    scale,
+    DIVISION_PRECISION,
+    DIVISION_PRECISION + magnitudeGap
+  );
+  const quotientScale = Math.min(wanted, MAX_SCALE);
+  const quotient = divideScaled(n, d, quotientScale);
+  if (n !== BIGINT_ZERO && quotient === BIGINT_ZERO) {
+    return {
+      kind: "float",
+      value: floatOfExact(numerator) / floatOfExact(denominator),
+    };
+  }
+  return aggregated({ value: quotient, decimals: quotientScale });
+}
+
+// The float nearest an exact fixed-point value, taken from the value itself
+// rather than from its factors, so the answer cannot depend on the order the
+// factors came in or underflow on a transient intermediate. A magnitude past
+// what a float can hold lands on 0 or Infinity, as any float would.
+function floatOfExact(d: Decimal): number {
+  return Number(`${d.value}e-${d.decimals}`);
+}
+
+// Keeps a running product to MAX_DIGITS significant digits by dropping
+// fractional digits only: the scale comes down, the integer part is never
+// touched, so what is carried stays exact until a product has more
+// significant digits than any input set could sensibly need.
+function trimSignificant(d: Decimal): Decimal {
+  const excess = digitCount(d.value) - MAX_DIGITS;
+  if (excess <= 0 || d.decimals === 0) {
+    return d;
+  }
+  const drop = Math.min(excess, d.decimals);
+  return { value: d.value / pow10(drop), decimals: d.decimals - drop };
+}
+
+// Places the factors after each index can still lift the running product by.
+function liftableDigits(decimals: Decimal[]): number[] {
+  const liftable: number[] = [];
+  let total = 0;
+  for (const d of [...decimals].reverse()) {
+    liftable.push(total);
+    total += Math.max(0, digitCount(d.value) - d.decimals);
+  }
+  return liftable.reverse();
+}
+
+// Bounds a running product's scale; a value the drop would zero keeps one unit
+// in the last place, so the end still reads it as a float underflow.
+function capProductScale(d: Decimal, limit: number): Decimal {
+  const capped = capScale(d, limit);
+  if (capped.value !== BIGINT_ZERO || d.value === BIGINT_ZERO) {
+    return capped;
+  }
+  return {
+    value: d.value < BIGINT_ZERO ? -BIGINT_ONE : BIGINT_ONE,
+    decimals: capped.decimals,
+  };
+}
+
+type Aggregated =
+  | { kind: "value"; value: Decimal }
+  | { kind: "float"; value: number };
+
+function aggregated(value: Decimal): Aggregated {
+  return { kind: "value", value };
+}
+
+// An exact value whose bounded form is zero goes to float from the exact
+// value, so it is never reported as an exact zero.
+function boundedOrFloat(exact: Decimal): Aggregated {
+  const bounded = boundScale(exact);
+  if (exact.value !== BIGINT_ZERO && bounded.value === BIGINT_ZERO) {
+    return { kind: "float", value: floatOfExact(exact) };
+  }
+  return aggregated(bounded);
+}
+
+function aggregateDecimals(
+  decimals: Decimal[],
+  operation: AggregateOperation
+): Aggregated {
+  const { values, scale } = alignAll(decimals);
+  const sum = reduceValues(values, BIGINT_ZERO, (a, b) => a + b);
+
+  switch (operation) {
+    case "sum":
+      return aggregated({ value: sum, decimals: scale });
+    case "count":
+      return aggregated({ value: BigInt(values.length), decimals: 0 });
+    case "average":
+      return decimalDivide(
+        { value: sum, decimals: scale },
+        { value: BigInt(values.length), decimals: 0 }
+      );
+    case "median":
+      // medianScaled widens one place so halving the two middle entries is exact.
+      return aggregated(boundScale(medianScaled(values, scale)));
+    case "min":
+      return aggregated({
+        value: findExtremeValue(values, (a, b) => a < b),
+        decimals: scale,
+      });
+    case "max":
+      return aggregated({
+        value: findExtremeValue(values, (a, b) => b < a),
+        decimals: scale,
+      });
+    case "product": {
+      // The running product keeps every digit a later factor can still lift
+      // into view, so a tiny factor followed by a large one does not vanish
+      // and the answer does not depend on the order the factors came in.
+      const liftable = liftableDigits(decimals);
+      let acc: Decimal = { value: BIGINT_ONE, decimals: 0 };
+      for (const [index, d] of decimals.entries()) {
+        acc = trimSignificant(
+          capProductScale(
+            {
+              value: acc.value * d.value,
+              decimals: acc.decimals + d.decimals,
+            },
+            liftable[index] + PRODUCT_SCALE_HEADROOM
+          )
+        );
+      }
+      return boundedOrFloat(acc);
+    }
+    default:
+      throw new Error(`Unknown operation: ${operation}`);
+  }
+}
+
+function valueOf<T>(value: T): PostResult<T> {
+  return { kind: "value", value };
+}
+
+function applyBinaryDecimalPostOperation(
+  value: Decimal,
+  postOp: BinaryPostOperation,
+  operand: NumericValue
+): PostResult<Decimal> {
+  const operandDecimal = toDecimal(operand);
+  const exponent = Number(operand.value);
+  const { values, scale } = alignAll([value, operandDecimal]);
+  const [a, b] = values;
+  switch (postOp) {
+    case "add":
+      return valueOf({ value: a + b, decimals: scale });
+    case "subtract":
+      return valueOf({ value: a - b, decimals: scale });
+    case "multiply": {
+      if (operandDecimal.value === BIGINT_ZERO && !writtenAsZero(operand)) {
+        // Zeroed at the scale bound, not as written: float still has an answer.
+        return {
+          kind: "float",
+          value: floatOfExact(value) * Number(operand.value),
+        };
+      }
+      return boundedOrFloat({
+        value: value.value * operandDecimal.value,
+        decimals: value.decimals + operandDecimal.decimals,
+      });
+    }
+    case "divide":
+    case "modulo": {
+      if (writtenAsZero(operand)) {
+        return { kind: "divisionByZero", postOp };
+      }
+      if (b === BIGINT_ZERO) {
+        // Not zero as written, zero at the bound. A quotient can still be
+        // answered in float while the operand is above its own floor; below
+        // it nothing can. A remainder cannot: a float remainder by a divisor
+        // the fixed-point scale cannot even represent is noise, not an
+        // answer, so modulo fails here on both counts.
+        const divisor = Number(operand.value);
+        if (divisor === 0 || postOp === "modulo") {
+          return { kind: "belowPrecision", postOp };
+        }
+        // Float can overflow to Infinity here, as it can on the power path.
+        // The result carries it rather than failing, which is what the
+        // floating-point path has always done.
+        return {
+          kind: "float",
+          value:
+            postOp === "divide"
+              ? floatOfExact(value) / divisor
+              : floatOfExact(value) % divisor,
+        };
+      }
+      if (postOp === "divide") {
+        return decimalDivide(value, operandDecimal);
+      }
+      return valueOf({ value: a % b, decimals: scale });
+    }
+    case "power": {
+      if (
+        Number.isInteger(exponent) &&
+        exponent >= 0 &&
+        exponent <= MAX_EXACT_POWER &&
+        digitCount(value.value) * exponent <= MAX_DIGITS
+      ) {
+        return boundedOrFloat({
+          value: value.value ** BigInt(exponent),
+          decimals: value.decimals * exponent,
+        });
+      }
+      return {
+        kind: "float",
+        value: floatOfExact(value) ** exponent,
+      };
+    }
+    case "round-decimals": {
+      const places = Math.trunc(exponent);
+      if (places >= value.decimals) {
+        return valueOf(value);
+      }
+      if (places >= 0) {
+        return valueOf({
+          value: roundDropping(value.value, value.decimals - places),
+          decimals: places,
+        });
+      }
+      // Negative places round to tens, hundreds, ... as the number path does.
+      const rounded = roundDropping(value.value, value.decimals - places);
+      return valueOf({ value: rounded * pow10(-places), decimals: 0 });
+    }
+    default:
+      throw new Error(`Unknown post-operation: ${postOp}`);
+  }
+}
+
+function applyUnaryDecimalPostOperation(
+  value: Decimal,
+  postOp: UnaryPostOperation
+): Decimal {
+  switch (postOp) {
+    case "abs":
+      return { value: absBigInt(value.value), decimals: value.decimals };
+    case "round":
+      return { value: roundDropping(value.value, value.decimals), decimals: 0 };
+    case "floor":
+      return { value: floorDropping(value.value, value.decimals), decimals: 0 };
+    case "ceil":
+      return { value: ceilDropping(value.value, value.decimals), decimals: 0 };
+    default:
+      throw new Error(`Unknown post-operation: ${postOp}`);
+  }
+}
+
+function applyDecimalPostOperation(
+  value: Decimal,
+  postOp: BinaryPostOperation | UnaryPostOperation,
+  operand: NumericValue | null
+): PostResult<Decimal> {
+  if (isBinaryPostOperation(postOp)) {
+    if (operand === null) {
+      throw new Error(
+        `postOperand is required for "${postOp}" post-operation.`
+      );
+    }
+    return applyBinaryDecimalPostOperation(value, postOp, operand);
+  }
+  return valueOf(applyUnaryDecimalPostOperation(value, postOp));
+}
+
+function isWholeDecimal(d: Decimal): boolean {
+  return d.decimals <= 0 || d.value % pow10(d.decimals) === BIGINT_ZERO;
 }
 
 // ─── Generic aggregation ────────────────────────────────────────────────────
@@ -327,18 +759,6 @@ function findExtremeValue<T>(
     }
   }
   return extreme;
-}
-
-function computeMedian<T>(values: T[], arithmetic: ArithmeticOperations<T>): T {
-  const sorted = arithmetic.sortAscending(values);
-  const midIndex = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 0) {
-    return arithmetic.divide(
-      arithmetic.addition(sorted[midIndex - 1], sorted[midIndex]),
-      arithmetic.two
-    );
-  }
-  return sorted[midIndex];
 }
 
 function computeAggregation<T>(
@@ -392,30 +812,31 @@ function computeAggregation<T>(
 function applyBinaryPostOperation(
   value: number,
   postOp: BinaryPostOperation,
-  operand: number
-): number {
+  operand: NumericValue
+): PostResult<number> {
+  const n = Number(operand.value);
   switch (postOp) {
     case "add":
-      return value + operand;
+      return valueOf(value + n);
     case "subtract":
-      return value - operand;
+      return valueOf(value - n);
     case "multiply":
-      return value * operand;
+      return valueOf(value * n);
     case "divide":
-      if (operand === 0) {
-        throw new Error("Division by zero.");
+    case "modulo": {
+      if (writtenAsZero(operand)) {
+        return { kind: "divisionByZero", postOp };
       }
-      return value / operand;
-    case "modulo":
-      if (operand === 0) {
-        throw new Error("Modulo by zero.");
+      if (n === 0) {
+        return { kind: "belowPrecision", postOp };
       }
-      return value % operand;
+      return valueOf(postOp === "divide" ? value / n : value % n);
+    }
     case "power":
-      return value ** operand;
+      return valueOf(value ** n);
     case "round-decimals": {
-      const factor = 10 ** Math.trunc(operand);
-      return Math.round(value * factor) / factor;
+      const factor = 10 ** Math.trunc(n);
+      return valueOf(Math.round(value * factor) / factor);
     }
     default:
       throw new Error(`Unknown post-operation: ${postOp}`);
@@ -443,8 +864,8 @@ function applyUnaryPostOperation(
 function applyPostOperation(
   value: number,
   postOp: BinaryPostOperation | UnaryPostOperation,
-  operand: number | null
-): number {
+  operand: NumericValue | null
+): PostResult<number> {
   if (isBinaryPostOperation(postOp)) {
     if (operand === null) {
       throw new Error(
@@ -453,7 +874,15 @@ function applyPostOperation(
     }
     return applyBinaryPostOperation(value, postOp, operand);
   }
-  return applyUnaryPostOperation(value, postOp);
+  return valueOf(applyUnaryPostOperation(value, postOp));
+}
+
+function postOperandOf(input: AggregateCoreInput): NumericValue | null {
+  return parseUnknownToNumericValue(
+    input.postOperation === "round-decimals"
+      ? input.postDecimalPlaces
+      : input.postOperand
+  );
 }
 
 // ─── Input parsing ──────────────────────────────────────────────────────────
@@ -463,7 +892,7 @@ function parseInputValues(
 ): NumericValue[] | AggregateResult {
   if (input.inputMode === "array") {
     if (!input.arrayInput) {
-      return failedAggregation(
+      return failed(
         "arrayInput is required in array mode. Reference an upstream node output containing a JSON array."
       );
     }
@@ -472,14 +901,14 @@ function parseInputValues(
 
   if (input.inputMode === "explicit") {
     if (!input.explicitValues) {
-      return failedAggregation(
+      return failed(
         "explicitValues is required in explicit mode. Provide comma-separated or newline-separated values."
       );
     }
     return extractExplicitValues(input.explicitValues);
   }
 
-  return failedAggregation(
+  return failed(
     `Invalid inputMode "${input.inputMode}". Must be "array" or "explicit".`
   );
 }
@@ -492,7 +921,7 @@ function validatePostOperation(
     return null;
   }
   if (!VALID_POST_OPERATIONS.has(postOperation)) {
-    return failedAggregation(
+    return failed(
       `Invalid postOperation "${postOperation}". Must be one of: ${ALL_POST_OPERATIONS.join(", ")}.`
     );
   }
@@ -507,7 +936,7 @@ function validatePostOperation(
         postOperation === "round-decimals"
           ? "postDecimalPlaces"
           : "postOperand";
-      return failedAggregation(
+      return failed(
         `${fieldName} is required and must be a valid number for "${postOperation}" post-operation.`
       );
     }
@@ -527,7 +956,7 @@ function buildOperationLabel(input: AggregateCoreInput): string {
 function stepHandler(input: AggregateCoreInput): AggregateResult {
   try {
     if (!isValidOperation(input.operation)) {
-      return failedAggregation(
+      return failed(
         `Invalid operation "${input.operation}". Must be one of: ${AGGREGATE_OPERATIONS.join(", ")}.`
       );
     }
@@ -542,70 +971,59 @@ function stepHandler(input: AggregateCoreInput): AggregateResult {
       return postError;
     }
 
-    const needsBigInt = parsed.some((v) => v.kind === "bigint");
     const { postOperation } = input;
+    const operationLabel = buildOperationLabel(input);
+    const operand = postOperandOf(input);
 
-    if (needsBigInt) {
-      const aggregated = computeAggregation(
-        convertNumericValuesToBigInts(parsed),
-        input.operation,
-        BIGINT_ARITHMETIC
+    const nullOnZeroDivisor =
+      input.zeroDivisorBehaviour === NULL_ON_ZERO_DIVISOR;
+    const done = (post: PostResult<number>): AggregateResult =>
+      finishNumberResult(
+        post,
+        operationLabel,
+        parsed.length,
+        nullOnZeroDivisor
       );
 
-      if (!isActivePostOperation(postOperation)) {
-        return {
-          success: true,
-          result: aggregated,
-          resultType: "bigint",
-          operation: buildOperationLabel(input),
-          inputCount: parsed.length,
-        };
+    // An integer written past the safe-integer range puts the whole set on the
+    // fixed-point path, where a fractional sibling keeps its digits instead of
+    // being truncated to an integer.
+    if (parsed.some((v) => v.kind === "bigint")) {
+      const exact = aggregateDecimals(parsed.map(toDecimal), input.operation);
+      if (exact.kind === "float") {
+        const post = isActivePostOperation(postOperation)
+          ? applyPostOperation(exact.value, postOperation, operand)
+          : valueOf(exact.value);
+        return done(post);
       }
-
-      // Post-operations use Number arithmetic — convert only the aggregated
-      // result, preserving BigInt precision for the aggregation step itself
-      let result = Number(aggregated);
-      const operandSource =
-        postOperation === "round-decimals"
-          ? input.postDecimalPlaces
-          : input.postOperand;
-      const operand = parseUnknownToNumber(operandSource);
-      result = applyPostOperation(result, postOperation, operand);
-
+      const post = isActivePostOperation(postOperation)
+        ? applyDecimalPostOperation(exact.value, postOperation, operand)
+        : valueOf(exact.value);
+      if (post.kind !== "value") {
+        return done(post);
+      }
       return {
         success: true,
-        result: String(result),
-        resultType: "number",
-        operation: buildOperationLabel(input),
+        result: formatScaled(post.value.value, post.value.decimals),
+        resultType: isWholeDecimal(post.value) ? "bigint" : "number",
+        operation: operationLabel,
         inputCount: parsed.length,
       };
     }
 
-    const aggregated = computeAggregation(
-      convertNumericValuesToNumbers(parsed),
-      input.operation,
-      NUMBER_ARITHMETIC
+    const floatAggregate = Number(
+      computeAggregation(
+        convertNumericValuesToNumbers(parsed),
+        input.operation,
+        NUMBER_ARITHMETIC
+      )
     );
-    let result = Number(aggregated);
-
-    if (isActivePostOperation(postOperation)) {
-      const operandSource =
-        postOperation === "round-decimals"
-          ? input.postDecimalPlaces
-          : input.postOperand;
-      const operand = parseUnknownToNumber(operandSource);
-      result = applyPostOperation(result, postOperation, operand);
-    }
-
-    return {
-      success: true,
-      result: String(result),
-      resultType: "number",
-      operation: buildOperationLabel(input),
-      inputCount: parsed.length,
-    };
+    const post = isActivePostOperation(postOperation)
+      ? applyPostOperation(floatAggregate, postOperation, operand)
+      : valueOf(floatAggregate);
+    return done(post);
   } catch (error) {
-    return failedAggregation(`Aggregation failed: ${getErrorMessage(error)}`);
+    return failed(`Aggregation failed: ${getErrorMessage(error)}`);
   }
 }
 

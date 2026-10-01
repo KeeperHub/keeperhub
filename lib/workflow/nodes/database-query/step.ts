@@ -16,6 +16,7 @@ import {
   getPostgresConnectionOptions,
   type PostgresSslOption,
 } from "@/lib/db/connection-utils";
+import { MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { sleep } from "@/lib/sleep";
 import {
@@ -180,7 +181,6 @@ export function resolveRetries(retries: unknown): number {
  * are excluded - they can occur after the query was transmitted.
  */
 const RETRYABLE_CONNECTION_CODES = new Set(["CONNECT_TIMEOUT", "ECONNREFUSED"]);
-const MAX_CAUSE_DEPTH = 5;
 
 function isRetryableConnectionError(error: unknown): boolean {
   // Walk the error -> cause chain. A direct postgres.js call exposes the code

@@ -1,4 +1,5 @@
 import "server-only";
+import { broadcastTransactionHash } from "@/lib/web3/onchain-revert";
 
 import { ethers } from "ethers";
 import { ErrorCategory, logUserError } from "@/lib/logging";
@@ -46,7 +47,13 @@ export type DexSwapResult =
       minAmountOut: string;
       chainId: number;
     }
-  | { success: false; error: string };
+  | {
+      success: false;
+      error: string;
+      transactionHash?: string;
+      chainId?: number;
+      broadcastAttempted?: boolean;
+    };
 
 function parseSlippageBps(raw: string | number | undefined): number | null {
   if (raw === undefined || raw === "") {
@@ -59,7 +66,7 @@ function parseSlippageBps(raw: string | number | undefined): number | null {
   return Math.floor(value);
 }
 
-async function stepHandler(input: DexSwapInput): Promise<DexSwapResult> {
+async function stepHandlerImpl(input: DexSwapInput): Promise<DexSwapResult> {
   const { network, tokenInConfig, tokenOutConfig, amountIn, _context } = input;
 
   let chainId: number;
@@ -95,6 +102,8 @@ async function stepHandler(input: DexSwapInput): Promise<DexSwapResult> {
   if (!orgCtx.success) {
     return orgCtx;
   }
+
+  let broadcastHash: string | undefined;
 
   try {
     const rpcManager = await getRpcProvider({
@@ -154,6 +163,7 @@ async function stepHandler(input: DexSwapInput): Promise<DexSwapResult> {
       executionId: _context?.executionId,
     });
 
+    broadcastHash = hash;
     const transactionLink = await buildTempoTxLink(chainId, hash);
     return {
       success: true,
@@ -174,8 +184,22 @@ async function stepHandler(input: DexSwapInput): Promise<DexSwapResult> {
       error,
       { plugin_name: "tempo", action_name: "dex-swap" }
     );
-    return { success: false, error: getErrorMessage(error) };
+    const transactionHash = broadcastHash ?? broadcastTransactionHash(error);
+    return {
+      success: false,
+      error: getErrorMessage(error),
+      broadcastAttempted: transactionHash ? true : false,
+      ...(transactionHash ? { transactionHash, chainId } : {}),
+    };
   }
+}
+
+async function stepHandler(input: DexSwapInput): Promise<DexSwapResult> {
+  const result = await stepHandlerImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }
 
 export async function dexSwapStep(input: DexSwapInput): Promise<DexSwapResult> {

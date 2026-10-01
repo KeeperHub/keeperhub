@@ -571,6 +571,15 @@ export function WorkflowCanvas() {
     [setSelectedNode, isSidebarCollapsed, setIsPanelAnimating, setIsSidebarCollapsed]
   );
 
+  // Open node details from any tab
+  const onNodeDoubleClick: NodeMouseHandler = useCallback(
+    (event, node) => {
+      onNodeClick(event, node);
+      setActiveTab("properties");
+    },
+    [onNodeClick, setActiveTab]
+  );
+
   const connectingHandleId = useRef<string | null>(null);
 
   const onConnectStart = useCallback(
@@ -789,6 +798,7 @@ export function WorkflowCanvas() {
         onEdgesChange={isGenerating ? undefined : onEdgesChange}
         onNodeClick={isGenerating ? undefined : onNodeClick}
         onNodeContextMenu={isGenerating ? undefined : onNodeContextMenu}
+        onNodeDoubleClick={isGenerating ? undefined : onNodeDoubleClick}
         onNodesChange={isGenerating ? undefined : onNodesChange}
         onPaneClick={onPaneClick}
         onPaneContextMenu={

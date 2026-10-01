@@ -9,6 +9,8 @@
  * only a value that actually is a SQLSTATE -- see `isSqlState`.
  */
 
+import { MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
+
 export type CuratedDbError = { message: string; status: number };
 
 /**
@@ -17,7 +19,6 @@ export type CuratedDbError = { message: string; status: number };
  * single `err.cause.code` check misses real constraint violations. Bounded so
  * a self-referential chain cannot spin.
  */
-const MAX_CAUSE_DEPTH = 5;
 
 /**
  * A Postgres SQLSTATE: exactly five characters, digits and uppercase letters.
@@ -87,6 +88,23 @@ function pgErrorCode(err: unknown): string | undefined {
 
 /** Postgres `unique_violation`. */
 const UNIQUE_VIOLATION = "23505";
+
+/** Postgres `query_canceled`, which is what a statement_timeout raises. */
+const QUERY_CANCELED = "57014";
+
+/**
+ * True when a caught DB error is a statement the server cancelled, almost
+ * always on `statement_timeout`.
+ *
+ * Two callers act on it rather than report it. The executor falls back to the
+ * step tracker when its step-output read is cancelled, and the retention
+ * plan-window drain reads a cancelled runs read as "this time slice is too
+ * wide" and narrows it (KEEP-1360). Both need the driver's SQLSTATE from under
+ * whatever wrapped it, which is exactly what `pgErrorCode` already does.
+ */
+export function isStatementTimeout(err: unknown): boolean {
+  return pgErrorCode(err) === QUERY_CANCELED;
+}
 
 /**
  * True when a caught DB error is a Postgres unique/primary-key violation.

@@ -7,8 +7,8 @@ import {
 } from "@/lib/workflow/executor/step-handler";
 import type { EvmChainCredentials } from "../credentials";
 import { callEvmRpc, isHexResult, toNative } from "./evm-rpc-core";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
-const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 type EthBalanceResult =
   | {
@@ -30,7 +30,7 @@ async function stepHandler(
   input: EthBalanceCoreInput,
   credentials: EvmChainCredentials
 ): Promise<EthBalanceResult> {
-  if (!ADDRESS_RE.test(input.address)) {
+  if (!EVM_ADDRESS_RE.test(input.address)) {
     return {
       success: false,
       error: "address must be a 20-byte hex address (0x... 40 hex chars)",

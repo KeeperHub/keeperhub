@@ -34,12 +34,12 @@ const mathPlugin: IntegrationPlugin = {
         {
           field: "result",
           description:
-            "The aggregation result as a string (preserves precision for large integers)",
+            "The aggregation result as a string (exact on the fixed-point path), or null when divide or modulo had a zero operand and the Zero Divisor field is set to return a null result",
         },
         {
           field: "resultType",
           description:
-            'Whether the result used "number" (standard) or "bigint" (large integer) arithmetic',
+            '"bigint" when the result is a whole number computed in fixed point, "number" otherwise',
         },
         {
           field: "operation",
@@ -48,6 +48,11 @@ const mathPlugin: IntegrationPlugin = {
         {
           field: "inputCount",
           description: "Number of values that were aggregated",
+        },
+        {
+          field: "divisionByZero",
+          description:
+            "true when the divide or modulo post-operation had a zero operand and the Zero Divisor field is set to return a null result; result is then null and the step succeeds so a Condition can branch on it",
         },
         { field: "error", description: "Error message if aggregation failed" },
       ],
@@ -173,6 +178,26 @@ const mathPlugin: IntegrationPlugin = {
                 equals: "round-decimals",
               },
             },
+            {
+              key: "zeroDivisorBehaviour",
+              label: "Zero Divisor",
+              type: "select",
+              options: [
+                { value: "fail", label: "Fail the step" },
+                {
+                  value: "null-result",
+                  label: "Return a null result and set divisionByZero",
+                },
+              ],
+              defaultValue: "fail",
+              example: "fail",
+              helpText:
+                "What happens when the operand is zero. Failing stops the run; a null result lets a Condition node branch on divisionByZero.",
+              showWhen: {
+                field: "postOperation",
+                oneOf: ["divide", "modulo"],
+              },
+            },
           ],
         },
       ],
@@ -269,6 +294,123 @@ const mathPlugin: IntegrationPlugin = {
       ],
     },
     {
+      slug: "treasury-runway",
+      label: "Treasury Runway",
+      description:
+        "Calculate reserve-adjusted treasury runway, recovery funding and a machine-readable treasury status using precision-safe arithmetic.",
+      category: "Math",
+      stepFunction: "treasuryRunwayStep",
+      stepImportPath: "treasury-runway",
+      requiresCredentials: false,
+      outputFields: [
+        { field: "success", description: "Whether the calculation succeeded" },
+        {
+          field: "reserveAdjustedBalance",
+          description:
+            "Treasury balance minus protected reserve, preserved as a signed decimal string",
+        },
+        {
+          field: "reserveBreached",
+          description:
+            "True when the treasury balance is below the protected reserve",
+        },
+        {
+          field: "netBurnRate",
+          description:
+            "Outgoing rate minus incoming rate in the selected rate period",
+        },
+        {
+          field: "runwayDays",
+          description:
+            "Remaining runway in days with up to six decimal places, or null when the treasury is not depleting",
+        },
+        {
+          field: "requiredRecoveryAmount",
+          description:
+            "Final top-up required to reach minimum runway, rounded upward at the supplied amount precision",
+        },
+        {
+          field: "status",
+          description: "Runway status: safe, warning or critical. A safe result can still have reserveBreached set to true.",
+        },
+        {
+          field: "ratePeriod",
+          description: "The fixed period used by the incoming and outgoing rates",
+        },
+        {
+          field: "error",
+          description: "Error message if the calculation failed",
+        },
+      ],
+      configFields: [
+        {
+          key: "treasuryBalance",
+          label: "Treasury Balance",
+          type: "template-input",
+          required: true,
+          placeholder: "{{@node1:Read Balance.result}}",
+          helpTip:
+            "Current treasury balance. Use the same amount unit and precision for all balance and rate inputs.",
+          example: "530",
+        },
+        {
+          key: "incomingRate",
+          label: "Incoming Rate",
+          type: "template-input",
+          required: true,
+          placeholder: "100",
+          helpTip: "Amount entering the treasury during each rate period.",
+          example: "100",
+        },
+        {
+          key: "outgoingRate",
+          label: "Outgoing Rate",
+          type: "template-input",
+          required: true,
+          placeholder: "920",
+          helpTip: "Amount leaving the treasury during each rate period.",
+          example: "920",
+        },
+        {
+          key: "protectedReserve",
+          label: "Protected Reserve",
+          type: "template-input",
+          required: true,
+          placeholder: "0",
+          helpTip:
+            "Balance reserved from ordinary spending. A balance below this value sets reserveBreached to true.",
+          example: "0",
+        },
+        {
+          key: "minimumRunwayDays",
+          label: "Minimum Runway Days",
+          type: "template-input",
+          required: true,
+          placeholder: "30",
+          helpTip:
+            "Required minimum runway in days. Reported runway uses up to six decimal places.",
+          example: "30",
+        },
+        {
+          key: "ratePeriod",
+          label: "Rate Period",
+          type: "select",
+          required: true,
+          helpTip:
+            "Fixed period represented by both incoming and outgoing rates.",
+          options: [
+            { value: "second", label: "Per second" },
+            { value: "minute", label: "Per minute" },
+            { value: "hour", label: "Per hour" },
+            { value: "day", label: "Per day" },
+            { value: "week", label: "Per week (7 days)" },
+            { value: "month", label: "Per month (30 days)" },
+            { value: "year", label: "Per year (365 days)" },
+          ],
+        },
+      ],
+    },
+    {
       slug: "format-number",
       label: "Format Number",
       description:
@@ -338,6 +480,74 @@ const mathPlugin: IntegrationPlugin = {
           placeholder: "SKY",
           helpTip: "Appended after the number, separated by a space.",
           example: "SKY",
+        },
+      ],
+    },
+    {
+      slug: "consensus-tolerance",
+      label: "Multi-Source Consensus Tolerance",
+      description:
+        "Evaluate N-way agreement across multiple price feeds or oracle readings (e.g. Chronicle, Chainlink, Pyth). BigInt-safe, checks every pair of sources against the tolerance and reports the median across all sources.",
+      category: "Math",
+      stepFunction: "consensusToleranceStep",
+      stepImportPath: "consensus-tolerance",
+      requiresCredentials: false,
+      outputFields: [
+        { field: "success", description: "Whether the consensus check executed" },
+        { field: "inConsensus", description: "True when all sources agree within the specified tolerance" },
+        { field: "sourceCount", description: "Number of sources evaluated" },
+        { field: "maxDeviation", description: "Largest difference found between any two sources" },
+        { field: "maxPercentDeviation", description: "Largest percentage difference between any pair, relative to the larger absolute value of that pair. 0 only when every source agrees exactly" },
+        { field: "median", description: "Median across all sources, including any that broke consensus" },
+        { field: "values", description: "The source values as they were read, in input order" },
+        { field: "tolerance", description: "The tolerance applied" },
+        { field: "mode", description: "percent or absolute" },
+        { field: "error", description: "Error message if consensus check failed" },
+      ],
+      configFields: [
+        {
+          key: "values",
+          label: "Source Values",
+          type: "template-textarea",
+          required: true,
+          placeholder: "{{@chronicle:Price.value}}\n{{@chainlink:Price.value}}\n{{@pyth:Price.value}}",
+          helpTip: "One value per line, or a JSON array, from multiple oracle/read nodes. Commas inside a value are read as thousands separators, so put each source on its own line.",
+          rows: 4,
+        },
+        {
+          key: "tolerance",
+          label: "Tolerance",
+          type: "template-input",
+          required: true,
+          placeholder: "1.0",
+          helpTip: "In percent mode, 1.0 means 1% max divergence between any pair of sources.",
+          example: "1.0",
+        },
+        {
+          key: "mode",
+          label: "Tolerance Mode",
+          type: "select",
+          required: true,
+          options: [
+            { value: "percent", label: "Percentage deviation" },
+            { value: "absolute", label: "Absolute difference" },
+          ],
+          defaultValue: "percent",
+        },
+        {
+          key: "minSources",
+          label: "Minimum Sources Required",
+          type: "number",
+          min: 2,
+          defaultValue: "2",
+          helpTip: "Fails if fewer than this number of sources are supplied (prevents single-oracle fallback). Two is the floor, so a lower value is treated as 2.",
+        },
+        {
+          key: "precision",
+          label: "Percent Decimal Places",
+          type: "number",
+          min: 0,
+          defaultValue: "6",
         },
       ],
     },

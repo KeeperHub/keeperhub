@@ -1,3 +1,4 @@
+import { ethers } from "ethers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockDbSelect = vi.fn();
@@ -246,6 +247,70 @@ describe("GET /api/openapi", () => {
     expect(op["x-payment-info"]).toBeUndefined();
     expect(op.responses["402"]).toBeUndefined();
     expect(op["x-workflow-type"]).toBe("write");
+  });
+
+  // Two things to hold at once: the encoding has to be exact, and the
+  // addresses have to stay inert. Decoding rather than string-comparing
+  // catches a truncated selector; pinning the recipient catches the change
+  // that would matter most - swapping in a live payee, which no shape
+  // assertion can detect.
+  it("write workflows: the 200 example is exactly encoded and not broadcastable", async () => {
+    mockDbSelect.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([
+          {
+            id: "wf-write-example",
+            name: "Write Workflow",
+            description: null,
+            listedSlug: "write-example",
+            inputSchema: null,
+            priceUsdcPerCall: null,
+            workflowType: "write",
+            category: null,
+            chain: null,
+          },
+        ]),
+      }),
+    });
+
+    const { GET } = await import("@/app/api/openapi/route");
+    const response = await GET(
+      new Request("https://app.keeperhub.com/api/openapi")
+    );
+    const body = await response.json();
+    const schema =
+      body.paths["/api/mcp/workflows/write-example/call"].post.responses["200"]
+        .content["application/json"].schema;
+
+    // OpenAPI 3.1: the plural form, never the deprecated singular.
+    expect(schema.example).toBeUndefined();
+    expect(schema.examples).toHaveLength(1);
+    const [example] = schema.examples;
+
+    // Every key is one the schema declares, and `type` meets its const.
+    for (const key of Object.keys(example)) {
+      expect(schema.properties).toHaveProperty(key);
+    }
+    expect(example.type).toBe(schema.properties.type.const);
+
+    // `to`: a well-formed, checksummed address. This response carries no
+    // chain identifier, so it must not name a token that exists on one chain
+    // and is codeless on another - broadcasting there mines a no-op that
+    // looks like success.
+    expect(ethers.getAddress(example.to)).toBe(example.to);
+
+    // `data`: selector plus two 32-byte ABI words, decoding to real arguments.
+    expect(example.data).toHaveLength(2 + 8 + 2 * 64);
+    const [recipient, amount] = new ethers.Interface([
+      "function transfer(address to, uint256 amount)",
+    ]).decodeFunctionData("transfer", example.data);
+    expect(amount).toBeGreaterThan(BigInt(0));
+    // The burn address, so the documented body cannot be pasted into a signer
+    // and send tokens to a real party.
+    expect(recipient).toBe("0x000000000000000000000000000000000000dEaD");
+
+    // `value`: wei as a decimal string, as lib/mcp/calldata.ts emits it.
+    expect(example.value).toMatch(/^\d+$/);
   });
 
   it("DB-backed inputSchema takes precedence over the open-object fallback", async () => {

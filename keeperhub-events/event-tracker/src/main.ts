@@ -5,11 +5,58 @@ import { chainProviderManager } from "./chains/provider-manager";
 import { createRegistry } from "./listener/factory";
 import type { ListenerRegistry } from "./listener/registry";
 import { buildRegistration } from "./listener/workflow-mapper";
+import { describePythMismatch } from "./pyth/availability";
+import { fetchPythRegistrations } from "./pyth/client";
+import { PythRegistry } from "./pyth/registry";
 
 // Lazy: creating the registry opens a Redis connection for dedup. Defer
 // construction until the first reconcile so unit tests that import this
 // module without env wiring do not connect on import.
 let registry: ListenerRegistry | null = null;
+let pythRegistry: PythRegistry | null = null;
+let pythSyncing = false;
+let pythMismatch: string | null = null;
+let shuttingDown = false;
+
+// Runs even without a key here, so a key set only on the app is reported
+// instead of leaving enabled Pyth workflows silently unobserved.
+async function synchronizePyth(): Promise<void> {
+  if (shuttingDown || pythSyncing) {
+    return;
+  }
+  pythSyncing = true;
+  const apiKey = process.env.PYTH_API_KEY;
+  try {
+    const { enabled, registrations } = await fetchPythRegistrations();
+    if (shuttingDown) {
+      return;
+    }
+    const mismatch = describePythMismatch(
+      Boolean(apiKey),
+      enabled,
+      registrations.length,
+    );
+    if (mismatch !== pythMismatch) {
+      pythMismatch = mismatch;
+      if (mismatch) {
+        logger.warn(mismatch);
+      }
+    }
+    if (!apiKey) {
+      return;
+    }
+    pythRegistry ??= new PythRegistry(apiKey);
+    await pythRegistry.reconcile(registrations);
+  } catch {
+    if (apiKey) {
+      logger.warn(
+        "[Pyth] workflow synchronization failed; retaining existing subscriptions",
+      );
+    }
+  } finally {
+    pythSyncing = false;
+  }
+}
 
 function getRegistry(): ListenerRegistry {
   if (!registry) {
@@ -30,9 +77,8 @@ function getRegistry(): ListenerRegistry {
  * ever invoked it, so those outlived the listeners they existed for.
  */
 async function shutdownRegistry(): Promise<void> {
-  if (registry) {
-    await registry.stopAll();
-  }
+  shuttingDown = true;
+  await Promise.all([pythRegistry?.stopAll(), registry?.stopAll()]);
   await chainProviderManager.destroy();
 }
 
@@ -112,9 +158,18 @@ async function reconcile(
 }
 
 async function synchronizeData(): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
   logger.log("Synchronizing data");
+  const pythSync = synchronizePyth();
   try {
-    const result = await fetchActiveWorkflows();
+    // A stalled legacy events endpoint must not block startup and prevent
+    // subsequent Pyth discovery retries.
+    const result = await fetchActiveWorkflows(AbortSignal.timeout(8000));
+    if (shuttingDown) {
+      return;
+    }
     if (!result) {
       logger.warn("No data received from worker, skipping sync cycle");
       return;
@@ -133,6 +188,8 @@ async function synchronizeData(): Promise<void> {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error(`Error during synchronization: ${message}`);
+  } finally {
+    await pythSync;
   }
 }
 
