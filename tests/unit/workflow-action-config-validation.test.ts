@@ -2016,3 +2016,153 @@ describe("formatActionConfigValidationResponse", () => {
     expect(result.message).not.toContain("B".repeat(41));
   });
 });
+
+/**
+ * Array inputs were rendered as plain text fields before they had a
+ * structured editor, so a config saved then holds a bare scalar or a
+ * comma-separated list. Validation runs over every node on every save, so
+ * rejecting one of those values makes the whole workflow unsaveable over a
+ * field the user never opened.
+ */
+describe("protocol array fields", () => {
+  const legacyCases: [string, unknown][] = [
+    ["a single scalar", "135184"],
+    ["a comma-separated list", "135184, 135185"],
+    ["a large integer", "1000000000000000000000"],
+  ];
+
+  it.each(legacyCases)(
+    "accepts %s saved before the array editor",
+    (_, value) => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("lido/claim-withdrawals", {
+          network: "1",
+          requestIds: value,
+          hints: value,
+        }),
+      ]);
+
+      expect(result).toEqual({ valid: true, issues: [] });
+    }
+  );
+
+  it("accepts a legacy address stored for an address array", () => {
+    const result = validateWorkflowActionConfigs([
+      actionNode("aerodrome/claim-rewards", {
+        network: "8453",
+        _gauges: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      }),
+    ]);
+
+    expect(result.valid).toBe(true);
+  });
+
+  it("accepts a whole-field reference and a JSON array", () => {
+    const result = validateWorkflowActionConfigs([
+      actionNode("lido/claim-withdrawals", {
+        network: "1",
+        requestIds: "{{@n1:Get Withdrawal Requests.requestsIds}}",
+        hints: '["1216"]',
+      }),
+    ]);
+
+    expect(result).toEqual({ valid: true, issues: [] });
+  });
+
+  it("still rejects a value no array can be read from", () => {
+    const result = validateWorkflowActionConfigs([
+      actionNode("lido/claim-withdrawals", {
+        network: "1",
+        requestIds: { nested: "object" },
+        hints: '["1216"]',
+      }),
+    ]);
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_TYPE",
+        field: "requestIds",
+      }),
+    ]);
+  });
+});
+
+describe("protocol-array element validation", () => {
+  const claim = (config: Record<string, unknown>) =>
+    validateWorkflowActionConfigs([
+      actionNode("lido/claim-withdrawals", {
+        network: "1",
+        requestIds: "1",
+        hints: "1",
+        ...config,
+      }),
+    ]);
+
+  it("rejects a non-numeric scalar on a uint256[] field", () => {
+    const result = claim({ requestIds: "abc" });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_TYPE",
+        field: "requestIds",
+        expected: "uint256[]",
+      }),
+    ]);
+  });
+
+  it("rejects a non-numeric element inside a JSON array", () => {
+    const result = claim({ requestIds: '["135184","abc"]' });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_TYPE",
+        field: "requestIds",
+      }),
+    ]);
+  });
+
+  it("rejects a non-numeric element in a legacy comma-separated value", () => {
+    const result = claim({ requestIds: "135184, abc" });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_TYPE",
+        field: "requestIds",
+      }),
+    ]);
+  });
+
+  it("keeps a legacy single scalar saveable", () => {
+    expect(claim({ requestIds: "135184" })).toEqual({
+      valid: true,
+      issues: [],
+    });
+  });
+
+  it("keeps a legacy comma-separated list saveable", () => {
+    expect(claim({ requestIds: "135184, 135185" })).toEqual({
+      valid: true,
+      issues: [],
+    });
+  });
+
+  it("accepts a JSON array and a whole-field template", () => {
+    expect(claim({ requestIds: '["135184","135185"]' })).toEqual({
+      valid: true,
+      issues: [],
+    });
+    expect(
+      claim({ requestIds: "{{@n1:Get Withdrawal Requests.requestsIds}}" })
+    ).toEqual({ valid: true, issues: [] });
+  });
+
+  it("accepts a template inside one element", () => {
+    expect(
+      claim({ requestIds: '["{{@n1:Get Requests.first}}","135185"]' })
+    ).toEqual({ valid: true, issues: [] });
+  });
+});

@@ -452,7 +452,8 @@ export type DiscardReason =
   | "org_deactivated"
   | "halted"
   | "disabled"
-  | "schedule_invalid";
+  | "schedule_invalid"
+  | "upstream_invalid";
 
 /**
  * KEEP-693: resolve a pre-created phantom or pending row when the executor

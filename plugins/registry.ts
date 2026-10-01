@@ -63,6 +63,7 @@ export type ActionConfigFieldBase = {
     | "protocol-bool" // Boolean select (true/false) with template variable support
     | "protocol-bytes" // Hex input with 0x-prefix validation
     | "protocol-eth-value" // Decimal ETH value input (e.g. 0.1, 1.5)
+    | "protocol-array" // Structured scalar array (e.g. uint256[])
     | "protocol-tuple-array" // Structured array of tuple items (e.g. tokenAmounts)
     | "pagerduty-service-select" // Services read live from the node's PagerDuty connection
     | "pagerduty-escalation-policy-select" // Escalation policies read live from that connection
@@ -143,6 +144,16 @@ export type ActionConfigFieldBase = {
   // its stored value, so a field gated on a sibling that is itself hidden
   // needs to gate on the sibling's own condition too.
   showWhen?: ShowWhen;
+
+  // Escape values substituted from {{...}} references into this field before
+  // the step runs, so resolved data cannot change the meaning of the author's
+  // own markup. `when` gates the rule on a sibling field using showWhen syntax.
+  escapeSubstitutions?: {
+    as: "html";
+    when?:
+      | { field: string; equals: string }
+      | { field: string; oneOf: string[] };
+  };
 
   // For abi-function-select and abi-event-select: which field contains the ABI JSON
   abiField?: string;

@@ -6,6 +6,8 @@
  * this file only proves the wiring.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { parsePythTriggerConfig } from "@/lib/pyth/price-trigger";
+import { hashPythConfig } from "@/lib/pyth/trigger-config";
 
 vi.mock("server-only", () => ({}));
 vi.mock("workflow/api", () => ({ start: vi.fn() }));
@@ -172,12 +174,16 @@ const workflow = {
   isAnonymous: false,
 };
 
-async function callExecute(body: string): Promise<Response> {
+async function callExecute(
+  body: string,
+  headers?: HeadersInit
+): Promise<Response> {
   const { POST } = await import(
     "@/app/api/workflow/[workflowId]/execute/route"
   );
   const request = new Request("http://localhost/api/workflow/wf_1/execute", {
     method: "POST",
+    headers,
     body,
   });
   return POST(request, { params: Promise.resolve({ workflowId: "wf_1" }) });
@@ -239,6 +245,76 @@ describe("execute route - input binding", {
       returning: vi.fn().mockResolvedValue([{ id: "exec_1" }]),
     });
   });
+
+  it.each([
+    { envelope: true, expired: false },
+    { envelope: false, expired: false },
+    { envelope: true, expired: true },
+    { envelope: false, expired: true },
+  ])(
+    "validates resolved upstream input (envelope=$envelope, expired=$expired)",
+    async ({ envelope, expired }) => {
+      const config = parsePythTriggerConfig({
+        feedId: "a".repeat(64),
+        direction: "above",
+        threshold: "100",
+        rearmThreshold: "95",
+        maxAgeSeconds: 30,
+      });
+      const nodes = [
+        {
+          data: {
+            type: "trigger",
+            config: { ...config, triggerType: "Pyth Price" },
+          },
+        },
+      ];
+      mockOwnerLimit.mockResolvedValue([
+        {
+          workflow: { ...workflow, nodes },
+          orgDeactivatedAt: null,
+          organizationName: null,
+        },
+      ]);
+      mockAuthenticateInternalService.mockResolvedValue({
+        authenticated: true,
+        caller: "events",
+      });
+      const input = {
+        source: "pyth-hermes",
+        speculative: true,
+        feedId: config.feedId,
+        configHash: hashPythConfig(config),
+        expiresAt: Date.now() + (expired ? -1000 : 30_000),
+      };
+      const response = await callExecute(
+        JSON.stringify(envelope ? { input } : input),
+        { "x-trigger-type": "upstream" }
+      );
+      expect(response.status).toBe(expired ? 409 : 200);
+      expect(Boolean(response.headers.get("Deprecation"))).toBe(!envelope);
+      if (expired) {
+        expect(await response.json()).toEqual({
+          error: "Pyth signal expired before execution started.",
+        });
+        expect(mockDbInsertValues).not.toHaveBeenCalled();
+        expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
+      } else {
+        expect(mockExecuteWorkflowInBackground).toHaveBeenCalledWith(
+          "exec_1",
+          "wf_1",
+          nodes,
+          workflow.edges,
+          input,
+          expect.anything(),
+          workflow.organizationId,
+          workflow.userId,
+          undefined,
+          undefined
+        );
+      }
+    }
+  );
 
   it("binds a bare top-level field as input, with a deprecation warning header", async () => {
     const response = await callExecute(JSON.stringify({ amount: "1" }));
