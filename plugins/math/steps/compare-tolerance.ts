@@ -1,6 +1,6 @@
 import "server-only";
 
-import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
 import {
   runPluginStep,
@@ -8,24 +8,22 @@ import {
 } from "@/lib/workflow/executor/step-handler";
 import {
   absBigInt,
-  align,
+  alignAll,
   divideScaled,
+  failed,
   formatScaled,
+  HUNDRED,
+  isWithinAbsolute,
+  isWithinPercent,
+  type Mode,
   parseDecimal,
-  pow10,
-  rescale,
+  resolveMode,
+  resolvePrecision,
+  ZERO,
 } from "./decimal-core";
 
 const PLUGIN_NAME = "math";
 const ACTION_NAME = "compare-tolerance";
-
-const DEFAULT_PRECISION = 6;
-const MAX_PRECISION = 30;
-const HUNDRED = BigInt(100);
-const ZERO = BigInt(0);
-
-const MODES = ["percent", "absolute"] as const;
-type Mode = (typeof MODES)[number];
 
 export type CompareToleranceCoreInput = {
   actual: string;
@@ -53,22 +51,6 @@ type CompareToleranceResult =
     }
   | { success: false; error: string; errorClass?: ExecutionErrorType };
 
-function failed(error: string): CompareToleranceResult {
-  return { success: false, error, errorClass: ExecutionErrorType.USER };
-}
-
-function resolveMode(raw: string | undefined): Mode {
-  return raw === "absolute" ? "absolute" : "percent";
-}
-
-function resolvePrecision(raw: string | number | undefined): number {
-  const parsed = typeof raw === "number" ? raw : Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return DEFAULT_PRECISION;
-  }
-  return Math.min(Math.trunc(parsed), MAX_PRECISION);
-}
-
 function directionOf(difference: bigint): "above" | "below" | "equal" {
   if (difference > ZERO) {
     return "above";
@@ -77,24 +59,6 @@ function directionOf(difference: bigint): "above" | "below" | "equal" {
     return "below";
   }
   return "equal";
-}
-
-/**
- * Percent tolerance without dividing first: `|diff| / |expected| <= tol / 100`
- * is checked as `|diff| * 100 * 10^td <= tol * |expected|`, so both sides stay
- * integral and nothing is lost at RAD/WAD magnitudes.
- */
-function isWithinPercent(
-  absoluteDifference: bigint,
-  expected: bigint,
-  tolerance: { value: bigint; decimals: number }
-): boolean {
-  if (expected === ZERO) {
-    return absoluteDifference === ZERO;
-  }
-  const left = absoluteDifference * HUNDRED * pow10(tolerance.decimals);
-  const right = absBigInt(tolerance.value) * absBigInt(expected);
-  return left <= right;
 }
 
 function percentDifferenceOf(
@@ -121,25 +85,30 @@ function stepHandler(input: CompareToleranceCoreInput): CompareToleranceResult {
     const mode = resolveMode(input.mode);
     const precision = resolvePrecision(input.precision);
 
-    const aligned = align(actual, expected);
-    const difference = aligned.a - aligned.b;
+    const { values, scale } = alignAll([actual, expected]);
+    const [actualScaled, expectedScaled] = values;
+    const difference = actualScaled - expectedScaled;
     const absoluteDifference = absBigInt(difference);
 
     const withinTolerance =
       mode === "absolute"
-        ? absoluteDifference <= absBigInt(rescale(tolerance, aligned.decimals))
-        : isWithinPercent(absoluteDifference, aligned.b, tolerance);
+        ? isWithinAbsolute(absoluteDifference, scale, tolerance)
+        : isWithinPercent(absoluteDifference, expectedScaled, tolerance);
 
     return {
       success: true,
       withinTolerance,
       breached: !withinTolerance,
       direction: directionOf(difference),
-      difference: formatScaled(difference, aligned.decimals),
-      absoluteDifference: formatScaled(absoluteDifference, aligned.decimals),
-      percentDifference: percentDifferenceOf(difference, aligned.b, precision),
-      actual: formatScaled(aligned.a, aligned.decimals),
-      expected: formatScaled(aligned.b, aligned.decimals),
+      difference: formatScaled(difference, scale),
+      absoluteDifference: formatScaled(absoluteDifference, scale),
+      percentDifference: percentDifferenceOf(
+        difference,
+        expectedScaled,
+        precision
+      ),
+      actual: formatScaled(actualScaled, scale),
+      expected: formatScaled(expectedScaled, scale),
       tolerance: formatScaled(tolerance.value, tolerance.decimals),
       mode,
     };

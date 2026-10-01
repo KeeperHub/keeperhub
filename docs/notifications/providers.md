@@ -50,8 +50,30 @@ Send messages to Discord channels via webhooks.
 
 **Features:**
 - Channel-specific message posting
-- Rich message formatting
+- Optional bot username and avatar override per node
+- Optional colored embed with a title
 - Real-time delivery
+
+**Configuration Fields:**
+
+| Field | Description |
+|-------|-------------|
+| Message | Message content (supports dynamic variables) |
+| Bot Username | Overrides the webhook's display name, up to 80 characters |
+| Avatar URL | `https://` image URL used as the sender avatar |
+| Embed Title | Title shown above the message when an embed is used |
+| Embed Color | None, Red, Green, Yellow, Blue, or Gray |
+| Retry attempts | Extra attempts after the first, for connection failures and retryable statuses. Default 0, max 5 |
+| Retry delay | Seconds to back off by, multiplied by the attempt number. A rate limit waits for the time Discord reports instead. Default 1, max 15 |
+
+**Embeds:** Setting an embed title or a color other than None sends the message
+as a Discord embed. The message text becomes the embed body, so it appears once
+rather than twice, and it can be up to 4096 characters instead of the 2000
+allowed for a plain message. Leave both empty to send a plain message.
+
+**Bot Username and Avatar:** Both are optional. A value Discord would reject,
+such as an avatar URL that is not a valid `https://` URL, is dropped and the
+message is still delivered without it.
 
 ### Slack
 
@@ -79,7 +101,8 @@ Send messages to Telegram chats and channels via bot API.
 
 **Features:**
 - Send messages to any chat, group, or channel
-- Support for plain text and MarkdownV2 formatting
+- Support for plain text, HTML, and MarkdownV2 formatting
+- Optional link preview suppression
 - Dynamic variables from workflow data
 
 **Configuration Fields:**
@@ -88,9 +111,18 @@ Send messages to Telegram chats and channels via bot API.
 |-------|-------------|
 | Chat ID | Numeric chat ID or `@channelusername` |
 | Message | Message content (supports dynamic variables) |
-| Parse Mode | Plain text or MarkdownV2 |
+| Parse Mode | Plain text, HTML, or MarkdownV2 |
+| Disable Link Preview | Yes hides the preview card for links in the message |
 
 **MarkdownV2 Note:** When using MarkdownV2 parse mode, special characters (`.`, `-`, `_`, `*`, `[`, `]`, `(`, `)`, `~`, `` ` ``, `>`, `#`, `+`, `=`, `|`, `{`, `}`, `!`) must be escaped with a backslash (`\`).
+
+**HTML Note:** HTML parse mode accepts the tags Telegram supports (`b`, `strong`,
+`i`, `em`, `u`, `ins`, `s`, `strike`, `del`, `span`, `tg-spoiler`, `a`, `code`,
+`pre`, `blockquote`). Write those tags directly in the Message field. Values
+inserted through `{{...}}` references are escaped before the message is sent, so
+a balance of `5 < 10` or a value containing markup is displayed as text rather
+than parsed as a tag. This keeps the message deliverable and stops upstream data
+from turning into a link inside your alert.
 
 ### PagerDuty
 

@@ -132,6 +132,9 @@ function mapFieldType(field: ActionConfigFieldBase): string {
     case "template-input":
     case "template-textarea":
       return "string (supports {{@nodeId:Label.field}} templates)";
+    case "protocol-array":
+    case "protocol-tuple-array":
+      return 'string (JSON array, e.g. ["0x...","0x..."], or a {{@nodeId:Label.field}} template resolving to the whole array)';
     default:
       return "string";
   }

@@ -9,14 +9,21 @@
  */
 
 import { useAtomValue } from "jotai";
+import { Info } from "lucide-react";
 import { KeeperHubLogo } from "@/components/icons/keeperhub-logo";
 import { SendGridConnectionSection } from "@/components/settings/sendgrid-connection-section";
 import { Web3WalletSection } from "@/components/settings/web3-wallet-section";
 import { Label } from "@/components/ui/label";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { AbiEventArgsField } from "@/components/workflow/config/abi-event-args-field";
 import { AbiEventSelectField } from "@/components/workflow/config/abi-event-select-field";
 import { AbiWithAutoFetchField } from "@/components/workflow/config/abi-with-auto-fetch-field";
 import { ArgsListField } from "@/components/workflow/config/args-list-field";
+import { ArrayInputField } from "@/components/workflow/config/array-input-field";
 import { CallListField } from "@/components/workflow/config/call-list-field";
 import {
   ChainSelectField,
@@ -38,6 +45,11 @@ import {
 import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
 import { integrationsAtom } from "@/lib/integrations-store";
+import {
+  normalizeProtocolArrayValue,
+  serializeProtocolArrayValue,
+  solidityArrayItemType,
+} from "@/lib/protocol-array-value";
 import {
   registerBranding,
   registerFieldRenderer,
@@ -360,10 +372,6 @@ function ProtocolFieldLabel({
     docUrl?: string;
   };
 }): React.ReactNode {
-  const { Tooltip, TooltipTrigger, TooltipContent } =
-    require("@/components/ui/tooltip") as typeof import("@/components/ui/tooltip");
-  const { Info } = require("lucide-react") as typeof import("lucide-react");
-
   const hasDocUrl = Boolean(field.docUrl);
 
   const infoIcon = (
@@ -580,6 +588,35 @@ registerFieldRenderer(
   }
 );
 
+/** Protocol scalar-array field with one typed editor row per item. */
+registerFieldRenderer(
+  "protocol-array",
+  ({ field, config, onUpdateConfig, disabled }) => {
+    const value = normalizeProtocolArrayValue(
+      config[field.key],
+      field.solidityType
+    );
+    const itemType = field.solidityType
+      ? solidityArrayItemType(field.solidityType)
+      : "value";
+
+    return (
+      <div className="space-y-2" key={field.key}>
+        <ProtocolFieldLabel field={field} />
+        <ArrayInputField
+          disabled={disabled}
+          fieldKey={field.key}
+          itemType={itemType}
+          onChange={(val: unknown[]) =>
+            onUpdateConfig(field.key, serializeProtocolArrayValue(val))
+          }
+          value={value}
+        />
+      </div>
+    );
+  }
+);
+
 /**
  * Protocol Tuple Array Field
  * Structured array builder for tuple[] inputs (e.g. CCIP tokenAmounts).
@@ -589,22 +626,13 @@ registerFieldRenderer(
 registerFieldRenderer(
   "protocol-tuple-array",
   ({ field, config, onUpdateConfig, disabled }) => {
-    const { ArrayInputField } =
-      require("@/components/workflow/config/array-input-field") as typeof import("@/components/workflow/config/array-input-field");
-
-    const rawValue = config[field.key];
-    let value: unknown = rawValue;
-    if (typeof rawValue === "string" && rawValue.trim() !== "") {
-      try {
-        value = JSON.parse(rawValue);
-      } catch {
-        value = rawValue;
-      }
-    }
-
+    const value = normalizeProtocolArrayValue(
+      config[field.key],
+      field.solidityType
+    );
     const components = field.tupleComponents ?? [];
-    const itemType = field.solidityType?.endsWith("[]")
-      ? field.solidityType.slice(0, -2)
+    const itemType = field.solidityType
+      ? solidityArrayItemType(field.solidityType)
       : "tuple";
 
     return (
@@ -616,7 +644,7 @@ registerFieldRenderer(
           fieldKey={field.key}
           itemType={itemType}
           onChange={(val: unknown[]) =>
-            onUpdateConfig(field.key, JSON.stringify(val))
+            onUpdateConfig(field.key, serializeProtocolArrayValue(val))
           }
           value={value}
         />

@@ -49,7 +49,7 @@ const slackPlugin: IntegrationPlugin = {
         {
           key: "slackChannel",
           label: "Channel",
-          type: "text",
+          type: "template-input",
           placeholder: "#general or {{NodeName.channel}}",
           example: "#general",
           required: true,

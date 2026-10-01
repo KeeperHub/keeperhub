@@ -62,7 +62,13 @@ const telegramPlugin: IntegrationPlugin = {
           label: "Message",
           type: "template-textarea",
           placeholder:
-            "Your message. Use {{NodeName.field}} to insert data from previous nodes. Note: If using MarkdownV2, special characters (., -, _, *, [, ], (, ), ~, `, >, #, +, =, |, {, }, !) must be escaped with \\.",
+            "Your message. Use {{NodeName.field}} to insert data from previous nodes. With MarkdownV2, special characters (., -, _, *, [, ], (, ), ~, `, >, #, +, =, |, {, }, !) must be escaped with \\. With HTML, write your own tags as usual; values pulled in from other nodes are escaped for you.",
+          helpTip:
+            "HTML parse mode accepts Telegram's b, i, u, s, span, tg-spoiler, a, code, pre and blockquote tags. Your own markup renders; &, < and > inside values inserted from other nodes are escaped so they display as text.",
+          escapeSubstitutions: {
+            as: "html",
+            when: { field: "parseMode", equals: "HTML" },
+          },
           rows: 4,
           example: "Hello from my workflow!",
           required: true,
@@ -73,6 +79,7 @@ const telegramPlugin: IntegrationPlugin = {
           type: "select",
           options: [
             { value: "none", label: "None (Plain Text)" },
+            { value: "HTML", label: "HTML" },
             {
               value: "MarkdownV2",
               label: "MarkdownV2 (requires escaping special chars)",
@@ -81,6 +88,18 @@ const telegramPlugin: IntegrationPlugin = {
           defaultValue: "none",
           placeholder: "Select parse mode",
           example: "none",
+        },
+        {
+          key: "disablePreview",
+          label: "Disable Link Preview",
+          type: "select",
+          options: [
+            { value: "false", label: "No" },
+            { value: "true", label: "Yes" },
+          ],
+          defaultValue: "false",
+          placeholder: "Disable link previews",
+          example: "false",
         },
       ],
     },
