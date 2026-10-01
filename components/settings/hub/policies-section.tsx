@@ -31,6 +31,7 @@ import { PolicyEditor } from "./policies/policy-editor";
 import { PolicySearch } from "./policies/policy-list-controls";
 import { PolicyOverview } from "./policies/policy-overview";
 import { PolicySimulator } from "./policies/policy-simulator";
+import { PolicyStepUpDialog } from "./policies/policy-step-up-dialog";
 import { SectionHeader, SettingsCard } from "./section";
 import { useSettingsContext } from "./settings-context";
 import { FormSkeleton } from "./skeletons";
@@ -168,6 +169,9 @@ export function PoliciesSection(): React.ReactElement {
     loading,
     meta,
     saving,
+    stepUpRequired,
+    dismissStepUp,
+    retryAfterStepUp,
     violations,
     warnings,
     create,
@@ -374,6 +378,12 @@ export function PoliciesSection(): React.ReactElement {
             ))}
           </div>
         )}
+
+        <PolicyStepUpDialog
+          onCancel={dismissStepUp}
+          onVerified={retryAfterStepUp}
+          open={stepUpRequired}
+        />
 
         {!loading && (
           <div className="mt-4 border-t pt-4">

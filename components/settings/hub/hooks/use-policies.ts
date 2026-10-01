@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { Page, PageLinks, PageMeta } from "@/lib/pagination";
 import type { PolicyDocument, PolicyEnforcementMode } from "@/lib/policy";
@@ -38,6 +38,15 @@ export type PolicyViolation = { sid?: string; message: string };
 
 export type PoliciesState = {
   policies: OrganizationPolicySummary[];
+  /**
+   * Set when the server asked for a step-up before it would accept a write.
+   * The write that triggered it is held so it can be replayed once the
+   * challenge is answered, which is the whole point: the person pressed save,
+   * not "prove yourself".
+   */
+  stepUpRequired: boolean;
+  dismissStepUp: () => void;
+  retryAfterStepUp: () => Promise<boolean>;
   /** Row count and page count for the current query, from the server. */
   meta: PageMeta;
   loading: boolean;
@@ -88,6 +97,8 @@ export function usePolicies(options?: {
   const page = options?.page ?? 1;
   const { organizationId } = useSettingsContext();
   const [saving, setSaving] = useState(false);
+  const [stepUpRequired, setStepUpRequired] = useState(false);
+  const pendingWrite = useRef<(() => Promise<boolean>) | null>(null);
   const [violations, setViolations] = useState<PolicyViolation[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
 
@@ -119,6 +130,7 @@ export function usePolicies(options?: {
     async (res: Response, successMessage: string): Promise<boolean> => {
       const body = (await res.json().catch(() => ({}))) as {
         error?: string;
+        code?: string;
         violations?: PolicyViolation[];
         warnings?: string[];
       };
@@ -127,6 +139,12 @@ export function usePolicies(options?: {
         setWarnings(body.warnings ?? []);
         toast.success(successMessage);
         return true;
+      }
+      // Not a failure to report: the server is asking who this is before it
+      // will take the change. The dialog handles it and the write is replayed.
+      if (body.code === "step_up_required") {
+        setStepUpRequired(true);
+        return false;
       }
       setViolations(body.violations ?? []);
       toast.error(body.error ?? "Could not save the policy");
@@ -137,6 +155,7 @@ export function usePolicies(options?: {
 
   const create = useCallback(
     async (document: PolicyDocument): Promise<boolean> => {
+      pendingWrite.current = () => create(document);
       setSaving(true);
       try {
         const res = await fetch(
@@ -171,6 +190,7 @@ export function usePolicies(options?: {
         document?: PolicyDocument;
       }
     ): Promise<boolean> => {
+      pendingWrite.current = () => update(id, patch);
       setSaving(true);
       try {
         const res = await fetch(
@@ -198,6 +218,7 @@ export function usePolicies(options?: {
 
   const remove = useCallback(
     async (id: string): Promise<boolean> => {
+      pendingWrite.current = () => remove(id);
       setSaving(true);
       try {
         const res = await fetch(
@@ -224,7 +245,23 @@ export function usePolicies(options?: {
     [organizationId, section]
   );
 
+  const dismissStepUp = useCallback(() => {
+    setStepUpRequired(false);
+    pendingWrite.current = null;
+  }, []);
+
+  /** Replay the write the challenge interrupted, now that it is answered. */
+  const retryAfterStepUp = useCallback(async (): Promise<boolean> => {
+    setStepUpRequired(false);
+    const write = pendingWrite.current;
+    pendingWrite.current = null;
+    return write ? await write() : false;
+  }, []);
+
   return {
+    stepUpRequired,
+    dismissStepUp,
+    retryAfterStepUp,
     policies: section.data?.items ?? [],
     meta: section.data?.meta ?? EMPTY_META,
     loading: section.loading,
