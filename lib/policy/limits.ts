@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { policyLimitReservations, policyLimitUsage } from "@/lib/db/schema";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
@@ -170,6 +170,64 @@ async function reserveOne(input: {
 }
 
 /**
+ * Give back the budget of reservations nobody closed.
+ *
+ * Reserving takes headroom immediately and settling keeps it, so a reservation
+ * that is never settled or released is indistinguishable from one that was
+ * spent: the organization loses that headroom permanently. Every path that
+ * reserves is supposed to close out, and `expiresAt` exists so the ones that do
+ * not are only wrong for a while. Nothing read it until this, which is why the
+ * comment above releaseReservations could promise that a budget comes back late
+ * rather than lost.
+ *
+ * Swept for one organization on its way in to reserving, rather than on a
+ * timer. A limit only matters to an organization that is acting, so the next
+ * action is exactly when stale headroom needs to be back, and this needs no
+ * scheduler to be true.
+ */
+export async function releaseExpiredReservations(
+  organizationId: string,
+  now: Date = new Date()
+): Promise<void> {
+  try {
+    const stale = await db
+      .select({ id: policyLimitReservations.id })
+      .from(policyLimitReservations)
+      .innerJoin(
+        policyLimitUsage,
+        eq(policyLimitReservations.usageId, policyLimitUsage.id)
+      )
+      .where(
+        and(
+          eq(policyLimitUsage.organizationId, organizationId),
+          eq(policyLimitReservations.status, "reserved"),
+          lt(policyLimitReservations.expiresAt, now)
+        )
+      );
+
+    if (stale.length === 0) {
+      return;
+    }
+
+    // The same path a timely release takes, so a swept reservation and a
+    // released one leave the ledger in exactly the same state.
+    await releaseReservations(
+      stale.map((row) => ({ reservationId: row.id, sid: "expired" }))
+    );
+  } catch (error) {
+    // Reclaiming is housekeeping. An organization that cannot sweep is only
+    // tighter than it should be, and refusing the action it was about to take
+    // would turn that into an outage.
+    logSystemWarn(
+      ErrorCategory.DATABASE,
+      "[PolicyLimits] Could not release expired reservations",
+      error,
+      { organizationId }
+    );
+  }
+}
+
+/**
  * Reserve every limit attached to the statements that permitted an action.
  *
  * All or nothing: a limit that cannot be taken releases the ones already taken,
@@ -184,6 +242,7 @@ export async function reserveLimits(input: {
   now?: Date;
 }): Promise<ReserveOutcome> {
   const now = input.now ?? new Date();
+  await releaseExpiredReservations(input.organizationId, now);
   const taken: ReservationHandle[] = [];
 
   for (const entry of input.limits) {

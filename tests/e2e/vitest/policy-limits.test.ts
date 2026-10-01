@@ -17,9 +17,15 @@ vi.mock("@/lib/db", async () => {
   return { db: realDrizzle(pg(connection, { max: 8, idle_timeout: 1 })) };
 });
 
-import { organization, policyLimitUsage, users } from "@/lib/db/schema";
+import {
+  organization,
+  policyLimitReservations,
+  policyLimitUsage,
+  users,
+} from "@/lib/db/schema";
 import { FactProvenance, FactState } from "@/lib/policy/constants";
 import {
+  releaseExpiredReservations,
   releaseReservations,
   reserveLimits,
   settleReservations,
@@ -340,5 +346,100 @@ describe("the limit ledger", () => {
       principal: member("person-c"),
     });
     expect(again.ok).toBe(false);
+  });
+
+  it("gives back the budget of a reservation nobody ever closed", async () => {
+    const sid = `abandoned-${crypto.randomUUID()}`;
+    const outcome = await reserveLimits({
+      organizationId: ORG_ID,
+      limits: limitsFor(sid),
+      facts: facts("40000"),
+    });
+    expect(outcome.ok).toBe(true);
+    expect(await usedFor(sid)).toBe("40000");
+
+    // What a dropped reservation looks like once its fifteen minutes are up.
+    // Before the sweep this headroom was gone for good: reserving takes it and
+    // only an explicit release gives it back.
+    if (outcome.ok) {
+      await db
+        .update(policyLimitReservations)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(
+          eq(
+            policyLimitReservations.id,
+            outcome.reservations[0]?.reservationId ?? ""
+          )
+        );
+    }
+
+    await releaseExpiredReservations(ORG_ID);
+    expect(await usedFor(sid)).toBe("0");
+  });
+
+  it("leaves a live reservation alone", async () => {
+    const sid = `live-${crypto.randomUUID()}`;
+    await reserveLimits({
+      organizationId: ORG_ID,
+      limits: limitsFor(sid),
+      facts: facts("30000"),
+    });
+
+    await releaseExpiredReservations(ORG_ID);
+    expect(await usedFor(sid)).toBe("30000");
+  });
+
+  it("leaves a settled reservation alone, however old", async () => {
+    const sid = `settled-${crypto.randomUUID()}`;
+    const outcome = await reserveLimits({
+      organizationId: ORG_ID,
+      limits: limitsFor(sid),
+      facts: facts("20000"),
+    });
+    if (outcome.ok) {
+      await settleReservations(outcome.reservations);
+      await db
+        .update(policyLimitReservations)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(
+          eq(
+            policyLimitReservations.id,
+            outcome.reservations[0]?.reservationId ?? ""
+          )
+        );
+    }
+
+    // Settled means spent. Sweeping it back would refund money that moved.
+    await releaseExpiredReservations(ORG_ID);
+    expect(await usedFor(sid)).toBe("20000");
+  });
+
+  it("reclaims stale headroom on the way in to the next reservation", async () => {
+    const sid = `reclaim-${crypto.randomUUID()}`;
+    const first = await reserveLimits({
+      organizationId: ORG_ID,
+      limits: limitsFor(sid),
+      facts: facts("90000"),
+    });
+    if (first.ok) {
+      await db
+        .update(policyLimitReservations)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(
+          eq(
+            policyLimitReservations.id,
+            first.reservations[0]?.reservationId ?? ""
+          )
+        );
+    }
+
+    // 90k of a 100k cap is abandoned. Without the sweep this second action
+    // would be refused for a budget nothing is actually spending.
+    const second = await reserveLimits({
+      organizationId: ORG_ID,
+      limits: limitsFor(sid),
+      facts: facts("90000"),
+    });
+    expect(second.ok).toBe(true);
   });
 });
