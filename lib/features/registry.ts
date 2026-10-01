@@ -75,6 +75,19 @@ export const FEATURES: Record<FeatureId, FeatureDefinition> = {
     requiredPlan: "pro",
     actionTypes: ["predge/read-signal"],
   },
+  // Off until organization policies can bound who it pays. The action signs
+  // a USDC transfer authorization with the org wallet, so it stays gated for
+  // every plan until then.
+  "action.paid-request": {
+    id: "action.paid-request",
+    name: "Paid Request (x402) action",
+    description:
+      "Call an endpoint that charges over x402 and pay the quoted USDC from the organization wallet.",
+    category: "workflow-action",
+    enabled: false,
+    requiredPlan: "pro",
+    actionTypes: ["web3/paid-request"],
+  },
   "notifications.execution-digest": {
     id: "notifications.execution-digest",
     name: "Execution digest",
