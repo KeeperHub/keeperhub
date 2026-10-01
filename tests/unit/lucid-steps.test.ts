@@ -159,6 +159,7 @@ describe("readAgentCard", () => {
   it("lists the keyed entrypoints, not the skills array", () => {
     const card = readAgentCard(SERVED_CARD);
     expect(card?.name).toBe("counterparty-oracle");
+    expect(card?.version).toBe("1.0.0");
     expect(card?.entrypoints.map((item) => item.name)).toEqual([
       "health",
       "quote",

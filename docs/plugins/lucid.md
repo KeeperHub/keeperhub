@@ -24,7 +24,7 @@ Reads the agent card at `{agentUrl}/.well-known/agent-card.json`. The step fails
 
 **Inputs:** Agent URL
 
-**Outputs:** `success`, `name`, `description`, `entrypoints`, `pricedEntrypoints`, `error`
+**Outputs:** `success`, `name`, `description`, `version`, `entrypoints`, `pricedEntrypoints`, `error`
 
 Each item in `entrypoints` has `name`, `description`, `priced` and `inputSchema`. A priced entrypoint also has:
 

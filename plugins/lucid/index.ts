@@ -37,6 +37,7 @@ const lucidPlugin: IntegrationPlugin = {
         { field: "success", description: "Whether the card was read" },
         { field: "name", description: "Agent name" },
         { field: "description", description: "Agent description" },
+        { field: "version", description: "Agent version" },
         {
           field: "entrypoints",
           description:
