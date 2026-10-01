@@ -30,7 +30,7 @@ Each item in `entrypoints` has `name`, `description`, `priced` and `inputSchema`
 
 - `price`: the price exactly as the card states it.
 - `priceUnit`: `usd` when the price is a USD decimal string, so `"0.01"` is one cent. `base_units` when the entrypoint is priced as a token amount, so `"10000"` of a 6-decimal token is 0.01 of that token. Absent when the card does not say.
-- `asset`: the token contract, only when `priceUnit` is `base_units`.
+- `asset`: the token contract, only when `priceUnit` is `base_units`. A USD price names no token on the card. Call Entrypoint's `payment.asset` always carries the token the agent will charge in.
 - `network` and `payTo`, when the card states them.
 
 An entrypoint that is marked as paid but states no price is still reported as `priced: true`.
