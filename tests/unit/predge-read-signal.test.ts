@@ -39,6 +39,7 @@ import {
   verifyPredgeSignal,
 } from "@/plugins/predge/steps/predge-core";
 import { readSignalStep } from "@/plugins/predge/steps/read-signal";
+import { generateAIActionPrompts } from "@/plugins/registry";
 
 const SCHEME = "veri402-ed25519-v1";
 const WALLET = "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984";
@@ -910,6 +911,27 @@ describe("readSignalStep", () => {
       expect(out.error).toMatch(/not a valid URL/i);
       expect(out.errorClass).toBe(ExecutionErrorType.USER);
       expect(safeFetch).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("AI workflow generation", () => {
+  it("seeds the wallet with a template reference, not a literal address", () => {
+    // Every generated node is prefilled with this, and any literal wallet
+    // eventually leaves the re-ranked set and starts returning 404.
+    const line = generateAIActionPrompts()
+      .split("\n")
+      .find((entry) => entry.includes("(predge/read-signal): "));
+    if (!line) {
+      throw new Error("no prompt line for predge/read-signal");
+    }
+    const example = JSON.parse(line.slice(line.indexOf("{"))) as Record<
+      string,
+      unknown
+    >;
+    expect(example).toEqual({
+      actionType: "predge/read-signal",
+      wallet: "{{Trigger.wallet}}",
     });
   });
 });

@@ -8,16 +8,15 @@ const walletField = (): ActionConfigField => ({
   label: "Wallet",
   type: "template-input",
   placeholder: "0x... or {{NodeName.address}}",
-  // Only verified smart-money wallets carry a signal, and conviction is a
-  // percentile within a set Predge re-ranks, so membership is not permanent:
-  // this address was ranked when it was captured and may 404 now. It is an
-  // address-shaped example, not a guarantee of a live 200 -- the help text
-  // below says so, because `example` also feeds AI workflow generation.
-  example: "0x0224bb9eb0a5c9fd261ac9123a72cbdd5748292a",
+  // `example` seeds AI workflow generation (buildExampleConfig in
+  // plugins/registry.ts), so it is prefilled into every generated node. A
+  // literal wallet goes stale there: conviction is a percentile within a set
+  // Predge re-ranks, so an address ranked today can 404 tomorrow. A template
+  // reference to the trigger's wallet does not age.
+  example: "{{Trigger.wallet}}",
   helpText:
     "Wallet to read a signal for. Only wallets in Predge's verified smart-money set carry one; " +
-    "the set is re-ranked, so a wallet can leave it and the step then fails with \"No Predge signal for this wallet\". " +
-    "The prefilled example is illustrative and may no longer be ranked.",
+    "the set is re-ranked, so a wallet can leave it and the step then fails with \"No Predge signal for this wallet\".",
   required: true,
 });
 
