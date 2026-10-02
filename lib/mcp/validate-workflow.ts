@@ -876,7 +876,13 @@ function approveTokenAmountOf(raw: unknown): ApproveAmount {
   if (!DECIMAL_AMOUNT_PATTERN.test(amount)) {
     return "unknown";
   }
-  return ZERO_AMOUNT_PATTERN.test(amount) ? "zero" : "exact";
+  if (ZERO_AMOUNT_PATTERN.test(amount)) {
+    return "zero";
+  }
+  // parseUnits scales the integer part up, so a decimal this large has no
+  // sendable value behind it and the hint claims nothing about it.
+  const whole = BigInt(amount.split(".")[0]);
+  return whole >= MAX_UINT256_BIGINT ? "unknown" : "exact";
 }
 
 // The second argument of a write-contract approve, in raw units: MaxUint256

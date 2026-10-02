@@ -13,7 +13,7 @@ import { validateWorkflow } from "@/lib/mcp/validate-workflow";
  * against one of them is a false positive in the validator, not a defect in
  * the template. The one warning they are expected to raise is the approve-side
  * hint, pinned by name below: every seed that approves does so without an
- * allowance read, and all of them approve unlimited.
+ * allowance read, and all but sky/stusds-leverage-loop.json approve unlimited.
  *
  * This pins that contract. It is the cheapest guard against a widened check
  * regressing on real node shapes: seed nodes are created by the seeder rather
@@ -36,24 +36,35 @@ function seedWorkflowFiles(dir: string): string[] {
 
 const files = seedWorkflowFiles(SEED_WORKFLOW_DIR);
 
-// Seeds that approve a token with no check-allowance node upstream, by name,
-// so a failure says which seed moved. Every one of them approves unlimited
-// ("max", the one spelling the Approve Token node treats that way), which is
-// what the hint's wording says on them.
-const SEEDS_THAT_APPROVE_BLIND = [
-  "aave-v3/mcp-test-supply-weth.json",
-  "aerodrome/mcp-test-swap-weth-usdc.json",
-  "compound/mcp-test-supply-weth.json",
-  "morpho/mcp-test-vault-deposit.json",
-  "sky/mcp-test-convert-dai-usds.json",
-  "sky/mcp-test-convert-usds-dai.json",
-  "sky/stusds-leverage-loop.json",
-  "spark/mcp-test-deposit-sdai.json",
-  "uniswap/mcp-test-swap-dai-usdc.json",
-  "uniswap/mcp-test-swap-usdc-usde.json",
-  "uniswap/mcp-test-swap.json",
-  "yearn/mcp-test-deposit-yvweth.json",
-];
+type HintShape = "unlimited" | "exact amount" | "no claim";
+
+// Seeds that approve with no check-allowance node upstream, with the wording
+// the hint gives each, so a failure says which seed moved and how its amount
+// now reads. All but sky/stusds-leverage-loop.json approve "max", the one
+// spelling the Approve Token node sends as unlimited; that one carries a
+// decimal MaxUint256 the action cannot send as written.
+const SEEDS_THAT_APPROVE_BLIND: Record<string, HintShape> = {
+  "aave-v3/mcp-test-supply-weth.json": "unlimited",
+  "aerodrome/mcp-test-swap-weth-usdc.json": "unlimited",
+  "compound/mcp-test-supply-weth.json": "unlimited",
+  "morpho/mcp-test-vault-deposit.json": "unlimited",
+  "sky/mcp-test-convert-dai-usds.json": "unlimited",
+  "sky/mcp-test-convert-usds-dai.json": "unlimited",
+  "sky/stusds-leverage-loop.json": "no claim",
+  "spark/mcp-test-deposit-sdai.json": "unlimited",
+  "uniswap/mcp-test-swap-dai-usdc.json": "unlimited",
+  "uniswap/mcp-test-swap-usdc-usde.json": "unlimited",
+  "uniswap/mcp-test-swap.json": "unlimited",
+  "yearn/mcp-test-deposit-yvweth.json": "unlimited",
+};
+
+// Which of the three amount claims a hint carries.
+function hintShape(message: string): HintShape {
+  if (message.includes("unlimited")) {
+    return "unlimited";
+  }
+  return message.includes("exact amount") ? "exact amount" : "no claim";
+}
 
 describe("validateWorkflow - shipped seed workflows", () => {
   it("finds seed workflows to check", () => {
@@ -82,10 +93,12 @@ describe("validateWorkflow - shipped seed workflows", () => {
 
   // The approve-side hint fires on every seed that approves without a
   // check-allowance upstream. Seeds carry no such read today, so this pins
-  // the list: a seed gaining or losing an approve, or the detector changing
-  // shape, changes it and has to be looked at.
+  // the list and each hint's amount claim: a seed gaining or losing an
+  // approve, a configured amount changing, or the detector changing shape,
+  // changes it and has to be looked at.
   it("raises the approve-without-allowance-check hint on exactly the seeds that approve blind", () => {
-    const flagged = files.filter((file) => {
+    const shapes: Record<string, HintShape> = {};
+    for (const file of files) {
       const raw = JSON.parse(readFileSync(file, "utf8")) as Record<
         string,
         unknown
@@ -99,13 +112,17 @@ describe("validateWorkflow - shipped seed workflows", () => {
         isListed: false,
         workflowType: raw.type === "write" ? "write" : "read",
       });
-      return result.warnings.some(
+      const hints = result.warnings.filter(
         (w) => w.code === "approve-without-allowance-check"
       );
-    });
-    const names = flagged.map((file) =>
-      relative(SEED_WORKFLOW_DIR, file).split(sep).join("/")
-    );
-    expect(names).toEqual(SEEDS_THAT_APPROVE_BLIND);
+      if (hints.length === 0) {
+        continue;
+      }
+      const name = relative(SEED_WORKFLOW_DIR, file).split(sep).join("/");
+      // One in-scope approve per seed today, so one claim per name.
+      expect(hints).toHaveLength(1);
+      shapes[name] = hintShape(hints[0].message);
+    }
+    expect(shapes).toEqual(SEEDS_THAT_APPROVE_BLIND);
   });
 });

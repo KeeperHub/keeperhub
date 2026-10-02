@@ -112,17 +112,18 @@ describe("validateWorkflow - approve without allowance check", () => {
 
   it('calls only "max" unlimited on an Approve Token node', () => {
     // approve-token-core special-cases "max" and sends every other string
-    // through parseUnits in the token's decimals: a decimal MaxUint256 is a
-    // (huge) exact amount as configured, and a hex string is not a decimal at
-    // all, so the hint claims nothing about it.
+    // through parseUnits in the token's decimals, which the action cannot do
+    // with a decimal MaxUint256 or a hex string, so neither gets a claim.
     const decimal = validateWorkflow(
       chain(
         [triggerNode(), approveTokenNode("a1", { amount: MAX_UINT256 })],
         [edge("e1", "trigger-1", "a1")]
       )
     );
-    expect(warningsOf(decimal)[0]?.message).toContain("exact amount");
-    expect(warningsOf(decimal)[0]?.message).not.toContain("unlimited");
+    const [decimalWarning] = warningsOf(decimal);
+    expect(decimalWarning).toBeDefined();
+    expect(decimalWarning?.message).not.toContain("unlimited");
+    expect(decimalWarning?.message).not.toContain("exact amount");
     const hex = validateWorkflow(
       chain(
         [
