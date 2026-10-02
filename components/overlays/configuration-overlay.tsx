@@ -47,12 +47,8 @@ import { ActionGrid } from "../workflow/config/action-grid";
 import { TriggerConfig } from "../workflow/config/trigger-config";
 import { VersionHistoryContent } from "../workflow/version-history-content";
 import { WorkflowRuns } from "../workflow/workflow-runs";
+import { SYSTEM_ACTION_INTEGRATIONS } from "@/lib/integrations/system";
 import type { OverlayComponentProps } from "./types";
-
-// System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
-  "Database Query": "database",
-};
 
 
 type ConfigurationOverlayProps = OverlayComponentProps;

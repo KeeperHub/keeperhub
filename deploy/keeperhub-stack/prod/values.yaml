@@ -42,7 +42,7 @@ app:
     # keep their code defaults (7, 7 and 30).
     EXECUTION_RETENTION_ENABLED:
       type: kv
-      value: "false"
+      value: "true"
     # Second switch, for run rows only. Every billing count reads
     # workflow_executions by started_at with no floor and the invoices page
     # recounts it per period on every load, so deleting a run row rewrites what
@@ -992,14 +992,21 @@ app:
           repository: ${ECR_REGISTRY}/keeperhub-prod
           tag: app-${IMAGE_TAG}
           imagePullPolicy: Always
-        # Daily, not hourly, and that is a product decision rather than a cost
-        # one. A plan downgrade drops the org to the free window, so the run
-        # after it deletes everything between the old window and the new one.
-        # Daily gives someone who cancels or lets a trial lapse a full day to
-        # resubscribe before that happens. The deletion itself is intended and
-        # the pricing page states the window; the point is only that an
-        # accidental lapse should not be irreversible within the hour.
-        schedule: "48 3 * * *" # 03:48 UTC, offset to clear every other job in this list
+        # Every four hours, with a longer gap over the nightly maintenance
+        # window. It was daily, to give someone who cancels or lets a trial
+        # lapse a full day before the shorter window deletes the difference.
+        # That protection does not come from the cadence: the pass defers an
+        # organization whose subscription changed inside the plan-change grace,
+        # a full day by default, and resumes it from its watermark afterwards.
+        # So the cadence is free to follow the work instead.
+        #
+        # The work needs it. One run strips the unredacted payload copy from
+        # the step logs it reaches inside the runtime budget, and about a
+        # quarter of a million more step logs cross the window every day, so a
+        # single daily run does not keep up and the backlog grows. Six runs a
+        # day clear the day's arrivals and eat into the backlog, while each run
+        # stays as short as the one it replaces.
+        schedule: "48 0,6,10,14,18,22 * * *" # every four hours at :48, clear of the other jobs here and of the maintenance window
         command: ["/bin/sh"]
         args:
           - "/app/deploy/scripts/reaper.sh"

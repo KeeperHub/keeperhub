@@ -56,6 +56,7 @@ export type ExecutionStatusResponse = {
   network: string | null;
   createdAt: string;
   completedAt: string | null;
+  pollIntervalHint: number;
 };
 
 export type ExecuteErrorResponse = {

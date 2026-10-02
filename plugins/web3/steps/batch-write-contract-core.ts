@@ -12,6 +12,7 @@
  * confirmed payable (not view) in lib/contracts/abis/multicall3.json.
  */
 import "server-only";
+import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { eq } from "drizzle-orm";
@@ -134,6 +135,7 @@ export type BatchWriteContractResult =
     // resolution, a whole-batch revert on the staticCall itself).
     results?: BatchWriteCallResult[];
     totalCalls?: number;
+    broadcastAttempted?: boolean;
   };
 
 /**
@@ -522,7 +524,7 @@ async function getWorkflowIdFromExecution(
  * `isolateCallFailures`.
  */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Contract interaction requires extensive validation, mirrors write-contract-core.ts
-export async function batchWriteContractCore(
+async function batchWriteContractCoreImpl(
   input: BatchWriteContractCoreInput
 ): Promise<BatchWriteContractResult> {
   const {
@@ -705,6 +707,7 @@ export async function batchWriteContractCore(
       };
     }
 
+    let receivedTransactionHash: string | undefined;
     try {
       const receipt = await adapter.executeContractCall(
         signer,
@@ -722,6 +725,7 @@ export async function batchWriteContractCore(
         }
       );
 
+      receivedTransactionHash = receipt.hash;
       const gasUsedUnits = receipt.gasUsed.toString();
       const effectiveGasPrice = receipt.effectiveGasPrice.toString();
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
@@ -746,12 +750,19 @@ export async function batchWriteContractCore(
       const errorClass =
         rpcRelayErrorClass(error) ??
         (isOnChainPendingError(error) ? ExecutionErrorType.SYSTEM : undefined);
-      const broadcastHash = broadcastTransactionHash(error);
+      const broadcastHash =
+        broadcastTransactionHash(error) ?? receivedTransactionHash;
       const base = {
         success: false as const,
         error: formatContractError(error, revertIface),
         ...(errorClass ? { errorClass } : {}),
         ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
+        broadcastAttempted: broadcastHash
+          ? true
+          : rejection.kind !== "unknown" ||
+              isPreBroadcastNetworkError(error)
+            ? false
+            : true,
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
       };
       // aggregate3 is atomic, so a confirmed on-chain revert (receipt status
@@ -777,4 +788,14 @@ export async function batchWriteContractCore(
       };
     }
   });
+}
+
+export async function batchWriteContractCore(
+  input: BatchWriteContractCoreInput
+): Promise<BatchWriteContractResult> {
+  const result = await batchWriteContractCoreImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }

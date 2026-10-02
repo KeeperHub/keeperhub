@@ -18,6 +18,14 @@ export interface WorkflowEventTrigger {
   workflowId: string;
   userId: string;
   triggerData: unknown;
+  /**
+   * End-to-end latency correlation (issue #2289): minted at the moment the
+   * event is first observed, so the executor can join its receive/dispatch
+   * stages to the tracker's observation on one key and measure the queue leg.
+   */
+  correlationId?: string;
+  /** Epoch ms when the event was first observed by the tracker. */
+  observedAt?: number;
 }
 
 export async function enqueueWorkflowEventTrigger(
@@ -32,6 +40,10 @@ export async function enqueueWorkflowEventTrigger(
     userId: trigger.userId,
     triggerType: "event" as const,
     triggerData: trigger.triggerData,
+    // Latency correlation (issue #2289): absent for messages enqueued by
+    // older tracker versions, so the executor falls back to minting its own.
+    correlationId: trigger.correlationId,
+    observedAt: trigger.observedAt,
   };
   const body = JSON.stringify(payload);
   await client.send(
@@ -47,5 +59,31 @@ export async function enqueueWorkflowEventTrigger(
         ...signSqsMessageAttributes("events", queueUrl, body),
       },
     }),
+  );
+}
+
+export async function enqueueWorkflowUpstreamTrigger(
+  client: SQSClient,
+  queueUrl: string,
+  trigger: {
+    executionId: string;
+    workflowId: string;
+    userId: string;
+    configHash: string;
+    triggerData: Record<string, unknown>;
+  },
+): Promise<void> {
+  const body = JSON.stringify({ ...trigger, triggerType: "upstream" });
+  await client.send(
+    new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: body,
+      MessageAttributes: {
+        TriggerType: { DataType: "String", StringValue: "upstream" },
+        WorkflowId: { DataType: "String", StringValue: trigger.workflowId },
+        ...signSqsMessageAttributes("events", queueUrl, body),
+      },
+    }),
+    { abortSignal: AbortSignal.timeout(8000) },
   );
 }

@@ -14,6 +14,7 @@ WORKDIR /app
 FROM base AS deps
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches/ ./patches/
 COPY event-tracker/package.json ./event-tracker/
 
 RUN --mount=type=cache,id=pnpm-events,target=/root/.local/share/pnpm/store \
@@ -26,6 +27,7 @@ RUN --mount=type=cache,id=pnpm-events,target=/root/.local/share/pnpm/store \
 FROM base AS build
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY patches/ ./patches/
 COPY event-tracker/package.json event-tracker/tsconfig.json event-tracker/tsup.config.ts ./event-tracker/
 COPY event-tracker/src/ ./event-tracker/src/
 COPY event-tracker/lib/ ./event-tracker/lib/

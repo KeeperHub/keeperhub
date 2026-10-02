@@ -580,12 +580,67 @@ function isValidOperand(token: Token): boolean {
 }
 
 /**
+ * True when `index` falls inside a string literal's span.
+ *
+ * A quoted operand is a value, not syntax: a `contains` rule compiles to
+ * `String(...).includes("...")`, so the `/` and `-` in
+ * `Contract call failed: Error(Splitter/kicked-too-soon)` are characters the
+ * author is matching, and the `-` in a pattern's `[0-9a-fA-F]` is a character
+ * class. The scan below reads the raw expression, so without this it reports
+ * `Operator "-" must have exactly one space before it` for both.
+ *
+ * The tokens come from `tokenizeExpression`, which already knows where a literal
+ * begins and ends, so this reads that answer rather than re-deriving it: a
+ * second definition of what counts as a literal is free to drift from the
+ * tokenizer's, and the tokenizer is also what rejects an unterminated quote,
+ * before this scan runs.
+ */
+function isInsideStringLiteral(tokens: Token[], index: number): boolean {
+  return tokens.some(
+    (token) => token.type === "string" && tokenSpanContains(token, index)
+  );
+}
+
+/** True when `index` falls inside this token's span. */
+function tokenSpanContains(token: Token, index: number): boolean {
+  return index >= token.start && index < token.start + token.value.length;
+}
+
+/**
+ * True when `index` falls inside a template variable's span.
+ *
+ * The scan below leaves an operator inside `{{@nodeId:Label.field}}` alone,
+ * because a hyphenated node label is ordinary text rather than syntax. It used to
+ * answer that by counting `{{` and `}}` in the raw text before the match, which is
+ * a second definition of a template and disagrees with this one:
+ * `TEMPLATE_VAR_PATTERN` requires `{{@`, while the tally counted any `{{`. Two
+ * things followed. A literal containing `{{` left the running count open for the
+ * rest of the expression, so every operator after it was skipped and validation
+ * switched off silently rather than firing wrongly: `{{@a:A.x}} === "z" &&
+ * {{@b:B.y}}==="w"` reports the missing space, and the same expression with
+ * `"{{"` in place of `"z"` reports nothing. A literal containing `}}`
+ * under-counts instead, so an operator inside a real template variable is
+ * validated as code: `String({{@a:A.x}}).includes("}}") && {{@b:My-Node.field}}
+ * === "z"` reports `Operator "-" must have exactly one space before it` for the
+ * hyphen in the label.
+ *
+ * `tokenizeExpression` already marks where a template starts and how long it is,
+ * so this reads that answer the way `isInsideStringLiteral` reads the literal's,
+ * rather than deriving a third definition that can drift from it.
+ */
+function isInsideTemplateToken(tokens: Token[], index: number): boolean {
+  return tokens.some(
+    (token) => token.type === "template" && tokenSpanContains(token, index)
+  );
+}
+
+/**
  * Validates spacing around binary operators (must have exactly one space on both sides)
  * Uses regex to find operators directly in the expression string for accurate positioning
  */
 function validateOperatorSpacing(
   expression: string,
-  _tokens: Token[]
+  tokens: Token[]
 ): ValidationResult {
   // Find all operator matches in the expression
   const operatorMatches: Array<{ value: string; index: number }> = [];
@@ -594,13 +649,16 @@ function validateOperatorSpacing(
   let match: RegExpExecArray | null = null;
   // biome-ignore lint/suspicious/noAssignInExpressions: Standard pattern for regex.exec in loop
   while ((match = pattern.exec(expression)) !== null) {
-    // Skip if this is part of a template variable (inside {{...}})
-    const beforeMatch = expression.slice(0, match.index);
-    const openBraces = (beforeMatch.match(/\{\{/g) || []).length;
-    const closeBraces = (beforeMatch.match(/\}\}/g) || []).length;
-    const isInsideTemplate = openBraces > closeBraces;
-
-    if (!isInsideTemplate) {
+    // An operator inside a template variable or inside a string literal is the
+    // author's own text rather than syntax, and both spans come from the
+    // tokenizer: a quoted operand is a value, and a hyphen in a node label is
+    // part of the label.
+    if (
+      !(
+        isInsideTemplateToken(tokens, match.index) ||
+        isInsideStringLiteral(tokens, match.index)
+      )
+    ) {
       operatorMatches.push({
         value: match[1],
         index: match.index,

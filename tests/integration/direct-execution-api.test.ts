@@ -1673,6 +1673,48 @@ describe("Direct Execution API", () => {
       expect(data.sponsored).toBe(false);
       expect(data.createdAt).toBe(now.toISOString());
       expect(data.completedAt).toBe(now.toISOString());
+      expect(response.headers.get("X-Poll-Interval-Hint")).toBe("0");
+      expect(data.pollIntervalHint).toBe(0);
+    });
+
+    it("returns pollIntervalHint: 2 matching header for a non-terminal execution", async () => {
+      setupPassingGuards();
+      const now = new Date();
+      mocks.statusDbResult = [
+        {
+          id: "exec_non_terminal",
+          organizationId: "org_test",
+          apiKeyId: "key_test",
+          type: "transfer",
+          network: "ethereum",
+          status: "pending",
+          transactionHash: null,
+          gasUsedWei: null,
+          gasPriceWei: null,
+          estimatedCostUsd: null,
+          retryCount: 0,
+          input: {},
+          output: null,
+          error: null,
+          createdAt: now,
+          completedAt: null,
+        },
+      ];
+
+      const response = await statusGET(
+        getRequest("/exec_non_terminal/status"),
+        {
+          params: Promise.resolve({ executionId: "exec_non_terminal" }),
+        }
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("X-Poll-Interval-Hint")).toBe("2");
+      const data = await response.json();
+      expect(data.pollIntervalHint).toBe(2);
+      expect(data.pollIntervalHint).toBe(
+        Number(response.headers.get("X-Poll-Interval-Hint"))
+      );
     });
 
     it("returns sponsored: true for a gas-sponsored execution", async () => {

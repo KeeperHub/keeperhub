@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
+import { DAY_MS } from "@/lib/utils/duration";
 
 /** Sentinel value meaning "no date filter". */
 export const ALL = "all";
@@ -67,8 +68,6 @@ export type AuditActivityMember = {
 };
 
 export type ResourceOption = { id: string; label: string };
-
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function toggle(list: string[], value: string): string[] {
   return list.includes(value)
@@ -212,7 +211,7 @@ export function useAuditActivity(options?: {
     const from =
       datePreset === ALL
         ? undefined
-        : new Date(Date.now() - Number(datePreset) * MS_PER_DAY).toISOString();
+        : new Date(Date.now() - Number(datePreset) * DAY_MS).toISOString();
     return {
       limit: pageSize,
       resourceTypes: types.length > 0 ? types : undefined,

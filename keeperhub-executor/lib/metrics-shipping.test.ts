@@ -40,9 +40,14 @@ const workflowCounters = {
   executionsFinished: makeCounter(),
 };
 
+const executorBroadcastsTotal = makeCounter();
+const executorBroadcastWriteFailuresTotal = makeCounter();
+
 vi.mock("../../lib/metrics/collectors/prometheus", () => ({
   rpcMetrics: counters,
   workflowCounterMetrics: workflowCounters,
+  executorBroadcastsTotal,
+  executorBroadcastWriteFailuresTotal,
 }));
 
 const {
@@ -50,8 +55,10 @@ const {
   applyCounterDeltas,
   isIngestPayload,
   isMetricDelta,
+  isLatencyObservation,
   SHIPPABLE_COUNTER_NAMES,
 } = await import("./metrics-shipping");
+const { TRIGGER_TYPES } = await import("../../lib/metrics/types");
 
 describe("collectCounterDeltas", () => {
   beforeEach(() => {
@@ -238,6 +245,71 @@ describe("payload validators", () => {
   });
 });
 
+describe("isLatencyObservation label allowlists", () => {
+  // These two labels are written straight into `trigger_type` and
+  // `dispatch_target`, and this validator is the last check before that happens.
+  // A validator narrower than the emitter does not corrupt a number - it rejects
+  // the observation and the sample is lost - so the sets have to agree with their
+  // owners exactly, in both directions.
+  const observation = (
+    overrides: Record<string, unknown> = {}
+  ): Record<string, unknown> => ({
+    correlationId: "1a2b3c4d5e6f7890",
+    executionId: "exec-1",
+    workflowId: "wf-1",
+    triggerType: "event",
+    dispatchTarget: "k8s-job",
+    stage: "observed-broadcast",
+    durationMs: 120,
+    ...overrides,
+  });
+
+  it("accepts every trigger type the platform can emit", () => {
+    // The regression this guards: the allowlist was hand-written and omitted
+    // `scheduled`, the legacy label TRIGGER_TYPES keeps so historical series stay
+    // valid. Iterating the owner's set means a future addition cannot silently
+    // start dropping observations.
+    for (const triggerType of TRIGGER_TYPES) {
+      expect(isLatencyObservation(observation({ triggerType }))).toBe(true);
+    }
+  });
+
+  it("accepts the legacy `scheduled` label specifically", () => {
+    expect(isLatencyObservation(observation({ triggerType: "scheduled" }))).toBe(
+      true
+    );
+  });
+
+  it("accepts every dispatch target in the union", () => {
+    for (const dispatchTarget of ["k8s-job", "in-process", "api"]) {
+      expect(isLatencyObservation(observation({ dispatchTarget }))).toBe(true);
+    }
+  });
+
+  it("rejects an unknown trigger type", () => {
+    expect(isLatencyObservation(observation({ triggerType: "whatever" }))).toBe(
+      false
+    );
+  });
+
+  it("rejects an unknown dispatch target", () => {
+    expect(isLatencyObservation(observation({ dispatchTarget: "k8s_job" }))).toBe(
+      false
+    );
+  });
+
+  it("does not accept an inherited object member as a dispatch target", () => {
+    // The key arrives over the network, so `toString` must not read as valid the
+    // way it would with `value in map`.
+    expect(
+      isLatencyObservation(observation({ dispatchTarget: "toString" }))
+    ).toBe(false);
+    expect(
+      isLatencyObservation(observation({ dispatchTarget: "constructor" }))
+    ).toBe(false);
+  });
+});
+
 describe("SHIPPABLE_COUNTER_NAMES", () => {
   it("matches the set of shippable RPC counters", () => {
     expect(SHIPPABLE_COUNTER_NAMES).toContain(
@@ -254,6 +326,15 @@ describe("SHIPPABLE_COUNTER_NAMES", () => {
     );
     expect(SHIPPABLE_COUNTER_NAMES).toContain(
       "keeperhub_workflow_execution_errors_created_total"
+    );
+  });
+
+  it("ships the broadcast write-failure counter beside the broadcast counter", () => {
+    // The ENOSPC/EACCES side: when the marker filesystem is down the
+    // broadcast histogram silently loses every sample, and this counter is
+    // what keeps that visible (issue #2289 review).
+    expect(SHIPPABLE_COUNTER_NAMES).toContain(
+      "keeperhub_executor_broadcast_write_failures_total"
     );
   });
 });

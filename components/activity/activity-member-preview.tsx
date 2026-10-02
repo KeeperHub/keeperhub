@@ -4,10 +4,8 @@ import { Info } from "lucide-react";
 import { type ReactNode, useMemo } from "react";
 import { groupByDate } from "@/lib/activity/time-groups";
 import type { SecurityAuditEvent } from "@/lib/api-client";
+import { DAY_MS, HOUR_MS } from "@/lib/utils/duration";
 import { ActivityRow } from "./activity-row";
-
-const HOUR_MS = 60 * 60 * 1000;
-const DAY_MS = 24 * HOUR_MS;
 
 // Synthetic sample rows shown to members, who can't read the real audit log
 // (the endpoint 403s them). Names/emails are fictional and IPs are from the
@@ -31,6 +29,9 @@ function buildSampleEvents(now: number): SecurityAuditEvent[] {
         email: "jordan@example.com",
         role: "admin",
       },
+      // Shows how an edit made with a shared key reads: attributed to the
+      // key's creator, labelled with the key that actually made it.
+      credential: { authMethod: "api-key", apiKeyName: "Automation key" },
     },
     {
       id: "sample-2",
@@ -48,6 +49,7 @@ function buildSampleEvents(now: number): SecurityAuditEvent[] {
         email: "sam@example.com",
         role: "owner",
       },
+      credential: { authMethod: "session", apiKeyName: null },
     },
     {
       id: "sample-3",
@@ -65,6 +67,7 @@ function buildSampleEvents(now: number): SecurityAuditEvent[] {
         email: "avery@example.com",
         role: "owner",
       },
+      credential: { authMethod: "session", apiKeyName: null },
     },
     {
       id: "sample-4",
@@ -82,6 +85,7 @@ function buildSampleEvents(now: number): SecurityAuditEvent[] {
         email: "jordan@example.com",
         role: "admin",
       },
+      credential: { authMethod: "session", apiKeyName: null },
     },
   ];
 }

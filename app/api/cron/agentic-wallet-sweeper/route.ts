@@ -37,11 +37,12 @@ import {
 } from "@/lib/db/schema";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { DAY_MS, WEEK_MS } from "@/lib/utils/duration";
 
 export const dynamic = "force-dynamic";
 
-const TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const RATE_LIMIT_RETENTION_MS = 24 * 60 * 60 * 1000;
+const TERMINAL_RETENTION_MS = WEEK_MS;
+const RATE_LIMIT_RETENTION_MS = DAY_MS;
 
 type SweeperResponse = {
   expired: number;

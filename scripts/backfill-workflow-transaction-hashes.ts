@@ -17,9 +17,9 @@
 
 import { createInterface } from "node:readline/promises";
 import { backfillTransactionHashes } from "@/lib/workflow/transaction-hash-backfill";
+import { LOCAL_DB_HOSTS } from "@/scripts/lib/local-db";
 
 const DEFAULT_BATCH_SIZE = 500;
-const LOCAL_HOSTS = ["localhost", "127.0.0.1", "::1", "postgres", "db"];
 
 function parseArgs() {
   const argv = process.argv.slice(2);
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
   }
 
   const host = databaseHost();
-  if (!(dryRun || LOCAL_HOSTS.includes(host))) {
+  if (!(dryRun || LOCAL_DB_HOSTS.has(host))) {
     const confirmed = await confirmLiveWrite(host);
     if (!confirmed) {
       process.stdout.write(

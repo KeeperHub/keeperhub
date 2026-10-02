@@ -8,7 +8,10 @@ import {
   updateIntegration,
 } from "@/lib/db/integrations";
 import { organizationWallets } from "@/lib/db/schema";
-import { stripSecretConfig } from "@/lib/integrations/secret-fields";
+import {
+  storedSecretKeys,
+  stripSecretConfig,
+} from "@/lib/integrations/secret-fields";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { SCOPE_MCP_READ, SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
@@ -21,6 +24,13 @@ export type GetIntegrationResponse = {
   name: string;
   type: string;
   config: IntegrationConfig;
+  /**
+   * Which secret keys hold a value, never the values. The form needs this to
+   * say which of two alternative credentials is in use and to warn when both
+   * are, neither of which it can work out from `config` - secrets are
+   * stripped from it.
+   */
+  storedSecretKeys: string[];
   createdAt: string;
   updatedAt: string;
   walletAddress?: string;
@@ -29,6 +39,8 @@ export type GetIntegrationResponse = {
 export type UpdateIntegrationRequest = {
   name?: string;
   config?: IntegrationConfig;
+  /** Config keys to remove. See `updateIntegration` for why this is needed. */
+  clearedConfigKeys?: string[];
 };
 
 /**
@@ -80,6 +92,7 @@ export async function GET(
       name: integration.name,
       type: integration.type,
       config: stripSecretConfig(integration.config, integration.type),
+      storedSecretKeys: storedSecretKeys(integration.config, integration.type),
       createdAt: integration.createdAt.toISOString(),
       updatedAt: integration.updatedAt.toISOString(),
     };
@@ -150,24 +163,42 @@ export async function PUT(
 
     const body: UpdateIntegrationRequest = await request.json();
 
+    // Whatever arrived, this reaches the database as a list of strings.
+    const clearedConfigKeys = Array.isArray(body.clearedConfigKeys)
+      ? body.clearedConfigKeys.filter(
+          (key): key is string => typeof key === "string" && key.length > 0
+        )
+      : [];
+
     // Fetch existing integration so updateIntegration can merge database
     // secrets without an extra DB round-trip.
-    const existing =
-      body.config === undefined
-        ? null
-        : await getIntegration(integrationId, userId ?? "", organizationId);
+    const touchesConfig =
+      body.config !== undefined || clearedConfigKeys.length > 0;
+    const existing = touchesConfig
+      ? await getIntegration(integrationId, userId ?? "", organizationId)
+      : null;
 
-    if (body.config !== undefined && !existing) {
+    if (touchesConfig && !existing) {
       return NextResponse.json(
         { error: "Integration not found" },
         { status: 404 }
       );
     }
 
+    // What actually went, compared against what is stored: a key sent with a
+    // new value in the same request is a rotation and keeps that value, and a
+    // key the connection never held was never there to remove.
+    const removedConfigKeys = clearedConfigKeys.filter((key) => {
+      const replacement = body.config?.[key];
+      const supplied =
+        replacement !== undefined && replacement !== null && replacement !== "";
+      return !supplied && existing !== null && key in existing.config;
+    });
+
     const integration = await updateIntegration(
       integrationId,
       userId ?? "",
-      body,
+      { ...body, clearedConfigKeys },
       organizationId,
       existing
     );
@@ -193,7 +224,13 @@ export async function PUT(
       before: existing ? { name: existing.name } : undefined,
       after: {
         name: integration.name,
-        configUpdated: body.config !== undefined,
+        configUpdated: touchesConfig,
+        // Named, because removing a credential is the one update here that
+        // destroys something. Key names only - never a value - so the log can
+        // tell a rotation from a deletion, and say which credential went.
+        ...(removedConfigKeys.length > 0
+          ? { clearedConfigKeys: removedConfigKeys }
+          : {}),
       },
       metadata: buildAuditMetadata(request),
     });
@@ -203,6 +240,7 @@ export async function PUT(
       name: integration.name,
       type: integration.type,
       config: stripSecretConfig(integration.config, integration.type),
+      storedSecretKeys: storedSecretKeys(integration.config, integration.type),
       createdAt: integration.createdAt.toISOString(),
       updatedAt: integration.updatedAt.toISOString(),
     };

@@ -10,6 +10,7 @@ import { requireScope } from "@/lib/middleware/require-scope";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { validateApiKey } from "../../_lib/auth";
 import { checkRateLimit } from "../../_lib/rate-limit";
+import { rejectSimulateQuery } from "../../_lib/simulate-flag";
 import type { ExecutionStatusResponse } from "../../_lib/types";
 
 // Seconds a client should wait before polling status again while the execution
@@ -27,6 +28,14 @@ export async function GET(
       { error: apiKeyCtx.error },
       { status: apiKeyCtx.status }
     );
+  }
+
+  // #2004: ?simulate= is refused rather than ignored on every /api/execute/*
+  // route. This endpoint is read-only, so a dry run has nothing to mean here
+  // -- there is exactly one shape of status request.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
   }
 
   const scopeError = requireScope(apiKeyCtx.scope, SCOPE_MCP_READ, {
@@ -77,10 +86,15 @@ export async function GET(
   }
 
   const output = execution.output as Record<string, unknown> | null;
+  const status = execution.status as ExecutionStatusResponse["status"];
+  const pollIntervalHint = TERMINAL_STATUSES.has(status)
+    ? 0
+    : POLL_INTERVAL_HINT_SECONDS;
 
   const response: ExecutionStatusResponse = {
     executionId: execution.id,
-    status: execution.status as ExecutionStatusResponse["status"],
+    status,
+    pollIntervalHint,
     type: execution.type,
     transactionHash: execution.transactionHash,
     transactionLink: (output?.transactionLink as string) ?? null,
@@ -96,10 +110,6 @@ export async function GET(
     createdAt: execution.createdAt.toISOString(),
     completedAt: execution.completedAt?.toISOString() ?? null,
   };
-
-  const pollIntervalHint = TERMINAL_STATUSES.has(response.status)
-    ? 0
-    : POLL_INTERVAL_HINT_SECONDS;
 
   return applyRateLimitHeaders(NextResponse.json(response), rateLimit, {
     pollIntervalHint,

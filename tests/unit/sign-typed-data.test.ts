@@ -488,6 +488,45 @@ describe("signTypedDataCore (KEEP-473)", () => {
     expect(mockSign).toHaveBeenCalled();
   });
 
+  // The chain gate reads SUPPORTED_CHAIN_IDS, so adding a chain there widens
+  // what this step will sign. These two pin the intent: a chain in that map
+  // is signable, and a chain KeeperHub merely serves from the database is
+  // not. A chain add that should not carry signing rights has to leave the
+  // map alone.
+  it("signs on HyperEVM (999), which SUPPORTED_CHAIN_IDS names", async () => {
+    mockGetOrgWallet.mockResolvedValue(WALLET);
+    mockSign.mockResolvedValue(`0x${"ab".repeat(65)}`);
+
+    const result = await signTypedDataCore({
+      typedData: {
+        ...VALID_TYPED_DATA,
+        domain: { ...VALID_TYPED_DATA.domain, chainId: 999 },
+      },
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockSign).toHaveBeenCalled();
+  });
+
+  it("still refuses Arc (5042), a seeded chain that SUPPORTED_CHAIN_IDS does not name", async () => {
+    mockGetOrgWallet.mockResolvedValue(WALLET);
+
+    const result = await signTypedDataCore({
+      typedData: {
+        ...VALID_TYPED_DATA,
+        domain: { ...VALID_TYPED_DATA.domain, chainId: 5042 },
+      },
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.code).toBe("VALIDATION");
+    }
+    expect(mockSign).not.toHaveBeenCalled();
+  });
+
   it("strips control characters from the rejection error message", async () => {
     mockGetOrgWallet.mockResolvedValue(WALLET);
 

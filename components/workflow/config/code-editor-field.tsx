@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-import { TemplateCodeEditor } from "@/components/ui/template-code-editor";
+import { TemplateCodeEditor } from "@/components/workflow/config/template-code-editor";
 
 type CodeEditorFieldProps = {
   value: string;

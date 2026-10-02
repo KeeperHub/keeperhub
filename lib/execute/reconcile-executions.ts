@@ -21,6 +21,7 @@ import {
 } from "@/lib/metrics/collectors/prometheus";
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
+import { DAY_MS } from "@/lib/utils/duration";
 import {
   describeVerificationFailure,
   hasUnreadableReceipt,
@@ -42,7 +43,7 @@ import {
 // How long a broadcast can stay unseen before we accept it never landed. Well
 // past any realistic mempool eviction, because concluding "dropped" for a
 // transaction that later mines is the expensive direction to be wrong in.
-const DROPPED_AFTER_MS = 24 * 60 * 60 * 1000;
+const DROPPED_AFTER_MS = DAY_MS;
 // Give the write path's own retries room to finish before re-reading.
 const MIN_AGE_MS = 30 * 1000;
 // Upper bound on the rows one run reads newest-first. It bounds memory only;

@@ -7,14 +7,16 @@ vi.mock("@/lib/billing/feature-flag", () => ({
   isBillingEnabled: () => isBillingEnabled(),
 }));
 
-const getOrgPlan = vi.fn(async (..._args: unknown[]) => "free");
+const resolveOrgPlan = vi.fn(async (..._args: unknown[]) => ({ plan: "free" }));
 const checkExecutionLimit = vi.fn(
   async (..._args: unknown[]) =>
     ({ allowed: true }) as { allowed: boolean; isOverage?: boolean }
 );
 vi.mock("@/lib/billing/plans-server", () => ({
-  getOrgPlan: (...args: unknown[]) => getOrgPlan(...args),
   checkExecutionLimit: (...args: unknown[]) => checkExecutionLimit(...args),
+}));
+vi.mock("@/lib/billing/subscription-read", () => ({
+  resolveOrgPlan: (...args: unknown[]) => resolveOrgPlan(...args),
 }));
 
 const validateWorkflowFeatures = vi.fn(
@@ -36,7 +38,7 @@ describe("checkDispatchAdmission", () => {
     vi.clearAllMocks();
     __resetDispatchAdmissionCacheForTest();
     isBillingEnabled.mockReturnValue(true);
-    getOrgPlan.mockResolvedValue("free");
+    resolveOrgPlan.mockResolvedValue({ plan: "free" });
     checkExecutionLimit.mockResolvedValue({ allowed: true });
     validateWorkflowFeatures.mockReturnValue([]);
   });
@@ -86,7 +88,7 @@ describe("checkDispatchAdmission", () => {
     await checkDispatchAdmission({ organizationId: "org_1", nodes: [] });
 
     expect(checkExecutionLimit).toHaveBeenCalledTimes(1);
-    expect(getOrgPlan).toHaveBeenCalledTimes(1);
+    expect(resolveOrgPlan).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the standing separate per org", async () => {
@@ -150,7 +152,7 @@ describe("checkDispatchAdmission", () => {
     });
 
     expect(refusal?.reason).toBe("plan_feature");
-    expect(getOrgPlan).not.toHaveBeenCalled();
+    expect(resolveOrgPlan).not.toHaveBeenCalled();
     expect(validateWorkflowFeatures).toHaveBeenCalledWith([], "free");
   });
 

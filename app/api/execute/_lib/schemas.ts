@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import { readErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
 import { isValidOperator, VALID_OPERATORS } from "./condition";
 import { selectorOf } from "./raw-calldata";
@@ -16,7 +17,6 @@ import type { ExecuteErrorResponse } from "./types";
  * validation itself now runs through Zod's safeParse at the boundary.
  */
 
-const HEX_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 const MAX_PRIORITY_FEE_GWEI = 10_000;
 
 function isNonEmptyString(value: unknown): value is string {
@@ -273,7 +273,7 @@ export const tokenFieldsSchema = objectBase.superRefine((record, ctx) => {
   if (
     "tokenAddress" in record &&
     (typeof record.tokenAddress !== "string" ||
-      !HEX_ADDRESS_REGEX.test(record.tokenAddress))
+      !EVM_ADDRESS_RE.test(record.tokenAddress))
   ) {
     addError(ctx, {
       error: "Invalid field type",

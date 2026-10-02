@@ -26,6 +26,10 @@ import { findActionById } from "@/plugins/registry";
 import { getReadContractOutputFields } from "@/lib/workflow/editor/action-output-fields";
 import { resolveForEachSyntheticOutput } from "@/lib/workflow/nodes/for-each/utils";
 import {
+  STATE_GET_OUTPUT_FIELDS,
+  STATE_SET_OUTPUT_FIELDS,
+} from "@/lib/workflow/nodes/workflow-state/utils";
+import {
   type ExecutionLogsByNodeId,
   type SchemaField,
   buildExecutionLogsMap,
@@ -139,6 +143,14 @@ const getCommonFields = (node: WorkflowNode) => {
       },
       { field: "count", description: "Number of completed iterations" },
     ];
+  }
+
+  if (actionType === "State Get") {
+    return STATE_GET_OUTPUT_FIELDS;
+  }
+
+  if (actionType === "State Set") {
+    return STATE_SET_OUTPUT_FIELDS;
   }
 
   // Check if the plugin defines output fields
@@ -262,7 +274,9 @@ export function TemplateAutocomplete({
 
     const fetchLogs = async () => {
       try {
-        const executions = await api.workflow.getExecutions(workflowId);
+        const { executions } = await api.workflow.getExecutions(workflowId, {
+          limit: 1,
+        });
         if (cancelled) {
           return;
         }

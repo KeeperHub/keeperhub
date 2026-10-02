@@ -10,9 +10,12 @@ import {
   lt,
   min,
   notInArray,
+  type SQL,
   sql,
 } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import { db } from "@/lib/db";
+import { isStatementTimeout } from "@/lib/db/errors";
 import {
   workflowExecutionLogs,
   workflowExecutions,
@@ -26,6 +29,7 @@ import { logWarn } from "@/lib/logging";
 import {
   daysBefore,
   getRetentionConfig,
+  PLAN_WINDOW_MIN_CEILING_MS,
   type RetentionConfig,
 } from "@/lib/retention/config";
 import {
@@ -39,6 +43,7 @@ import {
   RETENTION_EPOCH,
   setPurgeWatermark,
 } from "@/lib/retention/progress";
+import { SECOND_MS } from "@/lib/utils/duration";
 
 /**
  * Statuses a run can still be picked up from. Their step logs carry
@@ -98,6 +103,29 @@ export const PLAN_WINDOW_RUNS_PER_READ = 5000;
  */
 export const PLAN_WINDOW_MIN_SLICE_MS = 1000;
 
+/**
+ * How long one runs read of a workflow chunk may take before the drain treats
+ * its time slice as too wide.
+ *
+ * Well under the pool's 30 s statement_timeout, because this bound is not there
+ * to protect the database -- it is the signal that the planner has left the
+ * per-workflow index. A read that stays on it returns a full page in seconds
+ * even over a wide slice.
+ */
+export const PLAN_WINDOW_READ_TIMEOUT_MS = 5 * SECOND_MS;
+
+/**
+ * Drained slices with no cancelled read that earn the ceiling a doubling back
+ * up, to the cap.
+ *
+ * Without a way back up a single cancelled read halves an organization's
+ * ceiling for the rest of its drain, and a cancellation is not proof of a
+ * planner flip -- contention or a cold cache produces one too. Gated rather
+ * than immediate so a genuinely bad width costs at most one re-probe per this
+ * many slices instead of one per slice.
+ */
+export const PLAN_WINDOW_CEILING_RECOVERY_SLICES = 8;
+
 export type RetentionPassName =
   | "logs_floor"
   | "logs_plan_window"
@@ -114,7 +142,12 @@ export type RetentionWindowReport = {
 
 export type RetentionPassResult = {
   pass: RetentionPassName;
-  /** Rows deleted, or nulled for the output_raw pass. Candidates in a dry run. */
+  /**
+   * Rows deleted, or nulled for the output_raw pass. In a dry run, the rows a
+   * real run would touch. The output_raw pass walks its pages to get that
+   * figure, so when the budget stops it (`budgetExhausted`) the figure covers
+   * only the pages it reached and is a lower bound rather than a total.
+   */
   rows: number;
   /** True when the runtime budget stopped this pass before it drained. */
   budgetExhausted: boolean;
@@ -254,9 +287,15 @@ export async function runRetentionPurge(
       deferred
     )
   );
-  passes.push(await stripExpiredOutputRaw(config, now, budget));
   passes.push(await purgeSoftDeletedLogs(config, now, budget));
   passes.push(await purgeExecutionsPastFlatWindow(config, now, budget));
+  // output_raw last. It carries by far the largest backlog and can spend the
+  // whole budget for many runs in a row, and it is the one pass whose dry run
+  // walks pages rather than counting in one statement, so a dry run can spend
+  // the whole budget on it too. Any pass behind it would get no time at all.
+  // Last is also the cheaper order for a real run: a run row the pass above
+  // retires takes its step logs with it, so they are never nulled first.
+  passes.push(await stripExpiredOutputRaw(config, now, budget));
 
   const result: RetentionRunResult = {
     enabled: true,
@@ -290,30 +329,58 @@ function purgeLogsPastFloor(
   floorDays: number
 ): Promise<RetentionPassResult> {
   const cutoff = daysBefore(now, floorDays);
-  const eligible = lt(workflowExecutionLogs.startedAt, cutoff);
-  return runBatched({
+  return runKeysetPass({
     pass: "logs_floor",
     config,
     budget,
-    selectIds: (limit) =>
-      db
-        .select({ id: workflowExecutionLogs.id })
-        .from(workflowExecutionLogs)
-        .where(eligible)
-        .orderBy(workflowExecutionLogs.startedAt)
-        .limit(limit),
-    countEligible: async () =>
-      (
-        await db
-          .select({ n: count() })
-          .from(workflowExecutionLogs)
-          .where(eligible)
-      )[0].n,
+    selectPage: (limit, cursor) => floorPageQuery(cutoff, cursor, limit),
+    countEligible: async () => (await floorCountQuery(cutoff))[0].n,
     apply: (ids) =>
       db
         .delete(workflowExecutionLogs)
         .where(inArray(workflowExecutionLogs.id, ids)),
   });
+}
+
+/**
+ * One page of the floor pass: step logs past the floor cutoff, after `cursor`.
+ * Exported so a test can EXPLAIN the SQL the pass really sends.
+ */
+export function floorPageQuery(
+  cutoff: Date,
+  cursor: PageCursor | null,
+  limit: number
+) {
+  return db
+    .select({
+      id: workflowExecutionLogs.id,
+      at: sortKey(workflowExecutionLogs.startedAt),
+    })
+    .from(workflowExecutionLogs)
+    .where(
+      and(
+        lt(workflowExecutionLogs.startedAt, cutoff),
+        afterCursor(
+          workflowExecutionLogs.startedAt,
+          workflowExecutionLogs.id,
+          cursor
+        )
+      )
+    )
+    .orderBy(workflowExecutionLogs.startedAt, workflowExecutionLogs.id)
+    .limit(limit);
+}
+
+/**
+ * How many step logs the floor pass would delete: a dry run's figure. A plain
+ * range on `started_at`, which the planner answers from the index alone.
+ * Exported so a test can EXPLAIN the SQL the pass really sends.
+ */
+export function floorCountQuery(cutoff: Date) {
+  return db
+    .select({ n: count() })
+    .from(workflowExecutionLogs)
+    .where(lt(workflowExecutionLogs.startedAt, cutoff));
 }
 
 /**
@@ -493,13 +560,28 @@ export function planWindowLogCountQuery(
 
 /**
  * Run one read with sequential scans priced out, for statements keyed by
- * explicit ids on an indexed column. `SET LOCAL` ends with the transaction, so
- * nothing leaks to the next query that borrows the pooled connection. Each read
- * touches a single table, so the setting reaches no other relation.
+ * explicit ids on an indexed column, optionally under a tighter
+ * statement_timeout than the pool's. Both settings are local to the
+ * transaction, so nothing leaks to the next query that borrows the pooled
+ * connection. Most reads here touch one table; the resumable-run read joins
+ * workflow_executions to workflows, so for that one enable_seqscan reaches
+ * both -- which is the intent, since either side falling back to a sequential
+ * scan is the plan this bound exists to catch.
+ *
+ * `set_config(..., true)` rather than two `SET LOCAL` statements: it is the
+ * same local scope in one round trip, and the plan-window pass issues one of
+ * these per workflow chunk per slice.
  */
-function withIndexPlans<T>(query: (tx: Querier) => PromiseLike<T>): Promise<T> {
+function withIndexPlans<T>(
+  query: (tx: Querier) => PromiseLike<T>,
+  timeoutMs?: number
+): Promise<T> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+    await tx.execute(
+      timeoutMs === undefined
+        ? sql`SET LOCAL enable_seqscan = off`
+        : sql`SELECT set_config('enable_seqscan', 'off', true), set_config('statement_timeout', ${String(timeoutMs)}, true)`
+    );
     return await query(tx);
   });
 }
@@ -507,13 +589,35 @@ function withIndexPlans<T>(query: (tx: Querier) => PromiseLike<T>): Promise<T> {
 /**
  * One organization's drain, in time slices of its runs' `started_at`.
  *
- * A slice starts as the whole remaining range. When a workflow chunk has more
- * eligible runs in it than one read may return, the slice is halved and the walk
- * resumes at that chunk: the chunks before it were read in full over the larger
- * range, so they are already done for the smaller one. After a slice drains,
- * the watermark moves to its end -- or to the oldest run that can still resume,
- * if one sits below it -- and the next slice doubles again. A run cut off by the
- * budget therefore gives up at most the slice it was in.
+ * A slice starts at config.planWindowSliceMs, or at the whole remaining
+ * range when that is narrower, and never grows past it. Two things make it
+ * narrower still, and both resume the walk at the chunk that hit them -- the
+ * chunks before it were read in full over the larger range, so they are already
+ * done for the smaller one:
+ *
+ * - a workflow chunk with more eligible runs in it than one read may return;
+ * - a cancelled runs read, which is how a slice too wide for the planner to
+ *   answer from (workflow_id, started_at) announces itself (KEEP-1360). That one
+ *   lowers the ceiling as well as the slice.
+ *
+ * Narrowing works for those two because each reads exactly the slice. The
+ * skipped-run read does not: it is anchored at `from`, so the slice width is not
+ * what makes it expensive, and a cancellation there ends the organization's
+ * drain instead. See the branch itself for why that converges and narrowing
+ * would not.
+ *
+ * The ceiling is not a one-way ratchet. A cancelled read is not proof of a
+ * planner flip -- contention or a cold cache produces one too -- so after
+ * PLAN_WINDOW_CEILING_RECOVERY_SLICES slices drain with none, it doubles back
+ * towards the cap. Below PLAN_WINDOW_MIN_CEILING_MS it stops narrowing and
+ * fails the organization instead, because at that width narrowing has stopped
+ * being the answer and a silent crawl would starve every organization behind
+ * this one for the rest of the run.
+ *
+ * After a slice drains, the watermark moves to its end -- or to the oldest run
+ * that can still resume, if one sits below it -- and the next slice doubles up
+ * to the ceiling. A run cut off by the budget therefore gives up at most the
+ * slice it was in.
  *
  * A dry run walks the same slices and counts instead of deleting. It writes no
  * watermark, so every dry run walks from the same place.
@@ -535,13 +639,26 @@ async function drainPlanWindow(
 
   const end = cutoff.getTime();
   const widest = end - from.getTime();
+  const cap = Math.min(widest, config.planWindowSliceMs);
   let sliceStart = from.getTime();
-  let span = widest;
+  // Widest slice still believed to be answerable from the per-workflow index.
+  // A cancelled read lowers it; a run of clean slices raises it again, never
+  // past the cap.
+  let spanCeiling = cap;
+  let span = cap;
+  let cleanSlices = 0;
+  // The last watermark this drain claimed, so a stop can tell progress from a
+  // standstill. Counting writes would not: setPurgeWatermark upserts with
+  // GREATEST, and a run still sitting in a resumable status pins the claim to its
+  // own started_at, which can be `from` itself -- so the write happens, changes
+  // nothing, and the next run begins in the same place.
+  let claimed: Date | null = null;
   let firstChunk = 0;
 
   while (sliceStart < end) {
     const sliceEnd = Math.min(sliceStart + span, end);
     let overflowAt: number | null = null;
+    let cancelledAt: number | null = null;
 
     for (
       let i = firstChunk;
@@ -555,17 +672,28 @@ async function drainPlanWindow(
         i,
         i + PLAN_WINDOW_WORKFLOW_CHUNK
       );
-      const executionIds = (
-        await withIndexPlans((tx) =>
-          planWindowExecutionIdsQuery(
-            workflowChunk,
-            new Date(sliceStart),
-            new Date(sliceEnd),
-            PLAN_WINDOW_RUNS_PER_READ + 1,
-            tx
+      let executionIds: string[];
+      try {
+        executionIds = (
+          await withIndexPlans(
+            (tx) =>
+              planWindowExecutionIdsQuery(
+                workflowChunk,
+                new Date(sliceStart),
+                new Date(sliceEnd),
+                PLAN_WINDOW_RUNS_PER_READ + 1,
+                tx
+              ),
+            PLAN_WINDOW_READ_TIMEOUT_MS
           )
-        )
-      ).map((row) => row.id);
+        ).map((row) => row.id);
+      } catch (error) {
+        if (!isStatementTimeout(error)) {
+          throw error;
+        }
+        cancelledAt = i;
+        break;
+      }
 
       if (executionIds.length > PLAN_WINDOW_RUNS_PER_READ) {
         overflowAt = i;
@@ -581,6 +709,26 @@ async function drainPlanWindow(
       if (drained.budgetExhausted) {
         return { budgetExhausted: true };
       }
+    }
+
+    if (cancelledAt !== null) {
+      if (span <= PLAN_WINDOW_MIN_CEILING_MS) {
+        throw new Error(
+          `Reading the eligible runs of one chunk of this organization's workflows took longer than ${PLAN_WINDOW_READ_TIMEOUT_MS} ms over a ${PLAN_WINDOW_MIN_CEILING_MS} ms slice`
+        );
+      }
+      // Lowered for the whole organization, not just this slice: the doubling
+      // after a drained slice would otherwise walk straight back into the width
+      // that was cancelled and spend the timeout again on every sparse stretch.
+      spanCeiling = Math.max(Math.floor(span / 2), PLAN_WINDOW_MIN_CEILING_MS);
+      span = spanCeiling;
+      cleanSlices = 0;
+      logWarn("[Retention] Narrowing a plan-window slice a read timed out on", {
+        organization_id: organizationId,
+        slice_ms: String(spanCeiling),
+      });
+      firstChunk = cancelledAt;
+      continue;
     }
 
     if (overflowAt !== null) {
@@ -602,19 +750,75 @@ async function drainPlanWindow(
     // its plan sells. So the watermark stops at the oldest run this pass had to
     // skip. A dry run must not claim anything at all, since it deleted nothing.
     if (!config.dryRun) {
-      const skipped = await earliestResumableStartedAt(
-        organizationId,
-        from,
-        new Date(sliceEnd)
-      );
-      await setPurgeWatermark(
-        organizationId,
-        skipped && skipped.getTime() < sliceEnd ? skipped : new Date(sliceEnd)
-      );
+      // Bounded and cancellable like every other read in the drain. The range
+      // is [from, sliceEnd), not the slice: setPurgeWatermark upserts with
+      // GREATEST, so a slice that looked only at its own window would find no
+      // skipped run and carry the watermark past one an earlier slice stopped
+      // at.
+      let skipped: Date | null;
+      try {
+        skipped = await withIndexPlans(
+          (tx) =>
+            earliestResumableStartedAt(
+              organizationId,
+              from,
+              new Date(sliceEnd),
+              tx
+            ),
+          PLAN_WINDOW_READ_TIMEOUT_MS
+        );
+      } catch (error) {
+        if (!isStatementTimeout(error)) {
+          throw error;
+        }
+        // Narrowing the slice cannot answer this one, unlike a cancelled runs
+        // read. That read covers exactly [sliceStart, sliceEnd), so halving the
+        // slice halves what it scans; this one covers [from, sliceEnd), whose
+        // width is (sliceStart - from) + span, and halving span leaves the first
+        // term untouched -- hundreds of slices in, a halving moves the range by
+        // less than a percent. Retrying would also re-walk a slice that has
+        // already drained, probing the step logs of every run in it for nothing.
+        //
+        // Ending the drain here does converge: the next run starts at the last
+        // watermark this one wrote, so `from` itself moves up and the range
+        // really does shrink. Everything already deleted stands.
+        logWarn(
+          "[Retention] Ending a plan-window drain: the skipped-run read timed out",
+          {
+            organization_id: organizationId,
+            claimed_through: claimed?.toISOString() ?? "nothing",
+          }
+        );
+        if (!claimed || claimed.getTime() <= from.getTime()) {
+          // The lower bound did not move, so the next run starts here and stops
+          // in the same place, for good. Both halves of that arrive together: an
+          // inflated status index is what makes this read expensive AND what pins
+          // the claim, because the runs pinning it are the ones in a resumable
+          // status. Silence there would leave every log past this slice waiting
+          // for the floor pass while the run reported success.
+          throw new Error(
+            "Reading the oldest still-resumable run of this organization timed out without moving its watermark"
+          );
+        }
+        return { budgetExhausted: false };
+      }
+      const claim =
+        skipped && skipped.getTime() < sliceEnd ? skipped : new Date(sliceEnd);
+      await setPurgeWatermark(organizationId, claim);
+      claimed = claim;
     }
 
     sliceStart = sliceEnd;
-    span = Math.min(span * 2, widest);
+    // A cancelled read is not proof of a planner flip, so a run of clean slices
+    // earns the ceiling back. Gated, so a width that really is bad costs one
+    // re-probe per PLAN_WINDOW_CEILING_RECOVERY_SLICES slices rather than one
+    // per slice.
+    cleanSlices += 1;
+    if (cleanSlices >= PLAN_WINDOW_CEILING_RECOVERY_SLICES) {
+      spanCeiling = Math.min(spanCeiling * 2, cap);
+      cleanSlices = 0;
+    }
+    span = Math.min(span * 2, spanCeiling);
     firstChunk = 0;
   }
 
@@ -693,9 +897,31 @@ function describeError(error: unknown): string {
 async function earliestResumableStartedAt(
   organizationId: string,
   from: Date,
-  cutoff: Date
+  cutoff: Date,
+  querier: Querier = db
 ): Promise<Date | null> {
-  const rows = await db
+  const rows = await resumableStartedAtQuery(
+    organizationId,
+    from,
+    cutoff,
+    querier
+  );
+  return rows[0]?.oldest ?? null;
+}
+
+/**
+ * The oldest still-resumable run of one organization in `[from, cutoff)`.
+ * Exported so a test can EXPLAIN the SQL the pass really sends -- this is the
+ * only read in the drain that crosses a join, and since KEEP-1360 it runs under
+ * the same tighter statement_timeout as the runs read.
+ */
+export function resumableStartedAtQuery(
+  organizationId: string,
+  from: Date,
+  cutoff: Date,
+  querier: Querier = db
+) {
+  return querier
     .select({ oldest: min(workflowExecutions.startedAt) })
     .from(workflowExecutions)
     .innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
@@ -707,67 +933,10 @@ async function earliestResumableStartedAt(
         inArray(workflowExecutions.status, [...RESUMABLE_EXECUTION_STATUSES])
       )
     );
-  return rows[0]?.oldest ?? null;
 }
 
 /**
- * Pass 3. Null `output_raw` once a run can no longer resume. It is the
- * unredacted twin of `output` and costs about the same on disk, so dropping it
- * halves the payload of every aged row without deleting the row itself. The
- * redacted `output` the UI shows stays for the full plan window, and carries
- * every non-sensitive field verbatim -- only secret-keyed values are masked.
- *
- * No lower bound. idx_exec_logs_output_raw_pending is partial on
- * `output_raw IS NOT NULL`, so it shrinks as the backlog drains and holds only
- * rows inside the window once it has: an unbounded scan over a drained table
- * reads an index that no longer contains those rows at all.
- */
-function stripExpiredOutputRaw(
-  config: RetentionConfig,
-  now: Date,
-  budget: RunBudget
-): Promise<RetentionPassResult> {
-  const cutoff = daysBefore(now, config.outputRawRetentionDays);
-  const eligible = and(
-    lt(workflowExecutionLogs.startedAt, cutoff),
-    isNotNull(workflowExecutionLogs.outputRaw),
-    notInArray(workflowExecutions.status, [...RESUMABLE_EXECUTION_STATUSES])
-  );
-  return runBatched({
-    pass: "output_raw",
-    config,
-    budget,
-    selectIds: (limit) =>
-      db
-        .select({ id: workflowExecutionLogs.id })
-        .from(workflowExecutionLogs)
-        .innerJoin(
-          workflowExecutions,
-          eq(workflowExecutions.id, workflowExecutionLogs.executionId)
-        )
-        .where(eligible)
-        .limit(limit),
-    countEligible: async () =>
-      (
-        await db
-          .select({ n: count() })
-          .from(workflowExecutionLogs)
-          .innerJoin(
-            workflowExecutions,
-            eq(workflowExecutions.id, workflowExecutionLogs.executionId)
-          )
-          .where(eligible)
-      )[0].n,
-    apply: (ids) =>
-      db
-        .update(workflowExecutionLogs)
-        .set({ outputRaw: null })
-        .where(inArray(workflowExecutionLogs.id, ids)),
-  });
-}
-
-/**
- * Pass 4. Hard-delete step logs a user already purged from the UI. KEEP-1199
+ * Pass 3. Hard-delete step logs a user already purged from the UI. KEEP-1199
  * made that purge a soft delete so the gas and network aggregates stayed whole;
  * this is where those rows finally leave, once the grace period has passed.
  */
@@ -777,24 +946,12 @@ function purgeSoftDeletedLogs(
   budget: RunBudget
 ): Promise<RetentionPassResult> {
   const cutoff = daysBefore(now, config.softDeleteGraceDays);
-  const eligible = lt(workflowExecutionLogs.deletedAt, cutoff);
-  return runBatched({
+  return runKeysetPass({
     pass: "logs_soft_deleted",
     config,
     budget,
-    selectIds: (limit) =>
-      db
-        .select({ id: workflowExecutionLogs.id })
-        .from(workflowExecutionLogs)
-        .where(eligible)
-        .limit(limit),
-    countEligible: async () =>
-      (
-        await db
-          .select({ n: count() })
-          .from(workflowExecutionLogs)
-          .where(eligible)
-      )[0].n,
+    selectPage: (limit, cursor) => softDeletedPageQuery(cutoff, cursor, limit),
+    countEligible: async () => (await softDeletedCountQuery(cutoff))[0].n,
     apply: (ids) =>
       db
         .delete(workflowExecutionLogs)
@@ -803,7 +960,48 @@ function purgeSoftDeletedLogs(
 }
 
 /**
- * Pass 5. Run rows on ONE flat window, behind a switch of its own that ships
+ * One page of the soft-delete pass: step logs purged before `cutoff`, after
+ * `cursor`. Exported so a test can EXPLAIN the SQL the pass really sends.
+ */
+export function softDeletedPageQuery(
+  cutoff: Date,
+  cursor: PageCursor | null,
+  limit: number
+) {
+  return db
+    .select({
+      id: workflowExecutionLogs.id,
+      at: sortKey(workflowExecutionLogs.deletedAt),
+    })
+    .from(workflowExecutionLogs)
+    .where(
+      and(
+        lt(workflowExecutionLogs.deletedAt, cutoff),
+        afterCursor(
+          workflowExecutionLogs.deletedAt,
+          workflowExecutionLogs.id,
+          cursor
+        )
+      )
+    )
+    .orderBy(workflowExecutionLogs.deletedAt, workflowExecutionLogs.id)
+    .limit(limit);
+}
+
+/**
+ * How many purged step logs the soft-delete pass would delete: a dry run's
+ * figure. A range on the partial index that holds only purged rows. Exported so
+ * a test can EXPLAIN the SQL the pass really sends.
+ */
+export function softDeletedCountQuery(cutoff: Date) {
+  return db
+    .select({ n: count() })
+    .from(workflowExecutionLogs)
+    .where(lt(workflowExecutionLogs.deletedAt, cutoff));
+}
+
+/**
+ * Pass 4. Run rows on ONE flat window, behind a switch of its own that ships
  * off.
  *
  * Every billing count reads `workflow_executions` by `started_at` with no floor
@@ -907,44 +1105,172 @@ async function purgeExecutionsPastFlatWindow(
   }
 }
 
-type BatchedPass = {
+/**
+ * Pass 5. Null `output_raw` once a run can no longer resume. It is the
+ * unredacted twin of `output` and costs about the same on disk, so dropping it
+ * halves the payload of every aged row without deleting the row itself. The
+ * redacted `output` the UI shows stays for the full plan window, and carries
+ * every non-sensitive field verbatim -- only secret-keyed values are masked.
+ *
+ * No lower bound. idx_exec_logs_output_raw_pending is partial on
+ * `output_raw IS NOT NULL`, so it shrinks as the backlog drains and holds only
+ * rows inside the window once it has. The pass pages along that index by
+ * `(started_at, id)`, so a page costs the same however many rows ahead of it
+ * this run has already nulled.
+ *
+ * A row whose run can still resume is filtered out of its page, and the cursor
+ * moves past it with the rest. It is not lost: every run starts again at the
+ * front of the index, so the next run reads it again and nulls it once the run
+ * has finished.
+ *
+ * Its dry run walks the same pages instead of counting. A count has to join
+ * every eligible step log to its run for the status check, which on a large
+ * table plans as a sequential scan of both and cannot finish inside the
+ * statement timeout.
+ */
+function stripExpiredOutputRaw(
+  config: RetentionConfig,
+  now: Date,
+  budget: RunBudget
+): Promise<RetentionPassResult> {
+  const cutoff = daysBefore(now, config.outputRawRetentionDays);
+  return runKeysetPass({
+    pass: "output_raw",
+    config,
+    budget,
+    selectPage: (limit, cursor) => outputRawPageQuery(cutoff, cursor, limit),
+    apply: (ids) =>
+      db
+        .update(workflowExecutionLogs)
+        .set({ outputRaw: null })
+        .where(inArray(workflowExecutionLogs.id, ids)),
+  });
+}
+
+/**
+ * One page of the output_raw pass: step logs past `cutoff` that still carry
+ * `output_raw` and whose run cannot resume, after `cursor`. Exported so a test
+ * can EXPLAIN the SQL the pass really sends.
+ */
+export function outputRawPageQuery(
+  cutoff: Date,
+  cursor: PageCursor | null,
+  limit: number
+) {
+  return db
+    .select({
+      id: workflowExecutionLogs.id,
+      at: sortKey(workflowExecutionLogs.startedAt),
+    })
+    .from(workflowExecutionLogs)
+    .innerJoin(
+      workflowExecutions,
+      eq(workflowExecutions.id, workflowExecutionLogs.executionId)
+    )
+    .where(
+      and(
+        lt(workflowExecutionLogs.startedAt, cutoff),
+        isNotNull(workflowExecutionLogs.outputRaw),
+        notInArray(workflowExecutions.status, [
+          ...RESUMABLE_EXECUTION_STATUSES,
+        ]),
+        afterCursor(
+          workflowExecutionLogs.startedAt,
+          workflowExecutionLogs.id,
+          cursor
+        )
+      )
+    )
+    .orderBy(workflowExecutionLogs.startedAt, workflowExecutionLogs.id)
+    .limit(limit);
+}
+
+/**
+ * Where the next page starts: the sort key of the last row the previous page
+ * returned. `at` is the timestamp as Postgres prints it, see sortKey.
+ */
+export type PageCursor = { at: string; id: string };
+
+/** One row of a page: its id and the timestamp the pass orders by. */
+type PageRow = { id: string; at: string };
+
+type KeysetPass = {
   pass: RetentionPassName;
   config: RetentionConfig;
   budget: RunBudget;
-  selectIds: (limit: number) => Promise<Array<{ id: string }>>;
-  apply: (ids: string[]) => Promise<unknown>;
+  /** The next page after `cursor`, ordered by the `(at, id)` it compares. */
+  selectPage: (
+    limit: number,
+    cursor: PageCursor | null
+  ) => PromiseLike<PageRow[]>;
+  /** Act on exactly the ids of one page. Never called in a dry run. */
+  apply: (ids: string[]) => PromiseLike<unknown>;
   /**
-   * How many rows this pass would touch, over the same predicate `selectIds`
-   * uses and with no limit. Only ever called on a dry run, which is the one
-   * mode whose whole purpose is to report a number an operator will act on.
+   * The dry run's figure in one statement, for a pass whose predicate an index
+   * answers on its own. Without it a dry run walks the pages instead.
    */
-  countEligible: () => Promise<number>;
+  countEligible?: () => PromiseLike<number>;
 };
 
 /**
- * Select a bounded page of ids, then act on exactly those ids. The two-step
- * shape is what keeps memory flat: at most `batchSize` ids exist at once,
- * unlike purgeExpiredAuditEvents, which materialises every deleted id in one go
- * and would not survive this table.
+ * `(at, id) > (cursor.at, cursor.id)`: start a page right after the last row of
+ * the previous one. Postgres answers the row comparison with an index range on
+ * `at` and checks `id` on the rows at the boundary, so the page stays on the
+ * pass's timestamp index.
+ */
+function afterCursor(
+  at: PgColumn,
+  id: PgColumn,
+  cursor: PageCursor | null
+): SQL | undefined {
+  if (!cursor) {
+    return;
+  }
+  // Every column a pass orders by is `timestamp without time zone`.
+  return sql`(${at}, ${id}) > (${cursor.at}::timestamp, ${cursor.id})`;
+}
+
+/**
+ * A page's sort timestamp as text. The columns keep microseconds and a JS Date
+ * keeps milliseconds, so a cursor read back as a Date sits just before its own
+ * row: the next page returns that row again, and a page of one never moves.
+ */
+function sortKey(column: PgColumn): SQL<string> {
+  return sql<string>`${column}::text`;
+}
+
+/**
+ * Walk a pass in pages ordered by `(timestamp, id)`, each starting right after
+ * the last row of the page before, and act on exactly the ids of each page. The
+ * two-step shape is what keeps memory flat: at most `batchSize` ids exist at
+ * once, unlike purgeExpiredAuditEvents, which materialises every deleted id in
+ * one go and would not survive this table.
  *
- * Every batch is its own statement, so no transaction is held open long enough
+ * Every page is its own statement, so no transaction is held open long enough
  * to block autovacuum -- the exact failure mode that pinned the database on
  * 2026-09-02.
+ *
+ * The cursor keeps the cost of a page flat. A deleted or nulled row stays in
+ * the index until vacuum removes it, so a page that started again at the front
+ * each time had to walk past everything the run had already done, and got
+ * slower the further the run went.
+ *
+ * A dry run counts in one statement where the pass supplies `countEligible`.
+ * Otherwise it reads the same pages and writes nothing; the cursor still moves,
+ * so the walk ends. A walk makes no progress from one dry run to the next, so
+ * one that outlasts the budget reports how far it got, with `budgetExhausted`
+ * set, and every pass behind it reports nothing -- which is why a pass that can
+ * count does, and why the one that cannot runs last.
  */
-async function runBatched({
+async function runKeysetPass({
   pass,
   config,
   budget,
-  selectIds,
+  selectPage,
   apply,
   countEligible,
-}: BatchedPass): Promise<RetentionPassResult> {
-  // A dry run counts instead of deleting. It cannot loop -- with nothing
-  // changed the same page would come back forever -- so counting one page and
-  // reporting that was capping every figure at `batchSize`, per pass and per
-  // organization. The number the operator reads before turning dry-run off is
-  // the whole point of the mode, so it has to be the real one.
-  if (config.dryRun) {
+}: KeysetPass): Promise<RetentionPassResult> {
+  if (config.dryRun && countEligible) {
     if (budget.exhausted) {
       return { pass, rows: 0, budgetExhausted: true };
     }
@@ -952,18 +1278,23 @@ async function runBatched({
   }
 
   let rows = 0;
+  let cursor: PageCursor | null = null;
 
   for (;;) {
     if (budget.exhausted) {
       return { pass, rows, budgetExhausted: true };
     }
 
-    const victims = await selectIds(config.batchSize);
-    if (victims.length === 0) {
+    const page = await selectPage(config.batchSize, cursor);
+    const last = page.at(-1);
+    if (!last) {
       return { pass, rows, budgetExhausted: false };
     }
 
-    await apply(victims.map((victim) => victim.id));
-    rows += victims.length;
+    if (!config.dryRun) {
+      await apply(page.map((row) => row.id));
+    }
+    rows += page.length;
+    cursor = { at: last.at, id: last.id };
   }
 }

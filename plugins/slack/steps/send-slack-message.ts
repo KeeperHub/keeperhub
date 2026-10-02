@@ -1,4 +1,5 @@
 import "server-only";
+import { SLACK_API_URL } from "@/lib/notifications/messaging-endpoints";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { fetchCredentials } from "@/lib/credential-fetcher";
@@ -7,7 +8,6 @@ import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-ha
 import { getErrorMessage } from "@/lib/utils";
 import type { SlackCredentials } from "../credentials";
 
-const SLACK_API_URL = "https://slack.com/api";
 
 type SlackPostMessageResponse = {
   ok: boolean;

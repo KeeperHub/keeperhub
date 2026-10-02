@@ -133,9 +133,9 @@ A short list of canonical `error` codes is reused across endpoints: `unauthorize
 The `/api/execute/*` endpoints answer with a human-readable sentence in `error`,
 `field` naming the offending input where one applies, and `details` carrying
 context. Where a machine-readable code exists it is in `code`, for example
-`insufficient_balance` on a simulation that ran out of native currency. Branch
+`insufficient_balance` (native shortfall) or `insufficient_allowance` (allowance shortfall). Branch
 on the HTTP status and on `code`, and treat `error` there as prose to log or
-show. See [Direct Execution](/api/direct-execution) for the per-endpoint shapes.
+show. See [Direct Execution](/api/direct-execution) for the per-endpoint shapes and full list of failure codes.
 
 The `x-request-id` request header is honored when present: send any value (≤ 128 chars, no control characters) and it is reflected back on both the `request_id` response field and the `x-request-id` response header.
 

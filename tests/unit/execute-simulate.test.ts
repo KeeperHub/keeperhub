@@ -369,6 +369,34 @@ describe("simulateContractCall", () => {
     }
   });
 
+  it("returns the closed panic code with the exact panicCode hex", async () => {
+    resetSpies();
+    const encodedCode = ethers.AbiCoder.defaultAbiCoder().encode(
+      ["uint256"],
+      [17]
+    );
+    executeWithFailover.mockRejectedValueOnce({
+      data: `0x4e487b71${encodedCode.slice(2)}`,
+    });
+
+    const result = await simulateContractCall({
+      organizationId: "org_test",
+      network: "1",
+      contractAddress: CONTRACT_ADDRESS,
+      abi: WRITE_ABI,
+      functionName: "setValue",
+      functionArgs: JSON.stringify(["999"]),
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success && result.failureKind !== "unavailable") {
+      expect(result.failureKind).toBe("revert");
+      expect(result.code).toBe("panic");
+      expect(result.panicCode).toBe("0x11");
+      expect(result.revertReason).toBe("Panic(ArithmeticOverflowUnderflow)");
+    }
+  });
+
   // #2430: a revert raised in a callee, not in the contract being called. The
   // ABI that encodes `setValue` cannot name it, so it arrives as hex and the
   // caller learns nothing from a field that is supposed to carry the reason.

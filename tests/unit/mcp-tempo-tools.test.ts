@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { registerTools } from "@/lib/mcp/tools";
+import tempoPlugin from "@/plugins/tempo";
 
 type RegisteredTool = {
   name: string;
+  schema: Record<string, { description?: string }>;
   handler: (args: Record<string, unknown>) => Promise<{
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
@@ -21,11 +23,11 @@ function getTool(name: string): RegisteredTool {
       (
         toolName: string,
         _description: string,
-        _schema: Record<string, unknown>,
+        schema: Record<string, { description?: string }>,
         _annotations: Record<string, unknown>,
         handler: RegisteredTool["handler"]
       ) => {
-        registeredTools.push({ name: toolName, handler });
+        registeredTools.push({ name: toolName, schema, handler });
       }
     ),
   };
@@ -146,6 +148,22 @@ describe("MCP Tempo tools", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
       "http://internal/api/tempo/held-payments/hp-9/cancel"
     );
+  });
+
+  it("tempo_sign_and_hold's memo description matches the hold-payment plugin field's helpTip", () => {
+    const holdPaymentAction = tempoPlugin.actions.find(
+      (action) => action.slug === "hold-payment"
+    );
+    const memoField = holdPaymentAction?.configFields.find(
+      (field) => "key" in field && field.key === "memo"
+    );
+    const memoHelpTip =
+      memoField && "helpTip" in memoField ? memoField.helpTip : undefined;
+
+    expect(memoHelpTip).toBeDefined();
+
+    const schema = getTool("tempo_sign_and_hold").schema;
+    expect(schema.memo?.description).toBe(memoHelpTip);
   });
 });
 

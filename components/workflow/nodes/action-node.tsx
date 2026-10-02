@@ -9,6 +9,8 @@ import {
   Database,
   EyeOff,
   GitBranch,
+  HardDriveDownload,
+  HardDriveUpload,
   ListEnd,
   Repeat,
   XCircle,
@@ -146,6 +148,17 @@ const getProviderLogo = (actionType: string) => {
       return <Repeat className="size-12 text-purple-300" strokeWidth={1.5} />;
     case "Collect":
       return <ListEnd className="size-12 text-purple-300" strokeWidth={1.5} />;
+    case "State Get":
+      return (
+        <HardDriveDownload
+          className="size-12 text-blue-300"
+          strokeWidth={1.5}
+        />
+      );
+    case "State Set":
+      return (
+        <HardDriveUpload className="size-12 text-blue-300" strokeWidth={1.5} />
+      );
     default:
       // Not a system action, continue to check plugin registry
       break;

@@ -74,26 +74,46 @@ describe("Lido Protocol Definition", () => {
     }
   });
 
-  it("has exactly 10 actions", () => {
-    expect(lidoDef.actions).toHaveLength(10);
+  it("has exactly 20 actions", () => {
+    expect(lidoDef.actions).toHaveLength(20);
   });
 
-  it("has 3 write actions and 7 read actions", () => {
+  it("has 6 write actions and 14 read actions", () => {
     const readActions = lidoDef.actions.filter((a) => a.type === "read");
     const writeActions = lidoDef.actions.filter((a) => a.type === "write");
-    expect(writeActions).toHaveLength(3);
-    expect(readActions).toHaveLength(7);
+    expect(writeActions).toHaveLength(6);
+    expect(readActions).toHaveLength(14);
   });
 
-  it("has 2 contracts", () => {
-    expect(Object.keys(lidoDef.contracts)).toHaveLength(2);
+  it("has 4 contracts", () => {
+    expect(Object.keys(lidoDef.contracts)).toHaveLength(4);
   });
 
-  it("wsteth contract is available on Mainnet, Base, and Sepolia", () => {
+  it("wsteth contract is available on Mainnet and Sepolia", () => {
+    // Length-checked, not just membership. Re-adding "8453" here is the exact
+    // regression the L2 split exists to prevent. A bare toContain pair stays
+    // green through it.
     const chains = Object.keys(lidoDef.contracts.wsteth.addresses);
+    expect(chains).toHaveLength(2);
     expect(chains).toContain("1");
-    expect(chains).toContain("8453");
     expect(chains).toContain("11155111");
+  });
+
+  it("wstethL2 contract is available on Base", () => {
+    const chains = Object.keys(lidoDef.contracts.wstethL2.addresses);
+    expect(chains).toEqual(["8453"]);
+  });
+
+  it("wstethL2 exposes only the two read-only ERC-20 actions", () => {
+    // Pins the contract's own action set, so a third function added to the
+    // shared L2 ABI fails here rather than only moving the total count.
+    const slugs = lidoDef.actions
+      .filter((a) => a.contract === "wstethL2")
+      .map((a) => a.slug);
+    expect(slugs).toEqual([
+      "get-wsteth-balance-l2",
+      "get-wsteth-total-supply-l2",
+    ]);
   });
 
   it("steth contract is available on Mainnet and Sepolia", () => {
@@ -154,8 +174,113 @@ describe("Lido Protocol Definition", () => {
     expect(action?.outputs?.[0]?.name).toBe("totalSupply");
   });
 
-  it("has 1 event", () => {
-    expect(lidoDef.events).toHaveLength(1);
+  it("has 4 events", () => {
+    expect(lidoDef.events).toHaveLength(4);
+  });
+
+  it("exposes only owner-directed withdrawal claims", () => {
+    expect(lidoDef.actions.map((action) => action.slug)).toContain(
+      "claim-withdrawals"
+    );
+    expect(lidoDef.actions.map((action) => action.slug)).not.toContain(
+      "claim-withdrawals-to"
+    );
+  });
+
+  it("matches the Withdrawal Queue array return and indexed event ABI", () => {
+    const withdrawalQueueAbi = lidoDef.contracts.withdrawalQueue.abi;
+    expect(withdrawalQueueAbi).toBeDefined();
+    const queueAbi = JSON.parse(withdrawalQueueAbi ?? "[]");
+    const claimable = queueAbi.find(
+      (entry: { name?: string }) => entry.name === "getClaimableEther"
+    );
+    const requested = queueAbi.find(
+      (entry: { name?: string }) => entry.name === "WithdrawalRequested"
+    );
+    const finalized = queueAbi.find(
+      (entry: { name?: string }) => entry.name === "WithdrawalsFinalized"
+    );
+    const claimed = queueAbi.find(
+      (entry: { name?: string }) => entry.name === "WithdrawalClaimed"
+    );
+
+    expect(claimable.outputs).toEqual([
+      { name: "claimableEther", type: "uint256[]" },
+    ]);
+    expect(requested.inputs[3]).toMatchObject({ name: "amountOfStETH" });
+    expect(finalized.inputs.slice(0, 2)).toEqual([
+      expect.objectContaining({ name: "from", indexed: true }),
+      expect.objectContaining({ name: "to", indexed: true }),
+    ]);
+    expect(claimed.inputs[2]).toMatchObject({
+      name: "receiver",
+      indexed: true,
+    });
+  });
+
+  it("describes every Withdrawal Queue output and 18-decimal claimable ETH", () => {
+    const queueReads = [
+      "get-withdrawal-requests",
+      "get-withdrawal-status",
+      "get-last-checkpoint-index",
+      "find-checkpoint-hints",
+      "get-claimable-ether",
+    ];
+
+    for (const slug of queueReads) {
+      const action = lidoDef.actions.find(
+        (candidate) => candidate.slug === slug
+      );
+      expect(
+        action?.outputs,
+        `${slug} must declare output metadata`
+      ).toHaveLength(1);
+    }
+
+    const claimable = lidoDef.actions.find(
+      (action) => action.slug === "get-claimable-ether"
+    );
+    expect(claimable?.outputs?.[0]).toMatchObject({
+      name: "claimableEther",
+      decimals: 18,
+    });
+  });
+
+  it("targets named Withdrawal Queue results in coverage expectations", () => {
+    expect(lidoDef.testData?.["1"]?.expectations).toMatchObject({
+      "get-withdrawal-status": [{ field: "statuses", notEmpty: true }],
+      "get-last-checkpoint-index": [
+        { field: "lastCheckpointIndex", nonZero: true },
+      ],
+      "find-checkpoint-hints": [{ field: "hints", notEmpty: true }],
+      "get-claimable-ether": [{ field: "claimableEther", notEmpty: true }],
+    });
+  });
+
+  it("does not fund wstETH while every consuming write remains skipped", () => {
+    const mainnetTestData = lidoDef.testData?.["1"];
+
+    expect(mainnetTestData?.setup?.requiredTokens).toEqual([]);
+    expect(mainnetTestData?.skipped?.unwrap).toContain(
+      "wstETH balance - not provisioned"
+    );
+    expect(mainnetTestData?.skipped?.["request-withdrawals-wsteth"]).toContain(
+      "funded wstETH balance"
+    );
+  });
+
+  it("warns request builders about approval and owner requirements", () => {
+    for (const slug of ["request-withdrawals", "request-withdrawals-wsteth"]) {
+      const action = lidoDef.actions.find(
+        (candidate) => candidate.slug === slug
+      );
+      expect(
+        action?.inputs.find((input) => input.name === "amounts")?.helpTip
+      ).toContain("Withdrawal Queue");
+      expect(
+        action?.inputs.find((input) => input.name === "owner")?.helpTip
+      ).toContain("executing wallet");
+    }
   });
 
   it("all event slugs are valid kebab-case", () => {

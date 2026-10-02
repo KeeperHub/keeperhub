@@ -37,7 +37,7 @@ export const ALLOWED_TEMPO_CHAIN_IDS: readonly number[] = [
 // ERC-8004 Trustless Agents — Ethereum mainnet deployments (2026-01-29 launch).
 // Vanity prefix 0x8004 distinguishes the registries on-chain. Source-of-truth:
 // https://github.com/erc-8004/erc-8004-contracts
-export const ETHEREUM_MAINNET_CHAIN_ID = 1 as const;
+export { ETHEREUM_MAINNET_CHAIN_ID } from "@/lib/chains/ids";
 export const ERC_8004_IDENTITY_REGISTRY_ADDRESS =
   "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432" as const;
 export const ERC_8004_REPUTATION_REGISTRY_ADDRESS =

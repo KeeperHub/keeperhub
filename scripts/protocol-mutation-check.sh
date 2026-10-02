@@ -28,7 +28,7 @@ run_tests() {
     pnpm vitest run tests/unit/protocol-calldata.test.ts >/dev/null 2>&1
   else
     docker run --rm --network host -v "$REPO_DIR":/app -w /app node:22 bash -c \
-      "corepack enable >/dev/null 2>&1 && corepack prepare pnpm@9 --activate >/dev/null 2>&1 && pnpm vitest run tests/unit/protocol-calldata.test.ts >/dev/null 2>&1"
+      "corepack enable >/dev/null 2>&1 && corepack prepare pnpm@10 --activate >/dev/null 2>&1 && pnpm vitest run tests/unit/protocol-calldata.test.ts >/dev/null 2>&1"
   fi
 }
 

@@ -155,7 +155,7 @@ const tempoPlugin: IntegrationPlugin = {
           placeholder:
             '[{"recipient":"0x...","amount":"100.50","memo":"INV-1042"}] or {{NodeName.payouts}}',
           helpTip:
-            'JSON array of payments. Each entry needs "recipient" and "amount"; "memo" is optional and falls back to the shared memo below.',
+            'JSON array of payments. Each entry needs "recipient" and "amount"; "memo" is optional and falls back to the shared memo below. Attached on-chain as an indexed bytes32 topic. Plain text (<= 31 bytes) is utf8-encoded; a 0x + 64-hex value is used verbatim (e.g. a receipt hash).',
           rows: 6,
           required: true,
         },
@@ -165,7 +165,7 @@ const tempoPlugin: IntegrationPlugin = {
           type: "template-input",
           placeholder: "PAYRUN-2026-07 or {{NodeName.payRunId}}",
           helpTip:
-            "Applied to every payment that does not set its own memo (e.g. a pay-run id).",
+            "Applied to every payment that does not set its own memo (e.g. a pay-run id). Attached on-chain as an indexed bytes32 topic. Plain text (<= 31 bytes) is utf8-encoded; a 0x + 64-hex value is used verbatim (e.g. a receipt hash).",
         },
       ],
     },
@@ -320,7 +320,8 @@ const tempoPlugin: IntegrationPlugin = {
           label: "Memo",
           type: "template-input",
           placeholder: "INV-1042 or 0x... (32-byte hex)",
-          helpTip: "Attached on-chain as an indexed bytes32 topic.",
+          helpTip:
+            "Attached on-chain as an indexed bytes32 topic. Plain text (<= 31 bytes) is utf8-encoded; a 0x + 64-hex value is used verbatim (e.g. a receipt hash).",
         },
         {
           key: "broadcastMode",

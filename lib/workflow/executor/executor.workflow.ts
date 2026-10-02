@@ -7,6 +7,7 @@ import {
   applyBigIntConversion,
   needsBigIntMode,
 } from "@/lib/bigint-condition-utils";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import {
   ErrorCategory,
   logSystemError,
@@ -32,6 +33,11 @@ import {
 } from "@/lib/step-registry";
 import { deserializeTriggerInput, getErrorMessageAsync } from "@/lib/utils";
 import {
+  collectReachable,
+  isBackEdge,
+  partitionByBackEdges,
+} from "@/lib/workflow/editor/back-edges";
+import {
   BUILTIN_NODE_ID,
   BUILTIN_NODE_LABEL,
   getBuiltinVariables,
@@ -40,6 +46,7 @@ import {
   buildEdgesBySourceHandle,
   type EdgesBySourceHandle,
 } from "@/lib/workflow/editor/edge-handle-utils";
+import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import {
   buildEdgesBySource,
   buildEdgesByTarget,
@@ -60,6 +67,11 @@ import {
   getCompletedStepOutput,
 } from "@/lib/workflow/executor/get-completed-step-output";
 import { awaitCompletedStepOutputStep } from "@/lib/workflow/executor/get-completed-step-output.step";
+import {
+  createLoopBackTracker,
+  findUnsupportedBackEdges,
+  resetLoopBodyState,
+} from "@/lib/workflow/executor/loop-back";
 import { createPendingTracker } from "@/lib/workflow/executor/pending-tasks";
 import {
   EXCEEDED_MAX_RETRIES_REGEX,
@@ -76,7 +88,9 @@ import type { SystemActionType } from "@/lib/workflow/executor/system-action-typ
 import {
   assertResolved,
   createTracker,
+  liftConditionFields,
   recordUnresolved,
+  restoreConditionFields,
   TemplateResolutionError,
   type TemplateResolutionTracker,
 } from "@/lib/workflow/executor/template-resolution";
@@ -104,6 +118,7 @@ import { triggerStep } from "@/lib/workflow/nodes/trigger/step";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import { splitTemplateRef } from "@/lib/workflow/template-ref";
 import { LEGACY_ACTION_MAPPINGS } from "@/plugins/legacy-mappings";
+import { findActionById, flattenConfigFields } from "@/plugins/registry";
 
 export {
   type ForEachIterationFailure,
@@ -157,6 +172,18 @@ const SYSTEM_ACTIONS = {
       // biome-ignore lint/suspicious/noExplicitAny: Dynamic module import matches existing pattern
       import("@/lib/workflow/nodes/circuit-breaker-reset/step") as Promise<any>,
     stepFunction: "circuitBreakerResetStep",
+  },
+  "State Get": {
+    importer: () =>
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic module import matches existing pattern
+      import("@/lib/workflow/nodes/state-get/step") as Promise<any>,
+    stepFunction: "stateGetStep",
+  },
+  "State Set": {
+    importer: () =>
+      // biome-ignore lint/suspicious/noExplicitAny: Dynamic module import matches existing pattern
+      import("@/lib/workflow/nodes/state-set/step") as Promise<any>,
+    stepFunction: "stateSetStep",
   },
 } satisfies Record<SystemActionType, StepImporter>;
 
@@ -711,8 +738,9 @@ async function executeActionStep(input: {
 
   // Special handling for Condition action - needs template evaluation
   if (actionType === "Condition") {
-    const originalExpression =
-      resolveConditionExpression(stepInput) ?? stepInput.condition;
+    // resolveConditionExpression already reads `condition`; falling back to it here would
+    // re-admit the expression it refused, so it decides alone.
+    const originalExpression = resolveConditionExpression(stepInput);
 
     // KEEP-1284: Catch evaluation errors and pass to step so it gets logged
     let evaluatedCondition = false;
@@ -876,7 +904,8 @@ function replaceConfigTemplate(
   nodeId: string,
   rest: string,
   outputs: NodeOutputs,
-  tracker?: TemplateResolutionTracker
+  tracker?: TemplateResolutionTracker,
+  path?: string
 ): string {
   const trimmedNodeId = nodeId.trim();
   const sanitizedNodeId = trimmedNodeId.replace(/[^a-zA-Z0-9]/g, "_");
@@ -900,6 +929,7 @@ function replaceConfigTemplate(
       token: match,
       reason: "no-node",
       detail: `Node "${trimmedNodeId}" has no output yet.`,
+      path,
     });
     return "";
   }
@@ -912,6 +942,7 @@ function replaceConfigTemplate(
       token: match,
       reason: "no-data",
       detail: `Node "${trimmedNodeId}" produced no data.`,
+      path,
     });
     return "";
   }
@@ -940,6 +971,7 @@ function replaceConfigTemplate(
       token: match,
       reason: "no-path",
       detail: `Field "${fieldPath || "(whole output)"}" not found on node "${trimmedNodeId}".`,
+      path,
     });
     return "";
   }
@@ -971,11 +1003,17 @@ function replaceConfigTemplate(
 export function processTemplates(
   config: Record<string, unknown>,
   outputs: NodeOutputs,
-  tracker?: TemplateResolutionTracker
+  tracker?: TemplateResolutionTracker,
+  path = ""
 ): Record<string, unknown> {
   const processed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(config)) {
-    processed[key] = renderTemplateValue(value, outputs, tracker);
+    processed[key] = renderTemplateValue(
+      value,
+      outputs,
+      tracker,
+      path ? `${path}.${key}` : key
+    );
   }
   return processed;
 }
@@ -987,62 +1025,220 @@ export function processTemplates(
  * that this and scanForLeftoverLiterals agree on what a container is.
  */
 /*
- * No depth limit here, where scanForLeftoverLiterals stops at 10
- * (template-resolution.ts). The two walk for different reasons and the
- * difference is deliberate: this one has to render whatever the config
- * actually holds, so a limit would leave a token unrendered at the bottom of a
- * deep config and pass it to the action verbatim. The scan is a backstop for
- * tokens the resolver returned unchanged, and its limit bounds a diagnostic
- * rather than the run.
- *
- * What makes the asymmetry safe is the tracker: this function records an
- * unresolved reference as it renders, at any depth, so assertResolved still
- * fails the step for a token the scan never reaches. Pinned in
+ * No depth limit here. This walk has to render whatever the config actually
+ * holds, so a limit would leave a token unrendered at the bottom of a deep
+ * config and pass it to the action verbatim. It records every unresolved
+ * reference as it goes, at any depth, including one it could not match, so
+ * assertResolved fails the step wherever the token sits. Pinned in
  * tests/unit/template-fail-closed.test.ts.
  */
 function renderTemplateValue(
   value: unknown,
   outputs: NodeOutputs,
-  tracker?: TemplateResolutionTracker
+  tracker?: TemplateResolutionTracker,
+  path = ""
 ): unknown {
   if (typeof value === "string") {
-    return renderTemplateString(value, outputs, tracker);
+    return renderTemplateString(value, outputs, tracker, undefined, path);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => renderTemplateValue(item, outputs, tracker));
+    return value.map((item, index) =>
+      renderTemplateValue(item, outputs, tracker, `${path}[${index}]`)
+    );
   }
   if (typeof value === "object" && value !== null) {
-    return processTemplates(value as Record<string, unknown>, outputs, tracker);
+    return processTemplates(
+      value as Record<string, unknown>,
+      outputs,
+      tracker,
+      path
+    );
   }
   return value;
 }
 
-function renderTemplateString(
+/**
+ * Matches a stored ref `{{@nodeId:Label.field}}` OR a display ref
+ * `{{Label.field}}`. The display form is the fallback for tokens the editor
+ * never converted to stored format (mirrors extractTemplateParameters).
+ *
+ * One alternation, so both forms resolve in a single pass. Two passes read
+ * the text the first pass substituted, so every `{{...}}` inside an upstream
+ * node's output became a reference the author appeared to have written.
+ * processCodeTemplates has always resolved code fields in one pass.
+ */
+const configTemplatePattern = (): RegExp =>
+  /\{\{@([^:]+):([^}]+)\}\}|\{\{([^@}][^}]*)\}\}/g;
+
+/** Any `{{...}}`, used to find a token the reference patterns cannot match. */
+const anyTemplateToken = (): RegExp => /\{\{[^}]+\}\}/g;
+
+/**
+ * Resolve one matched reference to the text that replaces it. `escapeValue`,
+ * when given, is applied to the substituted text of both reference forms and
+ * never to the author's own surrounding text.
+ */
+function resolveConfigMatch(
+  match: RegExpExecArray,
+  outputs: NodeOutputs,
+  tracker?: TemplateResolutionTracker,
+  path?: string,
+  escapeValue?: (substituted: string) => string
+): string {
+  const [full, storedNodeId, storedRest, displayRef] = match;
+  if (storedNodeId !== undefined && storedRest !== undefined) {
+    const substituted = replaceConfigTemplate(
+      full,
+      storedNodeId,
+      storedRest,
+      outputs,
+      tracker,
+      path
+    );
+    return escapeValue ? escapeValue(substituted) : substituted;
+  }
+  if (displayRef === undefined) {
+    return full;
+  }
+  const resolved = resolveDisplayTemplate(displayRef, outputs);
+  if (resolved === null || resolved === undefined) {
+    recordUnresolved(tracker, {
+      token: full,
+      reason: "no-path",
+      detail: `Display reference "${displayRef}" did not resolve.`,
+      path,
+    });
+    return full;
+  }
+  const substituted = formatConfigValue(resolved);
+  return escapeValue ? escapeValue(substituted) : substituted;
+}
+
+/**
+ * Enough entries to diagnose the fault, bounded so a config holding thousands
+ * of tokens cannot grow the tracker without limit on every run. The error
+ * message quotes the first five and counts the rest either way; the old
+ * post-scan capped itself at the same order for the same reason.
+ */
+const MAX_TRACKED_LEFTOVERS = 50;
+
+/**
+ * Report a `{{...}}` the reference patterns could not match, in a stretch of
+ * the author's own text. Only authored stretches reach here, so a token that
+ * arrived inside a resolved value is never reported.
+ */
+function recordAuthoredLeftovers(
+  authored: string,
+  tracker: TemplateResolutionTracker | undefined,
+  path: string
+): void {
+  if (!(tracker && authored.includes("{{"))) {
+    return;
+  }
+  for (const leftover of authored.matchAll(anyTemplateToken())) {
+    if (tracker.unresolved.length >= MAX_TRACKED_LEFTOVERS) {
+      return;
+    }
+    recordUnresolved(tracker, {
+      token: leftover[0],
+      reason: "literal-leftover",
+      detail: "Reference left in rendered config; resolver did not match.",
+      path: path || undefined,
+    });
+  }
+}
+
+/**
+ * Render one config string, tracking where the author's text ends and a
+ * substituted value begins.
+ *
+ * The boundary is the whole point. A rendered string is a blend of the two,
+ * and a node's output is data: a `{{...}}` inside it is not a reference
+ * anyone can fix. Walking the matches keeps the halves apart, so the
+ * leftover check reads the gaps between references and never the text that
+ * replaced one. Comparing the rendered string against the authored one
+ * cannot do this, because an output that quotes the workflow's own config
+ * carries a verbatim copy of the author's token.
+ *
+ * The same boundary carries `escapeValue`: it is applied to each substituted
+ * value and never to the author's text, so their markup keeps rendering while
+ * resolved data stays inert. Exported for the escaped-field path in
+ * processActionConfig; the generic config walk calls it without an escaper.
+ */
+export function renderTemplateString(
   value: string,
   outputs: NodeOutputs,
-  tracker?: TemplateResolutionTracker
+  tracker?: TemplateResolutionTracker,
+  escapeValue?: (substituted: string) => string,
+  path = ""
 ): string {
-  const storedPattern = /\{\{@([^:]+):([^}]+)\}\}/g;
-  // Fallback: resolve display-format templates {{Label.field}} that were not
-  // converted to stored format by the editor (mirrors extractTemplateParameters).
-  const displayPattern = /\{\{([^@}][^}]*)\}\}/g;
+  const pattern = configTemplatePattern();
+  let result = "";
+  let cursor = 0;
+  let match = pattern.exec(value);
+  while (match !== null) {
+    const authored = value.slice(cursor, match.index);
+    recordAuthoredLeftovers(authored, tracker, path);
+    result +=
+      authored + resolveConfigMatch(match, outputs, tracker, path, escapeValue);
+    cursor = match.index + match[0].length;
+    match = pattern.exec(value);
+  }
+  const tail = value.slice(cursor);
+  recordAuthoredLeftovers(tail, tracker, path);
+  return result + tail;
+}
 
-  let result = value.replace(storedPattern, (m, nodeId, rest) =>
-    replaceConfigTemplate(m, nodeId, rest, outputs, tracker)
+const HTML_ENTITIES = new Map([
+  ["&", "&amp;"],
+  ["<", "&lt;"],
+  [">", "&gt;"],
+]);
+
+/** Escape a value substituted into a field parsed as HTML by its provider. */
+export function escapeHtmlSubstitution(substituted: string): string {
+  return substituted.replace(
+    /[&<>]/g,
+    (char) => HTML_ENTITIES.get(char) ?? char
   );
-  result = result.replace(displayPattern, (full, displayRef) => {
-    const resolved = resolveDisplayTemplate(displayRef, outputs);
-    if (resolved === null || resolved === undefined) {
-      recordUnresolved(tracker, {
-        token: full,
-        reason: "no-path",
-        detail: `Display reference "${displayRef}" did not resolve.`,
-      });
-      return full;
+}
+
+const SUBSTITUTION_ESCAPERS = new Map<string, (substituted: string) => string>([
+  ["html", escapeHtmlSubstitution],
+]);
+
+export type EscapedSubstitutionField = {
+  key: string;
+  escapeValue: (substituted: string) => string;
+};
+
+/**
+ * String config fields that opted into substitution escaping and whose
+ * `when` predicate holds for this node's config.
+ */
+export function getEscapedSubstitutionFields(
+  actionType: string,
+  config: Record<string, unknown>
+): EscapedSubstitutionField[] {
+  const action = findActionById(actionType);
+  if (!action) {
+    return [];
+  }
+  const escaped: EscapedSubstitutionField[] = [];
+  for (const field of flattenConfigFields(action.configFields)) {
+    const rule = field.escapeSubstitutions;
+    if (!rule || typeof config[field.key] !== "string") {
+      continue;
     }
-    return formatConfigValue(resolved);
-  });
-  return result;
+    if (!evaluateShowWhen(rule.when, config)) {
+      continue;
+    }
+    const escapeValue = SUBSTITUTION_ESCAPERS.get(rule.as);
+    if (escapeValue) {
+      escaped.push({ key: field.key, escapeValue });
+    }
+  }
+  return escaped;
 }
 
 /**
@@ -2387,6 +2583,15 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   // Enter async-local context so any logUserError/logSystemError called from
   // this point on (including inside plugin steps) automatically includes
   // org/owner/workflow identifiers without manual threading.
+  //
+  // Mechanism note: enterWorkflowErrorContext uses ALS enterWith, which
+  // mutates the current async resource's store rather than scoping a callback
+  // like run() does. That is the weaker of the two mechanisms, and it holds
+  // here because by the time executeWorkflow runs, concurrent in-process
+  // executions are on distinct async resources, so each mutation lands on its
+  // own store. The step-level runWithWorkflowErrorContext in step-handler.ts
+  // is a proper run() and is the path web3 writes actually take, so plugin
+  // execution is scoped by the stronger mechanism regardless.
   enterWorkflowErrorContext({
     workflow_id: workflowId,
     execution_id: executionId,
@@ -2433,11 +2638,22 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
 
   // Build node and edge maps
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+
+  // Edges that point back at an ancestor are the loop primitive and are held
+  // apart from the forward DAG. `edgesBySource` keeps them so routing still
+  // finds the loop entry; every map that answers "what has to happen before
+  // this node runs" is built from the forward edges only, or the loop entry
+  // waits on an arrival that its own execution has to produce first.
+  const { forwardEdges, backEdges, backEdgesBySource } = partitionByBackEdges(
+    nodes,
+    edges
+  );
   const edgesBySource = buildEdgesBySource(edges);
+  const forwardEdgesBySource = buildEdgesBySource(forwardEdges);
   const edgesBySourceHandle = buildEdgesBySourceHandle(edges);
   const conditionDecisions = new Map<string, ConditionDecision>();
 
-  const edgesByTarget = buildEdgesByTarget(edges);
+  const edgesByTarget = buildEdgesByTarget(forwardEdges);
   const convergenceArrivals = new Map<string, Set<string>>();
   // Skip-arrivals tracked apart from real arrivals so an OR-join whose every
   // incoming edge was skipped is itself skipped rather than executed.
@@ -2487,14 +2703,14 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     .map((n) => n.id);
   const orderedForEachNodeIds = orderForEachNodesOuterFirst(
     forEachNodeIds,
-    edgesBySource,
+    forwardEdgesBySource,
     nodeMap,
     edgesBySourceHandle
   );
   for (const forEachId of orderedForEachNodeIds) {
     const body = identifyLoopBody(
       forEachId,
-      edgesBySource,
+      forwardEdgesBySource,
       nodeMap,
       edgesBySourceHandle,
       claimedCollectOwners
@@ -2520,6 +2736,34 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       }
     }
   }
+
+  // Re-run scope of each loop entry, computed once: the entry plus everything it
+  // feeds over the forward DAG. Re-entering the entry runs all of it again.
+  const loopBodyCache = new Map<string, Set<string>>();
+  const loopBodyOf = (loopEntryNodeId: string): Set<string> => {
+    const cached = loopBodyCache.get(loopEntryNodeId);
+    if (cached) {
+      return cached;
+    }
+    const body = collectReachable(loopEntryNodeId, forwardEdgesBySource);
+    loopBodyCache.set(loopEntryNodeId, body);
+    return body;
+  };
+
+  const loopTracker = createLoopBackTracker({
+    labelOf: (nodeId: string) => {
+      const node = nodeMap.get(nodeId);
+      return node ? getNodeName(node) : nodeId;
+    },
+  });
+
+  // A back edge that touches a For Each body would be dropped in silence by the
+  // body runner's own dispatcher. Refuse the run rather than execute a graph
+  // that does not match what the canvas shows.
+  const unsupportedBackEdges = findUnsupportedBackEdges(
+    backEdges,
+    loopBodyNodeIds
+  );
 
   // Must complete before the first step runs: it invokes no steps itself, and
   // once it has, every step call downstream is reached synchronously, so the
@@ -2587,11 +2831,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     currentOutputs: NodeOutputs,
     assertContext?: { nodeId?: string; nodeLabel?: string }
   ): Record<string, unknown> {
-    const configWithoutSpecial = { ...config };
-    const originalCondition = config.condition;
-    configWithoutSpecial.condition = undefined;
-    const originalConditionConfig = config.conditionConfig;
-    configWithoutSpecial.conditionConfig = undefined;
+    const { rest: configWithoutSpecial, lifted: conditionFields } =
+      liftConditionFields(config);
     const originalDbQuery = config.dbQuery;
     if (actionType === "Database Query") {
       configWithoutSpecial.dbQuery = undefined;
@@ -2601,10 +2842,15 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       configWithoutSpecial.code = undefined;
     }
 
+    const escapedFields = getEscapedSubstitutionFields(actionType, config);
+    for (const field of escapedFields) {
+      configWithoutSpecial[field.key] = undefined;
+    }
+
     // KEEP-468: collect every unresolved reference so we can fail closed
-    // before the step runs. Tracker entries cover empty-string substitutions
-    // (no-node / no-data / no-path); the post-scan inside `assertResolved`
-    // catches the displayPattern literal-passthrough path.
+    // before the step runs. The renderer records all of them, including a
+    // token it could not match, against the field that held it, so a
+    // `{{...}}` carried in by an upstream value is never mistaken for one.
     const tracker = createTracker();
 
     const processedConfig = processTemplates(
@@ -2631,6 +2877,18 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       processedConfig.dbQuery = originalDbQuery;
     }
 
+    // Escaped fields render on their own path so a substituted value cannot
+    // change the meaning of the author's surrounding markup.
+    for (const { key, escapeValue } of escapedFields) {
+      processedConfig[key] = renderTemplateString(
+        config[key] as string,
+        currentOutputs,
+        tracker,
+        escapeValue,
+        key
+      );
+    }
+
     // Render the code now (so genuine unresolved refs in executable code land
     // in the tracker), but attach it only AFTER the leftover-literal assert
     // below. processCodeTemplates skips refs inside comments / commented-out
@@ -2653,21 +2911,21 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     // otherwise every Condition node downstream of For Each / a Code step
     // false-flags `{{@nodeId:Label.field}}` as a leftover literal and the
     // workflow body cannot run.
-    assertResolved(tracker, processedConfig, {
-      nodeId: assertContext?.nodeId,
-      nodeLabel: assertContext?.nodeLabel,
-      actionType,
-    });
+    assertResolved(
+      tracker,
+      processedConfig,
+      {
+        nodeId: assertContext?.nodeId,
+        nodeLabel: assertContext?.nodeLabel,
+        actionType,
+      },
+      { rendererScanned: true }
+    );
 
     if (renderedCode !== undefined) {
       processedConfig.code = renderedCode;
     }
-    if (originalCondition !== undefined) {
-      processedConfig.condition = originalCondition;
-    }
-    if (originalConditionConfig !== undefined) {
-      processedConfig.conditionConfig = originalConditionConfig;
-    }
+    restoreConditionFields(processedConfig, conditionFields);
 
     return processedConfig;
   }
@@ -2889,7 +3147,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       bodyEdgesBySourceHandle,
     } = identifyLoopBody(
       forEachNodeId,
-      edgesBySource,
+      forwardEdgesBySource,
       nodeMap,
       edgesBySourceHandle
     );
@@ -3190,9 +3448,19 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     nextNodeIds: string[],
     visited: Set<string>
   ): Promise<void> {
+    const forwardTargets: string[] = [];
+    const loopEntryTargets: string[] = [];
+    for (const nextId of nextNodeIds) {
+      if (isBackEdge(backEdgesBySource, fromNodeId, nextId)) {
+        loopEntryTargets.push(nextId);
+      } else {
+        forwardTargets.push(nextId);
+      }
+    }
+
     const readyIds = getReadyDownstreamIds(
       fromNodeId,
-      nextNodeIds,
+      forwardTargets,
       edgesByTarget,
       convergenceArrivals,
       visited
@@ -3204,6 +3472,62 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       );
       processSettledResults(settled, readyIds);
     }
+
+    for (const loopEntryId of loopEntryTargets) {
+      await runLoopIteration(fromNodeId, loopEntryId, visited);
+    }
+  }
+
+  /**
+   * Re-enter a loop entry so it and everything downstream of it runs again.
+   *
+   * The previous pass's traversal state for the loop body is cleared first --
+   * without that the entry reads as already visited and the loop is a no-op,
+   * which is what a back edge did before loops were supported. Refusing a pass
+   * on a cap records the failure against the node that asked to loop, so the run
+   * ends in error with a message naming the loop instead of quietly stopping
+   * with whichever pass happened to be last.
+   */
+  async function runLoopIteration(
+    fromNodeId: string,
+    loopEntryId: string,
+    visited: Set<string>
+  ): Promise<void> {
+    const bodyNodeIds = loopBodyOf(loopEntryId);
+    const admission = loopTracker.admit(fromNodeId, loopEntryId, bodyNodeIds);
+
+    if (!admission.admitted) {
+      logUserError(
+        ErrorCategory.WORKFLOW_ENGINE,
+        "[Workflow Executor] Loop iteration limit reached",
+        undefined,
+        { ...baseLogLabels, node_id: fromNodeId }
+      );
+      results[fromNodeId] = {
+        success: false,
+        error: admission.error,
+        errorClass: ExecutionErrorType.USER,
+      };
+      return;
+    }
+
+    console.log("[Workflow Executor] Looping back:", {
+      from: fromNodeId,
+      to: loopEntryId,
+      iteration: admission.iteration,
+    });
+
+    resetLoopBodyState(bodyNodeIds, {
+      visited,
+      convergenceArrivals,
+      convergenceSkipArrivals,
+      skippedNodes,
+    });
+
+    const settled = await pendingTasks.track(
+      Promise.allSettled([executeNode(loopEntryId, visited)])
+    );
+    processSettledResults(settled, [loopEntryId]);
   }
 
   /**
@@ -3233,6 +3557,10 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     const handleId = conditionResult === true ? "true" : "false";
     const notTakenHandle = conditionResult === true ? "false" : "true";
     const handleTargets = handleMap.get(handleId) ?? [];
+    // A not-taken back edge just means the loop is not repeated; its entry is
+    // not a skipped branch, and skipping it would mark the whole loop skipped.
+    const isForwardTarget = (targetId: string): boolean =>
+      !isBackEdge(backEdgesBySource, nodeId, targetId);
 
     // Record decision for branch-aware finalSuccess
     conditionDecisions.set(nodeId, {
@@ -3241,10 +3569,18 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         nodeId,
         notTakenHandle,
         edgesBySourceHandle
-      ),
+      ).filter(isForwardTarget),
       takenTargets: handleTargets,
     });
+    const reentriesBefore = loopTracker.reentriesOf(nodeId);
     await executeReadyDownstream(nodeId, handleTargets, visited);
+
+    // The taken branch looped back and a later pass ran this condition again.
+    // That pass has already routed both of its branches, so skipping here would
+    // mark nodes the later pass executed as skipped and hide their failures.
+    if (loopTracker.reentriesOf(nodeId) !== reentriesBefore) {
+      return;
+    }
 
     // Propagate skip signals for the not-taken branch so convergence nodes
     // downstream receive arrival signals from skipped sources. A convergence
@@ -3252,12 +3588,14 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     // skipped it is added to `skippedNodes` and the skip continues downstream.
     // This both unblocks genuine convergence and stops an all-skipped OR-join
     // from firing.
-    const skippedTargets = handleMap.get(notTakenHandle) ?? [];
+    const skippedTargets = (handleMap.get(notTakenHandle) ?? []).filter(
+      isForwardTarget
+    );
     if (skippedTargets.length > 0) {
       const unblockedIds = propagateConvergenceSkips(
         nodeId,
         skippedTargets,
-        edgesBySource,
+        forwardEdgesBySource,
         edgesByTarget,
         convergenceArrivals,
         convergenceSkipArrivals,
@@ -3603,11 +3941,16 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
             outputs,
             forEachTracker
           );
-          assertResolved(forEachTracker, forEachConfig, {
-            nodeId: node.id,
-            nodeLabel: getNodeName(node),
-            actionType: "For Each",
-          });
+          assertResolved(
+            forEachTracker,
+            forEachConfig,
+            {
+              nodeId: node.id,
+              nodeLabel: getNodeName(node),
+              actionType: "For Each",
+            },
+            { rendererScanned: true }
+          );
           const iterationSummary = await handleForEachExecution({
             forEachNodeId: nodeId,
             forEachNode: node,
@@ -3685,10 +4028,17 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       // whose tracker is empty, leaving the in-catch branch unable to
       // recover and forcing reliance on post-drain. Reading the DB-backed
       // authority here makes the recovery uniform across both paths.
+      //
+      // A node the loop has already re-entered is excluded: the tracker and the
+      // log row are keyed by node, so every pass overwrites the last one and the
+      // recovery would hand back an earlier pass's output as if it were this
+      // one's. For a loop that moves value that is worse than failing, so a
+      // second or later pass takes the normal failure path.
       const isSpuriousMaxRetries =
-        EXCEEDED_MAX_RETRIES_REGEX.test(errorMessage) ||
-        FAILED_AFTER_RETRIES_REGEX.test(errorMessage) ||
-        NO_STEP_COMPLETION_REGEX.test(errorMessage);
+        (EXCEEDED_MAX_RETRIES_REGEX.test(errorMessage) ||
+          FAILED_AFTER_RETRIES_REGEX.test(errorMessage) ||
+          NO_STEP_COMPLETION_REGEX.test(errorMessage)) &&
+        loopTracker.iterationOf(nodeId) === 0;
       let recordedOutput =
         isSpuriousMaxRetries && executionId
           ? (await getCompletedStepOutput(executionId, nodeId))?.output
@@ -3842,7 +4192,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           ? (node.data.config?.actionType as string | undefined)
           : undefined;
       if (failedActionType !== "Condition") {
-        const nextNodes = edgesBySource.get(nodeId) ?? [];
+        const nextNodes = forwardEdgesBySource.get(nodeId) ?? [];
         const unblockedIds = signalConvergenceArrival(
           nodeId,
           nextNodes,
@@ -3864,6 +4214,18 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   try {
     console.log("[Workflow Executor] Starting execution from trigger nodes");
     const workflowStartTime = Date.now();
+
+    if (unsupportedBackEdges.length > 0) {
+      const [{ source, target }] = unsupportedBackEdges;
+      const sourceNode = nodeMap.get(source);
+      const targetNode = nodeMap.get(target);
+      throw new Error(
+        `The connection from "${sourceNode ? getNodeName(sourceNode) : source}" back to ` +
+          `"${targetNode ? getNodeName(targetNode) : target}" crosses a For Each loop body. ` +
+          "Looping back into or out of a For Each body is not supported. Move the " +
+          "connection outside the For Each, or use the For Each iteration itself to repeat the work."
+      );
+    }
 
     const triggerType = detectTriggerType(nodes);
     const metrics = getMetricsCollector();
