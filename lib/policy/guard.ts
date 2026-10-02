@@ -116,12 +116,30 @@ function summariseCounterparty(
  * discards them cannot answer "would this new rule have blocked that", which is
  * the main question the log exists to answer.
  */
+/**
+ * A URL without whatever was hanging off the end of it.
+ *
+ * A step's URL routinely carries a credential in the query string: a signed
+ * object URL, an API key a provider accepts as a parameter, a webhook token.
+ * The rule that matched is explainable from the origin and the path, and the
+ * part that is not needed for that is the part worth losing.
+ */
+function urlWithoutQuery(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return url.search || url.hash ? `${url.origin}${url.pathname}` : raw;
+  } catch {
+    // An unresolved template or a malformed address. It was never a URL, so
+    // there is no query to split off and nothing safe to assume about it.
+    return UNSUMMARISED;
+  }
+}
+
 function summariseValue(key: string, raw: unknown): unknown {
-  if (
-    typeof raw === "string" ||
-    typeof raw === "number" ||
-    typeof raw === "boolean"
-  ) {
+  if (typeof raw === "string") {
+    return key === "httpUrl" ? urlWithoutQuery(raw) : raw;
+  }
+  if (typeof raw === "number" || typeof raw === "boolean") {
     return raw;
   }
   if (!Array.isArray(raw)) {
@@ -143,9 +161,11 @@ function summariseValue(key: string, raw: unknown): unknown {
  * Facts are recorded for the decision log, so they are trimmed to what makes a
  * verdict explainable and re-decidable. Full calldata stays out: the log is
  * read by anyone who can see policy, which is a wider audience than the
- * execution.
+ * execution. A URL loses its query string for the same reason.
  */
-function summariseFacts(facts: PolicyFacts): Record<string, unknown> {
+export function summariseFactsForLog(
+  facts: PolicyFacts
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(facts)) {
     if (key === "capability") {
@@ -323,7 +343,7 @@ async function recordDecision(
       reason: decision.reason,
       matchedSids: decision.matched.map((m) => m.sid),
       governingPolicyIds: decision.governingPolicyIds,
-      facts: summariseFacts(input.facts),
+      facts: summariseFactsForLog(input.facts),
       // A receipt, so the signing check can recognise an action this decision
       // already permitted rather than deciding it a second time without the
       // context this layer had.
