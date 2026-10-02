@@ -33,6 +33,7 @@ const predgePlugin: IntegrationPlugin = {
   // Works against the hosted Predge signal service without credentials. Add a
   // connection to point at your own deployment or pin a specific signing key.
   requiresCredentials: false,
+  optionalConnection: true,
 
   formFields: [
     {
