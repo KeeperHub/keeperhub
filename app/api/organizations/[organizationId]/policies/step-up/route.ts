@@ -4,6 +4,7 @@ import {
   openPolicyWriteWindow,
   POLICY_WRITE_COOKIE,
   POLICY_WRITE_WINDOW_MINUTES,
+  sessionFingerprint,
 } from "@/lib/mfa/policy-write-window";
 import { STEP_UP_ACTIONS } from "@/lib/mfa/step-up-policy";
 import { authorizeAction } from "@/lib/middleware/authorize-action";
@@ -74,9 +75,18 @@ export async function POST(
     return authorized.response;
   }
 
+  const fingerprint = sessionFingerprint(request);
+  if (!fingerprint) {
+    return NextResponse.json(
+      { error: "session_required", detail: "Sign in before changing policy" },
+      { status: 403 }
+    );
+  }
+
   const { token, expiresAt } = await openPolicyWriteWindow({
     userId: session.user.id,
     organizationId,
+    session: fingerprint,
   });
 
   await recordAuditEvent({

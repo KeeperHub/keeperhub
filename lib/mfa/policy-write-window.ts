@@ -25,8 +25,9 @@ import { generateId } from "@/lib/utils/id";
  *     writing another's;
  *   - the browser has to present the token it was issued, so the window follows
  *     the device that answered the challenge rather than the account;
- *   - it lives in the database, so signing out or revoking a session can end it
- *     before its time, which a self-contained signed cookie could not offer.
+ *   - it belongs to the session that answered. Signing out and back in starts a
+ *     new session, which no longer matches, so the window ends with the sitting
+ *     that opened it and needs no hook on sign-out to say so.
  *
  * The token is stored as a SHA-256 hash. A read of this table yields nothing
  * that can be replayed.
@@ -52,8 +53,40 @@ export const POLICY_WRITE_WINDOW_MINUTES = 10;
 
 const WINDOW_MS = POLICY_WRITE_WINDOW_MINUTES * 60 * 1000;
 
-function identifierFor(userId: string, organizationId: string): string {
-  return `policy_write_window:${userId}:${organizationId}`;
+/**
+ * The session a window belongs to, as a fingerprint rather than the token.
+ *
+ * Binding to the session is what makes signing out end the window: a new
+ * sign-in issues a new token, so the identifier no longer matches and the old
+ * row is unusable however long it had left. Only a hash is kept, so this never
+ * puts a live session token in the identifier of a database row.
+ */
+export function sessionFingerprint(request: Request): string | undefined {
+  const header = request.headers.get("cookie");
+  if (!header) {
+    return;
+  }
+  for (const part of header.split(";")) {
+    const [name, ...rest] = part.trim().split("=");
+    if (
+      name === "better-auth.session_token" ||
+      name === "__Secure-better-auth.session_token"
+    ) {
+      const value = rest.join("=");
+      return value
+        ? crypto.createHash("sha256").update(value).digest("hex").slice(0, 32)
+        : undefined;
+    }
+  }
+  return;
+}
+
+function identifierFor(
+  userId: string,
+  organizationId: string,
+  session: string
+): string {
+  return `policy_write_window:${userId}:${organizationId}:${session}`;
 }
 
 function hash(token: string): string {
@@ -69,10 +102,15 @@ function hash(token: string): string {
 export async function openPolicyWriteWindow(input: {
   userId: string;
   organizationId: string;
+  session: string;
 }): Promise<{ token: string; expiresAt: Date }> {
   const token = crypto.randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + WINDOW_MS);
-  const identifier = identifierFor(input.userId, input.organizationId);
+  const identifier = identifierFor(
+    input.userId,
+    input.organizationId,
+    input.session
+  );
 
   await db
     .delete(verifications)
@@ -98,9 +136,10 @@ export async function openPolicyWriteWindow(input: {
 export async function hasPolicyWriteWindow(input: {
   userId: string;
   organizationId: string;
+  session: string | undefined;
   token: string | undefined;
 }): Promise<boolean> {
-  if (!input.token) {
+  if (!(input.token && input.session)) {
     return false;
   }
 
@@ -111,7 +150,7 @@ export async function hasPolicyWriteWindow(input: {
       and(
         eq(
           verifications.identifier,
-          identifierFor(input.userId, input.organizationId)
+          identifierFor(input.userId, input.organizationId, input.session)
         ),
         gt(verifications.expiresAt, new Date())
       )
@@ -130,21 +169,6 @@ export async function hasPolicyWriteWindow(input: {
     presented.length === stored.length &&
     crypto.timingSafeEqual(presented, stored)
   );
-}
-
-/** End the window early. Used when a session ends or the person signs out. */
-export async function closePolicyWriteWindow(input: {
-  userId: string;
-  organizationId: string;
-}): Promise<void> {
-  await db
-    .delete(verifications)
-    .where(
-      eq(
-        verifications.identifier,
-        identifierFor(input.userId, input.organizationId)
-      )
-    );
 }
 
 /**

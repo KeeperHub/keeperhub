@@ -20,6 +20,7 @@ import { member } from "@/lib/db/schema";
 import {
   hasPolicyWriteWindow,
   readPolicyWriteCookie,
+  sessionFingerprint,
 } from "@/lib/mfa/policy-write-window";
 import { getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { PolicyRole } from "@/lib/policy";
@@ -108,6 +109,7 @@ export async function requireOrgPolicyAccess(
     const open = await hasPolicyWriteWindow({
       userId: auth.userId,
       organizationId,
+      session: sessionFingerprint(request),
       token: readPolicyWriteCookie(request),
     });
     if (!open) {

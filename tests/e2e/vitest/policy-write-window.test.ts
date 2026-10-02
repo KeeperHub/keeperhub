@@ -17,11 +17,11 @@ vi.mock("@/lib/db", async () => {
 
 import { verifications } from "@/lib/db/schema";
 import {
-  closePolicyWriteWindow,
   hasPolicyWriteWindow,
   openPolicyWriteWindow,
   POLICY_WRITE_COOKIE,
   readPolicyWriteCookie,
+  sessionFingerprint,
 } from "@/lib/mfa/policy-write-window";
 
 const CONNECTION =
@@ -37,6 +37,8 @@ describe("the policy write window", () => {
   const otherUserId = `user-${id()}`;
   const orgId = `org-${id()}`;
   const otherOrgId = `org-${id()}`;
+  const session = `sess-${id()}`;
+  const otherSession = `sess-${id()}`;
 
   beforeAll(() => {
     client = postgres(CONNECTION, { max: 4 });
@@ -58,32 +60,40 @@ describe("the policy write window", () => {
     const { token } = await openPolicyWriteWindow({
       userId,
       organizationId: orgId,
+      session,
     });
-
-    expect(
-      await hasPolicyWriteWindow({ userId, organizationId: orgId, token })
-    ).toBe(true);
-  });
-
-  it("refuses a request that carries no token", async () => {
-    await openPolicyWriteWindow({ userId, organizationId: orgId });
 
     expect(
       await hasPolicyWriteWindow({
         userId,
         organizationId: orgId,
+        session,
+        token,
+      })
+    ).toBe(true);
+  });
+
+  it("refuses a request that carries no token", async () => {
+    await openPolicyWriteWindow({ userId, organizationId: orgId, session });
+
+    expect(
+      await hasPolicyWriteWindow({
+        userId,
+        organizationId: orgId,
+        session,
         token: undefined,
       })
     ).toBe(false);
   });
 
   it("refuses a token that was not the one issued", async () => {
-    await openPolicyWriteWindow({ userId, organizationId: orgId });
+    await openPolicyWriteWindow({ userId, organizationId: orgId, session });
 
     expect(
       await hasPolicyWriteWindow({
         userId,
         organizationId: orgId,
+        session,
         token: crypto.randomBytes(32).toString("base64url"),
       })
     ).toBe(false);
@@ -93,12 +103,14 @@ describe("the policy write window", () => {
     const { token } = await openPolicyWriteWindow({
       userId,
       organizationId: orgId,
+      session,
     });
 
     expect(
       await hasPolicyWriteWindow({
         userId,
         organizationId: otherOrgId,
+        session,
         token,
       })
     ).toBe(false);
@@ -108,12 +120,14 @@ describe("the policy write window", () => {
     const { token } = await openPolicyWriteWindow({
       userId,
       organizationId: orgId,
+      session,
     });
 
     expect(
       await hasPolicyWriteWindow({
         userId: otherUserId,
         organizationId: orgId,
+        session,
         token,
       })
     ).toBe(false);
@@ -123,16 +137,19 @@ describe("the policy write window", () => {
     const first = await openPolicyWriteWindow({
       userId,
       organizationId: orgId,
+      session,
     });
     const second = await openPolicyWriteWindow({
       userId,
       organizationId: orgId,
+      session,
     });
 
     expect(
       await hasPolicyWriteWindow({
         userId,
         organizationId: orgId,
+        session,
         token: first.token,
       })
     ).toBe(false);
@@ -140,6 +157,7 @@ describe("the policy write window", () => {
       await hasPolicyWriteWindow({
         userId,
         organizationId: orgId,
+        session,
         token: second.token,
       })
     ).toBe(true);
@@ -149,6 +167,7 @@ describe("the policy write window", () => {
     const { token } = await openPolicyWriteWindow({
       userId,
       organizationId: orgId,
+      session,
     });
 
     // Age the row rather than wait ten minutes for it.
@@ -156,37 +175,76 @@ describe("the policy write window", () => {
       .update(verifications)
       .set({ expiresAt: new Date(Date.now() - 1000) })
       .where(
-        eq(verifications.identifier, `policy_write_window:${userId}:${orgId}`)
+        eq(
+          verifications.identifier,
+          `policy_write_window:${userId}:${orgId}:${session}`
+        )
       );
 
     expect(
-      await hasPolicyWriteWindow({ userId, organizationId: orgId, token })
+      await hasPolicyWriteWindow({
+        userId,
+        organizationId: orgId,
+        session,
+        token,
+      })
     ).toBe(false);
   });
 
-  it("can be ended early, which is what a sign-out needs", async () => {
+  it("does not survive a new session, which is what signing out leaves", async () => {
+    // Nothing has to run on sign-out. A new sign-in issues a new token, so the
+    // identifier no longer matches and whatever time the window had left is
+    // unreachable, even from the same browser with the same cookie.
     const { token } = await openPolicyWriteWindow({
       userId,
       organizationId: orgId,
+      session,
     });
-    await closePolicyWriteWindow({ userId, organizationId: orgId });
 
     expect(
-      await hasPolicyWriteWindow({ userId, organizationId: orgId, token })
+      await hasPolicyWriteWindow({
+        userId,
+        organizationId: orgId,
+        session: otherSession,
+        token,
+      })
     ).toBe(false);
+  });
+
+  it("fingerprints the session cookie without keeping the token", () => {
+    const value = "eyJhbGciOi.some-live-session-token.signature";
+    const request = new Request("https://test.local/api", {
+      headers: { cookie: `better-auth.session_token=${value}` },
+    });
+
+    const print = sessionFingerprint(request);
+    expect(print).toBeDefined();
+    expect(print).not.toContain(value);
+    expect(print).toMatch(/^[a-f0-9]{32}$/);
+  });
+
+  it("reports no session when the cookie is absent", () => {
+    const request = new Request("https://test.local/api", {
+      headers: { cookie: "other=1" },
+    });
+    expect(sessionFingerprint(request)).toBeUndefined();
   });
 
   it("stores the token hashed, so reading the table yields nothing replayable", async () => {
     const { token } = await openPolicyWriteWindow({
       userId,
       organizationId: orgId,
+      session,
     });
 
     const [row] = await testDb
       .select({ value: verifications.value })
       .from(verifications)
       .where(
-        eq(verifications.identifier, `policy_write_window:${userId}:${orgId}`)
+        eq(
+          verifications.identifier,
+          `policy_write_window:${userId}:${orgId}:${session}`
+        )
       );
 
     expect(row?.value).toBeDefined();
