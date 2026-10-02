@@ -1169,6 +1169,80 @@ describe("runWorkflowSimulation", () => {
       );
     });
 
+    it("keeps the hedge after an earlier protocol write node", async () => {
+      spies.simulateCallSequence.mockResolvedValueOnce({
+        success: false,
+        status: "simulated",
+        from: "0xaa0000000000000000000000000000000000aa00",
+        atomic: false,
+        mechanism: "eth_simulateV1",
+        wouldRevert: true,
+        results: [SUCCESS_RESULT, REVERT_RESULT],
+      });
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          actionNode("grant", "sky/approve-usds", {
+            spender: "0xbb0000000000000000000000000000000000bb00",
+            amount: "5",
+          }),
+          writeNode("prepare", "approve"),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: [
+          { source: "trigger-1", target: "grant" },
+          { source: "grant", target: "prepare" },
+          { source: "prepare", target: "deposit" },
+        ],
+      });
+
+      // A protocol action type is `<protocol>/<slug>`, so the substring checks
+      // miss it; it is still an on-chain approval landing before the run.
+      expect(spies.simulateCallSequence).toHaveBeenCalledTimes(1);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toMatchObject({ nodeId: "deposit" });
+      expect(result.warnings[0]?.message).toContain(
+        "may depend on an earlier step"
+      );
+    });
+
+    it("ends the run at an unsimulated write so the other fan-out branch keeps the hedge", async () => {
+      spies.simulateContractCall
+        .mockResolvedValueOnce(SUCCESS_RESULT)
+        .mockResolvedValueOnce(REVERT_RESULT);
+
+      const result = await runWorkflowSimulation({
+        organizationId: "org_test",
+        nodes: [
+          triggerNode(),
+          writeNode("prepare", "approve"),
+          actionNode("grant", "web3/approve-token", {
+            tokenAddress: "0xcc0000000000000000000000000000000000cc00",
+            spenderAddress: "0xbb0000000000000000000000000000000000bb00",
+            amount: "5",
+          }),
+          writeNode("deposit", "deposit"),
+        ],
+        edges: [
+          { source: "trigger-1", target: "prepare" },
+          { source: "prepare", target: "grant" },
+          { source: "prepare", target: "deposit" },
+        ],
+      });
+
+      // The executor runs both branches in parallel, so the approval can land
+      // before the deposit and the deposit cannot chain onto prepare alone.
+      expect(spies.simulateCallSequence).not.toHaveBeenCalled();
+      expect(spies.simulateContractCall).toHaveBeenCalledTimes(2);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toMatchObject({ nodeId: "deposit" });
+      expect(result.warnings[0]?.message).toContain(
+        "may depend on an earlier step"
+      );
+    });
+
     it("keeps a write that carries native value on the single-call path", async () => {
       await runWorkflowSimulation({
         organizationId: "org_test",

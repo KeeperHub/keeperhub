@@ -17,6 +17,13 @@ import {
   SIGNER_MODE,
 } from "@/lib/safe/signer-resolver";
 import { hasTemplateVariables } from "@/lib/utils/template";
+import { resolveProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
+// Protocol registration is an import side effect: each definition module calls
+// registerProtocol at load. Without this barrel resolveProtocolMeta's registry
+// lookup finds nothing in this module graph and every protocol node falls back
+// to its cached _protocolMeta alone. lib/mcp/workflow-server.ts carries the
+// same import for the same reason.
+import "@/protocols";
 
 const NON_NEGATIVE_INTEGER_PATTERN = /^\d+$/;
 
@@ -229,6 +236,23 @@ function isSupportedActionType(
   return (
     typeof actionType === "string" && SUPPORTED_ACTION_TYPE_SET.has(actionType)
   );
+}
+
+/**
+ * True for a protocol action node whose `<protocol>/<slug>` action writes on
+ * chain, which isMutatingActionType's fixed names and substrings never match.
+ */
+function isProtocolWriteNode(
+  actionType: unknown,
+  protocolMeta: unknown
+): boolean {
+  const meta = resolveProtocolMeta({
+    ...(typeof actionType === "string" ? { _actionType: actionType } : {}),
+    ...(typeof protocolMeta === "string"
+      ? { _protocolMeta: protocolMeta }
+      : {}),
+  });
+  return meta?.actionType === "write";
 }
 
 function issuePath(nodeIndex: number, fieldKey?: string): string {
@@ -1043,10 +1067,19 @@ export async function runWorkflowSimulation({
     // it may depend on state the preflight never applied. Only the supported
     // types go on to be simulated.
     const hasEarlierReachableWrite = reachableWriteCount > 0;
-    if (isMutatingActionType(actionType)) {
+    const mutates =
+      isMutatingActionType(actionType) ||
+      isProtocolWriteNode(actionType, config?._protocolMeta);
+    if (mutates) {
       reachableWriteCount += 1;
     }
     if (!(config && isSupportedActionType(actionType))) {
+      // An unsimulated write lands before everything after it, so no later
+      // node may chain past it, not even the other branch of a fan-out whose
+      // run is still open.
+      if (mutates) {
+        await flush();
+      }
       continue;
     }
 
