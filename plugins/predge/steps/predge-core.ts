@@ -179,8 +179,10 @@ export function canonicalize(value: unknown): string {
     .join(",")}}`;
 }
 
-// Returns an ArrayBuffer-backed view (not ArrayBufferLike) so it satisfies
-// WebCrypto's BufferSource parameters without a cast.
+// Close to hexToBytes in @noble/hashes/utils.js, which plugins/data uses, and
+// kept separate because this one accepts an optional 0x prefix and noble's
+// rejects it. The declared Uint8Array<ArrayBuffer> (not ArrayBufferLike) is
+// what WebCrypto's BufferSource parameters take without a cast.
 function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
   const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
   if (clean.length % 2 !== 0 || /[^0-9a-fA-F]/.test(clean)) {
@@ -563,8 +565,10 @@ export async function fetchSignedSignal(
     }
 
     // Declared size first, so an oversized body is refused before it becomes a
-    // string; a missing or unparseable header reads as NaN and falls through to
-    // the length check below, which is the real bound on what gets parsed.
+    // string. A missing header reads as 0 (headers.get returns null, and
+    // Number(null) is 0) and an unparseable one as NaN; neither is over the
+    // limit, so both fall through to the length check below, which is the real
+    // bound on what gets parsed.
     const declaredBytes = Number(response.headers.get("content-length"));
     if (Number.isFinite(declaredBytes) && declaredBytes > MAX_RESPONSE_BYTES) {
       return {
