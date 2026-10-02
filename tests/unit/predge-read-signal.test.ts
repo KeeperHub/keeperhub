@@ -115,6 +115,23 @@ beforeAll(async () => {
   signer = await generateSigner();
 });
 
+describe("canonicalize", () => {
+  it("drops undefined-valued keys at every level, as Predge's signer does", () => {
+    expect(
+      canonicalize({ b: 1, a: undefined, c: { e: [1, "x"], d: undefined } })
+    ).toBe('{"b":1,"c":{"e":[1,"x"]}}');
+  });
+
+  it("gives the same bytes before and after a JSON round trip", () => {
+    // The verifier canonicalizes the parsed response, so whatever was signed
+    // has to canonicalize identically once it has crossed the wire.
+    const signed = { z: "last", a: { y: undefined, x: 1 }, n: null };
+    expect(canonicalize(signed)).toBe(
+      canonicalize(JSON.parse(JSON.stringify(signed)))
+    );
+  });
+});
+
 describe("verifyPredgeSignal", () => {
   it("accepts a signal signed by the pinned key, about the wallet, and fresh", async () => {
     const signed = await signSignal(signer);

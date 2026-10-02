@@ -163,7 +163,12 @@ export type PredgeVerifyResult = {
 };
 
 // Deterministic JSON: object keys sorted recursively, so signer and verifier
-// hash the exact same bytes regardless of key order. Mirrors Predge's signer.
+// hash the exact same bytes regardless of key order. The same algorithm as
+// Predge's signer, step for step: primitives through JSON.stringify, arrays in
+// order, object keys by Array.prototype.sort, no whitespace, and keys whose
+// value is undefined dropped. JSON.parse never yields undefined, so that last
+// rule changes nothing for a parsed response; it keeps an object canonicalizing
+// to the same bytes before and after a JSON round trip.
 // Exported so tests can produce the exact bytes the verifier checks.
 export function canonicalize(value: unknown): string {
   if (value === null || typeof value !== "object") {
@@ -175,6 +180,7 @@ export function canonicalize(value: unknown): string {
   const obj = value as Record<string, unknown>;
   return `{${Object.keys(obj)
     .sort()
+    .filter((k) => obj[k] !== undefined)
     .map((k) => `${JSON.stringify(k)}:${canonicalize(obj[k])}`)
     .join(",")}}`;
 }
