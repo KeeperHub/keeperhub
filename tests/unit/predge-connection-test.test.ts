@@ -25,14 +25,12 @@ function keyset(keys: Record<string, unknown>[]) {
 }
 
 function respondWith(body: unknown, status = 200) {
-  return vi
-    .spyOn(globalThis, "fetch")
-    .mockResolvedValue(
-      new Response(typeof body === "string" ? body : JSON.stringify(body), {
-        status,
-        headers: { "content-type": "application/json" },
-      })
-    );
+  return vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(typeof body === "string" ? body : JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    })
+  );
 }
 
 afterEach(() => {
@@ -63,7 +61,9 @@ describe("testPredge", () => {
     const result = await testPredge({});
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/no longer the active attestation key/);
-    expect(result.error).toMatch(/set Pinned Signer Key to the new published key/);
+    expect(result.error).toMatch(
+      /set Pinned Signer Key to the new published key/
+    );
   });
 
   it("fails when the pinned key is not listed at all", async () => {
@@ -143,6 +143,8 @@ describe("testPredge", () => {
     await testPredge({ PREDGE_SIGNAL_URL: " https://signals.example.com// " });
 
     const [url] = fetchSpy.mock.calls[0] as [string];
-    expect(url).toBe("https://signals.example.com/.well-known/predge-keys.json");
+    expect(url).toBe(
+      "https://signals.example.com/.well-known/predge-keys.json"
+    );
   });
 });

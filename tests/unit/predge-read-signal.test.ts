@@ -263,7 +263,12 @@ describe("verifyPredgeSignal", () => {
     // NaN matters most: `ageMs > NaN` is false, so it used to pass every
     // attestation as fresh.
     const signed = await signSignal(signer);
-    for (const maxAgeSeconds of [3601, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const maxAgeSeconds of [
+      3601,
+      -1,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
       const result = await verifyPredgeSignal(signed, {
         requestedWallet: WALLET,
         expectedKeyId: signer.keyIdHex,
@@ -1018,6 +1023,8 @@ describe("Test button guard for the Predge Signal URL", () => {
       message: "Connection successful",
     });
     const [url] = fetchSpy.mock.calls[0] as [string];
-    expect(url).toBe("https://signals.example.com/.well-known/predge-keys.json");
+    expect(url).toBe(
+      "https://signals.example.com/.well-known/predge-keys.json"
+    );
   });
 });
