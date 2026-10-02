@@ -139,6 +139,7 @@ vi.mock("@/lib/billing/payg/charge", () => ({
 
 import { checkAndReserveExecution } from "@/app/api/execute/_lib/spending-cap";
 import {
+  getDefaultDailyGasTopUpCapMicroUsd,
   getDefaultDailySolanaValueCapLamports,
   getDefaultDailyValueCapWei,
 } from "@/lib/execute/spend-cap-defaults";
@@ -179,6 +180,87 @@ describe("platform default cap figures", () => {
 
   it("is 0.5 SOL per day for Solana", () => {
     expect(getDefaultDailySolanaValueCapLamports()).toBe("500000000");
+  });
+
+  it("is 200 USD per day for gas top-ups", () => {
+    expect(getDefaultDailyGasTopUpCapMicroUsd()).toBe("200000000");
+  });
+});
+
+describe("checkAndReserveExecution stablecoin daily charge", () => {
+  const CAP = BigInt(200_000_000);
+
+  function daily(usedMicroUsd: bigint, amountMicroUsd: bigint) {
+    const sumTodayMicroUsd = vi.fn(() => Promise.resolve(usedMicroUsd));
+    return {
+      sumTodayMicroUsd,
+      params: {
+        ...baseParams,
+        type: "gas-top-up",
+        reserved: { kind: "evm" as const, valueWei: "0" },
+        stablecoinDaily: {
+          amountMicroUsd,
+          capMicroUsd: CAP,
+          sumTodayMicroUsd,
+          label: "gas top-up",
+        },
+      },
+    };
+  }
+
+  it("admits a charge that fits and sums under the cap row lock", async () => {
+    const { params, sumTodayMicroUsd } = daily(
+      BigInt(50_000_000),
+      BigInt(100_000_000)
+    );
+
+    const result = await checkAndReserveExecution(params);
+
+    expect(result).toEqual({ allowed: true, executionId: "exec_test" });
+    expect(state.inserted).toHaveLength(1);
+    // Zero native value, yet the lock is taken: the fast path would let two
+    // concurrent top-ups both fit under the last of the day's budget.
+    expect(state.capAnchors).toEqual([{ organizationId: "org_1" }]);
+    expect(sumTodayMicroUsd).toHaveBeenCalledWith(expect.anything(), "org_1");
+  });
+
+  it("admits a charge that lands exactly on the cap", async () => {
+    const { params } = daily(BigInt(100_000_000), BigInt(100_000_000));
+
+    const result = await checkAndReserveExecution(params);
+
+    expect(result.allowed).toBe(true);
+  });
+
+  it("refuses a charge that would pass the cap, before any row is written", async () => {
+    const { params } = daily(BigInt(150_000_000), BigInt(100_000_000));
+
+    const result = await checkAndReserveExecution(params);
+
+    expect(result).toEqual({
+      allowed: false,
+      reason:
+        "Daily gas top-up limit exceeded: 150 USD used today, 100 USD requested, limit 200 USD",
+    });
+    expect(state.inserted).toHaveLength(0);
+    expect(mockLogSecurityEvent).toHaveBeenCalledWith(
+      "stablecoin_daily_cap_blocked",
+      expect.objectContaining({
+        organizationId: "org_1",
+        usedMicroUsd: "150000000",
+        requestedMicroUsd: "100000000",
+      })
+    );
+  });
+
+  it("is not refused by an exhausted wei cap it does not draw on", async () => {
+    state.caps = [{ dailyValueCapWei: "1000" }];
+    state.sumRows = [{ totalWei: "5000" }];
+    const { params } = daily(BigInt(0), BigInt(100_000_000));
+
+    const result = await checkAndReserveExecution(params);
+
+    expect(result.allowed).toBe(true);
   });
 });
 
