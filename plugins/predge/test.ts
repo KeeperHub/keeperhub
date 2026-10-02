@@ -61,11 +61,28 @@ export async function testPredge(
     // Read-only: the published keyset confirms the signal service is reachable,
     // and that the key the step verifies against is still the one it signs
     // with, so a rotation shows up here rather than as failed runs.
+    //
+    // Redirects are not followed. handlePluginTest runs assertUrlIsPublic on
+    // the configured URL before this function is loaded, but nothing checks
+    // where a redirect points: the raw fetch global has no per-hop guard (the
+    // connector inside safeFetch is what validates each hop, and this file
+    // cannot import it). Following one would let a public URL steer this
+    // request to an internal address and report back its status. The signal
+    // service answers this path directly, as plugins/agent-gateway/test.ts
+    // already assumes of its own host.
     const response = await fetch(`${baseUrl}/.well-known/predge-keys.json`, {
       method: "GET",
+      redirect: "manual",
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
+
+    if (response.status >= 300 && response.status < 400) {
+      return {
+        success: false,
+        error: `Predge signal service redirected (HTTP ${response.status}) and the connection test does not follow redirects. Set the signal URL to the address that serves /.well-known/predge-keys.json.`,
+      };
+    }
 
     if (!response.ok) {
       return {

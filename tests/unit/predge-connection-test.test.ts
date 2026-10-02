@@ -111,6 +111,32 @@ describe("testPredge", () => {
     expect(result.error).toMatch(/HTTP 404/);
   });
 
+  it("does not follow a redirect", async () => {
+    // handlePluginTest checks the configured URL, not where a redirect points,
+    // so following one would let a public URL steer the request inward.
+    for (const status of [301, 302, 307, 308]) {
+      vi.restoreAllMocks();
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(null, {
+          status,
+          headers: { location: "http://169.254.169.254/latest/meta-data/" },
+        })
+      );
+
+      const result = await testPredge({
+        PREDGE_SIGNAL_URL: "https://signals.example.com",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(
+        new RegExp(`redirected \\(HTTP ${status}\\).*does not follow redirects`)
+      );
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(init.redirect).toBe("manual");
+    }
+  });
+
   it("reads the keyset from the operator's signal URL", async () => {
     const fetchSpy = respondWith(keyset([attestationKey(PINNED)]));
 

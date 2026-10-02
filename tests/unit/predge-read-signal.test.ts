@@ -32,6 +32,7 @@ vi.mock("@/lib/safe-fetch", () => ({
   SsrfBlockedError: class SsrfBlockedError extends Error {},
 }));
 
+import { handlePluginTest } from "@/lib/db/test-connection";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import {
   canonicalize,
@@ -933,5 +934,73 @@ describe("AI workflow generation", () => {
       actionType: "predge/read-signal",
       wallet: "{{Trigger.wallet}}",
     });
+  });
+});
+
+// The Test button runs testPredge, which uses the raw fetch global (test.ts is
+// client-reachable and cannot import safe-fetch). What keeps it off internal
+// addresses is handlePluginTest running assertUrlIsPublic on every url-typed
+// form field first, so these run the real Predge plugin definition through it.
+describe("Test button guard for the Predge Signal URL", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("refuses a link-local signal URL before testPredge runs", async () => {
+    const safeFetchModule = await import("@/lib/safe-fetch");
+    const MockSsrfBlockedError =
+      safeFetchModule.SsrfBlockedError as unknown as new (
+        message: string
+      ) => Error;
+    vi.mocked(safeFetchModule.assertUrlIsPublic).mockRejectedValueOnce(
+      new MockSsrfBlockedError(
+        "Outbound request to 169.254.169.254 blocked by SSRF policy (link-local)."
+      )
+    );
+    // Never a real request, even if the guard regresses: on a cloud CI runner
+    // this address is the instance metadata service.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("the network must not be reached"));
+
+    const result = await handlePluginTest("predge", {
+      PREDGE_SIGNAL_URL: "http://169.254.169.254",
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.message).toMatch(/^Predge Signal URL: .*link-local/);
+    expect(safeFetchModule.assertUrlIsPublic).toHaveBeenCalledWith(
+      "http://169.254.169.254"
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("lets a public signal URL through to testPredge", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          keys: [
+            {
+              public_key:
+                "13fa3d18a369e6c71bf941563ba47822b30182273d5106a0e8fb61c5016352d9",
+              active: true,
+              role: "attestation",
+            },
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+
+    const result = await handlePluginTest("predge", {
+      PREDGE_SIGNAL_URL: "https://signals.example.com",
+    });
+
+    expect(result).toEqual({
+      status: "success",
+      message: "Connection successful",
+    });
+    const [url] = fetchSpy.mock.calls[0] as [string];
+    expect(url).toBe("https://signals.example.com/.well-known/predge-keys.json");
   });
 });
