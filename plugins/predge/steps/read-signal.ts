@@ -9,6 +9,7 @@ import {
 import type { PredgeCredentials } from "../credentials";
 import {
   blameForBadBody,
+  MAX_SIGNAL_AGE_CEILING_SECONDS,
   RESOURCE_MISMATCH_REASON,
   fetchSignedSignal,
   parseConvictionPayload,
@@ -60,16 +61,34 @@ export type ReadSignalInput = StepInput &
     integrationId?: string;
   };
 
+type MaxAgeSetting =
+  | { valid: true; seconds?: number }
+  | { valid: false; reason: string };
+
 // Blank falls back to the default window. `0` is honored literally (reject
 // anything not issued this instant) rather than silently becoming the default,
-// so an operator who types it gets what they asked for. Negatives and
-// non-numbers are ignored.
-function parseMaxAgeSeconds(raw?: string): number | undefined {
-  if (!raw?.trim()) {
-    return undefined;
+// so an operator who types it gets what they asked for. Anything else has to be
+// a number of seconds from 0 to MAX_SIGNAL_AGE_CEILING_SECONDS. A value outside
+// that, or one that is not a number, is refused rather than ignored: ignoring
+// it would run the step with a window the operator did not choose, and a value
+// above the ceiling is exactly the one that switches freshness off.
+function parseMaxAgeSeconds(raw?: string): MaxAgeSetting {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return { valid: true };
   }
-  const parsed = Number(raw.trim());
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+  const parsed = Number(trimmed);
+  if (
+    !Number.isFinite(parsed) ||
+    parsed < 0 ||
+    parsed > MAX_SIGNAL_AGE_CEILING_SECONDS
+  ) {
+    return {
+      valid: false,
+      reason: `PREDGE_MAX_SIGNAL_AGE_SECONDS must be a number of seconds from 0 to ${MAX_SIGNAL_AGE_CEILING_SECONDS}, got ${JSON.stringify(trimmed)}`,
+    };
+  }
+  return { valid: true, seconds: parsed };
 }
 
 // Who to blame for a verification failure, for attribution only: this changes
@@ -111,6 +130,16 @@ async function stepHandler(
     };
   }
 
+  // Configuration is checked before any egress, like the wallet.
+  const maxAge = parseMaxAgeSeconds(credentials.PREDGE_MAX_SIGNAL_AGE_SECONDS);
+  if (!maxAge.valid) {
+    return {
+      success: false,
+      error: maxAge.reason,
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
+
   const result = await fetchSignedSignal(wallet, credentials);
   if (!result.success) {
     return result;
@@ -123,7 +152,7 @@ async function stepHandler(
   const verification = await verifyPredgeSignal(signed, {
     requestedWallet: wallet,
     expectedKeyId: credentials.PREDGE_SIGNER_KEY_ID?.trim() || undefined,
-    maxAgeSeconds: parseMaxAgeSeconds(credentials.PREDGE_MAX_SIGNAL_AGE_SECONDS),
+    maxAgeSeconds: maxAge.seconds,
   });
 
   // A gate that did not hold belongs on the error path, not in the data. Fail

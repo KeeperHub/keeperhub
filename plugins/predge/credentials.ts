@@ -13,6 +13,9 @@ export type PredgeCredentials = {
   // release; an unset connection has to wait for it.
   PREDGE_SIGNER_KEY_ID?: string;
   // Optional. Reject an attestation issued more than this many seconds ago.
-  // Defaults to 600. Raise it only if your signer's clock lags.
+  // Defaults to 600 and is capped at 3600: freshness is what bounds how long a
+  // captured attestation can be served again, so it can be tightened but not
+  // switched off. A value outside 0-3600 fails the step. Raise it only if your
+  // signer's clock lags.
   PREDGE_MAX_SIGNAL_AGE_SECONDS?: string;
 };

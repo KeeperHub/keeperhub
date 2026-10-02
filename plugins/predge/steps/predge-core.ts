@@ -39,6 +39,11 @@ const DEFAULT_PINNED_SIGNER =
 // A freshly issued attestation is re-minted per request, so a short window
 // kills replay of a captured older response without breaking legitimate reads.
 const DEFAULT_MAX_SIGNAL_AGE_SECONDS = 600;
+// The widest window an operator can configure. Freshness is what bounds how
+// long a captured attestation can be served again, so it can be tightened but
+// not switched off: an hour is six times the default and far past any clock
+// skew, and beyond it the window no longer means "recent".
+export const MAX_SIGNAL_AGE_CEILING_SECONDS = 3600;
 // Tolerate a little clock skew on issuedAt before calling it future-dated.
 const MAX_CLOCK_SKEW_MS = 60_000;
 // A signal host that accepts the connection and never answers must not hold the
@@ -125,7 +130,8 @@ export type PredgeVerifyInput = {
   // Signer to trust. Falls back to Predge's published key; never to the key the
   // response carries.
   expectedKeyId?: string;
-  // Reject an attestation older than this many seconds. Falls back to 600.
+  // Reject an attestation older than this many seconds. Falls back to 600; a
+  // value outside 0-MAX_SIGNAL_AGE_CEILING_SECONDS, or NaN, fails closed.
   maxAgeSeconds?: number;
   // Injectable clock for tests.
   now?: number;
@@ -327,6 +333,16 @@ export async function verifyPredgeSignal(
   const ageMs = now - issuedMs;
   const ageSeconds = Math.round(ageMs / 1000);
   const maxAgeSeconds = input.maxAgeSeconds ?? DEFAULT_MAX_SIGNAL_AGE_SECONDS;
+  // The step refuses an out-of-range setting before it fetches; this is the
+  // backstop for any other caller. Written so NaN fails too: `ageMs > NaN` is
+  // false, which would otherwise pass every attestation as fresh.
+  if (
+    !(maxAgeSeconds >= 0 && maxAgeSeconds <= MAX_SIGNAL_AGE_CEILING_SECONDS)
+  ) {
+    return fail(
+      `max signal age must be 0-${MAX_SIGNAL_AGE_CEILING_SECONDS} seconds, got ${maxAgeSeconds}`
+    );
+  }
   if (ageMs > maxAgeSeconds * 1000) {
     return fail(`attestation is stale (${ageSeconds}s old)`, ageSeconds);
   }

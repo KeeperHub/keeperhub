@@ -240,6 +240,35 @@ describe("verifyPredgeSignal", () => {
     expect(result.subjectMatch).toBe(false);
   });
 
+  it("fails closed on a max age outside 0-3600, NaN included", async () => {
+    // NaN matters most: `ageMs > NaN` is false, so it used to pass every
+    // attestation as fresh.
+    const signed = await signSignal(signer);
+    for (const maxAgeSeconds of [3601, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const result = await verifyPredgeSignal(signed, {
+        requestedWallet: WALLET,
+        expectedKeyId: signer.keyIdHex,
+        maxAgeSeconds,
+        now: NOW,
+      });
+      expect(result.verified).toBe(false);
+      expect(result.reason).toMatch(/max signal age must be 0-3600 seconds/);
+    }
+  });
+
+  it("accepts an attestation inside the widest allowed window", async () => {
+    const signed = await signSignal(signer, {
+      issuedAt: new Date(NOW - 3_599_000).toISOString(),
+    });
+    const result = await verifyPredgeSignal(signed, {
+      requestedWallet: WALLET,
+      expectedKeyId: signer.keyIdHex,
+      maxAgeSeconds: 3600,
+      now: NOW,
+    });
+    expect(result.verified).toBe(true);
+  });
+
   it("verifies a captured live signal against the default pin, no override", async () => {
     // A real 200 from https://api.predge.io/v1/signal/<wallet>, signed by the
     // production attestation key. This exercises the hardcoded
@@ -546,6 +575,37 @@ describe("readSignalStep", () => {
     expect(out.success).toBe(true);
     const [url] = safeFetch.mock.calls[0] as [string];
     expect(url).toBe(`https://api.predge.io/v1/signal/${WALLET.toLowerCase()}`);
+  });
+
+  it("refuses a max signal age outside 0-3600 before any fetch", async () => {
+    // Above the ceiling is the value that switches freshness off; the others
+    // used to be ignored, which ran the step on a window nobody chose.
+    for (const value of ["3601", "86400", "-5", "abc", "Infinity"]) {
+      mockFetchCredentials.mockResolvedValue({
+        PREDGE_MAX_SIGNAL_AGE_SECONDS: value,
+      });
+      const out = await runStep();
+      expect(out.success).toBe(false);
+      expect(out.error).toMatch(
+        /PREDGE_MAX_SIGNAL_AGE_SECONDS must be a number of seconds from 0 to 3600/
+      );
+      expect(out.errorClass).toBe(ExecutionErrorType.USER);
+    }
+    expect(safeFetch).not.toHaveBeenCalled();
+  });
+
+  it("honors a max signal age at the ceiling", async () => {
+    mockFetchCredentials.mockResolvedValue({
+      PREDGE_SIGNER_KEY_ID: signer.keyIdHex,
+      PREDGE_MAX_SIGNAL_AGE_SECONDS: "3600",
+    });
+    // Fifty minutes old: stale under the 600s default, fresh under 3600.
+    respondWith(
+      await signSignal(signer, {
+        issuedAt: new Date(Date.now() - 3_000_000).toISOString(),
+      })
+    );
+    expect((await runStep()).success).toBe(true);
   });
 
   // The four reproductions from review, each run against the real step with the
