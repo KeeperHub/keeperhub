@@ -22,7 +22,8 @@ import type { PredgeCredentials } from "../credentials";
 // `{ randomUUID }` only, with no `subtle`).
 //
 // Default hosted signal service. Point PREDGE_SIGNAL_URL at your own Predge
-// deployment (or a local dev service) to override.
+// deployment (or a local dev service) to override. Restated in ../test.ts,
+// which cannot import this server-only module: change both together.
 const DEFAULT_PREDGE_SIGNAL_URL = "https://api.predge.io";
 
 // The signature scheme Predge stamps on every attestation.
@@ -33,6 +34,8 @@ const PREDGE_SCHEME = "veri402-ed25519-v1";
 // detached attestation only means something against a signer known in advance,
 // so this is pinned by default and verification fails closed against it.
 // Override with PREDGE_SIGNER_KEY_ID to pin a different deployment's key.
+// Restated in ../test.ts, whose connection test checks this key is still the
+// keyset's active attestation key: change both together.
 const DEFAULT_PINNED_SIGNER =
   "13fa3d18a369e6c71bf941563ba47822b30182273d5106a0e8fb61c5016352d9";
 
