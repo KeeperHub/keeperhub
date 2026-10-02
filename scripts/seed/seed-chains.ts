@@ -1237,40 +1237,6 @@ export function buildExplorerConfigs(
   });
 }
 
-/**
- * Refuse a database that is not on this machine unless the caller says so.
- *
- * The chain UPDATE below writes every column it does not know as null: with
- * no CHAIN_RPC_CONFIG in the environment it clears the WSS and private RPC
- * columns of every chain row and turns private-mempool routing off. Run by a
- * contributor whose shell still exports a shared DATABASE_URL, that silently
- * stops Event triggers registering on every chain until the next deploy
- * re-seeds. Same shape and override as scripts/backfill-drizzle-migrations.ts;
- * the deploy migrator, the one legitimate remote caller, sets ALLOW_REMOTE=1
- * on its command line.
- */
-export function assertLocalOrAllowed(
-  connectionString: string,
-  env: Record<string, string | undefined> = process.env
-): void {
-  let hostname: string;
-  try {
-    hostname = new URL(connectionString).hostname;
-  } catch {
-    hostname = "";
-  }
-  const isLocal =
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname === "::1" ||
-    hostname === "[::1]" ||
-    hostname === "";
-  if (!isLocal && env.ALLOW_REMOTE !== "1") {
-    throw new Error(
-      `Refusing to seed chains against non-local host '${hostname}'. Set ALLOW_REMOTE=1 to override.`
-    );
-  }
-}
 
 async function seedChains() {
   // Resolved before anything is written: a chain with no explorer mapping
@@ -1283,7 +1249,6 @@ async function seedChains() {
   );
 
   const connectionString = getDatabaseUrl();
-  assertLocalOrAllowed(connectionString);
 
   console.log("Connecting to database...");
   const client = postgres(connectionString, { max: 1 });

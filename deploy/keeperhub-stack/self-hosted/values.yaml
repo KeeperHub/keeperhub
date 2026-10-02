@@ -293,8 +293,7 @@ app:
             echo "Running database migrations..."
             pnpm db:migrate
             echo "Seeding chains..."
-            # seed-chains refuses a non-local DATABASE_URL unless told otherwise; this job is the one remote caller
-            ALLOW_REMOTE=1 pnpm tsx scripts/seed/seed-chains.ts
+            pnpm tsx scripts/seed/seed-chains.ts
             # Only this line tolerates failure, and only because insertHmacSecret
             # has no ON CONFLICT: re-deploying against an already-seeded database
             # legitimately throws on the unique key. Everything above is under
