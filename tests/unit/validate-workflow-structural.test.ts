@@ -109,6 +109,7 @@ describe("TRIGGERS exports", () => {
       "Manual",
       "Pyth Price",
       "Schedule",
+      "Trace",
       "Transfer",
       "Webhook",
     ]);
