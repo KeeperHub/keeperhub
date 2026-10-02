@@ -140,14 +140,25 @@ export async function PATCH(
       );
     }
     warnings = compiled.warnings;
-    update.document = parsed.document;
     update.name = parsed.document.name;
     update.description = parsed.document.description ?? null;
-    update.version = existing.version + 1;
     update.changeDelayHours = parsed.changeDelayHours;
-    update.effectiveAt = new Date(
-      Date.now() + parsed.changeDelayHours * 60 * 60 * 1000
-    );
+
+    if (parsed.changeDelayHours > 0) {
+      // The point of a delay is that a weakening is visible before it holds,
+      // which only means something if what is there now keeps holding. So the
+      // edit waits beside the live document rather than displacing it, and
+      // what is enforced does not change until its hour.
+      update.pendingDocument = parsed.document;
+      update.pendingEffectiveAt = new Date(
+        Date.now() + parsed.changeDelayHours * 60 * 60 * 1000
+      );
+    } else {
+      update.document = parsed.document;
+      update.version = existing.version + 1;
+      update.pendingDocument = null;
+      update.pendingEffectiveAt = null;
+    }
   }
 
   if (body.enabled !== undefined) {

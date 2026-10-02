@@ -68,10 +68,20 @@ async function loadFromDb(organizationId: string): Promise<CompiledPolicySet> {
 
   const policies: CompiledPolicy[] = [];
   for (const row of rows) {
+    // A delayed edit waits beside the live document and takes over at its hour.
+    // Until then the rules that were already in force are the rules that apply,
+    // which is the whole point of asking for a delay.
+    const due =
+      row.pendingDocument !== null &&
+      row.pendingEffectiveAt !== null &&
+      row.pendingEffectiveAt <= now
+        ? row.pendingDocument
+        : null;
+
     const out = compilePolicy({
       id: row.id,
       enabled: row.enabled,
-      document: row.document,
+      document: due ?? row.document,
       enforcement: row.enforcement,
     });
     if (out.ok) {

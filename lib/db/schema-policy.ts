@@ -61,6 +61,15 @@ export const organizationPolicies = pgTable(
     // malicious or mistaken relaxation is visible before it takes hold. Zero
     // means immediate.
     changeDelayHours: integer("change_delay_hours").notNull().default(0),
+    /**
+     * The edit that is waiting, and when it replaces the one above.
+     *
+     * A change delay is there so that lowering a guardrail is visible before it
+     * bites, which only means anything if the guardrail stays up meanwhile. The
+     * live document keeps being enforced and this one takes over at its hour.
+     */
+    pendingDocument: jsonb("pending_document").$type<PolicyDocument>(),
+    pendingEffectiveAt: timestamp("pending_effective_at"),
     effectiveAt: timestamp("effective_at").notNull().defaultNow(),
     // A protected policy needs a second approver to relax or remove it.
     protected: boolean("protected").notNull().default(false),
