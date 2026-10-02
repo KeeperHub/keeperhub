@@ -79,16 +79,16 @@ const RESOURCE_PREFIX = "conviction:";
 // The complete set of values the signal service emits for the two categorical
 // fields. Anything else is rejected rather than passed through, so a workflow
 // branching on them can enumerate them and know the list is exhaustive.
-export const PREDGE_ACTIONS = ["accumulate", "reduce", "hold"] as const;
-export const PREDGE_WINDOWS = ["7d", "30d"] as const;
+const PREDGE_ACTIONS = ["accumulate", "reduce", "hold"] as const;
+const PREDGE_WINDOWS = ["7d", "30d"] as const;
 
 export type PredgeAction = (typeof PREDGE_ACTIONS)[number];
 export type PredgeWindow = (typeof PREDGE_WINDOWS)[number];
 
 // Conviction is a percentile within Predge's ranked smart-money set, so it is a
 // number in this closed range -- never a numeric string, never out of range.
-export const MIN_CONVICTION = 0;
-export const MAX_CONVICTION = 100;
+const MIN_CONVICTION = 0;
+const MAX_CONVICTION = 100;
 
 export type PredgeConvictionSignal = {
   wallet: string;
