@@ -31,6 +31,8 @@ import {
   KEEPERHUB_ERC_8004_AGENT_ID,
 } from "@/lib/agentic-wallet/constants";
 
+vi.mock("server-only", () => ({}));
+
 const TEST_HMAC_SECRET =
   "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 const TEST_SUB_ORG = "subOrg_feedback_test";

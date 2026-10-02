@@ -136,6 +136,26 @@ const spies = vi.hoisted(() => ({
 }));
 
 vi.mock("server-only", () => ({}));
+
+// The policy store reads tables the schema mock below does not model, and a
+// store that cannot be read refuses, so every case here would come back 403.
+// Stubbed to "this organization has no policies", which is a real state and
+// keeps these tests about the simulate invariant. The guard's behaviour when
+// the store is unreadable is covered by tests/unit/policy-guard-failclosed.
+vi.mock("@/lib/policy/store", () => ({
+  getCompiledPolicySet: vi.fn(() =>
+    Promise.resolve({
+      organizationId: "org_test",
+      version: "empty",
+      policies: [],
+      compiledAt: Date.now(),
+    })
+  ),
+  loadGrants: vi.fn(() => Promise.resolve([])),
+  grantCovers: vi.fn(() => null),
+  invalidateOrgPolicies: vi.fn(),
+  invalidateAllPolicies: vi.fn(),
+}));
 vi.mock("@/protocols", () => ({}));
 
 vi.mock("../../app/api/execute/_lib/auth", () => ({

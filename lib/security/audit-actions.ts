@@ -31,6 +31,18 @@ const ACTION_MAP: Record<string, AuditActionDescription> = {
   "integration.created": { phrase: "added an integration", kind: "add" },
   "integration.updated": { phrase: "updated an integration", kind: "change" },
   "integration.deleted": { phrase: "removed an integration", kind: "remove" },
+  "org.policy_created": {
+    phrase: "created an organization policy",
+    kind: "add",
+  },
+  "org.policy_updated": {
+    phrase: "changed an organization policy",
+    kind: "change",
+  },
+  "org.policy_deleted": {
+    phrase: "deleted an organization policy",
+    kind: "remove",
+  },
   "workflow.created": { phrase: "created a workflow", kind: "add" },
   "workflow.updated": { phrase: "updated a workflow", kind: "change" },
   "workflow.deleted": { phrase: "deleted a workflow", kind: "remove" },

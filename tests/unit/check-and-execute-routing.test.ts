@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+// Policy has its own tests; here it must not stand between the request
+// and the behaviour under test.
+vi.mock("@/lib/policy/direct-execution", () => ({
+  enforceDirectNodePolicy: async () => null,
+  enforceDirectExecutionPolicy: async () => null,
+}));
 
 // Spy references for readContractCore and writeContractCore
 const mockReadContractCore = vi.fn();

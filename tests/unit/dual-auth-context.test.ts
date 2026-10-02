@@ -68,6 +68,13 @@ vi.mock("@/lib/db/schema", () => ({
   organization: {},
 }));
 
+vi.mock("server-only", () => ({}));
+// The gate has its own tests; here it must not stand between the resolver and
+// what this file is about, which is how a principal is resolved.
+vi.mock("@/lib/middleware/policy-gate", () => ({
+  policyRefusalFor: async () => null,
+}));
+
 import {
   getDualAuthContext,
   resolveCreatorContext,

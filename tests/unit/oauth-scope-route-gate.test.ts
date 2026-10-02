@@ -8,6 +8,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // helper families -> requireScope -> each route's chosen scope constant.
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/middleware/policy-gate", () => ({
+  policyRefusalFor: async () => null,
+}));
 
 const {
   mockUsersFindFirst,

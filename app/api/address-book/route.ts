@@ -14,6 +14,7 @@ import {
 import { requireScope } from "@/lib/middleware/require-scope";
 
 // GET - List all address book entries for the current organization
+
 export async function GET(request: Request) {
   try {
     const authCtx = await resolveOrganizationId(request);

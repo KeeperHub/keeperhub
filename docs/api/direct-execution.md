@@ -48,6 +48,9 @@ On the three endpoints that accept `simulate` a dry run reports the same refusal
 
 Two things this does **not** do: it does not price non-stablecoin ERC-20s, which are not bounded at all, and it does not cover Solana. SPL token transfers are outside the ceiling, and the daily Solana cap counts native SOL only.
 
+Organization policies apply to these endpoints as well, and can bound them by
+contract, counterparty, asset, amount and time. See [Policies](/api/policies).
+
 ## Safe First-Write Sequence
 
 This sequence is for `/api/execute/transfer`, `/api/execute/contract-call` and
