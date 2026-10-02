@@ -2,6 +2,10 @@ import type { NodeExecutionStatus } from "@/lib/errors/execution-status";
 import { getReadContractOutputFields } from "@/lib/workflow/editor/action-output-fields";
 import { getInputSchemaFields } from "@/lib/workflow/editor/input-schema-fields";
 import { getTriggerOutputFields } from "@/lib/workflow/editor/trigger-output-fields";
+import {
+  STATE_GET_OUTPUT_FIELDS,
+  STATE_SET_OUTPUT_FIELDS,
+} from "@/lib/workflow/nodes/workflow-state/utils";
 import type { ExecutionLogEntry, WorkflowNode } from "@/lib/workflow/store";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 import { findActionById } from "@/plugins/registry";
@@ -222,6 +226,14 @@ export function getActionFields(node: WorkflowNode): FieldEntry[] | null {
       { field: "results", description: "Array of outputs from each iteration" },
       { field: "count", description: "Number of completed iterations" },
     ];
+  }
+
+  if (actionType === "State Get") {
+    return STATE_GET_OUTPUT_FIELDS;
+  }
+
+  if (actionType === "State Set") {
+    return STATE_SET_OUTPUT_FIELDS;
   }
 
   if (actionType) {

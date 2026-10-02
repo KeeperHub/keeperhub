@@ -6,6 +6,11 @@ import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { recordWorkflowCreatedFromSource } from "@/lib/metrics/collectors/prometheus";
 import { authFailureResponse, getDualAuthContext } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
+import {
+  hasPythPriceTrigger,
+  isPythPriceTriggerEnabled,
+} from "@/lib/pyth/feature-flag";
+import { findPythConfig } from "@/lib/pyth/trigger-config";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
 import { recordWorkflowSnapshot } from "@/lib/workflow/history";
 import { db } from "@/lib/db";
@@ -157,6 +162,33 @@ export async function POST(request: Request) {
     nodes = sanitized.nodes;
     edges = sanitized.edges;
 
+    if (!isPythPriceTriggerEnabled() && hasPythPriceTrigger(nodes)) {
+      return NextResponse.json(
+        {
+          error: "PYTH_TRIGGER_DISABLED",
+          message: "Pyth Price triggers are not enabled on this deployment.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // Same rule as enabling through PATCH: a draft may be incomplete, but a
+    // workflow created enabled must carry a config the listener can register.
+    if (body.enabled === true) {
+      try {
+        findPythConfig(nodes);
+      } catch (error) {
+        return NextResponse.json(
+          {
+            error: "INVALID_PYTH_TRIGGER",
+            message:
+              error instanceof Error ? error.message : "Invalid Pyth trigger",
+          },
+          { status: 400 }
+        );
+      }
+    }
+
     // A 201 from this endpoint does not mean the workflow will run. The gate
     // below is an AUTHORIZATION check on integrationId, not an existence
     // check: filterUnauthorizedIntegrationIds treats ids with no matching row
@@ -305,7 +337,12 @@ export async function POST(request: Request) {
       workflowId: newWorkflow.id,
       before: null,
       after: newWorkflow,
-      actor: { userId, organizationId, authMethod: authContext.authMethod },
+      actor: {
+        userId,
+        organizationId,
+        authMethod: authContext.authMethod,
+        apiKeyId: authContext.apiKeyId,
+      },
       source: "create",
     });
 

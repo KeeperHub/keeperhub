@@ -35,6 +35,7 @@ import {
 import { api, type WorkflowVersionSummary } from "@/lib/api-client";
 import { groupByDate } from "@/lib/activity/time-groups";
 import { usePaginatedResource } from "@/lib/hooks/use-paginated-resource";
+import { credentialLabel } from "@/lib/security/credential-label";
 import { currentWorkflowIdAtom, previewVersionAtom } from "@/lib/workflow/store";
 import {
   type ConfigValueResolver,
@@ -537,6 +538,9 @@ function VersionRow({
       ? filterDiffToNode(fullDiff, nodeId, nodeLabel ?? null)
       : fullDiff;
   const items = diff ? buildChangeItems(diff, resolveValue) : [];
+  // An org API key is recorded against whoever created it, so name the key
+  // rather than letting the version read as that person having edited it.
+  const via = credentialLabel(version.credential);
   return (
     <li
       className={`rounded-xl transition-colors ${
@@ -567,6 +571,11 @@ function VersionRow({
           </span>
           <span className="mt-0.5 flex items-center gap-1.5 text-muted-foreground text-xs">
             <span className="truncate">{actorLabel(version.changedBy)}</span>
+            {via && (
+              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-medium text-[10px] text-foreground">
+                {via}
+              </span>
+            )}
             <span className="text-muted-foreground/60">·</span>
             <span className="flex shrink-0 items-center gap-1">
               <Clock className="size-3" />

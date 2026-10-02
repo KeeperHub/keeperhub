@@ -1,11 +1,11 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { hasIndependentTokenList } from "@/lib/chain-utils";
 import { ETHEREUM_MAINNET_CHAIN_ID as MAINNET_CHAIN_ID } from "@/lib/chains/ids";
 import { db } from "@/lib/db";
 import { chains, explorerConfigs, supportedTokens } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
+import { hasIndependentTokenList } from "@/lib/web3/independent-token-list-chains";
 
 /**
  * Build explorer URL for a token address
@@ -116,8 +116,8 @@ export async function GET(request: Request) {
       ),
     });
 
-    // For chains with independent stablecoin lineups (TEMPO, Plasma), return
-    // only their own tokens; no master-list overlay.
+    // For chains with independent stablecoin lineups, return only their own
+    // tokens; no master-list overlay.
     if (hasIndependentTokenList(chainId)) {
       const tokens = await db
         .select()

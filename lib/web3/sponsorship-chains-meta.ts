@@ -40,6 +40,17 @@ export const SPONSORSHIP_CHAIN_IDS: ReadonlySet<number> = new Set(
   SPONSORSHIP_CHAINS.map((c) => c.chainId)
 );
 
+/**
+ * Whether Turnkey's Gas Station can sponsor a transaction on this chain.
+ *
+ * Lives here rather than in turnkey-sponsorship-config.ts so the node config
+ * form can ask the same question the step does; that module is server-only
+ * and re-exports this for the server-side callers.
+ */
+export function isSponsorshipSupported(chainId: number): boolean {
+  return SPONSORSHIP_CHAIN_IDS.has(chainId);
+}
+
 export const SPONSORSHIP_MAINNET_NAMES: readonly string[] =
   SPONSORSHIP_CHAINS.filter((c) => !c.isTestnet).map((c) => c.name);
 

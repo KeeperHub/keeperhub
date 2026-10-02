@@ -21,7 +21,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { buildRunsQuery } from "@/lib/analytics/runs-query";
+import { buildRunsQuery, runsPageCount } from "@/lib/analytics/runs-query";
 import {
   normalizeRunsResponse,
   type WireRunsResponse,
@@ -651,7 +651,8 @@ function TableSkeleton(): ReactNode {
   );
 }
 
-function Pagination({
+// Exported for the unit test that pins the pager against the route's ceiling.
+export function Pagination({
   page,
   pageSize,
   total,
@@ -664,7 +665,8 @@ function Pagination({
   onPageChange: (page: number) => void;
   loading: boolean;
 }): ReactNode {
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  // Capped at the route's page ceiling, so Next stops where the server does.
+  const totalPages = runsPageCount(total, pageSize);
   if (total <= pageSize) {
     return null;
   }

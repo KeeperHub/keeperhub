@@ -4,9 +4,9 @@ import { db } from "@/lib/db";
 import { type Chain, chains, workflows } from "@/lib/db/schema";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { getProtocol } from "@/lib/protocol-registry";
 import type { WorkflowNode } from "@/lib/workflow/store";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
+import { resolveProtocolEventAddress } from "@/lib/workflow/protocol-event-address";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 
 // The Transfer trigger always watches the fixed TIP-20
@@ -124,24 +124,13 @@ export async function GET(request: Request) {
 
           // Try to infer contract address from protocol and event slug
           if (isEventTrigger && config && !config.contractAddress) {
-            const protocolSlug = config._eventProtocolSlug as
-              | string
-              | undefined;
-            const eventSlug = config._eventSlug as string | undefined;
-            const network = config.network as string | undefined;
-
-            if (protocolSlug && eventSlug && network) {
-              const protocol = getProtocol(protocolSlug);
-              const event = protocol?.events?.find(
-                (e) => e.slug === eventSlug
-              );
-              if (protocol && event) {
-                const contract = protocol.contracts[event.contract];
-                const address = contract?.addresses[network];
-                if (address) {
-                  config.contractAddress = address;
-                }
-              }
+            const address = resolveProtocolEventAddress(
+              config._eventProtocolSlug as string | undefined,
+              config._eventSlug as string | undefined,
+              config.network as string | undefined
+            );
+            if (address) {
+              config.contractAddress = address;
             }
           }
 

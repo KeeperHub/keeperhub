@@ -20,7 +20,7 @@
  *
  * Response shapes:
  *   200 { amount: "0.50", currency: "USD", subOrgId: string }
- *   401 { error, code: "HMAC_MISSING" | "HMAC_INVALID" | "HMAC_STALE" }
+ *   401 { error, code: "HMAC_MISSING" | "HMAC_INVALID" | "HMAC_MALFORMED" | "HMAC_STALE" }
  *   404 { error: "Unknown sub-org", code: "WALLET_NOT_FOUND" }
  *   500 { error: "Internal error", code: "INTERNAL" }
  *
@@ -43,12 +43,20 @@ export const dynamic = "force-dynamic";
 function mapAuthFailureToCode(
   status: number,
   errorMessage: string
-): "HMAC_MISSING" | "HMAC_INVALID" | "HMAC_STALE" | "WALLET_NOT_FOUND" {
+):
+  | "HMAC_MISSING"
+  | "HMAC_INVALID"
+  | "HMAC_MALFORMED"
+  | "HMAC_STALE"
+  | "WALLET_NOT_FOUND" {
   if (status === 404) {
     return "WALLET_NOT_FOUND";
   }
   if (errorMessage.includes("Missing")) {
     return "HMAC_MISSING";
+  }
+  if (errorMessage === "Malformed timestamp") {
+    return "HMAC_MALFORMED";
   }
   if (errorMessage.includes("Timestamp")) {
     return "HMAC_STALE";

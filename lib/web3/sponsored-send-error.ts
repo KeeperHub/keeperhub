@@ -11,6 +11,7 @@ export type SponsoredSendDecision =
   | {
       fallback: false;
       error: string;
+      broadcastAttempted: true;
       // Set whenever the sponsored transaction reached the chain, whether it
       // reverted there or its outcome could not be read, so a caller can tell
       // "this hash exists" (reconcilable) from "nothing was broadcast"
@@ -62,6 +63,7 @@ export function resolveSponsoredSendError(
     );
     return {
       fallback: false,
+      broadcastAttempted: true,
       error: `Transaction reverted: ${error.message} (tx ${error.txHash})`,
       transactionHash: error.txHash,
     };
@@ -84,6 +86,7 @@ export function resolveSponsoredSendError(
     );
     return {
       fallback: false,
+      broadcastAttempted: true,
       error: error.txHash
         ? `Sponsored transaction ${error.txHash} was broadcast but its outcome could not be confirmed. It may still complete; not retrying to avoid a duplicate transaction.`
         : "Sponsored transaction was submitted but not confirmed in time. It may still complete; not retrying to avoid a duplicate transaction.",

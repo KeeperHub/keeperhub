@@ -318,6 +318,7 @@ import {
   clearExecution,
   recordTransactionHashIfPresent,
 } from "@/lib/workflow/executor/step-success-tracker";
+import { MAX_STORED_OUTPUT_BYTES } from "@/lib/workflow/output-limits";
 
 function getExecUpdate(): UpdateCall | undefined {
   return updateCalls.find((c) => c.target === workflowExecutionsMock);
@@ -1718,5 +1719,73 @@ describe("selfHealWorkflowAfterLateStepCommit transactionHashes (KEEP-470)", () 
       (c) => c.target === workflowExecutionsMock && c.set.status === "success"
     );
     expect(healUpdate).toBeUndefined();
+  });
+});
+
+describe("stored-output cap on persistence", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateCalls = [];
+    allLogs = [];
+    siblingErrorRows = [];
+    mockExecution = null;
+  });
+
+  it("stores a marker and no raw output for an oversized step result", async () => {
+    const huge = { results: "x".repeat(MAX_STORED_OUTPUT_BYTES) };
+
+    await logStepCompleteDb({
+      logId: "log_big",
+      startTime: Date.now() - 5,
+      status: "success",
+      output: huge,
+      outputRaw: huge,
+    });
+
+    const set = getLogUpdate()?.set;
+    expect(set?.status).toBe("success");
+    expect(set?.output).toEqual(
+      expect.objectContaining({
+        _truncated: true,
+        originalSize: MAX_STORED_OUTPUT_BYTES + '{"results":""}'.length,
+      })
+    );
+    // A row without raw output is re-run on resume rather than reused.
+    expect(set?.outputRaw).toBeNull();
+    expect(logSystemWarn).toHaveBeenCalledWith(
+      "workflow_engine",
+      expect.stringContaining("stored-output limit"),
+      null,
+      expect.objectContaining({ logId: "log_big" })
+    );
+  });
+
+  it("stores a step result within the limit as before", async () => {
+    await logStepCompleteDb({
+      logId: "log_small",
+      startTime: Date.now() - 5,
+      status: "success",
+      output: { count: 3 },
+      outputRaw: { count: 3 },
+    });
+
+    const set = getLogUpdate()?.set;
+    expect(set?.output).toEqual({ count: 3 });
+    expect(set?.outputRaw).toEqual({ count: 3 });
+    expect(logSystemWarn).not.toHaveBeenCalled();
+  });
+
+  it("stores a marker for an oversized run output", async () => {
+    await logWorkflowCompleteDb({
+      executionId: "exec_big",
+      status: "success",
+      output: { results: "x".repeat(MAX_STORED_OUTPUT_BYTES) },
+      startTime: Date.now() - 1000,
+    });
+
+    expect(getExecUpdate()?.set.status).toBe("success");
+    expect(getExecUpdate()?.set.output).toEqual(
+      expect.objectContaining({ _truncated: true })
+    );
   });
 });

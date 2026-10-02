@@ -168,8 +168,30 @@ address a wallet user signed in with - see
 | 0G Galileo (testnet) | `16602` | - | experimental |
 | Arc (Circle) | `5042` | `0x3600000000000000000000000000000000000000` | experimental |
 | Arc Testnet (Circle) | `5042002` | `0x3600000000000000000000000000000000000000` | experimental |
+| HyperEVM | `999` | `0xb88339cb7199b77e23db6e890353e22632ba630f` | experimental |
+| Unichain | `130` | `0x078D782b760474a361dDA0AF3839290b0EF57AD6` | experimental |
+| Unichain Sepolia (testnet) | `1301` | `0x31d0220469e10c4E71834a79b1f276d740d3768F` | experimental |
+| Somnia | `5031` | - | experimental |
+| Somnia Shannon (testnet) | `50312` | `0x0ED782B8079529f7385c3eDA9fAf1EaA0DbC6a17` | experimental |
 
-Arc's USDC is also its native gas token. The address above is the fixed
+HyperEVM's regular blocks cap at 3,000,000 gas, and the node rejects a
+transaction above that before it is sent, so KeeperHub sizes gas limits with a
+1.5x multiplier there rather than the default 2x. A transaction that genuinely
+needs more than 3,000,000 gas cannot be sent from KeeperHub today: larger blocks
+on HyperEVM require an opt-in made on HyperCore. HyperEVM also carries USDT0 at
+`0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb`. Mainnet only; the testnet has no
+working explorer API.
+
+The 1.5x multiplier is a workaround, not a ceiling: an estimate above roughly
+2,000,000 gas can still exceed the block limit once the multiplier is applied,
+and blocks routinely reach 0.7 to 0.9 of the limit. Size such a transaction down
+rather than relying on the multiplier.
+
+Chain id 999 is registered as HyperEVM by Etherscan and the node itself, but
+`chainid.network` still lists 999 as Wanchain Testnet, so third-party tooling
+keyed off that registry may label the chain Wanchain.
+
+Arc's USDC is also its native gas token. The Arc address above is the fixed
 ERC-20-interface precompile Circle documents for programmatic balance and
 transfer access; it reports balances at 6 decimals, distinct from the
 18-decimal native currency accounting used for gas. The same precompile is at
@@ -223,9 +245,9 @@ faucets above, then use this sequence:
    `idempotency_key`.
 4. Pass the returned `executionId` to `get_direct_execution_status` and poll
    until the status is `completed` or `failed`. Wait the number of seconds in
-   the `X-Poll-Interval-Hint` response header between polls rather than
-   picking your own interval; a value of `0` means the execution is terminal
-   and you can stop.
+   the `pollIntervalHint` response body field (or the `X-Poll-Interval-Hint`
+   header on REST) between polls rather than picking your own interval; a value
+   of `0` means the execution is terminal and you can stop.
 5. Save `transactionLink` from the terminal response as the onchain proof.
 
 Example simulation on Base Sepolia:

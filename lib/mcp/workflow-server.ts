@@ -1,6 +1,7 @@
 import "server-only";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { hasIrreversibleEffect } from "@/lib/mcp/action-type";
+import { buildApiCallFailedError } from "@/lib/mcp/api-call-error";
 import {
   buildTriggerInputSchema,
   detectListingTriggerType,
@@ -110,9 +111,7 @@ async function callApi(
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(
-      `API call failed: ${response.status} ${response.statusText} - ${errorText}`
-    );
+    throw buildApiCallFailedError(response, errorText);
   }
 
   const contentType = response.headers.get("content-type") ?? "";

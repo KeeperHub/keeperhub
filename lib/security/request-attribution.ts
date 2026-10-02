@@ -44,7 +44,8 @@ export type TriggerSource =
   | "mcp"
   | "internal"
   | "block"
-  | "event";
+  | "event"
+  | "upstream";
 
 export type TriggerLabels = {
   /** Prometheus metric label (keeperhub_workflow_executions_started_total). */

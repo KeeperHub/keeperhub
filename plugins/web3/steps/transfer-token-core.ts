@@ -6,6 +6,7 @@
  * exporting functions from "use step" files (which breaks the workflow bundler).
  */
 import "server-only";
+import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 
 import { and, eq, inArray } from "drizzle-orm";
 import { ethers } from "ethers";
@@ -45,7 +46,6 @@ import {
   type RevertKind,
 } from "@/lib/web3/decode-revert-error";
 import { resolveGasLimitOverrides } from "@/lib/web3/gas-defaults";
-import { isSponsorshipSupported } from "@/lib/web3/turnkey-sponsorship-config";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import {
   broadcastTransactionHash,
@@ -55,7 +55,7 @@ import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
 import { traceExecutedCallWithFailover } from "@/lib/web3/trace-executed-call";
-import { isGasSponsorshipEnabled } from "@/lib/web3/sponsorship-feature-flag";
+import { shouldTrySponsorship } from "@/lib/web3/sponsorship-eligibility";
 import {
   type TransactionContext,
   withNonceSession,
@@ -73,6 +73,10 @@ export type TransferTokenCoreInput = {
   amount: string;
   gasLimitMultiplier?: string;
   tokenAddress?: string;
+  // Per-node "Sponsor gas" toggle. Defaults on; false skips the gas-sponsored
+  // route outright so the transaction is signed and paid for by the org's own
+  // wallet. Resolved through resolveSponsorGas so an unset value stays on.
+  sponsorGas?: boolean;
   // KEEP-137: Route through private mempool (Flashbots Protect). Skips
   // Turnkey-sponsored execution -- mutually exclusive.
   usePrivateMempool?: boolean;
@@ -128,6 +132,7 @@ export type TransferTokenResult =
       // True when the terminal failure came from the gas-sponsored path, so
       // the finalizer can report the route accurately on a failed execution.
       sponsored?: boolean;
+      broadcastAttempted?: boolean;
     };
 
 /**
@@ -243,7 +248,7 @@ export async function parseTokenAddress(
  * When _context.organizationId is provided, skips workflowExecutions lookup.
  */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Token transfer handler with comprehensive validation and error handling
-export async function transferTokenCore(
+async function transferTokenCoreImpl(
   input: TransferTokenCoreInput
 ): Promise<TransferTokenResult> {
   const {
@@ -251,6 +256,7 @@ export async function transferTokenCore(
     recipientAddress,
     amount,
     gasLimitMultiplier,
+    sponsorGas,
     usePrivateMempool,
     strict,
     web3Connection,
@@ -430,15 +436,14 @@ export async function transferTokenCore(
   };
 
   // Try gas-sponsored execution first via Turnkey Gas Station (KEEP-464).
-  // KEEP-137: skip sponsorship when routing through a private mempool --
-  // Turnkey broadcasts via its own infrastructure, which bypasses Flashbots Protect.
-  // Also skip in Safe mode: the sponsored path sends from the org's EOA wallet,
-  // which would change msg.sender away from the Safe.
+  // shouldTrySponsorship holds every reason the route can be declined.
   if (
-    isSponsorshipSupported(chainId) &&
-    !usePrivateMempool &&
-    signerMode.kind === SIGNER_MODE.EOA &&
-    isGasSponsorshipEnabled()
+    shouldTrySponsorship({
+      chainId,
+      signerMode,
+      sponsorGas,
+      usePrivateMempool,
+    })
   ) {
     try {
       const [decimals, symbol] = await rpcManager.executeWithFailover(
@@ -537,6 +542,7 @@ export async function transferTokenCore(
           // in-flight send into success.
           errorClass: decision.errorClass,
           sponsored: true,
+          broadcastAttempted: decision.broadcastAttempted,
           ...(decision.transactionHash
             ? { transactionHash: decision.transactionHash, chainId }
             : {}),
@@ -579,14 +585,16 @@ export async function transferTokenCore(
     // Create contract instance for the actual write (needs signer)
     const contract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
 
-    try {
       const tokenHolderAddress =
         signerMode.kind === SIGNER_MODE.SAFE_ROLE || signerMode.kind === SIGNER_MODE.SAFE
           ? signerMode.safeAddress
           : signerAddress;
 
-      const [decimals, symbol, balance] =
-        await rpcManager.executeWithFailover((p) => {
+      let decimals: bigint;
+      let symbol: string;
+      let balance: bigint;
+      try {
+        [decimals, symbol, balance] = await rpcManager.executeWithFailover((p) => {
           const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, p);
           return Promise.all([
             tokenContract.decimals() as Promise<bigint>,
@@ -594,6 +602,12 @@ export async function transferTokenCore(
             tokenContract.balanceOf(tokenHolderAddress) as Promise<bigint>,
           ]);
         });
+      } catch (error) {
+        return {
+          success: false,
+          error: `Failed to read token metadata or balance: ${getErrorMessage(error)}`,
+        };
+      }
 
       const decimalsNum = Number(decimals);
 
@@ -647,6 +661,8 @@ export async function transferTokenCore(
         };
       }
 
+    let receivedTransactionHash: string | undefined;
+    try {
       let receipt: Awaited<ReturnType<typeof adapter.executeContractCall>>;
       if (signerMode.kind === SIGNER_MODE.SAFE_ROLE) {
         receipt = await executeContractCallAsRole(
@@ -704,6 +720,7 @@ export async function transferTokenCore(
         );
       }
 
+      receivedTransactionHash = receipt.hash;
       const gasUsedUnits = receipt.gasUsed.toString();
       const effectiveGasPrice = receipt.effectiveGasPrice.toString();
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
@@ -740,6 +757,8 @@ export async function transferTokenCore(
         }
       );
       const rejection = classifyRevert(error, contract.interface);
+      const broadcastHash =
+        broadcastTransactionHash(error) ?? receivedTransactionHash;
       // Attributed as a system fault so the execution log records a fault
       // domain for it; a relay-determined class is more specific, so it wins.
       const errorClass =
@@ -754,10 +773,24 @@ export async function transferTokenCore(
         ),
         ...(errorClass ? { errorClass } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
-        ...(broadcastTransactionHash(error)
-          ? { transactionHash: broadcastTransactionHash(error), chainId }
-          : {}),
+        broadcastAttempted:
+          broadcastHash ? true
+            : rejection.kind !== "unknown" ||
+                isPreBroadcastNetworkError(error)
+              ? false
+              : true,
+        ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
       };
     }
   });
+}
+
+export async function transferTokenCore(
+  input: TransferTokenCoreInput
+): Promise<TransferTokenResult> {
+  const result = await transferTokenCoreImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }

@@ -29,6 +29,9 @@ function isTemplateVariable(value: string): boolean {
 export function solidityTypeToFieldType(
   solidityType: string
 ): ActionConfigFieldBase["type"] {
+  if (solidityType.endsWith("]")) {
+    return "protocol-array";
+  }
   if (solidityType === "address") {
     return "protocol-address";
   }

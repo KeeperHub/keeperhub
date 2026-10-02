@@ -51,8 +51,15 @@ vi.mock("@/lib/db/schema-payments", () => ({ workflowPayments: {} }));
 vi.mock("@/lib/billing/plans", () => ({
   // Two distinct windows, so the schedule has both a floor pass and a
   // per-organization group. With one window everything sits at the floor.
-  getPlanLimits: (plan: string) => ({
-    logRetentionDays: plan === "enterprise" ? 365 : 7,
+  // planOverrides is honoured so a test can build a THIRD window and therefore
+  // a second per-organization group; every other fixture row passes null.
+  getPlanLimits: (
+    plan: string,
+    _tier: unknown,
+    overrides?: { logRetentionDays?: number } | null
+  ) => ({
+    logRetentionDays:
+      overrides?.logRetentionDays ?? (plan === "enterprise" ? 365 : 7),
   }),
   parsePlanName: (value: unknown) => value ?? "free",
   parseTierKey: () => null,
@@ -72,8 +79,8 @@ const { state, dbStub } = vi.hoisted(() => {
     /** Counts returned to a dry run's count selects, in call order. */
     counts: [] as number[],
     countCalls: 0,
-    /** Oldest still-resumable run per drained organization, in call order. */
-    oldest: [] as Array<Date | null>,
+    /** Oldest still-resumable run per drained slice, in call order. */
+    oldest: [] as Array<Date | null | Error>,
     oldestCalls: 0,
     /** Instants handed to setPurgeWatermark, in call order. */
     watermarks: [] as unknown[],
@@ -101,6 +108,11 @@ const { state, dbStub } = vi.hoisted(() => {
       aggregate = () => {
         const oldest = hoistedState.oldest[hoistedState.oldestCalls] ?? null;
         hoistedState.oldestCalls += 1;
+        // An Error stands for a statement the database refused, as it does in
+        // the page queue: this read runs under the same bound as the runs read.
+        if (oldest instanceof Error) {
+          throw oldest;
+        }
         return [{ oldest }];
       };
     } else if (shape.includes("changedOrganizationId")) {
@@ -185,8 +197,12 @@ const { state, dbStub } = vi.hoisted(() => {
 
 vi.mock("@/lib/db", () => ({ db: dbStub }));
 
-import { getRetentionConfig } from "@/lib/retention/config";
 import {
+  getRetentionConfig,
+  PLAN_WINDOW_MIN_CEILING_MS,
+} from "@/lib/retention/config";
+import {
+  PLAN_WINDOW_CEILING_RECOVERY_SLICES,
   PLAN_WINDOW_MIN_SLICE_MS,
   PLAN_WINDOW_RUNS_PER_READ,
   PLAN_WINDOW_WORKFLOW_CHUNK,
@@ -198,6 +214,9 @@ const NOW = new Date("2026-09-07T12:00:00.000Z");
 
 /** The 7-day group's cutoff at NOW. */
 const FREE_CUTOFF = new Date("2026-08-31T12:00:00.000Z");
+
+/** The slice width enabledConfig carries, which is the production default. */
+const SLICE_MS = 24 * 60 * 60 * 1000;
 
 /** More eligible runs than one read of a workflow chunk may return. */
 const OVERFLOW = Array.from(
@@ -218,6 +237,32 @@ const ORG_ROWS = [
 
 function enabledConfig(overrides: Record<string, unknown> = {}) {
   return { ...getRetentionConfig(), enabled: true, ...overrides };
+}
+
+/**
+ * A watermark row leaving `slices` whole initial slices below the free group's
+ * cutoff, as getPurgeWatermarks returns them.
+ *
+ * Without one the walk starts at the epoch, and since KEEP-1360 capped the
+ * first slice that is fifteen doubling slices of empty range -- true to
+ * production, but it buries whatever the test is actually asserting. A seeded
+ * watermark puts each test on a range it can state exactly.
+ */
+function watermarkRow(slices: number, organizationId = "org-free") {
+  return {
+    organizationId,
+    executionsPurgedThrough: new Date(
+      FREE_CUTOFF.getTime() - slices * SLICE_MS
+    ),
+  };
+}
+
+/** A read the statement_timeout cancelled, as postgres reports it. */
+function cancelledRead(): Error {
+  return Object.assign(
+    new Error("canceling statement due to statement timeout"),
+    { code: "57014" }
+  );
 }
 
 beforeEach(() => {
@@ -244,6 +289,41 @@ function workflowChunkReads(): string[][] {
       (ids): ids is string[] =>
         Array.isArray(ids) && String(ids[0]).startsWith("wf-")
     );
+}
+
+/** The [from, to) bounds of every runs read of a workflow chunk, in call order. */
+function sliceReads(): [Date, Date][] {
+  return state.wheres
+    .filter((where) =>
+      findMarkers(where, "inArray").some((marker) => {
+        const ids = marker.args[1];
+        return Array.isArray(ids) && String(ids[0]).startsWith("wf-");
+      })
+    )
+    .map((where) => [
+      findMarkers(where, "gte")[0].args[1] as Date,
+      findMarkers(where, "lt")[0].args[1] as Date,
+    ]);
+}
+
+/** The [from, to) bounds of every skipped-run read, in call order. */
+function resumableReads(): [Date, Date][] {
+  return state.wheres
+    .filter((where) =>
+      findMarkers(where, "inArray").some((marker) => {
+        const values = marker.args[1];
+        return Array.isArray(values) && values[0] === "pending";
+      })
+    )
+    .map((where) => [
+      findMarkers(where, "gte")[0].args[1] as Date,
+      findMarkers(where, "lt")[0].args[1] as Date,
+    ]);
+}
+
+/** How wide each of those reads was, in ms. */
+function sliceSpans(): number[] {
+  return sliceReads().map(([from, to]) => to.getTime() - from.getTime());
 }
 
 /** Depth-first search for an operator marker of `kind` in a predicate tree. */
@@ -298,7 +378,7 @@ describe("runRetentionPurge", () => {
   });
 
   it("leaves run rows alone until their own switch is turned on", async () => {
-    state.selectPages = [ORG_ROWS];
+    state.selectPages = [ORG_ROWS, [], [watermarkRow(1)]];
 
     const result = await runRetentionPurge(enabledConfig(), NOW);
     const executionPass = result.passes.find(
@@ -313,7 +393,9 @@ describe("runRetentionPurge", () => {
       budgetExhausted: false,
       skipped: "disabled",
     });
-    expect(state.transactions).toBe(0);
+    // The one transaction is the plan-window pass reading its skipped run under
+    // the tighter timeout; the run-row pass opens none while its switch is off.
+    expect(state.transactions).toBe(1);
   });
 
   it("deletes page by page, then stops when the next page is empty", async () => {
@@ -418,8 +500,8 @@ describe("runRetentionPurge", () => {
     // lower bound past those rows and, because the bound is inclusive below,
     // they would never be selected again -- a run that is phantom today and
     // succeeds tomorrow would keep its step logs until the floor pass.
-    const skipped = new Date("2026-08-18T12:00:00.000Z");
-    state.selectPages = [ORG_ROWS, [], [], []];
+    const skipped = new Date(FREE_CUTOFF.getTime() - SLICE_MS / 2);
+    state.selectPages = [ORG_ROWS, [], [watermarkRow(1)], []];
     state.oldest = [skipped];
 
     await runRetentionPurge(enabledConfig(), NOW);
@@ -445,7 +527,7 @@ describe("runRetentionPurge", () => {
   });
 
   it("advances to the cutoff when it skipped nothing", async () => {
-    state.selectPages = [ORG_ROWS, [], [], []];
+    state.selectPages = [ORG_ROWS, [], [watermarkRow(1)], []];
     state.oldest = [null];
 
     await runRetentionPurge(enabledConfig(), NOW);
@@ -559,7 +641,14 @@ describe("runRetentionPurge", () => {
   it("retires a run row and its children in one transaction", async () => {
     // Nothing until the run-row pass: orgs, floor, watermarks, free group,
     // soft-deleted, then one execution.
-    state.selectPages = [ORG_ROWS, [], [], [], [], [{ id: "exec-1" }]];
+    state.selectPages = [
+      ORG_ROWS,
+      [],
+      [watermarkRow(1)],
+      [],
+      [],
+      [{ id: "exec-1" }],
+    ];
 
     const result = await runRetentionPurge(
       enabledConfig({ executionsEnabled: true }),
@@ -570,7 +659,9 @@ describe("runRetentionPurge", () => {
     );
 
     expect(executionPass?.rows).toBe(1);
-    expect(state.transactions).toBe(1);
+    // One for the run row and its children, one for the plan-window pass
+    // reading its skipped run under the tighter timeout.
+    expect(state.transactions).toBe(2);
     // Children first: nothing cascades, so a parent delete with a surviving
     // child simply fails. The watermark write from the plan-window pass is not
     // part of that ordering.
@@ -614,7 +705,7 @@ describe("runRetentionPurge", () => {
       { length: PLAN_WINDOW_WORKFLOW_CHUNK + 1 },
       (_, index) => ({ id: `wf-${index}` })
     );
-    state.selectPages = [ORG_ROWS, [], [], workflowRows];
+    state.selectPages = [ORG_ROWS, [], [watermarkRow(1)], workflowRows];
 
     await runRetentionPurge(enabledConfig(), NOW);
 
@@ -628,7 +719,7 @@ describe("runRetentionPurge", () => {
     state.selectPages = [
       ORG_ROWS,
       [],
-      [],
+      [watermarkRow(1)],
       [{ id: "wf-1" }],
       [{ id: "exec-1" }],
       [{ id: "log-1" }],
@@ -639,12 +730,19 @@ describe("runRetentionPurge", () => {
     const settings = state.writes
       .filter((write) => write.op === "execute")
       .map((write) => JSON.stringify(write.table))
-      .filter((statement) => statement.includes("enable_seqscan = off"));
+      .filter((statement) => statement.includes("enable_seqscan"));
 
-    // The runs of the one workflow chunk, the page of step logs, and the empty
-    // page that ends the drain, each in a short transaction of its own.
-    expect(settings).toHaveLength(3);
-    expect(state.transactions).toBe(3);
+    // The runs of the one workflow chunk, the page of step logs, the empty page
+    // that ends the drain, and the skipped-run read, each in a short
+    // transaction of its own.
+    expect(settings).toHaveLength(4);
+    expect(state.transactions).toBe(4);
+    // The two reads whose plan can leave the per-workflow index carry the
+    // tighter timeout, because a cancellation is how the drain learns its slice
+    // is too wide. The step-log reads are keyed by run id and do not.
+    expect(
+      settings.filter((statement) => statement.includes("statement_timeout"))
+    ).toHaveLength(2);
   });
 
   it("carries on past an organization that fails, then fails the run", async () => {
@@ -672,8 +770,8 @@ describe("runRetentionPurge", () => {
         },
       ],
       [], // floor pass
-      [], // watermarks
-      new Error("canceling statement due to statement timeout"), // org-a workflows
+      [watermarkRow(1, "org-b")], // watermarks
+      new Error("relation does not exist"), // org-a workflows
       [], // org-b workflows
       [], // soft-delete pass
       [{ id: "log-9", at: "2026-08-01 10:00:00.000001" }], // output_raw pass
@@ -705,7 +803,7 @@ describe("runRetentionPurge", () => {
     state.selectPages = [
       ORG_ROWS,
       [], // floor pass
-      [], // watermarks: none, so the walk starts at the epoch
+      [watermarkRow(1)], // watermarks: one initial slice left to walk
       workflowRows,
       [], // slice 1, first chunk
       OVERFLOW, // slice 1, second chunk: too many
@@ -723,10 +821,277 @@ describe("runRetentionPurge", () => {
       PLAN_WINDOW_WORKFLOW_CHUNK,
       1,
     ]);
-    const middle = new Date(Math.floor(FREE_CUTOFF.getTime() / 2));
+    const middle = new Date(FREE_CUTOFF.getTime() - SLICE_MS / 2);
     expect(state.watermarks).toEqual([middle, FREE_CUTOFF]);
     // The runs of the read that overflowed were never acted on.
     expect(state.writes.filter((write) => write.op === "delete")).toEqual([]);
+  });
+
+  it("never reads a slice wider than the cap, however wide the range", async () => {
+    // KEEP-1360: the slice used to be the whole remaining range, and the
+    // doubling used to climb back to it. Over a range an organization's runs
+    // cannot fill a page early in, the planner stops using
+    // (workflow_id, started_at) and walks the global started_at index instead -
+    // measured on prod at 3.4 s warm and past the pool timeout cold. The cap
+    // makes that width unreachable rather than usually caught.
+    state.selectPages = [ORG_ROWS, [], [watermarkRow(5)], [{ id: "wf-1" }]];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    const spans = sliceSpans();
+    expect(spans).toHaveLength(5);
+    expect(new Set(spans)).toEqual(new Set([SLICE_MS]));
+    // And the walk still reaches the end of the range.
+    expect(sliceReads().at(-1)?.[1]).toEqual(FREE_CUTOFF);
+    expect(state.watermarks.at(-1)).toEqual(FREE_CUTOFF);
+  });
+
+  it("narrows the slice a read timed out on, and never widens back into it", async () => {
+    // A cancelled read is how a slice too wide for the per-workflow index
+    // announces itself. Halving alone would not be enough: the doubling after
+    // the next drained slice would walk straight back into the width that was
+    // just cancelled and spend the timeout again on every sparse stretch.
+    state.selectPages = [
+      ORG_ROWS,
+      [], // floor pass
+      [watermarkRow(2)], // two initial slices left to walk
+      [{ id: "wf-1" }],
+      cancelledRead(), // the first slice, at the initial width
+    ];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    const half = SLICE_MS / 2;
+    expect(sliceSpans()).toEqual([SLICE_MS, half, half, half, half]);
+    // Narrowed, not abandoned: the organization still drains to its cutoff.
+    expect(state.watermarks.at(-1)).toEqual(FREE_CUTOFF);
+  });
+
+  it("fails an organization whose reads keep timing out at the shortest slice", async () => {
+    // Narrowing has the same floor halving does. Past it the drain refuses
+    // rather than retrying a width that has already proved unanswerable.
+    state.selectPages = [
+      ORG_ROWS,
+      [], // floor pass
+      [
+        {
+          organizationId: "org-free",
+          executionsPurgedThrough: new Date(
+            FREE_CUTOFF.getTime() - PLAN_WINDOW_MIN_CEILING_MS * 1.5
+          ),
+        },
+      ],
+      [{ id: "wf-1" }],
+      cancelledRead(), // an hour and a half
+      cancelledRead(), // the floor itself
+    ];
+
+    const error = await runRetentionPurge(enabledConfig(), NOW).catch(
+      (caught: unknown) => caught
+    );
+
+    expect(error).toBeInstanceOf(RetentionPurgeIncompleteError);
+    expect(
+      (error as RetentionPurgeIncompleteError).failedOrganizationIds
+    ).toEqual(["org-free"]);
+    expect(state.watermarks).toEqual([]);
+  });
+
+  it("fails an organization whose runs read is refused for any other reason", async () => {
+    // Only a cancelled statement means "too wide". Everything else must still
+    // stop the organization rather than be retried on a narrower slice.
+    state.selectPages = [
+      ORG_ROWS,
+      [], // floor pass
+      [watermarkRow(1)],
+      [{ id: "wf-1" }],
+      new Error("deadlock detected"),
+    ];
+
+    const error = await runRetentionPurge(enabledConfig(), NOW).catch(
+      (caught: unknown) => caught
+    );
+
+    expect(error).toBeInstanceOf(RetentionPurgeIncompleteError);
+    expect(
+      (error as RetentionPurgeIncompleteError).failedOrganizationIds
+    ).toEqual(["org-free"]);
+    expect(sliceSpans()).toEqual([SLICE_MS]);
+    expect(state.watermarks).toEqual([]);
+  });
+
+  it("reads the oldest still-resumable run once per slice, anchored at the organization's lower bound", async () => {
+    // Per slice, and over [from, sliceEnd) rather than the slice: setPurgeWatermark
+    // upserts with GREATEST, so a slice looking only at its own window would find
+    // no skipped run, write its own sliceEnd, and carry the watermark past one an
+    // earlier slice stopped at.
+    state.selectPages = [ORG_ROWS, [], [watermarkRow(2)], [{ id: "wf-1" }]];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    const reads = resumableReads();
+    const from = new Date(FREE_CUTOFF.getTime() - 2 * SLICE_MS);
+    expect(state.oldestCalls).toBe(2);
+    expect(reads).toEqual([
+      [from, new Date(from.getTime() + SLICE_MS)],
+      [from, FREE_CUTOFF],
+    ]);
+  });
+
+  it("recovers the ceiling once enough slices drain with no cancellation", async () => {
+    // A cancelled read is not proof of a planner flip, so the ceiling must be
+    // able to climb back. Gated, so a width that really is bad costs one
+    // re-probe per PLAN_WINDOW_CEILING_RECOVERY_SLICES slices, not one per slice.
+    state.selectPages = [
+      ORG_ROWS,
+      [], // floor pass
+      [watermarkRow(12)],
+      [{ id: "wf-1" }],
+      cancelledRead(), // the first slice, at the cap
+    ];
+
+    await runRetentionPurge(enabledConfig(), NOW);
+
+    const half = SLICE_MS / 2;
+    const spans = sliceSpans();
+    expect(spans[0]).toBe(SLICE_MS);
+    expect(spans.slice(1, 1 + PLAN_WINDOW_CEILING_RECOVERY_SLICES)).toEqual(
+      Array.from({ length: PLAN_WINDOW_CEILING_RECOVERY_SLICES }, () => half)
+    );
+    // Back at the cap, not past it.
+    expect(spans[1 + PLAN_WINDOW_CEILING_RECOVERY_SLICES]).toBe(SLICE_MS);
+  });
+
+  it("ends the drain when the skipped-run read is cancelled after a slice has drained", async () => {
+    // Narrowing cannot answer this read: it covers [from, sliceEnd), so its
+    // width is dominated by (sliceStart - from), which the slice width does not
+    // change. Stopping does converge, because the next run starts at the last
+    // watermark this one wrote.
+    state.selectPages = [ORG_ROWS, [], [watermarkRow(3)], [{ id: "wf-1" }]];
+    state.oldest = [null, cancelledRead()];
+
+    const result = await runRetentionPurge(enabledConfig(), NOW);
+    const planPass = result.passes.find(
+      (pass) => pass.pass === "logs_plan_window"
+    );
+    const from = FREE_CUTOFF.getTime() - 3 * SLICE_MS;
+
+    // The first slice drained and kept its watermark; the second stopped the
+    // drain and claimed nothing.
+    expect(state.watermarks).toEqual([new Date(from + SLICE_MS)]);
+    // Progress was made, so this is not a failure.
+    expect(planPass?.failedOrganizationIds).toBeUndefined();
+    // And it did not re-walk the slice it had already drained.
+    expect(sliceSpans()).toEqual([SLICE_MS, SLICE_MS]);
+  });
+
+  it("fails an organization whose watermark was written but never moved", async () => {
+    // The write is not the progress. setPurgeWatermark upserts with GREATEST, and
+    // a run still in a resumable status pins the claim to its own started_at --
+    // which can be `from` itself, so the write lands and changes nothing. Both
+    // halves arrive together: the resumable runs that pin the claim are the same
+    // rows that make the skipped-run read expensive. Counting writes would read
+    // this as progress and stop quietly, and the organization would stop at the
+    // same slice on every run while the run reported success.
+    const from = new Date(FREE_CUTOFF.getTime() - 3 * SLICE_MS);
+    state.selectPages = [ORG_ROWS, [], [watermarkRow(3)], [{ id: "wf-1" }]];
+    state.oldest = [from, cancelledRead()];
+
+    const error = await runRetentionPurge(enabledConfig(), NOW).catch(
+      (caught: unknown) => caught
+    );
+
+    // Slice 1 claimed `from` again, so the lower bound never moved.
+    expect(state.watermarks).toEqual([from]);
+    expect(error).toBeInstanceOf(RetentionPurgeIncompleteError);
+    expect(
+      (error as RetentionPurgeIncompleteError).failedOrganizationIds
+    ).toEqual(["org-free"]);
+  });
+
+  it("fails an organization whose skipped-run read is cancelled before any slice drains", async () => {
+    // With nothing written, the next run would start in the same place and
+    // stall the same way. That read's cost does not depend on its range when the
+    // planner answers it from the status index, so this is the likely shape
+    // rather than a rare one, and it has to be reported rather than repeated.
+    state.selectPages = [ORG_ROWS, [], [watermarkRow(3)], [{ id: "wf-1" }]];
+    state.oldest = [cancelledRead()];
+
+    const error = await runRetentionPurge(enabledConfig(), NOW).catch(
+      (caught: unknown) => caught
+    );
+
+    expect(error).toBeInstanceOf(RetentionPurgeIncompleteError);
+    expect(
+      (error as RetentionPurgeIncompleteError).failedOrganizationIds
+    ).toEqual(["org-free"]);
+    expect(state.watermarks).toEqual([]);
+  });
+
+  it("skips every organization behind the one the budget stopped, and every later group", async () => {
+    // The consequence that makes a crawling organization worse than a slow one.
+    // In purgeLogsPastPlanWindow, budgetExhausted breaks out of the loop over a
+    // group's organizations and then out of the loop over groups, so one
+    // organization that cannot finish takes every organization behind it down
+    // with it for that run -- and the report says only "budgetExhausted", never
+    // which ones were skipped.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-07T03:48:00.000Z"));
+    state.selectPages = [
+      // Two organizations in the 7-day group, one in a 30-day group behind it.
+      [
+        {
+          organizationId: "org-a",
+          plan: "free",
+          tier: null,
+          planOverrides: null,
+        },
+        {
+          organizationId: "org-b",
+          plan: "free",
+          tier: null,
+          planOverrides: null,
+        },
+        {
+          organizationId: "org-pro",
+          plan: "pro",
+          tier: null,
+          planOverrides: { logRetentionDays: 30 },
+        },
+        {
+          organizationId: "org-ent",
+          plan: "enterprise",
+          tier: null,
+          planOverrides: null,
+        },
+      ],
+      [], // floor pass
+      [watermarkRow(1, "org-a"), watermarkRow(1, "org-b")], // 7-day group
+      [{ id: "wf-a" }], // org-a's workflows
+      () => {
+        // org-a's only chunk read burns the whole budget.
+        vi.setSystemTime(new Date("2026-09-07T04:00:00.000Z"));
+        return [];
+      },
+    ];
+
+    const result = await runRetentionPurge(
+      enabledConfig({ maxRuntimeMs: 60_000 }),
+      NOW
+    );
+    const planPass = result.passes.find(
+      (pass) => pass.pass === "logs_plan_window"
+    );
+
+    expect(planPass?.budgetExhausted).toBe(true);
+    // The 30-day group was never entered: the group loop broke, so its window
+    // is absent from the report rather than present with zero rows.
+    expect(planPass?.windows?.map((window) => window.retentionDays)).toEqual([
+      7,
+    ]);
+    // And the 7-day group reports two organizations while only org-a was read.
+    expect(planPass?.windows?.[0].organizationCount).toBe(2);
+    expect(workflowChunkReads()).toEqual([["wf-a"]]);
   });
 
   it("keeps the watermark of the last drained slice when the budget runs out", async () => {
@@ -735,7 +1100,7 @@ describe("runRetentionPurge", () => {
     state.selectPages = [
       ORG_ROWS,
       [], // floor pass
-      [], // watermarks
+      [watermarkRow(1)], // watermarks
       [{ id: "wf-1" }],
       OVERFLOW, // whole range: too many
       [], // first half drains
@@ -756,7 +1121,7 @@ describe("runRetentionPurge", () => {
 
     expect(planPass?.budgetExhausted).toBe(true);
     expect(state.watermarks).toEqual([
-      new Date(Math.floor(FREE_CUTOFF.getTime() / 2)),
+      new Date(FREE_CUTOFF.getTime() - SLICE_MS / 2),
     ]);
   });
 
@@ -822,7 +1187,7 @@ describe("runRetentionPurge", () => {
     // shape that cannot finish on a production-sized table.
     state.selectPages = [
       ORG_ROWS,
-      [], // watermarks (a dry run's floor pass counts, it does not page)
+      [watermarkRow(1)], // watermarks (a dry run's floor pass counts, it does not page)
       [{ id: "wf-1" }],
       [{ id: "exec-1" }, { id: "exec-2" }],
     ];

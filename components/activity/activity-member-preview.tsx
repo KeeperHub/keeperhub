@@ -29,6 +29,9 @@ function buildSampleEvents(now: number): SecurityAuditEvent[] {
         email: "jordan@example.com",
         role: "admin",
       },
+      // Shows how an edit made with a shared key reads: attributed to the
+      // key's creator, labelled with the key that actually made it.
+      credential: { authMethod: "api-key", apiKeyName: "Automation key" },
     },
     {
       id: "sample-2",
@@ -46,6 +49,7 @@ function buildSampleEvents(now: number): SecurityAuditEvent[] {
         email: "sam@example.com",
         role: "owner",
       },
+      credential: { authMethod: "session", apiKeyName: null },
     },
     {
       id: "sample-3",
@@ -63,6 +67,7 @@ function buildSampleEvents(now: number): SecurityAuditEvent[] {
         email: "avery@example.com",
         role: "owner",
       },
+      credential: { authMethod: "session", apiKeyName: null },
     },
     {
       id: "sample-4",
@@ -80,6 +85,7 @@ function buildSampleEvents(now: number): SecurityAuditEvent[] {
         email: "jordan@example.com",
         role: "admin",
       },
+      credential: { authMethod: "session", apiKeyName: null },
     },
   ];
 }

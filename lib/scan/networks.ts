@@ -17,4 +17,5 @@ export const SCAN_NETWORK_IDS: readonly number[] = [
   10, // Optimism
   137, // Polygon
   4217, // Tempo (stablecoin-only — see STABLECOIN_ONLY_SCAN_CHAIN_IDS)
+  560_048, // Ethereum Hoodi
 ] as const;

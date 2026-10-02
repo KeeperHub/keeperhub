@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const DIRECT_ID_PREFIX_REGEX = /^direct-/;
 
@@ -221,7 +221,10 @@ vi.mock("@/lib/web3/sponsored-send-error", () => ({
     mockResolveSponsoredSendError(...args),
 }));
 
-vi.mock("@/lib/web3/sponsorship-feature-flag", () => ({
+vi.mock("@/lib/web3/sponsorship-feature-flag", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/web3/sponsorship-feature-flag")
+  >()),
   isGasSponsorshipEnabled: () => mockIsGasSponsorshipEnabled(),
 }));
 
@@ -263,6 +266,7 @@ import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { RpcRelayTransportError } from "@/lib/rpc/providers/transport-error";
 import { parsePriorityFeeGwei } from "@/lib/web3/gas-defaults";
 import { OnChainPendingError } from "@/lib/web3/onchain-revert";
+import { PreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 // Import mocks for assertion
 import { initializeWalletSigner } from "@/lib/web3/wallet-helpers";
 // Import SUT after all mocks
@@ -286,6 +290,7 @@ const VALID_ABI = JSON.stringify([
 
 const MOCK_EXECUTED_CALL = {
   contractAddress: "0x1234567890123456789012345678901234567890",
+  from: "0x00000000000000000000000000000000000000d1",
   functionName: "transfer",
   functionSignature: "transfer(address,uint256)",
   args: { to: "0xrecipient", amount: "1000" },
@@ -666,6 +671,26 @@ describe("writeContractCore broadcast with an unreadable receipt", () => {
     }
     expect(applyFailOnError(result, false).success).toBe(true);
   });
+
+  it("retains the receipt hash when post-broadcast explorer decoration fails", async () => {
+    mockGetTransactionUrl.mockRejectedValueOnce(
+      new Error("explorer lookup unavailable")
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.transactionHash).toBe("0xhash");
+      expect(result.broadcastAttempted).toBe(true);
+    }
+  });
 });
 
 describe("writeContractCore sponsored-relay failure link", () => {
@@ -717,6 +742,84 @@ describe("writeContractCore sponsored-relay failure link", () => {
       "0xsponsored"
     );
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+});
+
+describe("writeContractCore Sponsor gas toggle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+    mockIsGasSponsorshipEnabled.mockReturnValue(true);
+    mockExecuteSponsoredContractTransaction.mockResolvedValue({
+      transactionHash: "0xsponsored",
+      gasUsed: "21000",
+      gasUsedUnits: "21000",
+      effectiveGasPrice: "1000000000",
+    });
+    mockResolveSponsoredSendError.mockReturnValue({ fallback: true });
+    mockFindExplorerConfig.mockResolvedValue(null);
+    mockExecuteContractCall.mockResolvedValue({
+      hash: "0xhash",
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+    });
+  });
+
+  // clearAllMocks keeps implementations, so the sponsored success set up here
+  // would follow the suite into every later describe.
+  afterEach(() => {
+    mockIsGasSponsorshipEnabled.mockReturnValue(false);
+    mockExecuteSponsoredContractTransaction.mockResolvedValue(null);
+  });
+
+  it("takes the sponsored route when the toggle is unset", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.sponsored).toBe(true);
+      expect(result.transactionHash).toBe("0xsponsored");
+    }
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("signs directly and spends no sponsorship credit when the toggle is off", async () => {
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      sponsorGas: false,
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.transactionHash).toBe("0xhash");
+    }
+    expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
+    expect(mockExecuteContractCall).toHaveBeenCalled();
+  });
+
+  it('reads the "false" string the editor may persist as off', async () => {
+    await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      sponsorGas: "false" as unknown as boolean,
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
+    expect(mockExecuteContractCall).toHaveBeenCalled();
   });
 });
 
@@ -817,5 +920,81 @@ describe("writeContractCore functionArgs shape (#2359)", () => {
     });
     expect(result).toMatchObject({ success: false, errorClass: "user" });
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+});
+
+describe("writeContractCore broadcastAttempted evidence", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+  });
+
+  it("reports broadcastAttempted: false for a tagged pre-broadcast connection refusal", async () => {
+    // The marker is applied by submitSignedTransactionWithFailover at the
+    // broadcast boundary, where provenance is known. This is the evidence
+    // that lets the disposition layer release the key: nothing was sent.
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new PreBroadcastNetworkError(
+        "RPC failed on both endpoints. Primary: ECONNREFUSED. Fallback: ECONNREFUSED",
+        new Error("ECONNREFUSED")
+      )
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.broadcastAttempted).toBe(false);
+      expect(result.transactionHash).toBeUndefined();
+    }
+  });
+
+  it("reports broadcastAttempted: true for a generic send failure", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(new Error("boom"));
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.broadcastAttempted).toBe(true);
+    }
+  });
+
+  it("fails closed on an untagged error whose text matches a connection refusal", async () => {
+    // The blocker regression: an ECONNREFUSED rendered by executeWithFailover
+    // for the post-broadcast receipt poll or the nonce bookkeeping insert is
+    // text-identical to a refused send. Without the tag, the core must NOT
+    // read it as "nothing was sent" -- the transaction may be in the mempool.
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new Error(
+        "RPC failed on both endpoints. Primary: ECONNREFUSED. Fallback: ECONNREFUSED"
+      )
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.broadcastAttempted).toBe(true);
+    }
   });
 });

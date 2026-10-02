@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { parseRunFilters } from "@/lib/analytics/parse-run-filters";
-import { buildRunsQuery } from "@/lib/analytics/runs-query";
+import {
+  buildRunsQuery,
+  MAX_PAGE,
+  runsPageCount,
+} from "@/lib/analytics/runs-query";
 
 function parse(query: string): ReturnType<typeof parseRunFilters> {
   return parseRunFilters(new URLSearchParams(query));
@@ -29,6 +33,11 @@ describe("parseRunFilters", () => {
   it("ignores a negative or non-numeric duration bound", () => {
     expect(parse("durationMin=-5").durationMinMs).toBeUndefined();
     expect(parse("durationMax=soon").durationMaxMs).toBeUndefined();
+    // A blank value is absent, not zero. Number("") is 0, which made
+    // `?durationMax=` filter on duration < 0 and match nothing.
+    expect(parse("durationMax=").durationMaxMs).toBeUndefined();
+    expect(parse("durationMax=%20%20").durationMaxMs).toBeUndefined();
+    expect(parse("durationMin=").durationMinMs).toBeUndefined();
     expect(parse("durationMin=30000").durationMinMs).toBe(30_000);
   });
 
@@ -100,5 +109,35 @@ describe("buildRunsQuery", () => {
   it("leaves page 1 off the query so the first page has a clean URL", () => {
     expect(buildRunsQuery({ range: "24h", page: 1 })).toBe("range=24h");
     expect(buildRunsQuery({ range: "24h", page: 3 })).toContain("page=3");
+  });
+});
+
+describe("runsPageCount", () => {
+  const PAGE_SIZE = 50;
+
+  it("counts every page of a listing that fits under the ceiling", () => {
+    expect(runsPageCount(500, PAGE_SIZE)).toBe(10);
+    expect(runsPageCount(501, PAGE_SIZE)).toBe(11);
+    expect(runsPageCount(0, PAGE_SIZE)).toBe(1);
+  });
+
+  it("stops at the ceiling the route clamps to", () => {
+    // The route clamps page at MAX_PAGE, so page MAX_PAGE + 1 comes back as
+    // MAX_PAGE with the same rows. Counting past it left Next enabled on a
+    // page the server would not advance to and the click did nothing.
+    expect(runsPageCount(MAX_PAGE * PAGE_SIZE, PAGE_SIZE)).toBe(MAX_PAGE);
+    expect(runsPageCount(MAX_PAGE * PAGE_SIZE + 1, PAGE_SIZE)).toBe(MAX_PAGE);
+    expect(runsPageCount(5_000_000, PAGE_SIZE)).toBe(MAX_PAGE);
+  });
+
+  it("leaves the last reachable row at MAX_PAGE * pageSize", () => {
+    const lastPage = runsPageCount(5_000_000, PAGE_SIZE);
+    expect(lastPage * PAGE_SIZE).toBe(10_000);
+  });
+
+  it("never returns a page count the pager cannot render", () => {
+    // pageSize 0 is a legal count probe, and total / 0 is Infinity.
+    expect(runsPageCount(500, 0)).toBe(1);
+    expect(runsPageCount(Number.NaN, PAGE_SIZE)).toBe(1);
   });
 });

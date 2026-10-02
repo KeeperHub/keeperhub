@@ -1,3 +1,5 @@
+import { hasIndependentTokenList } from "@/lib/web3/independent-token-list-chains";
+
 // Single source of truth for Tempo's categorical no-native-row rule and for
 // which chains can have their native balance mirrored by a supported-token
 // row -- see lib/wallet/build-withdrawable-assets.ts.
@@ -8,9 +10,10 @@ export {
 
 export { ETHEREUM_MAINNET_CHAIN_ID as MAINNET_CHAIN_ID } from "@/lib/chains/ids";
 
-// The independent-token-list set lives in lib/chain-utils.ts so the API route
-// that serves the modal reads the same one.
-export { hasIndependentTokenList } from "@/lib/chain-utils";
+// Re-exported so wallet components keep importing chain helpers from one
+// place; the list itself lives in lib/web3 because the supported-tokens API
+// route needs the same answer.
+export { hasIndependentTokenList };
 
 // Display order for the wallet UI. Mainnets land at indexes 0-9, testnets at
 // 10-19, anything else falls back to 999 and sorts after the curated list.

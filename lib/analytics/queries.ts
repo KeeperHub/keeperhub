@@ -42,6 +42,7 @@ import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
 import { likePattern } from "./like-pattern";
+import { MAX_RUN_LIMIT } from "./runs-query";
 import type { BucketSqlInterval } from "./time-range";
 import {
   getBucketInterval,
@@ -1446,7 +1447,7 @@ export async function getUnifiedRuns(
   } = options;
   const rangeStart = getTimeRangeStart(range, customStart);
   const rangeEnd = getTimeRangeEnd(customEnd);
-  const pageLimit = Math.min(limit, 100);
+  const pageLimit = Math.min(limit, MAX_RUN_LIMIT);
   const wanted = resolveSources(filters.sources, projectId);
   const offset = cursor ? 0 : (page - 1) * pageLimit;
 

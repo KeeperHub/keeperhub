@@ -94,16 +94,23 @@ const recordIdempotentResponseMock = vi.fn(
   (_outcome: unknown, response: Response, _disposition?: string) =>
     Promise.resolve(response)
 );
-vi.mock("@/lib/idempotency", () => ({
-  beginIdempotentFromRequest: vi.fn().mockResolvedValue({ kind: "proceed" }),
-  idempotencyEarlyResponse: vi.fn().mockReturnValue(null),
-  recordIdempotentResponse: (
-    outcome: unknown,
-    response: Response,
-    disposition?: string
-  ) => recordIdempotentResponseMock(outcome, response, disposition),
-  withIdempotencyHeartbeat: (_outcome: unknown, fn: () => unknown) => fn(),
-}));
+vi.mock("@/lib/idempotency", async () => {
+  const { dispositionForExecutionOutcome } = await vi.importActual<
+    typeof import("@/lib/idempotency-disposition")
+  >("@/lib/idempotency-disposition");
+
+  return {
+    beginIdempotentFromRequest: vi.fn().mockResolvedValue({ kind: "proceed" }),
+    dispositionForExecutionOutcome,
+    idempotencyEarlyResponse: vi.fn().mockReturnValue(null),
+    recordIdempotentResponse: (
+      outcome: unknown,
+      response: Response,
+      disposition?: string
+    ) => recordIdempotentResponseMock(outcome, response, disposition),
+    withIdempotencyHeartbeat: (_outcome: unknown, fn: () => unknown) => fn(),
+  };
+});
 
 function protocolWithSupplyInputs(
   inputs: Array<{
@@ -329,6 +336,100 @@ describe("buildProtocolFunctionArgs", () => {
     expect(result).toEqual({
       ok: true,
       functionArgs: JSON.stringify([JSON.stringify(["0xA", "0xB"])]),
+    });
+  });
+
+  // Direct execution is the third consumer of a protocol array input. Sending
+  // the elements as one string leaves ethers with text where it expects an
+  // array, so every array action is unusable through this route and MCP.
+  it("keeps the elements of an array input", async () => {
+    getProtocolMock.mockReturnValue(
+      protocolWithSupplyInputs([
+        { name: "requestIds", type: "uint256[]" },
+        { name: "hints", type: "uint256[]" },
+      ])
+    );
+
+    const { buildProtocolFunctionArgs } = await import(
+      "@/app/api/execute/_lib/protocol-function-args"
+    );
+    const result = buildProtocolFunctionArgs(
+      { requestIds: ["135184"], hints: ["1216"] },
+      "test-protocol",
+      "pool",
+      "supply"
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      functionArgs: JSON.stringify([["135184"], ["1216"]]),
+    });
+  });
+
+  it("reads a JSON array string for an array input as an array", async () => {
+    getProtocolMock.mockReturnValue(
+      protocolWithSupplyInputs([{ name: "requestIds", type: "uint256[]" }])
+    );
+
+    const { buildProtocolFunctionArgs } = await import(
+      "@/app/api/execute/_lib/protocol-function-args"
+    );
+    const result = buildProtocolFunctionArgs(
+      { requestIds: '["135184","135185"]' },
+      "test-protocol",
+      "pool",
+      "supply"
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      functionArgs: JSON.stringify([["135184", "135185"]]),
+    });
+  });
+
+  it("reads a legacy scalar for an array input as a one-item array", async () => {
+    getProtocolMock.mockReturnValue(
+      protocolWithSupplyInputs([{ name: "gauges", type: "address[]" }])
+    );
+
+    const { buildProtocolFunctionArgs } = await import(
+      "@/app/api/execute/_lib/protocol-function-args"
+    );
+    const result = buildProtocolFunctionArgs(
+      { gauges: "0x1F98431c8aD98523631AE4a59f267346ea31F984" },
+      "test-protocol",
+      "pool",
+      "supply"
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      functionArgs: JSON.stringify([
+        ["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
+      ]),
+    });
+  });
+
+  it("normalizes an array default for a blank optional input", async () => {
+    getProtocolMock.mockReturnValue(
+      protocolWithSupplyInputs([
+        { name: "requestIds", type: "uint256[]", default: '["12","34"]' },
+      ])
+    );
+
+    const { buildProtocolFunctionArgs } = await import(
+      "@/app/api/execute/_lib/protocol-function-args"
+    );
+    const result = buildProtocolFunctionArgs(
+      {},
+      "test-protocol",
+      "pool",
+      "supply"
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      functionArgs: JSON.stringify([["12", "34"]]),
     });
   });
 });

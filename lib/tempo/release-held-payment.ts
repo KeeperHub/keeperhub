@@ -13,10 +13,12 @@ import "server-only";
 import {
   claimHeldPayment,
   getHeldPaymentForOrg,
+  markBroadcast,
   markConfirmed,
   markFailed,
 } from "@/lib/tempo/held-payments";
 import { getErrorMessage } from "@/lib/utils";
+import { isOnChainPendingError } from "@/lib/web3/onchain-revert";
 import { broadcastStoredTempoTx } from "@/plugins/tempo/steps/tempo-tx-core";
 
 export type ReleaseHeldPaymentResult =
@@ -30,10 +32,16 @@ export type ReleaseHeldPaymentResult =
     }
   | {
       ok: false;
-      reason: "not-found" | "expired" | "not-pending" | "broadcast-failed";
+      reason:
+        | "not-found"
+        | "expired"
+        | "not-pending"
+        | "broadcast-failed"
+        | "broadcast-pending";
       error: string;
       /** Current row status, for surfacing to the caller. */
       status?: string;
+      transactionHash?: string;
     };
 
 export async function releaseHeldPaymentNow(params: {
@@ -66,7 +74,8 @@ export async function releaseHeldPaymentNow(params: {
     return {
       ok: false,
       reason: "not-pending",
-      error: `Held payment ${paymentId} is not pending (status: ${existing.status}); it cannot be broadcast.`,
+      error:
+        "Payment is not in pending state (already released, cancelled, or currently broadcasting).",
       status: existing.status,
     };
   }
@@ -89,6 +98,16 @@ export async function releaseHeldPaymentNow(params: {
       chainId: claimed.chainId,
     };
   } catch (error) {
+    if (isOnChainPendingError(error)) {
+      await markBroadcast(claimed.id, error.transactionHash);
+      return {
+        ok: false,
+        reason: "broadcast-pending",
+        error: error.message,
+        status: "broadcast",
+        transactionHash: error.transactionHash,
+      };
+    }
     const message = getErrorMessage(error);
     await markFailed(claimed.id, message);
     return {

@@ -236,4 +236,58 @@ describe("createWorkflowMcpServer", () => {
     // We verify the slug appears in the registered tool name instead.
     expect(mockRegisterTool.mock.calls[0][0]).toBe("aave-position-monitor");
   });
+
+  it("surfaces Retry-After in error when workflow call endpoint returns 429", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "Concurrency limit reached" }), {
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: { "Retry-After": "30", "content-type": "application/json" },
+      })
+    );
+
+    createWorkflowMcpServer({
+      slug: "aave-position-monitor",
+      listing: baseListing,
+      internalApiBaseUrl: "http://localhost:3000",
+      authHeader: "Bearer kh_test",
+    });
+
+    const handler = mockRegisterTool.mock.calls[0][2] as (
+      args: unknown
+    ) => Promise<unknown>;
+
+    await expect(handler({})).rejects.toThrow(
+      /API call failed: 429 Too Many Requests \(Retry-After: 30s\) - \{"error":"Concurrency limit reached"\}/
+    );
+
+    fetchSpy.mockRestore();
+  });
+
+  it("omits Retry-After token when workflow call 429 omits the header", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "Concurrency limit reached" }), {
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    createWorkflowMcpServer({
+      slug: "aave-position-monitor",
+      listing: baseListing,
+      internalApiBaseUrl: "http://localhost:3000",
+      authHeader: "Bearer kh_test",
+    });
+
+    const handler = mockRegisterTool.mock.calls[0][2] as (
+      args: unknown
+    ) => Promise<unknown>;
+
+    await expect(handler({})).rejects.toThrow(
+      'API call failed: 429 Too Many Requests - {"error":"Concurrency limit reached"}'
+    );
+
+    fetchSpy.mockRestore();
+  });
 });

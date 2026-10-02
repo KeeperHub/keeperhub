@@ -91,7 +91,11 @@ export type TransferSplTokenResult =
       recipientTokenAccount: string;
       createdRecipientAccount: boolean;
     }
-  | { success: false; error: string };
+  | {
+      success: false;
+      error: string;
+      broadcastAttempted?: boolean;
+    };
 
 type SolanaAccount = AccountInfo<Buffer> | null;
 
@@ -536,11 +540,15 @@ async function executeTransfer(
         chain_id: String(chainId),
       }
     );
-    return { success: false, error: getErrorMessage(error) };
+    return {
+      success: false,
+      error: getErrorMessage(error),
+      broadcastAttempted: true,
+    };
   }
 }
 
-export async function transferSplTokenCore(
+async function transferSplTokenCoreImpl(
   input: TransferSplTokenCoreInput
 ): Promise<TransferSplTokenResult> {
   const { network, mint, recipientAddress, amount, _context } = input;
@@ -614,4 +622,19 @@ export async function transferSplTokenCore(
     amount,
     solanaSigner: wallet.signer,
   });
+}
+
+/**
+ * Marks every failure returned before submit as definite pre-broadcast evidence.
+ * Any path after submit begins must set broadcastAttempted itself, otherwise the
+ * wrapper would incorrectly convert an ambiguous send into releasable evidence.
+ */
+export async function transferSplTokenCore(
+  input: TransferSplTokenCoreInput
+): Promise<TransferSplTokenResult> {
+  const result = await transferSplTokenCoreImpl(input);
+  if (result.success || result.broadcastAttempted !== undefined) {
+    return result;
+  }
+  return { ...result, broadcastAttempted: false };
 }

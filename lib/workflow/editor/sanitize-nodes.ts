@@ -117,6 +117,13 @@ function normalizeConditionRule(
   };
 }
 
+/** Read a group's logic without regard to case; anything unrecognised stays the stricter AND */
+function normalizeLogic(raw: unknown): "AND" | "OR" {
+  return typeof raw === "string" && raw.trim().toUpperCase() === "OR"
+    ? "OR"
+    : "AND";
+}
+
 /** Normalize a condition group, recursively handling nested groups */
 function normalizeConditionGroup(
   raw: Record<string, unknown>
@@ -124,7 +131,7 @@ function normalizeConditionGroup(
   const rules = Array.isArray(raw.rules) ? raw.rules : [];
   return {
     id: (raw.id as string) || nanoid(),
-    logic: raw.logic === "OR" ? "OR" : "AND",
+    logic: normalizeLogic(raw.logic),
     rules: rules.map((item: Record<string, unknown>) => {
       if ("rules" in item || "logic" in item) {
         return normalizeConditionGroup(item);
@@ -134,39 +141,105 @@ function normalizeConditionGroup(
   };
 }
 
+/** The resolver reads `condition` only when it is a non-blank string */
+function hasConditionExpression(config: Record<string, unknown>): boolean {
+  return typeof config.condition === "string" && config.condition.trim() !== "";
+}
+
+/** Fold an array-shaped group (broken format from some MCP outputs) into a single group */
+function toGroupObject(
+  raw: unknown,
+  logicalOperator: unknown
+): Record<string, unknown> | undefined {
+  if (Array.isArray(raw)) {
+    return {
+      id: nanoid(),
+      logic: normalizeLogic(logicalOperator),
+      rules: raw.flatMap((entry: Record<string, unknown>) =>
+        Array.isArray(entry.rules) ? entry.rules : [entry]
+      ),
+    };
+  }
+  return typeof raw === "object" && raw !== null
+    ? (raw as Record<string, unknown>)
+    : undefined;
+}
+
 /**
  * Normalize conditionConfig inside a Condition node's config.
  * Fixes: missing ids, wrong operator formats, field name aliases, array-shaped groups.
+ *
+ * Some producers (certain MCP/import/AI-generated paths) emit `group` at the config root,
+ * matching the `ConditionConfig` type's own literal `{ group }` shape, instead of nested
+ * under `conditionConfig`, which is what resolveConditionExpression actually reads, so
+ * those rules never run. Fold a root-level group in under the same rule as migration 0158:
+ * only where there is no expression for it to outrank.
+ *
+ * Nothing here removes a key it has not copied. This runs on every autosave, including
+ * mid-edit, so a rule group is only ever moved, never dropped, and the node the resolver
+ * would rather read always wins over one it has never read.
  */
 function normalizeConditionConfig(
   config: Record<string, unknown>
 ): Record<string, unknown> {
-  if (config.actionType !== "Condition" || !config.conditionConfig) {
+  if (config.actionType !== "Condition") {
     return config;
   }
 
-  const conditionConfig = config.conditionConfig as Record<string, unknown>;
-  let group = conditionConfig.group as
+  const nestedConditionConfig = config.conditionConfig as
     | Record<string, unknown>
-    | Record<string, unknown>[];
+    | undefined;
 
-  // Handle group as array (broken format from some MCP outputs)
-  if (Array.isArray(group)) {
-    group = {
-      id: nanoid(),
-      logic: (conditionConfig.logicalOperator as string) ?? "AND",
-      rules: group.flatMap((g: Record<string, unknown>) =>
-        Array.isArray(g.rules) ? g.rules : [g]
-      ),
-    };
-  }
+  // Check the nested config's own `group`, not just the wrapper: a `conditionConfig` of
+  // `{}` is truthy but has nothing to normalize, so a root-level group still gets its turn.
+  const nestedGroup = nestedConditionConfig?.group;
+  const rootGroup = config.group;
 
-  if (typeof group !== "object" || group === null) {
+  if (nestedGroup === undefined && rootGroup === undefined) {
     return config;
   }
+
+  if (nestedGroup !== undefined) {
+    const nested = toGroupObject(
+      nestedGroup,
+      nestedConditionConfig?.logicalOperator
+    );
+    // A root-level `group` beside it is left where it is: the resolver never reads it, and
+    // it may be the only copy of those rules.
+    return nested
+      ? {
+          ...config,
+          conditionConfig: { group: normalizeConditionGroup(nested) },
+        }
+      : config;
+  }
+
+  // An expression already decides this node, so the root-level group is stale rather than a
+  // fold candidate, and promoting it would start evaluating rules the author replaced.
+  // Migration 0158 deleted the stale key at that point; a save path cannot, because it
+  // cannot tell a stale group from the only copy, so both keys are left untouched.
+  if (hasConditionExpression(config)) {
+    return config;
+  }
+
+  const group = toGroupObject(
+    rootGroup,
+    nestedConditionConfig?.logicalOperator ?? config.logicalOperator
+  );
+  if (!group) {
+    return config;
+  }
+
+  // Drop the stray root-level copies now that they have been folded in, so they cannot
+  // drift out of sync with the copy the resolver reads.
+  const {
+    group: _rootGroup,
+    logicalOperator: _rootLogicalOperator,
+    ...rest
+  } = config;
 
   return {
-    ...config,
+    ...rest,
     conditionConfig: {
       group: normalizeConditionGroup(group),
     },

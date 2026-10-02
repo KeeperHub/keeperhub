@@ -18,6 +18,7 @@ import {
   isWriteActionType,
 } from "@/lib/mcp/action-type";
 import {
+  type ValidateWorkflowOptions,
   type ValidationIssue,
   type ValidationResult,
   type ValidatorWorkflow,
@@ -27,9 +28,8 @@ import { VALIDATION_WARNING_CODES } from "@/lib/mcp/validate-workflow-codes";
 import { isTemplateReference } from "@/lib/mcp/validate-workflow-web3";
 import { sleep } from "@/lib/sleep";
 
-export type ValidateWorkflowDeepOptions = {
-  /** Chain IDs to consider valid (passed through to the fast tier when 48-02 lands). */
-  chainIds?: Set<number>;
+/** The fast-tier options are passed through, so deepCheck reports a superset. */
+export type ValidateWorkflowDeepOptions = ValidateWorkflowOptions & {
   /** Per-call resolveAbi timeout (ms). Default 2000. */
   perCallTimeoutMs?: number;
   /** Aggregate deep-check deadline (ms). Default 3000. */
@@ -337,7 +337,7 @@ export async function validateWorkflowDeep(
   workflow: ValidatorWorkflow,
   opts: ValidateWorkflowDeepOptions = {}
 ): Promise<ValidationResult> {
-  const fast = validateWorkflow(workflow);
+  const fast = validateWorkflow(workflow, opts);
   const refs = collectContractRefs(workflow.nodes);
   if (refs.length === 0) {
     return fast;

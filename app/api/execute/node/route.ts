@@ -9,6 +9,7 @@ import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { integrations } from "@/lib/db/schema";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   PROCESSING_TTL_MS as IDEMPOTENCY_PROCESSING_TTL_MS,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
@@ -37,6 +38,7 @@ import { checkRateLimit } from "../_lib/rate-limit";
 import { parseNodeNativeValueWei } from "../_lib/reserved-value";
 import {
   capRetriesByDeclaration,
+  DEFAULT_MAX_RETRIES,
   DEFAULT_TIMEOUT_MS as DEFAULT_RETRY_TIMEOUT_MS,
   effectiveMaxRetries,
   executeWithRetry,
@@ -44,6 +46,7 @@ import {
   type TransactionResult,
   transactionRetryOptions,
 } from "../_lib/retry";
+import { refuseSimulateBody, rejectSimulateQuery } from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import type { NodeExecuteRequest, RetryConfig } from "../_lib/types";
 import { requireWallet } from "../_lib/wallet-check";
@@ -82,13 +85,33 @@ function validateRetryConfig(
     };
   }
 
-  const attempts = ((r.maxRetries as number | undefined) ?? 0) + 1;
+  // Both defaults must match what resolveConfig will apply, or the budget is
+  // measured against a run that never happens: an absent maxRetries executes
+  // as DEFAULT_MAX_RETRIES, so defaulting it to 0 here admitted four times the
+  // ceiling this check exists to enforce.
+  const attempts =
+    ((r.maxRetries as number | undefined) ?? DEFAULT_MAX_RETRIES) + 1;
   const perAttempt =
     (r.timeoutMs as number | undefined) ?? DEFAULT_RETRY_TIMEOUT_MS;
   if (attempts * perAttempt > MAX_RETRY_BUDGET_MS) {
+    // State the effective attempt count, and say where it came from when the
+    // caller did not set it - otherwise the arithmetic reads as
+    // self-contradicting to someone who sent no maxRetries.
+    //
+    // Naming maxRetries: 0 matters more than the arithmetic. The apparent
+    // remedy is to lower timeoutMs, and that is the one change that can turn
+    // a slow web3 write into several: withTimeout races a setTimeout rather
+    // than cancelling, so a timed-out attempt keeps running and can still
+    // broadcast while the next attempt signs at the next nonce.
+    const defaulted =
+      r.maxRetries === undefined
+        ? ` (maxRetries defaults to ${DEFAULT_MAX_RETRIES})`
+        : "";
     return {
       valid: false,
-      error: `retry budget (timeoutMs x (maxRetries + 1)) must not exceed ${MAX_RETRY_BUDGET_MS}ms`,
+      error:
+        `retry budget exceeded: timeoutMs ${perAttempt} x ${attempts} attempts${defaulted} = ${attempts * perAttempt}ms, limit ${MAX_RETRY_BUDGET_MS}ms. ` +
+        "Use maxRetries: 0 to keep one long attempt.",
     };
   }
 
@@ -313,12 +336,25 @@ async function handleResult(
         : undefined;
     const chainId =
       output && typeof output.chainId === "number" ? output.chainId : undefined;
+    const broadcastAttempted =
+      output && typeof output.broadcastAttempted === "boolean"
+        ? output.broadcastAttempted
+        : undefined;
     const settled = await failExecution(executionId, errorMsg, {
       transactionHash,
       chainId,
+      broadcastAttempted,
     });
-    // The step ran (possibly broadcasting): finalize as failed so a retry
-    // replays the failure instead of re-executing.
+    // A hash is only adjudicable together with its numeric chain id. Without
+    // that pair, failExecution cannot verify a receipt and this arbitrary node
+    // may already have produced a side effect, so the idempotency key stays
+    // held. broadcastAttempted is still forwarded above so a hashless attempted
+    // chain send fails closed as unconfirmed. The reconciler requires a hash,
+    // so this shape is intentionally held rather than described as reconcilable.
+    const disposition =
+      transactionHash && chainId !== undefined
+        ? dispositionForExecutionOutcome(settled.status, { transactionHash })
+        : "failed";
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
@@ -332,7 +368,7 @@ async function handleResult(
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }
       ),
-      "failed"
+      disposition
     );
   }
 
@@ -360,6 +396,16 @@ async function handleResult(
   // assert an outcome we do not have. It is non-terminal, so the caller polls
   // the status endpoint and the reconciler settles the row.
   if (outcome.status !== "completed") {
+    // Mirror the failure branch above: only a hash+chain pair could have been
+    // independently verified by completeExecution. A hash without a numeric
+    // chain id is evidence of a possible send, not evidence of a conclusive
+    // failure, so keep the key held.
+    const disposition =
+      completeParams.transactionHash && completeParams.chainId !== undefined
+        ? dispositionForExecutionOutcome(outcome.status, {
+            transactionHash: completeParams.transactionHash,
+          })
+        : "failed";
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
@@ -372,7 +418,7 @@ async function handleResult(
         },
         { status: HttpStatus.UNPROCESSABLE_ENTITY }
       ),
-      "failed"
+      disposition
     );
   }
 
@@ -539,7 +585,10 @@ async function executeNode(
 
     if (!invokeResult.ok) {
       await failExecution(executionId, invokeResult.error);
-      // The step ran (possibly broadcasting): finalize as failed.
+      // Deliberately NOT dispositionForExecutionOutcome: there is no hash to
+      // adjudicate here, so failExecution would answer "failed" from the mere
+      // absence of one and the key would be released. The step ran and may
+      // have broadcast, which is the unknown case -- hold the key.
       return recordIdempotentResponse(
         idem,
         NextResponse.json(
@@ -570,7 +619,8 @@ async function executeNode(
   } catch (err: unknown) {
     const errorMsg = getErrorMessage(err);
     await failExecution(executionId, errorMsg);
-    // A thrown error may have left a tx mid-broadcast: finalize as failed.
+    // Also deliberately held: a throw can land between broadcast and hash
+    // capture, so "no hash" here does not mean "nothing was sent".
     return recordIdempotentResponse(
       idem,
       NextResponse.json(
@@ -589,6 +639,13 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: apiKeyCtx.error },
       { status: apiKeyCtx.status }
     );
+  }
+
+  // #2004: ?simulate= is refused on every /api/execute/* route rather than
+  // silently ignored.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
   }
 
   const scopeError = requireScope(apiKeyCtx.scope, SCOPE_MCP_WRITE, {
@@ -628,6 +685,19 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: "Invalid JSON body" },
       { status: HttpStatus.BAD_REQUEST }
     );
+  }
+
+  // #2004: this route has no dry-run support. A top-level `simulate` used to
+  // be dropped by validateRequest's fixed whitelist and the step broadcast
+  // for real -- the same accept-and-broadcast defect as the protocol route,
+  // reached through a different mechanism. `config.simulate` survives the
+  // whitelist and stripReservedConfig and reaches the step, which ignores it.
+  // Refuse both loudly, before the whitelist and before the idempotency key
+  // is reserved.
+  const simulateBody =
+    refuseSimulateBody(body) ?? refuseSimulateBody(body, "config");
+  if (simulateBody) {
+    return simulateBody;
   }
 
   const validation = validateRequest(body);

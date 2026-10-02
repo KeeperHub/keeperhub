@@ -420,16 +420,18 @@ describe("condition evaluation edge cases", () => {
         },
       };
 
+      // A blank rightOperand makes the rule unusable, which leaves the group with nothing
+      // to generate, so the node has no gate rather than one that lets everything through.
       const expression = resolveConditionExpression(config);
-      expect(expression).toBeDefined();
+      expect(expression).toBeUndefined();
 
       const outputs = {
         node1: { label: "API", data: { text: "hello" } },
       };
 
-      // String.includes("") always returns true
-      const result = evaluateConditionExpression(expression, outputs);
-      expect(result.result).toBe(true);
+      expect(() => evaluateConditionExpression(expression, outputs)).toThrow(
+        /no expression configured/
+      );
     });
 
     it("should handle 'isEmpty' check on empty string", () => {
