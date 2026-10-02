@@ -13,7 +13,11 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
-import { db } from "@/lib/db";
+// The dashboard reads run on the analytics pool, so a slow chart cannot take
+// the connections the executor needs to record progress. getSpendCapData below
+// serves the organization limits panel and the MCP spending-limits tool, not
+// the dashboard, so it stays on the app pool. See lib/db/index.ts.
+import { analyticsDb, db } from "@/lib/db";
 import { logInputField, logOutputField } from "@/lib/db/execution-log-fields";
 import type { TransactionHashEntry } from "@/lib/db/schema";
 import {
@@ -713,7 +717,7 @@ async function getWorkflowCounts(
   durationSum: number;
   durationCount: number;
 }> {
-  const result = await db
+  const result = await analyticsDb
     .select({
       success: sql<number>`SUM(CASE WHEN ${workflowExecutions.status} = 'success' THEN 1 ELSE 0 END)`,
       error: sql<number>`SUM(CASE WHEN ${inArray(workflowExecutions.status, [...ERROR_STATUSES])} THEN 1 ELSE 0 END)`,
@@ -763,7 +767,7 @@ async function getDirectCounts(
   durationCount: number;
   totalGasWei: string;
 }> {
-  const result = await db
+  const result = await analyticsDb
     .select({
       success: sql<number>`SUM(CASE WHEN ${directExecutions.status} = 'completed' THEN 1 ELSE 0 END)`,
       error: sql<number>`SUM(CASE WHEN ${directExecutions.status} = 'failed' THEN 1 ELSE 0 END)`,
@@ -799,7 +803,7 @@ function getActiveWorkflowCount(
   organizationId: string,
   projectId?: string
 ): Promise<number> {
-  return db
+  return analyticsDb
     .select({ count: count() })
     .from(workflowExecutions)
     .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
@@ -814,7 +818,7 @@ function getActiveWorkflowCount(
 }
 
 function getActiveDirectCount(organizationId: string): Promise<number> {
-  return db
+  return analyticsDb
     .select({ count: count() })
     .from(directExecutions)
     .where(
@@ -893,7 +897,7 @@ async function getSponsoredGasTotal(
   rangeEnd: Date,
   projectId?: string
 ): Promise<string> {
-  const result = await db
+  const result = await analyticsDb
     .select({
       totalWei: sql<string>`COALESCE(SUM(CAST(${gasCreditUsage.gasCostWei} AS NUMERIC)), 0)::text`,
     })
@@ -976,7 +980,7 @@ async function getWorkflowGasTotal(
   // is the correct axis, and it matches every other summary metric, which is
   // already keyed to run start. Boundary-straddling runs can reattribute by the
   // gap between run start and a late step; immaterial at dashboard granularity.
-  const result = await db
+  const result = await analyticsDb
     .select({
       totalGas: sql<string>`COALESCE(SUM(CAST(${workflowExecutions.gasUsedWei} AS NUMERIC)), 0)::text`,
     })
@@ -1058,7 +1062,7 @@ async function computeTimeSeries(
   );
   const bucketExpr = bucketSql(sqlInterval, timeZone);
 
-  const workflowBuckets = await db
+  const workflowBuckets = await analyticsDb
     .select({
       bucket: sql<string>`${bucketExpr(workflowExecutions.startedAt)}`,
       success: sql<string>`SUM(CASE WHEN ${workflowExecutions.status} = 'success' THEN 1 ELSE 0 END)`,
@@ -1086,7 +1090,7 @@ async function computeTimeSeries(
 
   const directBuckets = projectId
     ? []
-    : await db
+    : await analyticsDb
         .select({
           bucket: sql<string>`${bucketExpr(directExecutions.createdAt)}`,
           success: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'completed' THEN 1 ELSE 0 END)`,
@@ -1147,7 +1151,7 @@ async function bucketSkeleton(
 
   const localStart = sql`${rangeStart.toISOString()}::timestamptz AT TIME ZONE ${timeZone}`;
   const localEnd = sql`${rangeEnd.toISOString()}::timestamptz AT TIME ZONE ${timeZone}`;
-  const rows = await db.execute<{ bucket: string }>(sql`
+  const rows = await analyticsDb.execute<{ bucket: string }>(sql`
     SELECT generate_series(
       ${truncLocal(sqlInterval, localStart)},
       ${localEnd},
@@ -1303,7 +1307,7 @@ async function computeNetworkBreakdown(
           successCount: number;
           errorCount: number;
         }[])
-      : db
+      : analyticsDb
           .select({
             network: directExecutions.network,
             totalGasWei: sql<string>`COALESCE(SUM(CAST(${directExecutions.gasUsedWei} AS NUMERIC)), 0)::text`,
@@ -1328,7 +1332,7 @@ async function computeNetworkBreakdown(
     // are populated by lib/workflow/executor/logging.ts and backfilled by
     // scripts/backfill-exec-log-network-gas.ts; they agree value-for-value with
     // the JSONB extraction the rest of the readers use.
-    db
+    analyticsDb
       .select({
         network: workflowExecutionLogs.network,
         totalGasWei: sql<string>`COALESCE(SUM(${workflowExecutionLogs.gasUsedWei}), 0)::text`,
@@ -1523,7 +1527,7 @@ async function fetchWorkflowRuns(
   projectId?: string
 ): Promise<UnifiedRun[]> {
   // Scope to org's workflows via subquery so leftJoin still enforces org isolation
-  const orgWorkflowIds = db
+  const orgWorkflowIds = analyticsDb
     .select({ id: workflows.id })
     .from(workflows)
     .where(
@@ -1568,7 +1572,7 @@ async function fetchWorkflowRuns(
   // tiebreaker the two independent ORDER BY ... LIMIT evaluations could select
   // different rows at the boundary and drop a boundary row's gas. `id` is a
   // unique total order, so both queries resolve ties identically.
-  const pagedExecutionIds = db
+  const pagedExecutionIds = analyticsDb
     .select({ id: workflowExecutions.id })
     .from(workflowExecutions)
     .where(and(...conditions))
@@ -1598,7 +1602,7 @@ async function fetchWorkflowRuns(
   const logStepHasGas = sql`(${workflowExecutionLogs.gasUsedWei} IS NOT NULL OR ${logOutputField("gasUsed")} IS NOT NULL)`;
   const logStepGasWei = sql`COALESCE(${workflowExecutionLogs.gasUsedWei}, CAST(${logOutputField("gasUsed")} AS NUMERIC))`;
 
-  const logSummary = db
+  const logSummary = analyticsDb
     .select({
       executionId: workflowExecutionLogs.executionId,
       gasUsedWei: sql<string>`COALESCE(SUM(${logStepGasWei}), 0)::text`.as(
@@ -1644,7 +1648,7 @@ async function fetchWorkflowRuns(
   // Preferred for a single-network run because it carries the chain, so the
   // amount renders in that chain's own token; multi-network runs render as
   // "Composed" instead.
-  const gasCostSummary = db
+  const gasCostSummary = analyticsDb
     .select({
       executionId: gasCreditUsage.executionId,
       gasCostWei:
@@ -1666,7 +1670,7 @@ async function fetchWorkflowRuns(
     .groupBy(gasCreditUsage.executionId)
     .as("gas_cost_summary");
 
-  const result = await db
+  const result = await analyticsDb
     .select({
       id: workflowExecutions.id,
       status: workflowExecutions.status,
@@ -1762,7 +1766,7 @@ async function fetchDirectRuns(
     conditions.push(lt(directExecutions.createdAt, new Date(cursor)));
   }
 
-  const result = await db
+  const result = await analyticsDb
     .select({
       id: directExecutions.id,
       status: directExecutions.status,
@@ -1846,7 +1850,7 @@ async function getWorkflowRunsTotal(
       projectId,
     })
   );
-  const result = await db
+  const result = await analyticsDb
     .select({ count: count() })
     .from(workflowExecutions)
     .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
@@ -1866,7 +1870,7 @@ async function getDirectRunsTotal(
     lt(directExecutions.createdAt, rangeEnd),
     ...directFilterConditions(filters),
   ];
-  const result = await db
+  const result = await analyticsDb
     .select({ count: count() })
     .from(directExecutions)
     .where(and(...conditions));
@@ -1990,7 +1994,7 @@ async function computeRunFacets(
 
   const workflowRows =
     wanted.workflow && dimensions.has("status")
-      ? await db
+      ? await analyticsDb
           .select({ status: workflowNormalizedStatus, value: count() })
           .from(workflowExecutions)
           .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
@@ -2016,7 +2020,7 @@ async function computeRunFacets(
 
   const directRows =
     wanted.direct && dimensions.has("status")
-      ? await db
+      ? await analyticsDb
           .select({ status: directNormalizedStatus, value: count() })
           .from(directExecutions)
           .where(
@@ -2062,7 +2066,10 @@ async function computeNetworkFacets(
   // de-duplicates per run, so a chain named by both sources still counts once.
   const workflowRows = wanted.workflow
     ? (
-        await db.execute<{ network: string | null; value: string }>(sql`
+        await analyticsDb.execute<{
+          network: string | null;
+          value: string;
+        }>(sql`
           SELECT net.network AS network,
                  COUNT(DISTINCT ${workflowExecutions.id}) AS value
             FROM ${workflowExecutions}
@@ -2097,7 +2104,7 @@ async function computeNetworkFacets(
     : [];
 
   const directRows = wanted.direct
-    ? await db
+    ? await analyticsDb
         .select({ network: directExecutions.network, value: count() })
         .from(directExecutions)
         .where(
@@ -2217,7 +2224,7 @@ export async function getStepLogs(
     CAST(${logOutputField("triggerGasUsed")} AS NUMERIC)
   )`;
 
-  const result = await db
+  const result = await analyticsDb
     .select({
       id: workflowExecutionLogs.id,
       nodeId: workflowExecutionLogs.nodeId,
@@ -2368,10 +2375,13 @@ export async function getAnalyticsChecksum(
   // has no column to map a Date through, the way the comparison helpers do.
   const from = rangeStart.toISOString();
 
-  const [wfMax, deMax, activeCount] = await Promise.all([
-    db
-      .execute<{ max_started: string }>(
-        sql`
+  // Sequential, not Promise.all. The stream runs this per open connection every
+  // poll interval, and three at once took the whole analytics pool for a tick,
+  // so page requests queued behind the streams watching them. Each arm is an
+  // index-only lookup, so the wall-clock cost of serialising is a few ms.
+  const wfMax = await analyticsDb
+    .execute<{ max_started: string }>(
+      sql`
     SELECT COALESCE(MAX(latest.started_at), '1970-01-01')::text AS max_started
       FROM ${workflows} AS scoped_wf
       CROSS JOIN LATERAL (
@@ -2381,32 +2391,33 @@ export async function getAnalyticsChecksum(
            AND ${workflowExecutions.startedAt} >= ${from}
       ) AS latest
      WHERE scoped_wf.organization_id = ${organizationId}`
+    )
+    .then((r) => r[0]?.max_started ?? "");
+
+  const deMax = await analyticsDb
+    .select({
+      maxCreated: sql<string>`COALESCE(MAX(${directExecutions.createdAt}), '1970-01-01')::text`,
+    })
+    .from(directExecutions)
+    .where(
+      and(
+        eq(directExecutions.organizationId, organizationId),
+        gte(directExecutions.createdAt, rangeStart)
       )
-      .then((r) => r[0]?.max_started ?? ""),
-    db
-      .select({
-        maxCreated: sql<string>`COALESCE(MAX(${directExecutions.createdAt}), '1970-01-01')::text`,
-      })
-      .from(directExecutions)
-      .where(
-        and(
-          eq(directExecutions.organizationId, organizationId),
-          gte(directExecutions.createdAt, rangeStart)
-        )
+    )
+    .then((r) => r[0]?.maxCreated ?? "");
+
+  const activeCount = await analyticsDb
+    .select({ count: count() })
+    .from(workflowExecutions)
+    .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+    .where(
+      and(
+        eq(workflows.organizationId, organizationId),
+        sql`${workflowExecutions.status} IN ('pending', 'running')`
       )
-      .then((r) => r[0]?.maxCreated ?? ""),
-    db
-      .select({ count: count() })
-      .from(workflowExecutions)
-      .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
-      .where(
-        and(
-          eq(workflows.organizationId, organizationId),
-          sql`${workflowExecutions.status} IN ('pending', 'running')`
-        )
-      )
-      .then((r) => Number(r[0]?.count) || 0),
-  ]);
+    )
+    .then((r) => Number(r[0]?.count) || 0);
 
   return `${wfMax}|${deMax}|${activeCount}`;
 }

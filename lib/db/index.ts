@@ -88,6 +88,8 @@ const globalForDb = globalThis as unknown as {
   db: PostgresJsDatabase<typeof schema> | undefined;
   metricsClient: ReturnType<typeof postgres> | undefined;
   metricsDb: PostgresJsDatabase<typeof schema> | undefined;
+  analyticsClient: ReturnType<typeof postgres> | undefined;
+  analyticsDb: PostgresJsDatabase<typeof schema> | undefined;
 };
 
 // statement_timeout is set once on every app-pool connection (not per query).
@@ -172,9 +174,52 @@ const metricsClient =
 export const metricsDb =
   globalForDb.metricsDb ?? drizzle(metricsClient, { schema });
 
+// Dedicated pool for the /analytics read path, for the same reason the metrics
+// collector has one: its queries are the heaviest the request path issues, and
+// on the shared pool they compete with the writes that keep runs alive. On the
+// app pool's max:10 a single viewer's refresh pass could hold every connection
+// a pod has, the executor could not record progress, and the reaper filed those
+// runs as system errors.
+//
+// A separate pool keeps the app pool's 10 for work that must not queue behind a
+// chart, whatever the dashboard does. Its size is set by one refresh pass: at
+// peak the summary holds 10 connections (six arms, one of which runs the four
+// previous-period queries), runs 4, networks 2, time-series 1 and facets 1, and
+// a stream tick adds 1. max:20 covers that, so a single viewer never queues
+// against itself. A queue is invisible to statement_timeout, which starts only
+// once a connection is held, and one that outlives the request shows up as an
+// edge timeout with no server-side signal. getAnalyticsChecksum runs its arms
+// sequentially so a stream tick costs one connection, not three.
+//
+// 15s rather than the app pool's 30s because the client abandons a pass long
+// before then - it polls on a 10s rearm and aborts the previous pass - and an
+// abandoned request still holds its connection until Postgres cancels the
+// statement. Override with ANALYTICS_STATEMENT_TIMEOUT_MS; a cancelled
+// statement surfaces as Postgres 57014.
+const parsedAnalyticsTimeoutMs = Number.parseInt(
+  process.env.ANALYTICS_STATEMENT_TIMEOUT_MS ?? "",
+  10
+);
+const ANALYTICS_STATEMENT_TIMEOUT_MS =
+  Number.isFinite(parsedAnalyticsTimeoutMs) && parsedAnalyticsTimeoutMs > 0
+    ? parsedAnalyticsTimeoutMs
+    : 15_000;
+
+const analyticsClient =
+  globalForDb.analyticsClient ??
+  postgres(connectionString, {
+    max: 20,
+    idle_timeout: 20,
+    connection: { statement_timeout: ANALYTICS_STATEMENT_TIMEOUT_MS },
+  });
+export const analyticsDb =
+  globalForDb.analyticsDb ?? drizzle(analyticsClient, { schema });
+
 if (process.env.NODE_ENV !== "production") {
   globalForDb.queryClient = queryClient;
   globalForDb.db = db;
   globalForDb.metricsClient = metricsClient;
   globalForDb.metricsDb = metricsDb;
+  globalForDb.analyticsClient = analyticsClient;
+  globalForDb.analyticsDb = analyticsDb;
 }

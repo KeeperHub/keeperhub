@@ -25,6 +25,9 @@ export const analyticsTimeSeriesAtom = atom<TimeSeriesBucket[]>([]);
 export const analyticsTimeSeriesIntervalAtom = atom<number>(60 * 60 * 1000);
 export const analyticsNetworksAtom = atom<NetworkBreakdown[]>([]);
 export const analyticsRunsAtom = atom<RunsResponse | null>(null);
+// The runs page the user is on, so the periodic refresh reloads that page
+// rather than snapping the table back to the first one.
+export const analyticsRunsPageAtom = atom(1);
 
 export const analyticsLoadingAtom = atom<boolean>(true);
 export const analyticsErrorAtom = atom<string | null>(null);

@@ -1,12 +1,17 @@
 "use client";
 
-import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import { useCallback, useEffect, useRef } from "react";
+import {
+  createPollScheduler,
+  type PollScheduler,
+} from "@/lib/analytics/poll-scheduler";
 import { buildRunsQuery } from "@/lib/analytics/runs-query";
 import {
   normalizeRunsResponse,
   type WireRunsResponse,
 } from "@/lib/analytics/runs-response";
+import { nextStreamRetry } from "@/lib/analytics/stream-retry";
 import type {
   AnalyticsSummary,
   NetworkBreakdown,
@@ -27,6 +32,7 @@ import {
   analyticsProjectIdAtom,
   analyticsRangeAtom,
   analyticsRunsAtom,
+  analyticsRunsPageAtom,
   analyticsSearchAtom,
   analyticsSourceFiltersAtom,
   analyticsStatusFiltersAtom,
@@ -141,10 +147,20 @@ export function useAnalytics(): UseAnalyticsReturn {
   const setRuns = useSetAtom(analyticsRunsAtom);
   const setFacets = useSetAtom(analyticsFacetsAtom);
   const setLastUpdated = useSetAtom(analyticsLastUpdatedAtom);
+  // Read at call time, not subscribed, so paging does not rebuild fetchData
+  // and restart the refresh.
+  const store = useStore();
 
   const eventSourceRef = useRef<EventSource | null>(null);
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollSchedulerRef = useRef<PollScheduler | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const reconnectAttemptsRef = useRef(0);
+  // startSSE reopens itself from its own onerror, which it cannot reference
+  // directly inside its own useCallback.
+  const startSSERef = useRef<(() => void) | null>(null);
 
   const fetchData = useCallback(async (): Promise<void> => {
     if (!activeOrgId) {
@@ -179,7 +195,8 @@ export function useAnalytics(): UseAnalyticsReturn {
       customStart,
       customEnd,
     };
-    const runsQuery = buildRunsQuery(filters);
+    const runsPage = store.get(analyticsRunsPageAtom);
+    const runsQuery = buildRunsQuery({ ...filters, page: runsPage });
     // The status counts sit under every filter except status itself, so the
     // facets request carries the same query with that one dimension lifted.
     // Status only. The network and gas counts read the step logs, and this
@@ -215,8 +232,13 @@ export function useAnalytics(): UseAnalyticsReturn {
         ctx.aborted = true;
         setError(message);
         setLoading(false);
-        clearInterval(pollIntervalRef.current ?? undefined);
-        pollIntervalRef.current = null;
+        pollSchedulerRef.current?.stop();
+        pollSchedulerRef.current = null;
+        // An auth failure must not reopen the stream on a pending backoff.
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
+        }
         eventSourceRef.current?.close();
         eventSourceRef.current = null;
       },
@@ -285,6 +307,11 @@ export function useAnalytics(): UseAnalyticsReturn {
       ),
       wrapSection(
         processSection<WireRunsResponse>(runsPromise, "Runs", ctx, (data) => {
+          // The user paged while this pass was in flight, so its rows are
+          // for a page no longer on screen.
+          if (store.get(analyticsRunsPageAtom) !== runsPage) {
+            return;
+          }
           setRuns(normalizeRunsResponse(data));
         })
       ),
@@ -322,6 +349,7 @@ export function useAnalytics(): UseAnalyticsReturn {
     setRuns,
     setFacets,
     setLastUpdated,
+    store,
   ]);
 
   const cleanupSSE = useCallback((): void => {
@@ -332,19 +360,22 @@ export function useAnalytics(): UseAnalyticsReturn {
   }, []);
 
   const cleanupPolling = useCallback((): void => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
+    pollSchedulerRef.current?.stop();
+    pollSchedulerRef.current = null;
+  }, []);
+
+  const cleanupReconnect = useCallback((): void => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
     }
   }, []);
 
   const startPolling = useCallback((): void => {
     cleanupPolling();
-    pollIntervalRef.current = setInterval(() => {
-      fetchData().catch(() => {
-        /* polling errors handled in fetchData */
-      });
-    }, POLL_INTERVAL_MS);
+    const scheduler = createPollScheduler(fetchData, POLL_INTERVAL_MS);
+    pollSchedulerRef.current = scheduler;
+    scheduler.start();
   }, [cleanupPolling, fetchData]);
 
   const startSSE = useCallback((): void => {
@@ -359,19 +390,21 @@ export function useAnalytics(): UseAnalyticsReturn {
     const source = new EventSource(`/api/analytics/stream?${query}`);
 
     source.onmessage = (event: MessageEvent): void => {
+      // A delivered message proves the stream is healthy, so the next close
+      // starts its backoff from zero rather than from the last outage.
+      reconnectAttemptsRef.current = 0;
       try {
         const parsed = JSON.parse(event.data as string) as {
           type: string;
           data: unknown;
         };
 
+        // summary and heartbeat are the only frames the stream sends. A
+        // heartbeat needs nothing beyond the counter reset above, and the
+        // periodic refresh keeps the rest of the page current.
         if (parsed.type === "summary") {
           setSummary(parsed.data as AnalyticsSummary);
           setLastUpdated(new Date());
-        } else if (parsed.type === "new-run" || parsed.type === "run-updated") {
-          fetchData().catch(() => {
-            /* SSE-triggered refresh errors handled in fetchData */
-          });
         }
       } catch {
         // Ignore malformed SSE messages
@@ -380,7 +413,20 @@ export function useAnalytics(): UseAnalyticsReturn {
 
     source.onerror = (): void => {
       cleanupSSE();
-      startPolling();
+      cleanupReconnect();
+
+      // Only the summary rides this stream, and the refresh below runs whatever
+      // happens here, so giving up costs summary freshness and nothing else.
+      const retry = nextStreamRetry(reconnectAttemptsRef.current);
+      if (retry.action === "stop") {
+        return;
+      }
+
+      reconnectAttemptsRef.current += 1;
+      reconnectTimeoutRef.current = setTimeout(() => {
+        reconnectTimeoutRef.current = null;
+        startSSERef.current?.();
+      }, retry.delayMs);
     };
 
     eventSourceRef.current = source;
@@ -390,14 +436,15 @@ export function useAnalytics(): UseAnalyticsReturn {
     customStart,
     customEnd,
     cleanupSSE,
+    cleanupReconnect,
     setSummary,
     setLastUpdated,
-    startPolling,
-    fetchData,
   ]);
 
-  // Fetch on mount and when range/filters change
+  // Fetch on mount and when range/filters change. A new filter set starts the
+  // listing again at page 1.
   useEffect(() => {
+    store.set(analyticsRunsPageAtom, 1);
     fetchData().catch(() => {
       /* initial fetch errors handled in fetchData */
     });
@@ -406,7 +453,7 @@ export function useAnalytics(): UseAnalyticsReturn {
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
     };
-  }, [fetchData]);
+  }, [fetchData, store]);
 
   // Re-fetch when org switches
   const prevOrgIdRef = useRef(activeOrgId);
@@ -420,15 +467,25 @@ export function useAnalytics(): UseAnalyticsReturn {
     });
   }, [activeOrgId, fetchData]);
 
-  // SSE for real-time updates, falls back to polling on error
+  // The stream carries the summary. Its query reads the range and the project,
+  // not the row filters, so changing a filter no longer recycles it.
   useEffect(() => {
+    startSSERef.current = startSSE;
+    reconnectAttemptsRef.current = 0;
     startSSE();
 
     return (): void => {
       cleanupSSE();
-      cleanupPolling();
+      cleanupReconnect();
     };
-  }, [startSSE, cleanupSSE, cleanupPolling]);
+  }, [startSSE, cleanupSSE, cleanupReconnect]);
+
+  // The refresh keeps the runs table, the chart, the network panel and the
+  // status counts current, and runs whatever the stream is doing.
+  useEffect(() => {
+    startPolling();
+    return cleanupPolling;
+  }, [startPolling, cleanupPolling]);
 
   return { loading, error, refetch: fetchData };
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useStore } from "jotai";
 import {
   Check,
   ChevronDown,
@@ -42,6 +42,7 @@ import {
   analyticsProjectIdAtom,
   analyticsRangeAtom,
   analyticsRunsAtom,
+  analyticsRunsPageAtom,
   analyticsSearchAtom,
   analyticsSourceFiltersAtom,
   analyticsStatusFiltersAtom,
@@ -772,6 +773,7 @@ export function RunsTable(): ReactNode {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [pageLoading, setPageLoading] = useState(false);
+  const store = useStore();
 
   const currentPage = runsData?.page ?? 1;
   const pageSize = runsData?.pageSize ?? 50;
@@ -779,6 +781,7 @@ export function RunsTable(): ReactNode {
   const handlePageChange = useCallback(
     async (newPage: number): Promise<void> => {
       setPageLoading(true);
+      store.set(analyticsRunsPageAtom, newPage);
 
       // Update URL without full navigation
       const url = new URL(window.location.href);
@@ -807,6 +810,10 @@ export function RunsTable(): ReactNode {
         const response = await fetch(`/api/analytics/runs?${query}`);
         if (response.ok) {
           const data = (await response.json()) as WireRunsResponse;
+          // A later page click or a filter change has moved on from this page.
+          if (store.get(analyticsRunsPageAtom) !== newPage) {
+            return;
+          }
           setRunsData(normalizeRunsResponse(data));
         } else {
           toast.error("Failed to load runs");
@@ -830,6 +837,7 @@ export function RunsTable(): ReactNode {
       customEnd,
       setRunsData,
       router,
+      store,
     ]
   );
 
