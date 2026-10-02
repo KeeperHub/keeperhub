@@ -269,6 +269,70 @@ describe("PATCH /api/workflows/[workflowId] schedule registration", () => {
     ]);
   });
 
+  it("rejects enabling an incomplete Pyth trigger before writing", async () => {
+    // The route gates on the feature flag before it validates the config, so
+    // without a key set this asserts PYTH_TRIGGER_DISABLED instead of the
+    // validation error it is here to pin.
+    const originalPythApiKey = process.env.PYTH_API_KEY;
+    process.env.PYTH_API_KEY = "test-pyth-api-key";
+    try {
+      mockWorkflowsFindFirst.mockResolvedValue({
+        ...existingWorkflow(),
+        enabled: false,
+        nodes: [
+          {
+            id: "trigger-1",
+            data: { type: "trigger", config: { triggerType: "Pyth Price" } },
+          },
+        ],
+      });
+      const response = await PATCH(makeRequest({ enabled: true }), { params });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toBe("INVALID_PYTH_TRIGGER");
+      expect(mockUpdateReturning).not.toHaveBeenCalled();
+    } finally {
+      if (originalPythApiKey === undefined) {
+        delete process.env.PYTH_API_KEY;
+      } else {
+        process.env.PYTH_API_KEY = originalPythApiKey;
+      }
+    }
+  });
+
+  it("refuses to enable a Pyth trigger when PYTH_API_KEY is unset", async () => {
+    const originalPythApiKey = process.env.PYTH_API_KEY;
+    delete process.env.PYTH_API_KEY;
+    try {
+      mockWorkflowsFindFirst.mockResolvedValue({
+        ...existingWorkflow(),
+        enabled: false,
+        nodes: [
+          {
+            id: "trigger-1",
+            data: {
+              type: "trigger",
+              config: {
+                triggerType: "Pyth Price",
+                feedId: "a".repeat(64),
+                direction: "above",
+                threshold: "100",
+                rearmThreshold: "95",
+              },
+            },
+          },
+        ],
+      });
+      const response = await PATCH(makeRequest({ enabled: true }), { params });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toBe("PYTH_TRIGGER_DISABLED");
+      expect(mockUpdateReturning).not.toHaveBeenCalled();
+    } finally {
+      if (originalPythApiKey !== undefined) {
+        process.env.PYTH_API_KEY = originalPythApiKey;
+      }
+    }
+  });
+
   it("registers the schedule on an enable-only PATCH", async () => {
     const response = await PATCH(makeRequest({ enabled: true }), { params });
 

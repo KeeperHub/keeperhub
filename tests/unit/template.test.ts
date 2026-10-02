@@ -95,6 +95,126 @@ describe("template utils", () => {
     });
   });
 
+  /**
+   * Field access over an array cursor maps the key across every element. The
+   * spread is the point - a real binding over a list of objects renders
+   * "1, 2" - but when no element carries the key the map used to hand back an
+   * array of holes, which is neither `undefined` nor `null` and so counted as
+   * resolved. `formatValue` then joined the holes into ", " and the caller's
+   * resolution tracker recorded nothing to fail on.
+   *
+   * A non-object element contributes a hole rather than a prototype lookup, so
+   * the same rule reaches `.length` over a list of strings. The discriminator
+   * is the element's type, which the pair of `.length` cases below pins from
+   * both sides.
+   *
+   * All three spellings walk their own copy of the loop, so all three are
+   * exercised: `{{@nodeId:Label.field}}` is what saved workflows store,
+   * `{{$nodeId.field}}` and `{{Label.field}}` are the legacy forms.
+   */
+  describe("processTemplate over an array cursor", () => {
+    const arrayOutputs: NodeOutputs = {
+      n1: {
+        label: "Step",
+        data: {
+          success: true,
+          result: { owners: ["0xaaa", "0xbbb", "0xccc"] },
+        },
+      },
+    };
+
+    const objectListOutputs: NodeOutputs = {
+      n2: {
+        label: "Fees",
+        data: { fees: [{ amt: 1 }, { amt: 2 }] },
+      },
+    };
+
+    it("misses a key no element carries, in the stored spelling", () => {
+      expect(
+        processTemplate("{{@n1:Step.result.owners.typo}}", arrayOutputs)
+      ).toBe("");
+    });
+
+    it("misses a key no element carries, in the $nodeId spelling", () => {
+      expect(processTemplate("{{$n1.result.owners.typo}}", arrayOutputs)).toBe(
+        ""
+      );
+    });
+
+    it("misses a key no element carries, in the label spelling", () => {
+      expect(processTemplate("{{Step.result.owners.typo}}", arrayOutputs)).toBe(
+        ""
+      );
+    });
+
+    it("still joins a real binding across the array", () => {
+      expect(processTemplate("{{@n2:Fees.fees.amt}}", objectListOutputs)).toBe(
+        "1, 2"
+      );
+      expect(processTemplate("{{$n2.fees.amt}}", objectListOutputs)).toBe(
+        "1, 2"
+      );
+      expect(processTemplate("{{Fees.fees.amt}}", objectListOutputs)).toBe(
+        "1, 2"
+      );
+    });
+
+    it("resolves when only some elements carry the key", () => {
+      const partial: NodeOutputs = {
+        n3: {
+          label: "Fees",
+          data: { fees: [{ amt: 1 }, {}, { amt: 2 }] },
+        },
+      };
+
+      // Not an all-holes map, so it is a real value and stays a hit. The gap
+      // renders empty the way any other array element holding nothing does.
+      expect(processTemplate("{{@n3:Fees.fees.amt}}", partial)).toBe("1, , 2");
+      expect(processTemplate("{{$n3.fees.amt}}", partial)).toBe("1, , 2");
+      expect(processTemplate("{{Fees.fees.amt}}", partial)).toBe("1, , 2");
+    });
+
+    it("leaves an empty array a hit", () => {
+      const empty: NodeOutputs = {
+        n4: { label: "Query", data: { events: [] } },
+      };
+
+      // No element to probe means no evidence the key is wrong, and a query
+      // that legitimately matched nothing must not start failing the step.
+      expect(processTemplate("{{@n4:Query.events.txHash}}", empty)).toBe("");
+    });
+
+    it("misses a key that only a builtin would answer", () => {
+      // The map contributes undefined for a non-object element, so `.length`
+      // over an array of strings is all holes rather than [5, 5, 5].
+      expect(
+        processTemplate("{{@n1:Step.result.owners.length}}", arrayOutputs)
+      ).toBe("");
+      expect(
+        processTemplate("{{$n1.result.owners.length}}", arrayOutputs)
+      ).toBe("");
+      expect(
+        processTemplate("{{Step.result.owners.length}}", arrayOutputs)
+      ).toBe("");
+    });
+
+    it("keys off element type, not property name", () => {
+      const pages: NodeOutputs = {
+        n5: {
+          label: "Pages",
+          data: { pages: [{ length: 12 }, { length: 30 }] },
+        },
+      };
+
+      // Same property name as the builtin above, but these elements are
+      // objects that genuinely carry it, so it stays a real binding.
+      expect(processTemplate("{{@n5:Pages.pages.length}}", pages)).toBe(
+        "12, 30"
+      );
+    });
+  });
+
   describe("getAvailableFields", () => {
     it("includes nested paths under data with nodeId and fieldPath", () => {
       const nodeOutputs: NodeOutputs = {

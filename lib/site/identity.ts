@@ -15,7 +15,7 @@
  * components, metadata routes, and the proxy.
  */
 
-const TRAILING_SLASH = /\/$/;
+import { stripTrailingSlashes } from "@/lib/utils/url";
 
 const DEFAULT_APP_URL = "https://app.keeperhub.com";
 const DEFAULT_MARKETING_URL = "https://keeperhub.com";
@@ -34,7 +34,7 @@ const DEFAULT_PRIVACY_EMAIL = "support@keeperhub.com";
 const DEFAULT_FOUNDING_DATE = "2025";
 
 function trimTrailingSlash(value: string): string {
-  return value.replace(TRAILING_SLASH, "");
+  return stripTrailingSlashes(value);
 }
 
 function envUrl(key: string, fallback: string): string {

@@ -18,7 +18,8 @@ import {
 } from "@/lib/features";
 import { isBillingEnabled } from "./feature-flag";
 import type { PlanName } from "./plans";
-import { checkExecutionLimit, getOrgPlan } from "./plans-server";
+import { checkExecutionLimit } from "./plans-server";
+import { resolveOrgPlan } from "./subscription-read";
 
 export type DispatchRefusalReason = "plan_feature" | "execution_limit";
 
@@ -42,7 +43,10 @@ export function planFeatureRefusalMessage(
  * Org-level standing: the part of the decision that costs database reads and is
  * identical for every workflow the org owns.
  */
-type OrgStanding = { plan: PlanName; limitBlocked: boolean };
+// A null plan is "we could not establish one", not "free". Feature gating is
+// skipped for it rather than validated against the free plan, which would
+// refuse an enterprise org's workflow on a read that never resolved.
+type OrgStanding = { plan: PlanName | null; limitBlocked: boolean };
 
 // A dispatcher calls this on every occurrence of every trigger, which on a fast
 // block trigger is tens of times a minute for the same org. Without this the
@@ -95,11 +99,14 @@ async function readOrgStanding(organizationId: string): Promise<OrgStanding> {
     return cached.standing;
   }
 
-  const [plan, limit] = await Promise.all([
-    getOrgPlan(organizationId),
+  const [resolved, limit] = await Promise.all([
+    resolveOrgPlan(organizationId),
     checkExecutionLimit(organizationId),
   ]);
-  const standing: OrgStanding = { plan, limitBlocked: !limit.allowed };
+  const standing: OrgStanding = {
+    plan: resolved?.plan ?? null,
+    limitBlocked: !limit.allowed,
+  };
   if (standingCache.size >= STANDING_CACHE_MAX) {
     evictStandings(now);
   }
@@ -146,10 +153,13 @@ export async function checkDispatchAdmission(params: {
 
   // Per-workflow and free: which nodes are gated depends on the definition, so
   // this part must not be cached per org.
-  const violations = validateWorkflowFeatures(
-    extractActionTypeNodes(params.nodes),
-    standing.plan
-  );
+  const violations =
+    standing.plan === null
+      ? []
+      : validateWorkflowFeatures(
+          extractActionTypeNodes(params.nodes),
+          standing.plan
+        );
   if (violations.length > 0) {
     return {
       reason: "plan_feature",

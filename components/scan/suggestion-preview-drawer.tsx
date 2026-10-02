@@ -36,6 +36,7 @@ import {
 } from "@/lib/scan/factory/threshold-format";
 import { persistSuggestion } from "@/lib/scan/persist-suggestion";
 import type { SuggestionDescriptor } from "@/lib/scan/suggestions/types";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
   edgesAtom,
   isWorkflowOwnerAtom,
@@ -44,7 +45,6 @@ import {
 } from "@/lib/workflow/store";
 
 /** A confirmInputs value that is a raw EVM address. */
-const ADDRESS_DISPLAY_RE = /^0x[0-9a-fA-F]{40}$/;
 
 type SuggestionPreviewDrawerProps = {
   suggestion: SuggestionDescriptor | null;
@@ -398,7 +398,7 @@ export function SuggestionPreviewDrawer({
       key === "walletAddress" && addressKind === "contract"
         ? "Contract address"
         : addressFieldLabel(key);
-    const isAddress = ADDRESS_DISPLAY_RE.test(value);
+    const isAddress = EVM_ADDRESS_RE.test(value);
     return (
       <div className="mb-3" key={key}>
         <div className="mb-1 flex items-center justify-between gap-2">

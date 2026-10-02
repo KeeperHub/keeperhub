@@ -8,6 +8,7 @@ import {
   Copy,
   ExternalLink,
   Play,
+  Radio,
   ScanSearch,
   Webhook,
 } from "lucide-react";
@@ -28,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TimezoneSelect } from "@/components/ui/timezone-select";
+import { useFeatures } from "@/hooks/use-features";
 import {
   type AbiItem,
   computeSelector,
@@ -36,6 +38,7 @@ import {
 import { parseIntervalSeconds } from "@/lib/cron-utils";
 import { parseSchemaFields } from "@/lib/schema-fields";
 import {
+  isValidTraceContractAddress,
   isValidTraceSelector,
   parseTraceCallTypes,
   TRACE_CALL_TYPES,
@@ -46,6 +49,7 @@ import type { ActionConfigField } from "@/plugins/registry";
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { CronScheduleBuilder } from "./cron-schedule-builder";
 import { SchemaBuilder } from "./schema-builder";
+import { PythTriggerConfig } from "./pyth-trigger-config";
 
 // Built once rather than spread inline in the field list: ChainSelectField
 // refetches whenever this prop's identity changes, so a new array on every
@@ -65,6 +69,9 @@ export function TriggerConfig({
   disabled,
   workflowId,
 }: TriggerConfigProps) {
+  const { snapshot: featureSnapshot } = useFeatures();
+  const pythPriceTriggerEnabled =
+    featureSnapshot?.pythPriceTriggerEnabled === true;
   const webhookUrl = workflowId
     ? `${typeof window !== "undefined" ? window.location.origin : ""}/api/workflows/${workflowId}/webhook`
     : "";
@@ -103,6 +110,14 @@ export function TriggerConfig({
             <SelectValue placeholder="Select trigger type" />
           </SelectTrigger>
           <SelectContent>
+            {pythPriceTriggerEnabled && (
+              <SelectItem value="Pyth Price">
+                <div className="flex items-center gap-2">
+                  <Radio className="h-4 w-4" />
+                  Pyth Price
+                </div>
+              </SelectItem>
+            )}
             <SelectItem value="Manual">
               <div className="flex items-center gap-2">
                 <Play className="h-4 w-4" />
@@ -149,6 +164,9 @@ export function TriggerConfig({
         </Select>
       </div>
 
+      {pythPriceTriggerEnabled && config?.triggerType === "Pyth Price" && (
+        <PythTriggerConfig config={config} disabled={disabled} onUpdateConfig={onUpdateConfig} />
+      )}
       {/* Webhook fields */}
       {config?.triggerType === "Webhook" && (
         <>
@@ -468,6 +486,11 @@ function TraceTriggerFields({
 
   const selector = (config.traceSelector as string) || "";
   const selectorInvalid = !isValidTraceSelector(selector);
+  // Refused by the events endpoint, so a bad value never registers at all.
+  const contractAddress = (config.contractAddress as string) || "";
+  const contractAddressInvalid =
+    contractAddress.trim() !== "" &&
+    !isValidTraceContractAddress(contractAddress);
   // traceMinValueWei is what registers; traceMinValue is only what the box
   // shows. A config written through the API or MCP may carry the wei value
   // alone, and the box must show the threshold that is in force rather than
@@ -475,7 +498,7 @@ function TraceTriggerFields({
   const minValue = displayMinValue(config.traceMinValue, config.traceMinValueWei);
   const minValueInvalid = minValue.trim() !== "" && toWeiString(minValue) === null;
 
-  const targetFields: ActionConfigField[] = [
+  const networkFields: ActionConfigField[] = [
     {
       key: "network",
       label: "Network",
@@ -496,6 +519,9 @@ function TraceTriggerFields({
       placeholder: "Select network",
       required: true,
     },
+  ];
+
+  const contractFields: ActionConfigField[] = [
     {
       key: "contractAddress",
       label: "Watched Contract",
@@ -504,6 +530,9 @@ function TraceTriggerFields({
       required: true,
       isAddressField: true,
     },
+  ];
+
+  const outcomeFields: ActionConfigField[] = [
     {
       key: "traceStatus",
       label: "Call Outcome",
@@ -602,7 +631,29 @@ function TraceTriggerFields({
       <ActionConfigRenderer
         config={config}
         disabled={disabled}
-        fields={targetFields}
+        fields={networkFields}
+        onUpdateConfig={onUpdateConfig}
+      />
+      <div className="space-y-2">
+        <ActionConfigRenderer
+          config={config}
+          disabled={disabled}
+          fields={contractFields}
+          onUpdateConfig={onUpdateConfig}
+        />
+        {contractAddressInvalid && (
+          <p className="text-destructive text-xs">
+            A watched contract is 0x followed by exactly 40 hex characters. A
+            template resolves against nothing here, since a trigger runs before
+            any node, and any other shape is refused when the trigger
+            registers, so the workflow would enable and never fire.
+          </p>
+        )}
+      </div>
+      <ActionConfigRenderer
+        config={config}
+        disabled={disabled}
+        fields={outcomeFields}
         onUpdateConfig={onUpdateConfig}
       />
       <ActionConfigRenderer

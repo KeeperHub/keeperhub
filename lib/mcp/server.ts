@@ -3,6 +3,7 @@ import {
   ResourceTemplate,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AuthMethod } from "@/lib/middleware/auth-helpers";
+import { buildApiCallFailedError } from "./api-call-error";
 import { PUBLIC_TOOLS, SCOPE_MCP_PUBLIC } from "./oauth-scopes";
 import { registerMetaTools, registerTools } from "./tools";
 
@@ -47,15 +48,13 @@ async function fetchJson(
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(
-      `API call failed: ${response.status} ${response.statusText} - ${errorText}`
-    );
+    throw buildApiCallFailedError(response, errorText);
   }
 
   return response.json();
 }
 
-function registerResources(
+export function registerResources(
   server: McpServer,
   internalApiBaseUrl: string,
   authHeader: string

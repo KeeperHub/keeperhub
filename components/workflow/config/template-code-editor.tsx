@@ -5,6 +5,7 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { CodeEditor } from "@/components/ui/code-editor";
+import { BeautifiableField } from "@/components/workflow/config/beautifiable-field";
 import { api } from "@/lib/api-client";
 import { getInputSchemaFields } from "@/lib/workflow/editor/input-schema-fields";
 import {
@@ -173,7 +174,9 @@ export function TemplateCodeEditor({
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: async fetch with cancellation guard mirrors template-autocomplete.tsx
     const fetchLogs = async (): Promise<void> => {
       try {
-        const executions = await api.workflow.getExecutions(workflowId);
+        const { executions } = await api.workflow.getExecutions(workflowId, {
+          limit: 1,
+        });
         if (cancelled) {
           return;
         }
@@ -482,7 +485,12 @@ export function TemplateCodeEditor({
 
   return (
     <>
-      <div className="overflow-hidden rounded-md border">
+      <BeautifiableField
+        disabled={disabled}
+        language={language}
+        onChange={onChange}
+        value={value}
+      >
         <CodeEditor
           defaultLanguage={language}
           defaultValue={placeholder}
@@ -495,7 +503,7 @@ export function TemplateCodeEditor({
           }}
           value={displayValue}
         />
-      </div>
+      </BeautifiableField>
       {duplicateLabelWarnings.length > 0 && (
         <div className="flex items-start gap-2 rounded-md border border-yellow-200 bg-yellow-50 p-2 text-xs text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />

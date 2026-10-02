@@ -8,9 +8,12 @@
  */
 
 import type { AbiParam, FunctionAbiEntry } from "@/lib/abi/types";
+import {
+  isSolidityArrayType,
+  solidityArrayItemType,
+} from "@/lib/protocol-array-value";
 
 const TEMPLATE_VARIABLE_RE = /^\{\{.+\}\}$/;
-const ARRAY_SUFFIX_RE = /\[\d*\]$/;
 
 export type { FunctionAbiEntry } from "@/lib/abi/types";
 
@@ -169,7 +172,7 @@ function coerceValue(
   if (isTemplateVariable(value)) {
     return value;
   }
-  if (isArrayType(type)) {
+  if (isSolidityArrayType(type)) {
     return coerceArray(value, type, components);
   }
   if (type === "tuple") {
@@ -189,7 +192,7 @@ function coerceArray(
   if (!Array.isArray(value)) {
     return value;
   }
-  const elementType = stripArraySuffix(arrayType);
+  const elementType = solidityArrayItemType(arrayType);
   return value.map((item) => coerceValue(item, elementType, components));
 }
 
@@ -224,14 +227,6 @@ function coerceBool(value: unknown): unknown {
     return false;
   }
   return value;
-}
-
-function isArrayType(type: string): boolean {
-  return type.endsWith("]");
-}
-
-function stripArraySuffix(type: string): string {
-  return type.replace(ARRAY_SUFFIX_RE, "");
 }
 
 function isTemplateVariable(value: unknown): boolean {

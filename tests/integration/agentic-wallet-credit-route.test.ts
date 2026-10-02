@@ -92,10 +92,10 @@ const { GET } = await import("@/app/api/agentic-wallet/credit/route");
 
 function buildHmacHeaders(
   subOrgId: string,
-  secret: string = TEST_HMAC_SECRET
+  secret: string = TEST_HMAC_SECRET,
+  ts: string = Math.floor(Date.now() / 1000).toString()
 ): Record<string, string> {
   const path = "/api/agentic-wallet/credit";
-  const ts = Math.floor(Date.now() / 1000).toString();
   // GET request -> empty body string -> sha256_hex("").
   const digest = createHash("sha256").update("").digest("hex");
   // REVIEW HI-05: subOrgId is bound into the signed string.
@@ -146,6 +146,24 @@ describe("GET /api/agentic-wallet/credit", () => {
     expect(res.status).toBe(401);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe("HMAC_INVALID");
+  });
+
+  it("401 HMAC_MALFORMED when the timestamp is non-canonical", async () => {
+    const ts = `0${Math.floor(Date.now() / 1000)}`;
+    const headers = buildHmacHeaders(TEST_SUB_ORG, TEST_HMAC_SECRET, ts);
+    const res = await GET(makeReq(headers));
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("HMAC_MALFORMED");
+  });
+
+  it("401 HMAC_STALE when the timestamp is outside the replay window", async () => {
+    const ts = String(Math.floor(Date.now() / 1000) - 301);
+    const headers = buildHmacHeaders(TEST_SUB_ORG, TEST_HMAC_SECRET, ts);
+    const res = await GET(makeReq(headers));
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("HMAC_STALE");
   });
 
   it("200 returns 0.50 USD when a single 50-cent onboard grant exists", async () => {

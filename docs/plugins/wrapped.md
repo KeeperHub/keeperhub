@@ -98,5 +98,6 @@ After withdrawing a wrapped-token position from a lending protocol, unwrap it ba
 | Polygon (137) | WMATIC |
 | Avalanche C-Chain (43114) | WAVAX |
 | Avalanche Fuji (43113) | WAVAX |
+| HyperEVM (999) | WHYPE |
 
 Optimism is not currently included in this protocol's chain list.

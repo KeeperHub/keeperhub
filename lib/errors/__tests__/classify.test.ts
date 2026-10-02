@@ -543,12 +543,45 @@ describe("applyErrorClassHint", () => {
     });
   });
 
-  it("overrides to user with no code, keeping the classifier category", () => {
+  /**
+   * A message no rule recognises lands in workflow_engine, which is a
+   * system-caused category: a step hinting "user" was therefore filing a
+   * revoked credential alongside real executor faults, where the dashboards
+   * that sum by category could not tell them apart.
+   */
+  it("overrides to user and re-buckets a category that means 'no rule matched'", () => {
     const base = classifyExecutionError("some novel provider message");
+    expect(base.errorCategory).toBe(ErrorCategory.WORKFLOW_ENGINE);
+
     const hinted = applyErrorClassHint(base, "user");
     expect(hinted.errorType).toBe("user");
     expect(hinted.code).toBeNull();
-    expect(hinted.errorCategory).toBe(base.errorCategory);
+    expect(hinted.errorCategory).toBe(ErrorCategory.CONFIGURATION);
+  });
+
+  /**
+   * Where a rule did match, it stands. A plugin that hints "user" on every
+   * non-5xx must not be able to relabel a recognised fault as somebody's
+   * configuration.
+   *
+   * "Matched" is the code rather than the category, and these cases are why:
+   * the first three carry WORKFLOW_ENGINE, which is also what an unmatched
+   * message falls through to, so a rule keyed on the category re-bucketed
+   * recognised executor faults as well.
+   */
+  it.each([
+    ["Execution timed out", ErrorCategory.WORKFLOW_ENGINE, "E-0001"],
+    ['Step "x" exceeded max retries', ErrorCategory.WORKFLOW_ENGINE, "E-0002"],
+    ["Unknown action type: nope", ErrorCategory.WORKFLOW_ENGINE, "E-0003"],
+    ["Workflow terminated by SIGTERM", ErrorCategory.INFRASTRUCTURE, "P-0003"],
+  ])("keeps the category a rule matched for %s", (message, category, code) => {
+    const base = classifyExecutionError(message);
+    expect(base.errorCategory).toBe(category);
+    expect(base.code).toBe(code);
+
+    const hinted = applyErrorClassHint(base, "user");
+    expect(hinted.errorType).toBe("user");
+    expect(hinted.errorCategory).toBe(category);
   });
 
   it("keeps a system hint coded (classifier code, or the default)", () => {

@@ -25,11 +25,19 @@ const VALID_GAS = new Set<GasSpend>(["sponsored", "wallet", "free"]);
 const MAX_SEARCH_LENGTH = 128;
 
 function parseNonNegativeInt(raw: string | null): number | undefined {
-  if (raw === null) {
+  // A blank value is absent, not zero. Number("") and Number("   ") are both
+  // 0, so `?durationMax=` read as durationMaxMs 0 and filtered on
+  // `duration < 0`, which matches nothing.
+  if (raw === null || raw.trim() === "") {
     return undefined;
   }
-  const value = Number(raw);
-  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+  // Same rule the route applies to page and limit: the string has to round-trip,
+  // or the value is not the one the caller wrote. Number() reads "0x10" as 16.
+  const value = Number.parseInt(raw, 10);
+  if (Number.isNaN(value) || String(value) !== raw.trim() || value < 0) {
+    return undefined;
+  }
+  return value;
 }
 
 /**

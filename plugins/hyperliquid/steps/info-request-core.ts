@@ -4,13 +4,13 @@ import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { safeFetch } from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
 export const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
 
-const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 
 export function isEvmAddress(value: unknown): value is string {
-  return typeof value === "string" && EVM_ADDRESS_PATTERN.test(value);
+  return typeof value === "string" && EVM_ADDRESS_RE.test(value);
 }
 
 export type InfoResult<T = unknown> =

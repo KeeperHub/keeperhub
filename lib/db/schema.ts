@@ -1,5 +1,6 @@
 import { isNotNull, relations, sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   index,
   integer,
@@ -19,6 +20,7 @@ import type {
   WorkflowExecutionStatus,
 } from "../errors/execution-status";
 import type { ErrorCategory } from "../logging";
+import type { PythSignal } from "../pyth/price-trigger";
 import type { IntegrationType } from "../types/integration";
 import { generateId } from "../utils/id";
 
@@ -833,6 +835,19 @@ export const workflowExecutions = pgTable(
     deletedAt: timestamp("deleted_at"),
   },
   (table) => [
+    /**
+     * Created by migration 0024 and, until now, declared nowhere: invisible to
+     * anyone reading this file and absent from a database bootstrapped with
+     * `db:push`, which builds only from here.
+     *
+     * It is the index the PagerDuty consecutive-runs guard leans on - one
+     * lookup per paging run of "the finished runs of this workflow before this
+     * one, newest first" - and the same shape the analytics queries use.
+     */
+    index("idx_workflow_executions_workflow_started").on(
+      table.workflowId,
+      table.startedAt.desc()
+    ),
     index("idx_workflow_executions_status").on(table.status),
     index("idx_workflow_executions_user_id").on(table.userId),
     // Backs the FK to organization: without it the RI check on an organization
@@ -847,6 +862,27 @@ export const workflowExecutions = pgTable(
     uniqueIndex("idx_workflow_executions_dispatch_key").on(table.dispatchKey),
   ]
 );
+
+// One durable threshold checkpoint and pending dispatch per Pyth workflow.
+// The workflow row lock serializes observation, ownership and outbox changes.
+export const pythTriggerCheckpoints = pgTable("pyth_trigger_checkpoints", {
+  workflowId: text("workflow_id")
+    .primaryKey()
+    .references(() => workflows.id, { onDelete: "cascade" }),
+  configHash: text("config_hash").notNull(),
+  sessionId: text("session_id"),
+  leaseUntil: timestamp("lease_until", { withTimezone: true }),
+  lastPublishTime: bigint("last_publish_time", { mode: "number" }),
+  armed: boolean("armed").notNull().default(false),
+  pending: jsonb("pending").$type<{
+    executionId: string;
+    configHash: string;
+    triggerData: PythSignal;
+  }>(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
 
 // Workflow execution logs to track individual node executions
 export const workflowExecutionLogs = pgTable(
@@ -968,6 +1004,55 @@ export {
   agenticWalletCredits,
   type NewAgenticWalletCredit,
 } from "./schema-agentic-wallet-credits";
+// Workflow-scoped key-value state that survives a run (#2288).
+// A per-workflow store for the values a workflow computes and needs on its
+// next run - the monitor cursor pattern ("last block I scanned", "the
+// transactions I have already alerted on"). Backed by the Postgres the app
+// already operates (not the best-effort Redis tier, which documents itself as
+// "never a source of truth"; a lost cursor is the visible-failure case this
+// table exists to prevent).
+//
+// Isolation is structural: every read and write scopes by workflow_id, which
+// step callers take from the execution context, never from node config. The
+// org is deliberately not stored: it is already on the workflow, and a copy
+// here would go stale when a workflow changes org (account linking re-parents
+// an anonymous user's workflows), orphaning its state. Workflow deletion
+// cascades, and so does org deletion through the workflow;
+// duplicated and imported workflows get a new id and therefore start with
+// empty state; state is runtime data and is not part of workflow export.
+export const workflowState = pgTable(
+  "workflow_state",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => generateId()),
+    workflowId: text("workflow_id")
+      .notNull()
+      .references(() => workflows.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
+    value: jsonb("value").notNull().$type<any>(),
+    // Bumped on every write. state/get returns it; state/set accepts it as
+    // expectedVersion for compare-and-set - the atomic read-modify-write path
+    // for two overlapping executions of the same workflow.
+    version: integer("version").notNull().default(1),
+    // Null = no expiry. Reads filter on it; an expired row stays until the
+    // next write to its key overwrites it. Nothing sweeps expired rows, so the
+    // column is not indexed until a sweeper exists.
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // Which run last wrote the row - the debuggability hook for the "opaque
+    // cursor" problem the issue describes.
+    updatedByExecutionId: text("updated_by_execution_id"),
+  },
+  (table) => [
+    // The isolation constraint: one row per (workflow, key).
+    uniqueIndex("idx_workflow_state_scope_key").on(table.workflowId, table.key),
+  ]
+);
+
 export {
   type AgenticWallet,
   type AgenticWalletDailySpend,
@@ -998,9 +1083,12 @@ export {
   type ExecutionDebt,
   type ExecutionQuotaNotification,
   type ExecutionRetentionProgress,
+  type ExecutionUsagePeriod,
+  type ExecutionUsagePeriodSource,
   executionDebt,
   executionQuotaNotifications,
   executionRetentionProgress,
+  executionUsagePeriods,
   type GasCreditAllocation,
   type GasSponsorshipMonthly,
   gasCreditAllocations,
@@ -1013,6 +1101,7 @@ export {
   type NewExecutionDebt,
   type NewExecutionQuotaNotification,
   type NewExecutionRetentionProgress,
+  type NewExecutionUsagePeriod,
   type NewGasCreditAllocation,
   type NewGasSponsorshipMonthly,
   type NewOrganizationApiKey,

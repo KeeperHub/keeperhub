@@ -62,38 +62,19 @@ import {
   DEV_WORKFLOW_FIXTURES,
 } from "./fixtures/dev-workflows";
 import { seedOnboardingWorkflows } from "./seed-onboarding-workflows";
+import { assertLocalDb } from "@/scripts/lib/local-db";
+import { SCRYPT_CONFIG } from "@/scripts/lib/dev-seed";
 
 // ---------------------------------------------------------------------------
 // Hostname guard
 // ---------------------------------------------------------------------------
 
-const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "db", "postgres"]);
-
-function assertLocalDb(url: string): string {
-  let hostname: string;
-  try {
-    hostname = new URL(url).hostname;
-  } catch {
-    throw new Error(
-      `dev-bootstrap: DATABASE_URL is not a parseable URL: ${url}`
-    );
-  }
-  if (!ALLOWED_HOSTS.has(hostname)) {
-    throw new Error(
-      `dev-bootstrap: refusing to run against host "${hostname}". ` +
-        `Only ${[...ALLOWED_HOSTS].join(", ")} are allowed. ` +
-        "Set DATABASE_URL to a local Postgres before re-running."
-    );
-  }
-  return hostname;
-}
 
 // ---------------------------------------------------------------------------
 // Password hashing (matches tests/e2e/playwright/utils/seed.ts so the
 // dev user's password is verifiable through Better Auth's credential flow)
 // ---------------------------------------------------------------------------
 
-const SCRYPT_CONFIG = { N: 16_384, r: 16, p: 1, dkLen: 64 } as const;
 const DEFAULT_DEV_PASSWORD = "Test1234!";
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -479,7 +460,7 @@ async function seedWorkflowFixtures(
 
 async function main(): Promise<void> {
   const url = getDatabaseUrl();
-  const host = assertLocalDb(url);
+  const host = assertLocalDb(url, "dev-bootstrap");
   console.log(`dev-bootstrap: connected to ${host}`);
 
   const client = postgres(url, { max: 1 });

@@ -14,6 +14,12 @@ it from your pull request - in the title (`fix: #1978 description`), as
 broken links, formatting, and docs corrected to match existing behaviour skip
 all of that.
 
+Search first. Before opening anything, search open and closed issues **and**
+open pull requests - someone may have filed or fixed it already. If an existing
+issue or pull request covers what you found, comment on that thread instead of
+opening a new one, including when what you have is a disagreement with it. See
+[Search before you open anything](ISSUES.md#search-before-you-open-anything).
+
 ## Table of Contents
 
 - [Development Setup](#development-setup)
@@ -116,6 +122,8 @@ make hybrid-down      # Teardown
 
 - The backing issue carries the `accepted` label, or the change is on the
   no-issue-required list in [ISSUES.md](ISSUES.md)
+- No open pull request already makes this change - search before you open one,
+  the same way you searched before filing the issue
 - All tests pass
 - Code passes lint (`pnpm check`) and type check (`pnpm type-check`)
 - Changes are tested thoroughly

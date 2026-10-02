@@ -23,6 +23,10 @@ import { getErrorMessage, resolveFailOnError } from "@/lib/utils";
 import { extractTemplateTokens } from "@/lib/utils/template";
 import type { StepInput } from "@/lib/workflow/executor/step-handler";
 import {
+  formatStoredBytes,
+  MAX_STORED_OUTPUT_BYTES,
+} from "@/lib/workflow/output-limits";
+import {
   isRetryableHttpStatus,
   linearBackoffMs,
   resolveRetryAttempts as resolveRetryAttemptsWithLimits,
@@ -183,12 +187,102 @@ export function resolveRetryDelayMs(retryDelay: unknown): number {
   });
 }
 
-function parseResponse(response: Response): Promise<unknown> {
-  const contentType = response.headers.get("content-type");
-  if (contentType?.includes("application/json")) {
-    return response.json();
+type BoundedBody = { ok: true; text: string } | { ok: false; bytes: number };
+
+const UTF8 = new TextDecoder("utf-8");
+
+/**
+ * Read a response body up to the stored-output limit and stop there.
+ *
+ * The step could not store a larger result anyway, and buffering the rest
+ * is exactly what lets one upstream response take the executor's memory. A
+ * declared Content-Length above the limit is refused before any read; a
+ * chunked body is refused as soon as it crosses the limit and the stream is
+ * cancelled. Callers handle a response without a body stream themselves.
+ */
+async function readBoundedBody(
+  response: Response & { body: ReadableStream<Uint8Array> },
+  maxBytes: number
+): Promise<BoundedBody> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    return { ok: false, bytes: declared };
   }
-  return response.text();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    received += value.byteLength;
+    if (received > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return { ok: false, bytes: received };
+    }
+    chunks.push(value);
+  }
+  // TextDecoder, like Response.text(), drops a leading UTF-8 byte-order mark;
+  // Buffer#toString keeps it, and JSON.parse then rejects the body.
+  return { ok: true, text: UTF8.decode(Buffer.concat(chunks)) };
+}
+
+function oversizeBodyError(bytes: number): string {
+  return `HTTP request failed: response body of ${formatStoredBytes(bytes)} exceeds the ${formatStoredBytes(MAX_STORED_OUTPUT_BYTES)} limit for step output. Request less data (filter, page or narrow the endpoint) so the result can be stored and passed to the next step.`;
+}
+
+function hasBodyStream(
+  response: Response
+): response is Response & { body: ReadableStream<Uint8Array> } {
+  return response.body !== null && response.body !== undefined;
+}
+
+function isJsonResponse(response: Response): boolean {
+  return (
+    response.headers.get("content-type")?.includes("application/json") ?? false
+  );
+}
+
+type ResponseData = { ok: true; data: unknown } | { ok: false; bytes: number };
+
+/**
+ * The parsed body of a successful response, or the size that made it
+ * unreadable. A response without a body stream (test doubles, some runtimes)
+ * is parsed the way it always was.
+ */
+async function readResponseData(response: Response): Promise<ResponseData> {
+  if (!hasBodyStream(response)) {
+    const data = isJsonResponse(response)
+      ? await response.json()
+      : await response.text();
+    return { ok: true, data };
+  }
+  const body = await readBoundedBody(response, MAX_STORED_OUTPUT_BYTES);
+  if (!body.ok) {
+    return body;
+  }
+  return {
+    ok: true,
+    data: isJsonResponse(response) ? JSON.parse(body.text) : body.text,
+  };
+}
+
+/** The text of an error response, withheld past the limit. */
+async function readErrorText(response: Response): Promise<string> {
+  if (!hasBodyStream(response)) {
+    return response.text().catch(() => "Unknown error");
+  }
+  const body = await readBoundedBody(response, MAX_STORED_OUTPUT_BYTES).catch(
+    () => null
+  );
+  if (body === null) {
+    return "Unknown error";
+  }
+  return body.ok
+    ? body.text
+    : `response body of ${formatStoredBytes(body.bytes)} withheld`;
 }
 
 /**
@@ -226,7 +320,7 @@ async function attemptHttpRequest(
     });
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => "Unknown error");
+      const errorText = await readErrorText(response);
       return {
         kind: "http-error",
         status: response.status,
@@ -234,9 +328,17 @@ async function attemptHttpRequest(
       };
     }
 
+    // An oversized body is a property of the endpoint, not a transient miss:
+    // it is never retried and, like an SSRF block, not soft-failed into a
+    // null-data success that a downstream step would carry on with.
+    const body = await readResponseData(response);
+    if (!body.ok) {
+      return { kind: "fatal", error: oversizeBodyError(body.bytes) };
+    }
+
     return {
       kind: "success",
-      data: await parseResponse(response),
+      data: body.data,
       status: response.status,
     };
   } catch (error) {

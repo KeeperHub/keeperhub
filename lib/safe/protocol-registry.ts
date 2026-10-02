@@ -1,3 +1,9 @@
+import {
+  ARBITRUM_ONE_CHAIN_ID as ARB,
+  BASE_CHAIN_ID as BASE,
+  ETHEREUM_MAINNET_CHAIN_ID as ETH,
+  OPTIMISM_CHAIN_ID as OPT,
+} from "@/lib/chains/ids";
 import type { TemplateSlug } from "@/lib/safe/condition-templates";
 
 /**
@@ -58,11 +64,6 @@ export const ENFORCEMENT_LEVEL_TOOLTIPS: Readonly<
   "contract-allowlist":
     "KeeperHub lets workflows call any function on this protocol's contracts. The contract itself decides what's valid. Per-token spending caps still apply. Used when a per-parameter template hasn't shipped yet for this protocol.",
 } as const;
-
-const ETH = 1;
-const OPT = 10;
-const BASE = 8453;
-const ARB = 42_161;
 
 export const PROTOCOL_CATALOG: Readonly<
   Record<ProtocolSlug, ProtocolCatalogEntry>

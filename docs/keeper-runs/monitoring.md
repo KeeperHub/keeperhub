@@ -70,8 +70,8 @@ See [Analytics API](/api/analytics) for details on accessing spending cap data p
 
 Analytics support multiple time ranges:
 
-- Last 24 hours
-- Last 7 days
-- Last 30 days (default)
-- Last 90 days
-- Custom date ranges
+- Last hour (`1h`)
+- Last 24 hours (`24h`, the default)
+- Last 7 days (`7d`)
+- Last 30 days (`30d`)
+- Custom date ranges (`custom`)

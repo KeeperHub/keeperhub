@@ -204,3 +204,49 @@ describe("selectorForFunctionChange", () => {
     ).toBeUndefined();
   });
 });
+
+describe("Trace trigger watched contract", () => {
+  function contractHint(): string | null {
+    const hints = Array.from(
+      container.querySelectorAll<HTMLParagraphElement>("p.text-destructive")
+    );
+    return (
+      hints.find((hint) => hint.textContent?.includes("watched contract"))
+        ?.textContent ?? null
+    );
+  }
+
+  it("flags an address that is one character short", () => {
+    // The events endpoint drops the workflow, so without this the author
+    // saves and enables a trigger that never registers.
+    renderTrace(false, {
+      triggerType: "Trace",
+      network: "9745",
+      contractAddress: `0x${"a".repeat(39)}`,
+    });
+    expect(contractHint()).toContain("exactly 40 hex characters");
+  });
+
+  it("flags a template, which a trigger has nothing to resolve against", () => {
+    renderTrace(false, {
+      triggerType: "Trace",
+      network: "9745",
+      contractAddress: "{{Lookup.address}}",
+    });
+    expect(contractHint()).toContain("exactly 40 hex characters");
+  });
+
+  it("says nothing about an address the endpoint accepts", () => {
+    renderTrace(false, {
+      triggerType: "Trace",
+      network: "9745",
+      contractAddress: `0x${"a".repeat(40)}`,
+    });
+    expect(contractHint()).toBeNull();
+  });
+
+  it("says nothing about a field nobody has filled in yet", () => {
+    renderTrace(false, { triggerType: "Trace", network: "9745" });
+    expect(contractHint()).toBeNull();
+  });
+});

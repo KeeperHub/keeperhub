@@ -7,9 +7,9 @@ import {
   parseProxyCreationEvent,
   SAFE_PROXY_FACTORY_ABI,
   SAFE_SETUP_ABI,
-  ZERO_ADDRESS,
 } from "@/lib/safe/address";
 import { getSafeContracts } from "@/lib/safe/contracts";
+import { ZERO_ADDRESS } from "@/lib/web3/address";
 
 const EXAMPLE_OWNER = "0x1111111111111111111111111111111111111111";
 const SECOND_OWNER = "0x2222222222222222222222222222222222222222";

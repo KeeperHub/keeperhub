@@ -41,6 +41,8 @@ export function createdFallback(
     resourceType: input.resourceType,
     resourceId: input.resourceId,
     resourceName: input.resourceName ?? null,
+    // Synthesized from the resource row, which records no credential.
+    credential: null,
     // A synthesized creation predates the version-history feature, so there is
     // no specific version to deep-link to.
     version: null,

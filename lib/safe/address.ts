@@ -6,9 +6,7 @@
  */
 
 import { ethers } from "ethers";
-
-export const ZERO_ADDRESS =
-  "0x0000000000000000000000000000000000000000" as const;
+import { ZERO_ADDRESS } from "@/lib/web3/address";
 
 /**
  * Safe v1.4.1 setup() ABI. Called once against a freshly-deployed proxy

@@ -6,11 +6,12 @@ import { useSession } from "@/lib/auth-client";
 import { BILLING_API } from "@/lib/billing/constants";
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import { useActiveMember } from "@/lib/hooks/use-organization";
+import { WEEK_MS } from "@/lib/utils/duration";
 import type { TrialInfo } from "./pricing-table/types";
 import { TrialUpsellModal } from "./trial-upsell-modal";
 
 const STORAGE_KEY = "keeperhub:trial-upsell";
-const COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // wait a week between shows
+const COOLDOWN_MS = WEEK_MS;
 const MAX_SHOWS = 3; // stop nudging after a few unanswered shows
 const SHOW_PROBABILITY = 0.25; // only some eligible sessions, not every one
 const SHOW_DELAY_MS = 6000; // let the user settle before interrupting

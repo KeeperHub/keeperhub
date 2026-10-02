@@ -41,6 +41,7 @@ export type ActionConfigFieldBase = {
     | "text" // Regular text input
     | "number" // Number input
     | "fail-on-error-switch" // "Fail workflow on error" toggle, shares HTTP Request's default-on resolution; not a generic boolean switch, ignores defaultValue in the renderer
+    | "gas-sponsorship-switch" // "Sponsor gas" toggle on a write action; default-on, skips the sponsored route entirely when off
     | "datetime" // Native date + time picker (stores an ISO 8601 string)
     | "select" // Dropdown select
     | "chain-select" // Dynamic chain selector that fetches from /api/chains
@@ -50,6 +51,7 @@ export type ActionConfigFieldBase = {
     | "abi-with-auto-fetch" // ABI textarea with automatic fetch from Etherscan
     | "token-select" // Token selector with supported/custom toggle
     | "abi-event-select" // Dynamic dropdown that parses ABI and shows events
+    | "abi-event-args" // One input per indexed parameter of the selected event
     | "gas-limit-multiplier" // Gas limit multiplier with chain default display
     | "code-editor" // Monaco-based JavaScript code editor
     | "json-editor" // Monaco-based JSON editor
@@ -61,7 +63,16 @@ export type ActionConfigFieldBase = {
     | "protocol-bool" // Boolean select (true/false) with template variable support
     | "protocol-bytes" // Hex input with 0x-prefix validation
     | "protocol-eth-value" // Decimal ETH value input (e.g. 0.1, 1.5)
-    | "protocol-tuple-array"; // Structured array of tuple items (e.g. tokenAmounts)
+    | "protocol-array" // Structured scalar array (e.g. uint256[])
+    | "protocol-tuple-array" // Structured array of tuple items (e.g. tokenAmounts)
+    | "pagerduty-service-select" // Services read live from the node's PagerDuty connection
+    | "pagerduty-escalation-policy-select" // Escalation policies read live from that connection
+    | "pagerduty-preview" // Read-only payload and incident preview for a PagerDuty node
+    | "pagerduty-test-node" // Sends one real alert through the selected service and takes it back
+    | "pagerduty-backup-connection-select" // Existing Discord/Slack/Telegram connection used when a page fails
+    | "pagerduty-priority-select" // Account incident priorities, read live (REST only)
+    | "pagerduty-trigger-node-select" // A Trigger Incident node in this workflow, for the dedup key
+    | "pagerduty-from-email-notice"; // Warns when neither the node nor its connection carries a From email
 
   // For chain-select: filter by chain type - one ("evm") or several (["evm", "solana"])
   chainTypeFilter?: string | string[];
@@ -83,11 +94,35 @@ export type ActionConfigFieldBase = {
   // Example value for AI prompt generation
   example?: string;
 
+  /**
+   * For a `select`: accept a `{{template}}` in place of one of the options.
+   *
+   * Off by default, and deliberately so. A select's options are a promise to
+   * the step that the value is one of them, and several steps lean on it:
+   * robinhood's `side` treats anything that is not "buy" as a sell, tempo's
+   * `broadcastMode` turns an unrecognised value into a hold that never fires.
+   * Only set this where the step resolves an unknown value to a documented
+   * default, and say so in the field's help text.
+   */
+  allowTemplate?: boolean;
+
   // For select fields: list of options
   options?: SelectOption[];
 
   // Number of rows (for textarea)
   rows?: number;
+
+  // For a template-textarea field whose value is JSON: offers a Beautify
+  // action in a strip along the top of the field. Named valueFormat rather
+  // than format because a plugin's own config can carry a field keyed
+  // "format" (data/encode does), and the two would read as the same thing.
+  //
+  // Set it only where the value is always JSON. On a message body or a
+  // line-oriented format there is nothing to reformat and the action would
+  // report a parse error; on a field that takes either a bare reference or
+  // JSON it is worse than that, because a lone `{{ref}}` formats to itself
+  // and the button appears to do nothing at all.
+  valueFormat?: "json";
 
   // Min value (for number fields)
   min?: number;
@@ -110,6 +145,16 @@ export type ActionConfigFieldBase = {
   // needs to gate on the sibling's own condition too.
   showWhen?: ShowWhen;
 
+  // Escape values substituted from {{...}} references into this field before
+  // the step runs, so resolved data cannot change the meaning of the author's
+  // own markup. `when` gates the rule on a sibling field using showWhen syntax.
+  escapeSubstitutions?: {
+    as: "html";
+    when?:
+      | { field: string; equals: string }
+      | { field: string; oneOf: string[] };
+  };
+
   // For abi-function-select and abi-event-select: which field contains the ABI JSON
   abiField?: string;
 
@@ -118,6 +163,9 @@ export type ActionConfigFieldBase = {
 
   // For abi-function-args: which field contains the ABI JSON and selected function
   abiFunctionField?: string;
+
+  // For abi-event-args: which field holds the selected event name
+  abiEventField?: string;
 
   // For abi-with-auto-fetch: which field contains the contract address
   contractAddressField?: string;
@@ -310,6 +358,12 @@ export type IntegrationPlugin = {
   // Defaults to true for backward compatibility
   requiresCredentials?: boolean;
 
+  // Set alongside requiresCredentials: false when formFields hold real,
+  // optional settings (a custom instance URL, an API key override) that steps
+  // read when a connection is chosen. Offers the connection form in the picker
+  // and the node's Connection block without requiring one before a run.
+  optionalConnection?: boolean;
+
   // Whether only one connection is allowed per user
   // Set to true for integrations with unique constraints (e.g., web3 wallet)
   // When true, the "+" button to add more connections will be hidden
@@ -326,6 +380,14 @@ export type IntegrationPlugin = {
     configKey: string; // Which key in IntegrationConfig to store the value
     envVar?: string; // Environment variable this field maps to (e.g., "RESEND_API_KEY")
     defaultValue?: string | boolean; // Default value for the field (for checkboxes, use boolean)
+    /**
+     * Marks this field as part of one of several alternative credentials, only
+     * one of which is used. The connection form holds the others shut once one
+     * is filled in, so "either this or that" is visible rather than implied.
+     */
+    exclusiveGroup?: string;
+    /** Shown on the divider that opens the group, on its first field. */
+    exclusiveGroupLabel?: string;
   }>;
 
   // Testing configuration (lazy-loaded to avoid bundling Node.js packages in client)
@@ -588,6 +650,69 @@ export function flattenConfigFields(
 }
 
 /**
+ * Field types that render something rather than collect a value.
+ *
+ * They still belong in `configFields`, because that is what puts them on the
+ * node in the right place, but they have no value to seed into an example
+ * config and the step never reads their key.
+ */
+const DISPLAY_ONLY_FIELD_SUFFIXES = [
+  "-preview",
+  "-test-node",
+  "-notice",
+] as const;
+
+export function isDisplayOnlyField(type: string | undefined): boolean {
+  return (
+    type !== undefined &&
+    DISPLAY_ONLY_FIELD_SUFFIXES.some((suffix) => type.endsWith(suffix))
+  );
+}
+
+/**
+ * The example config one action contributes to the generation prompt.
+ *
+ * Exported so a test can assert on what a generated node carries without
+ * copying this ladder. A copy cannot fail when the ladder changes, which is
+ * the one thing such a test is for.
+ */
+export function buildExampleConfig(
+  actionType: string,
+  configFields: ActionConfigField[] | undefined
+): Record<string, string | number> {
+  const exampleConfig: Record<string, string | number> = { actionType };
+
+  for (const field of flattenConfigFields(configFields ?? [])) {
+    // A field that renders a panel rather than collecting a value has
+    // nothing to seed. Without this it falls through to the string branch
+    // below and the prompt tells the model to emit
+    // `"pagerdutyPreview":"Your preview"` - a key the step never reads,
+    // in every generated node, and in the system prompt on every call.
+    if (isDisplayOnlyField(field.type)) continue;
+
+    // Include a conditional field when its condition holds for the
+    // example assembled so far. Fields are visited in declaration order,
+    // so a field's dependencies are already in the example.
+    if (!evaluateShowWhen(field.showWhen, exampleConfig)) continue;
+
+    // Use example, defaultValue, or a sensible default based on type
+    if (field.example !== undefined) {
+      exampleConfig[field.key] = field.example;
+    } else if (field.defaultValue !== undefined) {
+      exampleConfig[field.key] = field.defaultValue;
+    } else if (field.type === "number") {
+      exampleConfig[field.key] = 10;
+    } else if (field.type === "select" && field.options?.[0]) {
+      exampleConfig[field.key] = field.options[0].value;
+    } else {
+      exampleConfig[field.key] = `Your ${field.label.toLowerCase()}`;
+    }
+  }
+
+  return exampleConfig;
+}
+
+/**
  * Generate AI prompt section for all available actions
  * This dynamically builds the action types documentation for the AI
  */
@@ -597,33 +722,7 @@ export function generateAIActionPrompts(): string {
   for (const plugin of integrationRegistry.values()) {
     for (const action of plugin.actions) {
       const fullId = computeActionId(plugin.type, action.slug);
-
-      // Build example config from configFields (flatten groups)
-      const exampleConfig: Record<string, string | number> = {
-        actionType: fullId,
-      };
-
-      const flatFields = flattenConfigFields(action.configFields);
-
-      for (const field of flatFields) {
-        // Include a conditional field when its condition holds for the
-        // example assembled so far. Fields are visited in declaration order,
-        // so a field's dependencies are already in the example.
-        if (!evaluateShowWhen(field.showWhen, exampleConfig)) continue;
-
-        // Use example, defaultValue, or a sensible default based on type
-        if (field.example !== undefined) {
-          exampleConfig[field.key] = field.example;
-        } else if (field.defaultValue !== undefined) {
-          exampleConfig[field.key] = field.defaultValue;
-        } else if (field.type === "number") {
-          exampleConfig[field.key] = 10;
-        } else if (field.type === "select" && field.options?.[0]) {
-          exampleConfig[field.key] = field.options[0].value;
-        } else {
-          exampleConfig[field.key] = `Your ${field.label.toLowerCase()}`;
-        }
-      }
+      const exampleConfig = buildExampleConfig(fullId, action.configFields);
 
       lines.push(
         `- ${action.label} (${fullId}): ${JSON.stringify(exampleConfig)}`

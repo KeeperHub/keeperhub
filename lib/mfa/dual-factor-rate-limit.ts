@@ -10,21 +10,30 @@
  *   - Brute-force guesses: attacker has stolen one factor and tries
  *     to guess the other across a live verifications row.
  *
- * In-memory per pod, matching the pattern in lib/mcp/rate-limit.ts.
- * In a multi-replica deployment each pod tracks its own window;
- * effective limit is LIMIT_PER_WINDOW * num_replicas. Migrate to
- * Redis when replica count starts to matter.
+ * In-memory per pod, on the shared sliding window in
+ * lib/rate-limit/sliding-window.ts. In a multi-replica deployment each pod
+ * tracks its own window; effective limit is LIMIT_PER_WINDOW * num_replicas.
+ * Migrate to Redis when replica count starts to matter.
  *
  * On a successful dual-factor verify the caller invokes `resetDualFactor`
  * to wipe the counter; this prevents a legitimately-confused user
  * from running out of room after a few typos before they finally hit
  * the right codes.
+ *
+ * The result shape stays narrower than the shared limiter's on purpose:
+ * callers here only ever need allowed/retryAfter.
  */
 
-const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+import { createSlidingWindowLimiter } from "@/lib/rate-limit/sliding-window";
+import { MINUTE_MS } from "@/lib/utils/duration";
+
+const WINDOW_MS = 15 * MINUTE_MS;
 const LIMIT_PER_WINDOW = 10;
 
-const attemptLog = new Map<string, number[]>();
+const limiter = createSlidingWindowLimiter({
+  limit: LIMIT_PER_WINDOW,
+  windowMs: WINDOW_MS,
+});
 
 const keyFor = (userId: string, action: string): string =>
   `${userId}:${action}`;
@@ -37,29 +46,17 @@ export function checkDualFactorRateLimit(
   userId: string,
   action: string
 ): DualFactorRateLimitResult {
-  const key = keyFor(userId, action);
-  const now = Date.now();
-  const windowStart = now - WINDOW_MS;
-
-  const timestamps = attemptLog.get(key);
-  const recent = timestamps ? timestamps.filter((t) => t > windowStart) : [];
-
-  if (recent.length >= LIMIT_PER_WINDOW) {
-    const oldestInWindow = recent[0];
-    const retryAfter = Math.ceil((oldestInWindow + WINDOW_MS - now) / 1000);
-    return { allowed: false, retryAfter: Math.max(retryAfter, 1) };
-  }
-
-  recent.push(now);
-  attemptLog.set(key, recent);
-  return { allowed: true };
+  const result = limiter.check(keyFor(userId, action));
+  return result.allowed
+    ? { allowed: true }
+    : { allowed: false, retryAfter: result.retryAfter };
 }
 
 export function resetDualFactor(userId: string, action: string): void {
-  attemptLog.delete(keyFor(userId, action));
+  limiter.reset(keyFor(userId, action));
 }
 
 // Test-only: wipe all tracked windows.
 export function resetDualFactorRateLimitState(): void {
-  attemptLog.clear();
+  limiter.__reset();
 }

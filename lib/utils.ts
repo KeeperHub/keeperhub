@@ -109,6 +109,17 @@ export function getErrorMessage(error: unknown): string {
 }
 
 /**
+ * Resolve a default-on boolean config flag. Only an explicit `false` - the
+ * boolean, or the "false" string the visual editor may persist - turns it
+ * off; anything else, an absent value included, reads as on. Every toggle
+ * that ships default-on resolves through here so they all read a stored
+ * value the same way.
+ */
+export function resolveDefaultOnFlag(value: unknown): boolean {
+  return value !== false && value !== "false";
+}
+
+/**
  * Resolve a "fail workflow on error" config flag. Defaults to true (a failure
  * fails the step); only an explicit `false` (boolean or the "false" string
  * the visual editor may persist) opts into soft-fail. Shared by any step that
@@ -116,7 +127,7 @@ export function getErrorMessage(error: unknown): string {
  * semantics stay identical everywhere it appears.
  */
 export function resolveFailOnError(failOnError: unknown): boolean {
-  return failOnError !== false && failOnError !== "false";
+  return resolveDefaultOnFlag(failOnError);
 }
 
 /**

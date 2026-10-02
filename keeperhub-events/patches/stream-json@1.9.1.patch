@@ -1,0 +1,36 @@
+diff --git a/filters/FilterBase.js b/filters/FilterBase.js
+index 2e96d1581e8ca67ca600ab9228ec7a4a1c84d4af..27a208ab02f97fde9d9b10d67d89e17947e0bd4a 100644
+--- a/filters/FilterBase.js
++++ b/filters/FilterBase.js
+@@ -2,6 +2,12 @@
+ 
+ const {Transform} = require('stream');
+ 
++// Backport of the stream-json 3.5.0 depth cap (GHSA-528h-pc64-c93x).
++// stringFilter/regExpFilter rejoin the whole stack on every checkable
++// token, so a deeply nested document costs O(depth^2). Upstream caps the
++// nesting depth the path filters will walk; opt out with maxDepth: Infinity.
++const DEFAULT_MAX_DEPTH = 1024;
++
+ class FilterBase extends Transform {
+   static stringFilter(string, separator) {
+     return stack => {
+@@ -52,6 +58,18 @@ class FilterBase extends Transform {
+ 
+     this._once = options && options.once;
+     this._previousToken = '';
++
++    const maxDepth = options && options.maxDepth;
++    this._maxDepth = maxDepth === undefined || maxDepth === null ? DEFAULT_MAX_DEPTH : maxDepth;
++    if (typeof this._filter == 'function') {
++      const filterFn = this._filter;
++      this._filter = (stack, chunk) => {
++        if (stack.length > this._maxDepth) {
++          throw new RangeError(`filter: JSON nesting depth exceeds maxDepth (${this._maxDepth})`);
++        }
++        return filterFn(stack, chunk);
++      };
++    }
+   }
+ 
+   _check(chunk, _, callback) {

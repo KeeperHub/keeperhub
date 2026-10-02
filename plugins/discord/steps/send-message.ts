@@ -1,4 +1,5 @@
 import "server-only";
+import { isValidDiscordWebhookUrl } from "@/lib/notifications/messaging-endpoints";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { fetchCredentials } from "@/lib/credential-fetcher";
@@ -35,6 +36,10 @@ type SendDiscordMessageResult =
 
 export type SendDiscordMessageCoreInput = {
   discordMessage: string;
+  username?: string;
+  avatarUrl?: string;
+  embedTitle?: string;
+  embedColor?: string;
   /** Extra attempts after the first; a string when set from the editor. */
   retryAttempts?: number | string;
   /** Base backoff in seconds; a string when set from the editor. */
@@ -46,7 +51,23 @@ export type SendDiscordMessageInput = StepInput &
     integrationId: string;
   };
 
-const DISCORD_WEBHOOK_HOSTS = new Set(["discord.com", "discordapp.com"]);
+const EMBED_COLORS = new Map<string, number>([
+  ["red", 15_158_332],
+  ["green", 3_066_993],
+  ["yellow", 15_844_367],
+  ["blue", 3_447_003],
+  ["gray", 9_807_270],
+]);
+
+const USERNAME_MAX_CHARS = 80;
+const EMBED_TITLE_MAX_CHARS = 256;
+const EMBED_DESCRIPTION_MAX_CHARS = 4096;
+
+// Discord rejects a webhook username carrying either substring.
+const USERNAME_BANNED_SUBSTRINGS = ["discord", "clyde"];
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: control chars are stripped from the username before it reaches the Discord API
+const USERNAME_CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
 
 /**
  * Retry policy for transient Discord failures. Parsing, clamping, the
@@ -84,33 +105,140 @@ const LOG_LABELS = {
   service: "discord",
 };
 
+type DiscordEmbed = {
+  title?: string;
+  description: string;
+  color?: number;
+};
+
+type DiscordWebhookPayload = {
+  content?: string;
+  username?: string;
+  avatar_url?: string;
+  embeds?: DiscordEmbed[];
+};
+
 /**
- * Validates a Discord webhook URL by hostname over https, not by substring.
- * A substring match on "discord.com/api/webhooks/" is satisfied by an
- * off-host URL that carries it in the path (e.g.
- * https://10.0.0.1/discord.com/api/webhooks/x), which points egress at an
- * internal host. The safeFetch SSRF guard is the network-layer backstop;
- * this rejects an off-host URL before any request is attempted.
+ * A malformed avatar URL makes Discord reject the whole request, so an
+ * unusable value is dropped instead of sent.
  */
-function isValidDiscordWebhookUrl(rawUrl: string): boolean {
+function resolveAvatarUrl(
+  rawAvatarUrl: string | undefined
+): string | undefined {
+  const trimmed = rawAvatarUrl?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
   let parsed: URL;
   try {
-    parsed = new URL(rawUrl);
+    parsed = new URL(trimmed);
   } catch {
-    return false;
+    logUserError(
+      ErrorCategory.VALIDATION,
+      "[Discord] Avatar URL is not a valid URL, sending without it",
+      undefined,
+      LOG_LABELS
+    );
+    return undefined;
   }
   if (parsed.protocol !== "https:") {
-    return false;
+    logUserError(
+      ErrorCategory.VALIDATION,
+      "[Discord] Avatar URL must use https, sending without it",
+      undefined,
+      LOG_LABELS
+    );
+    return undefined;
   }
-  const host = parsed.hostname.toLowerCase();
-  const hostAllowed =
-    DISCORD_WEBHOOK_HOSTS.has(host) ||
-    host.endsWith(".discord.com") ||
-    host.endsWith(".discordapp.com");
-  if (!hostAllowed) {
-    return false;
+  return trimmed;
+}
+
+/** Same degrade-instead-of-fail treatment for the bot username override. */
+function resolveUsername(rawUsername: string | undefined): string | undefined {
+  const trimmed = rawUsername?.replace(USERNAME_CONTROL_CHARS, " ").trim();
+  if (!trimmed) {
+    if (rawUsername?.trim()) {
+      logUserError(
+        ErrorCategory.VALIDATION,
+        "[Discord] Bot username has no usable characters, sending without it",
+        undefined,
+        LOG_LABELS
+      );
+    }
+    return undefined;
   }
-  return parsed.pathname.startsWith("/api/webhooks/");
+  const lowered = trimmed.toLowerCase();
+  if (USERNAME_BANNED_SUBSTRINGS.some((banned) => lowered.includes(banned))) {
+    logUserError(
+      ErrorCategory.VALIDATION,
+      "[Discord] Bot username contains a reserved word, sending without it",
+      undefined,
+      LOG_LABELS
+    );
+    return undefined;
+  }
+  return trimmed.slice(0, USERNAME_MAX_CHARS);
+}
+
+/** Returns the Discord colour integer, or undefined when none applies. */
+function resolveEmbedColor(
+  rawEmbedColor: string | undefined
+): number | undefined {
+  const key = rawEmbedColor?.trim().toLowerCase();
+  if (!key || key === "none") {
+    return undefined;
+  }
+  const color = EMBED_COLORS.get(key);
+  if (color === undefined) {
+    logUserError(
+      ErrorCategory.VALIDATION,
+      "[Discord] Unrecognised embed colour, sending without it",
+      undefined,
+      LOG_LABELS
+    );
+  }
+  return color;
+}
+
+/**
+ * Builds the webhook body once, before the first attempt, so a rejected
+ * avatar or username never reaches a retry.
+ */
+function buildPayload(
+  input: SendDiscordMessageCoreInput
+): DiscordWebhookPayload {
+  const payload: DiscordWebhookPayload = {};
+
+  const username = resolveUsername(input.username);
+  if (username) {
+    payload.username = username;
+  }
+
+  const avatarUrl = resolveAvatarUrl(input.avatarUrl);
+  if (avatarUrl) {
+    payload.avatar_url = avatarUrl;
+  }
+
+  const embedTitle = input.embedTitle?.trim();
+  const embedColor = resolveEmbedColor(input.embedColor);
+
+  // An embed carries the message text instead of `content`, so the channel
+  // shows it once and the 2000-char content limit does not apply.
+  if (embedTitle || embedColor !== undefined) {
+    payload.embeds = [
+      {
+        ...(embedTitle
+          ? { title: embedTitle.slice(0, EMBED_TITLE_MAX_CHARS) }
+          : {}),
+        description: input.discordMessage.slice(0, EMBED_DESCRIPTION_MAX_CHARS),
+        ...(embedColor !== undefined ? { color: embedColor } : {}),
+      },
+    ];
+  } else {
+    payload.content = input.discordMessage;
+  }
+
+  return payload;
 }
 
 /**
@@ -180,7 +308,7 @@ function classifyThrow(error: unknown): AttemptOutcome {
 
 async function attemptSend(
   webhookUrl: string,
-  content: string
+  payload: DiscordWebhookPayload
 ): Promise<AttemptOutcome> {
   try {
     const response = await safeFetch(webhookUrl, {
@@ -189,7 +317,7 @@ async function attemptSend(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify(payload),
       // Bounds each attempt so a stalled socket cannot hang the step; the
       // waits between attempts are bounded separately below.
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -320,6 +448,7 @@ function toResult(outcome: AttemptOutcome): SendDiscordMessageResult {
  */
 async function sendWithRetries(
   webhookUrl: string,
+  payload: DiscordWebhookPayload,
   input: SendDiscordMessageCoreInput
 ): Promise<AttemptOutcome> {
   const maxRetries = resolveRetryAttempts(
@@ -328,7 +457,7 @@ async function sendWithRetries(
   );
   const baseDelayMs = resolveRetryDelayMs(input.retryDelay, RETRY_DELAY_LIMITS);
 
-  let outcome = await attemptSend(webhookUrl, input.discordMessage);
+  let outcome = await attemptSend(webhookUrl, payload);
   for (let retry = 1; retry <= maxRetries; retry++) {
     if (outcome.kind === "success" || !isRetryable(outcome)) {
       break;
@@ -348,7 +477,7 @@ async function sendWithRetries(
     if (delayMs > 0) {
       await sleep(delayMs);
     }
-    outcome = await attemptSend(webhookUrl, input.discordMessage);
+    outcome = await attemptSend(webhookUrl, payload);
   }
   return outcome;
 }
@@ -400,9 +529,11 @@ async function stepHandler(
     };
   }
 
+  const payload = buildPayload(input);
+
   console.log("[Discord] Sending message to webhook");
 
-  const outcome = await sendWithRetries(webhookUrl, input);
+  const outcome = await sendWithRetries(webhookUrl, payload, input);
 
   if (outcome.kind === "success") {
     console.log("[Discord] Message sent successfully");

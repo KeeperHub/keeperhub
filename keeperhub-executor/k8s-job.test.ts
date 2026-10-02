@@ -100,6 +100,7 @@ describe("createWorkflowJob", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (CONFIG as Record<string, unknown>).etherscanApiKey = "test-etherscan-key";
+    delete (CONFIG as Record<string, unknown>).workflowRunnerCollectMonitoring;
     delete process.env.METRICS_COLLECTOR;
     delete process.env.EXECUTOR_METRICS_INGEST_URL;
     delete process.env.METRICS_INGEST_TOKEN;
@@ -441,6 +442,42 @@ describe("createWorkflowJob", () => {
     expect(getSubmittedJob().spec?.ttlSecondsAfterFinished).toBe(300);
   });
 
+  it("opts a runner pod out of voluntary node disruption", async () => {
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const job = getSubmittedJob();
+    const annotations = job.spec?.template?.metadata?.annotations;
+
+    // backoffLimit 0 means an evicted pod fails the Job outright and loses the
+    // execution, so the pod must not be drained out from under a live run.
+    expect(job.spec?.backoffLimit).toBe(0);
+    expect(annotations?.["karpenter.sh/do-not-disrupt"]).toBe("true");
+    // The monitoring opt-out rides in the same annotation map; it is on by
+    // default here because the mocked config leaves collection disabled.
+    expect(annotations?.["keeperhub.com/monitoring.exclude"]).toBe("true");
+  });
+
+  it("keeps the disruption opt-out when monitoring collection is enabled", async () => {
+    (CONFIG as Record<string, unknown>).workflowRunnerCollectMonitoring = true;
+
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const annotations = getSubmittedJob().spec?.template?.metadata?.annotations;
+
+    expect(annotations?.["karpenter.sh/do-not-disrupt"]).toBe("true");
+    expect(annotations?.["keeperhub.com/monitoring.exclude"]).toBeUndefined();
+  });
+
   it("gives the drain watchdog a budget that expires before the pod is killed", async () => {
     await createWorkflowJob({
       workflowId: "wf-1",
@@ -457,6 +494,89 @@ describe("createWorkflowJob", () => {
 
     expect(drainMs).toBe(400_000);
     expect(drainMs).toBeLessThan(deadlineMs);
+  });
+
+  it("propagates a label-safe correlation id to the Job env and labels", async () => {
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "event",
+      correlationId: "abcd1234efgh5678",
+      latencyEpochs: { receivedAt: 1_000, observedAt: 500 },
+    });
+
+    const job = getSubmittedJob();
+    expect(job.metadata?.labels?.["correlation-id"]).toBe("abcd1234efgh5678");
+    const envVars = getJobEnvVars(job);
+    expect(getEnvVar(envVars, "KH_CORRELATION_ID")).toBe("abcd1234efgh5678");
+    expect(getEnvVar(envVars, "KH_RECEIVED_AT")).toBe("1000");
+    expect(getEnvVar(envVars, "KH_OBSERVED_AT")).toBe("500");
+  });
+
+  it("never puts a label-unsafe correlation id on the Job", async () => {
+    // A Kubernetes label value caps at 63 characters with a restricted
+    // charset; an invalid value fails Job creation, which would turn a bad
+    // correlation id into a workflow that never runs.
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "event",
+      correlationId: `bad/${"a".repeat(70)}`,
+    });
+
+    const job = getSubmittedJob();
+    expect(job.metadata?.labels?.["correlation-id"]).toBeUndefined();
+    expect(getEnvVar(getJobEnvVars(job), "KH_CORRELATION_ID")).toBeUndefined();
+  });
+
+  it("accepts a correlation id at the 63-character label limit", async () => {
+    const atLimit = "a".repeat(63);
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "event",
+      correlationId: atLimit,
+    });
+
+    const job = getSubmittedJob();
+    expect(job.metadata?.labels?.["correlation-id"]).toBe(atLimit);
+    expect(getEnvVar(getJobEnvVars(job), "KH_CORRELATION_ID")).toBe(atLimit);
+  });
+
+  it.each([
+    ["one character over the limit", "a".repeat(64)],
+    ["a leading separator", "-abcd1234"],
+    ["a trailing separator", "abcd1234."],
+    ["a trailing newline", "abcd1234\n"],
+  ])("drops a correlation id with %s", async (_case, correlationId) => {
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "event",
+      correlationId,
+    });
+
+    const job = getSubmittedJob();
+    expect(job.metadata?.labels?.["correlation-id"]).toBeUndefined();
+    expect(getEnvVar(getJobEnvVars(job), "KH_CORRELATION_ID")).toBeUndefined();
+  });
+
+  it("omits the latency env anchors when no stage stamps are supplied", async () => {
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const envVars = getJobEnvVars(getSubmittedJob());
+    expect(envVars.find((v) => v.name === "KH_CORRELATION_ID")).toBeUndefined();
+    expect(envVars.find((v) => v.name === "KH_RECEIVED_AT")).toBeUndefined();
+    expect(envVars.find((v) => v.name === "KH_OBSERVED_AT")).toBeUndefined();
   });
 
   it("caps the runner heap below the container memory limit", async () => {

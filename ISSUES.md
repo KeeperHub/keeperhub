@@ -17,6 +17,38 @@ contributor real work on this repo:
 None of those are review problems. They are all answerable in a sentence before
 any code is written.
 
+## Search before you open anything
+
+Search open **and** closed issues, and open pull requests, before you file.
+The pull request half is the one people skip (`is:pr is:open` plus your
+keywords), and it is the one that catches work already in flight.
+
+Three things you can find, none of which needs a new issue:
+
+- **An open issue covers it.** Comment there, and add what it is missing - your
+  reproduction, the surface you hit it on, the version you checked. A second
+  issue for the same fault splits the evidence across two threads.
+- **A closed issue covers it.** The reason is in the closing comment and often
+  still applies. If you have evidence it no longer does, say so on that issue;
+  reopening a thread with new evidence is more useful than a fresh report.
+- **An open pull request already changes it.** Comment on it or review it. A
+  competing pull request for the same lines wastes the other contributor's work
+  as surely as it wastes yours.
+
+**A disagreement with an existing issue belongs in a comment on that issue**,
+not in an issue of your own. Whether the scope is right, whether the plan is
+right, whether it should be fixed at all - that is what the thread is for, and
+it is where triage reads it. A second issue arguing with the first is closed as
+a duplicate, and the argument is lost with it.
+
+Open a new issue when yours is genuinely a different problem - a different root
+cause, or a different surface with its own reproduction - even where the symptom
+looks the same. Say what you found in the search and why yours is separate; that
+saves triage from repeating it.
+
+If an issue is `accepted` and unclaimed, say you are taking it before you start,
+so two people do not build the same thing.
+
 ## When an issue is required
 
 **Required** for anything that changes behaviour:
@@ -204,15 +236,6 @@ pull request saying what it found and what to do. The check reruns on every
 push and edit, but not when the issue's labels change: once `accepted` lands,
 edit the title or re-run the job. A maintainer can apply `no-issue-required` to
 exempt a pull request the rules did not anticipate.
-
-## Continuing an existing issue
-
-Someone may have filed it already. Search open **and** closed issues first - a
-closed one often carries the reason, and reopening that thread with new evidence
-is more useful than a fresh report.
-
-If an issue is `accepted` and unclaimed, say you are taking it before you start,
-so two people do not build the same thing.
 
 ## Security
 

@@ -41,14 +41,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 
 import { getDatabaseUrl } from "../lib/db/connection-utils";
-
-const ALLOWED_HOSTS = new Set([
-  "localhost",
-  "127.0.0.1",
-  "::1",
-  "db",
-  "postgres",
-]);
+import { assertLocalDb } from "@/scripts/lib/local-db";
 
 const REPO_ROOT = process.cwd();
 const COOKIE_FILE = path.join(
@@ -70,23 +63,6 @@ const DEV_URL = process.env.DEV_LOGIN_URL ?? "http://localhost:3000";
 const SERVER_READY_TIMEOUT_MS = 180_000;
 const SERVER_POLL_INTERVAL_MS = 1000;
 const SERVER_PROBE_TIMEOUT_MS = 2000;
-
-function assertLocalDb(): void {
-  const url = getDatabaseUrl();
-  let hostname: string;
-  try {
-    hostname = new URL(url).hostname;
-  } catch {
-    throw new Error("dev-login: DATABASE_URL is not a parseable URL");
-  }
-  if (!ALLOWED_HOSTS.has(hostname)) {
-    throw new Error(
-      `dev-login: refusing to run against host "${hostname}". Only ${[
-        ...ALLOWED_HOSTS,
-      ].join(", ")} are allowed.`
-    );
-  }
-}
 
 function parseEmail(): string {
   return process.argv[2] ?? "dev@keeperhub.local";
@@ -217,7 +193,7 @@ function launchBrowserDetached(rawSignedValue: string): void {
 }
 
 async function main(): Promise<void> {
-  assertLocalDb();
+  assertLocalDb(getDatabaseUrl(), "dev-login");
   const email = parseEmail();
 
   runStep("pnpm dev:bootstrap", "scripts/seed/dev-bootstrap.ts", []);

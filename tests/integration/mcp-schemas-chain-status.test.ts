@@ -23,6 +23,7 @@ vi.mock("@/plugins/registry", () => ({
   computeActionId: vi.fn(() => "noop"),
   flattenConfigFields: vi.fn(() => []),
   getAllIntegrations: vi.fn(() => []),
+  isDisplayOnlyField: vi.fn(() => false),
 }));
 
 // db.select({...}).from(chains).leftJoin(...).where(...) -> Promise<rows>

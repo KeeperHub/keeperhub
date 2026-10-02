@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import type { SimulateFailureCode } from "@/lib/execute/simulate";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 
 /**
@@ -39,9 +40,93 @@ const COMMON_ERROR_FRAGMENTS: string[] = [
   "error AlreadyInitialized()",
 ];
 
+export const SOLIDITY_PANIC_CODES: Record<
+  number,
+  { name: string; description: string; remediation: string }
+> = {
+  0: {
+    name: "GenericCompilerPanic",
+    description: "Generic compiler panic",
+    remediation:
+      "The contract hit a generic compiler panic, which points at its compilation or constructor invariants.",
+  },
+  1: {
+    name: "AssertFalse",
+    description: "Assertion evaluated to false",
+    remediation:
+      "A contract invariant checked with assert() evaluated to false for these inputs and this contract state.",
+  },
+  17: {
+    name: "ArithmeticOverflowUnderflow",
+    description:
+      "Arithmetic operation underflowed or overflowed outside an unchecked block",
+    remediation:
+      "The transaction attempted a calculation that exceeded numeric bounds. The amounts or token decimals in the request can cause this.",
+  },
+  18: {
+    name: "DivisionByZero",
+    description: "Division or modulo by zero",
+    remediation:
+      "The contract attempted to divide by zero. A zero denominator argument or a zero token price causes this.",
+  },
+  33: {
+    name: "InvalidEnumValue",
+    description: "Tried to convert a value into an enum that was out of bounds",
+    remediation: "An enum argument is outside the enum's valid range.",
+  },
+  34: {
+    name: "StorageByteSliceOutOfBounds",
+    description: "Access to incorrectly encoded storage byte array",
+    remediation:
+      "The contract read an incorrectly encoded storage byte array, which points at a storage layout mismatch or a corrupted byte array.",
+  },
+  49: {
+    name: "EmptyArrayPop",
+    description: "Called .pop() on an empty array",
+    remediation:
+      "The contract called pop() on an empty array. The queue or list it reads is empty.",
+  },
+  50: {
+    name: "ArrayOutOfBounds",
+    description: "Array index out of bounds or negative slice index",
+    remediation:
+      "An array index is out of bounds for the collection's current length.",
+  },
+  65: {
+    name: "OutOfMemory",
+    description: "Allocated too much memory or memory pointer overflowed",
+    remediation:
+      "The call exceeded the memory limit. The payload size or array lengths in the request can cause this.",
+  },
+  81: {
+    name: "ZeroInitializedInternalFunction",
+    description: "Called a zero-initialized variable of internal function type",
+    remediation:
+      "The contract called an uninitialized internal function pointer.",
+  },
+};
+
+// Panic(uint256) carries a contract-supplied uint256, so the table lookup
+// only converts to a number once the value is known to be small enough.
+const MAX_KNOWN_PANIC_CODE = 0xff;
+
+function lookupPanicCode(
+  code: bigint
+): (typeof SOLIDITY_PANIC_CODES)[number] | undefined {
+  if (code < 0 || code > MAX_KNOWN_PANIC_CODE) {
+    return;
+  }
+  return SOLIDITY_PANIC_CODES[Number(code)];
+}
+
 const COMMON_ERRORS_INTERFACE = new ethers.Interface(COMMON_ERROR_FRAGMENTS);
 
 function formatDecodedError(decoded: ethers.ErrorDescription): string {
+  if (decoded.name === "Panic" && decoded.args.length > 0) {
+    const code = BigInt(decoded.args[0]);
+    const info = lookupPanicCode(code);
+    return info ? `Panic(${info.name})` : `Panic(${code.toString()})`;
+  }
   if (decoded.args.length === 0) {
     return decoded.name;
   }
@@ -464,7 +549,12 @@ export type RevertKind =
     }
   | { kind: "role-not-authorized"; account?: string }
   | { kind: "erc20-insufficient-balance"; balance: string; needed: string }
-  | { kind: "erc20-insufficient-allowance"; allowance: string; needed: string }
+  | {
+      kind: "erc20-insufficient-allowance";
+      allowance: string;
+      needed: string;
+      spender?: string;
+    }
   | { kind: "ownable-unauthorized"; account?: string }
   | {
       kind: "access-control-unauthorized";
@@ -472,7 +562,15 @@ export type RevertKind =
       neededRole?: string;
     }
   | { kind: "paused" }
+  | { kind: "expected-pause" }
   | { kind: "reentrancy" }
+  | {
+      kind: "panic";
+      /** Exact hex of the Panic(uint256) argument, e.g. "0x11". */
+      panicCode: string;
+      name: string;
+      description: string;
+    }
   | {
       kind: "safe-signature-invalid";
       gsCode: SafeGsCode;
@@ -538,6 +636,7 @@ function classifyCommonError(
     case "ERC20InsufficientAllowance":
       return {
         kind: "erc20-insufficient-allowance",
+        spender: String(decoded.args[0]),
         allowance: String(decoded.args[1]),
         needed: String(decoded.args[2]),
       };
@@ -550,8 +649,9 @@ function classifyCommonError(
         neededRole: String(decoded.args[1]),
       };
     case "EnforcedPause":
-    case "ExpectedPause":
       return { kind: "paused" };
+    case "ExpectedPause":
+      return { kind: "expected-pause" };
     case "ReentrancyGuardReentrantCall":
       return { kind: "reentrancy" };
     case "NotAuthorized":
@@ -578,6 +678,46 @@ export function classifyRevert(
   const revertData = extractRevertData(error);
   if (!revertData || revertData === "0x") {
     return { kind: "unknown" };
+  }
+
+  // Handle built-in Error(string) and Panic(uint256) selectors before consulting
+  // contractInterface. ethers matches Error and Panic on every Interface instance,
+  // so consulting contractInterface first causes any ABI-carrying call to return
+  // { kind: "contract-custom", name: "Error" | "Panic" } instead of decoding them.
+  if (revertData.startsWith("0x08c379a0")) {
+    try {
+      const decoded = COMMON_ERRORS_INTERFACE.parseError(revertData);
+      if (decoded && decoded.args.length > 0) {
+        const reasonStr = String(decoded.args[0]);
+        const safeGs = extractSafeGsCode(reasonStr);
+        if (safeGs) {
+          return safeGs;
+        }
+        return { kind: "string-revert", reason: reasonStr };
+      }
+    } catch {
+      // not a standard Error(string)
+    }
+  }
+
+  if (revertData.startsWith("0x4e487b71")) {
+    try {
+      const decoded = COMMON_ERRORS_INTERFACE.parseError(revertData);
+      if (decoded && decoded.args.length > 0) {
+        const code = BigInt(decoded.args[0]);
+        const panicCode = `0x${code.toString(16)}`;
+        const panicInfo = lookupPanicCode(code);
+        return {
+          kind: "panic",
+          panicCode,
+          name: panicInfo?.name ?? `Panic(${code.toString()})`,
+          description:
+            panicInfo?.description ?? `Solidity panic code ${panicCode}`,
+        };
+      }
+    } catch {
+      // not a standard Panic(uint256)
+    }
   }
 
   if (contractInterface) {
@@ -610,24 +750,6 @@ export function classifyRevert(
   try {
     const decoded = COMMON_ERRORS_INTERFACE.parseError(revertData);
     if (decoded) {
-      // ethers' Interface.parseError matches the built-in `Error(string)`
-      // and `Panic(uint256)` selectors. Route Error(string) through the
-      // Safe-GS extractor + string-revert kind so callers get a useful
-      // discriminator instead of a misleading `contract-custom: "Error"`.
-      if (decoded.name === "Error" && decoded.args.length > 0) {
-        const reasonStr = String(decoded.args[0]);
-        const safeGs = extractSafeGsCode(reasonStr);
-        if (safeGs) {
-          return safeGs;
-        }
-        return { kind: "string-revert", reason: reasonStr };
-      }
-      if (decoded.name === "Panic" && decoded.args.length > 0) {
-        return {
-          kind: "string-revert",
-          reason: `Panic(${String(decoded.args[0])})`,
-        };
-      }
       const common = classifyCommonError(decoded);
       if (common) {
         return common;
@@ -699,4 +821,182 @@ function extractSafeGsCode(
     return null;
   }
   return classifySafeGsCode(code);
+}
+
+export type RevertRemediation = {
+  reasonCode: SimulateFailureCode;
+  remediation: string;
+};
+
+/**
+ * Map a classified revert to a closed reason code and a plain-English diagnosis.
+ *
+ * The remediation states what is wrong, with the numbers and addresses behind
+ * it, and may point at request inputs the caller controls (amount, arguments,
+ * gas limit, signer mode). It never tells the caller to make an on-chain call.
+ */
+export function getRemediationForRevert(
+  kind: RevertKind
+): RevertRemediation | null {
+  switch (kind.kind) {
+    case "erc20-insufficient-allowance": {
+      const spenderStr = kind.spender
+        ? `spender ${kind.spender}`
+        : "the spender";
+      return {
+        reasonCode: "insufficient_allowance",
+        remediation: `Allowance shortfall: the allowance the simulated sender has granted to ${spenderStr} is ${kind.allowance} base units, less than the required ${kind.needed} base units. The allowance is read for the simulated sender.`,
+      };
+    }
+    case "erc20-insufficient-balance": {
+      return {
+        reasonCode: "insufficient_token_balance",
+        remediation: `The sender account holds less than the required ${kind.needed} base units of the token (balance: ${kind.balance} base units).`,
+      };
+    }
+    case "paused": {
+      return {
+        reasonCode: "contract_paused",
+        remediation:
+          "The target contract is paused, and this function reverts while it is paused. The caller cannot change the pause state.",
+      };
+    }
+    case "expected-pause": {
+      return {
+        reasonCode: "contract_not_paused",
+        remediation:
+          "The target contract is not paused, and this function only runs while it is paused. The caller cannot change the pause state.",
+      };
+    }
+    case "ownable-unauthorized": {
+      return {
+        reasonCode: "caller_not_authorized",
+        remediation: "The simulated sender is not the owner of the contract.",
+      };
+    }
+    case "access-control-unauthorized": {
+      const acc = kind.account ? ` ${kind.account}` : "";
+      const role = kind.neededRole
+        ? `role ${kind.neededRole}`
+        : "the required role";
+      return {
+        reasonCode: "caller_not_authorized",
+        remediation: `The simulated sender${acc} lacks ${role}.`,
+      };
+    }
+    case "role-not-authorized": {
+      return {
+        reasonCode: "caller_not_authorized",
+        remediation:
+          "The simulated sender is not authorized for this call under the contract's role permissions.",
+      };
+    }
+    case "reentrancy": {
+      return {
+        reasonCode: "reentrancy_blocked",
+        remediation:
+          "The call re-entered a function guarded against reentrancy within the same transaction.",
+      };
+    }
+    case "panic": {
+      const info = lookupPanicCode(BigInt(kind.panicCode));
+      return {
+        reasonCode: "panic",
+        remediation:
+          info?.remediation ??
+          `The contract panicked with code ${kind.panicCode}, which is not a known Solidity panic code. The input arguments or the contract state caused it.`,
+      };
+    }
+    case "safe-signature-invalid": {
+      return {
+        reasonCode: "safe_signature_invalid",
+        remediation:
+          "The Safe rejected the signatures: they are invalid, below the threshold, or out of order.",
+      };
+    }
+    case "safe-insufficient-gas": {
+      return {
+        reasonCode: "safe_insufficient_gas",
+        remediation:
+          "The Safe execution ran out of gas. The gas limit in the request is too low for it.",
+      };
+    }
+    case "safe-not-authorized": {
+      return {
+        reasonCode: "safe_not_authorized",
+        remediation:
+          "The caller is not an owner or an enabled module of the Safe.",
+      };
+    }
+    case "role-condition-violation": {
+      return {
+        reasonCode: "role_condition_violation",
+        remediation: `The call parameters violate a role restriction: ${kind.status}.`,
+      };
+    }
+    case "string-revert": {
+      const lower = kind.reason.toLowerCase();
+      if (
+        lower === "erc20: transfer amount exceeds balance" ||
+        lower === "transfer amount exceeds balance" ||
+        lower === "insufficient balance"
+      ) {
+        return {
+          reasonCode: "insufficient_token_balance",
+          remediation:
+            "The sender account holds less of the token than the transfer amount.",
+        };
+      }
+      if (
+        lower === "erc20: transfer amount exceeds allowance" ||
+        lower === "erc20: insufficient allowance" ||
+        lower === "insufficient allowance" ||
+        lower === "allowance exceeded"
+      ) {
+        return {
+          reasonCode: "insufficient_allowance",
+          remediation:
+            "Allowance shortfall: the allowance the simulated sender has granted to the spender is less than the transfer amount. The allowance is read for the simulated sender.",
+        };
+      }
+      if (lower === "pausable: paused" || lower === "enforcedpause()") {
+        return {
+          reasonCode: "contract_paused",
+          remediation:
+            "The target contract is paused, and this function reverts while it is paused. The caller cannot change the pause state.",
+        };
+      }
+      if (lower === "expectedpause()") {
+        return {
+          reasonCode: "contract_not_paused",
+          remediation:
+            "The target contract is not paused, and this function only runs while it is paused. The caller cannot change the pause state.",
+        };
+      }
+      if (
+        lower === "ownable: caller is not the owner" ||
+        lower.startsWith("accesscontrol: account ") ||
+        lower === "not authorized"
+      ) {
+        return {
+          reasonCode: "caller_not_authorized",
+          remediation:
+            "The simulated sender is not the owner of the contract or lacks the required role.",
+        };
+      }
+      if (
+        lower === "reentrancyguard: reentrant call" ||
+        lower === "reentrancy"
+      ) {
+        return {
+          reasonCode: "reentrancy_blocked",
+          remediation:
+            "The call re-entered a function guarded against reentrancy within the same transaction.",
+        };
+      }
+      return null;
+    }
+    default:
+      return null;
+  }
 }

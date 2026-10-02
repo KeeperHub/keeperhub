@@ -8,6 +8,10 @@ import {
   writeContractCore,
 } from "@/plugins/web3/steps/write-contract-core";
 import { resolveAbi } from "@/lib/abi/cache";
+import {
+  isSolidityArrayType,
+  normalizeProtocolArrayValue,
+} from "@/lib/protocol-array-value";
 import { type AbiItem, findAbiFunction } from "@/lib/abi/utils";
 import { withStepValueCap } from "@/lib/execute/value-ledger";
 import { ErrorCategory, logUserError } from "@/lib/logging";
@@ -30,6 +34,8 @@ type ProtocolWriteInput = StepInput & {
   network: string;
   contractAddress?: string;
   gasLimitMultiplier?: string;
+  // Per-node "Sponsor gas" toggle. Forwarded to writeContractCore.
+  sponsorGas?: boolean;
   // KEEP-137: Private mempool routing (Flashbots Protect). Forwarded to writeContractCore.
   usePrivateMempool?: boolean;
   strict?: boolean;
@@ -196,9 +202,19 @@ function buildFunctionArgs(
   const rawInputs = protocolAction.inputs.map((inp) => {
     const raw = input[inp.name];
     if (raw === undefined || raw === "") {
-      return { name: inp.name, value: inp.default ?? "" };
+      return {
+        name: inp.name,
+        value: isSolidityArrayType(inp.type)
+          ? normalizeProtocolArrayValue(String(inp.default ?? ""), inp.type)
+          : (inp.default ?? ""),
+      };
     }
-    const value = typeof raw === "object" ? JSON.stringify(raw) : String(raw);
+    // Array inputs normalise; everything else keeps the coercion the ABI encoder expects.
+    const value = isSolidityArrayType(inp.type)
+      ? normalizeProtocolArrayValue(raw, inp.type)
+      : typeof raw === "object"
+        ? JSON.stringify(raw)
+        : String(raw);
     return { name: inp.name, value };
   });
 
@@ -371,6 +387,7 @@ export async function protocolWriteStep(
       functionArgs,
       ethValue,
       gasLimitMultiplier: input.gasLimitMultiplier,
+      sponsorGas: input.sponsorGas,
       usePrivateMempool: input.usePrivateMempool,
       strict: input.strict,
       _context: input._context

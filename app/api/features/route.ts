@@ -8,6 +8,7 @@ import {
   type OrganizationAuthContext,
   resolveOrganizationId,
 } from "@/lib/middleware/auth-helpers";
+import { isPythPriceTriggerEnabled } from "@/lib/pyth/feature-flag";
 
 // Returns the feature snapshot for the calling org so the UI can render
 // per-plan lock states without re-implementing the registry client-side.
@@ -19,6 +20,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       enabledFeatureIds: getAllFeatures().map((f) => f.id),
       features: getAllFeatures(),
       billingEnabled: false,
+      pythPriceTriggerEnabled: isPythPriceTriggerEnabled(),
     });
   }
 
@@ -38,6 +40,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     return NextResponse.json({
       ...buildFeatureSnapshot(plan),
       billingEnabled: true,
+      pythPriceTriggerEnabled: isPythPriceTriggerEnabled(),
     });
   } catch (error) {
     logSystemError(

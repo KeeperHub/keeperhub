@@ -166,8 +166,9 @@ glossary defines them in one table.
 
 ## 8. Verify
 
-Poll the status endpoint, honouring the `X-Poll-Interval-Hint` header rather than a fixed
-timer. A hint of `0` means the execution is terminal.
+Poll the status endpoint, honouring the `pollIntervalHint` response body field (or the
+`X-Poll-Interval-Hint` header on REST) rather than a fixed timer. A hint of `0` means
+the execution is terminal.
 
 ```bash
 curl -H "Authorization: Bearer $KEEPERHUB_API_KEY" \

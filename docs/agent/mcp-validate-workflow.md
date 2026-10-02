@@ -138,9 +138,10 @@ Warnings do not set `valid: false`. They indicate something worth reviewing, but
 
 | Code | When emitted | When safe to ignore |
 |------|--------------|---------------------|
-| `write-action-on-read-workflow` | `workflowType` is `"read"` but the workflow contains a write-action node | When the classification is intentional (for example, a simulate-then-read pattern) |
+| `write-action-on-read-workflow` | `workflowType` is `"read"` but the workflow contains a write-action node | Listed workflows only, when the `read` classification is intentional (for example, a simulate-then-read pattern). On an unlisted workflow the next save sets the type to `write`. |
 | `low-confidence-abi-match` | (`deepCheck` only) The declared ABI's function signatures do not match those resolved from the contract's on-chain bytecode | Always safe to ignore for proxy contracts — Aave V3 Pool, Uniswap V3, WETH, and any EIP-1967 / EIP-1822 / EIP-2535 proxy. The platform's runtime ABI resolver handles proxies automatically; a deep-check mismatch here is informational only |
 | `missing-allowance-preflight` | A `write-contract` node calls an allowance-consuming method (`transferFrom`, `redeem`, `withdrawFrom`) and no Check Allowance node is upstream of it | When the spender already has sufficient allowance, or allowance is granted outside this workflow |
+| `signer-routing-key-ignored` | A signed-write node sets `integrationId`, which no web3 step reads | Never - the key has no effect on which wallet signs. Remove it, and set `web3Connection` only to override organization policy for that node |
 
 ### What "upstream" means for `missing-allowance-preflight`
 

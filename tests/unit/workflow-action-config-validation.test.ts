@@ -524,6 +524,101 @@ describe("validateWorkflowActionConfigs", () => {
     });
   });
 
+  describe("abi-event-args (query-events eventArgs)", () => {
+    function queryEventsNode(eventArgs: unknown) {
+      return actionNode("web3/query-events", {
+        network: "1",
+        contractAddress: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+        abi: "[]",
+        eventName: "Transfer",
+        eventArgs,
+      });
+    }
+
+    it("accepts a native object", () => {
+      expect(
+        validateWorkflowActionConfigs([
+          queryEventsNode({
+            from: "0x0000000000000000000000000000000000000001",
+          }),
+        ])
+      ).toEqual({ valid: true, issues: [] });
+    });
+
+    it("accepts a JSON-stringified object (the format the UI emits)", () => {
+      expect(
+        validateWorkflowActionConfigs([
+          queryEventsNode(
+            '{"from":"0x0000000000000000000000000000000000000001"}'
+          ),
+        ])
+      ).toEqual({ valid: true, issues: [] });
+    });
+
+    it("accepts a template value", () => {
+      expect(
+        validateWorkflowActionConfigs([
+          queryEventsNode("{{@prev:Prev.filters}}"),
+        ])
+      ).toEqual({ valid: true, issues: [] });
+    });
+
+    it("accepts an empty or whitespace-only string (no filter)", () => {
+      expect(validateWorkflowActionConfigs([queryEventsNode("")])).toEqual({
+        valid: true,
+        issues: [],
+      });
+      expect(validateWorkflowActionConfigs([queryEventsNode("  ")])).toEqual({
+        valid: true,
+        issues: [],
+      });
+    });
+
+    it("rejects a native array", () => {
+      const result = validateWorkflowActionConfigs([queryEventsNode([])]);
+
+      expect(result.valid).toBe(false);
+      expect(result.issues).toEqual([
+        expect.objectContaining({
+          code: "INVALID_FIELD_TYPE",
+          path: "nodes[0].data.config.eventArgs",
+          field: "eventArgs",
+          expected: "object",
+          received: [],
+        }),
+      ]);
+    });
+
+    it("rejects a JSON-stringified array", () => {
+      const result = validateWorkflowActionConfigs([queryEventsNode("[]")]);
+
+      expect(result.valid).toBe(false);
+      expect(result.issues).toEqual([
+        expect.objectContaining({
+          code: "INVALID_FIELD_TYPE",
+          field: "eventArgs",
+          expected: "object",
+          received: "[]",
+        }),
+      ]);
+    });
+
+    it("rejects a JSON null string and a non-JSON literal", () => {
+      for (const eventArgs of ["null", "not-json"]) {
+        const result = validateWorkflowActionConfigs([
+          queryEventsNode(eventArgs),
+        ]);
+        expect(result.issues).toEqual([
+          expect.objectContaining({
+            code: "INVALID_FIELD_TYPE",
+            field: "eventArgs",
+            received: eventArgs,
+          }),
+        ]);
+      }
+    });
+  });
+
   describe("batch-write-contract calls[] required fields", () => {
     const DO_WRITE_ABI = JSON.stringify([
       {
@@ -1462,7 +1557,7 @@ describe("formatActionConfigValidationResponse", () => {
     expect(formatActionConfigValidationResponse(validation)).toEqual({
       error: "INVALID_ACTION_CONFIG",
       message:
-        'Workflow contains invalid action configuration. Invalid node(s): "webhook/send". Fix the listed fields and save again.',
+        'Workflow contains invalid action configuration. Invalid node(s): "webhook/send" (actionType). Fix the listed fields and save again.',
       invalidFields: validation.issues,
     });
   });
@@ -1619,6 +1714,455 @@ describe("formatActionConfigValidationResponse", () => {
       ],
     });
 
-    expect(result.message).toContain('"Send Notification" (2 issues)');
+    expect(result.message).toContain('"Send Notification" (a, b)');
+  });
+
+  it("names the missing fields in the top-level message", () => {
+    const validation = validateWorkflowActionConfigs([
+      {
+        id: "hash-probe",
+        type: "action",
+        data: {
+          label: "Hash Probe",
+          type: "action",
+          config: {
+            actionType: "data/hash",
+            algorithm: "keccak256",
+            value: "frob(bytes32,address)",
+          },
+        },
+      },
+    ]);
+
+    expect(formatActionConfigValidationResponse(validation).message).toContain(
+      '"Hash Probe" (inputEncoding)'
+    );
+  });
+
+  // Every UNKNOWN_FIELD is emitted before any MISSING_REQUIRED_FIELD, so in
+  // emission order the cap would elide the field that blocks the save.
+  it("keeps a blocking field ahead of stray keys under the cap", () => {
+    const validation = validateWorkflowActionConfigs([
+      {
+        id: "n1",
+        type: "action",
+        data: {
+          label: "Notify Ops",
+          type: "action",
+          config: {
+            actionType: "discord/send-message",
+            integrationId: "i1",
+            typoA: "x",
+            typoB: "x",
+            typoC: "x",
+            typoD: "x",
+          },
+        },
+      },
+    ]);
+
+    const { message } = formatActionConfigValidationResponse(validation);
+
+    expect(message).toContain('"Notify Ops" (discordMessage,');
+  });
+
+  it("elides field names past the third for one node", () => {
+    const result = formatActionConfigValidationResponse({
+      valid: false,
+      issues: ["a", "b", "c", "d", "e"].map((field) => ({
+        code: "MISSING_REQUIRED_FIELD" as const,
+        path: `nodes[0].data.config.${field}`,
+        actionType: "discord/send-message",
+        field,
+        message: `Missing ${field}`,
+        nodeLabel: "Send Notification",
+      })),
+    });
+
+    expect(result.message).toContain('"Send Notification" (a, b, c +2 more)');
+  });
+
+  it("names a field-less issue by its path segment", () => {
+    const result = formatActionConfigValidationResponse({
+      valid: false,
+      issues: [
+        {
+          code: "UNKNOWN_ACTION_TYPE",
+          path: "nodes[0].data.config.actionType",
+          message: "Unknown action type",
+          nodeLabel: "Mystery Node",
+        },
+      ],
+    });
+
+    expect(result.message).toContain('"Mystery Node" (actionType)');
+  });
+
+  it("keeps a field-less issue visible alongside one that names a field", () => {
+    const result = formatActionConfigValidationResponse({
+      valid: false,
+      issues: [
+        {
+          code: "UNKNOWN_ACTION_TYPE",
+          path: "nodes[0].data.config.actionType",
+          message: "Unknown action type",
+          nodeLabel: "Mystery Node",
+        },
+        {
+          code: "MISSING_REQUIRED_FIELD",
+          path: "nodes[0].data.config.amount",
+          field: "amount",
+          message: "Missing amount",
+          nodeLabel: "Mystery Node",
+        },
+      ],
+    });
+
+    expect(result.message).toContain('"Mystery Node" (actionType, amount)');
+  });
+
+  it("falls back to the issue count when no issue yields a name", () => {
+    const result = formatActionConfigValidationResponse({
+      valid: false,
+      issues: [
+        { code: "UNKNOWN_ACTION_TYPE", path: "", message: "x", nodeLabel: "N" },
+        { code: "UNKNOWN_ACTION_TYPE", path: "", message: "x", nodeLabel: "N" },
+      ],
+    });
+
+    expect(result.message).toContain('"N" (2 issues)');
+  });
+
+  it("keeps two nodes that share a label as separate entries", () => {
+    const result = formatActionConfigValidationResponse({
+      valid: false,
+      issues: [
+        {
+          code: "MISSING_REQUIRED_FIELD",
+          path: "nodes[0].data.config.content",
+          field: "content",
+          message: "Missing content",
+          nodeId: "n1",
+          nodeLabel: "Send Message",
+        },
+        {
+          code: "MISSING_REQUIRED_FIELD",
+          path: "nodes[1].data.config.content",
+          field: "content",
+          message: "Missing content",
+          nodeId: "n2",
+          nodeLabel: "Send Message",
+        },
+      ],
+    });
+
+    expect(result.message).toContain(
+      '"Send Message" (content), "Send Message" (content)'
+    );
+  });
+
+  it("separates id-less nodes that share a label by their path index", () => {
+    const issue = (index: number, field: string) => ({
+      code: "MISSING_REQUIRED_FIELD" as const,
+      path: `nodes[${index}].data.config.${field}`,
+      field,
+      message: `Missing ${field}`,
+      nodeLabel: "Send Message",
+    });
+
+    const result = formatActionConfigValidationResponse({
+      valid: false,
+      issues: [
+        issue(0, "message"),
+        issue(0, "discordMessage"),
+        issue(1, "message"),
+        issue(1, "discordMessage"),
+      ],
+    });
+
+    expect(result.message).toContain(
+      '"Send Message" (message, discordMessage), "Send Message" (message, discordMessage)'
+    );
+  });
+
+  // Node ids come straight off the payload with no uniqueness check, so an
+  // import can carry two nodes sharing one id.
+  it("separates two nodes that share an id", () => {
+    const result = formatActionConfigValidationResponse({
+      valid: false,
+      issues: [
+        {
+          code: "MISSING_REQUIRED_FIELD",
+          path: "nodes[0].data.config.content",
+          field: "content",
+          message: "Missing content",
+          nodeId: "a_1",
+          nodeLabel: "Send Discord",
+        },
+        {
+          code: "MISSING_REQUIRED_FIELD",
+          path: "nodes[1].data.config.channel",
+          field: "channel",
+          message: "Missing channel",
+          nodeId: "a_1",
+          nodeLabel: "Send Discord",
+        },
+      ],
+    });
+
+    expect(result.message).toContain(
+      '"Send Discord" (content), "Send Discord" (channel)'
+    );
+  });
+
+  // Field names render bare inside the parentheses, so the comma separator and
+  // the `+N more` marker are their only delimiters.
+  it("neutralises separators forged inside a config key", () => {
+    const result = formatActionConfigValidationResponse({
+      valid: false,
+      issues: [
+        {
+          code: "UNKNOWN_FIELD",
+          path: "nodes[0].data.config.x",
+          field: "webhookUrl, apiKey +9 more",
+          message: "Unknown field",
+          nodeId: "n1",
+          nodeLabel: "Treasury Transfer",
+        },
+      ],
+    });
+
+    expect(result.message).not.toContain("webhookUrl, apiKey");
+    expect(result.message).not.toContain("+9 more");
+  });
+
+  it("escapes the nodeId fallback when the label is blank", () => {
+    const result = formatActionConfigValidationResponse({
+      valid: false,
+      issues: [
+        {
+          code: "MISSING_REQUIRED_FIELD",
+          path: "nodes[0].data.config.amount",
+          field: "amount",
+          message: "Missing amount",
+          nodeId: '") (Treasury Transfer',
+          nodeLabel: "   ",
+        },
+      ],
+    });
+
+    expect(result.message).toContain('"\'] [Treasury Transfer"');
+    expect(result.message).not.toContain('") (Treasury Transfer');
+  });
+
+  it("groups every missing batch-call field under its node", () => {
+    const validation = validateWorkflowActionConfigs([
+      {
+        id: "b1",
+        type: "action",
+        data: {
+          label: "Batch Calls",
+          type: "action",
+          config: {
+            actionType: "web3/batch-write-contract",
+            network: "1",
+            calls: JSON.stringify([
+              { contractAddress: "", abi: "", abiFunction: "" },
+            ]),
+          },
+        },
+      },
+    ]);
+
+    const { message } = formatActionConfigValidationResponse(validation);
+
+    expect(message).toContain('"Batch Calls" (calls[0].contractAddress');
+    expect(message).not.toContain('"nodes[0]');
+  });
+
+  it("escapes format delimiters in field names to prevent fake entries", () => {
+    const result = formatActionConfigValidationResponse({
+      valid: false,
+      issues: [
+        {
+          code: "UNKNOWN_FIELD",
+          path: "nodes[0].data.config.bogus",
+          actionType: "discord/send-message",
+          field: 'x") (webhook/send',
+          message: "Unknown field",
+          nodeLabel: "Send Notification",
+        },
+      ],
+    });
+
+    expect(result.message).toContain("(x'] [webhook/send)");
+  });
+
+  it("caps field names in the summary", () => {
+    const result = formatActionConfigValidationResponse({
+      valid: false,
+      issues: [
+        {
+          code: "UNKNOWN_FIELD",
+          path: "nodes[0].data.config.bogus",
+          actionType: "discord/send-message",
+          field: "B".repeat(200),
+          message: "Unknown field",
+          nodeLabel: "Send Notification",
+        },
+      ],
+    });
+
+    expect(result.message).not.toContain("B".repeat(41));
+  });
+});
+
+/**
+ * Array inputs were rendered as plain text fields before they had a
+ * structured editor, so a config saved then holds a bare scalar or a
+ * comma-separated list. Validation runs over every node on every save, so
+ * rejecting one of those values makes the whole workflow unsaveable over a
+ * field the user never opened.
+ */
+describe("protocol array fields", () => {
+  const legacyCases: [string, unknown][] = [
+    ["a single scalar", "135184"],
+    ["a comma-separated list", "135184, 135185"],
+    ["a large integer", "1000000000000000000000"],
+  ];
+
+  it.each(legacyCases)(
+    "accepts %s saved before the array editor",
+    (_, value) => {
+      const result = validateWorkflowActionConfigs([
+        actionNode("lido/claim-withdrawals", {
+          network: "1",
+          requestIds: value,
+          hints: value,
+        }),
+      ]);
+
+      expect(result).toEqual({ valid: true, issues: [] });
+    }
+  );
+
+  it("accepts a legacy address stored for an address array", () => {
+    const result = validateWorkflowActionConfigs([
+      actionNode("aerodrome/claim-rewards", {
+        network: "8453",
+        _gauges: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      }),
+    ]);
+
+    expect(result.valid).toBe(true);
+  });
+
+  it("accepts a whole-field reference and a JSON array", () => {
+    const result = validateWorkflowActionConfigs([
+      actionNode("lido/claim-withdrawals", {
+        network: "1",
+        requestIds: "{{@n1:Get Withdrawal Requests.requestsIds}}",
+        hints: '["1216"]',
+      }),
+    ]);
+
+    expect(result).toEqual({ valid: true, issues: [] });
+  });
+
+  it("still rejects a value no array can be read from", () => {
+    const result = validateWorkflowActionConfigs([
+      actionNode("lido/claim-withdrawals", {
+        network: "1",
+        requestIds: { nested: "object" },
+        hints: '["1216"]',
+      }),
+    ]);
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_TYPE",
+        field: "requestIds",
+      }),
+    ]);
+  });
+});
+
+describe("protocol-array element validation", () => {
+  const claim = (config: Record<string, unknown>) =>
+    validateWorkflowActionConfigs([
+      actionNode("lido/claim-withdrawals", {
+        network: "1",
+        requestIds: "1",
+        hints: "1",
+        ...config,
+      }),
+    ]);
+
+  it("rejects a non-numeric scalar on a uint256[] field", () => {
+    const result = claim({ requestIds: "abc" });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_TYPE",
+        field: "requestIds",
+        expected: "uint256[]",
+      }),
+    ]);
+  });
+
+  it("rejects a non-numeric element inside a JSON array", () => {
+    const result = claim({ requestIds: '["135184","abc"]' });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_TYPE",
+        field: "requestIds",
+      }),
+    ]);
+  });
+
+  it("rejects a non-numeric element in a legacy comma-separated value", () => {
+    const result = claim({ requestIds: "135184, abc" });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_TYPE",
+        field: "requestIds",
+      }),
+    ]);
+  });
+
+  it("keeps a legacy single scalar saveable", () => {
+    expect(claim({ requestIds: "135184" })).toEqual({
+      valid: true,
+      issues: [],
+    });
+  });
+
+  it("keeps a legacy comma-separated list saveable", () => {
+    expect(claim({ requestIds: "135184, 135185" })).toEqual({
+      valid: true,
+      issues: [],
+    });
+  });
+
+  it("accepts a JSON array and a whole-field template", () => {
+    expect(claim({ requestIds: '["135184","135185"]' })).toEqual({
+      valid: true,
+      issues: [],
+    });
+    expect(
+      claim({ requestIds: "{{@n1:Get Withdrawal Requests.requestsIds}}" })
+    ).toEqual({ valid: true, issues: [] });
+  });
+
+  it("accepts a template inside one element", () => {
+    expect(
+      claim({ requestIds: '["{{@n1:Get Requests.first}}","135185"]' })
+    ).toEqual({ valid: true, issues: [] });
   });
 });

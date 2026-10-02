@@ -13,11 +13,16 @@
  *
  * The computed variant is how we express "render this field only when
  * another field's derived property matches" without persisting the
- * derived value in the workflow config. Today only "abiFunctionMutability"
- * is supported; add new kinds by extending the union in plugins/registry.ts
- * and the switch in `evaluateComputed`.
+ * derived value in the workflow config. Add new kinds by extending the
+ * ShowWhen union below and the switch in `evaluateComputed`.
+ *
+ * Every computed kind must be total: this runs on each render of a node's
+ * config form and while assembling the AI prompt's example configs, where a
+ * field holds placeholder text rather than a real value.
  */
 import { deriveStateMutability } from "@/lib/abi/mutability";
+import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
+import { isSponsorshipSupported } from "@/lib/web3/sponsorship-chains-meta";
 
 export type ShowWhen =
   | { field: string; equals: string }
@@ -28,6 +33,7 @@ export type ShowWhen =
       functionField: string;
       equals: string;
     }
+  | { computed: "sponsorshipSupported"; networkField: string }
   | { all: ShowWhen[] };
 
 function evaluateComputed(
@@ -42,6 +48,19 @@ function evaluateComputed(
       return false;
     }
     return deriveStateMutability(abi, funcName) === showWhen.equals;
+  }
+  if (showWhen.computed === "sponsorshipSupported") {
+    const network = config[showWhen.networkField];
+    if (typeof network !== "string" && typeof network !== "number") {
+      return false;
+    }
+    try {
+      return isSponsorshipSupported(getChainIdFromNetwork(network));
+    } catch {
+      // An unset or unrecognised network cannot be sponsored, and
+      // getChainIdFromNetwork throws rather than returning a sentinel.
+      return false;
+    }
   }
   return false;
 }

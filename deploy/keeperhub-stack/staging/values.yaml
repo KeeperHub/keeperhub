@@ -961,8 +961,13 @@ app:
         concurrencyPolicy: Forbid
         successfulJobsHistoryLimit: 3
         failedJobsHistoryLimit: 3
-        restartPolicy: OnFailure
-        backoffLimit: 2
+        # No retries. A failed run already did its whole budget of work, and
+        # the next scheduled run resumes from the watermarks, so a retry only
+        # repeats that load on a day something is already wrong. Quoted on
+        # purpose: the chart renders `backoffLimit | default "6"`, and `default`
+        # treats a numeric 0 as empty, so an unquoted 0 would deploy as 6.
+        restartPolicy: Never
+        backoffLimit: "0"
 
 executor:
   enabled: true
