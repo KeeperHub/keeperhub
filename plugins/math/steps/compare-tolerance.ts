@@ -8,7 +8,7 @@ import {
 } from "@/lib/workflow/executor/step-handler";
 import {
   absBigInt,
-  align,
+  alignAll,
   divideScaled,
   failed,
   formatScaled,
@@ -85,25 +85,30 @@ function stepHandler(input: CompareToleranceCoreInput): CompareToleranceResult {
     const mode = resolveMode(input.mode);
     const precision = resolvePrecision(input.precision);
 
-    const aligned = align(actual, expected);
-    const difference = aligned.a - aligned.b;
+    const { values, scale } = alignAll([actual, expected]);
+    const [actualScaled, expectedScaled] = values;
+    const difference = actualScaled - expectedScaled;
     const absoluteDifference = absBigInt(difference);
 
     const withinTolerance =
       mode === "absolute"
-        ? isWithinAbsolute(absoluteDifference, aligned.decimals, tolerance)
-        : isWithinPercent(absoluteDifference, aligned.b, tolerance);
+        ? isWithinAbsolute(absoluteDifference, scale, tolerance)
+        : isWithinPercent(absoluteDifference, expectedScaled, tolerance);
 
     return {
       success: true,
       withinTolerance,
       breached: !withinTolerance,
       direction: directionOf(difference),
-      difference: formatScaled(difference, aligned.decimals),
-      absoluteDifference: formatScaled(absoluteDifference, aligned.decimals),
-      percentDifference: percentDifferenceOf(difference, aligned.b, precision),
-      actual: formatScaled(aligned.a, aligned.decimals),
-      expected: formatScaled(aligned.b, aligned.decimals),
+      difference: formatScaled(difference, scale),
+      absoluteDifference: formatScaled(absoluteDifference, scale),
+      percentDifference: percentDifferenceOf(
+        difference,
+        expectedScaled,
+        precision
+      ),
+      actual: formatScaled(actualScaled, scale),
+      expected: formatScaled(expectedScaled, scale),
       tolerance: formatScaled(tolerance.value, tolerance.decimals),
       mode,
     };

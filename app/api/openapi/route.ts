@@ -497,6 +497,7 @@ export async function GET(request: Request): Promise<Response> {
       headers: Object.keys(RATE_LIMIT_HEADERS),
       retryAfterHeader: "Retry-After",
       pollIntervalHeader: "X-Poll-Interval-Hint",
+      pollIntervalBodyField: "pollIntervalHint",
       documented: `${docsUrl()}/api/errors`,
     },
     "x-service-info": {
