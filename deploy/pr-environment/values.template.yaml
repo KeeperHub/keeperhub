@@ -103,7 +103,8 @@ deployment:
           echo "Running database migrations..."
           pnpm db:migrate
           echo "Seeding chains and tokens..."
-          pnpm db:seed
+          # seed-chains refuses a non-local DATABASE_URL unless told otherwise; this job is the one remote caller
+          ALLOW_REMOTE=1 pnpm db:seed
           echo "Migrations and seeding completed successfully"
       env:
         <<: *shared_env
