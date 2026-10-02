@@ -79,6 +79,18 @@ const SYSTEM_ACTIONS: ActionType[] = [
     description: "Gather results from a For Each loop",
     category: "System",
   },
+  {
+    id: "State Get",
+    label: "State Get",
+    description: "Read a value from this workflow's persistent state",
+    category: "System",
+  },
+  {
+    id: "State Set",
+    label: "State Set",
+    description: "Write a value to this workflow's persistent state",
+    category: "System",
+  },
 ];
 
 /**

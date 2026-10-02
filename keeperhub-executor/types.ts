@@ -41,6 +41,12 @@ export type EventMessage = {
     args?: Record<string, unknown>;
     [key: string]: unknown;
   };
+  // Latency correlation (issue #2289): minted by the event-tracker at
+  // observation time and reused by the executor so the tracker -> queue ->
+  // executor legs share one key. Absent for messages enqueued by older
+  // trackers, in which case the executor mints its own.
+  correlationId?: string;
+  observedAt?: number;
 };
 
 export type ManualMessage = {
@@ -53,10 +59,32 @@ export type ManualMessage = {
   input: Record<string, unknown>;
 };
 
+export type UpstreamMessage = {
+  executionId: string;
+  workflowId: string;
+  userId: string;
+  configHash: string;
+  triggerType: "upstream";
+  triggerData: {
+    source: "pyth-hermes";
+    speculative: true;
+    sourceUpdateId: string;
+    feedId: string;
+    price: string;
+    confidence: string;
+    exponent: number;
+    publishTime: number;
+    expiresAt: number;
+    direction: "above" | "below";
+    threshold: string;
+  };
+};
+
 export type ExecutorMessage =
   | ScheduleMessage
   | BlockMessage
   | EventMessage
+  | UpstreamMessage
   | ManualMessage;
 
 export type DispatchTarget = "k8s-job" | "in-process" | "api";

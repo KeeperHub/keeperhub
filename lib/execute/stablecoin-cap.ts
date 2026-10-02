@@ -19,6 +19,7 @@ import { getOrganizationWalletAddress } from "@/lib/web3/wallet-helpers";
 // saw an EMPTY allowlist and refused every over-cap approval, including the
 // max-uint-before-swap that protocol integrations depend on.
 import "@/protocols";
+import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
 const MICRO_USD_DECIMALS = 6;
 
@@ -44,7 +45,6 @@ const ALLOWED = { kind: "allowed" } as const;
 
 const DECIMAL_INTEGER_RE = /^-?\d+$/;
 const HEX_INTEGER_RE = /^0x[0-9a-fA-F]+$/;
-const HEX_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 /**
  * The token entry points that let value leave the org's wallet. `transfer` and
@@ -72,7 +72,7 @@ function getErc20Interface(): ethers.Interface {
 }
 
 function isHexAddress(value: string): boolean {
-  return HEX_ADDRESS_RE.test(value);
+  return EVM_ADDRESS_RE.test(value);
 }
 
 type OutflowFn =

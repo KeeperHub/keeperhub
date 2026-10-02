@@ -164,6 +164,47 @@ export const SYSTEM_ACTIONS = {
         "boolean - True if the breaker had been engaged; false if it was already clear.",
     },
   },
+  "State Get": {
+    actionType: "State Get",
+    label: "State Get",
+    description:
+      "Read one key from this workflow's persistent state. State survives between runs and is scoped to this workflow only - use it for monitor cursors like 'last block scanned' or 'transactions already alerted on'. Pair with State Set for read-modify-write: pass State Get's version as State Set's expectedVersion to fail instead of losing a race.",
+    category: "System",
+    requiredFields: {
+      key: 'string - The state key to read (e.g. "lastScannedBlock")',
+    },
+    optionalFields: {},
+    outputFields: {
+      exists: "boolean - Whether a live (non-expired) value exists for the key",
+      value: "unknown - The stored value (null when the key does not exist)",
+      version:
+        "number - Current version of the key, 0 when it does not exist; pass it as expectedVersion to State Set for a race-free read-modify-write, including the first write",
+    },
+  },
+  "State Set": {
+    actionType: "State Set",
+    label: "State Set",
+    description:
+      "Write one key to this workflow's persistent state. The write is an atomic upsert; pass expectedVersion (from State Get) to turn it into a compare-and-set when two overlapping executions could race on the same key - on mismatch the step fails with a conflict error instead of silently overwriting. Limits, enforced: values up to 8 KB serialized, 100 keys per workflow, ttl clamped to 365 days.",
+    category: "System",
+    requiredFields: {
+      key: 'string - The state key to write (e.g. "lastScannedBlock")',
+      value:
+        'unknown - The value to store; must not be null or an empty string. Non-string values are stored as-is. A string is parsed when unambiguous: JSON object/array text is stored parsed, "true"/"false" as booleans, and a numeric string as a number only when it round-trips exactly (so a wei amount beyond 2^53 stays a string). Any other string is stored as-is. Max 8 KB serialized.',
+    },
+    optionalFields: {
+      ttl: "number - Seconds until the key expires (min 1, clamped to 365 days). Omit for no expiry; expired keys read as not-existing and are evicted.",
+      expectedVersion:
+        "number - Compare-and-set: only write if the key's current version matches this; 0 means only write if the key does not exist. On mismatch the step fails the run rather than overwriting; the next run re-reads the current version with State Get.",
+    },
+    outputFields: {
+      success: "boolean - Always true on a successful write",
+      created:
+        "boolean - True when this call created the key (including replacing an expired one) rather than overwriting a live value",
+      version:
+        "number - The key's version after this write; feed it back as expectedVersion for the next compare-and-set",
+    },
+  },
 } as const;
 
 // =============================================================================
@@ -171,6 +212,38 @@ export const SYSTEM_ACTIONS = {
 // To add a new trigger: add entry here and implement in trigger-config.tsx
 // =============================================================================
 export const TRIGGERS = {
+  "Pyth Price": {
+    triggerType: "Pyth Price",
+    label: "Pyth Price",
+    description:
+      "Native Pyth Hermes price threshold crossing. Upstream signals are speculative, consume the normal execution allowance, and do not guarantee transaction ordering. After startup or a reconnect the first update only re-establishes the baseline; an armed trigger whose price crossed during the gap and is still past the threshold fires on the next update. Requires the operator to configure a Pyth API key on the event worker.",
+    requiredFields: {
+      feedId:
+        "string - Pyth feed ID, 64 hexadecimal characters, optional 0x prefix",
+      direction: 'string - "above" (at or above) or "below" (at or below)',
+      threshold:
+        "string - Decimal quote-currency price, up to 18 decimal places",
+      rearmThreshold:
+        "string - Price must return here before firing again; below the threshold for above, above for below",
+    },
+    optionalFields: {
+      maxAgeSeconds:
+        "number or integer string - Signal lifetime, 5 to 300 seconds; default 30. Expired updates and queued signals are discarded.",
+    },
+    outputFields: {
+      feedId: "string - Pyth feed ID",
+      price: "string - Integer price; multiply by 10^exponent",
+      confidence: "string - Integer confidence interval with the same exponent",
+      exponent: "number - Base-ten price exponent",
+      publishTime: "number - Source publication time in Unix seconds",
+      sourceUpdateId: "string - Stable feed/publication identity",
+      expiresAt: "number - Signal expiration in Unix milliseconds",
+      speculative: "boolean - Always true",
+      direction: 'string - "above" or "below"',
+      threshold: "string - Configured decimal price",
+      triggeredAt: "string - ISO execution trigger timestamp",
+    },
+  },
   Manual: {
     triggerType: "Manual",
     label: "Manual",

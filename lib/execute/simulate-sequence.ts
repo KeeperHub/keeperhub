@@ -2,16 +2,19 @@ import "server-only";
 
 import { ethers } from "ethers";
 import {
+  classifySimulationError,
   getRpcManagerForChain,
   type PreparedSimulationCall,
   prepareSimulationCall,
   resolveSimulationWallet,
   type SimulateResult,
+  type SimulationFailureKind,
   simulationFailure,
   simulationUnavailable,
 } from "@/lib/execute/simulate";
 import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
 import { checkStablecoinContractCallBatch } from "@/lib/execute/stablecoin-cap";
+import { ErrorCategory, logSystemWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
 import { decodeRevertReason } from "@/lib/web3/decode-revert-error";
@@ -72,6 +75,12 @@ type EncodedCall = {
 
 type RawCallResult = {
   status?: string;
+  /**
+   * Set only by the state-overrides path, where the answer comes from a thrown
+   * error rather than a node-reported status. Absent means the node itself
+   * reported the outcome (eth_simulateV1).
+   */
+  failureKind?: SimulationFailureKind;
   gasUsed?: string;
   returnData?: string;
   error?: { code?: number; message?: string; data?: string };
@@ -216,7 +225,7 @@ async function runWithStateOverrides(
   const overrides: Record<string, Record<string, unknown>> = {};
   const results: RawCallResult[] = [];
 
-  for (const call of calls) {
+  for (const [index, call] of calls.entries()) {
     const tx = txForNode(from, call);
     // A snapshot per call: the accumulator keeps growing, and executeWithFailover
     // re-runs the operation on a retry, so the object handed to the node must
@@ -241,45 +250,93 @@ async function runWithStateOverrides(
       );
       results.push({ status: "0x1", gasUsed: gasHex, returnData });
     } catch (err) {
+      // A transport / node failure is not a reverting call. Agents treat
+      // status "0x0" as "do not broadcast"; reporting "we could not find out"
+      // the same way makes them abandon transactions that would have worked.
+      // Classified with the single-call path's classifier so the two agree.
+      const failureKind = classifySimulationError(err);
       results.push({
         status: "0x0",
+        failureKind,
         error: {
           message: getErrorMessage(err),
           data: extractDataFromError(err),
         },
       });
-      // The sequence is what the caller asked about, so keep going: the later
-      // calls still answer against the state as it stands.
+      if (failureKind !== "revert") {
+        // Only a revert is known to have left no state behind, so every other
+        // outcome leaves the later calls nothing to answer against.
+        results.push(
+          ...unavailableRest(
+            calls,
+            results.length,
+            `call ${index + 1} of the sequence could not be simulated: ${getErrorMessage(err)}`
+          )
+        );
+        return results;
+      }
+      // A revert changed nothing, so the later calls still answer against the
+      // state as it stands.
+      continue;
+    }
+
+    // The last call's diff would seed a nonexistent next call, and it is the
+    // most expensive trace of the sequence (largest accumulated
+    // stateOverrides). Skip it.
+    if (index === calls.length - 1) {
       continue;
     }
 
     try {
+      // Trace against the same accumulated state the eth_call above used.
+      // Without stateOverrides the node traces this call against the raw
+      // latest chain state, so a call that only succeeds because an earlier
+      // call set up state reverts here and its state changes never reach the
+      // later calls -- exactly the failure this path exists to avoid.
+      const traceOptions: Record<string, unknown> = {
+        tracer: "prestateTracer",
+        tracerConfig: { diffMode: true },
+      };
+      if (Object.keys(stateAtThisCall).length > 0) {
+        traceOptions.stateOverrides = stateAtThisCall;
+      }
       const diff = await rpc.executeWithFailover(
         (provider) =>
           provider.send("debug_traceCall", [
             tx,
             "latest",
-            { tracer: "prestateTracer", tracerConfig: { diffMode: true } },
+            traceOptions,
           ]) as Promise<{ post?: Record<string, Record<string, unknown>> }>,
         "preflight"
       );
       mergeDiffIntoOverrides(overrides, diff?.post ?? {});
-    } catch {
+    } catch (err) {
       // Without the diff the next call sees state as if this one never ran,
       // which is the behaviour this whole path exists to avoid. Stop rather
-      // than return answers that silently mean something else.
-      results.push(...unavailableRest(calls, results.length));
+      // than return answers that silently mean something else. Carry the node's
+      // own error through so an operator can tell a capability refusal
+      // (prestateTracer or stateOverrides missing) from a transport failure.
+      results.push(
+        ...unavailableRest(calls, results.length, getErrorMessage(err))
+      );
       return results;
     }
   }
   return results;
 }
 
-function unavailableRest(calls: EncodedCall[], from: number): RawCallResult[] {
+function unavailableRest(
+  calls: EncodedCall[],
+  from: number,
+  reason?: string
+): RawCallResult[] {
+  const detail =
+    reason && reason.length > 0
+      ? reason
+      : "the node did not answer debug_traceCall with the prestateTracer trace and the accumulated state overrides";
   return calls.slice(from).map(() => ({
     error: {
-      message:
-        "Could not carry state to this call: the node did not answer debug_traceCall with prestateTracer",
+      message: `Could not carry state to this call: ${detail}`,
     },
   }));
 }
@@ -467,6 +524,17 @@ export async function simulateCallSequence(
       if (!isMethodNotFound(err)) {
         return sequenceUnavailable(from, encoded, getErrorMessage(err));
       }
+      // The fallback is pinned for the process lifetime, and the result
+      // message reaches only the caller, so an operator would otherwise never
+      // learn that this chain's node stopped answering eth_simulateV1.
+      // Log the flip here, where the pin happens: once per process per chain,
+      // best-effort (a concurrent first-use race can log it twice).
+      logSystemWarn(
+        ErrorCategory.NETWORK_RPC,
+        `[SimulateSequence] chain ${chainId} does not answer eth_simulateV1; degraded to the state-overrides fallback for the process lifetime`,
+        err,
+        { chain_id: String(chainId) }
+      );
       mechanism = "state-overrides";
       mechanismByChain.set(chainId, "state-overrides");
       try {
@@ -500,12 +568,30 @@ export async function simulateCallSequence(
         answer.returnData
       );
     }
-    if (!answer.status && answer.error) {
+    if (
+      answer.failureKind === "unavailable" ||
+      (!answer.status && answer.error)
+    ) {
       return notRun(
         from,
         call.to,
-        `Simulation unavailable: ${answer.error.message}`
+        `Simulation unavailable: ${answer.error?.message ?? "the node did not answer"}`
       );
+    }
+    if (answer.failureKind === "validation") {
+      // Same shape the single-call path returns for a permanent, non-revert
+      // failure (bad argument, numeric fault, malformed decode, ...).
+      const originalError = answer.error?.message ?? "The call failed";
+      return {
+        ...simulationFailure(
+          from,
+          call.to,
+          call.value,
+          `Simulation failed: ${originalError}`,
+          "validation"
+        ),
+        originalError,
+      };
     }
     return reverted(
       from,

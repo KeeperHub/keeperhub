@@ -22,8 +22,8 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { getDatabaseUrl } from "../lib/db/connection-utils";
 import { twoFactor, users, verifications } from "../lib/db/schema";
+import { SEED_EMAIL } from "@/scripts/lib/dev-seed";
 
-const EMAIL = process.env.SEED_EMAIL ?? "dev@techops.services";
 const PERIOD = 30;
 const DIGITS = 6;
 // Better Auth's emailOTP expiresIn is 300s (lib/auth.ts); match it on refresh.
@@ -58,7 +58,7 @@ async function printTotp(db: Db, authSecret: string): Promise<void> {
     .select({ secret: twoFactor.secret })
     .from(twoFactor)
     .innerJoin(users, eq(twoFactor.userId, users.id))
-    .where(eq(users.email, EMAIL))
+    .where(eq(users.email, SEED_EMAIL))
     .limit(1);
 
   if (!row) {
@@ -84,7 +84,7 @@ async function printEmailOtp(db: Db, authSecret: string): Promise<void> {
       expiresAt: verifications.expiresAt,
     })
     .from(verifications)
-    .where(like(verifications.identifier, `%otp-${EMAIL}`))
+    .where(like(verifications.identifier, `%otp-${SEED_EMAIL}`))
     .orderBy(desc(verifications.createdAt))
     .limit(1);
 
@@ -132,7 +132,7 @@ async function main(): Promise<void> {
   const db = drizzle(client);
 
   try {
-    console.log(`MFA codes for ${EMAIL}:`);
+    console.log(`MFA codes for ${SEED_EMAIL}:`);
     await printTotp(db, authSecret);
     await printEmailOtp(db, authSecret);
   } finally {

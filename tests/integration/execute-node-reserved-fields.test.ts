@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks -- available to vi.mock factories which run before any imports
@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   stepFn: vi.fn(),
   ownershipResult: [] as unknown[],
   capturedInput: undefined as Record<string, unknown> | undefined,
+  recordIdempotentResponse: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -74,6 +75,14 @@ vi.mock("@/app/api/execute/_lib/execution-service", async (importActual) => {
 vi.mock("@/app/api/execute/_lib/action-resolver", () => ({
   resolveAction: mocks.resolveAction,
 }));
+
+vi.mock("@/lib/idempotency", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/idempotency")>();
+  return {
+    ...actual,
+    recordIdempotentResponse: mocks.recordIdempotentResponse,
+  };
+});
 
 vi.mock("@/lib/utils", async () => {
   const actual =
@@ -144,6 +153,9 @@ beforeEach(() => {
   mocks.redactInput.mockImplementation(
     (input: Record<string, unknown>) => input
   );
+  mocks.recordIdempotentResponse.mockImplementation(
+    (_outcome: unknown, response: Response) => Promise.resolve(response)
+  );
 
   mocks.stepFn.mockImplementation((input: Record<string, unknown>) => {
     mocks.capturedInput = input;
@@ -159,6 +171,15 @@ beforeEach(() => {
     },
     isPluginAction: true,
   }));
+});
+
+afterEach(() => {
+  // A step's declared ceiling is written onto the shared step mock as an own
+  // property, and vi.clearAllMocks() clears call history rather than removing
+  // properties. Without this, the first case that declares one leaves it on the
+  // mock for every test after it in this file - which is why the cases below
+  // only passed in the order they are written in.
+  delete (mocks.stepFn as { maxRetries?: number | string }).maxRetries;
 });
 
 // ---------------------------------------------------------------------------
@@ -374,6 +395,265 @@ describe("POST /api/execute/node reserved-field gating", () => {
 
     expect([200, 202]).toContain(response.status);
   });
+
+  it("budgets an absent maxRetries at the default the executor will apply", async () => {
+    // The validator used to default a missing count to 0, so this was checked
+    // as one attempt of 600000ms - inside the budget - and then run by
+    // resolveConfig as four, up to 2_400_000ms: four times the idempotency
+    // processing lock this budget exists to stay inside.
+    //
+    // A run that long does not lose its lock on its own. withIdempotencyHeartbeat
+    // re-stamps expiresAt every couple of minutes and the reclaim is fenced on
+    // an expired row, so the lock only lapses if the heartbeat also fails - and
+    // it is fire-and-forget with an empty catch. The budget is the invariant
+    // that keeps a request inside its own reservation without depending on
+    // that; this pins the arithmetic, not the failure mode.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { timeoutMs: 600_000 },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(mocks.stepFn).not.toHaveBeenCalled();
+  });
+
+  it("names the effective attempt count and the safe remedy in the rejection", async () => {
+    // Without the attempt count the arithmetic reads as self-contradicting to
+    // a caller who sent no maxRetries: they compute 600000 x (0 + 1), which is
+    // not over the limit.
+    //
+    // Naming maxRetries: 0 is the safety-relevant half. The apparent remedy is
+    // to lower timeoutMs, and a timeoutMs under the chain's confirmation
+    // latency is what turns one slow write into several: withTimeout races a
+    // setTimeout rather than cancelling, so an abandoned attempt can still
+    // broadcast while the next one signs at the next nonce.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { timeoutMs: 600_000 },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error?: string };
+    expect(body.error).toContain("4 attempts");
+    expect(body.error).toContain("maxRetries defaults to 3");
+    expect(body.error).toContain("2400000ms");
+    expect(body.error).toContain("maxRetries: 0");
+  });
+
+  it("omits the defaulting note when the caller set maxRetries itself", async () => {
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 10, timeoutMs: 600_000 },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error?: string };
+    expect(body.error).toContain("11 attempts");
+    expect(body.error).not.toContain("defaults to");
+  });
+
+  it("still accepts an absent maxRetries whose defaulted budget fits", async () => {
+    // The counterpart to the case above: defaulting to DEFAULT_MAX_RETRIES
+    // must not reject everything that omits the field. 4 x 120000 = 480000,
+    // inside the 600000ms lock TTL.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { timeoutMs: 120_000 },
+      })
+    );
+
+    expect([200, 202]).toContain(response.status);
+  });
+
+  it("budgets an explicit maxRetries of 0 as the single attempt it is", async () => {
+    // Defaulting must not become clamping: 0 is a meaningful value that
+    // resolveConfig honours via ??, so one attempt of 600000ms is exactly the
+    // budget and stays admissible.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 0, timeoutMs: 600_000 },
+      })
+    );
+
+    expect([200, 202]).toContain(response.status);
+  });
+
+  it("accepts an empty retry object at both of the executor's defaults", async () => {
+    // The only request shape where maxRetries and timeoutMs are both
+    // defaulted, and the pair only became load-bearing here: 4 x 120000 =
+    // 480000 now fills most of the 600000ms lock where the single-attempt
+    // reading left it at 120000. Every other case above pins timeoutMs
+    // explicitly, so raising DEFAULT_TIMEOUT_MS past 150000 would start
+    // rejecting every caller that sends `retry: {}` with nothing to catch it.
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: {},
+      })
+    );
+
+    expect([200, 202]).toContain(response.status);
+  });
+});
+
+describe("POST /api/execute/node step-declared retry ceiling", () => {
+  // The wiring is the defect: invokeStep reads the property off an object that
+  // arrives through a dynamic import. A helper test cannot see that line, so
+  // reverting the route to `if (retry)` would leave every unit case green.
+  it("runs a step that declares maxRetries = 0 exactly once", async () => {
+    Object.assign(mocks.stepFn, { maxRetries: 0 });
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+
+    // "read ECONNRESET" is in RETRYABLE_PATTERNS and the failure carries no
+    // hash, so without the declaration this is four calls.
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("still retries a step that declares nothing, four calls for three retries", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(4);
+  });
+
+  it("reports the budget the declaration left in force", async () => {
+    // The round-7 finding: a caller asking for three retries against a step that
+    // declares none got a 200, one attempt and no retryCount, which is the same
+    // shape as never having asked. Every value-moving step reachable through
+    // `resolveAction` declares 0, and the ones declaring nothing are read-only
+    // queries, so this is the common case rather than the corner.
+    Object.assign(mocks.stepFn, { maxRetries: 0 });
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
+    expect(body.maxRetriesApplied).toBe(0);
+    // Nothing was retried, so the count is still omitted rather than reported.
+    expect(body.retryCount).toBeUndefined();
+  });
+
+  it("reports the caller's own budget when the declaration is absent", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(4);
+    expect(body.maxRetriesApplied).toBe(3);
+  });
+
+  it("reports no budget when the caller never asked to retry", async () => {
+    // Absent rather than 0, so the field distinguishes "never asked" from
+    // "asked and was overridden" instead of collapsing the two.
+    mocks.stepFn.mockResolvedValue({ success: true });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body.maxRetriesApplied).toBeUndefined();
+  });
+
+  it("reports no budget for a declaring step the caller never retried", async () => {
+    // The field is the budget in force for this request, not the step's ceiling:
+    // a step declaring 0 against a request that sent no `retry` runs once and
+    // reports nothing, because no budget was applied to that request. Reading the
+    // field as "this step allows N" is wrong exactly here, and this is the case
+    // that pins the difference - the run above carries no declaration.
+    Object.assign(mocks.stepFn, { maxRetries: 0 });
+    mocks.stepFn.mockResolvedValue({ success: true });
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+      })
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
+    expect(body.maxRetriesApplied).toBeUndefined();
+  });
+
+  it("honours a declaration that is a string zero, which the import cannot type-check", async () => {
+    Object.assign(mocks.stepFn, { maxRetries: "0" });
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "read ECONNRESET",
+    });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "1", contractAddress: "0xabc" },
+        retry: { maxRetries: 3, timeoutMs: 120_000 },
+      })
+    );
+
+    expect(mocks.stepFn).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("POST /api/execute/node broadcast hash on a failed step", () => {
@@ -387,6 +667,7 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
       error: "Transaction sent but receipt not available",
       transactionHash: "0xpending",
       chainId: 1,
+      broadcastAttempted: true,
     });
     mocks.failExecution.mockResolvedValue({ status: "unconfirmed" });
 
@@ -400,7 +681,11 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
     expect(mocks.failExecution).toHaveBeenCalledWith(
       "ex1",
       "Transaction sent but receipt not available",
-      expect.objectContaining({ transactionHash: "0xpending", chainId: 1 })
+      expect.objectContaining({
+        transactionHash: "0xpending",
+        chainId: 1,
+        broadcastAttempted: true,
+      })
     );
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.status).toBe("unconfirmed");
@@ -487,5 +772,117 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.status).toBe("failed");
     expect(body.transactionHash).toBeUndefined();
+  });
+
+  it("releases a failed node transaction only after hash+chain adjudication", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "execution reverted",
+      transactionHash: "0xreverted",
+      chainId: 8453,
+    });
+    mocks.failExecution.mockResolvedValue({ status: "failed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "release"
+    );
+  });
+
+  it("holds a failed node transaction while receipt verification is unconfirmed", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "receipt unavailable",
+      transactionHash: "0xpending",
+      chainId: 8453,
+    });
+    mocks.failExecution.mockResolvedValue({ status: "unconfirmed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "failed"
+    );
+  });
+
+  it("holds a hash when chainId is not numeric instead of releasing it", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: false,
+      error: "provider returned malformed chain context",
+      transactionHash: "0xlive",
+      chainId: "8453",
+    });
+    mocks.failExecution.mockResolvedValue({ status: "failed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.failExecution).toHaveBeenCalledWith(
+      "ex1",
+      "provider returned malformed chain context",
+      expect.objectContaining({ transactionHash: "0xlive", chainId: undefined })
+    );
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "failed"
+    );
+  });
+
+  it("releases the non-completed success branch only after hash+chain adjudication", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: true,
+      transactionHash: "0xreverted",
+      gasUsed: "21000",
+      effectiveGasPrice: "1",
+      chainId: 8453,
+    });
+    mocks.completeExecution.mockResolvedValue({ status: "failed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "release"
+    );
+  });
+
+  it("holds the non-completed success branch while verification is unconfirmed", async () => {
+    mocks.stepFn.mockResolvedValue({
+      success: true,
+      transactionHash: "0xpending",
+      gasUsed: "21000",
+      effectiveGasPrice: "1",
+      chainId: 8453,
+    });
+    mocks.completeExecution.mockResolvedValue({ status: "unconfirmed" });
+
+    await nodePOST(
+      postRequest({
+        actionType: "web3/write-contract",
+        config: { network: "8453", contractAddress: "0xabc" },
+      })
+    );
+
+    expect(mocks.recordIdempotentResponse.mock.calls.at(-1)?.[2]).toBe(
+      "failed"
+    );
   });
 });

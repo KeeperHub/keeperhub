@@ -9,13 +9,21 @@
  */
 
 import { useAtomValue } from "jotai";
+import { Info } from "lucide-react";
 import { KeeperHubLogo } from "@/components/icons/keeperhub-logo";
 import { SendGridConnectionSection } from "@/components/settings/sendgrid-connection-section";
 import { Web3WalletSection } from "@/components/settings/web3-wallet-section";
 import { Label } from "@/components/ui/label";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { AbiEventArgsField } from "@/components/workflow/config/abi-event-args-field";
 import { AbiEventSelectField } from "@/components/workflow/config/abi-event-select-field";
 import { AbiWithAutoFetchField } from "@/components/workflow/config/abi-with-auto-fetch-field";
 import { ArgsListField } from "@/components/workflow/config/args-list-field";
+import { ArrayInputField } from "@/components/workflow/config/array-input-field";
 import { CallListField } from "@/components/workflow/config/call-list-field";
 import {
   ChainSelectField,
@@ -34,8 +42,14 @@ import {
   PagerDutyTestNodeButton,
   PagerDutyTriggerNodeField,
 } from "@/components/workflow/config/pagerduty-resource-field";
+import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
 import { integrationsAtom } from "@/lib/integrations-store";
+import {
+  normalizeProtocolArrayValue,
+  serializeProtocolArrayValue,
+  solidityArrayItemType,
+} from "@/lib/protocol-array-value";
 import {
   registerBranding,
   registerFieldRenderer,
@@ -162,6 +176,42 @@ registerFieldRenderer(
         <AbiEventSelectField
           abiValue={abiValue}
           disabled={disabled}
+          field={field}
+          onChange={(val: unknown) => onUpdateConfig(field.key, val)}
+          value={value}
+        />
+      </div>
+    );
+  }
+);
+
+/**
+ * ABI Event Args Field
+ * One input per indexed parameter of the selected event, with the ones no
+ * topic can match on disabled rather than offered and left to fail at the RPC.
+ */
+registerFieldRenderer(
+  "abi-event-args",
+  ({ field, config, onUpdateConfig, disabled }) => {
+    const rawAbi = config[field.abiField || "abi"];
+    const abiValue = typeof rawAbi === "string" ? rawAbi : "";
+    const rawEvent = config[field.abiEventField || "eventName"];
+    const eventValue = typeof rawEvent === "string" ? rawEvent : "";
+    // Passed through as stored: the step accepts the filter as a JSON string
+    // or as an object, and the field reads both.
+    const rawValue = config[field.key];
+    const value =
+      rawValue === undefined || rawValue === null || rawValue === ""
+        ? (field.defaultValue ?? "")
+        : rawValue;
+
+    return (
+      <div className="space-y-2" key={field.key}>
+        <ProtocolFieldLabel field={field} />
+        <AbiEventArgsField
+          abiValue={abiValue}
+          disabled={disabled}
+          eventValue={eventValue}
           field={field}
           onChange={(val: unknown) => onUpdateConfig(field.key, val)}
           value={value}
@@ -322,10 +372,6 @@ function ProtocolFieldLabel({
     docUrl?: string;
   };
 }): React.ReactNode {
-  const { Tooltip, TooltipTrigger, TooltipContent } =
-    require("@/components/ui/tooltip") as typeof import("@/components/ui/tooltip");
-  const { Info } = require("lucide-react") as typeof import("lucide-react");
-
   const hasDocUrl = Boolean(field.docUrl);
 
   const infoIcon = (
@@ -542,6 +588,35 @@ registerFieldRenderer(
   }
 );
 
+/** Protocol scalar-array field with one typed editor row per item. */
+registerFieldRenderer(
+  "protocol-array",
+  ({ field, config, onUpdateConfig, disabled }) => {
+    const value = normalizeProtocolArrayValue(
+      config[field.key],
+      field.solidityType
+    );
+    const itemType = field.solidityType
+      ? solidityArrayItemType(field.solidityType)
+      : "value";
+
+    return (
+      <div className="space-y-2" key={field.key}>
+        <ProtocolFieldLabel field={field} />
+        <ArrayInputField
+          disabled={disabled}
+          fieldKey={field.key}
+          itemType={itemType}
+          onChange={(val: unknown[]) =>
+            onUpdateConfig(field.key, serializeProtocolArrayValue(val))
+          }
+          value={value}
+        />
+      </div>
+    );
+  }
+);
+
 /**
  * Protocol Tuple Array Field
  * Structured array builder for tuple[] inputs (e.g. CCIP tokenAmounts).
@@ -551,22 +626,13 @@ registerFieldRenderer(
 registerFieldRenderer(
   "protocol-tuple-array",
   ({ field, config, onUpdateConfig, disabled }) => {
-    const { ArrayInputField } =
-      require("@/components/workflow/config/array-input-field") as typeof import("@/components/workflow/config/array-input-field");
-
-    const rawValue = config[field.key];
-    let value: unknown = rawValue;
-    if (typeof rawValue === "string" && rawValue.trim() !== "") {
-      try {
-        value = JSON.parse(rawValue);
-      } catch {
-        value = rawValue;
-      }
-    }
-
+    const value = normalizeProtocolArrayValue(
+      config[field.key],
+      field.solidityType
+    );
     const components = field.tupleComponents ?? [];
-    const itemType = field.solidityType?.endsWith("[]")
-      ? field.solidityType.slice(0, -2)
+    const itemType = field.solidityType
+      ? solidityArrayItemType(field.solidityType)
       : "tuple";
 
     return (
@@ -578,7 +644,7 @@ registerFieldRenderer(
           fieldKey={field.key}
           itemType={itemType}
           onChange={(val: unknown[]) =>
-            onUpdateConfig(field.key, JSON.stringify(val))
+            onUpdateConfig(field.key, serializeProtocolArrayValue(val))
           }
           value={value}
         />
@@ -600,6 +666,28 @@ registerFieldRenderer(
   "fail-on-error-switch",
   ({ field, config, onUpdateConfig, disabled }) => (
     <FailOnErrorSwitchField
+      description={field.helpTip ?? field.helpText}
+      disabled={disabled}
+      id={field.key}
+      key={field.key}
+      label={field.label}
+      onChange={(checked) => onUpdateConfig(field.key, checked)}
+      value={config[field.key]}
+    />
+  )
+);
+
+/**
+ * Gas Sponsorship Switch Field
+ * The "Sponsor gas" toggle on a web3 write action. Like the fail-on-error
+ * switch it is default-on and resolves through its own helper
+ * (resolveSponsorGas) rather than field.defaultValue, so the form and the
+ * step can never disagree about what an unset value means.
+ */
+registerFieldRenderer(
+  "gas-sponsorship-switch",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <SponsorGasField
       description={field.helpTip ?? field.helpText}
       disabled={disabled}
       id={field.key}

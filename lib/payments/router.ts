@@ -15,6 +15,7 @@ import {
   railForProtocol,
   toAssetUnits,
 } from "@/lib/payments/rails";
+import { resolveRealm } from "@/lib/payments/realm";
 import {
   buildPaymentConfig,
   extractPayerAddress,
@@ -31,8 +32,6 @@ import type { CallRouteWorkflow } from "@/lib/payments/x402/types";
 const X402_RAIL = railForProtocol("x402");
 const MPP_RAIL = railForProtocol("mpp");
 const PAYMENT_MAX_TIMEOUT_SECONDS = 300;
-const RE_PROTOCOL = /^https?:\/\//;
-const RE_TRAILING_SLASH = /\/$/;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -188,9 +187,7 @@ export function buildDual402Response(params: Dual402Params): Response {
 
   const mppSecretKey = process.env.MPP_SECRET_KEY;
   if (mppSecretKey) {
-    const realm = (process.env.NEXT_PUBLIC_APP_URL ?? "app.keeperhub.com")
-      .replace(RE_PROTOCOL, "")
-      .replace(RE_TRAILING_SLASH, "");
+    const realm = resolveRealm();
     const amountSmallestUnit = String(toAssetUnits(MPP_RAIL, price));
     const challenge = Challenge.from({
       secretKey: mppSecretKey,

@@ -83,6 +83,7 @@ const webhookPlugin: IntegrationPlugin = {
           key: "webhookHeaders",
           label: "Headers",
           type: "template-textarea",
+          valueFormat: "json",
           placeholder:
             '{"Authorization": "Bearer token", "Content-Type": "application/json"}',
           rows: 4,
@@ -94,6 +95,7 @@ const webhookPlugin: IntegrationPlugin = {
           key: "webhookPayload",
           label: "Payload",
           type: "template-textarea",
+          valueFormat: "json",
           placeholder: '{"key": "value", "data": {{NodeName.field}}}',
           rows: 6,
           example: '{"key": "value", "data": "example"}',

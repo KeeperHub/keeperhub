@@ -19,6 +19,7 @@ import {
   getAnvilWssUrl,
   waitForAnvil,
 } from "./helpers/anvil-helpers";
+import { emitWithNonceRetry } from "./helpers/emit-with-retry";
 import {
   type DeployedFixture,
   deployEventEmitter,
@@ -197,7 +198,7 @@ describe.skipIf(SKIP_INFRA_TESTS)(
       const emitEvent = fixture.contract.getFunction("emitEvent");
       let v1Msg: Message | null = null;
       for (let attempt = 0; attempt < 10 && !v1Msg; attempt++) {
-        const tx = await emitEvent(EMITTED_VALUE);
+        const tx = await emitWithNonceRetry(() => emitEvent(EMITTED_VALUE));
         await tx.wait();
         v1Msg = await waitForUserId(sqsClient, queueUrl, "user-v1", 3_000);
       }
@@ -224,7 +225,7 @@ describe.skipIf(SKIP_INFRA_TESTS)(
       // into the SQS body.
       let v2Msg: Message | null = null;
       for (let attempt = 0; attempt < 10 && !v2Msg; attempt++) {
-        const tx = await emitEvent(EMITTED_VALUE);
+        const tx = await emitWithNonceRetry(() => emitEvent(EMITTED_VALUE));
         await tx.wait();
         v2Msg = await waitForUserId(sqsClient, queueUrl, "user-v2", 3_000);
       }

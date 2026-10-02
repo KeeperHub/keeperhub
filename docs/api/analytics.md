@@ -173,7 +173,7 @@ Returns a unified list of both workflow executions and direct executions with pa
 | `search` | string | Match on the run id and the workflow name for workflow runs, and the run id, type and network for direct runs. No column holding an error message is searched, so searching an error string returns an empty page. Truncated to 128 characters |
 | `limit` | number | Results per page (default: 50, capped at 100: a larger value is clamped rather than rejected) |
 | `cursor` | string | Pagination cursor from previous response |
-| `page` | number | One-based page number, an alternative to `cursor`. Values below 1 are clamped to 1 |
+| `page` | number | One-based page number, an alternative to `cursor`. A value below 1, or one that is not a whole number, is ignored and the first page is served. A value above 200 is clamped to 200, so paging reaches the first 200 pages and further rows are reachable only with `cursor` |
 | `projectId` | string | Restrict the listing to one workflow project. Direct executions are excluded rather than filtered |
 
 ### Response

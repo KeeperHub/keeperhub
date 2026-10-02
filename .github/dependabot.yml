@@ -28,6 +28,16 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # better-auth is held at 1.7.2 by the pin documented in package.json
+      # (overrides_better_auth_comment): 1.7.3 stopped writing accounts.issuer,
+      # which KEEP-1311 made NOT NULL, so every credential signup fails on the
+      # insert. The pin lives in both the dependency and the overrides block,
+      # and a group bump raised both at once (#2592, KEEP-1374) - the comment
+      # is not something Dependabot reads. Ignoring the package here is what
+      # actually holds the pin. Note this also suppresses security updates for
+      # better-auth; Dependabot alerts still fire, so a CVE is still visible,
+      # it just will not open its own PR. Remove together with KEEP-1312.
+      - dependency-name: "better-auth"
     labels:
       - "dependencies"
 

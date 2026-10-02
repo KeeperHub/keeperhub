@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { markBroadcast } from "@/keeperhub-executor/lib/broadcast-marker";
 import { logWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { sleep } from "@/lib/sleep";
@@ -112,15 +113,21 @@ export class EvmChainAdapter implements ChainAdapter {
       maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
       chainId: this.chainId,
     };
-    const tx = options.rpcManager
-      ? (
-          await submitSignedTransactionWithFailover(
-            signer,
-            txRequest,
-            options.rpcManager
-          )
-        ).response
-      : await signer.sendTransaction(txRequest);
+    let tx: ethers.TransactionResponse;
+    if (options.rpcManager) {
+      tx = (
+        await submitSignedTransactionWithFailover(
+          signer,
+          txRequest,
+          options.rpcManager
+        )
+      ).response;
+    } else {
+      tx = await signer.sendTransaction(txRequest);
+    }
+    // Issue #2289: the transaction is on the wire - record the broadcast
+    // stage (sidecar marker + process-local counter, best-effort).
+    markBroadcast();
 
     return this.confirmTransaction(tx, session, nonce, gasConfig, options);
   }
@@ -238,6 +245,9 @@ export class EvmChainAdapter implements ChainAdapter {
         ...(request.value ? { value: request.value } : {}),
       });
     }
+    // Issue #2289: the transaction is on the wire - record the broadcast
+    // stage (sidecar marker + process-local counter, best-effort).
+    markBroadcast();
 
     return this.confirmTransaction(tx, session, nonce, gasConfig, options);
   }
@@ -345,8 +355,18 @@ export class EvmChainAdapter implements ChainAdapter {
     };
 
     const deadline = Date.now() + TEMPO_RECEIPT_TIMEOUT_MS;
+    let lastReadError: unknown;
     while (Date.now() < deadline) {
-      const receipt = await fetchReceipt();
+      let receipt: ethers.TransactionReceipt | null = null;
+      try {
+        receipt = await fetchReceipt();
+        lastReadError = undefined;
+      } catch (error) {
+        // A transient read failure is post-broadcast, but it should not throw
+        // away the rest of the confirmation window. Keep polling until the
+        // deadline; only the exhausted case below settles as pending.
+        lastReadError = error;
+      }
       if (receipt) {
         return receipt;
       }
@@ -358,7 +378,9 @@ export class EvmChainAdapter implements ChainAdapter {
     // message text, so the finalizer can settle the row as `unconfirmed` and
     // hand it to the reconciler.
     throw new OnChainPendingError({
-      message: `Timed out waiting for Tempo transaction receipt (${tx.hash})`,
+      message: lastReadError
+        ? `Timed out waiting for Tempo transaction receipt (${tx.hash}); last read failed: ${getErrorMessage(lastReadError)}`
+        : `Timed out waiting for Tempo transaction receipt (${tx.hash})`,
       transactionHash: tx.hash,
     });
   }

@@ -6,6 +6,8 @@
 // document into their bundle. The route publishes what this module defines;
 // neither half can drift from the other.
 
+import { DAY_MS } from "@/lib/utils/duration";
+
 /** Current major version of the REST surface. */
 export const API_VERSION = "1";
 
@@ -15,8 +17,6 @@ export const API_VERSION = "1";
  * guarantee rather than discovering it when something stops answering.
  */
 export const DEPRECATION_NOTICE_DAYS = 180;
-
-const MS_PER_DAY = 86_400_000;
 
 function startOfUtcDay(isoDay: string): Date {
   const parsed = new Date(`${isoDay}T00:00:00Z`);
@@ -43,7 +43,7 @@ export function toStructuredFieldDate(isoDay: string): string {
 /** The sunset date a deprecation effective on `isoDay` carries. */
 export function sunsetFor(isoDay: string): Date {
   return new Date(
-    startOfUtcDay(isoDay).getTime() + DEPRECATION_NOTICE_DAYS * MS_PER_DAY
+    startOfUtcDay(isoDay).getTime() + DEPRECATION_NOTICE_DAYS * DAY_MS
   );
 }
 

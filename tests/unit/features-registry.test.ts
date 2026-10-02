@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   buildFeatureSnapshot,
@@ -11,6 +11,7 @@ import {
   getFeaturesByCategory,
   isFeatureEnabled,
   planMeetsRequirement,
+  validateWorkflowFeatures,
 } from "@/lib/features";
 
 describe("feature registry", () => {
@@ -36,6 +37,9 @@ describe("feature registry", () => {
     expect(getFeatureForActionType("webhook/send-webhook")?.id).toBe(
       "action.webhook"
     );
+    expect(getFeatureForActionType("predge/read-signal")?.id).toBe(
+      "action.predge-read-signal"
+    );
   });
 
   it("returns undefined for non-gated action types", () => {
@@ -45,7 +49,7 @@ describe("feature registry", () => {
 
   it("filters by category", () => {
     const workflowActions = getFeaturesByCategory("workflow-action");
-    expect(workflowActions.length).toBe(5);
+    expect(workflowActions.length).toBe(6);
     for (const feature of workflowActions) {
       expect(feature.category).toBe("workflow-action");
     }
@@ -94,6 +98,7 @@ describe("getEnabledFeatureIdsForPlan", () => {
       "action.code",
       "action.webhook",
       "action.external-request",
+      "action.predge-read-signal",
       "notifications.execution-digest",
     ];
     for (const plan of ["pro", "business", "enterprise"] as const) {
@@ -109,5 +114,38 @@ describe("buildFeatureSnapshot", () => {
     expect(snapshot.plan).toBe("free");
     expect(snapshot.enabledFeatureIds).toEqual([]);
     expect(snapshot.features.length).toBe(Object.keys(FEATURES).length);
+  });
+});
+
+describe("predge read-signal kill switch", () => {
+  const featureId: FeatureId = "action.predge-read-signal";
+  const nodes = [{ id: "p1", actionType: "predge/read-signal" }];
+  const originalEnabled = FEATURES[featureId].enabled;
+
+  afterEach(() => {
+    FEATURES[featureId].enabled = originalEnabled;
+  });
+
+  it("keeps the pro requirement of the egress fallback while enabled", () => {
+    expect(FEATURES[featureId].enabled).toBe(true);
+    expect(FEATURES[featureId].requiredPlan).toBe("pro");
+    expect(validateWorkflowFeatures(nodes, "free")).toHaveLength(1);
+    for (const plan of ["pro", "business", "enterprise"] as const) {
+      expect(validateWorkflowFeatures(nodes, plan)).toEqual([]);
+    }
+  });
+
+  it("gates predge/read-signal for every plan when disabled", () => {
+    FEATURES[featureId].enabled = false;
+    for (const plan of ["free", "pro", "business", "enterprise"] as const) {
+      const violations = validateWorkflowFeatures(nodes, plan);
+      expect(violations.map((v) => v.featureId)).toEqual([featureId]);
+      expect(violations[0]?.nodeIds).toEqual(["p1"]);
+    }
+  });
+
+  it("leaves the shared external-request gate untouched when disabled", () => {
+    FEATURES[featureId].enabled = false;
+    expect(isFeatureEnabled("action.external-request", "pro")).toBe(true);
   });
 });

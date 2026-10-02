@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { SCAN_NETWORK_IDS } from "@/lib/scan/networks";
 import { scanResponseFixture } from "./fixtures/scan-response.fixture";
 
 // Force anonymous context for all scan tests — the /scan page is accessible
@@ -8,7 +9,11 @@ test.use({ storageState: { cookies: [], origins: [] } });
 const SCAN_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
 const INVALID_ADDRESS = "not-a-valid-address";
 const SCAN_URL_REGEX = /\/scan/;
-const SCANNED_COUNT_REGEX = /Scanned 5 of 6 supported networks/;
+// Derived rather than hardcoded: the header reads SCAN_NETWORK_IDS.length, so a new
+// scan chain used to break this assertion instead of the behaviour it covers.
+const SCANNED_COUNT_REGEX = new RegExp(
+  `Scanned ${SCAN_NETWORK_IDS.length - scanResponseFixture.unavailableChains.length} of ${SCAN_NETWORK_IDS.length} supported networks`
+);
 const AUTH_COPY_REGEX = /sign in|create account/i;
 
 test.describe("scan", () => {

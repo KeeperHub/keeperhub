@@ -10,6 +10,10 @@ import {
 import type { AuthMethod } from "@/lib/middleware/auth-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { SUPPORTED_CHAIN_IDS } from "@/lib/rpc/types";
+import {
+  buildApiCallFailedError,
+  parseRetryAfterSeconds,
+} from "./api-call-error";
 import { withToolLogging } from "./logging";
 import { deprecatedToolDescription } from "./mcp-tool-catalog";
 import {
@@ -122,9 +126,9 @@ type ApiResponse = Record<string, unknown>;
 
 /**
  * Detect whether an error message produced by `callApi` represents an
- * HTTP 402 Payment Required response. callApi formats failures as
- * `API call failed: <status> <statusText> - <body>`, so a substring
- * match on the prefix is sufficient and avoids parsing the body twice.
+ * HTTP 402 Payment Required response. buildApiCallFailedError formats failures as
+ * `API call failed: <status> <statusText>[ (Retry-After: <seconds>s)] - <body>`,
+ * so a substring match on the prefix is sufficient and avoids parsing the body twice.
  */
 const API_CALL_FAILED_402_PREFIX = "API call failed: 402";
 
@@ -297,6 +301,8 @@ function is400Error(message: string): boolean {
 // decoded custom errors are routinely longer than addresses. The original
 // callApi message remains verbatim as the first line for compatibility.
 const MAX_SIMULATION_REASON_CHARS = 200;
+// Remediation advice contains spender addresses and parameter amounts so it needs a wider cap
+const MAX_SIMULATION_REMEDIATION_CHARS = 500;
 
 type SimulateFailureShape = {
   success?: unknown;
@@ -308,6 +314,7 @@ type SimulateFailureShape = {
   code?: unknown;
   from?: unknown;
   to?: unknown;
+  remediation?: unknown;
 };
 
 /**
@@ -401,6 +408,15 @@ function buildSimulationFailureHint(originalMessage: string): string | null {
   if (typeof parsed.to === "string") {
     lines.push(
       `Simulated call target: ${sanitiseUpstreamField(parsed.to, MAX_ACCEPT_FIELD_CHARS, "unknown")}`
+    );
+  }
+
+  if (
+    typeof parsed.remediation === "string" &&
+    parsed.remediation.trim().length > 0
+  ) {
+    lines.push(
+      `Remediation: ${sanitiseUpstreamField(parsed.remediation, MAX_SIMULATION_REMEDIATION_CHARS, "")}`
     );
   }
 
@@ -664,21 +680,6 @@ function isMcpFetchTimeoutError(error: unknown): boolean {
   return error.name === "TimeoutError";
 }
 
-function parseRetryAfterSeconds(header: string | null): number {
-  if (!header) {
-    return DEFAULT_COLD_START_RETRY_SECONDS;
-  }
-  const asNumber = Number(header);
-  if (Number.isFinite(asNumber) && asNumber >= 0) {
-    return Math.ceil(asNumber);
-  }
-  const asDate = Date.parse(header);
-  if (!Number.isNaN(asDate)) {
-    return Math.max(1, Math.ceil((asDate - Date.now()) / 1000));
-  }
-  return DEFAULT_COLD_START_RETRY_SECONDS;
-}
-
 function buildColdStartError(
   retryAfterSeconds: number,
   idempotencyKey?: string
@@ -744,15 +745,13 @@ async function callApi(
       COLD_START_HTTP_STATUSES.has(response.status)
     ) {
       throw buildColdStartError(
-        parseRetryAfterSeconds(response.headers.get("Retry-After")),
+        parseRetryAfterSeconds(response.headers.get("Retry-After")) ??
+          DEFAULT_COLD_START_RETRY_SECONDS,
         idempotencyKey
       );
     }
     const errorText = await response.text();
-    const statusLabel = response.statusText
-      ? `${response.status} ${response.statusText}`
-      : String(response.status);
-    throw new Error(`API call failed: ${statusLabel} - ${errorText}`);
+    throw buildApiCallFailedError(response, errorText);
   }
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -807,7 +806,7 @@ const GET_EXECUTION_SCHEMA = {
     .boolean()
     .optional()
     .describe(
-      "Include input/output/outputRaw blobs on each log entry. Defaults to true for backward compatibility with v1.11 get_execution_logs callers. Pass false to receive a compact status-only response."
+      "Include input/output/outputRaw blobs on each log entry. Defaults to true for backward compatibility with v1.11 get_execution_logs callers. Pass false to receive a compact status-only response. A blob larger than 1 MiB is always returned as { _truncated: true, originalSize: <bytes>, preview: <first 1024 characters> } in place of the value; the full payload is never served."
     ),
   nodeIds: z
     .array(z.string())
@@ -821,7 +820,7 @@ const GET_EXECUTION_SCHEMA = {
     .positive()
     .optional()
     .describe(
-      "Per-field byte cap. Any input/output/outputRaw JSON-stringified payload exceeding this size is replaced with { _truncated: true, originalSize: <bytes>, preview: <first N bytes of stringified value> }. The error field is NEVER truncated regardless of this cap."
+      "Per-field byte cap. Any input/output/outputRaw JSON-stringified payload exceeding this size is replaced with { _truncated: true, originalSize: <bytes>, preview: <first N bytes of stringified value> }. Payloads above 1 MiB arrive already replaced by that marker whatever this cap is set to. The error field is NEVER truncated regardless of this cap."
     ),
 };
 
@@ -1223,7 +1222,7 @@ export function registerTools(
 
   server.tool(
     "get_execution",
-    "Get combined status and step-by-step logs for a workflow execution. Replaces the v1.11 get_execution_status + get_execution_logs pair. Returns { status, logs } in a single response. `status` and each log's `transactionHashes[].verified`/`receiptStatus` are independently reconciled against on-chain receipts before the execution is allowed to finalize as success -- this, not execute_workflow's trigger acknowledgement, is the authoritative signal for whether a workflow (and any money movement within it) actually completed. By default returns full node input/output data (backward compatible with v1.11 get_execution_logs no-param callers). Pass `includeData: false` to omit input/output/outputRaw blobs, `nodeIds: string[]` to restrict full data to specific nodes (status and error always returned for every node), or `truncateData: number` (bytes) to cap individual input/output/outputRaw payloads. The `error` field is never truncated. One exception to the shape: for an execution owned by another organization that you can see only through its workflow's public share setting, `logs` is null and `status` is redacted (node identifiers omitted) -- includeData, nodeIds and truncateData have no effect there.",
+    "Get combined status and step-by-step logs for a workflow execution. Replaces the v1.11 get_execution_status + get_execution_logs pair. Returns { status, logs } in a single response. `status` and each log's `transactionHashes[].verified`/`receiptStatus` are independently reconciled against on-chain receipts before the execution is allowed to finalize as success -- this, not execute_workflow's trigger acknowledgement, is the authoritative signal for whether a workflow (and any money movement within it) actually completed. By default returns full node input/output data (backward compatible with v1.11 get_execution_logs no-param callers), except that any single input/output/outputRaw payload above 1 MiB is returned as a { _truncated, originalSize, preview } marker. Pass `includeData: false` to omit input/output/outputRaw blobs, `nodeIds: string[]` to restrict full data to specific nodes (status and error always returned for every node), or `truncateData: number` (bytes) to cap individual input/output/outputRaw payloads. The `error` field is never truncated. One exception to the shape: for an execution owned by another organization that you can see only through its workflow's public share setting, `logs` is null and `status` is redacted (node identifiers omitted) -- includeData, nodeIds and truncateData have no effect there.",
     GET_EXECUTION_SCHEMA,
     { title: "Get Execution", readOnlyHint: true, destructiveHint: false },
     scoped("get_execution", async (args) =>
@@ -1535,7 +1534,7 @@ export function registerTools(
 
   server.tool(
     "get_wallet_integration",
-    "Get details for a specific wallet integration. Call list_integrations first to find the integrationId; its response already tells you which integrations are type 'web3'. Required for web3 write actions like fund transfers and contract writes. Credential values are never included in the response.",
+    "Get details for a specific wallet integration. Call list_integrations first to find the integrationId; its response already tells you which integrations are type 'web3'. Use this to confirm the organization has a wallet configured before building a web3 write. Write actions never take an integrationId of their own: they resolve the signing wallet from organization policy, or from the node's web3Connection. Credential values are never included in the response.",
     {
       integrationId: z
         .string()
@@ -2057,12 +2056,12 @@ export function registerTools(
         .min(1)
         .max(100)
         .optional()
-        .describe("Page size (default 20, max 100)"),
+        .describe("Page size (default 50, max 100)"),
       status: z
         .string()
         .optional()
         .describe(
-          "Filter by status: pending, running, success, error, system_error, external_error, cancelled"
+          "Filter by status: pending, running, success, error, system_error, external_error, skipped, cancelled"
         ),
       source: z
         .enum(["workflow", "direct"])
@@ -2774,6 +2773,7 @@ export function registerMetaTools(
     [
       "Validate a workflow's structural and Web3-specific correctness before calling create_workflow or executing it.",
       "Fast tier (default): structural checks (empty nodes, edge references, trigger config, bare-@ literals), listing-eligibility checks (inputSchema present for listed workflows, outputMapping references real nodes), write-action consistency, plus Web3 cheap checks (chain ID in chains table, contract address format via ethers.isAddress). Zero network calls; <300ms p95.",
+      "Fast tier also covers Event-trigger registration: the conditions under which the event tracker silently never registers the workflow, so it reports Enabled and never runs. Codes are prefixed `trigger-` and cover a missing network, a chain with no WebSocket endpoint configured, a missing contractAddress, eventName or contractABI, an ABI that is not JSON or not an array or carries no event fragments, an event fragment with no inputs array, an eventName the ABI does not declare, and a bare eventName that matches more than one overload.",
       "Deep tier (deepCheck=true): in addition, runs best-effort ABI bytecode match via resolveAbi against every contract reference. Mismatches on abi-with-auto-fetch fields are emitted as WARNINGS, never errors, so proxy contracts (Aave V3, Uniswap V3, WETH) never produce false positives. Capped at 3s aggregate + 2s per-call + 5 concurrent RPC calls.",
       "Return shape: { ok: true, result: { valid: boolean, nodeCount: number, errors?: Array<{ code, message, parameterPath }>, warnings?: Array<{ code, message, parameterPath }> } }. The errors and warnings keys are OMITTED when empty (not present as []). Error codes are kebab-case stable identifiers; parameterPath is a dot-path like 'nodes[2].config.contractAddress'.",
     ].join(" "),

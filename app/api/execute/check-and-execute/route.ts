@@ -10,6 +10,7 @@ import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
 import { simulateContractCall } from "@/lib/execute/simulate";
 import {
   beginIdempotentFromRequest,
+  dispositionForExecutionOutcome,
   type IdempotencyOutcome,
   idempotencyEarlyResponse,
   recordIdempotentResponse,
@@ -36,7 +37,11 @@ import {
 } from "../_lib/execution-service";
 import { readGasLimitMultiplier } from "../_lib/gas-limit-multiplier";
 import { checkRateLimit } from "../_lib/rate-limit";
-import { parseSimulateFlag } from "../_lib/simulate-flag";
+import {
+  parseSimulateFlag,
+  rejectNestedSimulate,
+  rejectSimulateQuery,
+} from "../_lib/simulate-flag";
 import { checkAndReserveExecution } from "../_lib/spending-cap";
 import { validateCheckAndExecuteInput } from "../_lib/validate";
 import { requireWallet } from "../_lib/wallet-check";
@@ -323,9 +328,12 @@ async function executeConditionalWrite(
       transactionHash: result.transactionHash,
       chainId: result.chainId,
       sponsored: result.sponsored,
+      broadcastAttempted: result.broadcastAttempted,
     });
     outcome = { status: settled.status, error: result.error };
   }
+
+  const disposition = dispositionForExecutionOutcome(outcome.status, result);
 
   return recordIdempotentResponse(
     idem,
@@ -339,7 +347,7 @@ async function executeConditionalWrite(
       },
       { status: HttpStatus.ACCEPTED }
     ),
-    outcome.status === "completed" ? "success" : "failed"
+    disposition
   );
 }
 
@@ -350,6 +358,13 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: apiKeyCtx.error },
       { status: apiKeyCtx.status }
     );
+  }
+
+  // #2004: ?simulate= is refused on every /api/execute/* route rather than
+  // silently ignored. This route honours the flag only in the body.
+  const simulateQuery = rejectSimulateQuery(request);
+  if (simulateQuery) {
+    return simulateQuery;
   }
 
   // Parsed before the scope gate because the required scope depends on
@@ -370,6 +385,13 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: simulateFlag.error, field: "simulate" },
       { status: HttpStatus.BAD_REQUEST }
     );
+  }
+
+  // #2004: only the top-level flag is read. `action.simulate` used to be
+  // ignored while the action broadcast for real.
+  const nestedSimulate = rejectNestedSimulate(body, "action");
+  if (nestedSimulate) {
+    return nestedSimulate;
   }
 
   // A dry run never signs, broadcasts, or reserves, so mcp:read satisfies it.

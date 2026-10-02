@@ -305,7 +305,7 @@ and the authoritative safe first-write sequence.
 | Tool | Description |
 |------|-------------|
 | `list_integrations` | List configured integrations (credentials) for the organization. |
-| `get_wallet_integration` | Get details for a wallet integration, required for web3 write actions. |
+| `get_wallet_integration` | Get details for a wallet integration. Confirms the organization has a wallet configured; write action nodes never carry an integrationId of their own. |
 
 ### Documentation
 
@@ -414,6 +414,23 @@ Conditions reference previous node outputs using template syntax: `{{@nodeId:Lab
 
 The `network` field accepts chain IDs as strings: `"1"` (Ethereum mainnet), `"11155111"` (Sepolia), `"8453"` (Base), `"42161"` (Arbitrum), `"137"` (Polygon).
 
+### `web3Connection` field
+
+Write actions take an optional `web3Connection` that selects which of the
+organization's signers the transaction is sent from:
+
+| Value | Signer |
+|-------|--------|
+| omitted, `""`, or `"default"` | Organization policy for that chain: the configured Safe with its active role, the configured Safe owner-signed when no role is active, or the organization EOA when no Safe is active there. All three values are the same branch. |
+| `"eoa"` | The Turnkey EOA directly, bypassing the organization's Safe policy. |
+| `"safe:<safeWalletId>"` | A specific Safe belonging to the organization. |
+
+Leave it unset unless you intend to override organization policy for that
+node. There is no other per-node signer field: `integrationId` is a database
+integration id and is **not** read by any web3 step, so setting it on a
+`web3/*` node has no effect on which wallet signs. `validate_workflow` warns
+when it is present on a write node.
+
 ### `abiFunction` field
 
 For `web3/read-contract` and `web3/write-contract`, the `abiFunction` field is the function as it appears in the contract's ABI. Pass the plain name for unique functions (`"balanceOf"`) or the full signature for overloaded ones (`"transfer(address,uint256)"`).
@@ -442,10 +459,13 @@ A `400` from `execute_transfer`, `execute_contract_call`, or
 `execute_check_and_execute` with `simulate: true` is not always a bad request. Classify
 the body in this order:
 
-1. A string `code` together with `wouldRevert: true` is an attributed preflight failure. Currently
-   `insufficient_balance` means the simulated sender lacks the native value needed for
-   the call. This remains `failureKind: "validation"` because preflight did not produce
-   a decoded EVM revert.
+1. A string `code` together with `wouldRevert: true` is an attributed preflight failure. Attributed
+   codes are a closed set: `insufficient_balance` (native shortfall), `insufficient_allowance`, `insufficient_token_balance`,
+   `contract_paused`, `contract_not_paused`, `caller_not_authorized`, `reentrancy_blocked`, `role_condition_violation`,
+   `safe_signature_invalid`, `safe_insufficient_gas`, `safe_not_authorized`, and `panic` (with the exact panic number
+   in `panicCode`, for example `"0x11"`). `caller_not_authorized` is an on-chain revert, not the API auth code `unauthorized`.
+   A native shortfall remains `failureKind: "validation"` because preflight did not produce
+   a decoded EVM revert; true reverts carry `failureKind: "revert"`.
 2. Both `failureKind: "revert"` and `wouldRevert: true` mean the simulated call reverted.
 3. Other `failureKind: "validation"` bodies are deterministic simulation failures
    without an attributed code. They can reflect call construction or chain state, and

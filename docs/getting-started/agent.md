@@ -98,8 +98,8 @@ Always preflight the three simulate-capable tools:
 2. Continue only when the result reports `success: true` and `wouldRevert: false`.
 3. Repeat the call with `simulate` omitted, passing a fresh `idempotency_key`.
 4. Poll `get_direct_execution_status` with the returned `executionId` until it is terminal. Wait
-   the number of seconds in the `X-Poll-Interval-Hint` response header between polls; `0` means
-   the execution is terminal and you can stop.
+   the number of seconds in the `pollIntervalHint` response body field (or the `X-Poll-Interval-Hint`
+   header on REST) between polls; `0` means the execution is terminal and you can stop.
 5. Keep `transactionLink` from the terminal response as the onchain proof.
 
 `execute_protocol_action` is not in that loop: it has no simulate step, so call it once with
@@ -140,9 +140,15 @@ instead of the full toolset. See [MCP Server](/agent/mcp-server).
 | Public MCP `tools/call`, per IP | 10 requests / minute |
 | Direct execution, per API key | 60 requests / minute |
 
-Rate-limited requests return `429` with a `Retry-After` header in seconds. Wait at least that
-long, then back off exponentially. Pass a stable `idempotency_key` on writes so a retry cannot
-double-spend.
+Rate-limited requests return `429` with a `Retry-After` header in seconds on HTTP transport
+responses. Inside MCP tool calls where HTTP headers are not surfaced directly, the wait is
+embedded into the error message as `(Retry-After: <seconds>s)`
+(for example `API call failed: 429 Too Many Requests (Retry-After: 30s) - ...`).
+That token appears only when the upstream response carries a `Retry-After` header, and a `429`
+whose body carries `plan`, `limit` and `used` is the monthly execution limit, which no amount of
+waiting clears.
+Wait at least that long, then back off exponentially. Pass a stable `idempotency_key` on writes
+so a retry cannot double-spend.
 
 ## Next
 
