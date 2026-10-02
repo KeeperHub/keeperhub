@@ -212,6 +212,34 @@ describe("verifyPredgeSignal", () => {
     expect(result.verified).toBe(true);
   });
 
+  it("rejects a requested wallet that is not an EVM address", async () => {
+    const result = await verifyPredgeSignal(await signSignal(signer), {
+      requestedWallet: "hello",
+      expectedKeyId: signer.keyIdHex,
+      now: NOW,
+    });
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/not an EVM address/);
+    expect(result.subjectMatch).toBe(false);
+  });
+
+  it("does not bind two non-addresses to each other", async () => {
+    // Prepending 0x to anything made "hello" on both sides bind, and this
+    // resource then matched as well, so the envelope verified. Both sides now
+    // normalize to nothing, which must not compare as a match.
+    const signed = await signSignal(signer, {
+      wallet: "hello",
+      resource: "conviction:0xhello",
+    });
+    const result = await verifyPredgeSignal(signed, {
+      requestedWallet: "hello",
+      expectedKeyId: signer.keyIdHex,
+      now: NOW,
+    });
+    expect(result.verified).toBe(false);
+    expect(result.subjectMatch).toBe(false);
+  });
+
   it("verifies a captured live signal against the default pin, no override", async () => {
     // A real 200 from https://api.predge.io/v1/signal/<wallet>, signed by the
     // production attestation key. This exercises the hardcoded
@@ -478,6 +506,46 @@ describe("readSignalStep", () => {
     expect(out.success).toBe(false);
     expect(out.error).toMatch(/wallet address is required/i);
     expect(safeFetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a wallet that is not an EVM address before any fetch", async () => {
+    mockFetchCredentials.mockResolvedValue({});
+    const notAddresses = [
+      "hello",
+      "0xhello",
+      WALLET.slice(0, -1), // one hex digit short
+      WALLET.replace("aF5", "af5"), // mixed case with a broken EIP-55 checksum
+    ];
+    for (const wallet of notAddresses) {
+      const out = (await readSignalStep({
+        wallet,
+        integrationId: "int_1",
+      } as never)) as { success: boolean; error: string; errorClass: string };
+
+      expect(out.success).toBe(false);
+      expect(out.error).toMatch(/must be an EVM address/);
+      expect(out.errorClass).toBe(ExecutionErrorType.USER);
+    }
+    expect(safeFetch).not.toHaveBeenCalled();
+  });
+
+  it("fetches the normalized address the signal service keys on", async () => {
+    mockFetchCredentials.mockResolvedValue({
+      PREDGE_SIGNER_KEY_ID: signer.keyIdHex,
+    });
+    respondWith(
+      await signSignal(signer, { issuedAt: new Date().toISOString() })
+    );
+
+    // No 0x prefix and checksum case: still this wallet, sent lowercase.
+    const out = (await readSignalStep({
+      wallet: WALLET.slice(2),
+      integrationId: "int_1",
+    } as never)) as { success: boolean };
+
+    expect(out.success).toBe(true);
+    const [url] = safeFetch.mock.calls[0] as [string];
+    expect(url).toBe(`https://api.predge.io/v1/signal/${WALLET.toLowerCase()}`);
   });
 
   // The four reproductions from review, each run against the real step with the

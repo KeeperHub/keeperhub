@@ -1,4 +1,6 @@
 import "server-only";
+import { ethers } from "ethers";
+import { normalizeAddressForStorage } from "@/lib/address-utils";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { ErrorCategory, logUserError } from "@/lib/logging";
@@ -182,10 +184,16 @@ function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-// EVM addresses are case-insensitive, so compare them normalized.
-function normalizeWallet(wallet: string): string {
-  const trimmed = wallet.trim().toLowerCase();
-  return trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`;
+// EVM addresses are case-insensitive, so compare them normalized: the lowercase
+// 0x form, which is also the form Predge signs into `resource`. Validated with
+// the ethers helpers in lib/address-utils.ts, so anything that is not an EVM
+// address is undefined rather than a guess ("hello" used to become "0xhello"),
+// and a mixed-case address has to carry a valid EIP-55 checksum.
+function normalizeWallet(wallet: string): string | undefined {
+  const trimmed = wallet.trim();
+  return ethers.isAddress(trimmed)
+    ? normalizeAddressForStorage(trimmed)
+    : undefined;
 }
 
 async function ed25519SignatureValid(
@@ -290,8 +298,13 @@ export async function verifyPredgeSignal(
     return fail("signature does not match payload");
   }
 
-  // Subject binding, checked only now that the signature holds.
+  // Subject binding, checked only now that the signature holds. A requested
+  // wallet that is not an address fails here rather than comparing equal to a
+  // payload wallet that is not one either.
   const requestedWallet = normalizeWallet(input.requestedWallet);
+  if (!requestedWallet) {
+    return fail("requested wallet is not an EVM address");
+  }
   const subjectMatch = normalizeWallet(walletInPayload) === requestedWallet;
   if (!subjectMatch) {
     return fail("signal is about a different wallet");
@@ -453,8 +466,21 @@ export async function fetchSignedSignal(
   wallet: string,
   credentials: PredgeCredentials
 ): Promise<PredgeFetchResult<PredgeSignedAttestation>> {
+  // A wallet that is not an EVM address is the author's configuration, so it is
+  // refused here, before it costs an egress call and comes back as some
+  // upstream failure. What goes out is the normalized form the signal service
+  // keys on.
+  const address = normalizeWallet(wallet);
+  if (!address) {
+    return {
+      success: false,
+      error: `Wallet must be an EVM address, got ${describeValue(wallet)}`,
+      errorClass: ExecutionErrorType.USER,
+    };
+  }
+
   const base = resolveBaseUrl(credentials);
-  const url = `${base}/v1/signal/${encodeURIComponent(wallet)}`;
+  const url = `${base}/v1/signal/${encodeURIComponent(address)}`;
 
   // A base URL the operator typed can be unparseable ("api.predge.io" with no
   // scheme, say). assertUrlIsPublic throws a plain TypeError on that, which
