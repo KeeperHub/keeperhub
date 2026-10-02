@@ -43,7 +43,7 @@ users can select in production. Collect these facts and put them in the issue:
 | A public WSS URL, if one exists | `wss://...` | `publicWssDefault`; see step 3 |
 | Explorer URL and API family | `https://plasmascan.to`, `etherscan` or `blockscout` | `EXPLORER_CONFIG_TEMPLATES` |
 | Stablecoins to show in the wallet | addresses, lowercase | `seed-tokens.ts` |
-| Whether the stablecoin lineup mirrors Ethereum mainnet | see step 6 | `INDEPENDENT_TOKEN_LIST_CHAIN_IDS` |
+| Whether the stablecoin lineup mirrors Ethereum mainnet | see step 6 | `INDEPENDENT_TOKEN_LIST_CHAIN_IDS` in `lib/web3/independent-token-list-chains.ts` |
 | Name aliases the API should accept | `plasma`, `plasma-mainnet` | `DEFAULT_CHAINS.aliases`, `docs/api/chains.md` |
 
 Cite the source for the chain id, RPC URLs and every token address (chainlist,
@@ -127,7 +127,7 @@ correct for most L2s. Add an override only if the chain's fee market needs
 one (a known minimum priority fee, unusually inaccurate gas estimation), and
 say in the pull request why.
 
-### 6. Wallet token list: `lib/chain-utils.ts`
+### 6. Wallet token list: `lib/web3/independent-token-list-chains.ts`
 
 The wallet modal renders each chain's stablecoins by overlaying its
 `supported_tokens` rows on the Ethereum mainnet master list, and shows
@@ -138,9 +138,10 @@ overlay would print a "Not available" row for every mainnet asset next to its
 one real token.
 
 If the chain's lineup does not mirror mainnet, add its id to
-`INDEPENDENT_TOKEN_LIST_CHAIN_IDS` in `lib/chain-utils.ts`. Both consumers
-(the wallet modal and `/api/supported-tokens`) read that one set; it used to
-be two hand-synced copies, and a chain added to one but not the other rendered
+`INDEPENDENT_TOKEN_LIST_CHAIN_IDS` in
+`lib/web3/independent-token-list-chains.ts`. Both consumers (the wallet
+modal and `/api/supported-tokens`) read that one set; it used to be two
+hand-synced copies, and a chain added to one but not the other rendered
 correctly in the API and wrongly in the modal.
 
 ### 7. Stablecoins: `scripts/seed/seed-tokens.ts`

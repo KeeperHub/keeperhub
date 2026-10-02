@@ -173,9 +173,9 @@ COPY --link --from=source /app/tsconfig.json ./tsconfig.json
 
 # This stage runs migrations and seeds default data
 # Build with: docker build --target migrator -t keeperhub-migrator .
-# Run setup (migrations + seed): docker run --env DATABASE_URL=xxx keeperhub-migrator pnpm db:setup
+# Run setup (migrations + seed): docker run --env DATABASE_URL=xxx --env ALLOW_REMOTE=1 keeperhub-migrator pnpm db:setup
 # Run migrations only: docker run --env DATABASE_URL=xxx keeperhub-migrator pnpm db:migrate
-# Run seed only: docker run --env DATABASE_URL=xxx keeperhub-migrator pnpm db:seed
+# Run seed only: docker run --env DATABASE_URL=xxx --env ALLOW_REMOTE=1 keeperhub-migrator pnpm db:seed
 
 # Stage 2.7a: Scheduler Dependencies (uses main project deps)
 # The scheduler scripts now live in scripts/scheduler/ and import from
