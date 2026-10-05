@@ -143,7 +143,12 @@ export function resolveObservedOnly(
   if (modes.length === 0) {
     return false;
   }
-  return modes.some((mode) => mode === Mode.MONITOR);
+  // Every one of them, not any. A decision is only observational when nothing
+  // that produced it is enforcing: one policy still watching must not speak for
+  // another that is not. Since a new policy starts in monitor mode, `some` made
+  // drafting one the way to switch enforcement off, which is the opposite of
+  // what monitor mode is for.
+  return modes.every((mode) => mode === Mode.MONITOR);
 }
 
 /**

@@ -491,10 +491,30 @@ export function evaluatePolicy(
     });
   }
 
-  const observedOnly = resolveObservedOnly(
-    governing.map((p) => p.enforcement as PolicyEnforcementMode)
-  );
   const governingPolicyIds = governing.map((p) => p.policyId);
+  // An unknown policy is treated as enforcing: the fallback must not be the
+  // value that stops a rule biting.
+  const ENFORCING = "enforce" as PolicyEnforcementMode;
+  const modeOf = new Map(
+    governing.map((p) => [p.policyId, p.enforcement as PolicyEnforcementMode])
+  );
+
+  /**
+   * Observational when nothing that produced the verdict is enforcing.
+   *
+   * Keyed on the statements that actually decided, so a policy that merely
+   * claims the same scope has no say over whether another policy's rule bites.
+   * With nothing matched the verdict is the default deny of the claimed scope,
+   * and then it is the policies that claimed it that decide.
+   */
+  const observedFor = (ids: readonly string[]): boolean =>
+    resolveObservedOnly(
+      (ids.length > 0 ? ids : governingPolicyIds).map(
+        (id) => modeOf.get(id) ?? ENFORCING
+      )
+    );
+
+  const observedOnly = observedFor(governingPolicyIds);
   const base = {
     governingPolicyIds,
     observedOnly,
@@ -527,6 +547,9 @@ export function evaluatePolicy(
       outcome: PolicyOutcome.DENY,
       reason: PolicyDecisionReason.EXPLICIT_DENY,
       matched: matched[PolicyEffect.DENY],
+      observedOnly: observedFor(
+        matched[PolicyEffect.DENY].map((m) => m.policyId)
+      ),
     });
   }
 
@@ -536,6 +559,9 @@ export function evaluatePolicy(
       outcome: PolicyOutcome.ALLOW,
       reason: PolicyDecisionReason.EXPLICIT_ALLOW,
       matched: matched[PolicyEffect.ALLOW],
+      observedOnly: observedFor(
+        matched[PolicyEffect.ALLOW].map((m) => m.policyId)
+      ),
     });
   }
 
