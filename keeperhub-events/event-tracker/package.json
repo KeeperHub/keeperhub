@@ -17,19 +17,19 @@
     "test:integration": "vitest run tests/integration"
   },
   "dependencies": {
-    "@aws-sdk/client-sqs": "^3.1140.0",
+    "@aws-sdk/client-sqs": "^3.1145.0",
     "ethers": "^6.17.0",
     "ioredis": "^5.11.1",
     "uuid": "^14.0.2",
-    "ws": "^8.21.3"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@types/node": "^22.20.4",
+    "@types/node": "^22.20.5",
     "@types/uuid": "^10.0.0",
-    "@types/ws": "^8.5.13",
+    "@types/ws": "^8.18.2",
     "tsup": "^8.3.5",
     "tsx": "^4.23.15",
-    "vite": "^8.3.1",
+    "vite": "^8.3.2",
     "vitest": "4.1.11"
   }
 }
