@@ -910,5 +910,72 @@ describe("execution usage periods (real database)", () => {
       expect(rows[0]?.periodEnd.toISOString()).toBe(billedStart.toISOString());
       expect(rows[0]?.totalExecutions).toBe(1);
     });
+
+    /** Runs in every month of the span, all before the live cycle starts. */
+    async function addRunsAcrossSpanBeforeLiveCycle(): Promise<void> {
+      await testDb
+        .update(organizationSubscriptions)
+        .set({
+          plan: "pro",
+          tier: "25k",
+          status: "active",
+          currentPeriodStart: new Date(Date.UTC(2026, 0, 6)),
+          currentPeriodEnd: new Date(Date.UTC(2026, 1, 6)),
+        })
+        .where(eq(organizationSubscriptions.organizationId, ORG));
+      await addRun("span_nov", new Date(Date.UTC(2025, 10, 20)));
+      await addRun("span_dec", new Date(Date.UTC(2025, 11, 20)));
+      await addRun("span_jan", new Date(Date.UTC(2026, 0, 3)));
+    }
+
+    it("reads a cycle billed before the lookback as the start of paying", async () => {
+      // Billed an overage once, then inside the limit ever since, so no later
+      // cycle left a record. The one that did ended before the span begins,
+      // and a close that only sees the span takes the live cycle for the
+      // first one: every month before it then reads as pre-conversion and gets
+      // a row at the paid limit with a charge of zero.
+      const spanStart = new Date(Date.UTC(2025, 10, 1));
+      const billedEnd = new Date(Date.UTC(2025, 8, 6));
+      expect(billedEnd < spanStart).toBe(true);
+      await addOverageRecord(new Date(Date.UTC(2025, 7, 6)), billedEnd);
+      await addRunsAcrossSpanBeforeLiveCycle();
+
+      const { closeCalendarMonthUsage } = await import(
+        "../../lib/billing/execution-usage-periods"
+      );
+      await closeCalendarMonthUsage(AFTER_MONTH);
+
+      expect(await storedRows()).toHaveLength(0);
+    });
+
+    it("reads a cycle recorded before the lookback as the start of paying", async () => {
+      // The same shape, with the old cycle known from its usage record rather
+      // than from a charge.
+      await testDb.insert(executionUsagePeriods).values({
+        id: `${PREFIX}old_sub_row`,
+        organizationId: ORG,
+        periodStart: new Date(Date.UTC(2025, 7, 6)),
+        periodEnd: new Date(Date.UTC(2025, 8, 6)),
+        plan: "pro",
+        tier: "25k",
+        executionLimit: 25_000,
+        workflowExecutions: 5,
+        directExecutions: 0,
+        totalExecutions: 5,
+        overageCount: 0,
+        totalChargeCents: 0,
+        source: "subscription",
+      });
+      await addRunsAcrossSpanBeforeLiveCycle();
+
+      const { closeCalendarMonthUsage } = await import(
+        "../../lib/billing/execution-usage-periods"
+      );
+      await closeCalendarMonthUsage(AFTER_MONTH);
+
+      const rows = await storedRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.source).toBe("subscription");
+    });
   });
 });
