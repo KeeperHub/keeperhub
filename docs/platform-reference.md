@@ -245,9 +245,9 @@ faucets above, then use this sequence:
    `idempotency_key`.
 4. Pass the returned `executionId` to `get_direct_execution_status` and poll
    until the status is `completed` or `failed`. Wait the number of seconds in
-   the `X-Poll-Interval-Hint` response header between polls rather than
-   picking your own interval; a value of `0` means the execution is terminal
-   and you can stop.
+   the `pollIntervalHint` response body field (or the `X-Poll-Interval-Hint`
+   header on REST) between polls rather than picking your own interval; a value
+   of `0` means the execution is terminal and you can stop.
 5. Save `transactionLink` from the terminal response as the onchain proof.
 
 Example simulation on Base Sepolia:

@@ -47,6 +47,9 @@ function buildStatusPayload(
 
   return {
     status: execution.status,
+    pollIntervalHint: TERMINAL_STATUSES.has(execution.status)
+      ? 0
+      : POLL_INTERVAL_HINT_SECONDS,
     nodeStatuses,
     progress: {
       totalSteps,
@@ -164,9 +167,7 @@ export async function GET(
     // poller that can only learn its remaining budget from the response that
     // already rejected it has no way to slow down before hitting the wall.
     return applyRateLimitHeaders(NextResponse.json(payload), rateLimit, {
-      pollIntervalHint: TERMINAL_STATUSES.has(execution.status)
-        ? 0
-        : POLL_INTERVAL_HINT_SECONDS,
+      pollIntervalHint: payload.pollIntervalHint,
     });
   } catch (error) {
     const { executionId } = await context.params;

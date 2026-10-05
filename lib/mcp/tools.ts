@@ -10,6 +10,10 @@ import {
 import type { AuthMethod } from "@/lib/middleware/auth-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { SUPPORTED_CHAIN_IDS } from "@/lib/rpc/types";
+import {
+  buildApiCallFailedError,
+  parseRetryAfterSeconds,
+} from "./api-call-error";
 import { withToolLogging } from "./logging";
 import { deprecatedToolDescription } from "./mcp-tool-catalog";
 import {
@@ -122,9 +126,9 @@ type ApiResponse = Record<string, unknown>;
 
 /**
  * Detect whether an error message produced by `callApi` represents an
- * HTTP 402 Payment Required response. callApi formats failures as
- * `API call failed: <status> <statusText> - <body>`, so a substring
- * match on the prefix is sufficient and avoids parsing the body twice.
+ * HTTP 402 Payment Required response. buildApiCallFailedError formats failures as
+ * `API call failed: <status> <statusText>[ (Retry-After: <seconds>s)] - <body>`,
+ * so a substring match on the prefix is sufficient and avoids parsing the body twice.
  */
 const API_CALL_FAILED_402_PREFIX = "API call failed: 402";
 
@@ -676,21 +680,6 @@ function isMcpFetchTimeoutError(error: unknown): boolean {
   return error.name === "TimeoutError";
 }
 
-function parseRetryAfterSeconds(header: string | null): number {
-  if (!header) {
-    return DEFAULT_COLD_START_RETRY_SECONDS;
-  }
-  const asNumber = Number(header);
-  if (Number.isFinite(asNumber) && asNumber >= 0) {
-    return Math.ceil(asNumber);
-  }
-  const asDate = Date.parse(header);
-  if (!Number.isNaN(asDate)) {
-    return Math.max(1, Math.ceil((asDate - Date.now()) / 1000));
-  }
-  return DEFAULT_COLD_START_RETRY_SECONDS;
-}
-
 function buildColdStartError(
   retryAfterSeconds: number,
   idempotencyKey?: string
@@ -756,15 +745,13 @@ async function callApi(
       COLD_START_HTTP_STATUSES.has(response.status)
     ) {
       throw buildColdStartError(
-        parseRetryAfterSeconds(response.headers.get("Retry-After")),
+        parseRetryAfterSeconds(response.headers.get("Retry-After")) ??
+          DEFAULT_COLD_START_RETRY_SECONDS,
         idempotencyKey
       );
     }
     const errorText = await response.text();
-    const statusLabel = response.statusText
-      ? `${response.status} ${response.statusText}`
-      : String(response.status);
-    throw new Error(`API call failed: ${statusLabel} - ${errorText}`);
+    throw buildApiCallFailedError(response, errorText);
   }
 
   const contentType = response.headers.get("content-type") ?? "";

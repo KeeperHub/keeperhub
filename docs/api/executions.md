@@ -87,6 +87,7 @@ Returns real-time execution status with progress tracking.
 ```json
 {
   "status": "success",
+  "pollIntervalHint": 0,
   "nodeStatuses": [
     { "nodeId": "node_1", "status": "success" },
     { "nodeId": "node_2", "status": "success" }
@@ -131,7 +132,7 @@ Returns real-time execution status with progress tracking.
 | `system_error` | Failed for an infrastructure reason, or was reaped after going stale | yes |
 | `cancelled` | Manually cancelled | yes |
 
-Treat this list as a lower bound rather than a closed set, and decide terminality from the `X-Poll-Interval-Hint` response header rather than from the status string. The server computes that header from its own terminal set, so it stays correct for statuses added after your client shipped; `0` means terminal. A client that routes an unrecognised status into a failing `default` branch reports a failure for a run that is still settling.
+Treat this list as a lower bound rather than a closed set, and decide terminality from the `pollIntervalHint` response body field (or the `X-Poll-Interval-Hint` response header) rather than from the status string. The server computes that hint from its own terminal set, so it stays correct for statuses added after your client shipped; `0` means terminal. A client that routes an unrecognised status into a failing `default` branch reports a failure for a run that is still settling.
 
 ### Transaction Hashes
 

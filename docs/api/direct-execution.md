@@ -92,7 +92,8 @@ you inspected is the transaction you send:
    retry sends the same one: see [Choosing a stable key](#choosing-a-stable-key).
 4. Save the returned `executionId`, then poll
    `GET /api/execute/{executionId}/status`. Honor the
-   `X-Poll-Interval-Hint` response header between polls.
+   `pollIntervalHint` JSON response body field (or `X-Poll-Interval-Hint`
+   response header) between polls.
 5. Treat the status response's `receipts` as the authoritative onchain proof:
    each entry is a receipt re-fetched from the chain, so `verified` and
    `receiptStatus` say what actually happened. `transactionHash` and
@@ -1051,6 +1052,7 @@ Check the status of a direct execution.
 {
   "executionId": "n3364uzl2s6aram5v558c",
   "status": "completed",
+  "pollIntervalHint": 0,
   "type": "transfer",
   "network": "11155111",
   "transactionHash": "0x...",
@@ -1079,6 +1081,11 @@ Check the status of a direct execution.
 ```
 
 **Other fields:**
+
+- `pollIntervalHint`: recommended seconds to wait before the next poll, or `0`
+  when the execution has reached a terminal state (`completed` or `failed`).
+  Identical to the `X-Poll-Interval-Hint` header, surfaced in the JSON body so
+  MCP tools and clients without header access can decide terminality safely.
 
 - `network`: the chain identifier the request supplied, stored verbatim as a
   string. The form is decided by the value, not by the field: both `chainId`
@@ -1165,15 +1172,20 @@ Treat this list as a lower bound rather than a closed set. A client that routes 
 unrecognised status into a failing `default` branch will report a failure for an
 execution that is still settling, and one that responds by retrying with a new
 idempotency key can put a second transaction onchain. Decide terminality from the
-`X-Poll-Interval-Hint` response header rather than from the status string: the
-server computes it from its own terminal set, so it stays correct for statuses
-added after your client shipped. `0` means terminal.
+`pollIntervalHint` response body field (or the `X-Poll-Interval-Hint` response
+header) rather than from the status string: the server computes it from its own
+terminal set, so it stays correct for statuses added after your client shipped.
+`0` means terminal.
 
 `sponsored` is `true` when the write was gas-sponsored and broadcast through
 a relayer or smart-account path rather than your org's EOA wallet — see
 [Sponsored Executions](#sponsored-executions).
 
-When polling this endpoint, honour the `X-Poll-Interval-Hint` response header instead of polling on a fixed timer: it gives the recommended number of seconds to wait before the next poll. A value of `0` means the execution has reached a terminal state (`completed` or `failed`) and you can stop polling.
+When polling this endpoint, honour the `pollIntervalHint` response body field
+(or the `X-Poll-Interval-Hint` response header) instead of polling on a fixed
+timer: it gives the recommended number of seconds to wait before the next poll.
+A value of `0` means the execution has reached a terminal state (`completed` or
+`failed`) and you can stop polling.
 
 ## Error Responses
 
