@@ -9,7 +9,7 @@
  * Pure: no I/O, no database. The ontology expansion it needs is passed in.
  */
 
-import { parseArn } from "./arn";
+import { isConcreteArn, type ParsedArn, parseArn } from "./arn";
 import {
   type Capability,
   expandCapabilityPattern,
@@ -273,8 +273,40 @@ function checkResources(
     const parsed = parseArn(pattern);
     if (!parsed.ok) {
       fail(ctx, `Resource "${pattern}": ${parsed.error}`, sid);
+      continue;
     }
+    rejectAbstract(ctx, pattern, parsed.arn, sid);
   }
+}
+
+/**
+ * Refuse an identifier that names an ontology class rather than onchain state.
+ *
+ * A decision is matched against a concrete identifier, the chain, contract and
+ * selector that were actually called, so a class never matches one and a rule
+ * written with one governs nothing. It compiles, the editor shows it, and the
+ * action it was meant to catch comes back unmanaged.
+ *
+ * Expanding a class into the deployments behind it is the ontology's job and is
+ * not built yet, so the rule is refused rather than stored in a form that
+ * cannot bite. This is the same reason an unrecognised condition key is
+ * refused: a rule that silently fails to protect is worse than one that will
+ * not save.
+ */
+function rejectAbstract(
+  ctx: Ctx,
+  pattern: string,
+  arn: ParsedArn,
+  sid?: string
+): void {
+  if (isConcreteArn(arn)) {
+    return;
+  }
+  fail(
+    ctx,
+    `Resource "${pattern}" names a class rather than something onchain. A decision is matched against the chain, contract and function that were called, so this would govern nothing. Name the deployment instead, as in kh:chain/8453/contract/0x.../fn/0x....`,
+    sid
+  );
 }
 
 function compileStatement(
@@ -354,6 +386,7 @@ function compileManagedScope(
   for (const entry of document.manages) {
     const asResource = parseArn(entry);
     if (asResource.ok) {
+      rejectAbstract(ctx, entry, asResource.arn);
       resourcePatterns.push(asResource.arn.value);
       continue;
     }
