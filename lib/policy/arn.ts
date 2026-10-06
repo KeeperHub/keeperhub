@@ -65,6 +65,11 @@ export const ArnSegment = {
   APIKEY: "apikey",
   POLICY: "policy",
   PROJECT: "project",
+  TAG: "tag",
+  ORGANIZATION: "organization",
+  EXECUTION: "execution",
+  AGENT_CONNECTION: "agentconnection",
+  INVITATION: "invitation",
 } as const;
 
 export type ArnSegment = (typeof ArnSegment)[keyof typeof ArnSegment];

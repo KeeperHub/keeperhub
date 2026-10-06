@@ -165,13 +165,19 @@ export const CONTROL_PLANE_ROUTES: Readonly<
   },
 
   "/api/agentic-wallet/[id]/approve": {
-    POST: unmapped("approving a wallet request has no capability yet"),
+    POST: unmapped(
+      "approving a wallet request resolves its principal through authorizeAction rather than a gated resolver, so the gate never runs on it"
+    ),
   },
   "/api/agentic-wallet/[id]/reject": {
-    POST: unmapped("rejecting a wallet request has no capability yet"),
+    POST: unmapped(
+      "approving a wallet request resolves its principal through authorizeAction rather than a gated resolver, so the gate never runs on it"
+    ),
   },
   "/api/agentic-wallet/approval-request": {
-    POST: unmapped("raising a wallet request has no capability yet"),
+    POST: unmapped(
+      "raising a wallet request resolves its principal through authorizeAction rather than a gated resolver, so the gate never runs on it"
+    ),
   },
   // Signs a transaction to the reputation registry, so it is governed where
   // it signs rather than here.
@@ -281,7 +287,10 @@ export const CONTROL_PLANE_ROUTES: Readonly<
   "/api/internal/wallet-unlock": { POST: ungoverned("internal service call") },
 
   "/api/mcp/connections/[connectionId]": {
-    DELETE: unmapped("revoking an agent connection has no capability yet"),
+    DELETE: governed(Capability.AGENT_CONNECTION_REVOKE, {
+      type: ArnSegment.AGENT_CONNECTION,
+      param: "connectionId",
+    }),
   },
   "/api/mcp/members/[userId]": {
     PATCH: governed(Capability.MEMBER_UPDATE, {
@@ -303,16 +312,25 @@ export const CONTROL_PLANE_ROUTES: Readonly<
   "/api/oauth/token": { POST: ungoverned("authentication itself") },
 
   "/api/organizations/[organizationId]": {
-    PATCH: unmapped("organization settings have no capability yet"),
+    PATCH: governed(Capability.ORG_SETTINGS_UPDATE, {
+      type: ArnSegment.ORGANIZATION,
+      param: "organizationId",
+    }),
   },
   "/api/organizations/[organizationId]/execution-digest": {
-    PUT: unmapped("digest preferences have no capability yet"),
+    PUT: governed(Capability.ORG_DIGEST_UPDATE, {
+      type: ArnSegment.ORGANIZATION,
+      param: "organizationId",
+    }),
   },
   "/api/organizations/[organizationId]/leave": {
     POST: governed(Capability.MEMBER_REMOVE),
   },
   "/api/organizations/[organizationId]/mfa-enforcement": {
-    PUT: unmapped("MFA enforcement has no capability yet"),
+    PUT: governed(Capability.ORG_MFA_ENFORCEMENT_UPDATE, {
+      type: ArnSegment.ORGANIZATION,
+      param: "organizationId",
+    }),
   },
   "/api/organizations/[organizationId]/policies": {
     POST: ungoverned(POLICY_ESCAPE_HATCH),
@@ -331,20 +349,38 @@ export const CONTROL_PLANE_ROUTES: Readonly<
     POST: ungoverned(READ_ONLY),
   },
   "/api/organizations/invitations/[invitationId]/wallet-accept": {
-    POST: unmapped("accepting an invitation has no capability yet"),
+    POST: unmapped(
+      "accepting an invitation resolves its principal through authorizeAction rather than a gated resolver, so the gate never runs on it"
+    ),
   },
 
-  "/api/projects": { POST: unmapped("projects have no capability yet") },
+  "/api/projects": {
+    POST: creates(Capability.PROJECT_CREATE, ArnSegment.PROJECT),
+  },
   "/api/projects/[projectId]": {
-    PATCH: unmapped("projects have no capability yet"),
-    DELETE: unmapped("projects have no capability yet"),
+    PATCH: governed(Capability.PROJECT_UPDATE, {
+      type: ArnSegment.PROJECT,
+      param: "projectId",
+    }),
+    DELETE: governed(Capability.PROJECT_DELETE, {
+      type: ArnSegment.PROJECT,
+      param: "projectId",
+    }),
   },
   "/api/public-tags": { POST: ungoverned(PLATFORM) },
   "/api/security/audit/export": { POST: ungoverned(READ_ONLY) },
-  "/api/tags": { POST: unmapped("tags have no capability yet") },
+  "/api/tags": {
+    POST: creates(Capability.TAG_CREATE, ArnSegment.TAG),
+  },
   "/api/tags/[tagId]": {
-    PATCH: unmapped("tags have no capability yet"),
-    DELETE: unmapped("tags have no capability yet"),
+    PATCH: governed(Capability.TAG_UPDATE, {
+      type: ArnSegment.TAG,
+      param: "tagId",
+    }),
+    DELETE: governed(Capability.TAG_DELETE, {
+      type: ArnSegment.TAG,
+      param: "tagId",
+    }),
   },
 
   "/api/tempo/held-payments": { POST: ungoverned(AT_SIGNER) },
@@ -455,7 +491,10 @@ export const CONTROL_PLANE_ROUTES: Readonly<
     POST: creates(Capability.WORKFLOW_CREATE, ArnSegment.WORKFLOW),
   },
   "/api/workflows/[workflowId]/executions": {
-    DELETE: unmapped("clearing run history has no capability yet"),
+    DELETE: governed(Capability.EXECUTION_HISTORY_DELETE, {
+      type: ArnSegment.WORKFLOW,
+      param: "workflowId",
+    }),
   },
   "/api/workflows/[workflowId]/go-live": {
     PUT: governed(Capability.WORKFLOW_PUBLISH, workflowRef),

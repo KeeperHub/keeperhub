@@ -82,6 +82,20 @@ export const Capability = {
   APIKEY_DELETE: "apikey.delete",
   /** Editing policy itself. The meta case, and the most sensitive. */
   POLICY_UPDATE: "policy.update",
+  PROJECT_CREATE: "project.create",
+  PROJECT_UPDATE: "project.update",
+  PROJECT_DELETE: "project.delete",
+  TAG_CREATE: "tag.create",
+  TAG_UPDATE: "tag.update",
+  TAG_DELETE: "tag.delete",
+  ORG_SETTINGS_UPDATE: "org.settings.update",
+  ORG_MFA_ENFORCEMENT_UPDATE: "org.mfa.update",
+  ORG_DIGEST_UPDATE: "org.digest.update",
+  WALLET_APPROVAL_REQUEST: "wallet.approval.request",
+  WALLET_APPROVAL_DECIDE: "wallet.approval.decide",
+  AGENT_CONNECTION_REVOKE: "agent.connection.revoke",
+  MEMBER_INVITE_ACCEPT: "member.invite.accept",
+  EXECUTION_HISTORY_DELETE: "execution.history.delete",
 } as const;
 
 export type Capability = (typeof Capability)[keyof typeof Capability];
@@ -263,6 +277,53 @@ export const CAPABILITIES: Readonly<Record<Capability, CapabilityDefinition>> =
       "Query a database",
       [GuardDimension.ACTOR, GuardDimension.TIMING, GuardDimension.FREQUENCY],
       false
+    ),
+    [Capability.PROJECT_CREATE]: controlLeaf(
+      Capability.PROJECT_CREATE,
+      "Create a project"
+    ),
+    [Capability.PROJECT_UPDATE]: controlLeaf(
+      Capability.PROJECT_UPDATE,
+      "Update a project"
+    ),
+    [Capability.PROJECT_DELETE]: controlLeaf(
+      Capability.PROJECT_DELETE,
+      "Delete a project"
+    ),
+    [Capability.TAG_CREATE]: controlLeaf(Capability.TAG_CREATE, "Create a tag"),
+    [Capability.TAG_UPDATE]: controlLeaf(Capability.TAG_UPDATE, "Update a tag"),
+    [Capability.TAG_DELETE]: controlLeaf(Capability.TAG_DELETE, "Delete a tag"),
+    [Capability.ORG_SETTINGS_UPDATE]: controlLeaf(
+      Capability.ORG_SETTINGS_UPDATE,
+      "Change organization settings"
+    ),
+    [Capability.ORG_MFA_ENFORCEMENT_UPDATE]: controlLeaf(
+      Capability.ORG_MFA_ENFORCEMENT_UPDATE,
+      "Change which factors the organization requires"
+    ),
+    [Capability.ORG_DIGEST_UPDATE]: controlLeaf(
+      Capability.ORG_DIGEST_UPDATE,
+      "Change execution digest preferences"
+    ),
+    [Capability.WALLET_APPROVAL_REQUEST]: controlLeaf(
+      Capability.WALLET_APPROVAL_REQUEST,
+      "Raise a wallet approval request"
+    ),
+    [Capability.WALLET_APPROVAL_DECIDE]: controlLeaf(
+      Capability.WALLET_APPROVAL_DECIDE,
+      "Approve or reject a wallet request"
+    ),
+    [Capability.AGENT_CONNECTION_REVOKE]: controlLeaf(
+      Capability.AGENT_CONNECTION_REVOKE,
+      "Revoke an agent connection"
+    ),
+    [Capability.MEMBER_INVITE_ACCEPT]: controlLeaf(
+      Capability.MEMBER_INVITE_ACCEPT,
+      "Accept an organization invitation"
+    ),
+    [Capability.EXECUTION_HISTORY_DELETE]: controlLeaf(
+      Capability.EXECUTION_HISTORY_DELETE,
+      "Clear a workflow's run history"
     ),
     [Capability.WORKFLOW_CREATE]: controlLeaf(
       Capability.WORKFLOW_CREATE,

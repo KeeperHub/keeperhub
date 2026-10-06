@@ -63,8 +63,14 @@ describe("policy gate", () => {
   });
 
   it("does not consult policy for a route with no capability yet", async () => {
+    // Raising a wallet approval resolves its principal through authorizeAction
+    // rather than a gated resolver, so the gate never runs on it and the
+    // manifest says so rather than claiming a coverage it does not have.
     expect(
-      await policyRefusalFor(post("http://localhost/api/tags"), CONTEXT)
+      await policyRefusalFor(
+        post("http://localhost/api/agentic-wallet/approval-request"),
+        CONTEXT
+      )
     ).toBeNull();
     expect(decideControlPlane).not.toHaveBeenCalled();
   });
