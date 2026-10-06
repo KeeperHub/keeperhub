@@ -80,6 +80,9 @@ function parseInput(
       ? raw
       : failure("Input must be a JSON object", ExecutionErrorType.USER);
   }
+  if (typeof raw !== "string") {
+    return failure("Input must be a JSON object", ExecutionErrorType.USER);
+  }
   const trimmed = raw.trim();
   if (!trimmed) {
     return {};
@@ -106,20 +109,37 @@ type InvokeResult = {
   output: unknown;
   runId?: string;
   agentStatus?: string;
+  errored: boolean;
   detail?: string;
 };
+
+/** An agent that carries any error at all has not produced a result. */
+function hasRunError(parsed: JsonObject): boolean {
+  if (!("error" in parsed)) {
+    return false;
+  }
+  const value = parsed.error;
+  return value !== null && value !== undefined && value !== "";
+}
 
 /** The agent's own account of why the run did not succeed, when it gives one. */
 function readRunError(value: unknown): string | undefined {
   if (typeof value === "string") {
-    return value;
+    return value || undefined;
   }
-  if (!isObject(value)) {
+  if (isObject(value)) {
+    const message =
+      typeof value.message === "string" ? value.message : undefined;
+    const code = typeof value.code === "string" ? value.code : undefined;
+    const named = [code, message].filter(Boolean).join(": ");
+    if (named) {
+      return named;
+    }
+  }
+  if (value === null || value === undefined) {
     return;
   }
-  const message = typeof value.message === "string" ? value.message : undefined;
-  const code = typeof value.code === "string" ? value.code : undefined;
-  return [code, message].filter(Boolean).join(": ") || undefined;
+  return JSON.stringify(value) ?? String(value);
 }
 
 /** The stated run status. A status that is not a string is carried as served. */
@@ -146,6 +166,7 @@ function readInvokeResult(parsed: unknown): InvokeResult | undefined {
     output: parsed.output,
     runId: typeof parsed.run_id === "string" ? parsed.run_id : undefined,
     agentStatus: readRunStatus(parsed),
+    errored: hasRunError(parsed),
     detail: readRunError(parsed.error),
   };
 }
@@ -217,7 +238,7 @@ async function stepHandler(
   // error whatever it names the run, has not produced a result.
   const runSucceeded =
     result.agentStatus === undefined || isSucceeded(result.agentStatus);
-  if (!runSucceeded || result.detail) {
+  if (!(runSucceeded && !result.errored)) {
     const stated = runSucceeded
       ? "reported an error"
       : `reported run status "${result.agentStatus}"`;

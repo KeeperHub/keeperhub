@@ -13,10 +13,13 @@ import { stripTrailingSlashes } from "@/lib/utils/url";
 /**
  * Shared logic for the Lucid Agents connector.
  *
- * A Lucid agent publishes two HTTP surfaces:
+ * The connector targets two HTTP surfaces on the agent:
  *
  *   GET  {agentUrl}/.well-known/agent-card.json   what the agent offers
  *   POST {agentUrl}/entrypoints/{key}/invoke      calling one entrypoint
+ *
+ * Everything either answer states is the remote's, so nothing is trusted on
+ * shape alone; see `readEntrypoint` and `readPaymentTerms`.
  *
  * A priced entrypoint answers the invoke with HTTP 402 and x402 payment terms
  * instead of a result. The connector returns those terms as data and never
@@ -29,6 +32,7 @@ const ERROR_BODY_PREVIEW = 300;
 
 /** An x402 amount is an integer count of the asset's base units, never a decimal. */
 const BASE_UNITS = /^\d+$/;
+const USD_AMOUNT = /^\d+(?:\.\d+)?$/;
 
 export const AGENT_URL_ERROR =
   "Agent URL must be an absolute http(s) URL with no credentials, e.g. https://agent.example.com";
@@ -55,10 +59,11 @@ export type LucidEntrypoint = {
   /** The price exactly as the card states it; see `priceUnit`. */
   price?: string;
   /**
-   * "usd" for Lucid's canonical USD decimal string ("0.01" is one cent),
-   * "base_units" when the entrypoint is priced as a token amount (then
-   * `asset` names the token), "unknown" when no offer on the card declares
-   * the unit or two offers at this price disagree about it.
+   * "usd" for a USD decimal string ("0.01" is one cent), "base_units" when
+   * the entrypoint is priced as a token amount (then `asset` names the
+   * token), "unknown" when no offer on the card declares the unit, two
+   * offers at this price disagree about it, or the price is not written in
+   * the form its unit requires.
    */
   priceUnit?: PriceUnit;
   asset?: string;
@@ -239,6 +244,22 @@ function findPaymentMethod(
   return first;
 }
 
+/**
+ * A unit the stated price cannot be in is no unit. A base-units price is an
+ * integer count; a USD price is a plain decimal. A figure classified as one
+ * but written as the other is reported "unknown" so a workflow refuses it
+ * rather than comparing a token amount against a dollar ceiling.
+ */
+function unitForPrice(unit: PriceUnit, price: string): PriceUnit {
+  if (unit === "base_units") {
+    return BASE_UNITS.test(price) ? unit : "unknown";
+  }
+  if (unit === "usd") {
+    return USD_AMOUNT.test(price) ? unit : "unknown";
+  }
+  return unit;
+}
+
 function readEntrypoint(
   card: JsonObject,
   name: string,
@@ -264,7 +285,7 @@ function readEntrypoint(
   if (price) {
     entrypoint.price = price;
     const method = findPaymentMethod(card, price, network);
-    entrypoint.priceUnit = method.unit;
+    entrypoint.priceUnit = unitForPrice(method.unit, price);
     entrypoint.asset = method.asset;
     entrypoint.payTo = method.payTo;
   }
@@ -328,12 +349,25 @@ function railFor(network: string | undefined): PaymentRail | undefined {
     : undefined;
 }
 
-/** Every distinct amount a challenge states, across each offer and both amount keys. */
+/**
+ * Every distinct quote a challenge states, across each offer and both amount
+ * keys. Two offers that state the same figure in different assets or on
+ * different networks are different quotes, so the key carries all three: the
+ * same count of base units is a different price in a token with other decimals.
+ */
 function statedAmounts(offers: JsonObject[]): string[] {
+  const seen = new Set<string>();
   const amounts: string[] = [];
   for (const offer of offers) {
+    const asset = str(offer.asset) ?? "";
+    const network = str(offer.network) ?? "";
     for (const value of [str(offer.maxAmountRequired), str(offer.amount)]) {
-      if (value !== undefined && !amounts.includes(value)) {
+      if (value === undefined) {
+        continue;
+      }
+      const key = `${value}|${asset}|${network}`;
+      if (!seen.has(key)) {
+        seen.add(key);
         amounts.push(value);
       }
     }
@@ -391,10 +425,12 @@ export function readPaymentTerms(envelope: unknown): PaymentTerms | null {
   return {
     scheme: str(terms.scheme),
     network,
-    offerCount: offers.length > 0 ? offers.length : 1,
+    offerCount: Array.isArray(accepts) ? offers.length : 1,
     amount,
     amountRejected:
-      amount === undefined && served.length > 0 ? served.join(", ") : undefined,
+      amount === undefined && served.length > 0
+        ? [...new Set(served)].join(", ")
+        : undefined,
     asset,
     assetDecimals: assetConfirmed ? rail?.assetDecimals : undefined,
     assetMismatch: rail ? !assetConfirmed : undefined,

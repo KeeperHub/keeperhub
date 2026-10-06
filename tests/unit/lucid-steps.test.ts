@@ -160,6 +160,48 @@ function entrypoint(name: string): unknown {
 }
 
 describe("readAgentCard", () => {
+  it.each([
+    ["a decimal stated as base units", "0.000001"],
+    ["a non-numeric price", "not-a-number"],
+  ])("reports %s as an unknown unit", (_label, price) => {
+    const card = readAgentCard({
+      entrypoints: { paid: { pricing: { invoke: price } } },
+      payments: [
+        {
+          extensions: { x402: { price: { amount: price, asset: "0xabc" } } },
+        },
+      ],
+    });
+    expect(card?.entrypoints[0]).toMatchObject({
+      priced: true,
+      price,
+      priceUnit: "unknown",
+    });
+  });
+
+  it("keeps a well-formed base-units price as base units", () => {
+    const card = readAgentCard({
+      entrypoints: { paid: { pricing: { invoke: "10000" } } },
+      payments: [
+        {
+          extensions: { x402: { price: { amount: "10000", asset: "0xabc" } } },
+        },
+      ],
+    });
+    expect(card?.entrypoints[0]).toMatchObject({
+      priceUnit: "base_units",
+      asset: "0xabc",
+    });
+  });
+
+  it("reports a non-numeric usd price as an unknown unit", () => {
+    const card = readAgentCard({
+      entrypoints: { paid: { pricing: { invoke: "not-a-number" } } },
+      payments: [{ extensions: { x402: { price: "not-a-number" } } }],
+    });
+    expect(card?.entrypoints[0]).toMatchObject({ priceUnit: "unknown" });
+  });
+
   it("lists the keyed entrypoints, not the skills array", () => {
     const card = readAgentCard(SERVED_CARD);
     expect(card?.name).toBe("counterparty-oracle");
@@ -419,6 +461,27 @@ describe("readPaymentTerms", () => {
       assetDecimals: undefined,
       assetMismatch: undefined,
     });
+  });
+
+  it("states no amount when two offers price it on different assets", () => {
+    expect(
+      readPaymentTerms({
+        accepts: [
+          { amount: "1000000", network: "eip155:8453", asset: "0xaaa" },
+          { amount: "1000000", network: "eip155:1", asset: "0xbbb" },
+        ],
+      })
+    ).toMatchObject({
+      amount: undefined,
+      amountRejected: "1000000",
+      offerCount: 2,
+    });
+  });
+
+  it("states no offers for an empty accepts list", () => {
+    expect(
+      readPaymentTerms({ accepts: [], payTo: PAYEE, amount: "1000000" })
+    ).toMatchObject({ offerCount: 0 });
   });
 
   it("returns null for something that is not payment terms", () => {
@@ -720,6 +783,61 @@ describe("callEntrypointStep", () => {
     if (!result.success) {
       expect(result.error).toContain("boom");
     }
+  });
+
+  it.each([
+    ["a numeric code", { code: 503 }],
+    ["an unknown key", { detail: "upstream died" }],
+    ["an array", ["timeout"]],
+    ["a number", 500],
+    ["a boolean", true],
+  ])("fails a succeeded run carrying an error as %s", async (_label, error) => {
+    respond(200, { output: 1, status: "succeeded", error });
+    const result = await callEntrypointStep({
+      agentUrl: AGENT,
+      entrypoint: "counterparty-check",
+    });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.EXTERNAL,
+    });
+  });
+
+  it("fails an unreadable error served with no status", async () => {
+    respond(200, { output: 1, error: { code: 503 } });
+    const result = await callEntrypointStep({
+      agentUrl: AGENT,
+      entrypoint: "counterparty-check",
+    });
+    expect(result).toMatchObject({ success: false });
+    if (!result.success) {
+      expect(result.error).toContain("503");
+    }
+  });
+
+  it.each([null, ""])("completes a run whose error is %p", async (error) => {
+    respond(200, { output: 1, status: "succeeded", error });
+    const result = await callEntrypointStep({
+      agentUrl: AGENT,
+      entrypoint: "counterparty-check",
+    });
+    expect(result).toMatchObject({ success: true, output: 1 });
+  });
+
+  it.each([5, true])("refuses a native scalar input: %p", async (raw) => {
+    const result = await callEntrypointStep({
+      agentUrl: AGENT,
+      entrypoint: "counterparty-check",
+      input: raw as never,
+    });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+    });
+    if (!result.success) {
+      expect(result.error).toContain("Input must be a JSON object");
+    }
+    expect(safeFetch).not.toHaveBeenCalled();
   });
 
   it("completes a succeeded status whatever its case and spacing", async () => {
