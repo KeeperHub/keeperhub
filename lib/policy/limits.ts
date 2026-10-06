@@ -45,7 +45,9 @@ function knownValue<T>(fact: { state: string; value?: unknown }): T | null {
  * Null when the action carries nothing that limit measures: a dollar limit on
  * an action with no readable value charges nothing rather than charging zero,
  * because zero would silently pass a cap the action should have been checked
- * against.
+ * against. A null is refused by the caller rather than skipped: a ceiling the
+ * policy states is a ceiling, and an amount nobody could establish is a reason
+ * to stop rather than a reason to proceed unmeasured.
  */
 export function amountFor(
   limit: PolicyLimit,
@@ -248,7 +250,13 @@ export async function reserveLimits(input: {
   for (const entry of input.limits) {
     const amount = amountFor(entry.limit, input.facts);
     if (amount === null) {
-      continue;
+      // The policy says there is a ceiling. Not being able to work out what
+      // this action spends is not permission to ignore it: skipping the limit
+      // let an unpriceable action through a cap it was never measured against,
+      // which is the cap failing open on exactly the actions it understands
+      // least. Both comments around this promised a refusal; now it refuses.
+      await releaseReservations(taken);
+      return { ok: false, sid: entry.sid };
     }
     const reservationId = await reserveOne({
       organizationId: input.organizationId,

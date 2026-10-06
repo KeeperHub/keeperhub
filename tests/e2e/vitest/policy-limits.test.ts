@@ -275,16 +275,19 @@ describe("the limit ledger", () => {
     expect(await usedFor(sid)).toBe("70000");
   });
 
-  it("charges nothing when the action carries no readable value", async () => {
+  it("refuses when the action carries no value it can read", async () => {
     const sid = `unreadable-${crypto.randomUUID()}`;
     const outcome = await reserveLimits({
       organizationId: ORG_ID,
       limits: limitsFor(sid),
       facts: { ...facts("1"), usdValue: U } as PolicyFacts,
     });
-    // Charging zero would silently pass a cap the action was never checked
-    // against, so nothing is taken and nothing is recorded.
-    expect(outcome.ok).toBe(true);
+
+    // The policy states a ceiling, so being unable to work out what this action
+    // spends is not permission to ignore it. Letting it through unmeasured is
+    // the cap failing open on exactly the actions it understands least, and it
+    // is what a workflow moving an unpriceable token used to do.
+    expect(outcome.ok).toBe(false);
     expect(await usedFor(sid)).toBe("0");
   });
 
