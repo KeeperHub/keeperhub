@@ -79,6 +79,8 @@ Sponsorship pays the **transaction fee only**. It does not provide the assets yo
 
 To send 0.1 ETH to another address, your wallet must hold at least 0.1 ETH; sponsorship only means it does not also need extra ETH to cover the gas fee. A token transfer (USDC and similar) likewise requires the token balance in your wallet. Only the gas is sponsored.
 
+If the wallet holds USDC but no ETH, [Gas Top-Up](/api/direct-execution#gas-top-up) (`POST /api/execute/gas-top-up`, or the `top_up_gas` MCP tool) converts up to 100 USD of that USDC into native ETH on the same wallet, using sponsored transactions on Ethereum, Base, and Arbitrum.
+
 ### When a transaction is sponsored
 
 A transaction is sponsored only when all of the following are true. Otherwise it falls back to paying gas from your wallet, and it fails if that wallet has no native balance.
@@ -193,5 +195,7 @@ Ensure your Turnkey wallet has sufficient ETH to cover:
 - Transaction gas costs
 - Retry attempts
 - Potential gas price spikes during network congestion
+
+A wallet funded with USDC can convert some of it to ETH with [Gas Top-Up](/api/direct-execution#gas-top-up). This is separate from pay-as-you-go billing: USDC sent for billing pays for executions, while a gas top-up turns the wallet's own USDC into ETH that stays in the wallet.
 
 See [Turnkey Integration](/wallet-management/turnkey) for wallet funding details.

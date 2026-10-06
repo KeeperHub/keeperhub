@@ -255,6 +255,31 @@ describe("GET /api/workflows/executions/[executionId]/status public access", () 
       EXEC_STATUS_ANON_IP_LIMIT - 1
     );
     expect(response.headers.get("X-Poll-Interval-Hint")).toBe("2");
+    const data = await response.json();
+    expect(data.pollIntervalHint).toBe(2);
+    expect(data.pollIntervalHint).toBe(
+      Number(response.headers.get("X-Poll-Interval-Hint"))
+    );
+  });
+
+  it("returns pollIntervalHint: 0 in body and header for terminal status", async () => {
+    mockResolveExecutionViewAccess.mockResolvedValue({
+      mode: "publicReadOnly",
+      execution: { ...makeExecution("public"), status: "success" },
+    });
+
+    const response = await GET(
+      createRequest({ "x-forwarded-for": "203.0.113.59" }),
+      { params: Promise.resolve({ executionId: EXECUTION_ID }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Poll-Interval-Hint")).toBe("0");
+    const data = await response.json();
+    expect(data.pollIntervalHint).toBe(0);
+    expect(data.pollIntervalHint).toBe(
+      Number(response.headers.get("X-Poll-Interval-Hint"))
+    );
   });
 
   it("keys authenticated callers per principal, not per IP", async () => {

@@ -19,6 +19,11 @@ export type ExecutorInputWorkflow = {
  * as the ORG principal (this organizationId). `createdBy` is
  * the workflow creator for audit attribution only - it confers no
  * credential access.
+ *
+ * Never refuse here based on triggerInput. It is caller-writable on the MCP
+ * call and webhook paths, and every runner calls this after the executor has
+ * claimed the row, so a refusal would strand or fail a run instead of
+ * skipping it. Pyth signal expiry is enforced by the executor before claim.
  */
 export function buildExecutorInput(
   workflow: ExecutorInputWorkflow,

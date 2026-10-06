@@ -461,3 +461,123 @@ describe("POST /api/workflows/create schedule registration", () => {
     expect(mockSyncPersistedSchedule).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /api/workflows/create Pyth availability", () => {
+  function pythTrigger(
+    config: Record<string, unknown>
+  ): Record<string, unknown> {
+    return {
+      id: "trigger-1",
+      type: "trigger",
+      data: {
+        type: "trigger",
+        label: "Pyth Price",
+        config: { triggerType: "Pyth Price", ...config },
+      },
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-123",
+      organizationId: "org-123",
+      authMethod: "session",
+    });
+    mockValidateWorkflowIntegrations.mockResolvedValue({ valid: true });
+    mockInsert.mockReturnValue({
+      values: vi.fn((row: Record<string, unknown>) => ({
+        returning: vi
+          .fn()
+          .mockResolvedValue([
+            { ...row, createdAt: new Date(), updatedAt: new Date() },
+          ]),
+      })),
+    });
+  });
+
+  async function withPythKey(run: () => Promise<void>): Promise<void> {
+    const originalPythApiKey = process.env.PYTH_API_KEY;
+    process.env.PYTH_API_KEY = "test-pyth-api-key";
+    try {
+      await run();
+    } finally {
+      if (originalPythApiKey === undefined) {
+        delete process.env.PYTH_API_KEY;
+      } else {
+        process.env.PYTH_API_KEY = originalPythApiKey;
+      }
+    }
+  }
+
+  it("rejects creating an enabled workflow with an invalid Pyth config", async () => {
+    await withPythKey(async () => {
+      const response = await POST(
+        request({
+          name: "Rearm on the wrong side",
+          nodes: [
+            pythTrigger({
+              feedId: "a".repeat(64),
+              direction: "above",
+              threshold: "100",
+              rearmThreshold: "105",
+            }),
+          ],
+          edges: [],
+          enabled: true,
+        })
+      );
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toBe("INVALID_PYTH_TRIGGER");
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+  });
+
+  it("saves an incomplete Pyth draft that is not enabled", async () => {
+    await withPythKey(async () => {
+      const response = await POST(
+        request({ name: "Draft", nodes: [pythTrigger({})], edges: [] })
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockInsert).toHaveBeenCalled();
+    });
+  });
+
+  it("refuses a Pyth trigger when PYTH_API_KEY is unset", async () => {
+    const originalPythApiKey = process.env.PYTH_API_KEY;
+    delete process.env.PYTH_API_KEY;
+    try {
+      const response = await POST(
+        request(
+          workflowBody([
+            {
+              id: "trigger-1",
+              type: "trigger",
+              data: {
+                type: "trigger",
+                label: "Pyth Price",
+                config: {
+                  triggerType: "Pyth Price",
+                  feedId: "a".repeat(64),
+                  direction: "above",
+                  threshold: "100",
+                  rearmThreshold: "95",
+                },
+              },
+            },
+          ])
+        )
+      );
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toBe("PYTH_TRIGGER_DISABLED");
+      expect(mockInsert).not.toHaveBeenCalled();
+    } finally {
+      if (originalPythApiKey !== undefined) {
+        process.env.PYTH_API_KEY = originalPythApiKey;
+      }
+    }
+  });
+});

@@ -93,3 +93,48 @@ describe("encodeFromConfig: ethValue transforms", () => {
     ).toThrow();
   });
 });
+
+/**
+ * The calldata fixtures are the fourth consumer of a stored array input, and
+ * they read it through the same helper as the editor, the validator and the
+ * steps. A legacy value that encodes here encodes in production.
+ */
+describe("encodeFromConfig: array inputs", () => {
+  function lidoClaimWithdrawals() {
+    const protocol = getProtocol("lido");
+    const action = protocol?.actions.find(
+      (a) => a.slug === "claim-withdrawals"
+    );
+    if (!(protocol && action)) {
+      throw new Error("lido/claim-withdrawals not registered");
+    }
+    return { protocol, action };
+  }
+
+  it("encodes a legacy single scalar as a one-item array", () => {
+    const { protocol, action } = lidoClaimWithdrawals();
+
+    expect(
+      encodeFromConfig(protocol, action, "1", {
+        requestIds: "135184",
+        hints: "1216",
+      }).data
+    ).toBe(
+      encodeFromConfig(protocol, action, "1", {
+        requestIds: '["135184"]',
+        hints: '["1216"]',
+      }).data
+    );
+  });
+
+  it("encodes a resolved whole-field reference", () => {
+    const { protocol, action } = lidoClaimWithdrawals();
+
+    expect(
+      encodeFromConfig(protocol, action, "1", {
+        requestIds: '["135184","135185"]',
+        hints: '["1216","1217"]',
+      }).data
+    ).toMatch(/^0x/);
+  });
+});

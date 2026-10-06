@@ -1142,6 +1142,13 @@
       "when": 1790700999263,
       "tag": "0162_keep_1338_execution_usage_periods",
       "breakpoints": true
+    },
+    {
+      "idx": 163,
+      "version": "7",
+      "when": 1790830000000,
+      "tag": "0163_pyth_trigger_checkpoints",
+      "breakpoints": true
     }
   ]
 }

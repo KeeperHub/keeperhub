@@ -71,6 +71,7 @@ export type ExecutionStatusPayload = {
     error?: string | null;
   } | null;
   transactionHashes: TransactionHashEntry[];
+  pollIntervalHint: number;
 };
 
 function isPubliclyShareableWorkflow(

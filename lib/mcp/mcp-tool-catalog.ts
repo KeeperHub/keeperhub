@@ -57,6 +57,7 @@ export const AUTHENTICATED_MCP_TOOLS: readonly string[] = [
   "tempo_sign_and_hold",
   "test_notification",
   "tools_documentation",
+  "top_up_gas",
   "unlist_workflow",
   "update_workflow",
   "update_workflow_listing",

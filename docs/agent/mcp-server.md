@@ -193,8 +193,8 @@ bounded backoff. Connection errors and DNS failures are **not** cold-start signa
 
 Most MCP tool calls use a 55-second client-side fetch timeout. Long-running
 execute tools (`execute_workflow`, `execute_transfer`, `execute_contract_call`,
-`execute_check_and_execute`, `execute_protocol_action`, `call_workflow`,
-`get_direct_execution_status`) disable that cap so on-chain work is not aborted
+`execute_check_and_execute`, `execute_protocol_action`, `top_up_gas`,
+`call_workflow`, `get_direct_execution_status`) disable that cap so on-chain work is not aborted
 mid-flight.
 
 ### Execution
@@ -224,6 +224,7 @@ mid-flight.
 | `execute_transfer` | Transfer native or ERC20 tokens to a recipient. Requires a wallet integration. |
 | `execute_contract_call` | Call a smart contract function. Returns the result for view/pure calls, or an execution ID for state-changing calls. |
 | `execute_check_and_execute` | Read one supported scalar and conditionally execute an action. Solidity integers support every operator; `address` and `bytes1` through `bytes32` support `eq`/`neq`. |
+| `top_up_gas` | Convert USDC in the org wallet into native ETH on the same wallet (approve, Uniswap swap with a server-side quoted floor, WETH unwrap; all gas-sponsored). Takes `chain_id` and `amount_usdc`, capped by the per-call stablecoin limit and a daily gas top-up limit per organization. No dry run. The response lists each step so a partial run is explicit. See [Gas Top-Up](/api/direct-execution#gas-top-up). |
 | `get_direct_execution_status` | Get the status of a direct execution (transfer or contract call), including the transaction hash and result. |
 
 ### Safely preflight direct writes

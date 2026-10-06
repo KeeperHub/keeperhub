@@ -43,6 +43,7 @@ import {
 } from "../lib/db/schema";
 import { getMetricsCollector } from "../lib/metrics";
 import { LabelKeys, MetricNames } from "../lib/metrics/types";
+import { pythDispatchRefusal } from "../lib/pyth/validate-dispatch";
 import { withBackstopCapture } from "../lib/security/backstop-capture";
 import { buildAttribution } from "../lib/security/request-attribution";
 import { verifySqsMessageSignature } from "../lib/sqs-message-auth";
@@ -235,6 +236,12 @@ function buildInput(message: ExecutorMessage): Record<string, unknown> {
       };
     case "manual":
       return { triggerType: "manual" as const, ...message.input };
+    case "upstream":
+      return {
+        ...message.triggerData,
+        configHash: message.configHash,
+        triggerType: "upstream",
+      };
     case "webhook":
       return { triggerType: "webhook" as const, ...message.input };
     default: {
@@ -493,6 +500,16 @@ async function processExecutorMessage(
     return;
   }
   const { workflow } = loaded;
+
+  if (message.triggerType === "upstream") {
+    const refusal = pythDispatchRefusal(workflow.nodes, buildInput(message));
+    if (refusal) {
+      await discardPhantomRow(db, message.executionId, {
+        reason: "upstream_invalid", error: refusal,
+      });
+      return;
+    }
+  }
 
   if (triggerType === "schedule") {
     const valid = await validateSchedule(
