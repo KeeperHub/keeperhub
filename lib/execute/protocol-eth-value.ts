@@ -181,9 +181,12 @@ export function applyEthValueTransform(
     return { ok: true, value: rawEthValue };
   }
   if (typeof rawEthValue === "number" && !Number.isSafeInteger(rawEthValue)) {
+    // Named after the input the value was read from, which is not ethValue
+    // for an action that sources its value from one of its own inputs.
+    const field = protocolAction?.payableValue?.fromInput ?? "ethValue";
     return {
       ok: false,
-      error: `Refusing to send a payable value: ethValue ${String(rawEthValue)} is a JSON number that cannot carry an exact integer wei amount. Send the wei value as a string.`,
+      error: `Refusing to send a payable value: ${field} ${String(rawEthValue)} is a JSON number that cannot carry an exact integer wei amount. Send the wei value as a string.`,
     };
   }
   // A safe-integer number or a bigint: String() yields its exact digits,

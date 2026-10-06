@@ -12,6 +12,8 @@ const registry = vi.hoisted(() => ({
     symbol: string;
     isStablecoin: boolean;
   }>,
+  // safe_wallets rows feeding the ceiling's org-payer set.
+  safeRows: [] as Array<{ safeAddress: string }>,
 }));
 
 const {
@@ -52,16 +54,24 @@ vi.mock("@/lib/logging", () => ({
 
 vi.mock("@/lib/db", () => ({
   db: {
-    select: () => ({
-      from: () => ({
-        // The stablecoin ceiling awaits where() directly (it reads the chain's
-        // whole token list); other lookups end in limit().
-        where: () =>
-          Object.assign(Promise.resolve(registry.tokenRows), {
-            limit: () => Promise.resolve([]),
-          }),
-      }),
-    }),
+    // Branches on the selected columns, the only thing separating the
+    // ceiling's two reads through this stub.
+    select: (columns?: Record<string, unknown>) => {
+      const rows =
+        columns !== undefined && "safeAddress" in columns
+          ? registry.safeRows
+          : registry.tokenRows;
+      return {
+        from: () => ({
+          // The stablecoin ceiling awaits where() directly (it reads the chain's
+          // whole token list); other lookups end in limit().
+          where: () =>
+            Object.assign(Promise.resolve(rows), {
+              limit: () => Promise.resolve([]),
+            }),
+        }),
+      };
+    },
     query: {
       explorerConfigs: {
         findFirst: (...args: unknown[]) => mockFindExplorerConfig(...args),
@@ -72,6 +82,11 @@ vi.mock("@/lib/db", () => ({
 
 vi.mock("@/lib/db/schema", () => ({
   workflowExecutions: { id: "id", userId: "userId", workflowId: "workflowId" },
+  safeWallets: {
+    organizationId: "organizationId",
+    chainId: "chainId",
+    safeAddress: "safeAddress",
+  },
   explorerConfigs: { chainId: "chainId" },
   supportedTokens: {
     chainId: "chainId",
@@ -333,6 +348,7 @@ describe("writeContractCore stablecoin ceiling", () => {
     vi.clearAllMocks();
     capturedTxContext = null;
     registry.tokenRows = [];
+    registry.safeRows = [];
   });
 
   it("refuses an over-cap USDC transfer routed through a raw contract call", async () => {
@@ -401,6 +417,7 @@ describe("writeContractCore executedCall on direct send", () => {
     vi.clearAllMocks();
     capturedTxContext = null;
     registry.tokenRows = [];
+    registry.safeRows = [];
     mockTraceExecutedCall.mockResolvedValue(undefined);
   });
 
@@ -628,6 +645,7 @@ describe("writeContractCore broadcast with an unreadable receipt", () => {
     vi.clearAllMocks();
     capturedTxContext = null;
     registry.tokenRows = [];
+    registry.safeRows = [];
   });
 
   it("classifies the send as SYSTEM so failOnError cannot soften it", async () => {
@@ -725,6 +743,7 @@ describe("writeContractCore sponsored-relay failure link", () => {
     vi.clearAllMocks();
     capturedTxContext = null;
     registry.tokenRows = [];
+    registry.safeRows = [];
     mockIsGasSponsorshipEnabled.mockReturnValue(false);
     mockExecuteSponsoredContractTransaction.mockResolvedValue(null);
     mockResolveSponsoredSendError.mockReturnValue({ fallback: true });
@@ -777,6 +796,7 @@ describe("writeContractCore Sponsor gas toggle", () => {
     vi.clearAllMocks();
     capturedTxContext = null;
     registry.tokenRows = [];
+    registry.safeRows = [];
     mockIsGasSponsorshipEnabled.mockReturnValue(true);
     mockExecuteSponsoredContractTransaction.mockResolvedValue({
       transactionHash: "0xsponsored",
@@ -955,6 +975,7 @@ describe("writeContractCore broadcastAttempted evidence", () => {
     vi.clearAllMocks();
     capturedTxContext = null;
     registry.tokenRows = [];
+    registry.safeRows = [];
   });
 
   it("reports broadcastAttempted: false for a tagged pre-broadcast connection refusal", async () => {
@@ -1043,6 +1064,11 @@ describe("writeContractCore payerParam (#2470)", () => {
   const SAFE_ADDRESS = "0x9999999999999999999999999999999999999999";
   // Matches the getOrganizationWalletAddress mock above.
   const ORG_WALLET = "0xwalletaddress1234567890123456789012345678";
+  const OUTSIDE_PAYER = "0x2222222222222222222222222222222222222222";
+  const RECIPIENT = "0x3333333333333333333333333333333333333333";
+  const USDS_CONTRACT = "0xdC035D45d973E3EC169d2276DDab16f1e407384F";
+  // 1,000 USDS at 18 decimals, ten times the 100 USD ceiling.
+  const OVER_CAP_USDS = "1000000000000000000000";
   const TRANSFER_FROM_ABI = JSON.stringify([
     {
       type: "function",
@@ -1076,6 +1102,7 @@ describe("writeContractCore payerParam (#2470)", () => {
     vi.clearAllMocks();
     capturedTxContext = null;
     registry.tokenRows = [];
+    registry.safeRows = [];
     stablecoinCeilingArgsAtCall = undefined;
     mockExecuteContractCall.mockResolvedValue(RECEIPT);
     vi.mocked(executeContractCallAsSafe).mockResolvedValue(RECEIPT);
@@ -1175,20 +1202,102 @@ describe("writeContractCore payerParam (#2470)", () => {
     expect(sent.args).toEqual(["1", PLACEHOLDER]);
   });
 
-  it("runs the stablecoin ceiling on the payer-written args, not the caller's", async () => {
-    // transferFrom's first argument names whose tokens move: an outside
-    // address there reads to the ceiling as an inbound collection, so the
-    // outflow check passes it. If the ceiling ran before the payer write it
-    // vetted that outside address while the broadcast moved the org's funds
-    // -- a drain the ceiling never measured.
-    const OUTSIDE = "0x2222222222222222222222222222222222222222";
-    const RECIPIENT = "0x3333333333333333333333333333333333333333";
+  it("refuses an over-cap transferFrom whose payer argument the core rewrites", async () => {
+    // The ceiling decides on the payer the broadcast carries, so a call that
+    // names an outside address and hands the core payerParam is measured as
+    // an org outflow and refused.
+    registry.tokenRows = [
+      {
+        tokenAddress: USDS_CONTRACT,
+        decimals: 18,
+        symbol: "USDS",
+        isStablecoin: true,
+      },
+    ];
 
+    const result = await writeContractCore({
+      ...baseInput,
+      contractAddress: USDS_CONTRACT,
+      abi: TRANSFER_FROM_ABI,
+      abiFunction: "transferFrom",
+      functionArgs: JSON.stringify([OUTSIDE_PAYER, RECIPIENT, OVER_CAP_USDS]),
+      payerParam: "from",
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("per-transaction limit");
+    }
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+    expect(executeContractCallAsSafe).not.toHaveBeenCalled();
+    expect(executeContractCallAsRole).not.toHaveBeenCalled();
+  });
+
+  it("refuses the same call when the Safe pays for it", async () => {
+    vi.mocked(resolveSignerForNode).mockResolvedValue({
+      kind: "safe",
+      ownerAddress: "0xwalletaddress",
+      safeAddress: SAFE_ADDRESS,
+      safeWalletId: "safe-1",
+    });
+    registry.tokenRows = [
+      {
+        tokenAddress: USDS_CONTRACT,
+        decimals: 18,
+        symbol: "USDS",
+        isStablecoin: true,
+      },
+    ];
+    registry.safeRows = [{ safeAddress: SAFE_ADDRESS }];
+
+    const result = await writeContractCore({
+      ...baseInput,
+      contractAddress: USDS_CONTRACT,
+      abi: TRANSFER_FROM_ABI,
+      abiFunction: "transferFrom",
+      functionArgs: JSON.stringify([OUTSIDE_PAYER, RECIPIENT, OVER_CAP_USDS]),
+      payerParam: "from",
+    });
+
+    expect(result.success).toBe(false);
+    expect(executeContractCallAsSafe).not.toHaveBeenCalled();
+  });
+
+  it("still allows an over-cap collection from a counterparty", async () => {
+    // No payerParam, so the counterparty stays the payer and the pull payment
+    // the ceiling exempts keeps working.
+    registry.tokenRows = [
+      {
+        tokenAddress: USDS_CONTRACT,
+        decimals: 18,
+        symbol: "USDS",
+        isStablecoin: true,
+      },
+    ];
+
+    const result = await writeContractCore({
+      ...baseInput,
+      contractAddress: USDS_CONTRACT,
+      abi: TRANSFER_FROM_ABI,
+      abiFunction: "transferFrom",
+      functionArgs: JSON.stringify([OUTSIDE_PAYER, RECIPIENT, OVER_CAP_USDS]),
+    });
+
+    expect(result.success).toBe(true);
+    const sent = mockExecuteContractCall.mock.calls[0]?.[1] as {
+      args: unknown[];
+    };
+    expect(sent.args).toEqual([OUTSIDE_PAYER, RECIPIENT, OVER_CAP_USDS]);
+  });
+
+  it("runs the stablecoin ceiling on the payer-written args, not the caller's", async () => {
+    // The ceiling has to read the payer the broadcast carries, not the one
+    // the caller supplied.
     const result = await writeContractCore({
       ...baseInput,
       abi: TRANSFER_FROM_ABI,
       abiFunction: "transferFrom",
-      functionArgs: JSON.stringify([OUTSIDE, RECIPIENT, "1000"]),
+      functionArgs: JSON.stringify([OUTSIDE_PAYER, RECIPIENT, "1000"]),
       payerParam: "from",
     });
 

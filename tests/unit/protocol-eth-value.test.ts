@@ -247,6 +247,9 @@ describe("applyEthValueTransform", () => {
       const out = applyEthValueTransform(n, OFT_SEND);
       expect(out.ok, String(n)).toBe(false);
       expect((out as { error: string }).error).toMatch(/JSON number/);
+      // Names the input the value came from, not the ethValue field the
+      // caller never sent.
+      expect((out as { error: string }).error).toContain("nativeFee");
     }
   });
 

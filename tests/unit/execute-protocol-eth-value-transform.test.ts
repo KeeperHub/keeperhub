@@ -562,16 +562,16 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
     if (!result.ok) {
       return;
     }
-    const newArgs = JSON.parse(result.functionArgs ?? "[]") as string[];
-    // What origin/staging forwarded: every input verbatim, in order (an
-    // array input as its JSON string, as resolveInputValue has always
-    // done). Written out by hand rather than derived from the inputs so a
-    // regression in the builder cannot be mirrored into the expectation.
+    const newArgs = JSON.parse(result.functionArgs ?? "[]") as unknown[];
+    // What origin/staging forwards: every input verbatim, in order, an
+    // array input keeping its elements. Written out by hand rather than
+    // derived from the inputs so a regression in the builder cannot be
+    // mirrored into the expectation.
     const stagingArgs = [
       "1",
       PADDED_WALLET,
       "0x",
-      "[]",
+      [],
       WALLET,
       "0x97a657c90000000000000000000000000000000000000000000000000000000000000000",
     ];
@@ -587,8 +587,8 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
       throw new Error("ccipSend fragment missing");
     }
     const abi = JSON.parse(fragment.format("json")) as FunctionAbiEntry;
-    // Array params arrive as JSON strings on both sides; parse them the
-    // way the core does before reshaping.
+    // An array param that still arrives as a JSON string is parsed the way
+    // the core does before reshaping.
     const parseArrays = (args: unknown[]) =>
       args.map((a) =>
         typeof a === "string" && a.startsWith("[") ? JSON.parse(a) : a
