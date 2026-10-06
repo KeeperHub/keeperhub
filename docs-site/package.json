@@ -12,14 +12,14 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "16.3.6",
+    "next": "16.3.8",
     "nextra": "^4.0.0",
     "nextra-theme-docs": "^4.0.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
-    "@types/node": "^22.20.4",
+    "@types/node": "^22.20.5",
     "@types/react": "^19.3.0",
     "pagefind": "^1.5.2",
     "typescript": "^5.7.0"
@@ -32,7 +32,7 @@
       "postcss": "^8.5.23",
       "mermaid": ">=11.16.1",
       "@xmldom/xmldom": "^0.9.12",
-      "dompurify": ">=3.4.13",
+      "dompurify": ">=3.4.16",
       "brace-expansion": ">=5.0.11",
       "nanoid@<3.3.17": "^3.3.17",
       "sharp": ">=0.35.0"

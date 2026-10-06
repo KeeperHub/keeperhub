@@ -17,6 +17,7 @@ Interact with EVM-compatible blockchain networks and Solana. Read-only actions w
 | Read Contract | Web3 | No | Call view/pure functions on smart contracts |
 | Batch Read Contract | Web3 | No | Batch multiple contract reads into one RPC call via Multicall3 |
 | Get Transaction | Web3 | No | Fetch full transaction details by hash |
+| Get Address Nonce | Web3 | No | Read an address's mined and pending transaction counts |
 | Write Contract | Web3 | Wallet | Execute state-changing contract functions |
 | Transfer Native Token | Web3 | Wallet | Send native tokens (ETH/MATIC on EVM, SOL on Solana) to a recipient |
 | Transfer ERC20 Token | Web3 | Wallet | Send ERC20 tokens to a recipient |
@@ -360,6 +361,26 @@ Event (new transaction on monitored contract)
   -> Assess Transaction Risk: calldata={{GetTransaction.input}}, value={{GetTransaction.value}}
   -> Condition: riskScore >= 51
   -> Discord: "HIGH RISK TX from {{GetTransaction.from}}: {{AssessRisk.reasoning}}"
+```
+
+---
+
+## Get Address Nonce
+
+Read the transaction count (nonce) of any address on EVM chains via `eth_getTransactionCount`. Every run reads both the mined count and the pending count in one step, so a single node can tell when transactions from a wallet are waiting in the mempool and not being mined.
+
+**Inputs:** Network, Address, Block Tag (`latest` or `pending`, defaults to `latest`)
+
+**Outputs:** `success`, `nonce` (count at the selected block tag), `blockTag`, `address`, `latestNonce` (mined transactions), `pendingNonce` (mined plus mempool transactions), `pendingCount` (`pendingNonce` minus `latestNonce`, never negative), `error`
+
+**When to use:** Watch a keeper or bot wallet for stuck transactions, confirm a submitted transaction was mined before sending the next one, or compare the nonce against your own records to spot transactions that were mined but did not have the expected effect.
+
+**Example workflow:**
+```
+Schedule (every 5 min)
+  -> Get Address Nonce (keeper wallet)
+  -> Condition: pendingCount > 0
+  -> Discord: "{{GetAddressNonce.pendingCount}} transaction(s) waiting from {{GetAddressNonce.address}}"
 ```
 
 ---

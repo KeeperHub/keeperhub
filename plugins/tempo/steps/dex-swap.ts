@@ -8,6 +8,11 @@ import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { getErrorMessage } from "@/lib/utils";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import {
+  applySlippageFloor,
+  BPS_DENOMINATOR,
+  DEFAULT_SLIPPAGE_BPS,
+} from "@/lib/web3/slippage";
+import {
   runPluginStep,
   type StepInput,
 } from "@/lib/workflow/executor/step-handler";
@@ -23,8 +28,6 @@ import {
 } from "./tempo-step-helpers";
 
 const MAX_UINT128 = (BigInt(1) << BigInt(128)) - BigInt(1);
-const DEFAULT_SLIPPAGE_BPS = 50; // 0.5%
-const BPS_DENOMINATOR = 10_000;
 
 export type DexSwapInput = StepInput & {
   network: string;
@@ -144,9 +147,7 @@ async function stepHandlerImpl(input: DexSwapInput): Promise<DexSwapResult> {
         error: `No DEX liquidity for ${tokenIn.symbol} to ${tokenOut.symbol}`,
       };
     }
-    const minAmountOut =
-      (quotedOut * BigInt(BPS_DENOMINATOR - slippageBps)) /
-      BigInt(BPS_DENOMINATOR);
+    const minAmountOut = applySlippageFloor(quotedOut, slippageBps);
 
     const call = buildSwapExactAmountInCall(
       tokenIn.address,

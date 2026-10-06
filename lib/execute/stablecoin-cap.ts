@@ -708,7 +708,7 @@ async function loadChainTokens(chainId: number): Promise<TokenRow[]> {
 }
 
 /** The registry row for a known stablecoin on this chain, or null. */
-async function loadStablecoin(
+export async function loadStablecoin(
   chainId: number,
   tokenAddress: string
 ): Promise<StablecoinToken | null> {

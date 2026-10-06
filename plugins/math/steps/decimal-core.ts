@@ -86,14 +86,16 @@ export function rescale(decimal: Decimal, decimals: number): bigint {
   return decimal.value * pow10(decimals - decimal.decimals);
 }
 
-/** Bring two decimals onto a common scale. */
-export function align(a: Decimal, b: Decimal): {
-  a: bigint;
-  b: bigint;
-  decimals: number;
+/** Bring any number of decimals onto a common scale. */
+export function alignAll(decimals: Decimal[]): {
+  values: bigint[];
+  scale: number;
 } {
-  const decimals = Math.max(a.decimals, b.decimals);
-  return { a: rescale(a, decimals), b: rescale(b, decimals), decimals };
+  let scale = 0;
+  for (const d of decimals) {
+    scale = Math.max(scale, d.decimals);
+  }
+  return { values: decimals.map((d) => rescale(d, scale)), scale };
 }
 
 export function absBigInt(value: bigint): bigint {

@@ -1001,6 +1001,82 @@ const web3Plugin: IntegrationPlugin = {
       ],
     },
     {
+      slug: "get-nonce",
+      label: "Get Address Nonce",
+      description:
+        "Get the transaction count (nonce) of any address, with both the mined and pending counts to spot stuck transactions",
+      category: "Web3",
+      stepFunction: "getNonceStep",
+      stepImportPath: "get-nonce",
+      outputFields: [
+        {
+          field: "success",
+          description:
+            "Whether the nonce read succeeded. Also true when failOnError is off and a failed read was softened; the nonce fields are null and `error` is set.",
+        },
+        {
+          field: "nonce",
+          description:
+            "Transaction count at the selected block tag, which is also the next nonce the address will use",
+        },
+        {
+          field: "blockTag",
+          description:
+            "The block tag the nonce was read at (latest or pending)",
+        },
+        {
+          field: "address",
+          description: "The address that was checked",
+        },
+        {
+          field: "latestNonce",
+          description:
+            "Transaction count at the latest block, counting mined transactions only",
+        },
+        {
+          field: "pendingNonce",
+          description:
+            "Transaction count including transactions still waiting in the mempool",
+        },
+        {
+          field: "pendingCount",
+          description:
+            "Transactions submitted but not yet mined (pendingNonce minus latestNonce, never negative). A value that stays above 0 can mean a stuck transaction.",
+        },
+        checkErrorOutput(),
+      ],
+      configFields: [
+        evmNetworkField(),
+        {
+          key: "address",
+          label: "Address",
+          type: "template-input",
+          placeholder: "0x... or {{NodeName.address}}",
+          example: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+          required: true,
+        },
+        {
+          key: "blockTag",
+          label: "Block Tag",
+          type: "select",
+          options: [
+            {
+              value: "latest",
+              label: "Latest (mined transactions only)",
+            },
+            {
+              value: "pending",
+              label: "Pending (includes mempool transactions)",
+            },
+          ],
+          defaultValue: "latest",
+          helpTip:
+            "Which count the nonce output reports. Both counts are always returned as latestNonce and pendingNonce.",
+        },
+        readFailOnErrorField(),
+      ],
+    },
+    {
       slug: "decode-calldata",
       label: "Decode Calldata",
       description:
