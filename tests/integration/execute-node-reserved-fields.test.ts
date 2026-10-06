@@ -406,6 +406,29 @@ describe("POST /api/execute/node value reservation for a protocol write", () => 
     expect(mocks.stepFn).not.toHaveBeenCalled();
   });
 
+  it("refuses a drifted action whose value sits on its declared input", async () => {
+    // The caller sent nativeFee, not ethValue. Reading only ethValue would
+    // report this call as carrying no value and reserve zero for it.
+    protocolWrite();
+
+    const response = await nodePOST(
+      postRequest({
+        actionType: "layerzero/no-such-action",
+        config: {
+          ...sendConfig(FEE_WEI),
+          _actionType: "layerzero/no-such-action",
+        },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    const { error } = await response.json();
+    expect(error).toMatch(/Refusing to reserve/);
+    expect(error).not.toMatch(/ethValue/);
+    expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+    expect(mocks.stepFn).not.toHaveBeenCalled();
+  });
+
   it("refuses the reservation when a separate ethValue disagrees with nativeFee", async () => {
     protocolWrite();
 

@@ -18,7 +18,11 @@ import {
   getEncodeTransform,
   getEncodeTransformKind,
 } from "@/lib/protocol-encode-transforms";
-import { getProtocol, type ProtocolAction } from "@/lib/protocol-registry";
+import {
+  getProtocol,
+  getRegisteredProtocols,
+  type ProtocolAction,
+} from "@/lib/protocol-registry";
 
 /** The identity every entrance resolves before it can look the action up. */
 export type ProtocolActionRef = {
@@ -192,4 +196,65 @@ export function applyEthValueTransform(
   // A safe-integer number or a bigint: String() yields its exact digits,
   // which is the integer wei string the transform expects.
   return { ok: true, value: transform(String(rawEthValue)) };
+}
+
+function statesValue(value: unknown): boolean {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+/**
+ * Whether a config states a payable value at all, without knowing which
+ * action it belongs to. An action declares the input its value comes from
+ * (the OFT send's nativeFee), so a caller whose stored metadata has drifted
+ * sent that field, not ethValue, and reading only ethValue would report a
+ * value-carrying call as carrying none.
+ *
+ * Only a non-empty string counts, the same rule applyEthValueTransform
+ * applies: a non-string has always been passed through untouched, and the
+ * reservation reads it as no value.
+ */
+export function hasPayableValue(source: Record<string, unknown>): boolean {
+  if (statesValue(source.ethValue)) {
+    return true;
+  }
+  for (const protocol of getRegisteredProtocols()) {
+    for (const action of protocol.actions) {
+      const fromInput = action.payableValue?.fromInput;
+      if (fromInput !== undefined && statesValue(source[fromInput])) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * The payable value an entrance should use, in ether, from the field the
+ * action declares. Every entrance runs this one call rather than its own
+ * copy of the read, the transform and the wrong-unit catch, so none of them
+ * can drift from the others.
+ */
+export function resolvePayableEther(
+  source: Record<string, unknown>,
+  meta: ProtocolActionRef
+): { ok: true; value: unknown; field: string } | { ok: false; error: string } {
+  const payableValue = readPayableValue(source, meta);
+  if (!payableValue.ok) {
+    return payableValue;
+  }
+  let transformed: EthValueTransformResult;
+  try {
+    transformed = applyEthValueTransform(payableValue.value, meta);
+  } catch (err) {
+    // Wrong unit (ether typed into a wei field): the caller's mistake, named
+    // with the field the caller actually sent.
+    return {
+      ok: false,
+      error: `Invalid ${payableValue.field}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!transformed.ok) {
+    return transformed;
+  }
+  return { ok: true, value: transformed.value, field: payableValue.field };
 }

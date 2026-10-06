@@ -6,10 +6,7 @@ import { NextResponse } from "next/server";
 import { resolveAbi } from "@/lib/abi/cache";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { enterApiExecuteErrorContext } from "@/lib/db/org-helpers";
-import {
-  applyEthValueTransform,
-  readPayableValue,
-} from "@/lib/execute/protocol-eth-value";
+import { resolvePayableEther } from "@/lib/execute/protocol-eth-value";
 import {
   beginIdempotentFromRequest,
   dispositionForExecutionOutcome,
@@ -251,7 +248,7 @@ async function executeProtocolAction(
   // workflow step would produce. An action with no transform gets its
   // value through exactly as before. Refuses, rather than guesses, when the
   // action cannot be resolved and a value is present.
-  const payableValue = readPayableValue(body, meta);
+  const payableValue = resolvePayableEther(body, meta);
   if (!payableValue.ok) {
     return recordIdempotentResponse(
       idem,
@@ -262,30 +259,7 @@ async function executeProtocolAction(
       "release"
     );
   }
-  let transformedEthValue: ReturnType<typeof applyEthValueTransform>;
-  try {
-    transformedEthValue = applyEthValueTransform(payableValue.value, meta);
-  } catch (err) {
-    // The transform rejects a value in the wrong unit (ether typed into a
-    // wei field). That is the caller's mistake, not a server fault.
-    transformedEthValue = {
-      ok: false,
-      error: `Invalid ${payableValue.field}: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  if (!transformedEthValue.ok) {
-    return recordIdempotentResponse(
-      idem,
-      NextResponse.json(
-        { success: false, error: transformedEthValue.error },
-        { status: HttpStatus.BAD_REQUEST }
-      ),
-      "release"
-    );
-  }
-  const ethValue = transformedEthValue.value
-    ? String(transformedEthValue.value)
-    : undefined;
+  const ethValue = payableValue.value ? String(payableValue.value) : undefined;
   // Charge any native value forwarded by the protocol write against the cap.
   const parsedValue = parseNativeValueEther(ethValue);
   if (!parsedValue.ok) {

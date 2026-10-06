@@ -40,8 +40,8 @@ import { checkRateLimit } from "../_lib/rate-limit";
 // route does the same).
 import "@/protocols";
 import {
-  applyEthValueTransform,
-  readPayableValue,
+  hasPayableValue,
+  resolvePayableEther,
 } from "@/lib/execute/protocol-eth-value";
 import { resolveProtocolMeta } from "@/plugins/protocol/steps/resolve-protocol-meta";
 import { parseNodeNativeValueWei } from "../_lib/reserved-value";
@@ -499,13 +499,11 @@ function protocolReservationConfig(
     // The same rule as the step's own refusal (#2322): a non-empty string
     // value with no resolvable action is refused; anything else is left
     // for the step to handle as it always has.
-    const hasValue =
-      typeof config.ethValue === "string" && config.ethValue.trim() !== "";
     return Promise.resolve(
-      hasValue
+      hasPayableValue(config)
         ? {
             ok: false,
-            error: `Refusing to reserve a payable value: "${resolvedActionType}" does not resolve to a registered protocol action, so whether ethValue needs a unit conversion cannot be determined.`,
+            error: `Refusing to reserve a payable value: "${resolvedActionType}" does not resolve to a registered protocol action, so whether the value needs a unit conversion cannot be determined.`,
           }
         : { ok: true, config }
     );
@@ -514,26 +512,13 @@ function protocolReservationConfig(
   // every other action's ethValue) before converting it; a separate
   // ethValue that disagrees with that source is refused here, before any
   // reservation, so the cap and the broadcast cannot disagree either.
-  const payableValue = readPayableValue(config, meta);
+  const payableValue = resolvePayableEther(config, meta);
   if (!payableValue.ok) {
     return Promise.resolve({ ok: false, error: payableValue.error });
   }
-  let transformed: ReturnType<typeof applyEthValueTransform>;
-  try {
-    transformed = applyEthValueTransform(payableValue.value, meta);
-  } catch (err) {
-    // Wrong unit (ether typed into a wei field): the caller's mistake.
-    transformed = {
-      ok: false,
-      error: `Invalid ${payableValue.field}: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  if (!transformed.ok) {
-    return Promise.resolve({ ok: false, error: transformed.error });
-  }
   return Promise.resolve({
     ok: true,
-    config: { ...config, ethValue: transformed.value },
+    config: { ...config, ethValue: payableValue.value },
   });
 }
 

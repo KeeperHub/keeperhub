@@ -454,3 +454,92 @@ describe("payer input and payableValue.fromInput hooks", () => {
     });
   });
 });
+
+/**
+ * The authoring-time guards around `payer` and `payableValue.fromInput`.
+ * Each one fails closed at run time as well, so what these pin is that a
+ * definition in that state never reaches a deploy in the first place.
+ */
+describe("payer and payableValue authoring guards", () => {
+  const PAYER_ABI = JSON.stringify([
+    {
+      type: "function",
+      name: "collect",
+      stateMutability: "payable",
+      inputs: [
+        { name: "from", type: "uint256" },
+        { name: "fee", type: "uint256" },
+      ],
+      outputs: [],
+    },
+  ]);
+
+  const TUPLE_ABI = JSON.stringify([
+    {
+      type: "function",
+      name: "send",
+      stateMutability: "payable",
+      inputs: [
+        {
+          name: "params",
+          type: "tuple",
+          components: [{ name: "payer", type: "address" }],
+        },
+      ],
+      outputs: [],
+    },
+  ]);
+
+  function derive(abi: string, overrides: Record<string, unknown>): unknown {
+    return deriveActionsFromAbi("c", {
+      label: "C",
+      abi,
+      addresses: {},
+      overrides: overrides as Record<string, AbiFunctionOverride>,
+    });
+  }
+
+  it("refuses a payer override on a parameter that is not an address", () => {
+    expect(() =>
+      derive(PAYER_ABI, { collect: { inputs: { from: { payer: true } } } })
+    ).toThrow(/must be an address parameter/);
+  });
+
+  it("refuses a payer override on a tuple component", () => {
+    expect(() =>
+      derive(TUPLE_ABI, { send: { inputs: { payer: { payer: true } } } })
+    ).toThrow(/top-level parameters only/);
+  });
+
+  it("refuses payableValue.fromInput naming an input that does not exist", () => {
+    expect(() =>
+      derive(PAYER_ABI, { collect: { payableValue: { fromInput: "nope" } } })
+    ).toThrow(/must name a user input/);
+  });
+
+  it("refuses a hand-written payer input that is not an address", () => {
+    const definition = {
+      slug: "zz-payer-guard",
+      name: "ZZ",
+      label: "ZZ",
+      description: "guard fixture",
+      contracts: { c: { label: "C", addresses: {} } },
+      actions: [
+        {
+          slug: "zz-payer-guard-collect",
+          label: "Collect",
+          description: "guard fixture",
+          type: "write",
+          contract: "c",
+          function: "collect",
+          abi: "function collect(uint256 from)",
+          kind: "write",
+          inputs: [{ name: "from", type: "uint256", payer: true }],
+        },
+      ],
+    } as unknown as ProtocolDefinition;
+    expect(() => defineProtocol(definition)).toThrow(
+      /must be an address parameter/
+    );
+  });
+});

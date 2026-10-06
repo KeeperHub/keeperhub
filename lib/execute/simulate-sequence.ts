@@ -490,7 +490,8 @@ export async function simulateCallSequence(
   }
 
   // Per call, as the single-call path checks it: each is its own transaction
-  // at broadcast.
+  // at broadcast. Same payer caveat as simulate.ts: scored on the args as
+  // sent, before writeContractCore rewrites a payer argument.
   const cap = await checkStablecoinContractCallBatch({
     organizationId: input.organizationId,
     chainId,

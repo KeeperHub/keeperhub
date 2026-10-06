@@ -18,10 +18,7 @@ import {
   type FunctionAbiEntry,
   reshapeArgsForAbi,
 } from "@/lib/abi/struct-args";
-import {
-  applyEthValueTransform,
-  readPayableValue,
-} from "@/lib/execute/protocol-eth-value";
+import { resolvePayableEther } from "@/lib/execute/protocol-eth-value";
 import { PAYER_PLACEHOLDER } from "@/lib/execute/protocol-payer";
 import {
   isSolidityArrayType,
@@ -263,17 +260,13 @@ export function encodeFromConfig(
   };
   // The value may live on a declared input rather than the virtual field
   // (the OFT send's nativeFee), so select the source before converting.
-  const payableValue = readPayableValue(config, meta);
+  const payableValue = resolvePayableEther(config, meta);
   if (!payableValue.ok) {
     throw new Error(`${protocol.slug}/${action.slug}: ${payableValue.error}`);
   }
-  const valueResult = applyEthValueTransform(payableValue.value, meta);
-  if (!valueResult.ok) {
-    throw new Error(`${protocol.slug}/${action.slug}: ${valueResult.error}`);
-  }
   const ethValue =
-    typeof valueResult.value === "string" && valueResult.value.trim() !== ""
-      ? valueResult.value.trim()
+    typeof payableValue.value === "string" && payableValue.value.trim() !== ""
+      ? payableValue.value.trim()
       : undefined;
   return {
     to,

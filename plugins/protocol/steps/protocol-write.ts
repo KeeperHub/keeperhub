@@ -19,9 +19,8 @@ import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
 import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
 import {
-  applyEthValueTransform,
   findProtocolAction,
-  readPayableValue,
+  resolvePayableEther,
 } from "@/lib/execute/protocol-eth-value";
 import {
   PAYER_PLACEHOLDER,
@@ -324,28 +323,12 @@ export async function protocolWriteStep(
     const functionArgs = buildFunctionArgs(input, meta);
 
     // 6. Delegate to writeContractCore
-    const payableValue = readPayableValue(input, meta);
+    const payableValue = resolvePayableEther(input, meta);
     if (!payableValue.ok) {
       return { success: false, error: payableValue.error };
     }
-    // The transform throws when the resolved value is in the wrong unit -
-    // ether typed into a wei-labelled field - which is the caller's
-    // mistake, so it comes back as a step error like the execute routes
-    // return it rather than escaping "use step".
-    let transformedEthValue: ReturnType<typeof applyEthValueTransform>;
-    try {
-      transformedEthValue = applyEthValueTransform(payableValue.value, meta);
-    } catch (err) {
-      return {
-        success: false,
-        error: `Invalid ${payableValue.field}: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-    if (!transformedEthValue.ok) {
-      return { success: false, error: transformedEthValue.error };
-    }
     const ethValue = resolveEthValue(
-      transformedEthValue.value,
+      payableValue.value,
       resolvedAbi,
       meta.functionName,
       meta.protocolSlug

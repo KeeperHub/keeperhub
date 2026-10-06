@@ -419,6 +419,46 @@ async function writeContractCoreImpl(
     };
   }
 
+  // Stablecoin ceiling. An ERC-20 call carries no native value, so the daily
+  // value cap reserves 0 for it: a `transfer` on a USDC contract is invisible
+  // to it. Checked here rather than in any one route because every write
+  // entrance funnels through this core -- the contract-call API, the protocol
+  // action API, check-and-execute, node execution, and the workflow steps.
+  //
+  // It reads `args`, which the payer overwrite below rewrites in place, so an
+  // action that names a payer argument is checked after that rewrite and every
+  // other one before the wallet and signer are resolved. Resolving a signer
+  // can probe the chain for a roles modifier and reconcile a row, which a call
+  // the ceiling will refuse should not pay for.
+  const enforceStablecoinCeiling = async (): Promise<
+    WriteContractResult | undefined
+  > => {
+    const stablecoinCap = await checkStablecoinContractCall({
+      organizationId,
+      chainId,
+      contractAddress,
+      functionName: functionAbi.name,
+      inputTypes: (functionAbi.inputs ?? []).map((i) => i.type),
+      args,
+      context: "write-contract",
+    });
+    if (stablecoinCap.kind === "allowed") {
+      return;
+    }
+    return {
+      success: false,
+      error: stablecoinCap.error,
+      errorClass: ExecutionErrorType.USER,
+    };
+  };
+
+  if (payerParam === undefined) {
+    const refusal = await enforceStablecoinCeiling();
+    if (refusal) {
+      return refusal;
+    }
+  }
+
   // Get wallet address for nonce management
   let walletAddress: string;
   try {
@@ -466,29 +506,12 @@ async function writeContractCoreImpl(
       };
     }
     args[payerIndex] = resolveFundingHolder(signerMode, walletAddress);
+    const refusal = await enforceStablecoinCeiling();
+    if (refusal) {
+      return refusal;
+    }
   }
 
-  // Stablecoin ceiling. An ERC-20 call carries no native value, so the daily
-  // value cap reserves 0 for it: a `transfer` on a USDC contract is invisible
-  // to it. Checked here rather than in any one route because every write
-  // entrance funnels through this core -- the contract-call API, the protocol
-  // action API, check-and-execute, node execution, and the workflow steps.
-  const stablecoinCap = await checkStablecoinContractCall({
-    organizationId,
-    chainId,
-    contractAddress,
-    functionName: functionAbi.name,
-    inputTypes: (functionAbi.inputs ?? []).map((i) => i.type),
-    args,
-    context: "write-contract",
-  });
-  if (stablecoinCap.kind !== "allowed") {
-    return {
-      success: false,
-      error: stablecoinCap.error,
-      errorClass: ExecutionErrorType.USER,
-    };
-  }
 
   // Get workflow ID for transaction tracking. The executor already puts
   // workflowId directly on _context for every real workflow execution, so
