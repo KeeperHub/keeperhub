@@ -101,6 +101,10 @@ const ROUTE_STANCES: Record<string, RouteStance> = {
     stance: "refuses",
     why: "arbitrary node steps execute for real; simulate was silently dropped by the validator whitelist (#1929's twin) and is now refused",
   },
+  "gas-top-up": {
+    stance: "refuses",
+    why: "approve, swap and unwrap broadcast for real (#2435); a dry run of the swap alone would not predict the sequence, so the flag is refused",
+  },
   swap: {
     stance: "stub-501",
     why: "501 Coming soon; body never parsed, nothing to broadcast; query flag still refused",
@@ -133,6 +137,8 @@ const spies = vi.hoisted(() => ({
   simulateNativeTransferMock: vi.fn(),
   simulateTokenTransferMock: vi.fn(),
   resolveAction: vi.fn(),
+  prepareGasTopUp: vi.fn(),
+  executeGasTopUp: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -213,6 +219,19 @@ vi.mock("../../app/api/execute/_lib/validate", () => ({
   validateTransferInput: () => ({ valid: true }),
   validateTokenFields: () => ({ valid: true }),
   validateCheckAndExecuteInput: () => ({ valid: true }),
+  validateGasTopUpInput: () => ({ valid: true }),
+}));
+
+// gas-top-up harness: a prepared plan reaches the executor if the guard were
+// removed, so the refusal is observable as "executeGasTopUp never ran".
+vi.mock("@/lib/execute/gas-top-up", () => ({
+  prepareGasTopUp: spies.prepareGasTopUp,
+  executeGasTopUp: spies.executeGasTopUp,
+}));
+
+vi.mock("@/lib/execute/org-circuit-breaker", async (importActual) => ({
+  ...(await importActual<typeof import("@/lib/execute/org-circuit-breaker")>()),
+  isOrgHalted: vi.fn(() => Promise.resolve(false)),
 }));
 
 vi.mock("@/lib/abi/cache", () => ({
@@ -309,6 +328,7 @@ import { POST as slugPOST } from "@/app/api/execute/[...slug]/route";
 import { GET as statusGET } from "@/app/api/execute/[executionId]/status/route";
 import { POST as checkAndExecutePOST } from "@/app/api/execute/check-and-execute/route";
 import { POST as contractCallPOST } from "@/app/api/execute/contract-call/route";
+import { POST as gasTopUpPOST } from "@/app/api/execute/gas-top-up/route";
 import { POST as nodePOST } from "@/app/api/execute/node/route";
 import { POST as swapPOST } from "@/app/api/execute/swap/route";
 import { POST as transferPOST } from "@/app/api/execute/transfer/route";
@@ -437,6 +457,10 @@ const REFUSING_HARNESSES: Record<string, RefusingHarness> = {
       config: { network: "1", contractAddress: "0xabc" },
     },
   },
+  "gas-top-up": {
+    post: (url, body) => gasTopUpPOST(jsonRequest(url, body)),
+    executableBody: { chainId: 8453, amountUsdc: "5" },
+  },
 };
 
 // Routes that cannot broadcast: only the query refusal applies to them.
@@ -466,6 +490,8 @@ const {
   transferTokenCore,
   stepFn,
   resolveAction,
+  prepareGasTopUp,
+  executeGasTopUp,
 } = spies;
 
 // The invariant's core claim: a flag-shaped request never reaches anything
@@ -481,6 +507,7 @@ function expectNoBroadcastSideEffects(): void {
   expect(transferFundsCore).not.toHaveBeenCalled();
   expect(transferTokenCore).not.toHaveBeenCalled();
   expect(stepFn).not.toHaveBeenCalled();
+  expect(executeGasTopUp).not.toHaveBeenCalled();
 }
 
 async function expectUnsupportedParam(
@@ -544,6 +571,25 @@ beforeEach(() => {
     isPluginAction: true,
   }));
   stepFn.mockResolvedValue({ success: true });
+  prepareGasTopUp.mockResolvedValue({
+    ok: true,
+    plan: {
+      chainId: 8453,
+      wallet: FROM_ADDRESS,
+      amountMicroUsd: BigInt(5_000_000),
+    },
+  });
+  executeGasTopUp.mockResolvedValue({
+    success: true,
+    chainId: 8453,
+    wallet: FROM_ADDRESS,
+    steps: [],
+    sponsored: true,
+    broadcastAttempted: true,
+    swapLanded: true,
+    gasUsedWei: "0",
+    finalTransactionHash: "0x01",
+  });
 });
 
 // ---------------------------------------------------------------------------

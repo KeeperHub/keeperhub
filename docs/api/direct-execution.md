@@ -92,7 +92,8 @@ you inspected is the transaction you send:
    retry sends the same one: see [Choosing a stable key](#choosing-a-stable-key).
 4. Save the returned `executionId`, then poll
    `GET /api/execute/{executionId}/status`. Honor the
-   `X-Poll-Interval-Hint` response header between polls.
+   `pollIntervalHint` JSON response body field (or `X-Poll-Interval-Hint`
+   response header) between polls.
 5. Treat the status response's `receipts` as the authoritative onchain proof:
    each entry is a receipt re-fetched from the chain, so `verified` and
    `receiptStatus` say what actually happened. `transactionHash` and
@@ -774,6 +775,150 @@ The request field is `condition` and the response field is `conditionResult`, on
 both the broadcast and the `simulate: true` paths. A parser written once against
 this endpoint works for both.
 
+## Gas Top-Up
+
+```http
+POST /api/execute/gas-top-up
+```
+
+Convert USDC in the organization's Turnkey wallet into native ETH on that same
+wallet. Gas sponsorship pays network fees only; it does not give the wallet
+spendable ETH. Use this route when the wallet holds USDC but needs native
+balance, for example for ETH value transfers, withdrawals, or writes that fall
+back to self-paid gas.
+
+This is not the pay-as-you-go billing top-up. Sending USDC to the organization
+wallet for billing pays for executions and KeeperHub covers gas; this route
+converts the wallet's own USDC into ETH that stays in the wallet.
+
+The route sends three gas-sponsored transactions from the organization's
+Turnkey EOA:
+
+1. `approve` exactly `amountUsdc` to Uniswap V3 SwapRouter02 (never unlimited).
+2. `exactInputSingle` USDC to WETH, with the wallet as recipient. A Uniswap
+   QuoterV2 `quoteExactInputSingle` call is taken before anything is sent, and
+   a zero or failed quote refuses the request. Once the approve confirms, the
+   quote is taken again, and the minimum output is that fresh quote less 0.5%,
+   set server-side. Each quote is also checked against the chain's Chainlink
+   ETH/USD price, which the pool cannot move: a quote more than 2% worse than
+   that price, or no fresh Chainlink price at all, refuses the request
+   (testnets skip this check). The swap goes through the router's `multicall`
+   with a deadline 3 minutes after that fresh quote, so a swap left in the
+   mempool past that reverts instead of filling at a stale price. If the second
+   quote fails or fails the Chainlink check, the swap is not sent and no USDC
+   is spent. Whenever the swap does not happen after the approve confirmed
+   (not sent, declined, or reverted), the route sends `approve` of `0` to the
+   router so no allowance is left behind.
+3. `withdraw` on WETH for the amount the swap delivered, read from the swap's
+   own receipt, which pays native ETH to the wallet. WETH the wallet already
+   held is left alone.
+
+Requires `mcp:write`. There is no dry-run mode: `simulate` is refused.
+
+### Request Body
+
+```json
+{
+  "chainId": 8453,
+  "amountUsdc": "5"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `chainId` | number or numeric string | `1` (Ethereum), `8453` (Base), `42161` (Arbitrum), or `11155111` (Sepolia) |
+| `amountUsdc` | string | USDC to convert, positive, at most 6 decimal places |
+
+Any other field is rejected with `400`. There is no recipient parameter (the
+ETH always lands in the wallet that paid the USDC) and no slippage parameter.
+
+### Limits and refusals
+
+Checked before an execution is reserved or anything is sent:
+
+| Status | When |
+|---|---|
+| `400` | Unsupported chain, invalid amount, unknown field, or `simulate` present |
+| `403` | Organization circuit breaker engaged |
+| `403` | `amountUsdc` above the per-call stablecoin cap (100 USD by default) |
+| `403` | `amountUsdc` would take the organization past its daily gas top-up limit (200 USD per UTC day by default). The error gives the amount used today, the amount requested, and the limit |
+| `422` | Gas sponsorship unavailable: not enabled on the chain, credits exhausted, or no Turnkey wallet. The route never falls back to self-paid gas |
+| `422` | `WALLET_NOT_CONFIGURED`, or the chain's canonical USDC is not a supported stablecoin |
+
+An insufficient USDC balance, a failed quote, or a first quote that fails the
+Chainlink price check (or finds no fresh Chainlink price) is reported after the
+execution is reserved, as `202` with `status: "failed"` and no transaction sent.
+
+The daily limit counts a finished top-up, whatever its status, when its swap
+landed (its USDC is spent), and a completed or unconfirmed top-up whose swap was
+broadcast and may still land. A top-up that stopped before its swap, or whose
+swap reverted, does not count. Top-ups still in flight count too, for the rest
+of the UTC day however long they take, so a slow or
+interrupted run never frees its share early. It is checked twice: once before
+the wallet and sponsorship are resolved, so a request over a spent budget is
+refused without that work, and again atomically with the reservation, so
+concurrent requests cannot both fit under the last of the day's allowance. A
+retry with the same `Idempotency-Key` replays the stored result even once the
+limit is reached. Self-hosted deployments can change it with
+`EXECUTE_DEFAULT_DAILY_GAS_TOP_UP_CAP_MICRO_USD` (micro-USD, so `200000000` is
+200 USD).
+
+### Response
+
+```json
+{
+  "executionId": "k72596auc9fwidsvm8jxu",
+  "status": "completed",
+  "chainId": 8453,
+  "wallet": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+  "transactionHash": "0x...",
+  "transactionLink": "https://basescan.org/tx/0x...",
+  "steps": [
+    { "name": "approve", "status": "confirmed", "transactionHash": "0x..." },
+    { "name": "swap", "status": "confirmed", "transactionHash": "0x..." },
+    { "name": "unwrap", "status": "confirmed", "transactionHash": "0x..." }
+  ],
+  "usdcSpent": "5",
+  "wethReceived": "0.0019",
+  "ethReceived": "0.0019",
+  "quotedWethOut": "1909500000000000",
+  "amountOutMinimum": "1899952500000000",
+  "sponsored": true
+}
+```
+
+`transactionHash` is the unwrap transaction on success. `quotedWethOut` and
+`amountOutMinimum` are in wei.
+
+If the swap's receipt still cannot be read after a few seconds of retries, the
+route unwraps `amountOutMinimum`,
+which the swap is guaranteed to have delivered, and the response carries a
+`warning`: any WETH above that minimum stays in the wallet. Unwrap it with the
+`wrapped/unwrap` protocol action.
+
+### Partial completion
+
+The three transactions are separate, so a run can stop after one or two. The
+response says which landed: each entry in `steps` is `confirmed`, `failed`, or
+`skipped`. `error` explains what state the wallet is left in:
+
+- Approve failed: no USDC was spent.
+- Swap failed: no USDC was spent, and the route sets the approval back to
+  zero. `approvalRevoked` is `true` once that confirmed, with
+  `revokeTransactionHash` and `revokeTransactionLink`. It is `false` when the
+  reset did not complete, in which case an approval for exactly `amountUsdc`
+  remains; revoke it with an `approve` of `0` to the router. A swap that is
+  still unconfirmed is never revoked, since it needs the approval to land.
+- Swap broadcast but unconfirmed: the USDC may or may not have been spent.
+  `usdcSpent` is omitted and `swapPending` is `true`.
+- Unwrap failed: the USDC is spent and the WETH is left unwrapped in the
+  wallet. `usdcSpent` and `wethReceived` are set, `ethReceived` is not.
+
+Once the swap has confirmed, a retry with the same `Idempotency-Key` replays the
+stored result rather than swapping again. Do not call again with a new key to
+finish a partial run: the USDC is already spent. Unwrap the remaining WETH with
+the `wrapped/unwrap` protocol action instead.
+
 ## Dry-Run Simulation
 
 All three execute endpoints (`/api/execute/transfer`, `/api/execute/contract-call`, `/api/execute/check-and-execute`) accept a `simulate` flag on the body. When set to boolean `true`, the endpoint validates inputs, resolves the org's from-address, encodes the call, and runs `provider.estimateGas` + `provider.call` against the chain — **without** signing or broadcasting a transaction.
@@ -1051,6 +1196,7 @@ Check the status of a direct execution.
 {
   "executionId": "n3364uzl2s6aram5v558c",
   "status": "completed",
+  "pollIntervalHint": 0,
   "type": "transfer",
   "network": "11155111",
   "transactionHash": "0x...",
@@ -1079,6 +1225,11 @@ Check the status of a direct execution.
 ```
 
 **Other fields:**
+
+- `pollIntervalHint`: recommended seconds to wait before the next poll, or `0`
+  when the execution has reached a terminal state (`completed` or `failed`).
+  Identical to the `X-Poll-Interval-Hint` header, surfaced in the JSON body so
+  MCP tools and clients without header access can decide terminality safely.
 
 - `network`: the chain identifier the request supplied, stored verbatim as a
   string. The form is decided by the value, not by the field: both `chainId`
@@ -1165,15 +1316,20 @@ Treat this list as a lower bound rather than a closed set. A client that routes 
 unrecognised status into a failing `default` branch will report a failure for an
 execution that is still settling, and one that responds by retrying with a new
 idempotency key can put a second transaction onchain. Decide terminality from the
-`X-Poll-Interval-Hint` response header rather than from the status string: the
-server computes it from its own terminal set, so it stays correct for statuses
-added after your client shipped. `0` means terminal.
+`pollIntervalHint` response body field (or the `X-Poll-Interval-Hint` response
+header) rather than from the status string: the server computes it from its own
+terminal set, so it stays correct for statuses added after your client shipped.
+`0` means terminal.
 
 `sponsored` is `true` when the write was gas-sponsored and broadcast through
 a relayer or smart-account path rather than your org's EOA wallet — see
 [Sponsored Executions](#sponsored-executions).
 
-When polling this endpoint, honour the `X-Poll-Interval-Hint` response header instead of polling on a fixed timer: it gives the recommended number of seconds to wait before the next poll. A value of `0` means the execution has reached a terminal state (`completed` or `failed`) and you can stop polling.
+When polling this endpoint, honour the `pollIntervalHint` response body field
+(or the `X-Poll-Interval-Hint` response header) instead of polling on a fixed
+timer: it gives the recommended number of seconds to wait before the next poll.
+A value of `0` means the execution has reached a terminal state (`completed` or
+`failed`) and you can stop polling.
 
 ## Error Responses
 

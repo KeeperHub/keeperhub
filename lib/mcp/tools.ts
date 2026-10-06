@@ -10,6 +10,10 @@ import {
 import type { AuthMethod } from "@/lib/middleware/auth-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { SUPPORTED_CHAIN_IDS } from "@/lib/rpc/types";
+import {
+  buildApiCallFailedError,
+  parseRetryAfterSeconds,
+} from "./api-call-error";
 import { withToolLogging } from "./logging";
 import { deprecatedToolDescription } from "./mcp-tool-catalog";
 import {
@@ -122,9 +126,9 @@ type ApiResponse = Record<string, unknown>;
 
 /**
  * Detect whether an error message produced by `callApi` represents an
- * HTTP 402 Payment Required response. callApi formats failures as
- * `API call failed: <status> <statusText> - <body>`, so a substring
- * match on the prefix is sufficient and avoids parsing the body twice.
+ * HTTP 402 Payment Required response. buildApiCallFailedError formats failures as
+ * `API call failed: <status> <statusText>[ (Retry-After: <seconds>s)] - <body>`,
+ * so a substring match on the prefix is sufficient and avoids parsing the body twice.
  */
 const API_CALL_FAILED_402_PREFIX = "API call failed: 402";
 
@@ -676,21 +680,6 @@ function isMcpFetchTimeoutError(error: unknown): boolean {
   return error.name === "TimeoutError";
 }
 
-function parseRetryAfterSeconds(header: string | null): number {
-  if (!header) {
-    return DEFAULT_COLD_START_RETRY_SECONDS;
-  }
-  const asNumber = Number(header);
-  if (Number.isFinite(asNumber) && asNumber >= 0) {
-    return Math.ceil(asNumber);
-  }
-  const asDate = Date.parse(header);
-  if (!Number.isNaN(asDate)) {
-    return Math.max(1, Math.ceil((asDate - Date.now()) / 1000));
-  }
-  return DEFAULT_COLD_START_RETRY_SECONDS;
-}
-
 function buildColdStartError(
   retryAfterSeconds: number,
   idempotencyKey?: string
@@ -756,15 +745,13 @@ async function callApi(
       COLD_START_HTTP_STATUSES.has(response.status)
     ) {
       throw buildColdStartError(
-        parseRetryAfterSeconds(response.headers.get("Retry-After")),
+        parseRetryAfterSeconds(response.headers.get("Retry-After")) ??
+          DEFAULT_COLD_START_RETRY_SECONDS,
         idempotencyKey
       );
     }
     const errorText = await response.text();
-    const statusLabel = response.statusText
-      ? `${response.status} ${response.statusText}`
-      : String(response.status);
-    throw new Error(`API call failed: ${statusLabel} - ${errorText}`);
+    throw buildApiCallFailedError(response, errorText);
   }
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -1742,6 +1729,10 @@ export function registerTools(
           "3. Save the terminal transactionLink as the onchain proof",
           "- status unconfirmed is non-terminal: keep polling. Never rotate the key or re-send; the transaction may still land",
           "",
+          "GAS TOP-UP (USDC TO NATIVE ETH)",
+          "- top_up_gas converts USDC in the org wallet into native ETH on that same wallet (approve, swap, unwrap; all gas-sponsored). No simulate mode; pass a unique idempotency_key",
+          "- Read steps[] in the response: a partial run (e.g. swap confirmed, unwrap failed) leaves WETH in the wallet. Do not call again to finish it; the USDC is already spent",
+          "",
           "TEMPLATE SYNTAX",
           "Reference outputs from previous nodes using: {{@nodeId:Label.field}}",
           "Example: {{@check-balance:Check Balance.balance}}",
@@ -1964,13 +1955,47 @@ export function registerTools(
   );
 
   server.tool(
+    "top_up_gas",
+    "Convert USDC in your organization's Turnkey wallet into native ETH on the same wallet, so it can pay native value (ETH transfers, withdrawals, self-paid gas). Runs three gas-sponsored transactions: approve exactly amount_usdc to Uniswap SwapRouter02, swap USDC to WETH with a minimum output derived server-side from an on-chain QuoterV2 quote less 0.5%, and unwrap the WETH. The recipient is always your organization wallet; there is no recipient or slippage parameter. Refused if gas sponsorship is unavailable on the chain, the amount exceeds the per-call stablecoin cap (100 USD by default) or would pass the organization's daily gas top-up limit (200 USD per UTC day by default), or the organization circuit breaker is engaged. The response lists each step (approve, swap, unwrap) with its status and transaction hash, so a partial run - for example WETH left unwrapped - is explicit. Chains: 1, 8453, 42161, 11155111. Not the same as pay-as-you-go billing top-up, which is sending USDC to pay for executions. Details: https://docs.keeperhub.com/api/direct-execution#gas-top-up",
+    {
+      chain_id: looseString(
+        "Chain ID: '1' (Ethereum), '8453' (Base), '42161' (Arbitrum) or '11155111' (Sepolia)"
+      ),
+      amount_usdc: looseString(
+        "USDC to convert, in human-readable units with at most 6 decimals (e.g., '5' or '2.50')"
+      ),
+      idempotency_key: IDEMPOTENCY_KEY_ARG,
+    },
+    { title: "Top Up Gas", readOnlyHint: false, destructiveHint: true },
+    scoped("top_up_gas", async (args) =>
+      withToolLogging("top_up_gas", undefined, async () => {
+        const data = await callExecuteApi(
+          internalApiBaseUrl,
+          authHeader,
+          "/api/execute/gas-top-up",
+          "POST",
+          {
+            chainId: args.chain_id,
+            amountUsdc: args.amount_usdc,
+          },
+          args.idempotency_key,
+          NO_MCP_FETCH_TIMEOUT
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        };
+      })
+    )
+  );
+
+  server.tool(
     "get_direct_execution_status",
     "Get the status of a direct execution (transfer or contract call). Returns transaction hash, status, and result when complete. Status is one of pending, running, unconfirmed, completed, failed; only completed and failed are terminal. unconfirmed means the transaction is on chain but not yet confirmed, so keep polling rather than re-sending.",
     {
       execution_id: z
         .string()
         .describe(
-          "The execution ID returned by execute_transfer, execute_contract_call, execute_protocol_action, or execute_check_and_execute"
+          "The execution ID returned by execute_transfer, execute_contract_call, execute_protocol_action, execute_check_and_execute, or top_up_gas"
         ),
     },
     {

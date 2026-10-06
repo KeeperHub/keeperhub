@@ -608,6 +608,16 @@ describe("GET /api/openapi agent contracts", () => {
         operation.responses["200"].headers["RateLimit-Limit"]
       ).toBeDefined();
     });
+
+    it("publishes both header and body field in x-rate-limits for poll interval hint", async () => {
+      const doc = await fetchDoc();
+      expect(doc["x-rate-limits"].pollIntervalHeader).toBe(
+        "X-Poll-Interval-Hint"
+      );
+      expect(doc["x-rate-limits"].pollIntervalBodyField).toBe(
+        "pollIntervalHint"
+      );
+    });
   });
 
   describe("verifiable API surface", () => {

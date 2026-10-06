@@ -115,6 +115,22 @@ describe("dexSwapStep", () => {
     );
   });
 
+  it("floors the quote by the caller's slippage", async () => {
+    const res = await dexSwapStep(baseInput({ slippageBps: 100 }));
+
+    expect(res.success).toBe(true);
+    if (res.success) {
+      // 99 * (1 - 0.01) = 98.01
+      expect(res.minAmountOut).toBe("98.01");
+    }
+    expect(mockBuildSwapCall).toHaveBeenCalledWith(
+      USDC,
+      ALPHA,
+      BigInt(100_000_000),
+      BigInt(98_010_000)
+    );
+  });
+
   it("rejects swapping a token for itself", async () => {
     const res = await dexSwapStep(
       baseInput({ tokenOutConfig: { supportedTokenId: "usdc" } })

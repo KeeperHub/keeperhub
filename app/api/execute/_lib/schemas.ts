@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  GAS_TOP_UP_CHAIN_IDS,
+  isGasTopUpChain,
+} from "@/lib/execute/gas-top-up-chains";
 import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import { readErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
@@ -472,3 +476,57 @@ export const checkAndExecuteInputSchema = objectBase.superRefine(
     }
   }
 );
+
+// `simulate` is listed only so a `simulate: false` passes; the route refuses
+// any other value before validation runs.
+const GAS_TOP_UP_FIELDS: ReadonlySet<string> = new Set([
+  "chainId",
+  "amountUsdc",
+  "simulate",
+]);
+const USDC_AMOUNT_RE = /^\d+(\.\d{1,6})?$/;
+const DECIMAL_CHAIN_ID_RE = /^\d+$/;
+
+// No recipient and no slippage: the wallet that pays is the wallet that
+// receives, and the floor is derived server-side from an on-chain quote.
+// An unknown field is refused rather than ignored so a caller who sends one
+// learns it had no effect.
+export const gasTopUpInputSchema = objectBase.superRefine((record, ctx) => {
+  const unknownField = Object.keys(record).find(
+    (key) => !GAS_TOP_UP_FIELDS.has(key)
+  );
+  if (unknownField !== undefined) {
+    addError(ctx, {
+      error: "Unknown field",
+      field: unknownField,
+      details:
+        "gas-top-up accepts only chainId and amountUsdc. The recipient is always the organization wallet and the slippage floor is set server-side.",
+    });
+    return;
+  }
+  const chainId =
+    typeof record.chainId === "string" &&
+    DECIMAL_CHAIN_ID_RE.test(record.chainId)
+      ? Number(record.chainId)
+      : record.chainId;
+  if (typeof chainId !== "number" || !isGasTopUpChain(chainId)) {
+    addError(ctx, {
+      error: "Invalid field value",
+      field: "chainId",
+      details: `chainId must be one of ${GAS_TOP_UP_CHAIN_IDS.join(", ")}`,
+    });
+    return;
+  }
+  if (
+    typeof record.amountUsdc !== "string" ||
+    !USDC_AMOUNT_RE.test(record.amountUsdc) ||
+    Number(record.amountUsdc) <= 0
+  ) {
+    addError(ctx, {
+      error: "Invalid field value",
+      field: "amountUsdc",
+      details:
+        'amountUsdc must be a positive decimal string with at most 6 decimal places, e.g. "5" or "2.50"',
+    });
+  }
+});
