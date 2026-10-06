@@ -47,6 +47,7 @@ const lucidPlugin: IntegrationPlugin = {
           field: "pricedEntrypoints",
           description: "Names of the priced entrypoints",
         },
+        { field: "httpStatus", description: "HTTP status from the agent" },
         { field: "error", description: "Error message if the read failed" },
       ],
       configFields: [agentUrlField],
@@ -74,7 +75,7 @@ const lucidPlugin: IntegrationPlugin = {
         {
           field: "payment",
           description:
-            "First x402 payment requirement when payment is required: scheme, network, amount (integer base units, absent when the server sent anything else), amountRejected, asset, assetDecimals, assetMismatch, payTo, resource",
+            "First x402 payment requirement when payment is required: scheme, network, offerCount, amount (integer base units, absent unless the challenge stated exactly one amount), amountRejected, asset, assetDecimals, assetMismatch, payTo, resource, description, maxTimeoutSeconds",
         },
         {
           field: "challenge",

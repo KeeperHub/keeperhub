@@ -77,14 +77,16 @@ export type LucidAgentCard = {
 export type PaymentTerms = {
   scheme?: string;
   network?: string;
-  /** Amount in the asset's base units; absent unless the server sent an integer. */
+  /** How many payment requirements the challenge states. */
+  offerCount?: number;
+  /** Amount in base units; absent unless the challenge stated one integer amount. */
   amount?: string;
-  /** The amount exactly as served, when it was not a base-units integer. */
+  /** Every amount as served, when they were not a single base-units integer. */
   amountRejected?: string;
   asset?: string;
-  /** Decimals of the settlement asset, when `network` is a rail this repo knows. */
+  /** Decimals of the settlement asset, once `asset` is confirmed as that asset. */
   assetDecimals?: number;
-  /** True when `network` is a known rail and `asset` is not that rail's settlement asset. */
+  /** True when `network` is a known rail and `asset` is not confirmed as its settlement asset. */
   assetMismatch?: boolean;
   payTo?: string;
   resource?: string;
@@ -326,22 +328,36 @@ function railFor(network: string | undefined): PaymentRail | undefined {
     : undefined;
 }
 
+/** Every distinct amount a challenge states, across each offer and both amount keys. */
+function statedAmounts(offers: JsonObject[]): string[] {
+  const amounts: string[] = [];
+  for (const offer of offers) {
+    for (const value of [str(offer.maxAmountRequired), str(offer.amount)]) {
+      if (value !== undefined && !amounts.includes(value)) {
+        amounts.push(value);
+      }
+    }
+  }
+  return amounts;
+}
+
 /**
  * Reads the first payment requirement from an x402 envelope
  * (`{ x402Version, accepts: [...] }`) or a bare requirement object.
  * Returns null when nothing in it looks like payment terms.
  *
  * The amount is the server's unvalidated string, so it is published as an
- * amount only when it is the integer count of base units the field claims to
- * be; anything else lands in `amountRejected`, where no arithmetic reaches it.
+ * amount only when the whole challenge states one amount and that amount is
+ * the integer count of base units the field claims to be; anything else lands
+ * in `amountRejected`, where no arithmetic reaches it.
  */
 export function readPaymentTerms(envelope: unknown): PaymentTerms | null {
   if (!isObject(envelope)) {
     return null;
   }
   const accepts = envelope.accepts;
-  const terms =
-    Array.isArray(accepts) && isObject(accepts[0]) ? accepts[0] : envelope;
+  const offers = Array.isArray(accepts) ? accepts.filter(isObject) : [];
+  const terms = offers[0] ?? envelope;
 
   const looksPriced =
     terms.maxAmountRequired !== undefined ||
@@ -359,24 +375,29 @@ export function readPaymentTerms(envelope: unknown): PaymentTerms | null {
     (isObject(terms.resource) ? str(terms.resource.url) : undefined) ??
     (isObject(envelope.resource) ? str(envelope.resource.url) : undefined);
 
-  const served = str(terms.maxAmountRequired) ?? str(terms.amount);
+  // A challenge stating more than one amount names no single price, so it is
+  // published as no amount rather than as whichever one was read first.
+  const served = statedAmounts(offers.length > 0 ? offers : [envelope]);
+  const stated = served.length === 1 ? served[0] : undefined;
   const amount =
-    served !== undefined && BASE_UNITS.test(served) ? served : undefined;
+    stated !== undefined && BASE_UNITS.test(stated) ? stated : undefined;
   const network = str(terms.network);
   const asset = str(terms.asset);
   const rail = railFor(network);
+  const railAsset = rail?.asset.toLowerCase();
+  const assetConfirmed =
+    railAsset !== undefined && asset?.toLowerCase() === railAsset;
 
   return {
     scheme: str(terms.scheme),
     network,
+    offerCount: offers.length > 0 ? offers.length : 1,
     amount,
-    amountRejected: amount === undefined ? served : undefined,
+    amountRejected:
+      amount === undefined && served.length > 0 ? served.join(", ") : undefined,
     asset,
-    assetDecimals: rail?.assetDecimals,
-    assetMismatch:
-      rail && asset
-        ? asset.toLowerCase() !== rail.asset.toLowerCase()
-        : undefined,
+    assetDecimals: assetConfirmed ? rail?.assetDecimals : undefined,
+    assetMismatch: rail ? !assetConfirmed : undefined,
     payTo: str(terms.payTo),
     resource,
     description: str(terms.description),

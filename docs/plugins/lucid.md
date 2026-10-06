@@ -46,21 +46,25 @@ Sends `POST {agentUrl}/entrypoints/{entrypoint}/invoke` with `{ "input": ... }`.
 What comes back depends on the entrypoint:
 
 - **Free entrypoint:** `status` is `completed`, `output` holds the result and `runId` the agent's run id. `agentStatus` is the run status the agent itself reported, when it reported one. The step fails if the agent answers without an entrypoint result.
-- **Priced entrypoint:** the entrypoint does not run. `status` is `awaiting_payment`. `payment` holds the first accepted requirement (`scheme`, `network`, `amount`, `amountRejected`, `asset`, `assetDecimals`, `assetMismatch`, `payTo`, `resource`). `challenge` holds the full x402 challenge as the agent served it. This is a quote, not an error, so `success` is `true`. The terms are read from the `PAYMENT-REQUIRED` header (base64 or JSON) or from the response body.
+- **Priced entrypoint:** the entrypoint does not run. `status` is `awaiting_payment`. `payment` holds the first accepted requirement (`scheme`, `network`, `offerCount`, `amount`, `amountRejected`, `asset`, `assetDecimals`, `assetMismatch`, `payTo`, `resource`, `description`, `maxTimeoutSeconds`). `challenge` holds the full x402 challenge as the agent served it. This is a quote, not an error, so `success` is `true`. The terms are read from the `PAYMENT-REQUIRED` header (base64 or JSON) or from the response body.
 
 ### The run status
 
-`status` is the step's own outcome and `agentStatus` is the agent's. The only run status that completes the step is `succeeded`. An agent that answers 2xx while naming its own run anything else, such as `failed` or `cancelled`, has not produced a result, so the step fails: `success` is `false`, `error` carries the status and whatever the agent said about it, and `agentStatus` carries the status as served. An envelope that states no status at all is taken as a completed run.
+`status` is the step's own outcome and `agentStatus` is the agent's. The only run status that completes the step is `succeeded`, matched without regard to case or surrounding spaces. An agent that answers 2xx while naming its own run anything else, such as `failed` or `cancelled`, has not produced a result, so the step fails: `success` is `false`, `error` carries the status and whatever the agent said about it, and `agentStatus` carries the status as served. A status that is not a string is reported as served and fails the step the same way.
+
+An envelope that carries an `error` also fails the step, whatever status it states, and the agent's account of the failure is carried in `error`. Only an envelope that states no status and no error is taken as a completed run.
 
 A workflow therefore does not have to branch on `agentStatus` to stay safe. A Condition on `status` is enough, because a run the agent reported as failed never reaches `completed`.
 
 ### Reading the payment terms
 
-`amount` is the integer count of the settlement asset's base units. It is the server's own string, so it is published only when it is in fact an integer: anything else, such as a decimal, is left out of `amount` and put in `amountRejected` as served. An absent `amount` on a priced call must be treated as a refusal, because there is no figure to compare against a cap.
+`amount` is the integer count of the settlement asset's base units. It is the server's own string, so it is published only when the challenge states one single amount and that amount is in fact an integer. Anything else is left out of `amount` and put in `amountRejected` as served: a decimal, and also a challenge that states two different amounts, whether across two entries in `accepts` or across `maxAmountRequired` and `amount` on the same entry. An absent `amount` on a priced call must be treated as a refusal, because there is no figure to compare against a cap.
 
-`assetDecimals` is the settlement asset's decimals, filled in when `network` names a payment rail KeeperHub settles on. Without it the amount cannot be turned into a currency figure, so an absent `assetDecimals` must also be treated as a refusal rather than divided by an assumed power of ten.
+`offerCount` is how many payment requirements the challenge states. `payment` describes the first of them, so a count above one means the agent also offers terms that `payment` does not describe; read `challenge` for those.
 
-`assetMismatch` is `true` when `network` names a known rail and `asset` is not that rail's settlement asset. Treat it as a refusal: the quote is denominated in a token the rail does not settle in.
+`assetDecimals` is the settlement asset's decimals, filled in only when `network` names a payment rail KeeperHub settles on and `asset` is that rail's settlement asset. Without it the amount cannot be turned into a currency figure, so an absent `assetDecimals` must be treated as a refusal rather than divided by an assumed power of ten.
+
+`assetMismatch` is `true` when `network` names a known rail and `asset` is not confirmed as that rail's settlement asset, which includes a challenge that names no asset at all. Treat it as a refusal: the quote is not denominated in the token the rail settles in, or does not say what it is denominated in.
 
 Redirects are never followed. Point the action at the agent's final URL. The step is not retried automatically, because a retry would run the entrypoint again.
 

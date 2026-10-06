@@ -14,6 +14,7 @@ import {
   INVOKE_TIMEOUT_MS,
   isFailure,
   isObject,
+  type JsonObject,
   type LucidFailure,
   lucidFetch,
   normalizeAgentUrl,
@@ -23,13 +24,12 @@ import {
   readPaymentTerms,
 } from "./lucid-core";
 
-/**
- * The only run status a Lucid agent reports on a 2xx invoke. Its own types
- * admit "failed" and "cancelled" alongside it, and the A2A client types the
- * field as an open string, so anything else is read as a run that did not
- * succeed rather than guessed at.
- */
+/** The only run status this step reads as a completed run; matched case-insensitively. */
 const RUN_SUCCEEDED = "succeeded";
+
+function isSucceeded(status: string): boolean {
+  return status.trim().toLowerCase() === RUN_SUCCEEDED;
+}
 
 /** A failure that still carries what the agent said about its run. */
 export type CallEntrypointFailure = LucidFailure & {
@@ -72,7 +72,7 @@ export type CallEntrypointInput = StepInput & CallEntrypointCoreInput;
 function parseInput(
   raw: CallEntrypointCoreInput["input"]
 ): Record<string, unknown> | LucidFailure {
-  if (raw === undefined || raw === null || raw === "") {
+  if (raw === undefined || raw === null) {
     return {};
   }
   if (typeof raw === "object") {
@@ -80,8 +80,16 @@ function parseInput(
       ? raw
       : failure("Input must be a JSON object", ExecutionErrorType.USER);
   }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return {};
+  }
   try {
-    const parsed: unknown = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(trimmed);
+    // A written null is no input, same as a native one.
+    if (parsed === null) {
+      return {};
+    }
     if (isObject(parsed)) {
       return parsed;
     }
@@ -114,6 +122,18 @@ function readRunError(value: unknown): string | undefined {
   return [code, message].filter(Boolean).join(": ") || undefined;
 }
 
+/** The stated run status. A status that is not a string is carried as served. */
+function readRunStatus(parsed: JsonObject): string | undefined {
+  if (!("status" in parsed)) {
+    return;
+  }
+  const status = parsed.status;
+  if (typeof status === "string") {
+    return status;
+  }
+  return JSON.stringify(status) ?? String(status);
+}
+
 /**
  * A Lucid invoke answers 2xx with `{ run_id, status, output }`. Anything else
  * is not an entrypoint result, however successful the HTTP status looks.
@@ -125,7 +145,7 @@ function readInvokeResult(parsed: unknown): InvokeResult | undefined {
   return {
     output: parsed.output,
     runId: typeof parsed.run_id === "string" ? parsed.run_id : undefined,
-    agentStatus: typeof parsed.status === "string" ? parsed.status : undefined,
+    agentStatus: readRunStatus(parsed),
     detail: readRunError(parsed.error),
   };
 }
@@ -193,16 +213,18 @@ async function stepHandler(
     );
   }
 
-  // An agent that names its own run anything but succeeded has not produced a
-  // result, so the step fails rather than publishing status "completed".
-  if (
-    result.agentStatus !== undefined &&
-    result.agentStatus !== RUN_SUCCEEDED
-  ) {
+  // An agent that names its own run anything but succeeded, or that reports an
+  // error whatever it names the run, has not produced a result.
+  const runSucceeded =
+    result.agentStatus === undefined || isSucceeded(result.agentStatus);
+  if (!runSucceeded || result.detail) {
+    const stated = runSucceeded
+      ? "reported an error"
+      : `reported run status "${result.agentStatus}"`;
     const detail = result.detail ? `: ${result.detail}` : "";
     return Object.assign(
       failure(
-        `Entrypoint ${entrypoint} reported run status "${result.agentStatus}"${detail}`,
+        `Entrypoint ${entrypoint} ${stated}${detail}`,
         ExecutionErrorType.EXTERNAL,
         response.status
       ),
