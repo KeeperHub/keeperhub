@@ -1,5 +1,6 @@
 "use client";
 
+import { useImperativeHandle, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -7,6 +8,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+
+/** What a caller can do with a toolbar button beyond rendering it. */
+export type FieldToolbarButtonHandle = {
+  /**
+   * Moves focus to the button without showing its tooltip. Radix opens a
+   * tooltip on any focus that does not follow a pointer press, so focus put
+   * back by code would otherwise leave the tooltip over the field - where it
+   * also takes the next Escape before anything under it.
+   */
+  focusWithoutTooltip: () => void;
+};
 
 type FieldToolbarButtonProps = {
   /**
@@ -27,7 +39,7 @@ type FieldToolbarButtonProps = {
    * undoes a state, like leaving full screen.
    */
   highlighted?: boolean;
-  ref?: React.Ref<HTMLButtonElement>;
+  handleRef?: React.Ref<FieldToolbarButtonHandle>;
   children: React.ReactNode;
 };
 
@@ -45,12 +57,38 @@ export function FieldToolbarButton({
   onClick,
   pressed,
   highlighted,
-  ref,
+  handleRef,
   children,
 }: FieldToolbarButtonProps): React.ReactElement {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  // Set only for the duration of a focus() made by focusWithoutTooltip, which
+  // is when Radix asks synchronously to open the tooltip.
+  const quietFocusRef = useRef(false);
+
+  useImperativeHandle(
+    handleRef,
+    () => ({
+      focusWithoutTooltip: (): void => {
+        quietFocusRef.current = true;
+        buttonRef.current?.focus();
+        quietFocusRef.current = false;
+      },
+    }),
+    []
+  );
+
   const on = pressed === true || highlighted === true;
   return (
-    <Tooltip>
+    <Tooltip
+      onOpenChange={(open) => {
+        if (open && quietFocusRef.current) {
+          return;
+        }
+        setTooltipOpen(open);
+      }}
+      open={tooltipOpen}
+    >
       <TooltipTrigger asChild>
         <Button
           aria-label={label}
@@ -63,7 +101,7 @@ export function FieldToolbarButton({
               : "text-muted-foreground hover:text-foreground"
           )}
           onClick={onClick}
-          ref={ref}
+          ref={buttonRef}
           size="sm"
           type="button"
           variant="ghost"

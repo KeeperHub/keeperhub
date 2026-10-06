@@ -14,7 +14,7 @@ import { TemplateBadgeTextarea } from "@/components/ui/template-badge-textarea";
 import {
   BeautifiableField,
   type FieldSize,
-  TALL_FIELD_MAX_LINES,
+  TALL_FIELD_MAX_ROWS,
 } from "@/components/workflow/config/beautifiable-field";
 import { toChecksumAddress, truncateAddress } from "@/lib/address-utils";
 import { buildAddressUrl } from "@/lib/build-explorer-url";
@@ -909,8 +909,7 @@ export function AbiWithAutoFetchField({
             // Parent-driven value changes are already synced via
             // TemplateBadgeTextarea's effect when the field is blurred.
             key={`${field.key}-${useProxyAbi ? "proxy" : "impl"}${isDiamond ? `-${useDiamondAbi ? "diamond" : "proxy"}` : ""}`}
-            maxLines={size === "tall" ? TALL_FIELD_MAX_LINES : undefined}
-            maxRows={4}
+            maxRows={size === "tall" ? TALL_FIELD_MAX_ROWS : 4}
             onChange={handleAbiChange}
             placeholder={
               useManualAbi

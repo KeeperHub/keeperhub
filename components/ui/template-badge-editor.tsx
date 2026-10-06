@@ -7,6 +7,7 @@ import { doesNodeExist, getDisplayTextForTemplate } from "@/lib/workflow/editor/
 import { cn } from "@/lib/utils";
 import { nodesAtom, selectedNodeAtom } from "@/lib/workflow/store";
 import {
+  AUTOCOMPLETE_MENU_HEIGHT,
   TemplateAutocomplete,
   type TemplateAutocompleteCloseReason,
 } from "./template-autocomplete";
@@ -78,12 +79,6 @@ export type TemplateBadgeEditorMultilineOptions = {
   rows: number;
   /** When set, limits visible height to this many rows and makes content scrollable */
   maxRows?: number;
-  /**
-   * Limits visible height to this many lines of text, measured in the
-   * editor's own line height rather than in rows, then scrolls. Takes the
-   * place of maxRows when set.
-   */
-  maxLines?: number;
   /**
    * Fills the parent's height and scrolls past it, ignoring rows and maxRows.
    * The parent has to have a definite height.
@@ -224,15 +219,26 @@ export function TemplateBadgeEditor({
 
   const openAutocompleteAtAt = (atPosition: number): void => {
     setAtSignPosition(atPosition);
-    if (contentRef.current) {
-      // A field filling a dialog is as tall as the dialog, so its bottom edge
-      // can be a screen away from the "@" just typed: open at the caret.
-      const anchor =
-        (multiline?.fill ? caretRect() : null) ??
-        contentRef.current.getBoundingClientRect();
+    // A field filling a dialog is as tall as the dialog, so its bottom edge
+    // can be a screen away from the "@" just typed: open at the caret, and
+    // above it when there is no room below, rather than letting the menu's
+    // viewport clamp pull it up over the line being typed.
+    const caret = multiline?.fill ? caretRect() : null;
+    if (caret) {
+      const below = caret.bottom + 4;
+      const top =
+        below + AUTOCOMPLETE_MENU_HEIGHT <= window.innerHeight
+          ? below
+          : Math.max(0, caret.top - 4 - AUTOCOMPLETE_MENU_HEIGHT);
       setAutocompletePosition({
-        top: anchor.bottom + window.scrollY + 4,
-        left: anchor.left + window.scrollX,
+        top: top + window.scrollY,
+        left: caret.left + window.scrollX,
+      });
+    } else if (contentRef.current) {
+      const editorRect = contentRef.current.getBoundingClientRect();
+      setAutocompletePosition({
+        top: editorRect.bottom + window.scrollY + 4,
+        left: editorRect.left + window.scrollX,
       });
     }
     setShowAutocomplete(true);
@@ -913,11 +919,7 @@ export function TemplateBadgeEditor({
     style = { height: "100%", overflowY: "auto" };
   } else if (multiline) {
     style = { minHeight: `${multiline.rows * 1.5}rem` };
-    if (multiline.maxLines !== undefined) {
-      // `text-sm` lines are 1.25rem; `py-2` adds 1rem around them.
-      style.maxHeight = `calc(${multiline.maxLines} * 1.25rem + 1rem)`;
-      style.overflowY = "auto";
-    } else if (multiline.maxRows !== undefined) {
+    if (multiline.maxRows !== undefined) {
       style.maxHeight = `${multiline.maxRows * 1.5}rem`;
       style.overflowY = "auto";
     }

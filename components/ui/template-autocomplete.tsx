@@ -55,6 +55,9 @@ import { getTriggerOutputFields } from "@/lib/workflow/editor/trigger-output-fie
  */
 export type TemplateAutocompleteCloseReason = "escape" | "outside";
 
+/** Room the menu needs from its top edge: its search row and its list. */
+export const AUTOCOMPLETE_MENU_HEIGHT = 300;
+
 type TemplateAutocompleteProps = {
   isOpen: boolean;
   position: { top: number; left: number };
@@ -614,6 +617,8 @@ export function TemplateAutocomplete({
       }
       case "Escape":
         e.preventDefault();
+        // Handled here: a dialog the picker sits in must not also close.
+        e.stopPropagation();
         onClose("escape");
         break;
       default:
@@ -639,7 +644,7 @@ export function TemplateAutocomplete({
 
   // Ensure position is within viewport
   const adjustedPosition = {
-    top: Math.min(position.top, window.innerHeight - 300), // Keep 300px from bottom
+    top: Math.min(position.top, window.innerHeight - AUTOCOMPLETE_MENU_HEIGHT),
     left: Math.min(position.left, window.innerWidth - 320), // Keep menu (320px wide) within viewport
   };
 

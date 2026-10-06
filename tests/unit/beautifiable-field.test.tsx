@@ -49,10 +49,16 @@ function render({
         showAction={showAction}
         value='{"a":1}'
       >
-        <textarea data-testid="input" readOnly value='{"a":1}' />
+        {() => <textarea data-testid="input" readOnly value='{"a":1}' />}
       </BeautifiableField>
     );
   });
+}
+
+function beautifyButton(): HTMLButtonElement | undefined {
+  return [...container.querySelectorAll("button")].find((b) =>
+    b.textContent?.includes("Beautify")
+  );
 }
 
 function frame(): HTMLElement {
@@ -66,15 +72,13 @@ function frame(): HTMLElement {
 describe("BeautifiableField", () => {
   it("frames the input and offers the action", () => {
     render();
-    expect(container.querySelector("button")?.textContent).toContain(
-      "Beautify"
-    );
+    expect(beautifyButton()).not.toBeUndefined();
     expect(container.querySelector('[data-testid="input"]')).not.toBeNull();
   });
 
   it("keeps the frame but drops the action when showAction is false", () => {
     render({ showAction: false });
-    expect(container.querySelector("button")).toBeNull();
+    expect(beautifyButton()).toBeUndefined();
     expect(container.querySelector('[data-testid="input"]')).not.toBeNull();
     expect(frame().className).toContain("rounded-md");
     expect(frame().className).toContain("border");
@@ -82,7 +86,7 @@ describe("BeautifiableField", () => {
 
   it("drops the action for a language with no formatter", () => {
     render({ language: "sql" });
-    expect(container.querySelector("button")).toBeNull();
+    expect(beautifyButton()).toBeUndefined();
     expect(container.querySelector('[data-testid="input"]')).not.toBeNull();
   });
 
@@ -131,8 +135,7 @@ describe("BeautifiableField", () => {
 
   it("disables the action when the field is disabled", () => {
     render({ disabled: true });
-    const button = container.querySelector("button");
-    expect(button?.hasAttribute("disabled")).toBe(true);
+    expect(beautifyButton()?.hasAttribute("disabled")).toBe(true);
   });
 });
 
@@ -152,7 +155,7 @@ describe("BeautifiableField above the size budget", () => {
           }}
           value={huge}
         >
-          <textarea data-testid="input" readOnly value={huge} />
+          {() => <textarea data-testid="input" readOnly value={huge} />}
         </BeautifiableField>
       );
     });
@@ -160,8 +163,8 @@ describe("BeautifiableField above the size budget", () => {
 
   it("greys the action out rather than hiding it", () => {
     renderLarge();
-    const button = container.querySelector("button");
-    expect(button).not.toBeNull();
+    const button = beautifyButton();
+    expect(button).not.toBeUndefined();
     expect(button?.hasAttribute("disabled")).toBe(true);
   });
 
@@ -172,8 +175,8 @@ describe("BeautifiableField above the size budget", () => {
   });
 });
 
-// A field whose input is given as a function of its size gets two more
-// buttons: one makes it taller in place, one opens it in a full-screen dialog.
+// Every field gets two more buttons: one makes it taller in place, one opens
+// it in a full-screen dialog.
 describe("BeautifiableField expand controls", () => {
   type SizedOptions = Options & { label?: string };
 
@@ -263,16 +266,6 @@ describe("BeautifiableField expand controls", () => {
     expect(button("Make taller").getAttribute("aria-pressed")).toBe("false");
     expect(button("Open in full screen")).not.toBeNull();
     expect(inputSizes()).toEqual(["normal"]);
-  });
-
-  it("does not offer them for an input given as a node", () => {
-    render();
-    expect(
-      container.querySelector('button[aria-label="Make taller"]')
-    ).toBeNull();
-    expect(
-      container.querySelector('button[aria-label="Open in full screen"]')
-    ).toBeNull();
   });
 
   // A toggle keeps one name; its pressed state carries the change.
@@ -374,7 +367,6 @@ describe("BeautifiableField expand controls", () => {
   });
 
   // Escape closes an open variable picker first, not the dialog under it.
-  // Escape closes an open variable picker first, not the dialog under it.
   it("keeps the dialog open on Escape while a variable picker is open", () => {
     const onClose = vi.fn();
     act(() => {
@@ -415,16 +407,64 @@ describe("BeautifiableField expand controls", () => {
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
-  // Monaco's widgets render in the dialog's own root, where the check looks.
-  it("keeps the dialog open on Escape while Monaco's suggestions are open", () => {
+  // An editor that handles Escape stops it propagating - Monaco does for its
+  // suggestions, find bar, menus and command palette - and the dialog closes
+  // only on an Escape that comes back up unhandled.
+  it("stays open on an Escape an editor handled", () => {
     renderSized();
     act(() => button("Open in full screen").click());
-    const widget = document.createElement("div");
-    widget.className = "suggest-widget visible";
-    document.querySelector('[role="dialog"]')?.appendChild(widget);
+    const input = document.querySelector('[data-size="fill"]');
+    const swallow = (event: Event): void => event.stopPropagation();
+    input?.addEventListener("keydown", swallow);
 
     pressEscape();
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    input?.removeEventListener("keydown", swallow);
+    pressEscape();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  // Monaco empties a closed right-click menu but leaves its node behind until
+  // the next one opens; a check for an open menu by its markup then held every
+  // later Escape. Nothing here reads widget markup any more.
+  it("closes on Escape after a right-click menu has opened and closed", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    const host = document.createElement("div");
+    host.className = "shadow-root-host";
+    const shadow = host.attachShadow({ mode: "open" });
+    const menu = document.createElement("div");
+    menu.className = "monaco-menu";
+    shadow.appendChild(menu);
+    document.querySelector('[role="dialog"]')?.appendChild(host);
+
+    pressEscape();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  // React Flow deletes the selected node on Backspace unless the key comes
+  // from an input or from inside `.nokey`, and focus in the dialog can sit on
+  // a button or on the dialog itself.
+  it("keeps its keys off the canvas behind it", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    expect(document.querySelector('[role="dialog"]')?.className).toContain(
+      "nokey"
+    );
+  });
+
+  // Radix opens a tooltip on any focus not following a pointer press, so focus
+  // put back on the button by code would leave its tooltip showing.
+  it("returns focus to its button without opening the button's tooltip", async () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    pressEscape();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.activeElement).toBe(button("Open in full screen"));
+    expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull();
   });
 
   // A modal leaves everything outside it unreachable, so the picker has to

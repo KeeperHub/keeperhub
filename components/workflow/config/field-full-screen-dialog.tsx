@@ -3,7 +3,8 @@
 import { Content as DialogContent } from "@radix-ui/react-dialog";
 import { useAtomValue } from "jotai";
 import { Minimize2 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { createOverflowWidgetsNode } from "@/components/ui/code-editor";
 import {
   Dialog,
   DialogOverlay,
@@ -16,52 +17,16 @@ import {
 } from "@/components/ui/editor-popup-container";
 import {
   FieldToolbarButton,
+  type FieldToolbarButtonHandle,
   FieldToolbarDivider,
 } from "@/components/workflow/config/field-toolbar-button";
 import { cn } from "@/lib/utils";
 import { getNodeDisplayName } from "@/lib/workflow/editor/template-helpers";
 import { nodesAtom, selectedNodeAtom } from "@/lib/workflow/store";
 
-// Popups that Escape should close before it closes the dialog. All of them
-// render inside the dialog: the variable picker, and Monaco's widgets through
-// the root this dialog gives it.
-const OPEN_EDITOR_POPUPS = [
-  "[data-template-autocomplete]",
-  ".suggest-widget.visible",
-  ".parameter-hints-widget.visible",
-  ".find-widget.visible",
-].join(", ");
-
 // What takes focus when the dialog opens: the input, where typing goes.
 // Monaco mounts after the dialog opens and focuses itself when it does.
 const EDITABLE = '[contenteditable="true"], textarea';
-
-// Monaco draws its right-click menu inside a shadow root, out of reach of a
-// selector, so an open one is found through its host.
-function hasOpenEditorPopup(container: HTMLElement): boolean {
-  if (container.querySelector(OPEN_EDITOR_POPUPS)) {
-    return true;
-  }
-  for (const host of container.querySelectorAll(".shadow-root-host")) {
-    if (host.shadowRoot?.querySelector(".monaco-menu")) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Monaco's overflow-widget root for this dialog. It carries the class
-// Monaco's widget styles are scoped to, as the shared root on <body> does.
-function createMonacoWidgetRoot(): HTMLElement {
-  const node = document.createElement("div");
-  node.className = "monaco-editor";
-  node.style.position = "absolute";
-  node.style.top = "0";
-  node.style.left = "0";
-  node.style.width = "0";
-  node.style.height = "0";
-  return node;
-}
 
 type FieldFullScreenDialogProps = {
   open: boolean;
@@ -76,7 +41,7 @@ type FieldFullScreenDialogProps = {
    * Where focus goes when the dialog closes. The dialog is opened from a
    * button that is not a Radix trigger, so Radix cannot find it on its own.
    */
-  returnFocusRef: React.RefObject<HTMLElement | null>;
+  returnFocusRef: React.RefObject<FieldToolbarButtonHandle | null>;
   /** The field's input, sized to fill the dialog. */
   children: React.ReactNode;
 };
@@ -103,9 +68,15 @@ export function FieldFullScreenDialog({
   // takes this node only when an editor is created, so it has to exist before
   // the editor inside renders for the first time.
   const monacoWidgets = useMemo(
-    () => (open ? createMonacoWidgetRoot() : null),
+    () => (open ? createOverflowWidgetsNode() : null),
     [open]
   );
+  // The Escape that reached this dialog as the topmost layer. Radix reports it
+  // on the way down; the dialog closes only if it also comes back up from the
+  // focused element, so an Escape an editor handled - which Monaco and the
+  // variable picker stop from propagating - leaves the dialog open, whatever
+  // widget it closed.
+  const escapeRef = useRef<KeyboardEvent | null>(null);
   const attachMonacoWidgets = useCallback(
     (slot: HTMLDivElement | null): void => {
       if (slot && monacoWidgets) {
@@ -128,14 +99,25 @@ export function FieldFullScreenDialog({
         <DialogOverlay />
         <DialogContent
           aria-describedby={undefined}
-          className="fixed inset-8 z-50 flex flex-col overflow-hidden rounded-lg border bg-background shadow-lg"
+          // `nokey` keeps keys pressed in the dialog off the canvas behind it:
+          // React Flow deletes the selected node on Backspace unless the key
+          // comes from an input or from inside `.nokey`.
+          className="nokey fixed inset-8 z-50 flex flex-col overflow-hidden rounded-lg border bg-background shadow-lg"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            returnFocusRef.current?.focus();
+            returnFocusRef.current?.focusWithoutTooltip();
           }}
           onEscapeKeyDown={(event) => {
-            if (content && hasOpenEditorPopup(content)) {
-              event.preventDefault();
+            event.preventDefault();
+            escapeRef.current = event;
+          }}
+          onKeyDown={(event) => {
+            if (
+              event.key === "Escape" &&
+              event.nativeEvent === escapeRef.current
+            ) {
+              escapeRef.current = null;
+              onOpenChange(false);
             }
           }}
           onOpenAutoFocus={(event) => {

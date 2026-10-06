@@ -26,7 +26,7 @@ import { TemplateBadgeTextarea } from "@/components/ui/template-badge-textarea";
 import {
   BeautifiableField,
   type FieldSize,
-  TALL_FIELD_MAX_LINES,
+  TALL_FIELD_MAX_ROWS,
 } from "@/components/workflow/config/beautifiable-field";
 import { SaveAddressBookmark } from "@/components/address-book/save-address-bookmark";
 import type { AbiComponent } from "@/components/workflow/config/abi-types";
@@ -151,8 +151,9 @@ function BeautifiableTextareaField({
           // Formatting turns one line into hundreds - an ERC-20 ABI pasted into
           // the override field goes to 224 - and this editor grows without
           // limit unless it is given a ceiling. Past it the field scrolls.
-          maxLines={size === "tall" ? TALL_FIELD_MAX_LINES : undefined}
-          maxRows={FORMATTED_FIELD_MAX_ROWS}
+          maxRows={
+            size === "tall" ? TALL_FIELD_MAX_ROWS : FORMATTED_FIELD_MAX_ROWS
+          }
           onChange={onChange}
           placeholder={field.placeholder}
           rows={field.rows || 4}

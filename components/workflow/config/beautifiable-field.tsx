@@ -6,6 +6,7 @@ import { BeautifyButton } from "@/components/workflow/config/beautify-button";
 import { FieldFullScreenDialog } from "@/components/workflow/config/field-full-screen-dialog";
 import {
   FieldToolbarButton,
+  type FieldToolbarButtonHandle,
   FieldToolbarDivider,
 } from "@/components/workflow/config/field-toolbar-button";
 import { useBeautify } from "@/lib/hooks/use-beautify";
@@ -20,14 +21,24 @@ import {
  * How much room the field's input is given.
  *
  * - `normal`: the size the field asked for.
- * - `tall`: grows to fit its content, up to {@link TALL_FIELD_MAX_LINES}
- *   lines, never shorter than `normal`. Width does not change.
+ * - `tall`: grows to fit its content, up to a ceiling well above its normal
+ *   one, never shorter than `normal`. Width does not change.
  * - `fill`: fills the full-screen dialog.
  */
 export type FieldSize = "normal" | "tall" | "fill";
 
-/** The ceiling on a field made taller, in lines of its own text. */
+/**
+ * The ceiling on a code editor made taller, in lines of its own text. Its
+ * normal heights show 5 to 16 lines.
+ */
 export const TALL_FIELD_MAX_LINES = 24;
+
+/**
+ * The ceiling on a text box made taller, in the rows its `maxRows` counts.
+ * A JSON text box already grows to 16 rows on its own, so its taller ceiling
+ * is double that rather than a few lines more.
+ */
+export const TALL_FIELD_MAX_ROWS = 32;
 
 /**
  * The height of a field made taller, in px: its content's height, capped at
@@ -60,11 +71,8 @@ type BeautifiableFieldProps = {
   /** Names the field in the full-screen dialog. */
   label?: string;
   className?: string;
-  /**
-   * The input. Given as a function of {@link FieldSize}, the frame can make it
-   * taller and open it in full screen; given as a node, it is only framed.
-   */
-  children: React.ReactNode | ((size: FieldSize) => React.ReactNode);
+  /** The input, rendered at the size the frame gives it. */
+  children: (size: FieldSize) => React.ReactNode;
 };
 
 /**
@@ -80,6 +88,9 @@ type BeautifiableFieldProps = {
  *
  * Beautify is dropped for a language with no formatter behind it, so the SQL
  * field keeps the strip for its expand buttons alone.
+ *
+ * The input is passed as a function of its size so the frame can give it more
+ * room; each editor family decides what each size means for it.
  */
 export function BeautifiableField({
   value,
@@ -110,7 +121,7 @@ export function BeautifiableField({
   // same space and the panel does not jump when the dialog closes.
   const [placeholderHeight, setPlaceholderHeight] = useState(0);
   const inputRef = useRef<HTMLDivElement>(null);
-  const fullScreenButtonRef = useRef<HTMLButtonElement>(null);
+  const fullScreenButtonRef = useRef<FieldToolbarButtonHandle>(null);
 
   const openFullScreen = (): void => {
     setPlaceholderHeight(inputRef.current?.offsetHeight ?? 0);
@@ -118,15 +129,10 @@ export function BeautifiableField({
   };
 
   const beautifyVisible = showAction && canBeautifyLanguage(language);
-  // Only an input the frame can size gets the buttons that size it.
-  const expandable = typeof children === "function";
   // Formatting a field this large would leave the workflow too big for the
   // import route to accept, and nothing in the product puts it back. The
   // control stays visible and says why rather than disappearing.
   const tooLarge = !isWithinBeautifySize(value);
-
-  const renderInput = (size: FieldSize): React.ReactNode =>
-    typeof children === "function" ? children(size) : children;
 
   const beautifyButton = beautifyVisible ? (
     <BeautifyButton
@@ -160,36 +166,28 @@ export function BeautifiableField({
         className
       )}
     >
-      {(beautifyVisible || expandable) && (
-        <div className="flex items-center justify-end gap-0.5 border-b bg-muted/30 px-1.5 py-1">
-          {beautifyButton}
-          {beautifyVisible && expandable && <FieldToolbarDivider />}
-          {expandable && (
-            <>
-              <FieldToolbarButton
-                label="Make taller"
-                onClick={() => setTall((current) => !current)}
-                pressed={tall}
-                tooltip={
-                  tall
-                    ? "Back to normal height"
-                    : `Make taller · fits up to ${TALL_FIELD_MAX_LINES} lines`
-                }
-              >
-                {tall ? <FoldVertical /> : <UnfoldVertical />}
-              </FieldToolbarButton>
-              <FieldToolbarButton
-                label="Open in full screen"
-                onClick={openFullScreen}
-                ref={fullScreenButtonRef}
-                tooltip="Open in full screen"
-              >
-                <Maximize2 />
-              </FieldToolbarButton>
-            </>
-          )}
-        </div>
-      )}
+      <div className="flex items-center justify-end gap-0.5 border-b bg-muted/30 px-1.5 py-1">
+        {beautifyButton}
+        {beautifyVisible && <FieldToolbarDivider />}
+        <FieldToolbarButton
+          label="Make taller"
+          onClick={() => setTall((current) => !current)}
+          pressed={tall}
+          tooltip={
+            tall ? "Back to normal height" : "Make taller · grows to fit"
+          }
+        >
+          {tall ? <FoldVertical /> : <UnfoldVertical />}
+        </FieldToolbarButton>
+        <FieldToolbarButton
+          handleRef={fullScreenButtonRef}
+          label="Open in full screen"
+          onClick={openFullScreen}
+          tooltip="Open in full screen"
+        >
+          <Maximize2 />
+        </FieldToolbarButton>
+      </div>
       <div
         className={cn(disabled && "opacity-50")}
         data-beautify-input
@@ -208,21 +206,19 @@ export function BeautifiableField({
             Editing in full screen
           </div>
         ) : (
-          renderInput(tall ? "tall" : "normal")
+          children(tall ? "tall" : "normal")
         )}
       </div>
-      {expandable && (
-        <FieldFullScreenDialog
-          beautifyButton={beautifyButton}
-          disabled={disabled}
-          label={label}
-          onOpenChange={setFullScreen}
-          open={fullScreen}
-          returnFocusRef={fullScreenButtonRef}
-        >
-          {renderInput("fill")}
-        </FieldFullScreenDialog>
-      )}
+      <FieldFullScreenDialog
+        beautifyButton={beautifyButton}
+        disabled={disabled}
+        label={label}
+        onOpenChange={setFullScreen}
+        open={fullScreen}
+        returnFocusRef={fullScreenButtonRef}
+      >
+        {children("fill")}
+      </FieldFullScreenDialog>
     </div>
   );
 }

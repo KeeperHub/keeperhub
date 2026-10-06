@@ -10,13 +10,13 @@ import { vercelDarkTheme } from "@/lib/monaco-theme";
 
 let overflowWidgetsDomNode: HTMLElement | null = null;
 
-function getOverflowWidgetsDomNode(): HTMLElement | undefined {
-  if (typeof document === "undefined") {
-    return;
-  }
-  if (overflowWidgetsDomNode) {
-    return overflowWidgetsDomNode;
-  }
+/**
+ * A root for Monaco's overflow widgets - suggestions, hovers, menus. It
+ * carries the classes Monaco scopes its widget styles to. The shared one
+ * lives on <body>; a modal that hosts an editor makes its own, since a modal
+ * leaves anything outside it unreachable.
+ */
+export function createOverflowWidgetsNode(zIndex = 10_000): HTMLElement {
   const node = document.createElement("div");
   node.className = "monaco-editor monaco-editor-overflow-widgets-root";
   node.style.position = "absolute";
@@ -24,7 +24,18 @@ function getOverflowWidgetsDomNode(): HTMLElement | undefined {
   node.style.left = "0";
   node.style.width = "0";
   node.style.height = "0";
-  node.style.zIndex = "10000";
+  node.style.zIndex = String(zIndex);
+  return node;
+}
+
+function getOverflowWidgetsDomNode(): HTMLElement | undefined {
+  if (typeof document === "undefined") {
+    return;
+  }
+  if (overflowWidgetsDomNode) {
+    return overflowWidgetsDomNode;
+  }
+  const node = createOverflowWidgetsNode();
   document.body.appendChild(node);
   overflowWidgetsDomNode = node;
   return node;

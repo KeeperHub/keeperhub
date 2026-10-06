@@ -12,8 +12,6 @@ export interface TemplateBadgeTextareaProps {
   rows?: number;
   /** When set, limits visible height to this many rows and makes content scrollable */
   maxRows?: number;
-  /** Limits visible height to this many lines of text, then scrolls; replaces maxRows */
-  maxLines?: number;
   /** Fills the parent's height and scrolls past it, ignoring rows and maxRows */
   fill?: boolean;
 }
@@ -25,14 +23,13 @@ export interface TemplateBadgeTextareaProps {
 export function TemplateBadgeTextarea({
   rows = 3,
   maxRows,
-  maxLines,
   fill,
   ...props
 }: TemplateBadgeTextareaProps) {
   return (
     <TemplateBadgeEditor
       {...props}
-      multiline={{ rows, maxRows, maxLines, fill }}
+      multiline={{ rows, maxRows, fill }}
     />
   );
 }
