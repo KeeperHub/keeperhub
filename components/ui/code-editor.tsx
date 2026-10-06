@@ -24,6 +24,9 @@ function getOverflowWidgetsDomNode(): HTMLElement | undefined {
   node.style.width = "0";
   node.style.height = "0";
   node.style.zIndex = "10000";
+  // A modal dialog sets `pointer-events: none` on <body>, which this node
+  // would inherit, leaving suggestions unclickable in a full-screen editor.
+  node.style.pointerEvents = "auto";
   document.body.appendChild(node);
   overflowWidgetsDomNode = node;
   return node;

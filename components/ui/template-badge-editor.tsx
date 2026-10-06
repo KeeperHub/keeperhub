@@ -78,6 +78,11 @@ export type TemplateBadgeEditorMultilineOptions = {
   rows: number;
   /** When set, limits visible height to this many rows and makes content scrollable */
   maxRows?: number;
+  /**
+   * Fills the parent's height and scrolls past it, ignoring rows and maxRows.
+   * The parent has to have a definite height.
+   */
+  fill?: boolean;
 };
 
 export type TemplateBadgeEditorProps = {
@@ -883,7 +888,9 @@ export function TemplateBadgeEditor({
   // Calculate min height based on rows; max height when maxRows is set
   // (truncates display, scrollable). Single-line editors get no inline style.
   let style: CSSProperties | undefined;
-  if (multiline) {
+  if (multiline?.fill) {
+    style = { height: "100%", overflowY: "auto" };
+  } else if (multiline) {
     style = { minHeight: `${multiline.rows * 1.5}rem` };
     if (multiline.maxRows !== undefined) {
       style.maxHeight = `${multiline.maxRows * 1.5}rem`;

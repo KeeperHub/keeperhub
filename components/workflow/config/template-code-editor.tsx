@@ -3,9 +3,14 @@
 import type { EditorProps, Monaco, OnMount } from "@monaco-editor/react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { AlertTriangle } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor } from "@/components/ui/code-editor";
-import { BeautifiableField } from "@/components/workflow/config/beautifiable-field";
+import {
+  BeautifiableField,
+  type FieldSize,
+  TALL_FIELD_MAX_LINES,
+  tallFieldHeight,
+} from "@/components/workflow/config/beautifiable-field";
 import { api } from "@/lib/api-client";
 import { getInputSchemaFields } from "@/lib/workflow/editor/input-schema-fields";
 import {
@@ -60,6 +65,8 @@ export type TemplateCodeEditorProps = {
   disabled?: boolean;
   height?: string;
   placeholder?: string;
+  /** Names the field in the full-screen dialog. */
+  label?: string;
   /**
    * Replaces the default Monaco options wholesale (readOnly is still driven
    * by `disabled`). Lets variants keep their exact editor configuration.
@@ -74,6 +81,7 @@ export function TemplateCodeEditor({
   disabled,
   height = "320px",
   placeholder,
+  label,
   editorOptions,
 }: TemplateCodeEditorProps): React.ReactElement {
   const nodes = useAtomValue(nodesAtom);
@@ -99,6 +107,11 @@ export function TemplateCodeEditor({
   // biome-ignore lint/suspicious/noExplicitAny: Monaco editor types are complex and vary across versions
   const editorRef = useRef<any>(null);
   const decorationIdsRef = useRef<string[]>([]);
+
+  // Measured from the mounted editor, so a taller field fits the text as
+  // Monaco lays it out - wrapped lines included - at its own line height.
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
+  const [tallMaxHeight, setTallMaxHeight] = useState<number | null>(null);
 
   const displayValue = useMemo(
     () => value.replace(/\{\{@[^:]+:([^}]+)\}\}/g, "{{$1}}"),
@@ -413,6 +426,22 @@ export function TemplateCodeEditor({
 
       updateDecorations();
 
+      const padding = editor.getOption(monaco.editor.EditorOption.padding);
+      const lineHeight = editor.getOption(
+        monaco.editor.EditorOption.lineHeight
+      );
+      setTallMaxHeight(
+        TALL_FIELD_MAX_LINES * lineHeight + padding.top + padding.bottom
+      );
+      setContentHeight(editor.getContentHeight());
+      editor.onDidContentSizeChange(
+        (event: { contentHeight: number; contentHeightChanged: boolean }) => {
+          if (event.contentHeightChanged) {
+            setContentHeight(event.contentHeight);
+          }
+        }
+      );
+
       let decorationRaf: number | undefined;
       editor.onDidChangeModelContent(() => {
         if (decorationRaf !== undefined) {
@@ -478,6 +507,21 @@ export function TemplateCodeEditor({
     [language, updateDecorations]
   );
 
+  const editorHeight = (size: FieldSize): string => {
+    if (size === "fill") {
+      return "100%";
+    }
+    if (size === "normal" || contentHeight === null || tallMaxHeight === null) {
+      return height;
+    }
+    const tall = tallFieldHeight({
+      normalHeight: Number.parseFloat(height) || 0,
+      contentHeight,
+      maxHeight: tallMaxHeight,
+    });
+    return `${tall}px`;
+  };
+
   const duplicateLabelWarnings = useMemo(
     () => findDuplicateTemplateLabels(displayValue, nodes),
     [displayValue, nodes]
@@ -487,22 +531,25 @@ export function TemplateCodeEditor({
     <>
       <BeautifiableField
         disabled={disabled}
+        label={label}
         language={language}
         onChange={onChange}
         value={value}
       >
-        <CodeEditor
-          defaultLanguage={language}
-          defaultValue={placeholder}
-          height={height}
-          onChange={(v) => handleEditorChange(v || "")}
-          onMount={handleMount}
-          options={{
-            ...(editorOptions ?? DEFAULT_EDITOR_OPTIONS),
-            readOnly: disabled,
-          }}
-          value={displayValue}
-        />
+        {(size: FieldSize) => (
+          <CodeEditor
+            defaultLanguage={language}
+            defaultValue={placeholder}
+            height={editorHeight(size)}
+            onChange={(v) => handleEditorChange(v || "")}
+            onMount={handleMount}
+            options={{
+              ...(editorOptions ?? DEFAULT_EDITOR_OPTIONS),
+              readOnly: disabled,
+            }}
+            value={displayValue}
+          />
+        )}
       </BeautifiableField>
       {duplicateLabelWarnings.length > 0 && (
         <div className="flex items-start gap-2 rounded-md border border-yellow-200 bg-yellow-50 p-2 text-xs text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">

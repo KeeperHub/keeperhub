@@ -23,7 +23,11 @@ import {
 } from "@/components/ui/select";
 import { TemplateBadgeInput } from "@/components/ui/template-badge-input";
 import { TemplateBadgeTextarea } from "@/components/ui/template-badge-textarea";
-import { BeautifiableField } from "@/components/workflow/config/beautifiable-field";
+import {
+  BeautifiableField,
+  type FieldSize,
+  TALL_FIELD_MAX_LINES,
+} from "@/components/workflow/config/beautifiable-field";
 import { SaveAddressBookmark } from "@/components/address-book/save-address-bookmark";
 import type { AbiComponent } from "@/components/workflow/config/abi-types";
 import { ArrayInputField } from "@/components/workflow/config/array-input-field";
@@ -133,23 +137,29 @@ function BeautifiableTextareaField({
     <BeautifiableField
       className="shadow-xs"
       disabled={disabled}
+      label={field.label}
       language="json"
       onChange={onChange}
       value={value}
     >
-      <TemplateBadgeTextarea
-        className="rounded-none border-0 opacity-100 shadow-none focus-within:ring-0"
-        disabled={disabled}
-        id={field.key}
-        // Formatting turns one line into hundreds - an ERC-20 ABI pasted into
-        // the override field goes to 224 - and this editor grows without limit
-        // unless it is given a ceiling. Past it the field scrolls.
-        maxRows={FORMATTED_FIELD_MAX_ROWS}
-        onChange={onChange}
-        placeholder={field.placeholder}
-        rows={field.rows || 4}
-        value={value}
-      />
+      {(size: FieldSize) => (
+        <TemplateBadgeTextarea
+          className="rounded-none border-0 opacity-100 shadow-none focus-within:ring-0"
+          disabled={disabled}
+          fill={size === "fill"}
+          id={field.key}
+          // Formatting turns one line into hundreds - an ERC-20 ABI pasted into
+          // the override field goes to 224 - and this editor grows without
+          // limit unless it is given a ceiling. Past it the field scrolls.
+          maxRows={
+            size === "tall" ? TALL_FIELD_MAX_LINES : FORMATTED_FIELD_MAX_ROWS
+          }
+          onChange={onChange}
+          placeholder={field.placeholder}
+          rows={field.rows || 4}
+          value={value}
+        />
+      )}
     </BeautifiableField>
   );
 }
