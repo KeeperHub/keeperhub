@@ -7,11 +7,13 @@ import {
   type StepInput,
 } from "@/lib/workflow/executor/step-handler";
 import {
+  AGENT_URL_ERROR,
   CHALLENGE_HEADERS,
   failure,
   httpFailure,
   INVOKE_TIMEOUT_MS,
   isFailure,
+  isObject,
   type LucidFailure,
   lucidFetch,
   normalizeAgentUrl,
@@ -21,12 +23,28 @@ import {
   readPaymentTerms,
 } from "./lucid-core";
 
+/**
+ * The only run status a Lucid agent reports on a 2xx invoke. Its own types
+ * admit "failed" and "cancelled" alongside it, and the A2A client types the
+ * field as an open string, so anything else is read as a run that did not
+ * succeed rather than guessed at.
+ */
+const RUN_SUCCEEDED = "succeeded";
+
+/** A failure that still carries what the agent said about its run. */
+export type CallEntrypointFailure = LucidFailure & {
+  agentStatus?: string;
+  runId?: string;
+};
+
 export type CallEntrypointResult =
   | {
       success: true;
       status: "completed";
       httpStatus: number;
       output: unknown;
+      /** The run status the agent reported, when it reported one. */
+      agentStatus?: string;
       /** The agent's id for this run, when it returns one. */
       runId?: string;
     }
@@ -41,7 +59,7 @@ export type CallEntrypointResult =
       /** The full 402 challenge as served. */
       challenge: unknown;
     }
-  | LucidFailure;
+  | CallEntrypointFailure;
 
 export type CallEntrypointCoreInput = {
   agentUrl: string;
@@ -58,12 +76,14 @@ function parseInput(
     return {};
   }
   if (typeof raw === "object") {
-    return raw;
+    return isObject(raw)
+      ? raw
+      : failure("Input must be a JSON object", ExecutionErrorType.USER);
   }
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+    if (isObject(parsed)) {
+      return parsed;
     }
     return failure("Input must be a JSON object", ExecutionErrorType.USER);
   } catch (error) {
@@ -74,25 +94,39 @@ function parseInput(
   }
 }
 
+type InvokeResult = {
+  output: unknown;
+  runId?: string;
+  agentStatus?: string;
+  detail?: string;
+};
+
+/** The agent's own account of why the run did not succeed, when it gives one. */
+function readRunError(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!isObject(value)) {
+    return;
+  }
+  const message = typeof value.message === "string" ? value.message : undefined;
+  const code = typeof value.code === "string" ? value.code : undefined;
+  return [code, message].filter(Boolean).join(": ") || undefined;
+}
+
 /**
  * A Lucid invoke answers 2xx with `{ run_id, status, output }`. Anything else
  * is not an entrypoint result, however successful the HTTP status looks.
  */
-function readInvokeResult(
-  parsed: unknown
-): { output: unknown; runId?: string } | undefined {
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    Array.isArray(parsed) ||
-    !("output" in parsed)
-  ) {
+function readInvokeResult(parsed: unknown): InvokeResult | undefined {
+  if (!(isObject(parsed) && "output" in parsed)) {
     return;
   }
-  const envelope = parsed as { output: unknown; run_id?: unknown };
   return {
-    output: envelope.output,
-    runId: typeof envelope.run_id === "string" ? envelope.run_id : undefined,
+    output: parsed.output,
+    runId: typeof parsed.run_id === "string" ? parsed.run_id : undefined,
+    agentStatus: typeof parsed.status === "string" ? parsed.status : undefined,
+    detail: readRunError(parsed.error),
   };
 }
 
@@ -101,10 +135,7 @@ async function stepHandler(
 ): Promise<CallEntrypointResult> {
   const agentUrl = normalizeAgentUrl(input.agentUrl);
   if (!agentUrl) {
-    return failure(
-      "Agent URL must be an absolute http(s) URL, e.g. https://agent.example.com",
-      ExecutionErrorType.USER
-    );
+    return failure(AGENT_URL_ERROR, ExecutionErrorType.USER);
   }
   const entrypoint = input.entrypoint?.trim();
   if (!entrypoint) {
@@ -162,11 +193,29 @@ async function stepHandler(
     );
   }
 
+  // An agent that names its own run anything but succeeded has not produced a
+  // result, so the step fails rather than publishing status "completed".
+  if (
+    result.agentStatus !== undefined &&
+    result.agentStatus !== RUN_SUCCEEDED
+  ) {
+    const detail = result.detail ? `: ${result.detail}` : "";
+    return Object.assign(
+      failure(
+        `Entrypoint ${entrypoint} reported run status "${result.agentStatus}"${detail}`,
+        ExecutionErrorType.EXTERNAL,
+        response.status
+      ),
+      { agentStatus: result.agentStatus, runId: result.runId }
+    );
+  }
+
   return {
     success: true,
     status: "completed",
     httpStatus: response.status,
     output: result.output,
+    agentStatus: result.agentStatus,
     runId: result.runId,
   };
 }

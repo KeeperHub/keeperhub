@@ -18,6 +18,7 @@ vi.mock("@/lib/safe-fetch", () => ({
 }));
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { BASE_RAIL } from "@/lib/payments/rails";
 import { callEntrypointStep } from "@/plugins/lucid/steps/call-entrypoint";
 import { discoverAgentStep } from "@/plugins/lucid/steps/discover-agent";
 import {
@@ -200,7 +201,7 @@ describe("readAgentCard", () => {
     });
   });
 
-  it("leaves the unit unset when no payment method matches the price", () => {
+  it("reports the unit as unknown when no payment method matches the price", () => {
     const card = readAgentCard({
       entrypoints: {
         x: { payment_protocol: "x402", pricing: { invoke: "5" } },
@@ -209,8 +210,40 @@ describe("readAgentCard", () => {
     expect(card?.entrypoints[0]).toMatchObject({
       priced: true,
       price: "5",
-      priceUnit: undefined,
+      priceUnit: "unknown",
     });
+  });
+
+  it("finds a price published only under priceModel, with an unknown unit", () => {
+    const card = readAgentCard({
+      entrypoints: {
+        x: { payment_protocol: "x402", pricing: { invoke: "10000" } },
+      },
+      payments: [
+        { method: "x402", payee: PAYEE, priceModel: { default: "10000" } },
+      ],
+    });
+    expect(card?.entrypoints[0]).toMatchObject({
+      price: "10000",
+      priceUnit: "unknown",
+      payTo: PAYEE,
+    });
+  });
+
+  it("reports unknown when two offers state the same price in different units", () => {
+    const card = readAgentCard({
+      entrypoints: {
+        x: { payment_protocol: "x402", pricing: { invoke: "10000" } },
+      },
+      payments: [
+        { method: "x402", extensions: { x402: { price: "10000" } } },
+        {
+          method: "x402",
+          extensions: { x402: { price: { amount: "10000", asset: ASSET } } },
+        },
+      ],
+    });
+    expect(card?.entrypoints[0]).toMatchObject({ priceUnit: "unknown" });
   });
 
   it("treats a payment marker without a price as priced", () => {
@@ -252,6 +285,56 @@ describe("readPaymentTerms", () => {
     ).toMatchObject({ amount: "5" });
   });
 
+  it("refuses an amount that is not an integer count of base units", () => {
+    expect(
+      readPaymentTerms({ accepts: [{ amount: "0.01", payTo: PAYEE }] })
+    ).toMatchObject({ amount: undefined, amountRejected: "0.01" });
+  });
+
+  it("keeps a base-units integer and leaves nothing rejected", () => {
+    expect(readPaymentTerms(CHALLENGE)).toMatchObject({
+      amount: "10000",
+      amountRejected: undefined,
+    });
+  });
+
+  it("returns the rail's decimals for a known network", () => {
+    expect(
+      readPaymentTerms({
+        accepts: [
+          {
+            amount: "10000",
+            asset: BASE_RAIL.asset.toLowerCase(),
+            network: BASE_RAIL.network,
+            payTo: PAYEE,
+          },
+        ],
+      })
+    ).toMatchObject({ assetDecimals: 6, assetMismatch: false });
+  });
+
+  it("flags an asset that is not the rail's settlement asset", () => {
+    expect(
+      readPaymentTerms({
+        accepts: [
+          {
+            amount: "10000",
+            asset: ASSET,
+            network: BASE_RAIL.network,
+            payTo: PAYEE,
+          },
+        ],
+      })
+    ).toMatchObject({ assetDecimals: 6, assetMismatch: true });
+  });
+
+  it("states no decimals for a network that is not a known rail", () => {
+    expect(readPaymentTerms(CHALLENGE)).toMatchObject({
+      assetDecimals: undefined,
+      assetMismatch: undefined,
+    });
+  });
+
   it("returns null for something that is not payment terms", () => {
     expect(readPaymentTerms({})).toBeNull();
     expect(readPaymentTerms("nope")).toBeNull();
@@ -278,6 +361,23 @@ describe("discoverAgentStep", () => {
       name: "counterparty-oracle",
       pricedEntrypoints: ["quote", "counterparty-check"],
     });
+  });
+
+  it("drops a query and fragment instead of letting them swallow the path", async () => {
+    respond(200, SERVED_CARD);
+    await discoverAgentStep({ agentUrl: `${AGENT}/base/?token=x#frag` });
+    expect(lastCall().url).toBe(`${AGENT}/base/.well-known/agent-card.json`);
+  });
+
+  it("refuses an agent URL carrying credentials", async () => {
+    const result = await discoverAgentStep({
+      agentUrl: "https://user:pw@agent.example.com",
+    });
+    expect(result.success).toBe(false);
+    expect(safeFetch).not.toHaveBeenCalled();
+    if (!result.success) {
+      expect(result.error).not.toContain("pw");
+    }
   });
 
   it("fails on JSON that is not an agent card", async () => {
@@ -382,6 +482,7 @@ describe("callEntrypointStep", () => {
       status: "completed",
       httpStatus: 200,
       output: { ok: true },
+      agentStatus: "succeeded",
       runId: "run-1",
     });
   });
@@ -410,6 +511,52 @@ describe("callEntrypointStep", () => {
     expect(result).toMatchObject({
       success: true,
       output: { recorded: true },
+    });
+  });
+
+  it("fails a run the agent itself reports as failed", async () => {
+    respond(200, {
+      run_id: "run-2",
+      status: "failed",
+      output: null,
+      error: "upstream oracle unreachable",
+    });
+
+    const result = await callEntrypointStep({
+      agentUrl: AGENT,
+      entrypoint: "counterparty-check",
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.EXTERNAL,
+      agentStatus: "failed",
+      runId: "run-2",
+    });
+    if (!result.success) {
+      expect(result.error).toContain("upstream oracle unreachable");
+    }
+  });
+
+  it("never reports completed for a status it does not recognise", async () => {
+    respond(200, { status: "cancelled", output: { partial: true } });
+    const result = await callEntrypointStep({
+      agentUrl: AGENT,
+      entrypoint: "counterparty-check",
+    });
+    expect(result).toMatchObject({ success: false, agentStatus: "cancelled" });
+  });
+
+  it("completes an envelope that states no status", async () => {
+    respond(200, { output: { ok: true } });
+    const result = await callEntrypointStep({
+      agentUrl: AGENT,
+      entrypoint: "health",
+    });
+    expect(result).toMatchObject({
+      success: true,
+      status: "completed",
+      agentStatus: undefined,
     });
   });
 
@@ -502,8 +649,14 @@ describe("callEntrypointStep", () => {
       entrypoint: "health",
       input: "[1]",
     });
+    const nativeArray = await callEntrypointStep({
+      agentUrl: AGENT,
+      entrypoint: "health",
+      input: [1] as unknown as Record<string, unknown>,
+    });
     expect(invalid.success).toBe(false);
     expect(array.success).toBe(false);
+    expect(nativeArray.success).toBe(false);
     expect(safeFetch).not.toHaveBeenCalled();
   });
 

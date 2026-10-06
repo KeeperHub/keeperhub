@@ -1,6 +1,7 @@
 import "server-only";
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { PAYMENT_RAILS, type PaymentRail } from "@/lib/payments/rails";
 import {
   assertUrlIsPublic,
   SsrfBlockedError,
@@ -26,6 +27,12 @@ export const DISCOVER_TIMEOUT_MS = 10_000;
 export const INVOKE_TIMEOUT_MS = 30_000;
 const ERROR_BODY_PREVIEW = 300;
 
+/** An x402 amount is an integer count of the asset's base units, never a decimal. */
+const BASE_UNITS = /^\d+$/;
+
+export const AGENT_URL_ERROR =
+  "Agent URL must be an absolute http(s) URL with no credentials, e.g. https://agent.example.com";
+
 // x402 v2 servers carry the terms in PAYMENT-REQUIRED; older ones use the
 // X-prefixed names. KeeperHub's own call route sets the first two.
 export const CHALLENGE_HEADERS = [
@@ -33,6 +40,9 @@ export const CHALLENGE_HEADERS = [
   "x-payment-requirements",
   "x-payment-required",
 ];
+
+/** The unit `LucidEntrypoint.price` is stated in. */
+export type PriceUnit = "usd" | "base_units" | "unknown";
 
 export type LucidEntrypoint = {
   /**
@@ -47,9 +57,10 @@ export type LucidEntrypoint = {
   /**
    * "usd" for Lucid's canonical USD decimal string ("0.01" is one cent),
    * "base_units" when the entrypoint is priced as a token amount (then
-   * `asset` names the token). Absent when the card does not say.
+   * `asset` names the token), "unknown" when no offer on the card declares
+   * the unit or two offers at this price disagree about it.
    */
-  priceUnit?: "usd" | "base_units";
+  priceUnit?: PriceUnit;
   asset?: string;
   network?: string;
   payTo?: string;
@@ -66,9 +77,15 @@ export type LucidAgentCard = {
 export type PaymentTerms = {
   scheme?: string;
   network?: string;
-  /** Amount in the asset's base units. */
+  /** Amount in the asset's base units; absent unless the server sent an integer. */
   amount?: string;
+  /** The amount exactly as served, when it was not a base-units integer. */
+  amountRejected?: string;
   asset?: string;
+  /** Decimals of the settlement asset, when `network` is a rail this repo knows. */
+  assetDecimals?: number;
+  /** True when `network` is a known rail and `asset` is not that rail's settlement asset. */
+  assetMismatch?: boolean;
   payTo?: string;
   resource?: string;
   description?: string;
@@ -82,13 +99,13 @@ export type LucidFailure = {
   httpStatus?: number;
 };
 
-type JsonObject = Record<string, unknown>;
+export type JsonObject = Record<string, unknown>;
 
 // Failures are recognised by identity, not by shape: user input or an agent
 // response can itself contain `success: false`.
 const failures = new WeakSet<object>();
 
-function isObject(value: unknown): value is JsonObject {
+export function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -128,55 +145,96 @@ export function isFailure(value: unknown): value is LucidFailure {
 }
 
 /**
- * Validates the agent base URL and returns it without trailing slashes.
- * Returns undefined when it is not an absolute http(s) URL.
+ * Validates the agent base URL and returns its origin and path, without
+ * trailing slashes. Returns undefined when it is not an absolute http(s) URL
+ * or when it carries credentials.
  */
 export function normalizeAgentUrl(raw: string | undefined): string | undefined {
   const trimmed = raw?.trim();
   if (!trimmed) {
     return;
   }
+  let parsed: URL;
   try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-      return;
-    }
+    parsed = new URL(trimmed);
   } catch {
     return;
   }
-  return stripTrailingSlashes(trimmed);
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return;
+  }
+  // Userinfo is a credential, and this url is echoed into errors where the
+  // redactor drops query strings but not userinfo.
+  if (parsed.username || parsed.password) {
+    return;
+  }
+  // Rebuilt rather than returned as given, so a query or fragment cannot
+  // swallow the path each caller appends.
+  return stripTrailingSlashes(`${parsed.origin}${parsed.pathname}`);
+}
+
+type PaymentMatch = { unit: PriceUnit; asset?: string; payTo?: string };
+
+/**
+ * Matches one offer in the card's `payments` list against an entrypoint's
+ * `pricing.invoke`. `extensions.x402.price` is either the USD string the
+ * author wrote or a `{ amount, asset }` token amount, which is how the unit
+ * and asset are told apart; `priceModel.default` restates the same figure
+ * without saying which unit it is in.
+ */
+function matchOffer(
+  method: JsonObject,
+  price: string,
+  network: string | undefined
+): PaymentMatch | undefined {
+  const extensions = isObject(method.extensions) ? method.extensions : {};
+  const offer = isObject(extensions.x402) ? extensions.x402 : {};
+  if (network && str(offer.network ?? method.network) !== network) {
+    return;
+  }
+  const payTo = str(offer.payTo) ?? str(method.payee);
+  if (isObject(offer.price) && str(offer.price.amount) === price) {
+    return { unit: "base_units", asset: str(offer.price.asset), payTo };
+  }
+  if (str(offer.price) === price) {
+    return { unit: "usd", payTo };
+  }
+  const priceModel = isObject(method.priceModel) ? method.priceModel : {};
+  if (str(priceModel.default) === price) {
+    return { unit: "unknown", payTo };
+  }
+  return;
 }
 
 /**
- * The card's `payments` list holds one x402 method per offer. Its
- * `extensions.x402.price` is either the USD string the author wrote or a
- * `{ amount, asset }` token amount, which is how the unit and asset of an
- * entrypoint's `pricing.invoke` are told apart.
+ * The offer an entrypoint's price belongs to. Always reports a unit: a price
+ * no offer explains, and a price two offers state in different units, are both
+ * "unknown", because the agent chooses the order of `payments[]` and reading
+ * whichever came first as the unit is how a token amount passes for dollars.
  */
 function findPaymentMethod(
   card: JsonObject,
   price: string,
   network: string | undefined
-): { unit: "usd" | "base_units"; asset?: string; payTo?: string } | undefined {
+): PaymentMatch {
   const methods = Array.isArray(card.payments) ? card.payments : [];
+  const matches: PaymentMatch[] = [];
   for (const method of methods) {
-    if (!isObject(method)) {
-      continue;
-    }
-    const extensions = isObject(method.extensions) ? method.extensions : {};
-    const offer = isObject(extensions.x402) ? extensions.x402 : {};
-    if (network && str(offer.network ?? method.network) !== network) {
-      continue;
-    }
-    const payTo = str(offer.payTo) ?? str(method.payee);
-    if (isObject(offer.price) && str(offer.price.amount) === price) {
-      return { unit: "base_units", asset: str(offer.price.asset), payTo };
-    }
-    if (str(offer.price) === price) {
-      return { unit: "usd", payTo };
+    if (isObject(method)) {
+      const match = matchOffer(method, price, network);
+      if (match) {
+        matches.push(match);
+      }
     }
   }
-  return;
+  const first = matches[0];
+  if (!first) {
+    return { unit: "unknown" };
+  }
+  if (matches.some((match) => match.unit !== first.unit)) {
+    return { unit: "unknown" };
+  }
+  return first;
 }
 
 function readEntrypoint(
@@ -204,9 +262,9 @@ function readEntrypoint(
   if (price) {
     entrypoint.price = price;
     const method = findPaymentMethod(card, price, network);
-    entrypoint.priceUnit = method?.unit;
-    entrypoint.asset = method?.asset;
-    entrypoint.payTo = method?.payTo;
+    entrypoint.priceUnit = method.unit;
+    entrypoint.asset = method.asset;
+    entrypoint.payTo = method.payTo;
   }
   return entrypoint;
 }
@@ -261,10 +319,21 @@ export function readHeaderJson(headers: Headers, names: string[]): unknown {
   return null;
 }
 
+/** The rail a CAIP-2 network id names, when this repo settles on it. */
+function railFor(network: string | undefined): PaymentRail | undefined {
+  return network && Object.hasOwn(PAYMENT_RAILS, network)
+    ? PAYMENT_RAILS[network]
+    : undefined;
+}
+
 /**
  * Reads the first payment requirement from an x402 envelope
  * (`{ x402Version, accepts: [...] }`) or a bare requirement object.
  * Returns null when nothing in it looks like payment terms.
+ *
+ * The amount is the server's unvalidated string, so it is published as an
+ * amount only when it is the integer count of base units the field claims to
+ * be; anything else lands in `amountRejected`, where no arithmetic reaches it.
  */
 export function readPaymentTerms(envelope: unknown): PaymentTerms | null {
   if (!isObject(envelope)) {
@@ -290,11 +359,24 @@ export function readPaymentTerms(envelope: unknown): PaymentTerms | null {
     (isObject(terms.resource) ? str(terms.resource.url) : undefined) ??
     (isObject(envelope.resource) ? str(envelope.resource.url) : undefined);
 
+  const served = str(terms.maxAmountRequired) ?? str(terms.amount);
+  const amount =
+    served !== undefined && BASE_UNITS.test(served) ? served : undefined;
+  const network = str(terms.network);
+  const asset = str(terms.asset);
+  const rail = railFor(network);
+
   return {
     scheme: str(terms.scheme),
-    network: str(terms.network),
-    amount: str(terms.maxAmountRequired) ?? str(terms.amount),
-    asset: str(terms.asset),
+    network,
+    amount,
+    amountRejected: amount === undefined ? served : undefined,
+    asset,
+    assetDecimals: rail?.assetDecimals,
+    assetMismatch:
+      rail && asset
+        ? asset.toLowerCase() !== rail.asset.toLowerCase()
+        : undefined,
     payTo: str(terms.payTo),
     resource,
     description: str(terms.description),

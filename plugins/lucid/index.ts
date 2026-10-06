@@ -41,7 +41,7 @@ const lucidPlugin: IntegrationPlugin = {
         {
           field: "entrypoints",
           description:
-            "Entrypoints: name, description, priced, price, priceUnit (usd or base_units), asset, network, payTo, inputSchema",
+            "Entrypoints: name, description, priced, price, priceUnit (usd, base_units or unknown), asset, network, payTo, inputSchema",
         },
         {
           field: "pricedEntrypoints",
@@ -67,9 +67,14 @@ const lucidPlugin: IntegrationPlugin = {
         },
         { field: "output", description: "Entrypoint output when completed" },
         {
+          field: "agentStatus",
+          description:
+            'The run status the agent reported, when it reported one. Only "succeeded" completes the step',
+        },
+        {
           field: "payment",
           description:
-            "First x402 payment requirement when payment is required: scheme, network, amount (base units), asset, payTo, resource",
+            "First x402 payment requirement when payment is required: scheme, network, amount (integer base units, absent when the server sent anything else), amountRejected, asset, assetDecimals, assetMismatch, payTo, resource",
         },
         {
           field: "challenge",
@@ -92,8 +97,10 @@ const lucidPlugin: IntegrationPlugin = {
         {
           key: "input",
           label: "Input JSON",
-          type: "template-input",
+          type: "template-textarea",
+          valueFormat: "json",
           placeholder: '{"text": "hello"}',
+          rows: 4,
           required: false,
         },
       ],

@@ -6,6 +6,7 @@ import {
   type StepInput,
 } from "@/lib/workflow/executor/step-handler";
 import {
+  AGENT_URL_ERROR,
   DISCOVER_TIMEOUT_MS,
   failure,
   httpFailure,
@@ -40,10 +41,7 @@ async function stepHandler(
 ): Promise<DiscoverAgentResult> {
   const agentUrl = normalizeAgentUrl(input.agentUrl);
   if (!agentUrl) {
-    return failure(
-      "Agent URL must be an absolute http(s) URL, e.g. https://agent.example.com",
-      ExecutionErrorType.USER
-    );
+    return failure(AGENT_URL_ERROR, ExecutionErrorType.USER);
   }
 
   const url = `${agentUrl}/.well-known/agent-card.json`;

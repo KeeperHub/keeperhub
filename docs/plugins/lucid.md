@@ -9,7 +9,7 @@ Discover a [Lucid](https://www.npmjs.com/package/@lucid-agents/core) agent and c
 
 This plugin never signs or pays, and it cannot make a paid call.
 
-No credentials required. The agent URL is set on each action. It must be a public http(s) address: private, loopback and link-local addresses are refused, and redirects are not followed.
+No credentials required. The agent URL is set on each action. It must be a public http(s) address with no credentials in it: private, loopback and link-local addresses are refused, a URL carrying a username or password is refused, and redirects are not followed. A query string or fragment on the agent URL is dropped, because every request appends its own path.
 
 ## Actions
 
@@ -29,7 +29,7 @@ Reads the agent card at `{agentUrl}/.well-known/agent-card.json`. The step fails
 Each item in `entrypoints` has `name`, `description`, `priced` and `inputSchema`. A priced entrypoint also has:
 
 - `price`: the price exactly as the card states it.
-- `priceUnit`: `usd` when the price is a USD decimal string, so `"0.01"` is one cent. `base_units` when the entrypoint is priced as a token amount, so `"10000"` of a 6-decimal token is 0.01 of that token. Absent when the card does not say.
+- `priceUnit`: `usd` when the price is a USD decimal string, so `"0.01"` is one cent. `base_units` when the entrypoint is priced as a token amount, so `"10000"` of a 6-decimal token is 0.01 of that token. `unknown` when no payment offer on the card declares the unit, or when two offers state the same price in different units. Treat `unknown` as a refusal: the same digits are a cent or ten thousand tokens depending on a unit the card did not state, so a spend cap compared against the price is meaningless.
 - `asset`: the token contract, only when `priceUnit` is `base_units`. A USD price names no token on the card. Call Entrypoint's `payment.asset` always carries the token the agent will charge in.
 - `network` and `payTo`, when the card states them.
 
@@ -41,12 +41,26 @@ Sends `POST {agentUrl}/entrypoints/{entrypoint}/invoke` with `{ "input": ... }`.
 
 **Inputs:** Agent URL, Entrypoint, Input JSON (optional)
 
-**Outputs:** `success`, `status`, `output`, `runId`, `payment`, `challenge`, `httpStatus`, `error`
+**Outputs:** `success`, `status`, `agentStatus`, `output`, `runId`, `payment`, `challenge`, `httpStatus`, `error`
 
 What comes back depends on the entrypoint:
 
-- **Free entrypoint:** `status` is `completed`, `output` holds the result and `runId` the agent's run id. The step fails if the agent answers without an entrypoint result.
-- **Priced entrypoint:** the entrypoint does not run. `status` is `awaiting_payment`. `payment` holds the first accepted requirement (`scheme`, `network`, `amount`, `asset`, `payTo`, `resource`), where `amount` is always in the asset's base units. `challenge` holds the full x402 challenge as the agent served it. This is a quote, not an error, so `success` is `true`. The terms are read from the `PAYMENT-REQUIRED` header (base64 or JSON) or from the response body.
+- **Free entrypoint:** `status` is `completed`, `output` holds the result and `runId` the agent's run id. `agentStatus` is the run status the agent itself reported, when it reported one. The step fails if the agent answers without an entrypoint result.
+- **Priced entrypoint:** the entrypoint does not run. `status` is `awaiting_payment`. `payment` holds the first accepted requirement (`scheme`, `network`, `amount`, `amountRejected`, `asset`, `assetDecimals`, `assetMismatch`, `payTo`, `resource`). `challenge` holds the full x402 challenge as the agent served it. This is a quote, not an error, so `success` is `true`. The terms are read from the `PAYMENT-REQUIRED` header (base64 or JSON) or from the response body.
+
+### The run status
+
+`status` is the step's own outcome and `agentStatus` is the agent's. The only run status that completes the step is `succeeded`. An agent that answers 2xx while naming its own run anything else, such as `failed` or `cancelled`, has not produced a result, so the step fails: `success` is `false`, `error` carries the status and whatever the agent said about it, and `agentStatus` carries the status as served. An envelope that states no status at all is taken as a completed run.
+
+A workflow therefore does not have to branch on `agentStatus` to stay safe. A Condition on `status` is enough, because a run the agent reported as failed never reaches `completed`.
+
+### Reading the payment terms
+
+`amount` is the integer count of the settlement asset's base units. It is the server's own string, so it is published only when it is in fact an integer: anything else, such as a decimal, is left out of `amount` and put in `amountRejected` as served. An absent `amount` on a priced call must be treated as a refusal, because there is no figure to compare against a cap.
+
+`assetDecimals` is the settlement asset's decimals, filled in when `network` names a payment rail KeeperHub settles on. Without it the amount cannot be turned into a currency figure, so an absent `assetDecimals` must also be treated as a refusal rather than divided by an assumed power of ten.
+
+`assetMismatch` is `true` when `network` names a known rail and `asset` is not that rail's settlement asset. Treat it as a refusal: the quote is denominated in a token the rail does not settle in.
 
 Redirects are never followed. Point the action at the agent's final URL. The step is not retried automatically, because a retry would run the entrypoint again.
 
