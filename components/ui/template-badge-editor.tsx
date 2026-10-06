@@ -214,28 +214,31 @@ export function TemplateBadgeEditor({
   // Autocomplete state
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompletePosition, setAutocompletePosition] = useState({ top: 0, left: 0 });
+  const [autocompletePlacement, setAutocompletePlacement] = useState<"below" | "above">("below");
   const [atSignPosition, setAtSignPosition] = useState<number | null>(null);
   const pendingCursorPosition = useRef<number | null>(null);
 
   const openAutocompleteAtAt = (atPosition: number): void => {
     setAtSignPosition(atPosition);
     // A field filling a dialog is as tall as the dialog, so its bottom edge
-    // can be a screen away from the "@" just typed: open at the caret, and
-    // above it when there is no room below, rather than letting the menu's
-    // viewport clamp pull it up over the line being typed.
+    // can be a screen away from the "@" just typed: open at the caret, below
+    // it when the menu fits there, otherwise on whichever side has more room.
+    // Above, the menu is anchored by its bottom edge so it meets the line
+    // however short its list is, rather than letting the menu's viewport
+    // clamp pull it up over the line being typed.
     const caret = multiline?.fill ? caretRect() : null;
     if (caret) {
-      const below = caret.bottom + 4;
-      const top =
-        below + AUTOCOMPLETE_MENU_HEIGHT <= window.innerHeight
-          ? below
-          : Math.max(0, caret.top - 4 - AUTOCOMPLETE_MENU_HEIGHT);
+      const roomBelow = window.innerHeight - caret.bottom - 4;
+      const roomAbove = caret.top - 4;
+      const below = roomBelow >= AUTOCOMPLETE_MENU_HEIGHT || roomBelow >= roomAbove;
+      setAutocompletePlacement(below ? "below" : "above");
       setAutocompletePosition({
-        top: top + window.scrollY,
-        left: caret.left + window.scrollX,
+        top: below ? caret.bottom + 4 : caret.top - 4,
+        left: caret.left,
       });
     } else if (contentRef.current) {
       const editorRect = contentRef.current.getBoundingClientRect();
+      setAutocompletePlacement("below");
       setAutocompletePosition({
         top: editorRect.bottom + window.scrollY + 4,
         left: editorRect.left + window.scrollX,
@@ -984,6 +987,7 @@ export function TemplateBadgeEditor({
         isOpen={showAutocomplete}
         onClose={closeAutocomplete}
         onSelect={handleAutocompleteSelect}
+        placement={autocompletePlacement}
         position={autocompletePosition}
       />
     </>

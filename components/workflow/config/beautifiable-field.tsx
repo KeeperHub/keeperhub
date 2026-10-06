@@ -34,11 +34,12 @@ export type FieldSize = "normal" | "tall" | "fill";
 export const TALL_FIELD_MAX_LINES = 24;
 
 /**
- * The ceiling on a text box made taller, in the rows its `maxRows` counts.
- * A JSON text box already grows to 16 rows on its own, so its taller ceiling
- * is double that rather than a few lines more.
+ * The ceiling on a text box made taller, in the rows its `maxRows` counts
+ * (1.5rem each). A JSON text box already grows to 16 rows on its own, so its
+ * taller ceiling is a clear step above that - 42rem against 24rem - while
+ * staying inside a laptop-height config panel.
  */
-export const TALL_FIELD_MAX_ROWS = 32;
+export const TALL_FIELD_MAX_ROWS = 28;
 
 /**
  * The height of a field made taller, in px: its content's height, capped at

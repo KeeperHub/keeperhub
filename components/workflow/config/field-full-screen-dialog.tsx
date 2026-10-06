@@ -75,7 +75,8 @@ export function FieldFullScreenDialog({
   // on the way down; the dialog closes only if it also comes back up from the
   // focused element, so an Escape an editor handled - which Monaco and the
   // variable picker stop from propagating - leaves the dialog open, whatever
-  // widget it closed.
+  // widget it closed. With a selection in Monaco that means the first Escape
+  // clears the selection and the second closes, as in VS Code.
   const escapeRef = useRef<KeyboardEvent | null>(null);
   const attachMonacoWidgets = useCallback(
     (slot: HTMLDivElement | null): void => {
@@ -101,7 +102,9 @@ export function FieldFullScreenDialog({
           aria-describedby={undefined}
           // `nokey` keeps keys pressed in the dialog off the canvas behind it:
           // React Flow deletes the selected node on Backspace unless the key
-          // comes from an input or from inside `.nokey`.
+          // comes from an input or from inside `.nokey`. Monaco's right-click
+          // menu sits in a shadow root that check cannot see into, so the
+          // delete keys are also stopped below.
           className="nokey fixed inset-8 z-50 flex flex-col overflow-hidden rounded-lg border bg-background shadow-lg"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
@@ -109,16 +112,41 @@ export function FieldFullScreenDialog({
           }}
           onEscapeKeyDown={(event) => {
             event.preventDefault();
+            // Focus outside the content - on <body> after a focused element
+            // went away - leaves nothing in here to send the key back up.
+            if (
+              !(event.target instanceof Node && content?.contains(event.target))
+            ) {
+              onOpenChange(false);
+              return;
+            }
             escapeRef.current = event;
           }}
           onKeyDown={(event) => {
-            if (
-              event.key === "Escape" &&
-              event.nativeEvent === escapeRef.current
-            ) {
-              escapeRef.current = null;
-              onOpenChange(false);
+            if (event.key === "Backspace" || event.key === "Delete") {
+              // React's listener for this portal runs on <body>, before React
+              // Flow's on document, so the canvas never sees the key.
+              event.stopPropagation();
+              return;
             }
+            if (
+              event.key !== "Escape" ||
+              event.nativeEvent !== escapeRef.current
+            ) {
+              return;
+            }
+            escapeRef.current = null;
+            // Monaco's widgets that take focus - its rename box, a focused
+            // hover - render in the widget root, outside the editor whose
+            // key handling would close them, so their Escape arrives here
+            // unhandled. It is still not a request to leave full screen.
+            if (
+              event.target instanceof Node &&
+              monacoWidgets?.contains(event.target)
+            ) {
+              return;
+            }
+            onOpenChange(false);
           }}
           onOpenAutoFocus={(event) => {
             // Radix would focus the first button, and a focused button shows

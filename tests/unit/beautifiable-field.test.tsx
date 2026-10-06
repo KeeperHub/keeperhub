@@ -405,6 +405,16 @@ describe("BeautifiableField expand controls", () => {
     pressEscape();
     expect(onClose).toHaveBeenCalledWith("escape");
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    // From one of its options too, not only from its search box.
+    const option = document.querySelector<HTMLButtonElement>(
+      "[data-template-autocomplete] button"
+    );
+    expect(option).not.toBeNull();
+    act(() => option?.focus());
+    pressEscape();
+    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
   // An editor that handles Escape stops it propagating - Monaco does for its
@@ -452,6 +462,89 @@ describe("BeautifiableField expand controls", () => {
     expect(document.querySelector('[role="dialog"]')?.className).toContain(
       "nokey"
     );
+  });
+
+  // The core of the Escape rule: the dialog closes only on the Escape Radix
+  // gave it as the topmost layer. With a tooltip on top, the tooltip takes the
+  // first Escape and the dialog must not close on that same key.
+  it("leaves the dialog open when an Escape closed a tooltip on top of it", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    act(() => button("Exit full screen").focus());
+    expect(
+      document.querySelector('[data-slot="tooltip-content"]')
+    ).not.toBeNull();
+
+    pressEscape();
+    expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    pressEscape();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("still closes on Escape when focus has fallen outside the dialog", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    act(() => {
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  // Monaco's focusable widgets - its rename box, a focused hover - render in
+  // the dialog's widget root, outside the editor that would handle their
+  // Escape. Escape there is not a request to leave full screen.
+  it("stays open on Escape from a widget in Monaco's widget root", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    const root = document.querySelector<HTMLElement>(
+      '[role="dialog"] .monaco-editor-overflow-widgets-root'
+    );
+    expect(root).not.toBeNull();
+    const rename = document.createElement("input");
+    root?.appendChild(rename);
+    act(() => rename.focus());
+
+    pressEscape();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  // React Flow listens for Backspace and Delete on document; a key pressed in
+  // the dialog - on a button, or in Monaco's right-click menu, which sits in a
+  // shadow root the `nokey` check cannot see into - must not reach it.
+  it("does not let Backspace or Delete reach the canvas behind it", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    const seen: string[] = [];
+    const listener = (event: KeyboardEvent): void => {
+      seen.push(event.key);
+    };
+    document.addEventListener("keydown", listener);
+    try {
+      const target = button("Exit full screen");
+      for (const key of ["Backspace", "Delete", "a"]) {
+        act(() => {
+          target.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key,
+              bubbles: true,
+              cancelable: true,
+            })
+          );
+        });
+      }
+    } finally {
+      document.removeEventListener("keydown", listener);
+    }
+    expect(seen).toEqual(["a"]);
   });
 
   // Radix opens a tooltip on any focus not following a pointer press, so focus

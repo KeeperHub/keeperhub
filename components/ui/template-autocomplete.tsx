@@ -60,7 +60,13 @@ export const AUTOCOMPLETE_MENU_HEIGHT = 300;
 
 type TemplateAutocompleteProps = {
   isOpen: boolean;
+  /**
+   * Where the menu opens, in viewport coordinates. With `placement` "above",
+   * `top` is where the menu's bottom edge sits, so a short list still meets
+   * the line it was opened from.
+   */
   position: { top: number; left: number };
+  placement?: "below" | "above";
   onSelect: (template: string) => void;
   onClose: (reason: TemplateAutocompleteCloseReason) => void;
   currentNodeId?: string;
@@ -218,6 +224,7 @@ export function TemplateAutocomplete({
   onSelect,
   onClose,
   currentNodeId,
+  placement = "below",
 }: TemplateAutocompleteProps) {
   const portalContainer = useContext(EditorPopupContainerContext)?.popups;
   const [nodes] = useAtom(nodesAtom);
@@ -615,12 +622,6 @@ export function TemplateAutocomplete({
         }
         break;
       }
-      case "Escape":
-        e.preventDefault();
-        // Handled here: a dialog the picker sits in must not also close.
-        e.stopPropagation();
-        onClose("escape");
-        break;
       default:
         break;
     }
@@ -643,20 +644,30 @@ export function TemplateAutocomplete({
   }
 
   // Ensure position is within viewport
-  const adjustedPosition = {
-    top: Math.min(position.top, window.innerHeight - AUTOCOMPLETE_MENU_HEIGHT),
-    left: Math.min(position.left, window.innerWidth - 320), // Keep menu (320px wide) within viewport
-  };
+  const left = Math.min(position.left, window.innerWidth - 320); // Keep menu (320px wide) within viewport
+  const verticalPosition =
+    placement === "above"
+      ? { bottom: `${window.innerHeight - position.top}px` }
+      : {
+          top: `${Math.min(position.top, window.innerHeight - AUTOCOMPLETE_MENU_HEIGHT)}px`,
+        };
 
   const menuContent = (
     <div
       className="fixed z-9999 flex w-80 flex-col overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-md"
       data-template-autocomplete=""
-      ref={menuRef}
-      style={{
-        top: `${adjustedPosition.top}px`,
-        left: `${adjustedPosition.left}px`,
+      // Escape from anywhere in the menu, the search box or an option, closes
+      // the menu alone: stopped here, it does not also close a dialog the
+      // menu sits in.
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          onClose("escape");
+        }
       }}
+      ref={menuRef}
+      style={{ ...verticalPosition, left: `${left}px` }}
     >
       <div className="flex items-center gap-2 border-b px-2 py-1.5">
         <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
