@@ -30,6 +30,7 @@ import {
   resolveSelectValue,
 } from "@/components/workflow/config/chain-select-field";
 import { CodeEditorField } from "@/components/workflow/config/code-editor-field";
+import { EventListField } from "@/components/workflow/config/event-list-field";
 import { FailOnErrorSwitchField } from "@/components/workflow/config/fail-on-error-switch-field";
 import { GasLimitMultiplierField } from "@/components/workflow/config/gas-limit-multiplier-field";
 import { PagerDutyPreviewField } from "@/components/workflow/config/pagerduty-preview-field";
@@ -322,6 +323,27 @@ registerFieldRenderer(
       </div>
     );
   }
+);
+
+/**
+ * Event List Builder Field
+ * Dynamic list of contract and event rows for query-events multiple mode
+ * Each row configures: contract address, ABI, event, and indexed argument filter
+ */
+registerFieldRenderer(
+  "event-list-builder",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <div className="space-y-2" key={field.key}>
+      <ProtocolFieldLabel field={field} />
+      <EventListField
+        actionConfig={config}
+        disabled={disabled}
+        field={field}
+        onChange={(val: string) => onUpdateConfig(field.key, val)}
+        value={config[field.key] ?? field.defaultValue ?? ""}
+      />
+    </div>
+  )
 );
 
 /**

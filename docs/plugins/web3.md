@@ -23,7 +23,7 @@ Interact with EVM-compatible blockchain networks and Solana. Read-only actions w
 | Transfer SPL Token | Web3 | Wallet | Send SPL tokens on Solana to a recipient |
 | Approve ERC20 Token | Web3 | Wallet | Approve a spender contract to spend tokens on your behalf |
 | Check ERC20 Allowance | Web3 | No | Check the current token spending allowance granted to a spender |
-| Query Contract Events | Web3 | No | Query historical smart contract events across a block range, optionally filtered by indexed argument values |
+| Query Contract Events | Web3 | No | Query historical smart contract events across a block range, for one event or for several events across several contracts, optionally filtered by indexed argument values |
 | Query Transaction History | Web3 | No | Query historical transactions by function call with optional argument filtering |
 | Sign Typed Data (EIP-712) | Web3 | Wallet | Produce an EIP-712 signature over a typed-data payload for off-chain signed intents |
 | Decode Calldata | Security | No | Decode raw calldata into human-readable function calls |
@@ -368,17 +368,30 @@ Event (new transaction on monitored contract)
 
 Query historical smart contract events (logs) across a block range with automatic batching. Supports any EVM-compatible chain. The step internally batches queries in 2,000-block chunks to stay within RPC provider limits.
 
+One node can watch a single event on one contract, or several events across several contracts on the same network.
+
+**Query modes:**
+
+| Mode | Description | Best For |
+| ---- | ----------- | -------- |
+| Single event (default) | One contract, one event, optional indexed argument filter | Watching one event, such as `Transfer` on a token |
+| Multiple events or contracts | A list of contract and event pairs on one network, each with its own ABI and optional filter, returned as one merged list | Watching a set of permission or emergency events across related contracts from one node |
+
 **Inputs:**
+- Query Mode (default: Single event)
 - Network (required)
 - Contract Address (required)
 - Contract ABI (required, auto-fetched from block explorer)
 - Event Name (required, selected from ABI)
 - Filter by Indexed Arguments (optional) -- a value for any indexed parameter of the event. Omit a parameter to match any value for it; a parameter given an empty value fails the step. One value per parameter: `eth_getLogs` also accepts a list of alternatives per topic, but that OR form is not supported here
+- Events (required in Multiple mode): up to 20 entries, each with its own Contract Address, Contract ABI (auto-fetched from block explorer), Event and optional Filter by Indexed Arguments. In Multiple mode these replace the single Contract Address, Contract ABI, Event Name and filter fields above.
 - Block Lookback -- number of blocks to scan back from To Block (default: 6500, ~1 day on Ethereum). Ignored if From Block is set
 - From Block -- explicit start block (overrides Block Lookback)
 - To Block -- end block number (default: latest)
 
 **Outputs:** `success`, `events` (array of decoded event objects with `blockNumber`, `transactionHash`, `logIndex`, `args`), `fromBlock`, `toBlock`, `eventCount`, `error`
+
+In Multiple mode each event also carries `contractAddress` and `eventName`, and `events` is one list ordered by block number, then log index, across every entry.
 
 **How it works:**
 
@@ -401,7 +414,22 @@ Two limits are worth knowing before you rely on it:
 
 A filter naming a parameter that is not indexed, or a value that does not fit its type, fails the step before any query runs rather than scanning the range and returning nothing.
 
-**When to use:** Index historical events, monitor contract activity over time, aggregate on-chain data for analytics, trigger downstream actions based on past events, and watch one address, pool or token ID on a contract busy enough that an unfiltered scan is impractical.
+**Querying multiple events or contracts**
+
+Set Query Mode to Multiple events or contracts and add one entry per contract and event pair. Each entry has its own contract address, ABI and event, and can carry its own indexed argument filter. Every entry runs on the node's network over one shared block range, so `fromBlock`, `toBlock` and `eventCount` describe the whole node.
+
+The node makes as few `eth_getLogs` calls as the entries allow:
+
+- Entries without a filter on the same contract share one call, and contracts watching the same set of events share one call through a list of addresses.
+- An entry with a filter gets a call of its own, because its filter narrows topics that the other entries leave open.
+
+Watching ten event types across three related contracts without filters takes at most three calls per 2,000-block batch, not one per contract and event pair. A log that two entries both match, such as a `Transfer` filtered on `from` in one entry and on `to` in another, is returned once.
+
+Every entry is checked before any query runs. An invalid address, an ABI that does not parse, an event missing from its ABI, or a filter that could never match fails the step with a message naming the entry, for example `Event 3 (RoleGranted): ...`. One node holds at most 20 entries.
+
+When To Block is empty or `latest`, a Multiple query ends 5 blocks behind the latest block. The calls for different entries can reach different nodes behind the same RPC provider, and a fixed end block lets every call cover exactly the same range. Block Lookback counts back from that end block, so a schedule whose lookback matches its interval still covers every block, and the most recent blocks are picked up on the next run.
+
+**When to use:** Index historical events, monitor contract activity over time, aggregate on-chain data for analytics, trigger downstream actions based on past events, and watch one address, pool or token ID on a contract busy enough that an unfiltered scan is impractical. Use Multiple mode to watch a set of related events across several contracts from one node instead of one node per contract and event.
 
 **Example workflow -- DEX Swap Monitor:**
 ```
@@ -426,6 +454,18 @@ Schedule (every 15 minutes)
   -> Discord: "{{QueryEvents.eventCount}} incoming transfers"
 ```
 Without the `to` filter this query fetches every USDC transfer in the window and the node is doing the filtering; with it, the RPC returns only the treasury's.
+
+**Example workflow (Protocol Emergency Watch):**
+```
+Schedule (every 15 minutes)
+  -> Query Contract Events: Multiple events or contracts, Block Lookback 75
+       Vault: "Paused", "Unpaused", "RoleGranted", "RoleRevoked"
+       Price oracle: "Paused", "Unpaused"
+       Governance token: "OwnershipTransferred"
+  -> Condition: eventCount > 0
+  -> Discord: "{{QueryEvents.eventCount}} admin events across the protocol"
+```
+One node replaces seven, and downstream nodes read one list in which each event names its contract and event.
 
 ---
 

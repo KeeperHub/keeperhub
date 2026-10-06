@@ -117,6 +117,8 @@ function mapFieldType(field: ActionConfigFieldBase): string {
       return "string (event name from ABI)";
     case "abi-event-args":
       return 'string (JSON object of indexed event parameter name to value, e.g. {"from":"0x..."}) - omit a parameter to match any value for it; only indexed parameters can be filtered';
+    case "event-list-builder":
+      return 'string (JSON array of up to 20 entries, each {"contractAddress":"0x...","abi":"<JSON ABI string>","eventName":"Transfer","eventArgs":{"from":"0x..."}}) - eventArgs is optional and takes the same indexed-argument filter as a single event';
     case "select": {
       const options =
         field.options?.map((o) => `"${o.value}"`).join(" | ") || "select";
@@ -480,6 +482,7 @@ export async function buildActionSchemasResponse(
       "integrationId is required for actions that need credentials (discord, sendgrid, database)",
       "web3 read actions (check-balance, read-contract) don't require wallet integration",
       "web3 write actions (transfer-funds, write-contract) require wallet integration",
+      'web3/query-events queries one contract event by default, and eventQueries is only read when queryMode is "multiple". To watch several events or contracts in one node, set queryMode to "multiple" and pass eventQueries instead of the top-level contractAddress, abi, eventName and eventArgs. Each returned event then carries contractAddress and eventName, ordered by block then log index.',
       "web3/query-transactions queries historical transactions by function call using block explorer APIs. Use it when the contract does not emit events for the operations you need to monitor. Provide functionArgs as a JSON array where empty strings are wildcards.",
       'tokenConfig must be a JSON string with format: {"mode":"custom","customToken":{"address":"0x...","symbol":"USDC"}}. On Solana actions (get-spl-token-balance, transfer-spl-token) customToken.address is the base58 mint address. Do NOT use a flat {address, symbol, decimals} object',
       "Use projectId to organize related workflows into a project (e.g., all Sky ESM workflows in one project)",

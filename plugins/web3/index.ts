@@ -1165,7 +1165,7 @@ const web3Plugin: IntegrationPlugin = {
       slug: "query-events",
       label: "Query Contract Events",
       description:
-        "Query historical smart contract events across a block range with automatic batching, optionally filtered by indexed argument values at the RPC",
+        "Query historical smart contract events across a block range with automatic batching, optionally filtered by indexed argument values at the RPC. Can watch several events across several contracts in one node and return them as one merged list.",
       category: "Web3",
       stepFunction: "queryEventsStep",
       stepImportPath: "query-events",
@@ -1178,7 +1178,7 @@ const web3Plugin: IntegrationPlugin = {
         {
           field: "events",
           description:
-            "Array of decoded event objects with blockNumber, transactionHash, logIndex, and args",
+            "Array of decoded event objects with blockNumber, transactionHash, logIndex, and args. With multiple events, each object also carries contractAddress and eventName, and the list is ordered by blockNumber then logIndex across every entry.",
         },
         {
           field: "fromBlock",
@@ -1186,12 +1186,13 @@ const web3Plugin: IntegrationPlugin = {
         },
         {
           field: "toBlock",
-          description: "Actual end block used (resolved from latest)",
+          description:
+            "Actual end block used (resolved from latest). With multiple events, a latest end stops a few blocks behind the head so every entry is scanned through the same block.",
         },
         {
           field: "eventCount",
           description:
-            "Number of events returned. Counts events matching the indexed argument filter when one is set, not every occurrence of the event.",
+            "Number of events returned. Counts events matching the indexed argument filter when one is set, not every occurrence of the event. With multiple events, counts the merged list.",
         },
         {
           field: "error",
@@ -1200,8 +1201,23 @@ const web3Plugin: IntegrationPlugin = {
         },
       ],
       configFields: [
+        {
+          key: "queryMode",
+          label: "Query Mode",
+          type: "select",
+          options: [
+            { value: "single", label: "Single event" },
+            { value: "multiple", label: "Multiple events or contracts" },
+          ],
+          defaultValue: "single",
+          helpTip:
+            "Single event: one contract and one event. Multiple: a list of contract and event pairs on the selected network, each with its own ABI and optional filter, returned as one merged event list.",
+        },
         evmNetworkField(),
-        contractAddressField(),
+        {
+          ...contractAddressField(),
+          showWhen: { field: "queryMode", notEquals: "multiple" },
+        },
         {
           key: "abi",
           label: "Contract ABI",
@@ -1211,6 +1227,7 @@ const web3Plugin: IntegrationPlugin = {
           networkField: "network",
           rows: 6,
           required: true,
+          showWhen: { field: "queryMode", notEquals: "multiple" },
         },
         {
           key: "eventName",
@@ -1219,6 +1236,7 @@ const web3Plugin: IntegrationPlugin = {
           abiField: "abi",
           placeholder: "Select an event",
           required: true,
+          showWhen: { field: "queryMode", notEquals: "multiple" },
         },
         {
           key: "eventArgs",
@@ -1228,6 +1246,18 @@ const web3Plugin: IntegrationPlugin = {
           abiEventField: "eventName",
           helpTip:
             "Optional. Filters at the RPC, so only matching logs are fetched. Only indexed parameters can be filtered this way. Omit a parameter to match any value for it.",
+          showWhen: { field: "queryMode", notEquals: "multiple" },
+        },
+        {
+          key: "eventQueries",
+          label: "Events",
+          type: "event-list-builder",
+          required: true,
+          contractInteractionType: "read",
+          networkField: "network",
+          helpTip:
+            "Up to 20 contract and event pairs, all on the network above. Each has its own contract address, ABI, event and optional indexed argument filter. Events without a filter on the same contract share one RPC call.",
+          showWhen: { field: "queryMode", equals: "multiple" },
         },
         {
           type: "group",
