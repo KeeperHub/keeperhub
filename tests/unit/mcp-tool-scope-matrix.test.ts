@@ -50,7 +50,7 @@ const READ_SAFE = new Set<string>([
  * Tools that move funds or sign transactions.
  *
  * These are in WRITE_TOOLS, so mcp:write reaches them: today "read and write"
- * and "full access" permit exactly the same 44 tools. That is asserted rather
+ * and "full access" permit exactly the same 45 tools. That is asserted rather
  * than wished for, so this test tells the truth about the model; if the two
  * levels are ever separated, the assertion below is what will catch it.
  */
@@ -59,6 +59,7 @@ const MOVES_FUNDS = new Set<string>([
   "execute_contract_call",
   "execute_protocol_action",
   "execute_check_and_execute",
+  "top_up_gas",
   "tempo_sign_and_hold",
   "tempo_cancel_hold",
   "tempo_release_hold",

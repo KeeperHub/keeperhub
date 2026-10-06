@@ -76,6 +76,7 @@ const WRITE_TOOLS = new Set<string>([
   "execute_transfer",
   "execute_contract_call",
   "execute_check_and_execute",
+  "top_up_gas",
   "call_workflow",
   "list_workflow",
   "unlist_workflow",
