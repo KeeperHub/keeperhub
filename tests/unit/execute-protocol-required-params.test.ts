@@ -158,7 +158,8 @@ describe("buildProtocolFunctionArgs", () => {
       { asset: "0xToken" },
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({
@@ -184,7 +185,8 @@ describe("buildProtocolFunctionArgs", () => {
       { asset: "0xToken", amount: "1000" },
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({
@@ -215,7 +217,8 @@ describe("buildProtocolFunctionArgs", () => {
       },
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({
@@ -240,7 +243,8 @@ describe("buildProtocolFunctionArgs", () => {
       { asset: "0xToken", amount: null },
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({
@@ -265,7 +269,8 @@ describe("buildProtocolFunctionArgs", () => {
       { asset: "0xToken" },
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({
@@ -290,13 +295,60 @@ describe("buildProtocolFunctionArgs", () => {
       { asset: "0xToken" },
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({
       ok: true,
       functionArgs: JSON.stringify(["0xToken", ""]),
     });
+  });
+
+  // The fake protocol above proves the mechanism; these two run the real
+  // Uniswap definition through it, so the slippage and deadline fields added
+  // for the position lifecycle cannot quietly gain a default later.
+  it("rejects blank slippage and deadline on the real uniswap actions", async () => {
+    const { default: uniswapDef } = await import("@/protocols/uniswap-v3");
+    getProtocolMock.mockReturnValue(uniswapDef);
+    const { buildProtocolFunctionArgs } = await import(
+      "../../app/api/execute/_lib/protocol-function-args"
+    );
+
+    const decrease = buildProtocolFunctionArgs(
+      {
+        tokenId: "1",
+        liquidity: "1000",
+        amount1Min: "0",
+        deadline: "4102444800",
+      },
+      "uniswap",
+      "positionManager",
+      "decreaseLiquidity",
+      "1"
+    );
+    expect(decrease.ok).toBe(false);
+    if (!decrease.ok) {
+      expect(decrease.field).toBe("amount0Min");
+    }
+
+    const increase = buildProtocolFunctionArgs(
+      {
+        tokenId: "1",
+        amount0Desired: "1",
+        amount1Desired: "1",
+        amount0Min: "0",
+        amount1Min: "0",
+      },
+      "uniswap",
+      "positionManager",
+      "increaseLiquidity",
+      "1"
+    );
+    expect(increase.ok).toBe(false);
+    if (!increase.ok) {
+      expect(increase.field).toBe("deadline");
+    }
   });
 
   it("returns undefined functionArgs when the action has no inputs", async () => {
@@ -312,7 +364,8 @@ describe("buildProtocolFunctionArgs", () => {
       {},
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({ ok: true, functionArgs: undefined });
@@ -330,7 +383,8 @@ describe("buildProtocolFunctionArgs", () => {
       { path: ["0xA", "0xB"] },
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({
@@ -357,7 +411,8 @@ describe("buildProtocolFunctionArgs", () => {
       { requestIds: ["135184"], hints: ["1216"] },
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({
@@ -378,7 +433,8 @@ describe("buildProtocolFunctionArgs", () => {
       { requestIds: '["135184","135185"]' },
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({
@@ -399,7 +455,8 @@ describe("buildProtocolFunctionArgs", () => {
       { gauges: "0x1F98431c8aD98523631AE4a59f267346ea31F984" },
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({
@@ -424,7 +481,8 @@ describe("buildProtocolFunctionArgs", () => {
       {},
       "test-protocol",
       "pool",
-      "supply"
+      "supply",
+      "1"
     );
 
     expect(result).toEqual({
