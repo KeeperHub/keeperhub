@@ -909,7 +909,8 @@ export function AbiWithAutoFetchField({
             // Parent-driven value changes are already synced via
             // TemplateBadgeTextarea's effect when the field is blurred.
             key={`${field.key}-${useProxyAbi ? "proxy" : "impl"}${isDiamond ? `-${useDiamondAbi ? "diamond" : "proxy"}` : ""}`}
-            maxRows={size === "tall" ? TALL_FIELD_MAX_LINES : 4}
+            maxLines={size === "tall" ? TALL_FIELD_MAX_LINES : undefined}
+            maxRows={4}
             onChange={handleAbiChange}
             placeholder={
               useManualAbi

@@ -151,9 +151,8 @@ function BeautifiableTextareaField({
           // Formatting turns one line into hundreds - an ERC-20 ABI pasted into
           // the override field goes to 224 - and this editor grows without
           // limit unless it is given a ceiling. Past it the field scrolls.
-          maxRows={
-            size === "tall" ? TALL_FIELD_MAX_LINES : FORMATTED_FIELD_MAX_ROWS
-          }
+          maxLines={size === "tall" ? TALL_FIELD_MAX_LINES : undefined}
+          maxRows={FORMATTED_FIELD_MAX_ROWS}
           onChange={onChange}
           placeholder={field.placeholder}
           rows={field.rows || 4}

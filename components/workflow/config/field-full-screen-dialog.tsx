@@ -3,31 +3,33 @@
 import { Content as DialogContent } from "@radix-ui/react-dialog";
 import { useAtomValue } from "jotai";
 import { Minimize2 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Dialog,
   DialogOverlay,
   DialogPortal,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { TemplateAutocompletePortalContext } from "@/components/ui/template-autocomplete";
+import {
+  EditorPopupContainerContext,
+  type EditorPopupContainers,
+} from "@/components/ui/editor-popup-container";
 import {
   FieldToolbarButton,
   FieldToolbarDivider,
 } from "@/components/workflow/config/field-toolbar-button";
+import { cn } from "@/lib/utils";
 import { getNodeDisplayName } from "@/lib/workflow/editor/template-helpers";
 import { nodesAtom, selectedNodeAtom } from "@/lib/workflow/store";
 
-// Popups an editor opens outside the dialog's own DOM: Monaco's suggestion,
-// hover and parameter-hint widgets live in one overflow root on <body>.
-const OUTSIDE_EDITOR_POPUPS = ".monaco-editor-overflow-widgets-root";
-
-// Popups that Escape should close before it closes the dialog.
+// Popups that Escape should close before it closes the dialog. All of them
+// render inside the dialog: the variable picker, and Monaco's widgets through
+// the root this dialog gives it.
 const OPEN_EDITOR_POPUPS = [
   "[data-template-autocomplete]",
-  `${OUTSIDE_EDITOR_POPUPS} .suggest-widget.visible`,
-  `${OUTSIDE_EDITOR_POPUPS} .parameter-hints-widget.visible`,
-  "[data-field-full-screen] .monaco-editor .find-widget.visible",
+  ".suggest-widget.visible",
+  ".parameter-hints-widget.visible",
+  ".find-widget.visible",
 ].join(", ");
 
 // What takes focus when the dialog opens: the input, where typing goes.
@@ -35,15 +37,12 @@ const OPEN_EDITOR_POPUPS = [
 const EDITABLE = '[contenteditable="true"], textarea';
 
 // Monaco draws its right-click menu inside a shadow root, out of reach of a
-// document selector, so an open one is found through its host.
-function isEditorPopupOpen(): boolean {
-  if (document.querySelector(OPEN_EDITOR_POPUPS)) {
+// selector, so an open one is found through its host.
+function hasOpenEditorPopup(container: HTMLElement): boolean {
+  if (container.querySelector(OPEN_EDITOR_POPUPS)) {
     return true;
   }
-  const hosts = document.querySelectorAll(
-    `${OUTSIDE_EDITOR_POPUPS} .shadow-root-host`
-  );
-  for (const host of hosts) {
+  for (const host of container.querySelectorAll(".shadow-root-host")) {
     if (host.shadowRoot?.querySelector(".monaco-menu")) {
       return true;
     }
@@ -51,10 +50,17 @@ function isEditorPopupOpen(): boolean {
   return false;
 }
 
-function isInsideEditorPopup(target: EventTarget | null): boolean {
-  return (
-    target instanceof Element && target.closest(OUTSIDE_EDITOR_POPUPS) !== null
-  );
+// Monaco's overflow-widget root for this dialog. It carries the class
+// Monaco's widget styles are scoped to, as the shared root on <body> does.
+function createMonacoWidgetRoot(): HTMLElement {
+  const node = document.createElement("div");
+  node.className = "monaco-editor";
+  node.style.position = "absolute";
+  node.style.top = "0";
+  node.style.left = "0";
+  node.style.width = "0";
+  node.style.height = "0";
+  return node;
 }
 
 type FieldFullScreenDialogProps = {
@@ -62,6 +68,8 @@ type FieldFullScreenDialogProps = {
   onOpenChange: (open: boolean) => void;
   /** The field's name, shown as the dialog title. */
   label?: string;
+  /** Dims the input, as the field itself is dimmed when read-only. */
+  disabled?: boolean;
   /** The same Beautify control the field's strip shows, or null when it has none. */
   beautifyButton: React.ReactNode;
   /**
@@ -85,16 +93,33 @@ export function FieldFullScreenDialog({
   open,
   onOpenChange,
   label,
+  disabled,
   beautifyButton,
   returnFocusRef,
   children,
 }: FieldFullScreenDialogProps): React.ReactElement {
-  // The variable picker positions itself against the viewport, so it is
-  // portalled into this element rather than <body>, where the modal would make
-  // it unreachable. The content has no transform once open, so a fixed
+  const [content, setContent] = useState<HTMLElement | null>(null);
+  // Created as the dialog opens rather than when its content mounts: Monaco
+  // takes this node only when an editor is created, so it has to exist before
+  // the editor inside renders for the first time.
+  const monacoWidgets = useMemo(
+    () => (open ? createMonacoWidgetRoot() : null),
+    [open]
+  );
+  const attachMonacoWidgets = useCallback(
+    (slot: HTMLDivElement | null): void => {
+      if (slot && monacoWidgets) {
+        slot.appendChild(monacoWidgets);
+      }
+    },
+    [monacoWidgets]
+  );
+  // The variable picker positions itself against the viewport, so it goes in
+  // the content itself; the content has no transform once open, so a fixed
   // position inside it still means the viewport.
-  const [portalContainer, setPortalContainer] = useState<HTMLElement | null>(
-    null
+  const popupContainers = useMemo<EditorPopupContainers | null>(
+    () => (monacoWidgets ? { popups: content, monacoWidgets } : null),
+    [content, monacoWidgets]
   );
 
   return (
@@ -104,18 +129,12 @@ export function FieldFullScreenDialog({
         <DialogContent
           aria-describedby={undefined}
           className="fixed inset-8 z-50 flex flex-col overflow-hidden rounded-lg border bg-background shadow-lg"
-          data-field-full-screen=""
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             returnFocusRef.current?.focus();
           }}
           onEscapeKeyDown={(event) => {
-            if (isEditorPopupOpen()) {
-              event.preventDefault();
-            }
-          }}
-          onInteractOutside={(event) => {
-            if (isInsideEditorPopup(event.target)) {
+            if (content && hasOpenEditorPopup(content)) {
               event.preventDefault();
             }
           }}
@@ -124,11 +143,10 @@ export function FieldFullScreenDialog({
             // its tooltip - which then takes the first Escape for itself. The
             // input gets focus instead, or the dialog until Monaco mounts.
             event.preventDefault();
-            const editable =
-              portalContainer?.querySelector<HTMLElement>(EDITABLE);
-            (editable ?? portalContainer)?.focus();
+            const editable = content?.querySelector<HTMLElement>(EDITABLE);
+            (editable ?? content)?.focus();
           }}
-          ref={setPortalContainer}
+          ref={setContent}
         >
           <div className="flex shrink-0 items-center gap-3 border-b bg-muted/30 py-2 pr-2 pl-4">
             <FullScreenTitle label={label || "Edit field"} />
@@ -139,23 +157,27 @@ export function FieldFullScreenDialog({
                 highlighted
                 label="Exit full screen"
                 onClick={() => onOpenChange(false)}
-                tooltip="Exit full screen · Esc"
+                tooltip="Exit full screen"
               >
                 <Minimize2 />
               </FieldToolbarButton>
             </div>
           </div>
-          <div className="min-h-0 flex-1">
-            <TemplateAutocompletePortalContext.Provider value={portalContainer}>
+          <div className={cn("min-h-0 flex-1", disabled && "opacity-50")}>
+            <EditorPopupContainerContext.Provider value={popupContainers}>
               {children}
-            </TemplateAutocompletePortalContext.Provider>
+            </EditorPopupContainerContext.Provider>
           </div>
           <div className="flex shrink-0 items-center justify-between border-t bg-muted/30 px-4 py-1.5 text-muted-foreground text-xs">
             <span>Edits apply to the field as you type</span>
-            <span>
+            <span className="hidden md:inline">
               <kbd className="rounded border px-1 font-mono">Esc</kbd> to close
             </span>
           </div>
+          <div
+            className="absolute top-0 left-0 z-50"
+            ref={attachMonacoWidgets}
+          />
         </DialogContent>
       </DialogPortal>
     </Dialog>

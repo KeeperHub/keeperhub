@@ -4,7 +4,8 @@ import "@/lib/monaco-loader-config";
 
 import MonacoEditor, { type EditorProps, type OnMount } from "@monaco-editor/react";
 import { useTheme } from "next-themes";
-import { useCallback, useMemo } from "react";
+import { useCallback, useContext, useMemo } from "react";
+import { EditorPopupContainerContext } from "@/components/ui/editor-popup-container";
 import { vercelDarkTheme } from "@/lib/monaco-theme";
 
 let overflowWidgetsDomNode: HTMLElement | null = null;
@@ -24,9 +25,6 @@ function getOverflowWidgetsDomNode(): HTMLElement | undefined {
   node.style.width = "0";
   node.style.height = "0";
   node.style.zIndex = "10000";
-  // A modal dialog sets `pointer-events: none` on <body>, which this node
-  // would inherit, leaving suggestions unclickable in a full-screen editor.
-  node.style.pointerEvents = "auto";
   document.body.appendChild(node);
   overflowWidgetsDomNode = node;
   return node;
@@ -35,14 +33,16 @@ function getOverflowWidgetsDomNode(): HTMLElement | undefined {
 export function CodeEditor(props: EditorProps): React.ReactElement {
   const { resolvedTheme } = useTheme();
   const propsOnMount = props.onMount;
+  // Inside a modal, widgets go in the modal's own root so they stay usable.
+  const modalWidgets = useContext(EditorPopupContainerContext)?.monacoWidgets;
 
   const mergedOptions = useMemo(
     () => ({
       fixedOverflowWidgets: true,
-      overflowWidgetsDomNode: getOverflowWidgetsDomNode(),
+      overflowWidgetsDomNode: modalWidgets ?? getOverflowWidgetsDomNode(),
       ...props.options,
     }),
-    [props.options]
+    [props.options, modalWidgets]
   );
 
   const handleEditorMount: OnMount = useCallback(
@@ -61,11 +61,17 @@ export function CodeEditor(props: EditorProps): React.ReactElement {
         });
       }
 
+      // A modal places focus when it opens, before Monaco has loaded, so an
+      // editor inside one takes focus itself once it exists.
+      if (modalWidgets) {
+        editor.focus();
+      }
+
       if (propsOnMount) {
         propsOnMount(editor, monaco);
       }
     },
-    [propsOnMount, resolvedTheme]
+    [propsOnMount, resolvedTheme, modalWidgets]
   );
 
   return (

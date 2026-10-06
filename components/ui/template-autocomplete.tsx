@@ -2,15 +2,9 @@
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Check, Search } from "lucide-react";
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { EditorPopupContainerContext } from "@/components/ui/editor-popup-container";
 import { BUILTIN_NODE_ID, BUILTIN_NODE_LABEL, BUILTIN_VARIABLE_FIELDS } from "@/lib/workflow/editor/builtin-variables";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -60,14 +54,6 @@ import { getTriggerOutputFields } from "@/lib/workflow/editor/trigger-output-fie
  *   focus flow wherever the click landed and don't refocus the editor.
  */
 export type TemplateAutocompleteCloseReason = "escape" | "outside";
-
-/**
- * Where the menu is portalled. Defaults to <body>; a modal that hosts an
- * editor provides its own content element, since a modal leaves everything
- * outside it unreachable by pointer and focus.
- */
-export const TemplateAutocompletePortalContext =
-  createContext<HTMLElement | null>(null);
 
 type TemplateAutocompleteProps = {
   isOpen: boolean;
@@ -230,7 +216,7 @@ export function TemplateAutocomplete({
   onClose,
   currentNodeId,
 }: TemplateAutocompleteProps) {
-  const portalContainer = useContext(TemplateAutocompletePortalContext);
+  const portalContainer = useContext(EditorPopupContainerContext)?.popups;
   const [nodes] = useAtom(nodesAtom);
   const [edges] = useAtom(edgesAtom);
   const executionLogs = useAtomValue(executionLogsAtom);

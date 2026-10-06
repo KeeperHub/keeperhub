@@ -79,6 +79,12 @@ export type TemplateBadgeEditorMultilineOptions = {
   /** When set, limits visible height to this many rows and makes content scrollable */
   maxRows?: number;
   /**
+   * Limits visible height to this many lines of text, measured in the
+   * editor's own line height rather than in rows, then scrolls. Takes the
+   * place of maxRows when set.
+   */
+  maxLines?: number;
+  /**
    * Fills the parent's height and scrolls past it, ignoring rows and maxRows.
    * The parent has to have a definite height.
    */
@@ -907,7 +913,11 @@ export function TemplateBadgeEditor({
     style = { height: "100%", overflowY: "auto" };
   } else if (multiline) {
     style = { minHeight: `${multiline.rows * 1.5}rem` };
-    if (multiline.maxRows !== undefined) {
+    if (multiline.maxLines !== undefined) {
+      // `text-sm` lines are 1.25rem; `py-2` adds 1rem around them.
+      style.maxHeight = `calc(${multiline.maxLines} * 1.25rem + 1rem)`;
+      style.overflowY = "auto";
+    } else if (multiline.maxRows !== undefined) {
       style.maxHeight = `${multiline.maxRows * 1.5}rem`;
       style.overflowY = "auto";
     }

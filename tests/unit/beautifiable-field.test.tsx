@@ -374,33 +374,57 @@ describe("BeautifiableField expand controls", () => {
   });
 
   // Escape closes an open variable picker first, not the dialog under it.
+  // Escape closes an open variable picker first, not the dialog under it.
   it("keeps the dialog open on Escape while a variable picker is open", () => {
-    renderSized();
+    const onClose = vi.fn();
+    act(() => {
+      root.render(
+        <BeautifiableField
+          label="Payload"
+          language="json"
+          onChange={() => {
+            // not exercised here
+          }}
+          value="{}"
+        >
+          {(size: FieldSize) =>
+            size === "fill" ? (
+              <TemplateAutocomplete
+                isOpen
+                onClose={onClose}
+                onSelect={() => {
+                  // not exercised here
+                }}
+                position={{ top: 0, left: 0 }}
+              />
+            ) : (
+              <textarea readOnly value="{}" />
+            )
+          }
+        </BeautifiableField>
+      );
+    });
     act(() => button("Open in full screen").click());
-    const picker = document.createElement("div");
-    picker.setAttribute("data-template-autocomplete", "");
-    document.querySelector('[role="dialog"]')?.appendChild(picker);
+    const search = document.querySelector<HTMLInputElement>(
+      "[data-template-autocomplete] input"
+    );
+    act(() => search?.focus());
 
     pressEscape();
+    expect(onClose).toHaveBeenCalledWith("escape");
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
+  // Monaco's widgets render in the dialog's own root, where the check looks.
   it("keeps the dialog open on Escape while Monaco's suggestions are open", () => {
     renderSized();
     act(() => button("Open in full screen").click());
-    const root = document.createElement("div");
-    root.className = "monaco-editor-overflow-widgets-root";
     const widget = document.createElement("div");
     widget.className = "suggest-widget visible";
-    root.appendChild(widget);
-    document.body.appendChild(root);
+    document.querySelector('[role="dialog"]')?.appendChild(widget);
 
-    try {
-      pressEscape();
-      expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-    } finally {
-      root.remove();
-    }
+    pressEscape();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
   // A modal leaves everything outside it unreachable, so the picker has to

@@ -214,6 +214,7 @@ export function BeautifiableField({
       {expandable && (
         <FieldFullScreenDialog
           beautifyButton={beautifyButton}
+          disabled={disabled}
           label={label}
           onOpenChange={setFullScreen}
           open={fullScreen}
