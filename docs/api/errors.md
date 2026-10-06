@@ -111,7 +111,7 @@ Every response from a rate-limited endpoint (both success and `429`) carries the
 | `X-RateLimit-Reset` | Unix epoch (seconds) when the window frees a slot |
 | `Retry-After` | Seconds to wait before retrying (sent only on `429`) |
 
-Status and long-poll endpoints additionally return `X-Poll-Interval-Hint`: the server-recommended number of seconds to wait before polling again. A value of `0` means the resource has reached a terminal state and no further polling is needed.
+A `200` response from `GET /api/execute/{executionId}/status` or `GET /api/workflows/executions/{executionId}/status` additionally carries `X-Poll-Interval-Hint`, and repeats the same value as `pollIntervalHint` in the JSON response body for MCP tools and callers without direct header visibility: the server-recommended number of seconds to wait before polling again. A value of `0` means the resource has reached a terminal state and no further polling is needed. The `404` and `429` responses from those two endpoints omit both spellings, and the long-poll endpoint `GET /api/workflows/executions/{executionId}/wait` sends neither: it reports terminality through the `completed` field in its response body.
 
 > Anti-abuse endpoints (for example password reset and MFA enrollment) intentionally omit `X-RateLimit-Remaining` so they don't disclose a caller's remaining attempt budget. They still send `Retry-After` on `429`.
 

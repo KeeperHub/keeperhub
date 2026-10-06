@@ -1,6 +1,7 @@
 import "server-only";
 
 import { and, eq, gte, ne, sql } from "drizzle-orm";
+import { formatUnits } from "viem";
 import { db } from "@/lib/db";
 import {
   directExecutions,
@@ -13,6 +14,7 @@ import {
 } from "@/lib/execute/org-circuit-breaker";
 import { parseNodeNativeValueWei } from "@/lib/execute/reserved-value";
 import {
+  getDefaultDailyGasTopUpCapMicroUsd,
   getDefaultDailySolanaValueCapLamports,
   getDefaultDailyValueCapWei,
 } from "@/lib/execute/spend-cap-defaults";
@@ -127,6 +129,107 @@ export async function sumOrgSolanaValueTodayLamports(
   const direct = BigInt(directRows[0]?.totalLamports ?? "0");
   const ledger = BigInt(ledgerRows[0]?.totalLamports ?? "0");
   return direct + ledger;
+}
+
+/**
+ * USDC (micro-USD) an org has converted to gas today through
+ * /api/execute/gas-top-up, read from the `amountMicroUsd` the route writes into
+ * each row's input. The swap forwards no native value, so the wei cap never
+ * sees it; this is what the route's daily cap is charged against.
+ *
+ * A finished row counts only when its swap landed or may still land, whatever
+ * its status: `output.swapLanded` means the USDC is spent (even if the unwrap
+ * did not finish), and `output.swapPending` means the swap was broadcast but is
+ * unconfirmed. The output is the run's own record; the reconciler later settles
+ * the status from the row's last transaction but never rewrites the output, so
+ * status alone would charge a run that only broadcast its approve. A pending
+ * swap stops counting once the reconciler marks it failed (reverted or
+ * dropped) and keeps counting if it marks it completed.
+ *
+ * Pending and running rows count for the rest of the UTC day, with no stale
+ * cutoff. One run is three sponsored sends, each with a Turnkey status poll and
+ * a receipt wait, plus RPC retries, so its worst case outlasts any fixed window;
+ * and a process that dies mid-run leaves the row running with nothing to sweep
+ * it. Either way the spend may be real, so it keeps counting until midnight
+ * rather than freeing its share early.
+ */
+export async function sumOrgGasTopUpTodayMicroUsd(
+  executor: Executor,
+  organizationId: string
+): Promise<bigint> {
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+
+  const rows = await executor
+    .select({
+      totalMicroUsd: sql<string>`COALESCE(SUM(CAST(${directExecutions.input}->>'amountMicroUsd' AS NUMERIC)), 0)::text`,
+    })
+    .from(directExecutions)
+    .where(
+      and(
+        eq(directExecutions.organizationId, organizationId),
+        eq(directExecutions.type, "gas-top-up"),
+        gte(directExecutions.createdAt, todayStart),
+        sql`(${directExecutions.status} IN ('pending', 'running') OR ${directExecutions.output}->>'swapLanded' = 'true' OR (${directExecutions.status} IN ('completed', 'unconfirmed') AND ${directExecutions.output}->>'swapPending' = 'true'))`
+      )
+    );
+
+  return BigInt(rows[0]?.totalMicroUsd ?? "0");
+}
+
+/**
+ * A stablecoin amount charged against its own daily total, for a route whose
+ * spend the native caps cannot see (gas top-up: USDC in, no native value out).
+ */
+export type StablecoinDailyLimit = {
+  amountMicroUsd: bigint;
+  capMicroUsd: bigint;
+  sumTodayMicroUsd: (
+    executor: Executor,
+    organizationId: string
+  ) => Promise<bigint>;
+  label: string;
+};
+
+/** The gas top-up's daily limit for one request of `amountMicroUsd`. */
+export function gasTopUpDailyLimit(
+  amountMicroUsd: bigint
+): StablecoinDailyLimit {
+  return {
+    amountMicroUsd,
+    capMicroUsd: BigInt(getDefaultDailyGasTopUpCapMicroUsd()),
+    sumTodayMicroUsd: sumOrgGasTopUpTodayMicroUsd,
+    label: "gas top-up",
+  };
+}
+
+function formatMicroUsd(value: bigint): string {
+  return formatUnits(value, 6);
+}
+
+/**
+ * The refusal reason when `limit.amountMicroUsd` would take the org past the
+ * day's limit, or null when it fits. Only authoritative when `executor` is the
+ * transaction holding the org's cap row; on the app db it is a cheap early
+ * answer that a concurrent request can race.
+ */
+export async function stablecoinDailyLimitDenial(
+  executor: Executor,
+  organizationId: string,
+  limit: StablecoinDailyLimit
+): Promise<string | null> {
+  const used = await limit.sumTodayMicroUsd(executor, organizationId);
+  if (used + limit.amountMicroUsd <= limit.capMicroUsd) {
+    return null;
+  }
+  logSecurityEvent("stablecoin_daily_cap_blocked", {
+    organizationId,
+    surface: limit.label,
+    usedMicroUsd: used.toString(),
+    requestedMicroUsd: limit.amountMicroUsd.toString(),
+    capMicroUsd: limit.capMicroUsd.toString(),
+  });
+  return `Daily ${limit.label} limit exceeded: ${formatMicroUsd(used)} USD used today, ${formatMicroUsd(limit.amountMicroUsd)} USD requested, limit ${formatMicroUsd(limit.capMicroUsd)} USD`;
 }
 
 /**

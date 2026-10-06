@@ -147,6 +147,25 @@ describe("math/compare-tolerance", () => {
     expect(outside.mode).toBe("absolute");
   });
 
+  it("supports an absolute tolerance with more decimals than the values", async () => {
+    const within = (await run({
+      actual: "3000",
+      expected: "3001",
+      tolerance: "1.5",
+      mode: "absolute",
+    })) as CompareSuccess;
+    const outside = (await run({
+      actual: "3000",
+      expected: "3002",
+      tolerance: "1.5",
+      mode: "absolute",
+    })) as CompareSuccess;
+
+    expect(within.withinTolerance).toBe(true);
+    expect(within.absoluteDifference).toBe("1");
+    expect(outside.withinTolerance).toBe(false);
+  });
+
   it("only passes a zero expected value when actual is zero too", async () => {
     const equal = (await run({
       actual: "0",

@@ -23,6 +23,10 @@ import {
   readPayableValue,
 } from "@/lib/execute/protocol-eth-value";
 import { PAYER_PLACEHOLDER } from "@/lib/execute/protocol-payer";
+import {
+  isSolidityArrayType,
+  normalizeProtocolArrayValue,
+} from "@/lib/protocol-array-value";
 import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
 import {
   getProtocol,
@@ -210,9 +214,11 @@ export function encodeFromConfig(
       return { name: inp.name, value: payerAddress ?? PAYER_PLACEHOLDER };
     }
     const raw = config[inp.name];
-    let value: string;
+    let value: unknown;
     if (raw === undefined || raw === "") {
-      value = inp.default ?? "";
+      value = normalizeProtocolArrayValue(inp.default ?? "", inp.type);
+    } else if (isSolidityArrayType(inp.type)) {
+      value = normalizeProtocolArrayValue(raw, inp.type);
     } else if (typeof raw === "object") {
       value = JSON.stringify(raw);
     } else {

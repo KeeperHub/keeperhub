@@ -1,6 +1,6 @@
 import "server-only";
 import { and, eq, gte, sql } from "drizzle-orm";
-import { createPublicClient, http } from "viem";
+import { type Address, createPublicClient, http } from "viem";
 import { db } from "@/lib/db";
 import {
   gasCreditAllocations,
@@ -293,6 +293,69 @@ function reportPriceFallback(args: {
 }
 
 /**
+ * One Chainlink `latestRoundData` read, cached on success. Throws when the read
+ * fails, the answer is older than the stale threshold, or it is not positive.
+ */
+async function readOraclePriceUsd(
+  rpcUrl: string,
+  chainId: number,
+  feedAddress: Address,
+  now: number
+): Promise<number> {
+  const client = createPublicClient({ transport: http(rpcUrl) });
+
+  const result = await client.readContract({
+    address: feedAddress,
+    abi: AGGREGATOR_V3_ABI,
+    functionName: "latestRoundData",
+  });
+
+  const [, answer, , updatedAt] = result;
+  const updatedAtMs = Number(updatedAt) * 1000;
+
+  if (now - updatedAtMs > STALE_PRICE_THRESHOLD_MS) {
+    throw new Error(
+      `Chainlink price stale: updatedAt ${new Date(updatedAtMs).toISOString()}`
+    );
+  }
+
+  const price = Number(answer) / 1e8;
+
+  if (price <= 0) {
+    throw new Error(`Invalid Chainlink price: ${price}`);
+  }
+
+  ethPriceCache.set(chainId, { usd: price, fetchedAt: now });
+  return price;
+}
+
+/**
+ * The gas token's USD price from a fresh oracle read only: the cached price
+ * within its 60-second TTL, or a new read. Unlike getGasTokenPriceUsd it never
+ * falls back to an older cached price or the hardcoded estimate, and throws
+ * instead, so a safety check can refuse rather than compare against a number
+ * that tracks nothing.
+ */
+export async function getFreshGasTokenPriceUsd(
+  rpcUrl: string,
+  chainId: number
+): Promise<number> {
+  const now = Date.now();
+  const cached = ethPriceCache.get(chainId);
+
+  if (cached !== undefined && now - cached.fetchedAt < ETH_PRICE_CACHE_TTL_MS) {
+    return cached.usd;
+  }
+
+  const feedAddress = getGasTokenUsdFeedAddress(chainId);
+  if (feedAddress === undefined) {
+    throw new Error(`No gas-token USD price feed for chain ${chainId}`);
+  }
+
+  return await readOraclePriceUsd(rpcUrl, chainId, feedAddress, now);
+}
+
+/**
  * Fetch the current USD price of a chain's native gas token (ETH on the L1 and
  * ETH L2s, POL on Polygon) from the Chainlink oracle on that chain. Results are
  * cached for 60 seconds per chainId.
@@ -324,31 +387,7 @@ export async function getGasTokenPriceUsd(
   }
 
   try {
-    const client = createPublicClient({ transport: http(rpcUrl) });
-
-    const result = await client.readContract({
-      address: feedAddress,
-      abi: AGGREGATOR_V3_ABI,
-      functionName: "latestRoundData",
-    });
-
-    const [, answer, , updatedAt] = result;
-    const updatedAtMs = Number(updatedAt) * 1000;
-
-    if (now - updatedAtMs > STALE_PRICE_THRESHOLD_MS) {
-      throw new Error(
-        `Chainlink price stale: updatedAt ${new Date(updatedAtMs).toISOString()}`
-      );
-    }
-
-    const price = Number(answer) / 1e8;
-
-    if (price <= 0) {
-      throw new Error(`Invalid Chainlink price: ${price}`);
-    }
-
-    ethPriceCache.set(chainId, { usd: price, fetchedAt: now });
-    return price;
+    return await readOraclePriceUsd(rpcUrl, chainId, feedAddress, now);
   } catch (error) {
     if (cached !== undefined) {
       const cachedAgeMs = now - cached.fetchedAt;

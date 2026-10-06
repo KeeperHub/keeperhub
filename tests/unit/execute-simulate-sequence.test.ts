@@ -456,6 +456,158 @@ describe("simulateCallSequence on a node without eth_simulateV1", () => {
     );
   });
 
+  it("stops the sequence when a call's own outcome is unknown", async () => {
+    let ethCalls = 0;
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call") {
+        ethCalls += 1;
+        // The first call's outcome is unknown, so nothing after it is knowable.
+        return ethCalls === 1
+          ? Promise.reject(new Error("connection reset"))
+          : Promise.resolve(TRUE);
+      }
+      if (method === "eth_estimateGas") {
+        return Promise.resolve("0x5208");
+      }
+      return Promise.resolve({ post: {} });
+    });
+
+    const result = await run();
+
+    expect(result.results).toHaveLength(2);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "unavailable",
+    });
+    // Not a decoded revert inherited from state the first call never wrote.
+    expect(result.results[1]).toMatchObject({
+      success: false,
+      failureKind: "unavailable",
+    });
+    expect(
+      (result.results[1] as Record<string, unknown>).revertReason
+    ).toBeUndefined();
+    expect(result.wouldRevert).toBe(false);
+  });
+
+  it("stops the sequence when a call fails validation without reverting", async () => {
+    const { makeError } = await import("ethers");
+    // eth_call answers, so the call did not revert; the node refuses the gas
+    // estimate instead, which classifySimulationError reads as validation.
+    const insufficientFunds = makeError(
+      "insufficient funds for gas * price + value",
+      "INSUFFICIENT_FUNDS",
+      { transaction: { from: FROM, to: TOKEN, data: "0x" } }
+    );
+
+    let estimates = 0;
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call") {
+        return Promise.resolve(TRUE);
+      }
+      if (method === "eth_estimateGas") {
+        estimates += 1;
+        // Only the first call is refused: a second call reaching the node
+        // would be answered, so a sequence that did not stop shows up here.
+        return estimates === 1
+          ? Promise.reject(insufficientFunds)
+          : Promise.resolve("0x5208");
+      }
+      return Promise.resolve({ post: {} });
+    });
+
+    const result = await run();
+
+    expect(
+      spies.send.mock.calls.filter(([m]) => m === "eth_call")
+    ).toHaveLength(1);
+    expect(result.results).toHaveLength(2);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "validation",
+    });
+    expect(result.results[1]).toMatchObject({
+      success: false,
+      failureKind: "unavailable",
+      wouldRevert: false,
+    });
+    // Not a revert reason inherited from state the first call never wrote.
+    expect(
+      (result.results[1] as Record<string, unknown>).revertReason
+    ).toBeUndefined();
+  });
+
+  it("names the call that could not be simulated in the skipped results", async () => {
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call") {
+        return Promise.reject(new Error("connection reset"));
+      }
+      if (method === "eth_estimateGas") {
+        return Promise.resolve("0x5208");
+      }
+      return Promise.resolve({ post: {} });
+    });
+
+    const result = await run();
+
+    const skipped = String((result.results[1] as { error?: string }).error);
+    expect(skipped).toContain("call 1 of the sequence could not be simulated");
+    expect(skipped).toContain("connection reset");
+  });
+
+  it("keeps simulating later calls after a revert, which leaves no state", async () => {
+    const { makeError } = await import("ethers");
+    const revertErr = makeError(
+      "execution reverted: ERC20: transfer amount exceeds allowance",
+      "CALL_EXCEPTION",
+      {
+        action: "call",
+        data: null,
+        reason: "ERC20: transfer amount exceeds allowance",
+        transaction: { to: TOKEN, data: "0x" },
+        invocation: null,
+        revert: null,
+      }
+    );
+
+    let ethCalls = 0;
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call") {
+        ethCalls += 1;
+        return ethCalls === 1
+          ? Promise.reject(revertErr)
+          : Promise.resolve(TRUE);
+      }
+      if (method === "eth_estimateGas") {
+        return Promise.resolve("0x5208");
+      }
+      return Promise.resolve({ post: {} });
+    });
+
+    const result = await run();
+
+    expect(
+      spies.send.mock.calls.filter(([m]) => m === "eth_call")
+    ).toHaveLength(2);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "revert",
+    });
+    expect(result.results[1]).toMatchObject({ success: true });
+  });
+
   it("keeps a node error that is not a missing method as unavailable", async () => {
     spies.send.mockRejectedValue(new Error("connection reset"));
 
@@ -472,6 +624,119 @@ describe("simulateCallSequence on a node without eth_simulateV1", () => {
     expect(
       spies.send.mock.calls.filter(([m]) => m === "eth_call")
     ).toHaveLength(0);
+  });
+
+  it("reports a transport failure on eth_call as unavailable, not a revert (#2542)", async () => {
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call" || method === "eth_estimateGas") {
+        return Promise.reject(new Error("connection reset"));
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    const result = await run();
+
+    expect(result.mechanism).toBe("state-overrides");
+    expect(result.wouldRevert).toBe(false);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "unavailable",
+      wouldRevert: false,
+    });
+  });
+
+  it("still reports an eth_call CALL_EXCEPTION as a revert (#2542)", async () => {
+    const { makeError } = await import("ethers");
+    const revertErr = makeError(
+      "execution reverted: ERC20: transfer amount exceeds allowance",
+      "CALL_EXCEPTION",
+      {
+        action: "call",
+        data: null,
+        reason: "ERC20: transfer amount exceeds allowance",
+        transaction: { to: TOKEN, data: "0x" },
+        invocation: null,
+        revert: null,
+      }
+    );
+
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call" || method === "eth_estimateGas") {
+        return Promise.reject(revertErr);
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    const result = await run();
+
+    expect(result.mechanism).toBe("state-overrides");
+    expect(result.wouldRevert).toBe(true);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "revert",
+      wouldRevert: true,
+    });
+  });
+  it("reports a permanent BAD_DATA on eth_call as validation, matching the single-call path (#2542)", async () => {
+    const { makeError } = await import("ethers");
+    const badData = makeError("could not decode result data", "BAD_DATA", {
+      value: "0x1234",
+    });
+
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call" || method === "eth_estimateGas") {
+        return Promise.reject(badData);
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    const result = await run();
+
+    expect(result.mechanism).toBe("state-overrides");
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "validation",
+    });
+    expect(result.results[0]).toMatchObject({
+      error: expect.stringMatching(/^Simulation failed: /),
+    });
+  });
+
+  it("treats a codeless failover wrapper mentioning 'execution reverted' as unavailable, matching the single-call path (#2542)", async () => {
+    // executeWithFailover's failoverError is a plain Error with no ethers
+    // code; a genuine CALL_EXCEPTION is rethrown as-is (non-retryable), so a
+    // codeless error is a transport outcome even if its text mentions a revert.
+    const wrapped = new Error(
+      "All RPC endpoints failed: execution reverted (upstream timeout)"
+    );
+
+    spies.send.mockImplementation((method: string) => {
+      if (method === "eth_simulateV1") {
+        return Promise.reject(new Error("method not found"));
+      }
+      if (method === "eth_call" || method === "eth_estimateGas") {
+        return Promise.reject(wrapped);
+      }
+      return Promise.reject(new Error(`unexpected ${method}`));
+    });
+
+    const result = await run();
+
+    expect(result.wouldRevert).toBe(false);
+    expect(result.results[0]).toMatchObject({
+      success: false,
+      failureKind: "unavailable",
+      wouldRevert: false,
+    });
   });
 });
 

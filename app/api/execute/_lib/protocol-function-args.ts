@@ -6,6 +6,10 @@ import {
   refuseSuppliedPayer,
 } from "@/lib/execute/protocol-payer";
 import {
+  isSolidityArrayType,
+  normalizeProtocolArrayValue,
+} from "@/lib/protocol-array-value";
+import {
   applyEncodeTransformsNamed,
   getEncodeTransformKind,
 } from "@/lib/protocol-encode-transforms";
@@ -31,7 +35,7 @@ function isBlank(value: unknown): boolean {
 function resolveInputValue(
   inp: ProtocolActionInput,
   raw: unknown
-): { ok: true; value: string } | { ok: false; error: string; field: string } {
+): { ok: true; value: unknown } | { ok: false; error: string; field: string } {
   // Match buildInputField in lib/protocol-registry.ts:
   // isRequired = required ?? (default === undefined). Reject blank required
   // fields first; apply registry defaults only for optional blanks.
@@ -46,9 +50,18 @@ function resolveInputValue(
       };
     }
     if (inp.default !== undefined) {
-      return { ok: true, value: String(inp.default) };
+      return {
+        ok: true,
+        value: normalizeProtocolArrayValue(String(inp.default), inp.type),
+      };
     }
     return { ok: true, value: "" };
+  }
+
+  // An array input keeps its elements: flattening it to a string leaves
+  // ethers with text where it expects an array.
+  if (isSolidityArrayType(inp.type)) {
+    return { ok: true, value: normalizeProtocolArrayValue(raw, inp.type) };
   }
 
   if (typeof raw === "object") {
@@ -96,7 +109,7 @@ export function buildProtocolFunctionArgs(
     return { ok: true, functionArgs: undefined };
   }
 
-  const named: Array<{ name: string; value: string }> = [];
+  const named: Array<{ name: string; value: unknown }> = [];
   for (const inp of protocolAction.inputs) {
     if (inp.payer) {
       // The placeholder keeps the payer arg's position; writeContractCore
@@ -118,27 +131,27 @@ export function buildProtocolFunctionArgs(
     const isPadded =
       getEncodeTransformKind(protocolSlug, protocolAction.slug, inp.name) ===
       "padAddressToBytes";
+    // An array input carries its elements rather than a scalar string, and
+    // neither check applies to one.
     const value = resolved.value;
-    if (isPadded && value !== "") {
-      if (!(EVM_ADDRESS_RE.test(value) || HEX_BYTES32.test(value))) {
+    if (typeof value === "string" && value !== "") {
+      if (isPadded) {
+        if (!(EVM_ADDRESS_RE.test(value) || HEX_BYTES32.test(value))) {
+          return {
+            ok: false,
+            field: inp.name,
+            error: `Invalid address for field ${inp.name}: expected a 0x-prefixed 20-byte hex address (or the same address already encoded as 32 bytes), got "${value}"`,
+          };
+        }
+      } else if (inp.type === "address" && !EVM_ADDRESS_RE.test(value)) {
         return {
           ok: false,
           field: inp.name,
-          error: `Invalid address for field ${inp.name}: expected a 0x-prefixed 20-byte hex address (or the same address already encoded as 32 bytes), got "${value}"`,
+          error: `Invalid address for field ${inp.name}: expected a 0x-prefixed 20-byte hex address, got "${value}"`,
         };
       }
-    } else if (
-      inp.type === "address" &&
-      value !== "" &&
-      !EVM_ADDRESS_RE.test(value)
-    ) {
-      return {
-        ok: false,
-        field: inp.name,
-        error: `Invalid address for field ${inp.name}: expected a 0x-prefixed 20-byte hex address, got "${value}"`,
-      };
     }
-    named.push({ name: inp.name, value: resolved.value });
+    named.push({ name: inp.name, value });
   }
 
   const transformed = applyEncodeTransformsNamed(

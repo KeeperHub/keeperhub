@@ -87,6 +87,14 @@ const DEFAULT_STABLECOIN_CAP_MICRO_USD = "100000000";
 // batch still cannot move materially more than a handful of single transfers.
 const DEFAULT_BATCH_STABLECOIN_CAP_MICRO_USD = "2000000000";
 
+// 200 USD in micro-USD: the DAILY total an org can convert from USDC to native
+// gas through /api/execute/gas-top-up. The per-call figure above bounds each
+// top-up; without this, a leaked key could repeat maximum-size calls until the
+// whole stablecoin position became ETH, since the swap forwards no native
+// value and the wei cap never sees it. Set at the 200 USD anchor itself
+// because it is an aggregate, the same kind of figure the anchor is.
+const DEFAULT_DAILY_GAS_TOP_UP_CAP_MICRO_USD = "200000000";
+
 // BigInt() accepts hex-prefixed strings ("0x10" -> 16), so an ops typo would
 // silently turn a cap into a near-zero one. Reject anything that is not a
 // decimal digit run before it is used.
@@ -145,5 +153,17 @@ export function getDefaultBatchStablecoinCapMicroUsd(): string {
   return resolveOverride(
     process.env.EXECUTE_DEFAULT_BATCH_STABLECOIN_CAP_MICRO_USD,
     DEFAULT_BATCH_STABLECOIN_CAP_MICRO_USD
+  );
+}
+
+/**
+ * Ceiling on the USDC an organization converts to native gas per UTC day, in
+ * micro-USD (6 decimals). Charged against the sum of the day's gas top-ups, so
+ * it applies alongside the per-call stablecoin figure rather than instead of it.
+ */
+export function getDefaultDailyGasTopUpCapMicroUsd(): string {
+  return resolveOverride(
+    process.env.EXECUTE_DEFAULT_DAILY_GAS_TOP_UP_CAP_MICRO_USD,
+    DEFAULT_DAILY_GAS_TOP_UP_CAP_MICRO_USD
   );
 }

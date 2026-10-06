@@ -1,6 +1,6 @@
 import "server-only";
 
-import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
 import {
   runPluginStep,
@@ -9,6 +9,7 @@ import {
 import {
   absBigInt,
   divideScaled,
+  failed,
   formatScaled,
   parseDecimal,
   pow10,
@@ -52,10 +53,6 @@ type FormatNumberResult =
       notation: Notation;
     }
   | { success: false; error: string; errorClass?: ExecutionErrorType };
-
-function failed(error: string): FormatNumberResult {
-  return { success: false, error, errorClass: ExecutionErrorType.USER };
-}
 
 function resolveNotation(raw: string | undefined): Notation {
   return raw === "plain" ? "plain" : "compact";

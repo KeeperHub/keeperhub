@@ -1,7 +1,13 @@
 import { ADDRESS_BOOK_SELECTION_KEY } from "@/lib/address-book-selection";
+import {
+  isSolidityArrayType,
+  normalizeProtocolArrayValue,
+  solidityArrayItemType,
+} from "@/lib/protocol-array-value";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 import {
+  checkSolidityValue,
   HEX_BYTES_PATTERN,
   INTEGER_PATTERN,
   UNSIGNED_INTEGER_PATTERN,
@@ -36,6 +42,7 @@ const RESERVED_CONFIG_KEYS = new Set([
 
 const TEMPLATE_VALUE_PATTERN = /\{\{[^}]+}}/;
 const DECIMAL_PATTERN = /^\d+(?:\.\d+)?$/;
+const FIXED_ARRAY_LENGTH_PATTERN = /\[(\d+)]$/;
 // The `nodes[N]` prefix the validator writes into every issue path, used to
 // tell two nodes apart when neither carries an id.
 const NODE_PATH_PREFIX_PATTERN = /^nodes\[\d+]/;
@@ -78,6 +85,72 @@ function sanitiseSummaryText(text: string, maxChars: number): string {
     return `${stripped.slice(0, maxChars - 3)}...`;
   }
   return stripped;
+}
+
+function fixedArrayLength(
+  solidityType: string | undefined
+): number | undefined {
+  if (!solidityType) {
+    return undefined;
+  }
+  const match = solidityType.match(FIXED_ARRAY_LENGTH_PATTERN);
+  return match ? Number(match[1]) : undefined;
+}
+
+function arrayValueHasExpectedLength(
+  value: unknown,
+  solidityType: string | undefined
+): boolean {
+  const expectedLength = fixedArrayLength(solidityType);
+  if (expectedLength === undefined || valueContainsTemplate(value)) {
+    return true;
+  }
+  const parsed = normalizeProtocolArrayValue(value, solidityType);
+  return Array.isArray(parsed) && parsed.length === expectedLength;
+}
+
+// The scalar item types checkSolidityValue decides. A tuple or any other
+// type it has no shape for is left to the encoder.
+const CHECKED_ITEM_TYPE_RE = /^(?:address|bool|string|(?:u?int|bytes)\d*)$/;
+
+function arrayItemMatchesType(item: unknown, itemType: string): boolean {
+  if (valueContainsTemplate(item)) {
+    return true;
+  }
+  if (!CHECKED_ITEM_TYPE_RE.test(itemType)) {
+    return true;
+  }
+  return checkSolidityValue(itemType, String(item)).valid;
+}
+
+// A value stored before array inputs had a structured editor: one scalar for
+// the whole array, or a comma-separated list. normalizeProtocolArrayValue
+// reads both as an array, so rejecting the shape here would make a config
+// that saved yesterday unsaveable today over a field the user never touched.
+function isLegacyScalarArrayShape(value: unknown): boolean {
+  return (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  );
+}
+
+// The shape above is accepted, but the elements are still checked against the
+// item type. That is the check these fields had before every type ending in
+// `]` was mapped to protocol-array.
+function arrayElementsMatchItemType(
+  value: unknown,
+  solidityType: string | undefined
+): boolean {
+  if (!isSolidityArrayType(solidityType)) {
+    return true;
+  }
+  const normalised = normalizeProtocolArrayValue(value, solidityType);
+  if (!Array.isArray(normalised)) {
+    return true;
+  }
+  const itemType = solidityArrayItemType(solidityType);
+  return normalised.every((item) => arrayItemMatchesType(item, itemType));
 }
 
 function sanitiseNodeLabel(label: string): string {
@@ -488,14 +561,59 @@ function validateFieldValue(
         (valueContainsTemplate(value) || DECIMAL_PATTERN.test(value))
         ? { valid: true }
         : { valid: false, expected: "decimal ETH amount", received: value };
+    case "protocol-array": {
+      const isStructured = Array.isArray(value) || isJsonArrayString(value);
+      if (
+        !(
+          isStructured ||
+          valueContainsTemplate(value) ||
+          isLegacyScalarArrayShape(value)
+        )
+      ) {
+        return {
+          valid: false,
+          expected: field.solidityType ?? "array",
+          received: value,
+        };
+      }
+      if (!arrayElementsMatchItemType(value, field.solidityType)) {
+        return {
+          valid: false,
+          expected: field.solidityType ?? "array",
+          received: value,
+        };
+      }
+      // Enforced on a legacy scalar too: no protocol input declares a
+      // fixed-size array, so a scalar in one can only arrive from a new write,
+      // and this reads through the same normaliser the steps encode from.
+      if (!arrayValueHasExpectedLength(value, field.solidityType)) {
+        return {
+          valid: false,
+          expected: `${field.solidityType} with ${fixedArrayLength(field.solidityType)} items`,
+          received: value,
+        };
+      }
+      return { valid: true };
+    }
     case "protocol-tuple-array":
-      return Array.isArray(value) ||
-        valueContainsTemplate(value) ||
-        isJsonArrayString(value)
+      if (
+        !(
+          Array.isArray(value) ||
+          valueContainsTemplate(value) ||
+          isJsonArrayString(value)
+        )
+      ) {
+        return {
+          valid: false,
+          expected: field.solidityType ?? "tuple[]",
+          received: value,
+        };
+      }
+      return arrayValueHasExpectedLength(value, field.solidityType)
         ? { valid: true }
         : {
             valid: false,
-            expected: field.solidityType ?? "tuple[]",
+            expected: `${field.solidityType} with ${fixedArrayLength(field.solidityType)} items`,
             received: value,
           };
     case "json-editor":

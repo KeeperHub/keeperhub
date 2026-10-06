@@ -86,10 +86,15 @@ export async function GET(
   }
 
   const output = execution.output as Record<string, unknown> | null;
+  const status = execution.status as ExecutionStatusResponse["status"];
+  const pollIntervalHint = TERMINAL_STATUSES.has(status)
+    ? 0
+    : POLL_INTERVAL_HINT_SECONDS;
 
   const response: ExecutionStatusResponse = {
     executionId: execution.id,
-    status: execution.status as ExecutionStatusResponse["status"],
+    status,
+    pollIntervalHint,
     type: execution.type,
     transactionHash: execution.transactionHash,
     transactionLink: (output?.transactionLink as string) ?? null,
@@ -105,10 +110,6 @@ export async function GET(
     createdAt: execution.createdAt.toISOString(),
     completedAt: execution.completedAt?.toISOString() ?? null,
   };
-
-  const pollIntervalHint = TERMINAL_STATUSES.has(response.status)
-    ? 0
-    : POLL_INTERVAL_HINT_SECONDS;
 
   return applyRateLimitHeaders(NextResponse.json(response), rateLimit, {
     pollIntervalHint,

@@ -70,6 +70,9 @@ env:
   LOG_LEVEL:
     type: kv
     value: "info"
+  SOLANA_SIGNATURES_POLL_INTERVAL_MS:
+    type: kv
+    value: "10000"
   HEALTH_PORT:
     type: kv
     value: "3001"

@@ -3,6 +3,7 @@ import {
   checkAndExecuteInputSchema,
   contractCallInputSchema,
   firstSchemaError,
+  gasTopUpInputSchema,
   tokenFieldsSchema,
   transferInputSchema,
 } from "./schemas";
@@ -42,4 +43,8 @@ export function validateTokenFields(
 
 export function validateCheckAndExecuteInput(body: unknown): ValidationResult {
   return runSchema(body, checkAndExecuteInputSchema);
+}
+
+export function validateGasTopUpInput(body: unknown): ValidationResult {
+  return runSchema(body, gasTopUpInputSchema);
 }
