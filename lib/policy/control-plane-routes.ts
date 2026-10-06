@@ -234,6 +234,9 @@ export const CONTROL_PLANE_ROUTES: Readonly<
   "/api/execute/[...slug]": { POST: ungoverned(AT_SIGNER) },
   "/api/execute/check-and-execute": { POST: ungoverned(AT_SIGNER) },
   "/api/execute/contract-call": { POST: ungoverned(AT_SIGNER) },
+  // Approves and swaps to refill gas. It moves value, and like its siblings it
+  // reaches a signer, which is where that value is actually judged.
+  "/api/execute/gas-top-up": { POST: ungoverned(AT_SIGNER) },
   "/api/execute/node": { POST: ungoverned(AT_SIGNER) },
   "/api/execute/swap": { POST: ungoverned(AT_SIGNER) },
   "/api/execute/transfer": { POST: ungoverned(AT_SIGNER) },

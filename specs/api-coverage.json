@@ -153,7 +153,7 @@
       "path": "/api/execute/{executionId}/status",
       "route_file": "app/api/execute/[executionId]/status/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 1047
+      "line": 1191
     },
     {
       "method": "GET",
@@ -437,6 +437,13 @@
     },
     {
       "method": "POST",
+      "path": "/api/execute/gas-top-up",
+      "route_file": "app/api/execute/gas-top-up/route.ts",
+      "source": "docs/api/direct-execution.md",
+      "line": 784
+    },
+    {
+      "method": "POST",
       "path": "/api/execute/transfer",
       "route_file": "app/api/execute/transfer/route.ts",
       "source": "docs/api/direct-execution.md",
@@ -594,7 +601,7 @@
       "path": "/api/workflows/{workflowId}/simulate",
       "route_file": "app/api/workflows/[workflowId]/simulate/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 1243
+      "line": 1387
     },
     {
       "method": "POST",

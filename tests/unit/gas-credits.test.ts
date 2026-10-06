@@ -37,6 +37,9 @@ vi.mock("@/lib/web3/chainlink-feeds", () => ({
       10: "0x13e3Ee699D1909E989722E753853AE30b17e08c5",
       137: "0xAB594600376Ec9fD91F8e885dADF0CE036862dE0",
       5000: "0x0000000000000000000000000000000000005000",
+      7001: "0x0000000000000000000000000000000000007001",
+      7002: "0x0000000000000000000000000000000000007002",
+      7003: "0x0000000000000000000000000000000000007003",
       8453: "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
       42161: "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612",
     };
@@ -114,6 +117,7 @@ vi.mock("@/lib/billing/feature-flag", () => ({
 import { isBillingEnabled } from "@/lib/billing/feature-flag";
 import {
   checkGasCredits,
+  getFreshGasTokenPriceUsd,
   getGasCreditBalance,
   getGasCreditCapCents,
   getGasCreditCaps,
@@ -386,6 +390,69 @@ describe("getGasTokenPriceUsd", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// A safety check compares against this, so unlike getGasTokenPriceUsd it must
+// throw rather than answer with an old cached price or the hardcoded 3000.
+describe("getFreshGasTokenPriceUsd", () => {
+  function freshRound(): bigint[] {
+    const seconds = BigInt(Math.floor(Date.now() / 1000));
+    return [BigInt(1), BigInt(250_000_000_000), seconds, seconds, BigInt(1)];
+  }
+
+  it("returns a fresh oracle price and serves it from cache within the TTL", async () => {
+    mockReadContract.mockResolvedValue(freshRound());
+
+    expect(
+      await getFreshGasTokenPriceUsd("https://rpc.example.com", 7001)
+    ).toBe(2500);
+    expect(
+      await getFreshGasTokenPriceUsd("https://rpc.example.com", 7001)
+    ).toBe(2500);
+    expect(mockReadContract).toHaveBeenCalledOnce();
+  });
+
+  it("throws when the chain has no feed", async () => {
+    await expect(
+      getFreshGasTokenPriceUsd("https://rpc.example.com", 31_338)
+    ).rejects.toThrow("No gas-token USD price feed for chain 31338");
+    expect(mockReadContract).not.toHaveBeenCalled();
+  });
+
+  it("throws when the read fails, even with a cached price past its TTL", async () => {
+    vi.useFakeTimers();
+    try {
+      mockReadContract.mockResolvedValue(freshRound());
+      expect(
+        await getFreshGasTokenPriceUsd("https://rpc.example.com", 7002)
+      ).toBe(2500);
+
+      vi.advanceTimersByTime(61_000);
+      mockReadContract.mockRejectedValue(new Error("RPC timeout"));
+
+      await expect(
+        getFreshGasTokenPriceUsd("https://rpc.example.com", 7002)
+      ).rejects.toThrow("RPC timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throws on a stale oracle answer rather than using the fallback", async () => {
+    const twoHoursAgo = BigInt(Math.floor(Date.now() / 1000) - 7200);
+    mockReadContract.mockResolvedValue([
+      BigInt(1),
+      BigInt(250_000_000_000),
+      twoHoursAgo,
+      twoHoursAgo,
+      BigInt(1),
+    ]);
+
+    await expect(
+      getFreshGasTokenPriceUsd("https://rpc.example.com", 7003)
+    ).rejects.toThrow("Chainlink price stale");
+    expect(mockLogSystemError).not.toHaveBeenCalled();
   });
 });
 
