@@ -434,6 +434,11 @@ export function TemplateCodeEditor({
         TALL_FIELD_MAX_LINES * lineHeight + padding.top + padding.bottom
       );
       setContentHeight(editor.getContentHeight());
+      // Monaco mounts after the full-screen dialog has already placed focus,
+      // so the editor there takes it once it exists.
+      if (editor.getContainerDomNode().closest("[data-field-full-screen]")) {
+        editor.focus();
+      }
       editor.onDidContentSizeChange(
         (event: { contentHeight: number; contentHeightChanged: boolean }) => {
           if (event.contentHeightChanged) {
@@ -546,6 +551,9 @@ export function TemplateCodeEditor({
             options={{
               ...(editorOptions ?? DEFAULT_EDITOR_OPTIONS),
               readOnly: disabled,
+              // A taller field measures its content height, which Monaco pads
+              // by the editor's own height when it scrolls past the last line.
+              scrollBeyondLastLine: false,
             }}
             value={displayValue}
           />

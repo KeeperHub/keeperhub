@@ -4,7 +4,10 @@ import { FoldVertical, Maximize2, UnfoldVertical } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { BeautifyButton } from "@/components/workflow/config/beautify-button";
 import { FieldFullScreenDialog } from "@/components/workflow/config/field-full-screen-dialog";
-import { FieldToolbarButton } from "@/components/workflow/config/field-toolbar-button";
+import {
+  FieldToolbarButton,
+  FieldToolbarDivider,
+} from "@/components/workflow/config/field-toolbar-button";
 import { useBeautify } from "@/lib/hooks/use-beautify";
 import { cn } from "@/lib/utils";
 import {
@@ -103,6 +106,16 @@ export function BeautifiableField({
 
   const [tall, setTall] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
+  // The field's height when full screen opened, so its placeholder holds the
+  // same space and the panel does not jump when the dialog closes.
+  const [placeholderHeight, setPlaceholderHeight] = useState(0);
+  const inputRef = useRef<HTMLDivElement>(null);
+  const fullScreenButtonRef = useRef<HTMLButtonElement>(null);
+
+  const openFullScreen = (): void => {
+    setPlaceholderHeight(inputRef.current?.offsetHeight ?? 0);
+    setFullScreen(true);
+  };
 
   const beautifyVisible = showAction && canBeautifyLanguage(language);
   // Only an input the frame can size gets the buttons that size it.
@@ -150,15 +163,13 @@ export function BeautifiableField({
       {(beautifyVisible || expandable) && (
         <div className="flex items-center justify-end gap-0.5 border-b bg-muted/30 px-1.5 py-1">
           {beautifyButton}
-          {beautifyVisible && expandable && (
-            <div aria-hidden="true" className="mx-1 h-3.5 w-px bg-border" />
-          )}
+          {beautifyVisible && expandable && <FieldToolbarDivider />}
           {expandable && (
             <>
               <FieldToolbarButton
-                active={tall}
-                label={tall ? "Back to normal height" : "Make taller"}
+                label="Make taller"
                 onClick={() => setTall((current) => !current)}
+                pressed={tall}
                 tooltip={
                   tall
                     ? "Back to normal height"
@@ -169,7 +180,8 @@ export function BeautifiableField({
               </FieldToolbarButton>
               <FieldToolbarButton
                 label="Open in full screen"
-                onClick={() => setFullScreen(true)}
+                onClick={openFullScreen}
+                ref={fullScreenButtonRef}
                 tooltip="Open in full screen"
               >
                 <Maximize2 />
@@ -178,11 +190,21 @@ export function BeautifiableField({
           )}
         </div>
       )}
-      <div className={cn(disabled && "opacity-50")} data-beautify-input>
+      <div
+        className={cn(disabled && "opacity-50")}
+        data-beautify-input
+        ref={inputRef}
+      >
         {fullScreen ? (
           // One editor at a time: the field stays where it was, holding its
           // place, while the dialog has the only live copy of the input.
-          <div className="flex h-24 items-center justify-center text-muted-foreground text-xs">
+          <div
+            className={cn(
+              "flex items-center justify-center text-muted-foreground text-xs",
+              placeholderHeight === 0 && "h-24"
+            )}
+            style={{ height: placeholderHeight || undefined }}
+          >
             Editing in full screen
           </div>
         ) : (
@@ -195,6 +217,7 @@ export function BeautifiableField({
           label={label}
           onOpenChange={setFullScreen}
           open={fullScreen}
+          returnFocusRef={fullScreenButtonRef}
         >
           {renderInput("fill")}
         </FieldFullScreenDialog>

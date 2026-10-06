@@ -101,6 +101,17 @@ export type TemplateBadgeEditorProps = {
   multiline?: TemplateBadgeEditorMultilineOptions;
 };
 
+// The caret's on-screen box, or null when there is no usable caret or the
+// browser reports an empty box for it (a collapsed range at a line start).
+function caretRect(): DOMRect | null {
+  const selection = window.getSelection();
+  if (!hasUsableSelection(selection)) {
+    return null;
+  }
+  const rect = selection.getRangeAt(0).getBoundingClientRect();
+  return rect.width === 0 && rect.height === 0 ? null : rect;
+}
+
 // Helper to find all template pattern ranges in text
 function findTemplateRanges(text: string): Array<{ start: number; end: number }> {
   const templatePattern = /\{\{@[^}]+\}\}/g;
@@ -208,10 +219,14 @@ export function TemplateBadgeEditor({
   const openAutocompleteAtAt = (atPosition: number): void => {
     setAtSignPosition(atPosition);
     if (contentRef.current) {
-      const editorRect = contentRef.current.getBoundingClientRect();
+      // A field filling a dialog is as tall as the dialog, so its bottom edge
+      // can be a screen away from the "@" just typed: open at the caret.
+      const anchor =
+        (multiline?.fill ? caretRect() : null) ??
+        contentRef.current.getBoundingClientRect();
       setAutocompletePosition({
-        top: editorRect.bottom + window.scrollY + 4,
-        left: editorRect.left + window.scrollX,
+        top: anchor.bottom + window.scrollY + 4,
+        left: anchor.left + window.scrollX,
       });
     }
     setShowAutocomplete(true);
@@ -913,7 +928,12 @@ export function TemplateBadgeEditor({
         <div
           className={
             multiline
-              ? "min-w-0 flex-1 whitespace-pre-wrap break-words outline-none"
+              ? cn(
+                  "min-w-0 flex-1 whitespace-pre-wrap break-words outline-none",
+                  // Filling a dialog, the whole box takes a click, not only
+                  // the lines of text at its top.
+                  multiline.fill && "self-stretch"
+                )
               : "min-w-0 flex-1 overflow-hidden whitespace-nowrap outline-none"
           }
           contentEditable={!disabled}

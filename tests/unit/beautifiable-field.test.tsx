@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
+import { TemplateAutocomplete } from "@/components/ui/template-autocomplete";
 import {
   BeautifiableField,
   type FieldSize,
@@ -234,8 +235,8 @@ describe("BeautifiableField expand controls", () => {
   }
 
   beforeEach(() => {
-    // The dialog focuses its exit button, which opens that button's tooltip,
-    // and the tooltip measures itself with an observer jsdom does not have.
+    // Radix measures a tooltip's trigger with an observer jsdom does not have,
+    // and the dialog's buttons all carry tooltips.
     vi.stubGlobal(
       "ResizeObserver",
       class {
@@ -274,14 +275,14 @@ describe("BeautifiableField expand controls", () => {
     ).toBeNull();
   });
 
+  // A toggle keeps one name; its pressed state carries the change.
   it("toggles the input between normal and tall", () => {
     renderSized();
     act(() => button("Make taller").click());
     expect(inputSizes()).toEqual(["tall"]);
-    const pressed = button("Back to normal height");
-    expect(pressed.getAttribute("aria-pressed")).toBe("true");
+    expect(button("Make taller").getAttribute("aria-pressed")).toBe("true");
 
-    act(() => pressed.click());
+    act(() => button("Make taller").click());
     expect(inputSizes()).toEqual(["normal"]);
     expect(button("Make taller").getAttribute("aria-pressed")).toBe("false");
   });
@@ -334,8 +335,34 @@ describe("BeautifiableField expand controls", () => {
   it("closes the dialog with its exit button", () => {
     renderSized();
     act(() => button("Open in full screen").click());
+    // An action rather than a toggle, though it is drawn green.
+    expect(button("Exit full screen").hasAttribute("aria-pressed")).toBe(false);
     act(() => button("Exit full screen").click());
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("puts focus in the input on open and back on its button on close", async () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    expect(document.activeElement?.getAttribute("data-size")).toBe("fill");
+
+    pressEscape();
+    // Radix restores focus on the tick after the dialog unmounts.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.activeElement).toBe(button("Open in full screen"));
+  });
+
+  it("greys out Beautify in the dialog for a disabled field", () => {
+    renderSized({ disabled: true });
+    act(() => button("Open in full screen").click());
+    const dialog = document.querySelector('[role="dialog"]');
+    const beautify = [...(dialog?.querySelectorAll("button") ?? [])].find((b) =>
+      b.textContent?.includes("Beautify")
+    );
+    expect(beautify?.hasAttribute("disabled")).toBe(true);
+    expect(button("Exit full screen").hasAttribute("disabled")).toBe(false);
   });
 
   it("returns to the height the field had before it opened", () => {
@@ -356,6 +383,62 @@ describe("BeautifiableField expand controls", () => {
 
     pressEscape();
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("keeps the dialog open on Escape while Monaco's suggestions are open", () => {
+    renderSized();
+    act(() => button("Open in full screen").click());
+    const root = document.createElement("div");
+    root.className = "monaco-editor-overflow-widgets-root";
+    const widget = document.createElement("div");
+    widget.className = "suggest-widget visible";
+    root.appendChild(widget);
+    document.body.appendChild(root);
+
+    try {
+      pressEscape();
+      expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    } finally {
+      root.remove();
+    }
+  });
+
+  // A modal leaves everything outside it unreachable, so the picker has to
+  // render inside the dialog rather than on <body>.
+  it("portals the variable picker into the dialog", () => {
+    act(() => {
+      root.render(
+        <BeautifiableField
+          label="Payload"
+          language="json"
+          onChange={() => {
+            // not exercised here
+          }}
+          value="{}"
+        >
+          {(size: FieldSize) =>
+            size === "fill" ? (
+              <TemplateAutocomplete
+                isOpen
+                onClose={() => {
+                  // not exercised here
+                }}
+                onSelect={() => {
+                  // not exercised here
+                }}
+                position={{ top: 0, left: 0 }}
+              />
+            ) : (
+              <textarea readOnly value="{}" />
+            )
+          }
+        </BeautifiableField>
+      );
+    });
+    act(() => button("Open in full screen").click());
+    const picker = document.querySelector("[data-template-autocomplete]");
+    expect(picker).not.toBeNull();
+    expect(picker?.closest('[role="dialog"]')).not.toBeNull();
   });
 
   it("falls back to a generic title when the field has no label", () => {

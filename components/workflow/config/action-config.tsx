@@ -233,18 +233,14 @@ function HttpRequestFields({
       </div>
       <div className="space-y-2">
         <Label htmlFor="httpBody">Body (JSON)</Label>
-        <div
-          className={config?.httpMethod === "GET" ? "opacity-50" : ""}
-        >
-          <TemplateCodeEditor
-            disabled={config?.httpMethod === "GET" || disabled}
-            height="120px"
-            label="Body (JSON)"
-            language="json"
-            onChange={(value) => onUpdateConfig("httpBody", value || "{}")}
-            value={(config?.httpBody as string) || "{}"}
-          />
-        </div>
+        <TemplateCodeEditor
+          disabled={config?.httpMethod === "GET" || disabled}
+          height="120px"
+          label="Body (JSON)"
+          language="json"
+          onChange={(value) => onUpdateConfig("httpBody", value || "{}")}
+          value={(config?.httpBody as string) || "{}"}
+        />
         {config?.httpMethod === "GET" && (
           <p className="text-muted-foreground text-xs">
             Body is disabled for GET requests
