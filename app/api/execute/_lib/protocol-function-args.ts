@@ -13,6 +13,7 @@ import {
   applyEncodeTransformsNamed,
   getEncodeTransformKind,
 } from "@/lib/protocol-encode-transforms";
+import { checkProtocolInputGuards } from "@/lib/protocol-input-guards";
 import { getProtocol, type ProtocolActionInput } from "@/lib/protocol-registry";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
 
@@ -86,7 +87,16 @@ export function buildProtocolFunctionArgs(
   input: Record<string, unknown>,
   protocolSlug: string,
   contractKey: string,
-  functionName: string
+  functionName: string,
+  /**
+   * Normalized chain id. The body's own `network`/`chainId` may be a chain
+   * name or the deprecated alias, and guards index addresses by chain id.
+   *
+   * Required, not optional: `contractAddressOn` returns undefined without it,
+   * which silently drops the position-manager half of the collect guard. A
+   * second caller should have to supply it rather than lose that by omission.
+   */
+  network: string
 ): BuildProtocolFunctionArgsResult {
   const protocol = getProtocol(protocolSlug);
   if (!protocol) {
@@ -107,6 +117,16 @@ export function buildProtocolFunctionArgs(
 
   if (!protocolAction || protocolAction.inputs.length === 0) {
     return { ok: true, functionArgs: undefined };
+  }
+
+  // Value-level guards the ABI cannot express (a shape-valid address that
+  // redirects funds). Shared with the workflow write step so both paths
+  // refuse the same values.
+  const guard = checkProtocolInputGuards(protocolSlug, functionName, input, {
+    network,
+  });
+  if (!guard.ok) {
+    return { ok: false, error: guard.error, field: guard.field };
   }
 
   const named: Array<{ name: string; value: unknown }> = [];

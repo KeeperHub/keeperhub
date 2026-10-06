@@ -500,7 +500,8 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
       { ...inputs, receiver: `0x${"1".repeat(39)}` },
       "chainlink",
       send.contract,
-      send.function
+      send.function,
+      "1"
     );
     expect(bad).toEqual({
       ok: false,
@@ -512,7 +513,8 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
       inputs,
       "chainlink",
       send.contract,
-      send.function
+      send.function,
+      "1"
     );
     expect(good.ok).toBe(true);
     if (good.ok) {
@@ -556,7 +558,8 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
       encoded,
       "chainlink",
       send.contract,
-      send.function
+      send.function,
+      "1"
     );
     expect(result.ok).toBe(true);
     if (!result.ok) {
@@ -629,7 +632,8 @@ describe("direct-execute route: encode transforms on a protocol write", () => {
           { ...inputs, receiver },
           "chainlink",
           send.contract,
-          send.function
+          send.function,
+          "1"
         )
       ).toMatchObject({ ok: false, field: "receiver" });
     }
