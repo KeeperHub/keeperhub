@@ -56,6 +56,31 @@ Rendered as part of the app layout. No external props -- reads state from:
 | Mobile | Hidden by default, slides in as sheet overlay |
 | Collapsed | Strip-width (32px) showing only icons |
 
+## Workflow Row
+
+Each workflow in the picker is a 32px row (`py-1.5`, `text-sm`) in three
+fixed columns, so the name gets the same room on every row:
+
+| Column | Content |
+|---|---|
+| Icon (20px tile) | Trigger-type icon from `components/workflow-trigger-icons.ts`. Green (`keeperhub-green` on a 10% tint) only when the workflow is enabled and fires on its own; grey with a `foreground/15` outline when disabled, and always for Manual. Tooltip: "Schedule trigger · Every 5 minutes". |
+| Name (flexible) | Truncated; the full name shows above it on hover. Dimmed when disabled. |
+| Label (64px, right-aligned, `text-xs`) | Cadence ("5 min", "Hourly", "Daily", "Weekdays", event name, "Every 10 blocks") and "Manual" in `foreground/75`; "Disabled" muted; "Deactivated" in `text-status-deactivated` with a tooltip saying KeeperHub turned it off. Truncated with a tooltip. |
+
+On the open workflow's row (`bg-muted`) dimmed text and grey icons step up
+to `foreground/55`. Tooltips open after 400ms. Status and trigger detail are
+read to screen readers from a hidden span; the visible label is
+`aria-hidden`.
+
+## Project Panel Filter
+
+The filter button (left of the project title) opens a strip pinned to the
+top of the list: multi-select chips All / Enabled / Disabled / Manual with
+counts (selected: outline and check; zero: 70% opacity) and, when the list is
+taller than the panel, a shared `SearchInput` over name, tag and trigger
+type. An empty result names the filters and offers "Show all workflows".
+Escape clears a typed search, then closes the filter, then the panel.
+
 ## Code Example
 
 ```tsx

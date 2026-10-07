@@ -4,6 +4,7 @@ import {
   WorkflowTriggerEnum,
 } from "@/lib/workflow/store";
 import {
+  countDeactivated,
   countTriggerStatuses,
   describeEmptyFilterResult,
   getTriggerAccessibleStatus,
@@ -312,19 +313,19 @@ describe("getTriggerTypeLabel", () => {
 });
 
 describe("getTriggerAccessibleStatus", () => {
-  it("adds enabled only where the visible label is a cadence", () => {
+  it("leads with the status, then the trigger", () => {
     expect(
       getTriggerAccessibleStatus({
         triggerType: WorkflowTriggerEnum.SCHEDULE,
         enabled: true,
       })
-    ).toBe("Schedule trigger, enabled");
+    ).toBe("Enabled, Schedule trigger");
     expect(
       getTriggerAccessibleStatus({
         triggerType: WorkflowTriggerEnum.EVENT,
         enabled: false,
       })
-    ).toBe("Event trigger");
+    ).toBe("Disabled, Event trigger");
   });
 
   it("names a manual trigger without calling it disabled", () => {
@@ -336,21 +337,21 @@ describe("getTriggerAccessibleStatus", () => {
     ).toBe("Manual trigger");
   });
 
-  it("includes the schedule in full, as the icon tooltip does", () => {
+  it("includes the schedule in full, with commas only", () => {
     expect(
       getTriggerAccessibleStatus({
         triggerType: WorkflowTriggerEnum.SCHEDULE,
         enabled: true,
         triggerConfig: { scheduleCron: "*/5 * * * *" },
       })
-    ).toBe("Schedule trigger · Every 5 minutes, enabled");
+    ).toBe("Enabled, Schedule trigger, Every 5 minutes");
   });
 
   it("never says undefined for a deactivated workflow with no trigger", () => {
     expect(
       getTriggerAccessibleStatus({ deactivatedAt: "2026-10-01T00:00:00.000Z" })
     ).toBe(
-      "Manual trigger. Turned off by KeeperHub. Contact support to turn it back on."
+      "Deactivated, Manual trigger. Turned off by KeeperHub. Contact support to turn it back on."
     );
   });
 });
@@ -484,5 +485,17 @@ describe("describeEmptyFilterResult", () => {
     [["enabled"], "  hat  ", "No enabled workflows match \u201chat\u201d"],
   ] as const)("filter %j with query %j says %s", (statuses, query, text) => {
     expect(describeEmptyFilterResult(new Set(statuses), query)).toBe(text);
+  });
+});
+
+describe("countDeactivated", () => {
+  it("counts only workflows ops switched off", () => {
+    expect(
+      countDeactivated([
+        { deactivatedAt: "2026-10-01T00:00:00.000Z" },
+        { deactivatedAt: null },
+        {},
+      ])
+    ).toBe(1);
   });
 });

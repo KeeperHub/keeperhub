@@ -234,10 +234,11 @@ export const DEACTIVATED_EXPLANATION =
   "Turned off by KeeperHub. Contact support to turn it back on.";
 
 /**
- * Read after the row's visible text, so screen-reader users get what mouse
- * users get from the tooltips: the trigger in full ("Schedule trigger ·
- * Every 5 minutes"), "enabled" when the visible label is a cadence that does
- * not say so, and why a deactivated workflow is off.
+ * The row's status for screen readers, read after the name in place of the
+ * visible label (which is hidden from them, so nothing is said twice):
+ * "Enabled, Schedule trigger, Every 5 minutes", "Disabled, Event trigger,
+ * Paused", "Manual trigger", and for a deactivated one who turned it off.
+ * Commas only, so no reader says "middle dot".
  */
 export function getTriggerAccessibleStatus(workflow: {
   triggerType?: WorkflowTriggerType | null;
@@ -245,13 +246,24 @@ export function getTriggerAccessibleStatus(workflow: {
   deactivatedAt?: string | null;
   triggerConfig?: Record<string, unknown> | null;
 }): string {
-  const trigger = getTriggerTooltip(workflow);
-  if (workflow.deactivatedAt) {
-    return `${trigger}. ${DEACTIVATED_EXPLANATION}`;
-  }
-  return getTriggerStatus(workflow) === "enabled"
-    ? `${trigger}, enabled`
-    : trigger;
+  const status = getTriggerStatus(workflow);
+  const detail = getTriggerDetail(workflow);
+  const parts = [
+    ...(workflow.deactivatedAt ? ["Deactivated"] : []),
+    ...(!workflow.deactivatedAt && status === "enabled" ? ["Enabled"] : []),
+    ...(!workflow.deactivatedAt && status === "disabled" ? ["Disabled"] : []),
+    getTriggerTypeLabel(workflow.triggerType),
+    ...(detail ? [detail] : []),
+  ];
+  const text = parts.join(", ");
+  return workflow.deactivatedAt ? `${text}. ${DEACTIVATED_EXPLANATION}` : text;
+}
+
+/** How many of these were switched off by KeeperHub ops. */
+export function countDeactivated(
+  workflows: Array<{ deactivatedAt?: string | null }>
+): number {
+  return workflows.filter((workflow) => workflow.deactivatedAt).length;
 }
 
 type TriggerStatusInput = Parameters<typeof getTriggerStatus>[0];
@@ -393,24 +405,29 @@ export function getTriggerTooltip(workflow: {
   triggerConfig?: Record<string, unknown> | null;
 }): string {
   const type = getTriggerTypeLabel(workflow.triggerType);
+  const detail = getTriggerDetail(workflow);
+  return detail ? `${type} · ${detail}` : type;
+}
+
+// What the 64px label has no room for: the schedule in full, the event name,
+// the block interval. Undefined when there is nothing to add to the type.
+function getTriggerDetail(workflow: {
+  triggerType?: WorkflowTriggerType | null;
+  triggerConfig?: Record<string, unknown> | null;
+}): string | undefined {
   const config = workflow.triggerConfig ?? {};
-  let detail: string | undefined;
   switch (workflow.triggerType) {
     case WorkflowTriggerEnum.SCHEDULE:
-      detail = describeScheduleInFull(config);
-      break;
+      return describeScheduleInFull(config);
     case WorkflowTriggerEnum.EVENT: {
       const name = describeEvent(config);
-      detail = name === "Event" ? undefined : name;
-      break;
+      return name === "Event" ? undefined : name;
     }
     case WorkflowTriggerEnum.BLOCK:
-      detail = describeBlockInFull(config);
-      break;
+      return describeBlockInFull(config);
     default:
-      detail = undefined;
+      return;
   }
-  return detail ? `${type} · ${detail}` : type;
 }
 
 /**

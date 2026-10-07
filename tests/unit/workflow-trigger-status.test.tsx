@@ -194,4 +194,49 @@ describe("TriggerFilterChips", () => {
       container.querySelector("[data-filter=enabled]")?.className
     ).not.toContain("opacity-70");
   });
+
+  it("says on the Disabled chip how many are deactivated", () => {
+    act(() =>
+      root.render(
+        <TriggerFilterChips
+          counts={counts}
+          deactivatedCount={2}
+          onClear={vi.fn()}
+          onToggle={vi.fn()}
+          value={new Set()}
+        />
+      )
+    );
+    expect(
+      container.querySelector("[data-filter=disabled]")?.textContent
+    ).toContain("Includes 2 deactivated by KeeperHub");
+    expect(container.querySelector("[data-filter=enabled]")?.textContent).toBe(
+      "Enabled 5"
+    );
+  });
+
+  it("closes the filter on Escape from a chip", () => {
+    const onEscape = vi.fn();
+    act(() =>
+      root.render(
+        <TriggerFilterChips
+          counts={counts}
+          onClear={vi.fn()}
+          onEscape={onEscape}
+          onToggle={vi.fn()}
+          value={new Set()}
+        />
+      )
+    );
+    const event = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      container.querySelector("[data-filter=manual]")?.dispatchEvent(event);
+    });
+    expect(onEscape).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
 });

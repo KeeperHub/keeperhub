@@ -30,11 +30,15 @@ export function TriggerStatusIcon({
   triggerType,
   status,
   tooltip,
+  isActive = false,
 }: {
   triggerType: WorkflowTriggerType | undefined;
   status: TriggerStatus;
   // Defaults to the bare type, e.g. "Block trigger".
   tooltip?: string;
+  // On the highlighted row a grey icon steps up, as the dimmed text does;
+  // on hover it follows the row's `group` class.
+  isActive?: boolean;
 }): React.ReactNode {
   const Icon = getTriggerIcon(triggerType);
   return (
@@ -45,7 +49,12 @@ export function TriggerStatusIcon({
             "flex size-5 shrink-0 items-center justify-center rounded-md border transition-colors duration-150 motion-reduce:transition-none",
             status === "enabled"
               ? "border-keeperhub-green/30 bg-keeperhub-green/10 text-keeperhub-green"
-              : "border-foreground/15 text-muted-foreground"
+              : cn(
+                  "border-foreground/15",
+                  isActive
+                    ? "text-foreground/55"
+                    : "text-muted-foreground group-hover:text-foreground/55"
+                )
           )}
           data-testid="trigger-status-icon"
           data-trigger-status={status}
@@ -59,6 +68,18 @@ export function TriggerStatusIcon({
       </TooltipContent>
     </Tooltip>
   );
+}
+
+// Runs onEscape for an Escape nothing else used yet, and marks it used so
+// the sidebar does not also close the panel.
+function handleEscape(
+  event: React.KeyboardEvent,
+  onEscape: (() => void) | undefined
+): void {
+  if (onEscape && event.key === "Escape" && !event.defaultPrevented) {
+    event.preventDefault();
+    onEscape();
+  }
 }
 
 // The search field and chips that the filter button shows and hides.
@@ -76,14 +97,15 @@ export function TriggerFilterButton({
   // While the workflows load there is nothing to filter yet.
   disabled?: boolean;
 }): React.ReactNode {
-  const label = open ? "Hide filter and search" : "Filter and search";
+  // The name stays fixed; aria-expanded says whether it is open. Only the
+  // tooltip changes wording.
   return (
     <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
       <TooltipTrigger asChild>
         <button
           aria-controls={open ? TRIGGER_FILTER_PANEL_ID : undefined}
           aria-expanded={open}
-          aria-label={label}
+          aria-label="Filter and search"
           className={cn(
             "size-6 shrink-0 rounded-md border p-1 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-foreground/60 disabled:pointer-events-none disabled:opacity-40",
             open
@@ -99,7 +121,9 @@ export function TriggerFilterButton({
           <ListFilter className="size-4" />
         </button>
       </TooltipTrigger>
-      <TooltipContent side="bottom">{label}</TooltipContent>
+      <TooltipContent side="bottom">
+        {open ? "Hide filter and search" : "Filter and search"}
+      </TooltipContent>
     </Tooltip>
   );
 }
@@ -115,15 +139,20 @@ function FilterChip({
   count,
   value,
   onClick,
+  onEscape,
+  hint,
   children,
 }: {
   selected: boolean;
   count: number;
   value: string;
   onClick: () => void;
+  onEscape?: () => void;
+  // Extra context, shown on hover and read by screen readers.
+  hint?: string;
   children: React.ReactNode;
 }): React.ReactNode {
-  return (
+  const chip = (
     <button
       aria-pressed={selected}
       className={cn(
@@ -136,11 +165,27 @@ function FilterChip({
       )}
       data-filter={value}
       onClick={onClick}
+      onKeyDown={(event) => handleEscape(event, onEscape)}
       type="button"
     >
-      {selected && <Check aria-hidden="true" className="size-3" />}
-      {children} {count}
+      {/* The check's space is always kept, so picking a chip never makes it
+          wider and re-wraps the row. */}
+      <Check
+        aria-hidden="true"
+        className={cn("size-3", !selected && "invisible")}
+      />
+      {children} <span className="tabular-nums">{count}</span>
+      {hint && <span className="sr-only">, {hint}</span>}
     </button>
+  );
+  if (!hint) {
+    return chip;
+  }
+  return (
+    <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
+      <TooltipTrigger asChild>{chip}</TooltipTrigger>
+      <TooltipContent side="bottom">{hint}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -151,13 +196,19 @@ function FilterChip({
 export function TriggerFilterChips({
   value,
   counts,
+  deactivatedCount = 0,
   onToggle,
   onClear,
+  onEscape,
 }: {
   value: TriggerFilter;
   counts: TriggerStatusCounts;
+  // Ops-deactivated workflows count as Disabled; the chip says so.
+  deactivatedCount?: number;
   onToggle: (status: TriggerStatus) => void;
   onClear: () => void;
+  // Escape on a chip closes the filter rather than the surrounding panel.
+  onEscape?: () => void;
 }): React.ReactNode {
   return (
     <fieldset
@@ -168,6 +219,7 @@ export function TriggerFilterChips({
       <FilterChip
         count={counts.all}
         onClick={onClear}
+        onEscape={onEscape}
         selected={value.size === 0}
         value="all"
       >
@@ -176,8 +228,14 @@ export function TriggerFilterChips({
       {FILTER_OPTIONS.map((option) => (
         <FilterChip
           count={counts[option.value]}
+          hint={
+            option.value === "disabled" && deactivatedCount > 0
+              ? `Includes ${deactivatedCount} deactivated by KeeperHub`
+              : undefined
+          }
           key={option.value}
           onClick={() => onToggle(option.value)}
+          onEscape={onEscape}
           selected={value.has(option.value)}
           value={option.value}
         >
@@ -191,10 +249,13 @@ export function TriggerFilterChips({
 export function WorkflowSearchField({
   value,
   onChange,
+  onEscape,
   ref,
 }: {
   value: string;
   onChange: (value: string) => void;
+  // Escape on an empty field; a typed query is cleared first by SearchInput.
+  onEscape?: () => void;
   ref?: React.Ref<HTMLInputElement>;
 }): React.ReactNode {
   return (
@@ -202,6 +263,7 @@ export function WorkflowSearchField({
       <SearchInput
         aria-label="Search workflows"
         data-testid="workflow-search"
+        onKeyDown={(event) => handleEscape(event, onEscape)}
         onValueChange={onChange}
         placeholder="Search workflows"
         ref={ref}

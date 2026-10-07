@@ -63,6 +63,7 @@ import {
   type WorkflowTriggerType,
 } from "@/lib/workflow/store";
 import {
+  countDeactivated,
   countTriggerStatuses,
   DEACTIVATED_EXPLANATION,
   describeEmptyFilterResult,
@@ -170,8 +171,9 @@ function WorkflowItem({
   const isActive = workflow.id === activeWorkflowId;
   return (
     <button
+      aria-current={isActive ? "page" : undefined}
       className={cn(
-        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted outline-none focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset",
+        "group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted outline-none focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset",
         isActive && "bg-muted"
       )}
       data-testid="workflow-picker-item"
@@ -179,6 +181,7 @@ function WorkflowItem({
       type="button"
     >
       <TriggerStatusIcon
+        isActive={isActive}
         status={status}
         tooltip={getTriggerTooltip(workflow)}
         triggerType={workflow.triggerType}
@@ -199,7 +202,10 @@ function WorkflowItem({
           is a workflow you can use, so it reads stronger than Disabled.
           Deactivated (ops switched it off; the user cannot undo it) gets a
           muted amber and a tooltip saying who to ask. */}
+      {/* Hidden from screen readers: the sr-only text below says the same
+          and more, so nothing is read twice. */}
       <span
+        aria-hidden="true"
         className={cn(
           "w-16 shrink-0 text-right text-xs",
           labelColorClass(workflow, status, isActive)
@@ -226,6 +232,21 @@ function WorkflowItem({
       </span>
       <span className="sr-only">, {getTriggerAccessibleStatus(workflow)}</span>
     </button>
+  );
+}
+
+// A polite live region that speaks only once the text has stopped changing
+// for a moment, so typing a search does not announce every keystroke.
+function DelayedAnnouncement({ text }: { text: string }): React.ReactNode {
+  const [announced, setAnnounced] = useState(text);
+  useEffect(() => {
+    const timer = setTimeout(() => setAnnounced(text), 400);
+    return () => clearTimeout(timer);
+  }, [text]);
+  return (
+    <p aria-live="polite" className="sr-only">
+      {announced}
+    </p>
   );
 }
 
@@ -444,15 +465,17 @@ function TagsPanel({
             {index > 0 && <div className="my-1 border-t" />}
             <button
               aria-expanded={!isCollapsed}
-              className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider transition-colors hover:bg-muted hover:text-foreground"
+              className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset"
               onClick={() => toggle(tag.id)}
               type="button"
             >
-              {isCollapsed ? (
-                <ChevronRight className="size-3 shrink-0" />
-              ) : (
-                <ChevronDown className="size-3 shrink-0" />
-              )}
+              <span className="flex size-5 shrink-0 items-center justify-center">
+                {isCollapsed ? (
+                  <ChevronRight className="size-3" />
+                ) : (
+                  <ChevronDown className="size-3" />
+                )}
+              </span>
               <span
                 className="inline-block size-2 shrink-0 rounded-full"
                 style={{ backgroundColor: tag.color }}
@@ -485,15 +508,17 @@ function TagsPanel({
                 {showHeader && (
                   <button
                     aria-expanded={!isCollapsed}
-                    className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider transition-colors hover:bg-muted hover:text-foreground"
+                    className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset"
                     onClick={() => toggle(UNTAGGED_KEY)}
                     type="button"
                   >
-                    {isCollapsed ? (
-                      <ChevronRight className="size-3 shrink-0" />
-                    ) : (
-                      <ChevronDown className="size-3 shrink-0" />
-                    )}
+                    <span className="flex size-5 shrink-0 items-center justify-center">
+                      {isCollapsed ? (
+                        <ChevronRight className="size-3" />
+                      ) : (
+                        <ChevronDown className="size-3" />
+                      )}
+                    </span>
                     <span className="truncate">Untagged</span>
                     <span className="ml-auto normal-case tracking-normal">
                       {untaggedWorkflows.length}
@@ -1008,13 +1033,19 @@ export function NavigationSidebar(): React.ReactNode {
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const allProjectWorkflows = byProject[selectedProjectId ?? ""] ?? [];
   const tagNames = new Map(tags.map((t) => [t.id, t.name]));
-  // Search covers the name, the tag and the trigger type. Status words are
-  // left to the chips, so "disabled" and "enabled" never half-match labels.
+  // Search covers the name, the tag, the trigger type ("Manual" when there
+  // is none yet) and the event name the label shows. Status words are left to
+  // the chips, so "disabled" and "enabled" never half-match labels.
   const searchMatches = allProjectWorkflows.filter((w) =>
     matchesWorkflowSearch(
-      [w.name, tagNames.get(w.tagId ?? "") ?? "", w.triggerType ?? ""].join(
-        " "
-      ),
+      [
+        w.name,
+        tagNames.get(w.tagId ?? "") ?? "",
+        w.triggerType ?? "Manual",
+        typeof w.triggerConfig?.eventName === "string"
+          ? w.triggerConfig.eventName
+          : "",
+      ].join(" "),
       workflowSearch
     )
   );
@@ -1022,6 +1053,13 @@ export function NavigationSidebar(): React.ReactNode {
   const projectWorkflows = searchMatches.filter((w) =>
     matchesTriggerFilter(w, triggerFilter)
   );
+  // Escape on a chip or an empty search closes the filter, not the whole
+  // panel; the next Escape closes the panel.
+  const closePickerFilter = (): void => {
+    resetPickerFilter();
+    setSearchKept(false);
+    setTriggerFilterOpen(false);
+  };
   const resetPickerFilter = (): void => {
     setTriggerFilter(new Set());
     setWorkflowSearch("");
@@ -1329,7 +1367,7 @@ export function NavigationSidebar(): React.ReactNode {
         }
         headerLeading={
           <TriggerFilterButton
-            disabled={dataLoading}
+            disabled={dataLoading || allProjectWorkflows.length === 0}
             onToggle={() => {
               // Closing the chips drops the filter, so a shortened list is
               // never left behind with nothing on screen explaining it.
@@ -1363,13 +1401,16 @@ export function NavigationSidebar(): React.ReactNode {
               {showWorkflowSearch && (
                 <WorkflowSearchField
                   onChange={setWorkflowSearch}
+                  onEscape={closePickerFilter}
                   ref={searchFieldRef}
                   value={workflowSearch}
                 />
               )}
               <TriggerFilterChips
                 counts={triggerCounts}
+                deactivatedCount={countDeactivated(searchMatches)}
                 onClear={() => setTriggerFilter(new Set())}
+                onEscape={closePickerFilter}
                 onToggle={(status) =>
                   setTriggerFilter((current) =>
                     toggleTriggerFilter(current, status)
@@ -1379,11 +1420,13 @@ export function NavigationSidebar(): React.ReactNode {
               />
             </div>
           )}
-          <p aria-live="polite" className="sr-only">
-            {isPickerFiltered
-              ? `${projectWorkflows.length} of ${allProjectWorkflows.length} workflows shown`
-              : ""}
-          </p>
+          <DelayedAnnouncement
+            text={
+              isPickerFiltered
+                ? `${projectWorkflows.length} of ${allProjectWorkflows.length} workflows shown`
+                : ""
+            }
+          />
           <div ref={setPickerList}>
             <TagsPanel
               activeWorkflowId={workflowId}

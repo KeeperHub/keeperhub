@@ -31,7 +31,7 @@ export function SearchInput({
         className="-translate-y-1/2 pointer-events-none absolute top-1/2 left-2.5 size-3.5 text-muted-foreground"
       />
       <Input
-        className={cn("h-8 pr-7 pl-8 text-sm", className)}
+        className={cn("h-8 pr-8 pl-8 text-sm", className)}
         onChange={(event) => onValueChange(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Escape" && value !== "") {
@@ -48,7 +48,7 @@ export function SearchInput({
       {value !== "" && (
         <button
           aria-label="Clear search"
-          className="-translate-y-1/2 absolute top-1/2 right-2 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60"
+          className="-translate-y-1/2 absolute top-1/2 right-1 flex size-6 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60"
           onClick={() => onValueChange("")}
           type="button"
         >
