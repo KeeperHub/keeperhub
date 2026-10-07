@@ -65,7 +65,7 @@ fixed columns, so the name gets the same room on every row:
 |---|---|
 | Icon (20px tile) | Trigger-type icon from `components/workflow-trigger-icons.ts`. Green (`keeperhub-green` on a 10% tint) only when the workflow is enabled and fires on its own; grey with a `foreground/15` outline when disabled, and always for Manual. Tooltip: "Schedule trigger · Every 5 minutes". |
 | Name (flexible) | Truncated; the full name shows above it on hover. Dimmed when disabled. |
-| Label (64px, right-aligned, `text-xs`) | Cadence ("5 min", "Hourly", "Daily", "Weekdays", event name, "Every 10 blocks") and "Manual" in `foreground/75`; "Disabled" muted; "Deactivated" in `text-status-deactivated` with a tooltip saying KeeperHub turned it off. Truncated with a tooltip. |
+| Label (64px, right-aligned, `text-xs`) | Always "how or when it fires": cadence ("5 min", "Hourly", "Daily", "Weekdays", "Custom"), event name, or "10 blocks"; empty for Webhook, Transfer and Manual, whose icon says it all. `foreground/75`, muted like the name when the workflow is off. The one status word is "Deactivated", in `text-status-deactivated` with a tooltip saying KeeperHub turned it off. Status otherwise comes from the icon colour and the dimmed name (and the tooltip and screen-reader text). Truncated with a tooltip. |
 
 On the open workflow's row (`bg-muted`) dimmed text and grey icons step up
 to `foreground/55`. Tooltips open after 400ms. Status and trigger detail are

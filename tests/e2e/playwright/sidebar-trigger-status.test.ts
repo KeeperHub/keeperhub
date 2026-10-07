@@ -77,8 +77,9 @@ test.describe("Sidebar trigger status icons", () => {
 
     const expectations = [
       [live.name, "Schedule", "enabled", "5 min"],
-      [off.name, "Webhook", "disabled", "Disabled"],
-      [manual.name, "Manual", "manual", "Manual"],
+      // Webhook and Manual have nothing to add to their icon.
+      [off.name, "Webhook", "disabled", ""],
+      [manual.name, "Manual", "manual", ""],
     ] as const;
     for (const [name, type, status, label] of expectations) {
       const row = pickerRow(page, name);
@@ -124,7 +125,7 @@ test.describe("Sidebar trigger status icons", () => {
     await expect(icon).toHaveAttribute("data-trigger-status", "manual");
     await expect(
       pickerRow(page, workflow.name).getByTestId("workflow-trigger-label")
-    ).toHaveText("Manual");
+    ).toHaveText("");
   });
 
   test("enabling the open workflow turns its icon green", async ({ page }) => {
@@ -144,9 +145,10 @@ test.describe("Sidebar trigger status icons", () => {
 
     const row = pickerRow(page, workflow.name);
     const icon = row.getByTestId("trigger-status-icon");
+    // The column shows the cadence either way; the icon shows the status.
     await expect(icon).toHaveAttribute("data-trigger-status", "disabled");
     await expect(row.getByTestId("workflow-trigger-label")).toHaveText(
-      "Disabled"
+      "15 min"
     );
 
     await page.getByTitle(ENABLE_BUTTON_REGEX).click();

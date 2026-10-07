@@ -86,11 +86,10 @@ describe("getTriggerStatus", () => {
 });
 
 describe("getTriggerLabel", () => {
-  const enabledSchedule = (
+  const schedule = (
     triggerConfig: Record<string, unknown>
   ): Parameters<typeof getTriggerLabel>[0] => ({
     triggerType: WorkflowTriggerEnum.SCHEDULE,
-    enabled: true,
     triggerConfig,
   });
 
@@ -106,14 +105,14 @@ describe("getTriggerLabel", () => {
     ["0 9 * * 1", "Weekly"],
     ["0 9 * * 1-5", "Weekdays"],
     ["0 9 * * 1,3,5", "3x a week"],
-    ["0 9 * * 0,7", "Schedule"],
-    ["0 */0 * * *", "Schedule"],
     ["*/7 * * * *", "7 min"],
     ["0 9 1 * *", "Custom"],
     ["0 0 9 * * *", "Custom"],
-    ["not a cron", "Schedule"],
-  ])("labels cron %s as %s", (scheduleCron, label) => {
-    expect(getTriggerLabel(enabledSchedule({ scheduleCron }))).toBe(label);
+    ["0 9 * * 0,7", ""],
+    ["0 */0 * * *", ""],
+    ["not a cron", ""],
+  ])("labels cron %s as %j", (scheduleCron, label) => {
+    expect(getTriggerLabel(schedule({ scheduleCron }))).toBe(label);
   });
 
   it.each([
@@ -128,98 +127,78 @@ describe("getTriggerLabel", () => {
     [604_800, "Weekly"],
     [172_800, "2 d"],
   ])("labels interval %s seconds as %s", (scheduleIntervalSeconds, label) => {
-    expect(getTriggerLabel(enabledSchedule({ scheduleIntervalSeconds }))).toBe(
-      label
-    );
+    expect(getTriggerLabel(schedule({ scheduleIntervalSeconds }))).toBe(label);
   });
 
   it("prefers the interval over a stale cron", () => {
     expect(
       getTriggerLabel(
-        enabledSchedule({
-          scheduleIntervalSeconds: 600,
-          scheduleCron: "0 * * * *",
-        })
+        schedule({ scheduleIntervalSeconds: 600, scheduleCron: "0 * * * *" })
       )
     ).toBe("10 min");
   });
 
-  it("falls back to Schedule for a sub-minute or empty schedule", () => {
-    expect(
-      getTriggerLabel(enabledSchedule({ scheduleIntervalSeconds: 30 }))
-    ).toBe("Schedule");
-    expect(getTriggerLabel(enabledSchedule({}))).toBe("Schedule");
+  it("is empty for a sub-minute or empty schedule", () => {
+    expect(getTriggerLabel(schedule({ scheduleIntervalSeconds: 30 }))).toBe("");
+    expect(getTriggerLabel(schedule({}))).toBe("");
   });
 
-  it("names the event for an Event trigger", () => {
+  it("names the event for an Event trigger, or nothing", () => {
     expect(
       getTriggerLabel({
         triggerType: WorkflowTriggerEnum.EVENT,
-        enabled: true,
         triggerConfig: { eventName: "Lift" },
       })
     ).toBe("Lift");
-    expect(
-      getTriggerLabel({ triggerType: WorkflowTriggerEnum.EVENT, enabled: true })
-    ).toBe("Event");
+    expect(getTriggerLabel({ triggerType: WorkflowTriggerEnum.EVENT })).toBe(
+      ""
+    );
   });
 
   it("gives the block interval for a Block trigger", () => {
     const block = (blockInterval: unknown): string =>
       getTriggerLabel({
         triggerType: WorkflowTriggerEnum.BLOCK,
-        enabled: true,
         triggerConfig: { blockInterval },
       });
-    expect(block("10")).toBe("Every 10 blocks");
+    expect(block("10")).toBe("10 blocks");
     expect(block(1)).toBe("Every block");
-    expect(block("")).toBe("Block");
+    expect(block("")).toBe("");
   });
 
   it.each([
-    [WorkflowTriggerEnum.WEBHOOK, "Webhook"],
-    [WorkflowTriggerEnum.TEMPO_PAYMENT, "Transfer"],
-    [WorkflowTriggerEnum.PYTH_PRICE, "Pyth Price"],
-  ])("uses the trigger name for %s", (triggerType, label) => {
-    expect(getTriggerLabel({ triggerType, enabled: true })).toBe(label);
+    WorkflowTriggerEnum.WEBHOOK,
+    WorkflowTriggerEnum.TEMPO_PAYMENT,
+    WorkflowTriggerEnum.PYTH_PRICE,
+    WorkflowTriggerEnum.MANUAL,
+  ])("is empty for %s, where the icon already says it all", (triggerType) => {
+    expect(getTriggerLabel({ triggerType })).toBe("");
   });
 
-  it("says Disabled instead of the cadence when the workflow is off", () => {
-    expect(
-      getTriggerLabel({
-        triggerType: WorkflowTriggerEnum.SCHEDULE,
-        enabled: false,
-        triggerConfig: { scheduleCron: "*/5 * * * *" },
-      })
-    ).toBe("Disabled");
+  it("is empty when there is no trigger yet", () => {
+    expect(getTriggerLabel({})).toBe("");
   });
 
-  it("says Manual for a manual workflow, never Disabled", () => {
-    expect(
-      getTriggerLabel({
-        triggerType: WorkflowTriggerEnum.MANUAL,
-        enabled: false,
-      })
-    ).toBe("Manual");
+  it("shows the cadence whether or not the workflow is enabled", () => {
+    // Status is the icon colour and the dimmed name, not this column.
+    expect(getTriggerLabel(schedule({ scheduleCron: "*/5 * * * *" }))).toBe(
+      "5 min"
+    );
   });
 
-  it("says Deactivated for a deactivated manual workflow too", () => {
-    expect(
-      getTriggerLabel({
-        triggerType: WorkflowTriggerEnum.MANUAL,
-        deactivatedAt: "2026-10-01T00:00:00.000Z",
-      })
-    ).toBe("Deactivated");
-  });
-
-  it("says Deactivated when ops deactivated it", () => {
-    expect(
-      getTriggerLabel({
-        triggerType: WorkflowTriggerEnum.SCHEDULE,
-        enabled: true,
-        deactivatedAt: "2026-10-01T00:00:00.000Z",
-      })
-    ).toBe("Deactivated");
+  it("says Deactivated when ops deactivated it, whatever the trigger", () => {
+    for (const triggerType of [
+      WorkflowTriggerEnum.SCHEDULE,
+      WorkflowTriggerEnum.MANUAL,
+    ]) {
+      expect(
+        getTriggerLabel({
+          triggerType,
+          deactivatedAt: "2026-10-01T00:00:00.000Z",
+          triggerConfig: { scheduleCron: "*/5 * * * *" },
+        })
+      ).toBe("Deactivated");
+    }
   });
 });
 
@@ -414,13 +393,11 @@ describe("trigger type read off a node list", () => {
     expect(readType([{ data: { type: "trigger" } }])).toBeUndefined();
   });
 
-  it("treats an unknown trigger type as no trigger, so it reads as Manual", () => {
+  it("treats an unknown trigger type as no trigger", () => {
     expect(
       readType([{ data: { type: "trigger", config: { triggerType: "Nope" } } }])
     ).toBeUndefined();
-    expect(getTriggerLabel({ triggerType: undefined, enabled: true })).toBe(
-      "Manual"
-    );
+    expect(getTriggerLabel({ triggerType: undefined })).toBe("");
     expect(getTriggerTooltip({})).toBe("Manual trigger");
   });
 

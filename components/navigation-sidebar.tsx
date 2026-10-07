@@ -212,13 +212,13 @@ function WorkflowItem({
         side="top"
         text={workflow.name}
       />
-      {/* Fixed width (fits every status word, "Deactivated" the longest) so
-          every name gets the same room, whatever the label says; a longer
-          cadence ("Every 10 blocks") or event name is cut off instead, with
-          the full text on hover. A cadence or "Manual"
-          is a workflow you can use, so it reads stronger than Disabled.
-          Deactivated (ops switched it off; the user cannot undo it) gets a
-          muted amber and a tooltip saying who to ask. */}
+      {/* How or when it fires ("5 min", the event, "10 blocks"), on every
+          row whether enabled or not; empty when the icon says it all. Fixed
+          width (fits "Deactivated") so every name gets the same room; a long
+          event name is cut off, with the full text on hover. Muted like the
+          name when the workflow is off; Deactivated (ops switched it off,
+          the user cannot undo it) is the one status word, in a muted amber
+          with a tooltip saying who to ask. */}
       {/* Hidden from screen readers: the sr-only text below says the same
           and more, so nothing is read twice. */}
       <span

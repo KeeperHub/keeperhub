@@ -176,55 +176,55 @@ function describeSchedule(config: Record<string, unknown>): string {
     return interval;
   }
   const cron = config.scheduleCron;
-  if (typeof cron === "string" && cron.trim() !== "") {
-    const short = describeCronShort(cron);
-    if (short) {
-      return short;
-    }
-    // A valid cron with no short name ("0 9 1 * *") is "Custom"; one that
-    // does not parse says only what kind of trigger it is.
-    return validateCronExpression(cron).valid ? "Custom" : "Schedule";
+  if (typeof cron !== "string" || cron.trim() === "") {
+    return "";
   }
-  return "Schedule";
+  // A valid cron with no short name ("0 9 1 * *") is "Custom"; one that does
+  // not parse has nothing to show.
+  const short = describeCronShort(cron);
+  if (short) {
+    return short;
+  }
+  return validateCronExpression(cron).valid ? "Custom" : "";
+}
+
+function blockInterval(config: Record<string, unknown>): number | undefined {
+  const interval = Number(config.blockInterval);
+  return Number.isInteger(interval) && interval >= 1 ? interval : undefined;
 }
 
 function describeBlock(config: Record<string, unknown>): string {
-  const interval = Number(config.blockInterval);
-  if (!Number.isInteger(interval) || interval < 1) {
-    return "Block";
+  const interval = blockInterval(config);
+  if (interval === undefined) {
+    return "";
   }
-  return interval === 1 ? "Every block" : `Every ${interval} blocks`;
+  return interval === 1 ? "Every block" : `${interval} blocks`;
 }
 
 function describeEvent(config: Record<string, unknown>): string {
   const name = config.eventName;
-  return typeof name === "string" && name.trim() !== "" ? name : "Event";
+  return typeof name === "string" ? name.trim() : "";
 }
 
 /**
- * The short text at the right of a picker row: how often an enabled
- * workflow fires ("5 min", "Lift", "Every 10 blocks"), "Disabled" when it is
- * off, and "Manual" when it can only be run by hand.
+ * The short text at the right of a picker row. It always answers one
+ * question, "how or when does it fire?": "5 min", "Daily", the event name,
+ * "10 blocks", whether the workflow is enabled or not (the row shows that
+ * through its icon and dimmed name). Empty when the icon already says it all
+ * (Webhook, Transfer, Manual) or nothing is configured yet. The one status
+ * word is "Deactivated": KeeperHub ops switched it off and the user cannot
+ * switch it back on.
  */
 export function getTriggerLabel(workflow: {
   triggerType?: WorkflowTriggerType | null;
-  enabled?: boolean | null;
   deactivatedAt?: string | null;
   triggerConfig?: Record<string, unknown> | null;
 }): string {
-  // Ops deactivation outranks the user's own switch, so it gets its own word.
   if (workflow.deactivatedAt) {
     return "Deactivated";
   }
-  const { triggerType } = workflow;
-  if (!hasEnableSwitch(triggerType)) {
-    return "Manual";
-  }
-  if (workflow.enabled !== true) {
-    return "Disabled";
-  }
   const config = workflow.triggerConfig ?? {};
-  switch (triggerType) {
+  switch (workflow.triggerType) {
     case WorkflowTriggerEnum.SCHEDULE:
       return describeSchedule(config);
     case WorkflowTriggerEnum.EVENT:
@@ -232,7 +232,7 @@ export function getTriggerLabel(workflow: {
     case WorkflowTriggerEnum.BLOCK:
       return describeBlock(config);
     default:
-      return triggerType;
+      return "";
   }
 }
 
@@ -400,8 +400,8 @@ function describeScheduleInFull(
 function describeBlockInFull(
   config: Record<string, unknown>
 ): string | undefined {
-  const label = describeBlock(config);
-  return label === "Block" ? undefined : label;
+  const interval = blockInterval(config);
+  return interval === undefined ? undefined : every(interval, "block");
 }
 
 /**
@@ -427,10 +427,8 @@ function getTriggerDetail(workflow: {
   switch (workflow.triggerType) {
     case WorkflowTriggerEnum.SCHEDULE:
       return describeScheduleInFull(config);
-    case WorkflowTriggerEnum.EVENT: {
-      const name = describeEvent(config);
-      return name === "Event" ? undefined : name;
-    }
+    case WorkflowTriggerEnum.EVENT:
+      return describeEvent(config) || undefined;
     case WorkflowTriggerEnum.BLOCK:
       return describeBlockInFull(config);
     default:
