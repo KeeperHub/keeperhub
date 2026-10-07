@@ -317,7 +317,7 @@ async function sendRawSolanaInstructionCoreImpl(
     return orgCtx;
   }
 
-  const wallet = await resolveWallet(orgCtx.organizationId);
+  const wallet = await resolveWallet(orgCtx.organizationId, chainId);
   if ("error" in wallet) {
     return { success: false, error: wallet.error };
   }

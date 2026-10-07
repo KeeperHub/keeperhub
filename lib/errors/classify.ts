@@ -81,6 +81,22 @@ const CHAIN_REJECTION_PATTERNS: readonly RegExp[] = [
  * overlap; more specific patterns should come before broader ones.
  */
 const RULES: readonly Rule[] = [
+  // a policy denial carries its fault domain structurally, so this
+  // rule is a backstop for the case where the class is lost crossing a
+  // boundary that only preserves the message. Without it the default below
+  // classifies a working guardrail as a platform failure and pages somebody.
+  {
+    pattern: /^Blocked by an organization policy/i,
+    errorCategory: ErrorCategory.POLICY,
+    errorType: ExecutionErrorType.POLICY,
+    code: null,
+  },
+  {
+    pattern: /Blocked by an organization policy/i,
+    errorCategory: ErrorCategory.POLICY,
+    errorType: ExecutionErrorType.POLICY,
+    code: null,
+  },
   // User-config: template / variable / safe-fetch input failures
   {
     pattern: /^Unresolved template reference/i,

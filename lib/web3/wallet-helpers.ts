@@ -5,7 +5,9 @@ import type { ethers } from "ethers";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { db } from "@/lib/db";
 import { type OrganizationWallet, organizationWallets } from "@/lib/db/schema";
+import { guardSigner, guardSolanaSigner } from "@/lib/policy/signing-guard";
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
+import { SUPPORTED_CHAIN_IDS } from "@/lib/rpc/types";
 import { ensureOrganizationSolanaAddress } from "@/lib/turnkey/ensure-solana-address";
 import { isSolanaWalletProvisioningEnabled } from "@/lib/turnkey/solana-provisioning-flag";
 import { TurnkeySolanaSigner } from "@/lib/turnkey/solana-signer";
@@ -36,6 +38,15 @@ export async function getOrganizationWallet(
   return wallet[0];
 }
 
+/**
+ * The organization's signer, wrapped so policy is unavoidable.
+ *
+ * Guarding here rather than at each route is the point. Not every path to a
+ * signature goes through the workflow engine: direct execution, agent calls and
+ * one-off runs all reach a signer another way, and a rule that only holds on
+ * some paths is not a rule. A route added tomorrow inherits the check without
+ * knowing policy exists.
+ */
 export async function initializeWalletSigner(
   organizationId: string,
   rpcUrl: string,
@@ -45,7 +56,10 @@ export async function initializeWalletSigner(
   const rpcManager = await getRpcProviderFromUrls(rpcUrl, undefined, chainId);
   const provider = rpcManager.getProvider();
 
-  return initializeTurnkeySigner(wallet, provider);
+  return guardSigner(initializeTurnkeySigner(wallet, provider), {
+    organizationId,
+    chainId,
+  });
 }
 
 function initializeTurnkeySigner(
@@ -104,7 +118,7 @@ export async function organizationHasWallet(
   return wallet.length > 0;
 }
 
-export function buildSolanaSignerFromWallet(
+function buildSolanaSignerFromWallet(
   wallet: OrganizationWallet
 ): SolanaTransactionSigner {
   if (!wallet.turnkeySubOrgId) {
@@ -124,11 +138,19 @@ export function buildSolanaSignerFromWallet(
 
 /**
  * Resolves an organization's Solana signer and its provisioned address in one
- * fetch. Throws if the wallet is missing or has no Solana account; callers wrap
- * this in their own error shape. Shared by the Solana transfer paths.
+ * fetch, with policy already wrapped around the signer. Throws if the wallet is
+ * missing or has no Solana account; callers wrap this in their own error shape.
+ *
+ * The guard lives here rather than in a separate helper because the separate
+ * helper is what failed: it existed, it was correct, and nothing called it, so
+ * every Solana write took the unguarded signer instead. The EVM and Solana
+ * paths share no code below the signer, so each has to be guarded where it is
+ * built, and a rule that holds on one chain family and not the other is not a
+ * rule.
  */
 export async function initializeSolanaWallet(
-  organizationId: string
+  organizationId: string,
+  chainId: number = SUPPORTED_CHAIN_IDS.SOLANA_MAINNET
 ): Promise<{ signer: SolanaTransactionSigner; address: string }> {
   let wallet = await getOrganizationWallet(organizationId);
   if (!wallet.solanaAddress && isSolanaWalletProvisioningEnabled()) {
@@ -136,11 +158,8 @@ export async function initializeSolanaWallet(
     wallet = { ...wallet, solanaAddress };
   }
   const signer = buildSolanaSignerFromWallet(wallet);
-  return { signer, address: wallet.solanaAddress as string };
-}
-
-export async function initializeSolanaWalletSigner(
-  organizationId: string
-): Promise<SolanaTransactionSigner> {
-  return (await initializeSolanaWallet(organizationId)).signer;
+  return {
+    signer: guardSolanaSigner(signer, { organizationId, chainId }),
+    address: wallet.solanaAddress as string,
+  };
 }
