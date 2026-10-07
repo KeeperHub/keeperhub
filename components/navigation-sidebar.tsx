@@ -1,5 +1,7 @@
 "use client";
 
+import { useAtomValue } from "jotai";
+import { selectAtom } from "jotai/utils";
 import {
   Activity,
   BarChart3,
@@ -31,6 +33,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TruncatedTooltip } from "@/components/ui/truncated-tooltip";
+import {
+  TOOLTIP_DELAY_MS,
+  TRIGGER_FILTER_PANEL_ID,
+  TriggerFilterButton,
+  TriggerFilterChips,
+  TriggerStatusIcon,
+  WorkflowSearchField,
+} from "@/components/workflow-trigger-status";
 import { useIsMobile } from "@/hooks/use-mobile";
 import type { Project, SavedWorkflow, Tag } from "@/lib/api-client";
 import { api } from "@/lib/api-client";
@@ -42,12 +52,30 @@ import { usePersistedNavState } from "@/lib/hooks/use-persisted-nav-state";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { registerSidebarRefetch } from "@/lib/refetch-sidebar";
 import { cn } from "@/lib/utils";
+import { matchesWorkflowSearch } from "@/lib/workflow/picker-search";
 import { filterPickerVisible } from "@/lib/workflow/soft-delete";
 import {
-  getWorkflowTriggerType,
-  shouldShowDisabledBadge,
+  currentWorkflowIdAtom,
+  getTriggerTypeFromConfig,
+  hasUnsavedChangesAtom,
+  nodesAtom,
+  previewVersionAtom,
   type WorkflowTriggerType,
 } from "@/lib/workflow/store";
+import {
+  countTriggerStatuses,
+  DEACTIVATED_EXPLANATION,
+  describeEmptyFilterResult,
+  getTriggerAccessibleStatus,
+  getTriggerConfig,
+  getTriggerLabel,
+  getTriggerStatus,
+  getTriggerTooltip,
+  isSameTriggerDisplay,
+  matchesTriggerFilter,
+  type TriggerFilter,
+  toggleTriggerFilter,
+} from "@/lib/workflow/trigger-display";
 import { FLYOUT_WIDTH, FlyoutPanel, STRIP_WIDTH } from "./flyout-panel";
 
 export const COLLAPSED_WIDTH = 60;
@@ -64,18 +92,31 @@ type WorkflowEntry = {
   // filterPickerVisible() re-checks it so a stale cached payload cannot put
   // one back in the picker.
   deletedAt?: string | null;
-  // The trigger type drives whether the "Disabled" label is meaningful --
-  // see shouldShowDisabledBadge. Derived once at the SavedWorkflow boundary
-  // so WorkflowItem doesn't have to carry the full nodes payload.
+  // The trigger type picks the row icon and decides whether the enabled
+  // flag means anything -- see getTriggerStatus. Derived once at the
+  // SavedWorkflow boundary so WorkflowItem doesn't have to carry the full
+  // nodes payload.
   triggerType?: WorkflowTriggerType;
+  // The trigger node's config, for the cadence label ("5 min", "Lift").
+  triggerConfig?: Record<string, unknown>;
   // When false on a trigger that supports the enable switch, the picker
-  // greys the row out and tags it "Disabled" without strikethrough. The row
-  // stays selectable.
+  // greys the icon and name and labels the row "Disabled". The row stays
+  // selectable.
   enabled?: boolean;
   // Set by ops via admin API. Takes precedence over the "Disabled" label —
   // the user cannot clear this themselves.
   deactivatedAt?: string | null;
 };
+
+// The open workflow's trigger config, read from the editor because saving a
+// trigger change does not refetch the sidebar. The row takes it only once the
+// edit is saved (see visibleWorkflows), so it never shows an unsaved trigger.
+// Only edits to the fields the row shows re-render it.
+const liveTriggerConfigAtom = selectAtom(
+  nodesAtom,
+  getTriggerConfig,
+  isSameTriggerDisplay
+);
 
 function groupWorkflows(workflows: WorkflowEntry[]): {
   byProject: Record<string, WorkflowEntry[]>;
@@ -98,6 +139,25 @@ function groupWorkflows(workflows: WorkflowEntry[]): {
   return { byProject, ungrouped };
 }
 
+// Muted grey is too faint on the active row's bg-muted, so dimmed text
+// steps up there.
+function dimmedTextClass(isActive: boolean): string {
+  return isActive ? "text-foreground/55" : "text-muted-foreground";
+}
+
+function labelColorClass(
+  workflow: WorkflowEntry,
+  status: ReturnType<typeof getTriggerStatus>,
+  isActive: boolean
+): string {
+  if (workflow.deactivatedAt) {
+    return "text-status-deactivated";
+  }
+  return status === "disabled"
+    ? dimmedTextClass(isActive)
+    : "text-foreground/75";
+}
+
 function WorkflowItem({
   workflow,
   activeWorkflowId,
@@ -106,35 +166,65 @@ function WorkflowItem({
   activeWorkflowId: string | undefined;
 }): React.ReactNode {
   const router = useRouter();
-  const isDeactivated = !!workflow.deactivatedAt;
-  const showDisabled = !isDeactivated && shouldShowDisabledBadge(workflow);
+  const status = getTriggerStatus(workflow);
   const isActive = workflow.id === activeWorkflowId;
   return (
     <button
       className={cn(
-        "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
+        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted outline-none focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset",
         isActive && "bg-muted"
       )}
+      data-testid="workflow-picker-item"
       onClick={() => router.push(`/workflows/${workflow.id}`)}
       type="button"
     >
+      <TriggerStatusIcon
+        status={status}
+        tooltip={getTriggerTooltip(workflow)}
+        triggerType={workflow.triggerType}
+      />
       <TruncatedTooltip
         className={cn(
-          (isDeactivated || showDisabled) && "text-muted-foreground"
+          "min-w-0 flex-1",
+          status === "disabled" && dimmedTextClass(isActive)
         )}
-        side="right"
+        delayDuration={TOOLTIP_DELAY_MS}
+        side="top"
         text={workflow.name}
       />
-      {isDeactivated && (
-        <span className="ml-2 shrink-0 text-muted-foreground text-xs">
-          Deactivated
-        </span>
-      )}
-      {showDisabled && (
-        <span className="ml-2 shrink-0 text-muted-foreground text-xs">
-          Disabled
-        </span>
-      )}
+      {/* Fixed width (fits every status word, "Deactivated" the longest) so
+          every name gets the same room, whatever the label says; a longer
+          cadence ("Every 10 blocks") or event name is cut off instead, with
+          the full text on hover. A cadence or "Manual"
+          is a workflow you can use, so it reads stronger than Disabled.
+          Deactivated (ops switched it off; the user cannot undo it) gets a
+          muted amber and a tooltip saying who to ask. */}
+      <span
+        className={cn(
+          "w-16 shrink-0 text-right text-xs",
+          labelColorClass(workflow, status, isActive)
+        )}
+        data-testid="workflow-trigger-label"
+      >
+        {workflow.deactivatedAt ? (
+          <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
+            <TooltipTrigger asChild>
+              <span className="block truncate">Deactivated</span>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              {DEACTIVATED_EXPLANATION}
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <TruncatedTooltip
+            className="block"
+            delayDuration={TOOLTIP_DELAY_MS}
+            side="right"
+            text={getTriggerLabel(workflow)}
+          />
+        )}
+      </span>
+      <span className="sr-only">, {getTriggerAccessibleStatus(workflow)}</span>
     </button>
   );
 }
@@ -219,7 +309,7 @@ function ProjectsPanel({
         return (
           <button
             className={cn(
-              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted outline-none focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset",
               isActive && "bg-muted"
             )}
             key={project.id}
@@ -277,12 +367,23 @@ function TagsPanel({
   untaggedWorkflows,
   activeWorkflowId,
   loading,
+  onResetFilter,
+  filteredEmptyText = "No matching workflows",
+  expandAll = false,
 }: {
   projectTags: Tag[];
   workflowsByTagId: Record<string, WorkflowEntry[]>;
   untaggedWorkflows: WorkflowEntry[];
   activeWorkflowId: string | undefined;
   loading: boolean;
+  // Set while a trigger filter is narrowing the list; an empty result then
+  // offers a way back to every workflow instead of a dead end.
+  onResetFilter?: () => void;
+  // What the empty list says while a filter or search is on.
+  filteredEmptyText?: string;
+  // While a filter or search narrows the list, collapsed groups open so no
+  // match hides behind a header.
+  expandAll?: boolean;
 }): React.ReactNode {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
 
@@ -309,6 +410,23 @@ function TagsPanel({
   const hasAny = projectTags.length > 0 || untaggedWorkflows.length > 0;
 
   if (!hasAny) {
+    if (onResetFilter) {
+      return (
+        <div className="flex flex-col items-center gap-1 py-4 text-sm">
+          <p className="text-center text-muted-foreground">
+            {filteredEmptyText}
+          </p>
+          <button
+            className="rounded-sm text-foreground underline underline-offset-4 hover:text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-foreground/60"
+            data-testid="trigger-filter-reset"
+            onClick={onResetFilter}
+            type="button"
+          >
+            Show all workflows
+          </button>
+        </div>
+      );
+    }
     return (
       <p className="py-4 text-center text-muted-foreground text-sm">
         No workflows
@@ -320,7 +438,7 @@ function TagsPanel({
     <div className="flex flex-col gap-0.5">
       {projectTags.map((tag, index) => {
         const tagWorkflows = workflowsByTagId[tag.id] ?? [];
-        const isCollapsed = collapsed.has(tag.id);
+        const isCollapsed = !expandAll && collapsed.has(tag.id);
         return (
           <div className="flex flex-col gap-0.5" key={tag.id}>
             {index > 0 && <div className="my-1 border-t" />}
@@ -360,7 +478,8 @@ function TagsPanel({
           {projectTags.length > 0 && <div className="my-1 border-t" />}
           {(() => {
             const showHeader = projectTags.length > 0;
-            const isCollapsed = showHeader && collapsed.has(UNTAGGED_KEY);
+            const isCollapsed =
+              !expandAll && showHeader && collapsed.has(UNTAGGED_KEY);
             return (
               <>
                 {showHeader && (
@@ -627,6 +746,21 @@ export function NavigationSidebar(): React.ReactNode {
   const { data: projects } = useProjects();
   const { data: tags } = useTags();
   const [dataLoading, setDataLoading] = useState(true);
+  const [triggerFilter, setTriggerFilter] = useState<TriggerFilter>(
+    () => new Set()
+  );
+  const [triggerFilterOpen, setTriggerFilterOpen] = useState(false);
+  const [workflowSearch, setWorkflowSearch] = useState("");
+  const [pickerOverflows, setPickerOverflows] = useState(false);
+  const [searchKept, setSearchKept] = useState(false);
+  const [pickerList, setPickerList] = useState<HTMLDivElement | null>(null);
+  const filterButtonRef = useRef<HTMLButtonElement>(null);
+  const searchFieldRef = useRef<HTMLInputElement>(null);
+  const isPickerFiltered = triggerFilter.size > 0 || workflowSearch !== "";
+  const openWorkflowId = useAtomValue(currentWorkflowIdAtom);
+  const liveTriggerConfig = useAtomValue(liveTriggerConfigAtom);
+  const previewVersion = useAtomValue(previewVersionAtom);
+  const hasUnsavedChanges = useAtomValue(hasUnsavedChangesAtom);
   const isDragging = useRef(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
@@ -655,6 +789,65 @@ export function NavigationSidebar(): React.ReactNode {
     });
   }, [isPending, session, fetchData]);
 
+  // Whether the project panel's list is taller than the panel. Measured only
+  // while nothing narrows the list, and kept while a filter or search does,
+  // so the search field does not vanish as typing shortens the list.
+  // Only the list is measured, so opening the filter strip above it cannot by
+  // itself make the list count as too long.
+  useEffect(() => {
+    const scroller = pickerList?.parentElement?.parentElement;
+    if (!(pickerList && scroller) || isPickerFiltered) {
+      return;
+    }
+    const measure = (): void => {
+      const style = getComputedStyle(scroller);
+      const room =
+        scroller.clientHeight -
+        Number.parseFloat(style.paddingTop) -
+        Number.parseFloat(style.paddingBottom);
+      setPickerOverflows(pickerList.offsetHeight > room);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(pickerList);
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [pickerList, isPickerFiltered]);
+
+  // Once search has appeared it stays until the filter closes or the project
+  // changes, so resizing the window never pulls it out from under the cursor.
+  useEffect(() => {
+    if (triggerFilterOpen && pickerOverflows) {
+      setSearchKept(true);
+    }
+  }, [triggerFilterOpen, pickerOverflows]);
+  const showWorkflowSearch =
+    workflowSearch !== "" || pickerOverflows || searchKept;
+  // Opening the filter on a long list puts the cursor in search, ready to
+  // type. Only on that click: search appearing later (a window resize, a
+  // refetch) must not pull focus from wherever the user is.
+  const focusSearchOnOpen = useRef(false);
+  useEffect(() => {
+    if (triggerFilterOpen && focusSearchOnOpen.current) {
+      focusSearchOnOpen.current = false;
+      if (showWorkflowSearch) {
+        searchFieldRef.current?.focus();
+      }
+    }
+  }, [triggerFilterOpen, showWorkflowSearch]);
+
+  // Closing the project panel any way at all (Escape, clicking outside, the
+  // close button, re-clicking the project) drops the filter and search.
+  const tagsPanelState = navState.state.panels.tags;
+  useEffect(() => {
+    if (tagsPanelState === "closed") {
+      setTriggerFilter(new Set());
+      setWorkflowSearch("");
+      setTriggerFilterOpen(false);
+      setSearchKept(false);
+    }
+  }, [tagsPanelState]);
+
   useEffect(
     () =>
       registerSidebarRefetch((options) => {
@@ -680,10 +873,23 @@ export function NavigationSidebar(): React.ReactNode {
 
   const isAnonymous = isAnonymousUser(session?.user);
 
-  const visibleWorkflows = filterPickerVisible(workflows).map((w) => ({
-    ...w,
-    triggerType: getWorkflowTriggerType(w.nodes),
-  }));
+  const visibleWorkflows = filterPickerVisible(workflows).map((w) => {
+    // A historical version preview puts old nodes on the canvas, and unsaved
+    // edits are not running yet; in both cases the row keeps the saved trigger.
+    const followsEditor =
+      w.id === openWorkflowId &&
+      previewVersion === null &&
+      !hasUnsavedChanges &&
+      liveTriggerConfig !== undefined;
+    const triggerConfig = followsEditor
+      ? liveTriggerConfig
+      : getTriggerConfig(w.nodes);
+    return {
+      ...w,
+      triggerConfig,
+      triggerType: getTriggerTypeFromConfig(triggerConfig),
+    };
+  });
 
   const workflowId =
     typeof params.workflowId === "string" ? params.workflowId : undefined;
@@ -755,7 +961,10 @@ export function NavigationSidebar(): React.ReactNode {
     }
 
     function handleKeyDown(e: KeyboardEvent): void {
-      if (e.key === "Escape") {
+      // A field that used Escape itself (the search box clearing its text)
+      // marks it handled; React and this listener share the document, so
+      // stopPropagation alone does not keep it from closing the panel.
+      if (e.key === "Escape" && !e.defaultPrevented) {
         navState.peelRightmost();
       }
     }
@@ -797,7 +1006,27 @@ export function NavigationSidebar(): React.ReactNode {
   const { byProject, ungrouped } = groupWorkflows(visibleWorkflows);
   const selectedProjectId = navState.state.selectedProjectId;
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
-  const projectWorkflows = byProject[selectedProjectId ?? ""] ?? [];
+  const allProjectWorkflows = byProject[selectedProjectId ?? ""] ?? [];
+  const tagNames = new Map(tags.map((t) => [t.id, t.name]));
+  // Search covers the name, the tag and the trigger type. Status words are
+  // left to the chips, so "disabled" and "enabled" never half-match labels.
+  const searchMatches = allProjectWorkflows.filter((w) =>
+    matchesWorkflowSearch(
+      [w.name, tagNames.get(w.tagId ?? "") ?? "", w.triggerType ?? ""].join(
+        " "
+      ),
+      workflowSearch
+    )
+  );
+  const triggerCounts = countTriggerStatuses(searchMatches);
+  const projectWorkflows = searchMatches.filter((w) =>
+    matchesTriggerFilter(w, triggerFilter)
+  );
+  const resetPickerFilter = (): void => {
+    setTriggerFilter(new Set());
+    setWorkflowSearch("");
+    filterButtonRef.current?.focus();
+  };
   const projectTagIds = new Set(
     projectWorkflows.filter((w) => w.tagId).map((w) => w.tagId)
   );
@@ -935,6 +1164,11 @@ export function NavigationSidebar(): React.ReactNode {
     navState.setSelectedTag(null);
     navState.setPanelState("tags", "open");
     navState.setPanelState("workflows", "closed");
+    // A filter or search belongs to the project it was set in.
+    setTriggerFilter(new Set());
+    setWorkflowSearch("");
+    setTriggerFilterOpen(false);
+    setSearchKept(false);
   }
 
   // NAV-01: render every nav item for everyone (anonymous, signed-out, signed-in).
@@ -1093,19 +1327,79 @@ export function NavigationSidebar(): React.ReactNode {
         collapsedLabel={
           selectedProject ? `Projects - ${selectedProject.name}` : "Projects"
         }
+        headerLeading={
+          <TriggerFilterButton
+            disabled={dataLoading}
+            onToggle={() => {
+              // Closing the chips drops the filter, so a shortened list is
+              // never left behind with nothing on screen explaining it.
+              if (triggerFilterOpen) {
+                resetPickerFilter();
+                setSearchKept(false);
+              } else {
+                focusSearchOnOpen.current = true;
+              }
+              setTriggerFilterOpen(!triggerFilterOpen);
+            }}
+            open={triggerFilterOpen}
+            ref={filterButtonRef}
+          />
+        }
         leftOffset={offsets.tags}
         onCollapse={() => navState.setPanelState("tags", "collapsed")}
         onExpand={() => navState.setPanelState("tags", "open")}
         state={navState.state.panels.tags}
         title={selectedProject?.name ?? "Projects"}
       >
-        <TagsPanel
-          activeWorkflowId={workflowId}
-          loading={dataLoading}
-          projectTags={projectTagsWithCounts}
-          untaggedWorkflows={untaggedWorkflows}
-          workflowsByTagId={projectWorkflowsByTagId}
-        />
+        <div>
+          {triggerFilterOpen && !dataLoading && (
+            // Pinned to the top of the scrolling list, so search and the
+            // sign that a filter is on stay in view on long lists. The
+            // negative offsets cover the panel's p-2 padding.
+            <div
+              className="fade-in-0 slide-in-from-top-1 sticky -top-2 z-10 -mx-2 -mt-2 mb-1 animate-in border-b bg-background px-2 pt-2 duration-150 motion-reduce:animate-none"
+              id={TRIGGER_FILTER_PANEL_ID}
+            >
+              {showWorkflowSearch && (
+                <WorkflowSearchField
+                  onChange={setWorkflowSearch}
+                  ref={searchFieldRef}
+                  value={workflowSearch}
+                />
+              )}
+              <TriggerFilterChips
+                counts={triggerCounts}
+                onClear={() => setTriggerFilter(new Set())}
+                onToggle={(status) =>
+                  setTriggerFilter((current) =>
+                    toggleTriggerFilter(current, status)
+                  )
+                }
+                value={triggerFilter}
+              />
+            </div>
+          )}
+          <p aria-live="polite" className="sr-only">
+            {isPickerFiltered
+              ? `${projectWorkflows.length} of ${allProjectWorkflows.length} workflows shown`
+              : ""}
+          </p>
+          <div ref={setPickerList}>
+            <TagsPanel
+              activeWorkflowId={workflowId}
+              expandAll={isPickerFiltered}
+              filteredEmptyText={describeEmptyFilterResult(
+                triggerFilter,
+                workflowSearch
+              )}
+              loading={dataLoading}
+              onResetFilter={isPickerFiltered ? resetPickerFilter : undefined}
+              projectTags={projectTagsWithCounts}
+              untaggedWorkflows={untaggedWorkflows}
+              workflowsByTagId={projectWorkflowsByTagId}
+            />
+          </div>
+        </div>
       </FlyoutPanel>
 
       {/* Fold/Close button outside the rightmost panel */}

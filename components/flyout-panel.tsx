@@ -17,6 +17,10 @@ type FlyoutPanelProps = {
   title: string;
   collapsedLabel?: string;
   accentColor?: string;
+  // A size-6 button drawn left of the title in the open header, in the slot
+  // that otherwise stays empty to balance the collapse chevron, so the title
+  // keeps its full width and stays centred.
+  headerLeading?: React.ReactNode;
   onCollapse: () => void;
   onExpand: () => void;
   children: React.ReactNode;
@@ -28,6 +32,7 @@ export function FlyoutPanel({
   title,
   collapsedLabel,
   accentColor,
+  headerLeading,
   onCollapse,
   onExpand,
   children,
@@ -88,19 +93,23 @@ export function FlyoutPanel({
     );
   }
 
+  // A labelled section rather than role="menu": the project panel holds a
+  // search field and filter chips, which menu semantics would swallow.
   return (
-    <div
+    <section
+      aria-label={title}
       className={cn(
         "pointer-events-auto fixed top-[calc(60px+var(--app-banner-height,0px))] bottom-0 z-30 border-r bg-background shadow-lg transition-[left] duration-200 ease-out",
         "animate-[flyout-in_150ms_ease-out_forwards]"
       )}
       data-flyout
-      role="menu"
       style={{ left: leftOffset, width: FLYOUT_WIDTH }}
     >
       <div className="flex h-full flex-col">
         <div className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
-          <span aria-hidden="true" className="size-6 shrink-0" />
+          {headerLeading ?? (
+            <span aria-hidden="true" className="size-6 shrink-0" />
+          )}
           <span className="min-w-0 flex-1 truncate text-center font-medium text-sm">
             {title}
           </span>
@@ -115,6 +124,6 @@ export function FlyoutPanel({
         </div>
         <div className="flex-1 overflow-y-auto p-2">{children}</div>
       </div>
-    </div>
+    </section>
   );
 }

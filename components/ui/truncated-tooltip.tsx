@@ -15,6 +15,8 @@ type TruncatedTooltipProps = {
   /** Classes applied to the truncating span (the `truncate` class is added). */
   className?: string;
   side?: React.ComponentProps<typeof TooltipContent>["side"];
+  /** Hover time in ms before it opens; immediate by default. */
+  delayDuration?: number;
   /** Distance from the text, for clearing anything drawn beside it. */
   sideOffset?: number;
   tooltipClassName?: string;
@@ -30,6 +32,7 @@ export function TruncatedTooltip({
   className,
   side = "top",
   sideOffset,
+  delayDuration,
   tooltipClassName,
 }: TruncatedTooltipProps): React.ReactNode {
   const spanRef = useRef<HTMLSpanElement>(null);
@@ -54,7 +57,7 @@ export function TruncatedTooltip({
   }, [measure]);
 
   return (
-    <Tooltip>
+    <Tooltip delayDuration={delayDuration}>
       <TooltipTrigger asChild>
         <span className={cn("truncate", className)} ref={spanRef}>
           {text}

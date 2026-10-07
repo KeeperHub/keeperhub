@@ -41,16 +41,13 @@ export function shouldShowEnableSwitch(
 }
 
 /**
- * Pull the trigger type off the trigger node in a workflow's node list.
- * Used by surfaces that need to gate behavior on what fires the workflow
- * without dragging the full editor store into view -- e.g. the sidebar
- * picker deciding whether to surface a "Disabled" label.
+ * The trigger type held in a trigger node's config, normalized. Pair with
+ * getTriggerConfig (lib/workflow/trigger-display) to read it off a node list.
  */
-export function getWorkflowTriggerType(
-  nodes: Array<{ data?: { type?: string; config?: Record<string, unknown> } }>
+export function getTriggerTypeFromConfig(
+  config: Record<string, unknown> | undefined
 ): WorkflowTriggerType | undefined {
-  const triggerNode = nodes.find((node) => node.data?.type === "trigger");
-  const raw = triggerNode?.data?.config?.triggerType;
+  const raw = config?.triggerType;
   if (typeof raw !== "string") {
     return undefined;
   }
@@ -58,22 +55,6 @@ export function getWorkflowTriggerType(
   // executor / metrics / mcp normalize it the same way before comparing.
   const normalized = raw === "Scheduled" ? "Schedule" : raw;
   return normalized as WorkflowTriggerType;
-}
-
-/**
- * Show the "Disabled" label in the sidebar picker only when the workflow has
- * a trigger type whose schedule the user can actually flip with the enable
- * switch. Manual workflows persist `enabled = false` by default but can't be
- * disabled through the UI -- labeling them would be noise.
- */
-export function shouldShowDisabledBadge(workflow: {
-  enabled?: boolean | null;
-  triggerType?: WorkflowTriggerType | null;
-}): boolean {
-  if (workflow.enabled !== false) {
-    return false;
-  }
-  return shouldShowEnableSwitch(workflow.triggerType ?? undefined);
 }
 
 export type WorkflowNodeData = {
