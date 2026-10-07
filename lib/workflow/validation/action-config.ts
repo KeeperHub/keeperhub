@@ -256,25 +256,41 @@ function isMissingRequiredValue(value: unknown): boolean {
   return value === undefined || value === null || value === "";
 }
 
-// Each entry inside a `call-list-builder` field (batch-write-contract,
-// batch-read-contract) carries its own contract address, ABI, and function --
-// the same three fields that are `required` on the equivalent standalone
-// write-contract/read-contract node. Validated independently per call so an
-// incomplete call added after a valid one is never silently treated as
-// optional. Network is required too, but only when the field renders a
-// per-row Network selector: batch-write-contract sets hideNetworkColumn and
-// reads the action-level network instead, so a blank per-call network there
-// is not a config error.
-const BATCH_CALL_REQUIRED_FIELDS: Array<{
-  key: "contractAddress" | "abi" | "abiFunction" | "network";
-  label: string;
-}> = [
+// Each list builder entry carries the fields its standalone node requires, so
+// an incomplete entry is never silently optional. A call's Network is required
+// only where the row renders its own selector (not with hideNetworkColumn).
+type ListEntryRequiredField = { key: string; label: string };
+
+const BATCH_CALL_REQUIRED_FIELDS: ListEntryRequiredField[] = [
   { key: "contractAddress", label: "Contract Address" },
   { key: "abi", label: "Contract ABI" },
   { key: "abiFunction", label: "Function" },
 ];
 
-function parseBatchCalls(value: unknown): Record<string, unknown>[] {
+const EVENT_QUERY_REQUIRED_FIELDS: ListEntryRequiredField[] = [
+  { key: "contractAddress", label: "Contract Address" },
+  { key: "abi", label: "Contract ABI" },
+  { key: "eventName", label: "Event" },
+];
+
+function listEntrySpec(
+  field: ActionConfigFieldBase
+): { entryLabel: string; required: ListEntryRequiredField[] } | undefined {
+  if (field.type === "call-list-builder") {
+    return {
+      entryLabel: "Call",
+      required: field.hideNetworkColumn
+        ? BATCH_CALL_REQUIRED_FIELDS
+        : [...BATCH_CALL_REQUIRED_FIELDS, { key: "network", label: "Network" }],
+    };
+  }
+  if (field.type === "event-list-builder") {
+    return { entryLabel: "Event", required: EVENT_QUERY_REQUIRED_FIELDS };
+  }
+  return;
+}
+
+function parseListEntries(value: unknown): Record<string, unknown>[] {
   const parsed = Array.isArray(value) ? value : safeParseJsonArray(value);
   return parsed.filter(isRecord);
 }
@@ -291,27 +307,32 @@ function safeParseJsonArray(value: unknown): unknown[] {
   }
 }
 
-export type BatchCallMissingField = {
-  callIndex: number;
-  fieldKey: "contractAddress" | "abi" | "abiFunction" | "network";
+type ListEntryMissingField = {
+  entryIndex: number;
+  // "Call" or "Event", as the editor labels each row.
+  entryLabel: string;
+  fieldKey: string;
   fieldLabel: string;
 };
 
-export function getMissingBatchCallFields(
-  callsValue: unknown,
-  hideNetworkColumn?: boolean
-): BatchCallMissingField[] {
-  const requiredFields = hideNetworkColumn
-    ? BATCH_CALL_REQUIRED_FIELDS
-    : [
-        ...BATCH_CALL_REQUIRED_FIELDS,
-        { key: "network", label: "Network" } as const,
-      ];
-  const missing: BatchCallMissingField[] = [];
-  for (const [callIndex, call] of parseBatchCalls(callsValue).entries()) {
-    for (const { key, label } of requiredFields) {
-      if (isMissingRequiredValue(call[key])) {
-        missing.push({ callIndex, fieldKey: key, fieldLabel: label });
+export function getMissingListEntryFields(
+  field: ActionConfigFieldBase,
+  value: unknown
+): ListEntryMissingField[] {
+  const spec = listEntrySpec(field);
+  if (!spec) {
+    return [];
+  }
+  const missing: ListEntryMissingField[] = [];
+  for (const [entryIndex, entry] of parseListEntries(value).entries()) {
+    for (const { key, label } of spec.required) {
+      if (isMissingRequiredValue(entry[key])) {
+        missing.push({
+          entryIndex,
+          entryLabel: spec.entryLabel,
+          fieldKey: key,
+          fieldLabel: label,
+        });
       }
     }
   }
@@ -627,6 +648,12 @@ function validateFieldValue(
         isJsonArrayOrObjectString(value)
         ? { valid: true }
         : { valid: false, expected: "object or array", received: value };
+    case "event-list-builder":
+      return Array.isArray(value) ||
+        valueContainsTemplate(value) ||
+        isJsonArrayString(value)
+        ? { valid: true }
+        : { valid: false, expected: "array", received: value };
     case "abi-event-args":
       // Keyed by indexed parameter name, so the step refuses an array.
       return isRecord(value) ||
@@ -775,22 +802,17 @@ export function validateWorkflowActionConfigs(
         continue;
       }
 
-      if (field.type === "call-list-builder") {
-        for (const missingCall of getMissingBatchCallFields(
-          value,
-          field.hideNetworkColumn
-        )) {
-          issues.push({
-            code: "MISSING_REQUIRED_FIELD",
-            path: `nodes[${nodeIndex}].data.config.${field.key}[${missingCall.callIndex}].${missingCall.fieldKey}`,
-            actionType,
-            field: `${field.key}[${missingCall.callIndex}].${missingCall.fieldKey}`,
-            nodeId: identity.nodeId,
-            nodeLabel: identity.nodeLabel,
-            expected: missingCall.fieldLabel,
-            message: `Missing required field "${missingCall.fieldLabel}" for call ${missingCall.callIndex + 1} on action "${actionType}".`,
-          });
-        }
+      for (const missingEntry of getMissingListEntryFields(field, value)) {
+        issues.push({
+          code: "MISSING_REQUIRED_FIELD",
+          path: `nodes[${nodeIndex}].data.config.${field.key}[${missingEntry.entryIndex}].${missingEntry.fieldKey}`,
+          actionType,
+          field: `${field.key}[${missingEntry.entryIndex}].${missingEntry.fieldKey}`,
+          nodeId: identity.nodeId,
+          nodeLabel: identity.nodeLabel,
+          expected: missingEntry.fieldLabel,
+          message: `Missing required field "${missingEntry.fieldLabel}" for ${missingEntry.entryLabel.toLowerCase()} ${missingEntry.entryIndex + 1} on action "${actionType}".`,
+        });
       }
 
       const fieldCheck = validateFieldValue(field, value);

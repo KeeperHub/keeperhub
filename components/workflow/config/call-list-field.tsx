@@ -1,18 +1,17 @@
 "use client";
 
-import { Plus, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { TemplateBadgeInput } from "@/components/ui/template-badge-input";
 import {
   AbiFunctionArgsField,
   AbiFunctionSelectField,
 } from "@/components/workflow/config/action-config-renderer";
-
-import { SaveAddressBookmark } from "@/components/address-book/save-address-bookmark";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
-import { AbiWithAutoFetchField } from "./abi-with-auto-fetch-field";
 import { ChainSelectField } from "./chain-select-field";
+import {
+  AddEntryButton,
+  EntryCard,
+  EntryContractFields,
+  useEntryList,
+} from "./entry-list";
 
 type CallEntry = {
   id: number;
@@ -104,56 +103,12 @@ export function CallListField({
   disabled,
   actionConfig,
 }: CallListFieldProps): React.ReactNode {
-  const idCounter = useRef(0);
-  const nextId = (): number => {
-    idCounter.current += 1;
-    return idCounter.current;
-  };
-
-  const [entries, setEntries] = useState<CallEntry[]>(() =>
-    parseCallsValue(value, nextId)
+  const { entries, addRow, removeRow, updateField } = useEntryList<CallEntry>(
+    (nextId) => parseCallsValue(value, nextId),
+    serializeCalls,
+    createEmptyEntry,
+    onChange
   );
-
-  // Notifies the parent from the committed `entries` state rather than
-  // inline in each mutator. A field like AbiWithAutoFetchField's manual-ABI
-  // toggle can call onUpdateConfig and onChange back to back in the same
-  // handler; deriving each mutator's next array from a stale `entries`
-  // closure would let the second call silently clobber the first. Reacting
-  // to the committed state instead means every functional setEntries update
-  // below composes correctly no matter how many fire in one event.
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
-  const isFirstRender = useRef(true);
-  useEffect(() => {
-    if (isFirstRender.current) {
-      isFirstRender.current = false;
-      return;
-    }
-    onChangeRef.current(serializeCalls(entries));
-  }, [entries]);
-
-  function addRow(): void {
-    setEntries((prev) => [...prev, createEmptyEntry(nextId())]);
-  }
-
-  function removeRow(targetId: number): void {
-    setEntries((prev) => {
-      const updated = prev.filter((e) => e.id !== targetId);
-      return updated.length > 0 ? updated : [createEmptyEntry(nextId())];
-    });
-  }
-
-  function updateField(
-    targetId: number,
-    key: keyof Omit<CallEntry, "id">,
-    fieldValue: string
-  ): void {
-    setEntries((prev) =>
-      prev.map((entry) =>
-        entry.id === targetId ? { ...entry, [key]: fieldValue } : entry
-      )
-    );
-  }
 
   const actionNetwork = String(
     actionConfig?.[field.networkField ?? "network"] ?? ""
@@ -177,17 +132,7 @@ export function CallListField({
         />
       ))}
 
-      <Button
-        className="w-full"
-        disabled={disabled}
-        onClick={addRow}
-        size="sm"
-        type="button"
-        variant="outline"
-      >
-        <Plus className="mr-1.5 h-3.5 w-3.5" />
-        Add Call
-      </Button>
+      <AddEntryButton disabled={disabled} label="Add Call" onClick={addRow} />
     </div>
   );
 }
@@ -223,35 +168,12 @@ function CallRow({
     ? (actionNetwork ?? "")
     : entry.network;
 
-  const rowConfig = useMemo<Record<string, unknown>>(
-    () => ({
-      contractAddress: entry.contractAddress,
-      network: abiFetchNetwork,
-      useManualAbi: entry.useManualAbi,
-    }),
-    [entry.contractAddress, abiFetchNetwork, entry.useManualAbi]
-  );
-
   return (
-    <div className="rounded-md border border-border space-y-2 p-3">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground">
-          Call {index + 1}
-        </span>
-        {onRemove && (
-          <Button
-            className="h-6 w-6 text-muted-foreground hover:text-destructive"
-            disabled={disabled}
-            onClick={onRemove}
-            size="icon"
-            type="button"
-            variant="ghost"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
-        )}
-      </div>
-
+    <EntryCard
+      disabled={disabled}
+      onRemove={onRemove}
+      title={`Call ${index + 1}`}
+    >
       {!hideNetworkColumn && (
         <div className="space-y-1.5">
           <label
@@ -274,47 +196,17 @@ function CallRow({
         </div>
       )}
 
-      <div className="space-y-1.5">
-        <label
-          className="text-xs font-medium"
-          htmlFor={`${fieldKey}-addr-${entry.id}`}
-        >
-          Contract Address
-        </label>
-        <SaveAddressBookmark address={entry.contractAddress}>
-          <TemplateBadgeInput
-            disabled={disabled}
-            id={`${fieldKey}-addr-${entry.id}`}
-            onChange={(val) => onUpdate("contractAddress", val)}
-            placeholder="0x... or {{NodeName.address}}"
-            value={entry.contractAddress}
-          />
-        </SaveAddressBookmark>
-      </div>
-
-      <div className="space-y-1.5">
-        <label
-          className="text-xs font-medium"
-          htmlFor={`${fieldKey}-abi-${entry.id}`}
-        >
-          ABI
-        </label>
-        <AbiWithAutoFetchField
-          config={rowConfig}
-          contractInteractionType={contractInteractionType}
-          disabled={disabled}
-          field={{
-            key: `${fieldKey}-abi-${entry.id}`,
-            label: "ABI",
-            type: "abi-with-auto-fetch",
-          }}
-          onChange={(val) => onUpdate("abi", String(val))}
-          onUpdateConfig={(key, val) =>
-            onUpdate(key as keyof Omit<CallEntry, "id">, String(val))
-          }
-          value={entry.abi}
-        />
-      </div>
+      <EntryContractFields
+        abi={entry.abi}
+        contractAddress={entry.contractAddress}
+        contractInteractionType={contractInteractionType}
+        disabled={disabled}
+        entryId={entry.id}
+        fieldKey={fieldKey}
+        network={abiFetchNetwork}
+        onUpdate={onUpdate}
+        useManualAbi={entry.useManualAbi}
+      />
 
       <div className="space-y-1.5">
         <label
@@ -358,6 +250,6 @@ function CallRow({
           value={entry.args}
         />
       </div>
-    </div>
+    </EntryCard>
   );
 }
