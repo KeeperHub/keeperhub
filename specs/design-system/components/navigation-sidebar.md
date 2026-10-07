@@ -77,8 +77,13 @@ read to screen readers from a hidden span; the visible label is
 The filter button (left of the project title) opens a strip pinned to the
 top of the list: multi-select chips All / Enabled / Disabled / Manual with
 counts (selected: outline and check; zero: 70% opacity) and, when the list is
-taller than the panel, a shared `SearchInput` over name, tag and trigger
-type. An empty result names the filters and offers "Show all workflows".
+taller than the panel, a shared `SearchInput` over name, tag, trigger type
+("Manual" when there is none) and event name; status words are left to the
+chips. The Disabled chip notes how many of its workflows were deactivated
+by KeeperHub. Dimmed text and grey icons step up on hover as on the open
+row; a row's icon tooltip (with the full name and, when deactivated, why)
+also opens on keyboard focus. While a filter is on, tag groups are held
+open and their headers do not fold. An empty result names the filters and offers "Show all workflows".
 Escape clears a typed search, then closes the filter, then the panel.
 
 ## Code Example

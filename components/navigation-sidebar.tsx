@@ -45,6 +45,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import type { Project, SavedWorkflow, Tag } from "@/lib/api-client";
 import { api } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
+import { isEscapeHandled } from "@/lib/escape-key";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import type { NavPanelStates } from "@/lib/hooks/use-persisted-nav-state";
@@ -118,6 +119,9 @@ const liveTriggerConfigAtom = selectAtom(
   getTriggerConfig,
   isSameTriggerDisplay
 );
+// Whether a workflow is on the canvas at all (nodes are cleared between
+// workflows), so "no trigger config" can mean the trigger was deleted.
+const editorLoadedAtom = selectAtom(nodesAtom, (nodes) => nodes.length > 0);
 
 function groupWorkflows(workflows: WorkflowEntry[]): {
   byProject: Record<string, WorkflowEntry[]>;
@@ -140,10 +144,12 @@ function groupWorkflows(workflows: WorkflowEntry[]): {
   return { byProject, ungrouped };
 }
 
-// Muted grey is too faint on the active row's bg-muted, so dimmed text
-// steps up there.
+// Muted grey is too faint on the active or hovered row's bg-muted, so
+// dimmed text steps up there.
 function dimmedTextClass(isActive: boolean): string {
-  return isActive ? "text-foreground/55" : "text-muted-foreground";
+  return isActive
+    ? "text-foreground/55"
+    : "text-muted-foreground group-hover:text-foreground/55";
 }
 
 function labelColorClass(
@@ -169,6 +175,7 @@ function WorkflowItem({
   const router = useRouter();
   const status = getTriggerStatus(workflow);
   const isActive = workflow.id === activeWorkflowId;
+  const [keyboardFocused, setKeyboardFocused] = useState(false);
   return (
     <button
       aria-current={isActive ? "page" : undefined}
@@ -177,11 +184,21 @@ function WorkflowItem({
         isActive && "bg-muted"
       )}
       data-testid="workflow-picker-item"
+      onBlur={() => setKeyboardFocused(false)}
       onClick={() => router.push(`/workflows/${workflow.id}`)}
+      onFocus={(event) =>
+        setKeyboardFocused(event.currentTarget.matches(":focus-visible"))
+      }
       type="button"
     >
       <TriggerStatusIcon
+        focusLines={
+          workflow.deactivatedAt
+            ? [workflow.name, DEACTIVATED_EXPLANATION]
+            : [workflow.name]
+        }
         isActive={isActive}
+        keyboardFocused={keyboardFocused}
         status={status}
         tooltip={getTriggerTooltip(workflow)}
         triggerType={workflow.triggerType}
@@ -382,6 +399,28 @@ function ProjectsPanel({
 
 const UNTAGGED_KEY = "__untagged__";
 
+// The chevron of a tag group header, in a 20px slot so it lines up with the
+// row icons. Hidden while filtering, when every group is held open and the
+// header cannot fold.
+function GroupChevron({
+  collapsed,
+  hidden,
+}: {
+  collapsed: boolean;
+  hidden: boolean;
+}): React.ReactNode {
+  return (
+    <span className="flex size-5 shrink-0 items-center justify-center">
+      {!hidden &&
+        (collapsed ? (
+          <ChevronRight className="size-3" />
+        ) : (
+          <ChevronDown className="size-3" />
+        ))}
+    </span>
+  );
+}
+
 function TagsPanel({
   projectTags,
   workflowsByTagId,
@@ -464,18 +503,13 @@ function TagsPanel({
           <div className="flex flex-col gap-0.5" key={tag.id}>
             {index > 0 && <div className="my-1 border-t" />}
             <button
-              aria-expanded={!isCollapsed}
-              className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset"
+              aria-expanded={expandAll ? undefined : !isCollapsed}
+              className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset disabled:pointer-events-none"
+              disabled={expandAll}
               onClick={() => toggle(tag.id)}
               type="button"
             >
-              <span className="flex size-5 shrink-0 items-center justify-center">
-                {isCollapsed ? (
-                  <ChevronRight className="size-3" />
-                ) : (
-                  <ChevronDown className="size-3" />
-                )}
-              </span>
+              <GroupChevron collapsed={isCollapsed} hidden={expandAll} />
               <span
                 className="inline-block size-2 shrink-0 rounded-full"
                 style={{ backgroundColor: tag.color }}
@@ -507,18 +541,13 @@ function TagsPanel({
               <>
                 {showHeader && (
                   <button
-                    aria-expanded={!isCollapsed}
-                    className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset"
+                    aria-expanded={expandAll ? undefined : !isCollapsed}
+                    className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset disabled:pointer-events-none"
+                    disabled={expandAll}
                     onClick={() => toggle(UNTAGGED_KEY)}
                     type="button"
                   >
-                    <span className="flex size-5 shrink-0 items-center justify-center">
-                      {isCollapsed ? (
-                        <ChevronRight className="size-3" />
-                      ) : (
-                        <ChevronDown className="size-3" />
-                      )}
-                    </span>
+                    <GroupChevron collapsed={isCollapsed} hidden={expandAll} />
                     <span className="truncate">Untagged</span>
                     <span className="ml-auto normal-case tracking-normal">
                       {untaggedWorkflows.length}
@@ -779,6 +808,9 @@ export function NavigationSidebar(): React.ReactNode {
   const [pickerOverflows, setPickerOverflows] = useState(false);
   const [searchKept, setSearchKept] = useState(false);
   const [pickerList, setPickerList] = useState<HTMLDivElement | null>(null);
+  const [pickerScroller, setPickerScroller] = useState<HTMLDivElement | null>(
+    null
+  );
   const filterButtonRef = useRef<HTMLButtonElement>(null);
   const searchFieldRef = useRef<HTMLInputElement>(null);
   const isPickerFiltered = triggerFilter.size > 0 || workflowSearch !== "";
@@ -786,12 +818,20 @@ export function NavigationSidebar(): React.ReactNode {
   const liveTriggerConfig = useAtomValue(liveTriggerConfigAtom);
   const previewVersion = useAtomValue(previewVersionAtom);
   const hasUnsavedChanges = useAtomValue(hasUnsavedChangesAtom);
+  const editorLoaded = useAtomValue(editorLoadedAtom);
+  // Triggers saved from the editor since the list was last fetched, so a row
+  // keeps a saved change after you open another workflow (saves do not
+  // refetch the list). Cleared by every fetch.
+  const [savedTriggers, setSavedTriggers] = useState<
+    Record<string, { config: Record<string, unknown> | undefined }>
+  >({});
   const isDragging = useRef(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   const fetchData = useCallback(async (): Promise<void> => {
     try {
       setWorkflows(await api.workflow.getAll().catch(() => []));
+      setSavedTriggers({});
     } finally {
       setDataLoading(false);
     }
@@ -820,7 +860,7 @@ export function NavigationSidebar(): React.ReactNode {
   // Only the list is measured, so opening the filter strip above it cannot by
   // itself make the list count as too long.
   useEffect(() => {
-    const scroller = pickerList?.parentElement?.parentElement;
+    const scroller = pickerScroller;
     if (!(pickerList && scroller) || isPickerFiltered) {
       return;
     }
@@ -837,7 +877,7 @@ export function NavigationSidebar(): React.ReactNode {
     observer.observe(pickerList);
     observer.observe(scroller);
     return () => observer.disconnect();
-  }, [pickerList, isPickerFiltered]);
+  }, [pickerList, pickerScroller, isPickerFiltered]);
 
   // Once search has appeared it stays until the filter closes or the project
   // changes, so resizing the window never pulls it out from under the cursor.
@@ -898,17 +938,31 @@ export function NavigationSidebar(): React.ReactNode {
 
   const isAnonymous = isAnonymousUser(session?.user);
 
+  // A historical version preview puts old nodes on the canvas, and unsaved
+  // edits are not running yet; in both cases the row keeps the saved trigger.
+  const editorIsSaved =
+    openWorkflowId !== null &&
+    editorLoaded &&
+    previewVersion === null &&
+    !hasUnsavedChanges;
+  useEffect(() => {
+    if (!(editorIsSaved && openWorkflowId)) {
+      return;
+    }
+    setSavedTriggers((current) =>
+      openWorkflowId in current &&
+      current[openWorkflowId].config === liveTriggerConfig
+        ? current
+        : { ...current, [openWorkflowId]: { config: liveTriggerConfig } }
+    );
+  }, [editorIsSaved, openWorkflowId, liveTriggerConfig]);
+
   const visibleWorkflows = filterPickerVisible(workflows).map((w) => {
-    // A historical version preview puts old nodes on the canvas, and unsaved
-    // edits are not running yet; in both cases the row keeps the saved trigger.
-    const followsEditor =
-      w.id === openWorkflowId &&
-      previewVersion === null &&
-      !hasUnsavedChanges &&
-      liveTriggerConfig !== undefined;
-    const triggerConfig = followsEditor
-      ? liveTriggerConfig
-      : getTriggerConfig(w.nodes);
+    const saved = savedTriggers[w.id];
+    let triggerConfig = saved ? saved.config : getTriggerConfig(w.nodes);
+    if (editorIsSaved && w.id === openWorkflowId) {
+      triggerConfig = liveTriggerConfig;
+    }
     return {
       ...w,
       triggerConfig,
@@ -986,10 +1040,9 @@ export function NavigationSidebar(): React.ReactNode {
     }
 
     function handleKeyDown(e: KeyboardEvent): void {
-      // A field that used Escape itself (the search box clearing its text)
-      // marks it handled; React and this listener share the document, so
-      // stopPropagation alone does not keep it from closing the panel.
-      if (e.key === "Escape" && !e.defaultPrevented) {
+      // A control that used this Escape itself (the search box clearing its
+      // text, a chip closing the filter) tags it; that step is all it does.
+      if (e.key === "Escape" && !isEscapeHandled(e)) {
         navState.peelRightmost();
       }
     }
@@ -1362,6 +1415,7 @@ export function NavigationSidebar(): React.ReactNode {
 
       {/* Panel 2: Projects (workflows in a project, grouped by tag subheader) */}
       <FlyoutPanel
+        bodyRef={setPickerScroller}
         collapsedLabel={
           selectedProject ? `Projects - ${selectedProject.name}` : "Projects"
         }

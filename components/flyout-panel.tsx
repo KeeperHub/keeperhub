@@ -21,6 +21,8 @@ type FlyoutPanelProps = {
   // that otherwise stays empty to balance the collapse chevron, so the title
   // keeps its full width and stays centred.
   headerLeading?: React.ReactNode;
+  // The open panel's scrolling area, for content that measures its room.
+  bodyRef?: React.Ref<HTMLDivElement>;
   onCollapse: () => void;
   onExpand: () => void;
   children: React.ReactNode;
@@ -33,6 +35,7 @@ export function FlyoutPanel({
   collapsedLabel,
   accentColor,
   headerLeading,
+  bodyRef,
   onCollapse,
   onExpand,
   children,
@@ -122,7 +125,9 @@ export function FlyoutPanel({
             <ChevronLeft className="size-4" />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto p-2">{children}</div>
+        <div className="flex-1 overflow-y-auto p-2" ref={bodyRef}>
+          {children}
+        </div>
       </div>
     </section>
   );

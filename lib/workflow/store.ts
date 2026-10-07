@@ -54,8 +54,15 @@ export function getTriggerTypeFromConfig(
   // "Scheduled" is a legacy spelling that still lives in some workflow rows;
   // executor / metrics / mcp normalize it the same way before comparing.
   const normalized = raw === "Scheduled" ? "Schedule" : raw;
-  return normalized as WorkflowTriggerType;
+  // Anything else unrecognized has no trigger to show, like no type at all.
+  return TRIGGER_TYPES.has(normalized)
+    ? (normalized as WorkflowTriggerType)
+    : undefined;
 }
+
+const TRIGGER_TYPES: ReadonlySet<string> = new Set(
+  Object.values(WorkflowTriggerEnum)
+);
 
 export type WorkflowNodeData = {
   label: string;

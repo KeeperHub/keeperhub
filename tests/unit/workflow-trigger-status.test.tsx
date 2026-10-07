@@ -11,6 +11,7 @@ import {
   TriggerFilterChips,
   TriggerStatusIcon,
 } from "@/components/workflow-trigger-status";
+import { isEscapeHandled } from "@/lib/escape-key";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 
 let container: HTMLDivElement;
@@ -207,12 +208,16 @@ describe("TriggerFilterChips", () => {
         />
       )
     );
+    // The hint is the chip's tooltip (Radix marks its trigger with
+    // data-state), not part of its text, so screen readers hear it once.
+    const disabled = container.querySelector("[data-filter=disabled]");
+    expect(disabled?.getAttribute("data-state")).not.toBeNull();
+    expect(disabled?.textContent).toBe("Disabled 5");
     expect(
-      container.querySelector("[data-filter=disabled]")?.textContent
-    ).toContain("Includes 2 deactivated by KeeperHub");
-    expect(container.querySelector("[data-filter=enabled]")?.textContent).toBe(
-      "Enabled 5"
-    );
+      container
+        .querySelector("[data-filter=enabled]")
+        ?.getAttribute("data-state")
+    ).toBeNull();
   });
 
   it("closes the filter on Escape from a chip", () => {
@@ -237,6 +242,6 @@ describe("TriggerFilterChips", () => {
       container.querySelector("[data-filter=manual]")?.dispatchEvent(event);
     });
     expect(onEscape).toHaveBeenCalledTimes(1);
-    expect(event.defaultPrevented).toBe(true);
+    expect(isEscapeHandled(event)).toBe(true);
   });
 });

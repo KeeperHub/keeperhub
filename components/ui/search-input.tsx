@@ -2,6 +2,7 @@
 
 import { Search, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { markEscapeHandled } from "@/lib/escape-key";
 import { cn } from "@/lib/utils";
 
 type SearchInputProps = Omit<
@@ -37,6 +38,7 @@ export function SearchInput({
           if (event.key === "Escape" && value !== "") {
             event.preventDefault();
             event.stopPropagation();
+            markEscapeHandled(event.nativeEvent);
             onValueChange("");
           }
           onKeyDown?.(event);

@@ -46,6 +46,14 @@ const NO_CONFIG: Record<string, unknown> = Object.freeze({});
  * still counts as "has a trigger" (a Manual one) and compares equal from
  * call to call.
  */
+// A trigger that fires on its own and so has an enabled switch; Manual and
+// "no trigger yet" do not. Also narrows away undefined for callers.
+function hasEnableSwitch(
+  triggerType: WorkflowTriggerType | null | undefined
+): triggerType is WorkflowTriggerType {
+  return shouldShowEnableSwitch(triggerType ?? undefined);
+}
+
 export function getTriggerConfig(
   nodes: TriggerNodeLike[]
 ): Record<string, unknown> | undefined {
@@ -71,7 +79,7 @@ export function getTriggerStatus(workflow: {
   if (workflow.deactivatedAt) {
     return "disabled";
   }
-  if (!shouldShowEnableSwitch(workflow.triggerType ?? undefined)) {
+  if (!hasEnableSwitch(workflow.triggerType)) {
     return "manual";
   }
   return workflow.enabled === true ? "enabled" : "disabled";
@@ -209,11 +217,10 @@ export function getTriggerLabel(workflow: {
     return "Deactivated";
   }
   const { triggerType } = workflow;
-  const status = getTriggerStatus(workflow);
-  if (!triggerType || status === "manual") {
+  if (!hasEnableSwitch(triggerType)) {
     return "Manual";
   }
-  if (status === "disabled") {
+  if (workflow.enabled !== true) {
     return "Disabled";
   }
   const config = workflow.triggerConfig ?? {};
@@ -323,6 +330,7 @@ const DISPLAYED_CONFIG_KEYS = [
   "scheduleIntervalSeconds",
   "eventName",
   "blockInterval",
+  "scheduleTimezone",
 ] as const;
 
 export function isSameTriggerDisplay(

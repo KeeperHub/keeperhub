@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, ListFilter } from "lucide-react";
+import { useState } from "react";
 import { SearchInput } from "@/components/ui/search-input";
 import {
   Tooltip,
@@ -8,6 +9,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { getTriggerIcon } from "@/components/workflow-trigger-icons";
+import { isEscapeHandled, markEscapeHandled } from "@/lib/escape-key";
 import { cn } from "@/lib/utils";
 import type { WorkflowTriggerType } from "@/lib/workflow/store";
 import {
@@ -31,6 +33,8 @@ export function TriggerStatusIcon({
   status,
   tooltip,
   isActive = false,
+  keyboardFocused = false,
+  focusLines = [],
 }: {
   triggerType: WorkflowTriggerType | undefined;
   status: TriggerStatus;
@@ -39,10 +43,20 @@ export function TriggerStatusIcon({
   // On the highlighted row a grey icon steps up, as the dimmed text does;
   // on hover it follows the row's `group` class.
   isActive?: boolean;
+  // While the row has keyboard focus the tooltip stays open, so keyboard
+  // users see what mouse users get on hover, plus focusLines (the full name,
+  // why a workflow is deactivated).
+  keyboardFocused?: boolean;
+  focusLines?: string[];
 }): React.ReactNode {
   const Icon = getTriggerIcon(triggerType);
+  const [hoverOpen, setHoverOpen] = useState(false);
   return (
-    <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
+    <Tooltip
+      delayDuration={TOOLTIP_DELAY_MS}
+      onOpenChange={setHoverOpen}
+      open={hoverOpen || keyboardFocused}
+    >
       <TooltipTrigger asChild>
         <span
           className={cn(
@@ -64,20 +78,26 @@ export function TriggerStatusIcon({
         </span>
       </TooltipTrigger>
       <TooltipContent className="pointer-events-none" side="top">
-        {tooltip ?? getTriggerTypeLabel(triggerType)}
+        {keyboardFocused &&
+          focusLines.map((line) => <div key={line}>{line}</div>)}
+        <div>{tooltip ?? getTriggerTypeLabel(triggerType)}</div>
       </TooltipContent>
     </Tooltip>
   );
 }
 
-// Runs onEscape for an Escape nothing else used yet, and marks it used so
-// the sidebar does not also close the panel.
+// Runs onEscape for an Escape no other control used yet, and marks it used
+// so the sidebar does not also close the panel.
 function handleEscape(
   event: React.KeyboardEvent,
   onEscape: (() => void) | undefined
 ): void {
-  if (onEscape && event.key === "Escape" && !event.defaultPrevented) {
-    event.preventDefault();
+  if (
+    onEscape &&
+    event.key === "Escape" &&
+    !isEscapeHandled(event.nativeEvent)
+  ) {
+    markEscapeHandled(event.nativeEvent);
     onEscape();
   }
 }
@@ -148,7 +168,8 @@ function FilterChip({
   value: string;
   onClick: () => void;
   onEscape?: () => void;
-  // Extra context, shown on hover and read by screen readers.
+  // Extra context in a tooltip; Radix also gives it to screen readers as the
+  // chip's description, so it is not repeated in the chip's own text.
   hint?: string;
   children: React.ReactNode;
 }): React.ReactNode {
@@ -159,7 +180,7 @@ function FilterChip({
         "flex h-6 items-center gap-1 rounded-full border px-2.5 text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-foreground/60",
         selected
           ? "border-foreground/40 bg-foreground/10 font-medium text-foreground"
-          : "border-border text-muted-foreground hover:bg-muted/50",
+          : "border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground",
         // Picking it would empty the list; it stays clickable all the same.
         count === 0 && !selected && "opacity-70"
       )}
@@ -175,7 +196,6 @@ function FilterChip({
         className={cn("size-3", !selected && "invisible")}
       />
       {children} <span className="tabular-nums">{count}</span>
-      {hint && <span className="sr-only">, {hint}</span>}
     </button>
   );
   if (!hint) {

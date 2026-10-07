@@ -363,6 +363,15 @@ describe("isSameTriggerDisplay", () => {
     contractABI: "[]",
   };
 
+  it("notices a timezone change, which the tooltip shows", () => {
+    expect(
+      isSameTriggerDisplay(
+        { ...base, scheduleTimezone: "UTC" },
+        { ...base, scheduleTimezone: "Europe/Vilnius" }
+      )
+    ).toBe(false);
+  });
+
   it("ignores fields the row does not show", () => {
     expect(isSameTriggerDisplay(base, { ...base, contractABI: "[{}]" })).toBe(
       true
@@ -403,6 +412,16 @@ describe("trigger type read off a node list", () => {
   it("returns undefined without a trigger node or a trigger type", () => {
     expect(readType([])).toBeUndefined();
     expect(readType([{ data: { type: "trigger" } }])).toBeUndefined();
+  });
+
+  it("treats an unknown trigger type as no trigger, so it reads as Manual", () => {
+    expect(
+      readType([{ data: { type: "trigger", config: { triggerType: "Nope" } } }])
+    ).toBeUndefined();
+    expect(getTriggerLabel({ triggerType: undefined, enabled: true })).toBe(
+      "Manual"
+    );
+    expect(getTriggerTooltip({})).toBe("Manual trigger");
   });
 
   it("normalizes the legacy Scheduled spelling", () => {

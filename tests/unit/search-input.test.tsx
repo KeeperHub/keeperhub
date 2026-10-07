@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SearchInput } from "@/components/ui/search-input";
+import { isEscapeHandled } from "@/lib/escape-key";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -83,6 +84,7 @@ describe("SearchInput", () => {
     document.removeEventListener("keydown", outside);
     expect(onValueChange).toHaveBeenCalledWith("");
     expect(event.defaultPrevented).toBe(true);
+    expect(isEscapeHandled(event)).toBe(true);
     expect(outside).not.toHaveBeenCalled();
   });
 
