@@ -5,8 +5,9 @@ import {
   lookup as dnsLookup,
   promises as dnsPromises,
   type LookupAddress,
+  type LookupOptions,
 } from "node:dns";
-import { BlockList, isIP } from "node:net";
+import { BlockList, isIP, type LookupFunction } from "node:net";
 import { captureException } from "@sentry/nextjs";
 import { Agent, buildConnector, fetch as undiciFetch } from "undici";
 import { logWarn } from "@/lib/logging";
@@ -398,68 +399,99 @@ function extractUrlString(input: RequestInfo | URL): string {
 }
 
 /**
- * Custom undici connector that resolves DNS, validates the resolved IP, and
- * only then hands off to the default TCP/TLS connector. Invoked per TCP
- * connection including redirect hops, so validation fires every time.
- *
- * The base connector is given the already-resolved IP as `hostname`, so it
- * does not perform a second DNS lookup — this closes the TOCTOU window
- * between our check and the socket handshake.
+ * Refuse a connection when any address it may use is blocked, matching
+ * `assertUrlIsPublic`. Returns undefined when it may proceed (or in shadow).
  */
+function checkResolvedAddresses(
+  hostname: string,
+  addresses: LookupAddress[]
+): SsrfBlockedError | undefined {
+  for (const { address } of addresses) {
+    const check = isBlockedIp(address);
+    if (!check.blocked) {
+      continue;
+    }
+    const shadow = isShadowMode();
+    const ctx: BlockContext = {
+      hostname,
+      resolvedIp: address,
+      reason: check.reason,
+      plugin: currentPlugin(),
+    };
+    if (!initialBlockAlreadyRecorded()) {
+      recordBlock(ctx, shadow);
+    }
+    if (shadow) {
+      return;
+    }
+    return new SsrfBlockedError({
+      hostname,
+      resolvedIp: address,
+      reason: check.reason,
+      message: blockedMessage(ctx),
+    });
+  }
+  return;
+}
+
+type LookupCallback = Parameters<LookupFunction>[2];
+
+/**
+ * Connector DNS lookup: checks every resolved address before any socket
+ * opens, then Node tries each one in turn like a plain `fetch`.
+ */
+function validatingLookup(
+  hostname: string,
+  options: LookupOptions,
+  callback: LookupCallback
+): void {
+  dnsLookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) {
+      callback(err, []);
+      return;
+    }
+    const blockError = checkResolvedAddresses(hostname, addresses);
+    if (blockError) {
+      callback(blockError, []);
+      return;
+    }
+    const [first] = addresses;
+    if (options.all || !first) {
+      callback(null, addresses);
+      return;
+    }
+    callback(null, first.address, first.family);
+  });
+}
+
 type ConnectOptions = Parameters<ReturnType<typeof buildConnector>>[0];
 type ConnectCallback = Parameters<ReturnType<typeof buildConnector>>[1];
 
-const baseConnector = buildConnector({});
+const baseConnector = buildConnector({
+  lookup: validatingLookup,
+  autoSelectFamily: true,
+});
 
+/**
+ * Runs per connection, redirect hops included. An IP literal skips DNS, so
+ * it is checked here instead of in `validatingLookup`.
+ */
 function validatingConnect(
   options: ConnectOptions,
   callback: ConnectCallback
 ): void {
   const { hostname } = options;
-
-  // IP literals are caught at the URL-entry check in `safeFetch` already,
-  // so `hostname` here is expected to be a domain name. Still, resolve it
-  // and re-check defensively — covers any code path that might feed an IP
-  // through the connector directly.
-  dnsLookup(hostname, { family: 0 }, (err, address) => {
-    if (err) {
-      callback(err as Error, null);
+  const family = isIP(hostname);
+  if (family !== 0) {
+    const blockError = checkResolvedAddresses(hostname, [
+      { address: hostname, family },
+    ]);
+    if (blockError) {
+      callback(blockError, null);
       return;
     }
-    const resolved = String(address);
-    const check = isBlockedIp(resolved);
-    const shadow = isShadowMode();
-    const plugin = currentPlugin();
-
-    if (check.blocked) {
-      if (!initialBlockAlreadyRecorded()) {
-        recordBlock(
-          { hostname, resolvedIp: resolved, reason: check.reason, plugin },
-          shadow
-        );
-      }
-      if (!shadow) {
-        callback(
-          new SsrfBlockedError({
-            hostname,
-            resolvedIp: resolved,
-            reason: check.reason,
-            message: blockedMessage({
-              hostname,
-              resolvedIp: resolved,
-              reason: check.reason,
-              plugin,
-            }),
-          }),
-          null
-        );
-        return;
-      }
-    }
-
-    // Hand off to the default connector with the already-resolved address.
-    baseConnector({ ...options, hostname: resolved }, callback);
-  });
+  }
+  baseConnector(options, callback);
 }
 
 /**
@@ -584,11 +616,20 @@ export async function safeFetch(
   // DNS lookup can attribute blocks to the calling plugin, and so the
   // connector can suppress a duplicate `recordBlock` when the
   // synchronous checks above have already counted this request.
-  const response = await pluginContext.run(
-    { plugin, initialBlockRecorded },
-    () => undiciFetch(rawUrl, initWithDispatcher)
-  );
-  return response as unknown as Response;
+  try {
+    const response = await pluginContext.run(
+      { plugin, initialBlockRecorded },
+      () => undiciFetch(rawUrl, initWithDispatcher)
+    );
+    return response as unknown as Response;
+  } catch (error) {
+    // undici wraps connector errors in TypeError("fetch failed"); rethrow a
+    // block as itself so callers can tell it from a network failure.
+    if (error instanceof Error && error.cause instanceof SsrfBlockedError) {
+      throw error.cause;
+    }
+    throw error;
+  }
 }
 
 /**

@@ -296,6 +296,11 @@ type AttemptOutcome =
   | { kind: "network-error"; error: string }
   | { kind: "fatal"; error: string };
 
+/** undici rejects every network failure (DNS, connect, reset) this way. */
+function isFetchNetworkFailure(error: TypeError): boolean {
+  return error.message === "fetch failed";
+}
+
 async function attemptHttpRequest(
   endpoint: string,
   httpMethod: string,
@@ -363,7 +368,7 @@ async function attemptHttpRequest(
     // TypeError. That is a configuration error, not a transient source miss,
     // so hard-fail it regardless of failOnError rather than soft-failing into
     // a null-data success an aggregator workflow would silently swallow.
-    if (error instanceof TypeError) {
+    if (error instanceof TypeError && !isFetchNetworkFailure(error)) {
       return {
         kind: "fatal",
         error: `HTTP request failed: ${getErrorMessage(error)}`,
