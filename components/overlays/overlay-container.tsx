@@ -210,6 +210,11 @@ function DesktopOverlayContainer() {
 
   const handleEscapeKey = useCallback(
     (e: KeyboardEvent) => {
+      // A layer above the overlay - a dialog, a picker - that handled this
+      // Escape marks it handled; it is not also a request to close the overlay.
+      if (e.defaultPrevented) {
+        return;
+      }
       if (e.key === "Escape" && currentItem?.options.closeOnEscape !== false) {
         pop();
       }
@@ -385,6 +390,11 @@ function MobileOverlayContainer() {
 
   const handleEscapeKey = useCallback(
     (e: KeyboardEvent) => {
+      // A layer above the overlay - a dialog, a picker - that handled this
+      // Escape marks it handled; it is not also a request to close the overlay.
+      if (e.defaultPrevented) {
+        return;
+      }
       if (e.key === "Escape" && currentItem?.options.closeOnEscape !== false) {
         pop();
       }
