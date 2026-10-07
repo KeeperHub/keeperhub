@@ -114,6 +114,7 @@ function DatabaseQueryFields({
             wordWrap: "off",
           }}
           height="150px"
+          label="SQL Query"
           language="sql"
           onChange={(v) => onUpdateConfig("dbQuery", v)}
           value={(config?.dbQuery as string) || ""}
@@ -224,6 +225,7 @@ function HttpRequestFields({
         <TemplateCodeEditor
           disabled={disabled}
           height="100px"
+          label="Headers (JSON)"
           language="json"
           onChange={(value) => onUpdateConfig("httpHeaders", value || "{}")}
           value={(config?.httpHeaders as string) || "{}"}
@@ -231,17 +233,14 @@ function HttpRequestFields({
       </div>
       <div className="space-y-2">
         <Label htmlFor="httpBody">Body (JSON)</Label>
-        <div
-          className={config?.httpMethod === "GET" ? "opacity-50" : ""}
-        >
-          <TemplateCodeEditor
-            disabled={config?.httpMethod === "GET" || disabled}
-            height="120px"
-            language="json"
-            onChange={(value) => onUpdateConfig("httpBody", value || "{}")}
-            value={(config?.httpBody as string) || "{}"}
-          />
-        </div>
+        <TemplateCodeEditor
+          disabled={config?.httpMethod === "GET" || disabled}
+          height="120px"
+          label="Body (JSON)"
+          language="json"
+          onChange={(value) => onUpdateConfig("httpBody", value || "{}")}
+          value={(config?.httpBody as string) || "{}"}
+        />
         {config?.httpMethod === "GET" && (
           <p className="text-muted-foreground text-xs">
             Body is disabled for GET requests
@@ -754,6 +753,7 @@ function StateSetFields({
             wordWrap: "off",
           }}
           height="100px"
+          label="Value"
           language="json"
           onChange={(v) => onUpdateConfig("value", v)}
           value={stateValueToEditorText(config?.value)}

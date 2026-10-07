@@ -263,6 +263,7 @@ registerFieldRenderer(
         <ProtocolFieldLabel field={field} />
         <CodeEditorField
           disabled={disabled}
+          label={field.label}
           onChange={(val: unknown) => onUpdateConfig(field.key, val)}
           placeholder={field.placeholder}
           value={value}
@@ -288,6 +289,7 @@ registerFieldRenderer(
         <CodeEditorField
           disabled={disabled}
           height="160px"
+          label={field.label}
           language="json"
           onChange={(val: unknown) => onUpdateConfig(field.key, val)}
           placeholder={field.placeholder}

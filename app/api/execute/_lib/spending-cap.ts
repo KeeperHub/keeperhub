@@ -13,7 +13,10 @@ import {
   getDefaultDailyValueCapWei,
 } from "@/lib/execute/spend-cap-defaults";
 import {
+  type LockedSpendCap,
   lockOrgSpendCapRow,
+  type StablecoinDailyLimit,
+  stablecoinDailyLimitDenial,
   sumOrgSolanaValueTodayLamports,
   sumOrgValueTodayWei,
 } from "@/lib/execute/value-ledger";
@@ -46,16 +49,81 @@ type ReserveExecutionParams = {
   // reservation below, because the execution row is committed by then and
   // counts towards the org's monthly usage.
   paygOverflow: boolean;
+  // A stablecoin amount charged against its own daily total, for a route whose
+  // spend the native caps cannot see (gas top-up: USDC in, no native value
+  // out). Checked under the same cap row lock as the native caps, so
+  // concurrent requests for one org cannot both fit under the last of the day.
+  stablecoinDaily?: StablecoinDailyLimit;
 };
 
 type ReserveResult =
   | { allowed: true; executionId: string }
   | { allowed: false; reason: string };
 
+type Denial = { allowed: false; reason: string };
+
 function defaultCapFor(isSolana: boolean): string {
   return isSolana
     ? getDefaultDailySolanaValueCapLamports()
     : getDefaultDailyValueCapWei();
+}
+
+async function nativeCapDenial(
+  // biome-ignore lint/suspicious/noExplicitAny: the open transaction
+  tx: any,
+  organizationId: string,
+  cap: LockedSpendCap,
+  reserved: bigint,
+  isSolana: boolean
+): Promise<Denial | null> {
+  const configuredCap = isSolana
+    ? cap.dailySolanaValueCapLamports
+    : cap.dailyValueCapWei;
+
+  // No cap configured for this chain family (no row, or that column unset)
+  // -> the platform default, not unlimited. The two caps stay independent:
+  // an unset Solana cap falls back to the Solana default, never to the wei
+  // cap.
+  const usingDefault = configuredCap === null;
+  const effectiveCap = usingDefault ? defaultCapFor(isSolana) : configuredCap;
+
+  // Sum today's value across BOTH stores (direct executions AND the workflow/
+  // protocol value ledger) so a direct-API request is charged against value
+  // moved by workflow runs too, and cannot exceed the cap by racing them.
+  // Runs inside the transaction that holds the cap row, which lockOrgSpendCapRow
+  // guarantees exists, so concurrent reservations for this org are serialized
+  // whether or not the org ever configured a cap.
+  const total = isSolana
+    ? await sumOrgSolanaValueTodayLamports(tx, organizationId)
+    : await sumOrgValueTodayWei(tx, organizationId);
+  const dailyCap = BigInt(effectiveCap);
+  const exceeded = total + reserved > dailyCap;
+
+  // Every value-moving request an unconfigured org makes is reported, so the
+  // blast radius of the default is measurable before it starts denying
+  // anyone. Zero-value requests never reach this point.
+  if (usingDefault) {
+    logSecurityEvent("spend_cap_default_applied", {
+      organizationId,
+      surface: "direct-execution",
+      chainFamily: isSolana ? "solana" : "evm",
+      reason: cap.created ? "no_cap_row" : "cap_unset_for_chain_family",
+      defaultCap: effectiveCap,
+      reserved: reserved.toString(),
+      exceeded,
+    });
+  }
+
+  // Pre-charge: deny if this request would push the day's total over the cap.
+  if (!exceeded) {
+    return null;
+  }
+  return {
+    allowed: false,
+    reason: isSolana
+      ? "Daily Solana spending cap exceeded"
+      : "Daily spending cap exceeded",
+  };
 }
 
 /**
@@ -132,8 +200,9 @@ export async function checkAndReserveExecution(
     //
     // Skipping the lock also keeps the insert-and-lock off the request path for
     // the traffic that is mostly zero-value. withValueCap on the ledger side
-    // already returns early on a zero value; this matches it.
-    if (reserved === BigInt(0)) {
+    // already returns early on a zero value; this matches it. A stablecoin
+    // daily charge is value the native caps cannot see, so it does not qualify.
+    if (reserved === BigInt(0) && !params.stablecoinDaily) {
       await insertReservation();
       return { allowed: true, executionId: id } as const;
     }
@@ -154,52 +223,31 @@ export async function checkAndReserveExecution(
 
     const cap = await lockOrgSpendCapRow(tx, params.organizationId);
 
-    const configuredCap = isSolana
-      ? cap.dailySolanaValueCapLamports
-      : cap.dailyValueCapWei;
-
-    // No cap configured for this chain family (no row, or that column unset)
-    // -> the platform default, not unlimited. The two caps stay independent:
-    // an unset Solana cap falls back to the Solana default, never to the wei
-    // cap.
-    const usingDefault = configuredCap === null;
-    const effectiveCap = usingDefault ? defaultCapFor(isSolana) : configuredCap;
-
-    // Sum today's value across BOTH stores (direct executions AND the workflow/
-    // protocol value ledger) so a direct-API request is charged against value
-    // moved by workflow runs too, and cannot exceed the cap by racing them.
-    // Runs inside the transaction that holds the cap row, which lockOrgSpendCapRow
-    // guarantees exists, so concurrent reservations for this org are serialized
-    // whether or not the org ever configured a cap.
-    const total = isSolana
-      ? await sumOrgSolanaValueTodayLamports(tx, params.organizationId)
-      : await sumOrgValueTodayWei(tx, params.organizationId);
-    const dailyCap = BigInt(effectiveCap);
-    const exceeded = total + reserved > dailyCap;
-
-    // Every value-moving request an unconfigured org makes is reported, so the
-    // blast radius of the default is measurable before it starts denying
-    // anyone. Zero-value requests returned above and never reach this point.
-    if (usingDefault) {
-      logSecurityEvent("spend_cap_default_applied", {
-        organizationId: params.organizationId,
-        surface: "direct-execution",
-        chainFamily: isSolana ? "solana" : "evm",
-        reason: cap.created ? "no_cap_row" : "cap_unset_for_chain_family",
-        defaultCap: effectiveCap,
-        reserved: reserved.toString(),
-        exceeded,
-      });
+    if (params.stablecoinDaily) {
+      const reason = await stablecoinDailyLimitDenial(
+        tx,
+        params.organizationId,
+        params.stablecoinDaily
+      );
+      if (reason) {
+        return { allowed: false, reason } as const;
+      }
     }
 
-    // Pre-charge: deny if this request would push the day's total over the cap.
-    if (exceeded) {
-      return {
-        allowed: false,
-        reason: isSolana
-          ? "Daily Solana spending cap exceeded"
-          : "Daily spending cap exceeded",
-      } as const;
+    // A zero native reservation is only here for its stablecoin charge; the
+    // native comparison would collapse to `total > dailyCap` and refuse it for
+    // value it does not move.
+    if (reserved > BigInt(0)) {
+      const denial = await nativeCapDenial(
+        tx,
+        params.organizationId,
+        cap,
+        reserved,
+        isSolana
+      );
+      if (denial) {
+        return denial;
+      }
     }
 
     await insertReservation();

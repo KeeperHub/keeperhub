@@ -15,7 +15,7 @@ author a workflow first, use the [browser](/getting-started/browser) or an
 |---|---|---|
 | **Use for** | A single transfer or contract call, no branching | Multi-step logic, conditions, anything reusable |
 | **Needs a workflow first** | No | Yes |
-| **Endpoint** | `POST /api/execute/transfer`, `POST /api/execute/contract-call` | `POST /api/workflows/{workflowId}/execute` |
+| **Endpoint** | `POST /api/execute/transfer`, `POST /api/execute/contract-call`, `POST /api/execute/gas-top-up` | `POST /api/workflows/{workflowId}/execute` |
 
 The rest of this page covers workflow execution. For direct execution, including spending caps and
 simulation, see [Direct Execution](/api/direct-execution).
