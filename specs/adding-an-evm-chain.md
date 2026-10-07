@@ -188,13 +188,11 @@ and fails on drift.
 
 ## Verify locally
 
-`scripts/seed/seed-chains.ts` refuses to run against a `DATABASE_URL` whose
-host is not this machine unless `ALLOW_REMOTE=1` is set. Check what your shell
-exports before you run it: a shell export overrides `.env`, and the seed
-writes null WSS and private-RPC columns on every chain row when
-`CHAIN_RPC_CONFIG` is absent, which is harmless on a local database and is
-exactly what the guard keeps away from a shared one. The deploy migrator sets
-`ALLOW_REMOTE=1` because it is the one caller meant to seed a remote database.
+Check what `DATABASE_URL` your shell exports before you run the seed: a shell
+export overrides `.env`, so point it at your local database. The seed writes
+null WSS and private-RPC columns on every chain row when `CHAIN_RPC_CONFIG` is
+absent, which is harmless locally and is worth keeping away from a shared
+database.
 
 ```bash
 pnpm tsx scripts/seed/seed-chains.ts
