@@ -63,7 +63,7 @@ fixed columns, so the name gets the same room on every row:
 
 | Column | Content |
 |---|---|
-| Icon (20px tile) | Trigger-type icon from `components/workflow-trigger-icons.ts`. Green (`keeperhub-green` on a 10% tint) only when the workflow is enabled and fires on its own; grey with a `foreground/15` outline when disabled, and always for Manual. Tooltip: "Schedule trigger · Every 5 minutes". |
+| Icon (20px tile) | Trigger-type icon from `components/workflow-trigger-icons.ts`. Green (`keeperhub-green` on a 10% tint) only when the workflow is enabled and fires on its own; grey with a `foreground/15` outline when disabled, and always for Manual. Tooltip leads with the status in words: "Disabled · Schedule trigger · Every 5 minutes"; Manual says "Manual trigger · Runs when you click Run Workflow". |
 | Name (flexible) | Truncated; the full name shows above it on hover. Dimmed when disabled. |
 | Label (64px, right-aligned, `text-xs`) | Always "how or when it fires": cadence ("5 min", "Hourly", "Daily", "Weekdays", "Custom"), event name, or "10 blocks"; empty for Webhook, Transfer and Manual, whose icon says it all. `foreground/75`, muted like the name when the workflow is off. The one status word is "Deactivated", in `text-status-deactivated` with a tooltip saying KeeperHub turned it off. Status otherwise comes from the icon colour and the dimmed name (and the tooltip and screen-reader text). Truncated with a tooltip. |
 
@@ -80,11 +80,14 @@ counts (selected: outline and check; zero: 70% opacity) and, when the list is
 taller than the panel, a shared `SearchInput` over name, tag, trigger type
 ("Manual" when there is none) and event name; status words are left to the
 chips. The Disabled chip notes how many of its workflows were deactivated
-by KeeperHub. Dimmed text and grey icons step up on hover as on the open
-row; a row's icon tooltip (with the full name and, when deactivated, why)
-also opens on keyboard focus. While a filter is on, tag groups are held
+by KeeperHub (tooltip, plus hidden text for screen readers). Dimmed text and
+grey icons step up on hover as on the open row. On keyboard focus, after the
+same 400ms, a row's icon tooltip opens only when it has something the row
+cannot show: a cut-off name in full, or why it is deactivated. Escape or
+moving the mouse closes it. While a filter is on, tag groups are held
 open and their headers do not fold. An empty result names the filters and offers "Show all workflows".
-Escape clears a typed search, then closes the filter, then the panel.
+Escape clears a typed search, then closes the filter, then the panel; an
+Escape that closes a dialog, menu or select inside the panel closes only that.
 
 ## Code Example
 

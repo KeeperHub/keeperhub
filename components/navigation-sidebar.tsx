@@ -6,7 +6,6 @@ import {
   Activity,
   BarChart3,
   Bookmark,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -34,18 +33,16 @@ import {
 } from "@/components/ui/tooltip";
 import { TruncatedTooltip } from "@/components/ui/truncated-tooltip";
 import {
-  TOOLTIP_DELAY_MS,
   TRIGGER_FILTER_PANEL_ID,
   TriggerFilterButton,
   TriggerFilterChips,
-  TriggerStatusIcon,
   WorkflowSearchField,
 } from "@/components/workflow-trigger-status";
 import { useIsMobile } from "@/hooks/use-mobile";
-import type { Project, SavedWorkflow, Tag } from "@/lib/api-client";
+import type { Project, SavedWorkflow } from "@/lib/api-client";
 import { api } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
-import { isEscapeHandled } from "@/lib/escape-key";
+import { isEscapeFromOverlay, isEscapeHandled } from "@/lib/escape-key";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import type { NavPanelStates } from "@/lib/hooks/use-persisted-nav-state";
@@ -54,61 +51,40 @@ import { isAnonymousUser } from "@/lib/is-anonymous";
 import { registerSidebarRefetch } from "@/lib/refetch-sidebar";
 import { cn } from "@/lib/utils";
 import { matchesWorkflowSearch } from "@/lib/workflow/picker-search";
+import {
+  dropSavedTriggersUpTo,
+  recordSavedTrigger,
+  type SavedTriggers,
+} from "@/lib/workflow/saved-triggers";
 import { filterPickerVisible } from "@/lib/workflow/soft-delete";
 import {
   currentWorkflowIdAtom,
   getTriggerTypeFromConfig,
   hasUnsavedChangesAtom,
+  isGeneratingAtom,
   nodesAtom,
   previewVersionAtom,
-  type WorkflowTriggerType,
 } from "@/lib/workflow/store";
 import {
   countDeactivated,
   countTriggerStatuses,
-  DEACTIVATED_EXPLANATION,
   describeEmptyFilterResult,
-  getTriggerAccessibleStatus,
   getTriggerConfig,
-  getTriggerLabel,
-  getTriggerStatus,
-  getTriggerTooltip,
   isSameTriggerDisplay,
   matchesTriggerFilter,
   type TriggerFilter,
   toggleTriggerFilter,
 } from "@/lib/workflow/trigger-display";
 import { FLYOUT_WIDTH, FlyoutPanel, STRIP_WIDTH } from "./flyout-panel";
+import {
+  TagsPanel,
+  type WorkflowEntry,
+  WorkflowItem,
+} from "./workflow-picker-list";
 
 export const COLLAPSED_WIDTH = 60;
 export const EXPANDED_WIDTH = 200;
 const SNAP_THRESHOLD = (COLLAPSED_WIDTH + EXPANDED_WIDTH) / 2;
-
-type WorkflowEntry = {
-  id: string;
-  name: string;
-  updatedAt: string;
-  projectId?: string | null;
-  tagId?: string | null;
-  // Soft-delete timestamp. The list route already excludes these rows;
-  // filterPickerVisible() re-checks it so a stale cached payload cannot put
-  // one back in the picker.
-  deletedAt?: string | null;
-  // The trigger type picks the row icon and decides whether the enabled
-  // flag means anything -- see getTriggerStatus. Derived once at the
-  // SavedWorkflow boundary so WorkflowItem doesn't have to carry the full
-  // nodes payload.
-  triggerType?: WorkflowTriggerType;
-  // The trigger node's config, for the cadence label ("5 min", "Lift").
-  triggerConfig?: Record<string, unknown>;
-  // When false on a trigger that supports the enable switch, the picker
-  // greys the icon and name and labels the row "Disabled". The row stays
-  // selectable.
-  enabled?: boolean;
-  // Set by ops via admin API. Takes precedence over the "Disabled" label —
-  // the user cannot clear this themselves.
-  deactivatedAt?: string | null;
-};
 
 // The open workflow's trigger config, read from the editor because saving a
 // trigger change does not refetch the sidebar. The row takes it only once the
@@ -119,9 +95,6 @@ const liveTriggerConfigAtom = selectAtom(
   getTriggerConfig,
   isSameTriggerDisplay
 );
-// Whether a workflow is on the canvas at all (nodes are cleared between
-// workflows), so "no trigger config" can mean the trigger was deleted.
-const editorLoadedAtom = selectAtom(nodesAtom, (nodes) => nodes.length > 0);
 
 function groupWorkflows(workflows: WorkflowEntry[]): {
   byProject: Record<string, WorkflowEntry[]>;
@@ -142,114 +115,6 @@ function groupWorkflows(workflows: WorkflowEntry[]): {
   }
 
   return { byProject, ungrouped };
-}
-
-// Muted grey is too faint on the active or hovered row's bg-muted, so
-// dimmed text steps up there.
-function dimmedTextClass(isActive: boolean): string {
-  return isActive
-    ? "text-foreground/55"
-    : "text-muted-foreground group-hover:text-foreground/55";
-}
-
-function labelColorClass(
-  workflow: WorkflowEntry,
-  status: ReturnType<typeof getTriggerStatus>,
-  isActive: boolean
-): string {
-  if (workflow.deactivatedAt) {
-    return "text-status-deactivated";
-  }
-  return status === "disabled"
-    ? dimmedTextClass(isActive)
-    : "text-foreground/75";
-}
-
-function WorkflowItem({
-  workflow,
-  activeWorkflowId,
-}: {
-  workflow: WorkflowEntry;
-  activeWorkflowId: string | undefined;
-}): React.ReactNode {
-  const router = useRouter();
-  const status = getTriggerStatus(workflow);
-  const isActive = workflow.id === activeWorkflowId;
-  const [keyboardFocused, setKeyboardFocused] = useState(false);
-  return (
-    <button
-      aria-current={isActive ? "page" : undefined}
-      className={cn(
-        "group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted outline-none focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset",
-        isActive && "bg-muted"
-      )}
-      data-testid="workflow-picker-item"
-      onBlur={() => setKeyboardFocused(false)}
-      onClick={() => router.push(`/workflows/${workflow.id}`)}
-      onFocus={(event) =>
-        setKeyboardFocused(event.currentTarget.matches(":focus-visible"))
-      }
-      type="button"
-    >
-      <TriggerStatusIcon
-        focusLines={
-          workflow.deactivatedAt
-            ? [workflow.name, DEACTIVATED_EXPLANATION]
-            : [workflow.name]
-        }
-        isActive={isActive}
-        keyboardFocused={keyboardFocused}
-        status={status}
-        tooltip={getTriggerTooltip(workflow)}
-        triggerType={workflow.triggerType}
-      />
-      <TruncatedTooltip
-        className={cn(
-          "min-w-0 flex-1",
-          status === "disabled" && dimmedTextClass(isActive)
-        )}
-        delayDuration={TOOLTIP_DELAY_MS}
-        side="top"
-        text={workflow.name}
-      />
-      {/* How or when it fires ("5 min", the event, "10 blocks"), on every
-          row whether enabled or not; empty when the icon says it all. Fixed
-          width (fits "Deactivated") so every name gets the same room; a long
-          event name is cut off, with the full text on hover. Muted like the
-          name when the workflow is off; Deactivated (ops switched it off,
-          the user cannot undo it) is the one status word, in a muted amber
-          with a tooltip saying who to ask. */}
-      {/* Hidden from screen readers: the sr-only text below says the same
-          and more, so nothing is read twice. */}
-      <span
-        aria-hidden="true"
-        className={cn(
-          "w-16 shrink-0 text-right text-xs",
-          labelColorClass(workflow, status, isActive)
-        )}
-        data-testid="workflow-trigger-label"
-      >
-        {workflow.deactivatedAt ? (
-          <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
-            <TooltipTrigger asChild>
-              <span className="block truncate">Deactivated</span>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              {DEACTIVATED_EXPLANATION}
-            </TooltipContent>
-          </Tooltip>
-        ) : (
-          <TruncatedTooltip
-            className="block"
-            delayDuration={TOOLTIP_DELAY_MS}
-            side="right"
-            text={getTriggerLabel(workflow)}
-          />
-        )}
-      </span>
-      <span className="sr-only">, {getTriggerAccessibleStatus(workflow)}</span>
-    </button>
-  );
 }
 
 // A polite live region that speaks only once the text has stopped changing
@@ -392,180 +257,6 @@ function ProjectsPanel({
         <p className="mt-2 border-t px-2 pt-2 text-center text-muted-foreground/70 text-xs">
           Sign in to create more
         </p>
-      )}
-    </div>
-  );
-}
-
-const UNTAGGED_KEY = "__untagged__";
-
-// The chevron of a tag group header, in a 20px slot so it lines up with the
-// row icons. Hidden while filtering, when every group is held open and the
-// header cannot fold.
-function GroupChevron({
-  collapsed,
-  hidden,
-}: {
-  collapsed: boolean;
-  hidden: boolean;
-}): React.ReactNode {
-  return (
-    <span className="flex size-5 shrink-0 items-center justify-center">
-      {!hidden &&
-        (collapsed ? (
-          <ChevronRight className="size-3" />
-        ) : (
-          <ChevronDown className="size-3" />
-        ))}
-    </span>
-  );
-}
-
-function TagsPanel({
-  projectTags,
-  workflowsByTagId,
-  untaggedWorkflows,
-  activeWorkflowId,
-  loading,
-  onResetFilter,
-  filteredEmptyText = "No matching workflows",
-  expandAll = false,
-}: {
-  projectTags: Tag[];
-  workflowsByTagId: Record<string, WorkflowEntry[]>;
-  untaggedWorkflows: WorkflowEntry[];
-  activeWorkflowId: string | undefined;
-  loading: boolean;
-  // Set while a trigger filter is narrowing the list; an empty result then
-  // offers a way back to every workflow instead of a dead end.
-  onResetFilter?: () => void;
-  // What the empty list says while a filter or search is on.
-  filteredEmptyText?: string;
-  // While a filter or search narrows the list, collapsed groups open so no
-  // match hides behind a header.
-  expandAll?: boolean;
-}): React.ReactNode {
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-
-  const toggle = (key: string): void => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-8">
-        <Loader2 className="size-5 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  const hasAny = projectTags.length > 0 || untaggedWorkflows.length > 0;
-
-  if (!hasAny) {
-    if (onResetFilter) {
-      return (
-        <div className="flex flex-col items-center gap-1 py-4 text-sm">
-          <p className="text-center text-muted-foreground">
-            {filteredEmptyText}
-          </p>
-          <button
-            className="rounded-sm text-foreground underline underline-offset-4 hover:text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-foreground/60"
-            data-testid="trigger-filter-reset"
-            onClick={onResetFilter}
-            type="button"
-          >
-            Show all workflows
-          </button>
-        </div>
-      );
-    }
-    return (
-      <p className="py-4 text-center text-muted-foreground text-sm">
-        No workflows
-      </p>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-0.5">
-      {projectTags.map((tag, index) => {
-        const tagWorkflows = workflowsByTagId[tag.id] ?? [];
-        const isCollapsed = !expandAll && collapsed.has(tag.id);
-        return (
-          <div className="flex flex-col gap-0.5" key={tag.id}>
-            {index > 0 && <div className="my-1 border-t" />}
-            <button
-              aria-expanded={expandAll ? undefined : !isCollapsed}
-              className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset disabled:pointer-events-none"
-              disabled={expandAll}
-              onClick={() => toggle(tag.id)}
-              type="button"
-            >
-              <GroupChevron collapsed={isCollapsed} hidden={expandAll} />
-              <span
-                className="inline-block size-2 shrink-0 rounded-full"
-                style={{ backgroundColor: tag.color }}
-              />
-              <TruncatedTooltip side="right" text={tag.name} />
-              <span className="ml-auto normal-case tracking-normal">
-                {tag.workflowCount}
-              </span>
-            </button>
-            {!isCollapsed &&
-              tagWorkflows.map((w) => (
-                <WorkflowItem
-                  activeWorkflowId={activeWorkflowId}
-                  key={w.id}
-                  workflow={w}
-                />
-              ))}
-          </div>
-        );
-      })}
-      {untaggedWorkflows.length > 0 && (
-        <>
-          {projectTags.length > 0 && <div className="my-1 border-t" />}
-          {(() => {
-            const showHeader = projectTags.length > 0;
-            const isCollapsed =
-              !expandAll && showHeader && collapsed.has(UNTAGGED_KEY);
-            return (
-              <>
-                {showHeader && (
-                  <button
-                    aria-expanded={expandAll ? undefined : !isCollapsed}
-                    className="flex w-full items-center gap-2 rounded-md px-2 pt-1 pb-1.5 text-left font-medium text-muted-foreground text-xs uppercase tracking-wider outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/60 focus-visible:ring-inset disabled:pointer-events-none"
-                    disabled={expandAll}
-                    onClick={() => toggle(UNTAGGED_KEY)}
-                    type="button"
-                  >
-                    <GroupChevron collapsed={isCollapsed} hidden={expandAll} />
-                    <span className="truncate">Untagged</span>
-                    <span className="ml-auto normal-case tracking-normal">
-                      {untaggedWorkflows.length}
-                    </span>
-                  </button>
-                )}
-                {!isCollapsed &&
-                  untaggedWorkflows.map((w) => (
-                    <WorkflowItem
-                      activeWorkflowId={activeWorkflowId}
-                      key={w.id}
-                      workflow={w}
-                    />
-                  ))}
-              </>
-            );
-          })()}
-        </>
       )}
     </div>
   );
@@ -818,20 +509,22 @@ export function NavigationSidebar(): React.ReactNode {
   const liveTriggerConfig = useAtomValue(liveTriggerConfigAtom);
   const previewVersion = useAtomValue(previewVersionAtom);
   const hasUnsavedChanges = useAtomValue(hasUnsavedChangesAtom);
-  const editorLoaded = useAtomValue(editorLoadedAtom);
+  // AI generation names the workflow before its nodes arrive.
+  const isGenerating = useAtomValue(isGeneratingAtom);
   // Triggers saved from the editor since the list was last fetched, so a row
   // keeps a saved change after you open another workflow (saves do not
-  // refetch the list). Cleared by every fetch.
-  const [savedTriggers, setSavedTriggers] = useState<
-    Record<string, { config: Record<string, unknown> | undefined }>
-  >({});
+  // refetch the list). A fetch drops only what was recorded before it began:
+  // a save that lands while it is in flight may be missing from its reply.
+  const [savedTriggers, setSavedTriggers] = useState<SavedTriggers>({});
+  const savedTriggerSeq = useRef(0);
   const isDragging = useRef(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   const fetchData = useCallback(async (): Promise<void> => {
+    const startedAt = savedTriggerSeq.current;
     try {
       setWorkflows(await api.workflow.getAll().catch(() => []));
-      setSavedTriggers({});
+      setSavedTriggers((current) => dropSavedTriggersUpTo(current, startedAt));
     } finally {
       setDataLoading(false);
     }
@@ -938,22 +631,24 @@ export function NavigationSidebar(): React.ReactNode {
 
   const isAnonymous = isAnonymousUser(session?.user);
 
-  // A historical version preview puts old nodes on the canvas, and unsaved
-  // edits are not running yet; in both cases the row keeps the saved trigger.
+  // The editor sets the open workflow's id in the same update as its nodes
+  // (and clears both between workflows), so once there is an id, no trigger
+  // node means it was deleted. A historical version preview puts old nodes on
+  // the canvas, and unsaved edits are not running yet; in both cases the row
+  // keeps the saved trigger.
   const editorIsSaved =
     openWorkflowId !== null &&
-    editorLoaded &&
+    !isGenerating &&
     previewVersion === null &&
     !hasUnsavedChanges;
   useEffect(() => {
     if (!(editorIsSaved && openWorkflowId)) {
       return;
     }
+    savedTriggerSeq.current += 1;
+    const seq = savedTriggerSeq.current;
     setSavedTriggers((current) =>
-      openWorkflowId in current &&
-      current[openWorkflowId].config === liveTriggerConfig
-        ? current
-        : { ...current, [openWorkflowId]: { config: liveTriggerConfig } }
+      recordSavedTrigger(current, openWorkflowId, liveTriggerConfig, seq)
     );
   }, [editorIsSaved, openWorkflowId, liveTriggerConfig]);
 
@@ -1042,7 +737,12 @@ export function NavigationSidebar(): React.ReactNode {
     function handleKeyDown(e: KeyboardEvent): void {
       // A control that used this Escape itself (the search box clearing its
       // text, a chip closing the filter) tags it; that step is all it does.
-      if (e.key === "Escape" && !isEscapeHandled(e)) {
+      // Likewise an Escape that closes a dialog, menu or select.
+      if (
+        e.key === "Escape" &&
+        !isEscapeHandled(e) &&
+        !isEscapeFromOverlay(e)
+      ) {
         navState.peelRightmost();
       }
     }

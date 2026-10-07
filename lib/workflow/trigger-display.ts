@@ -244,7 +244,8 @@ export const DEACTIVATED_EXPLANATION =
  * The row's status for screen readers, read after the name in place of the
  * visible label (which is hidden from them, so nothing is said twice):
  * "Enabled, Schedule trigger, Every 5 minutes", "Disabled, Event trigger,
- * Paused", "Manual trigger", and for a deactivated one who turned it off.
+ * Paused", "Manual trigger, Runs when you click Run Workflow", and for a
+ * deactivated one who turned it off.
  * Commas only, so no reader says "middle dot".
  */
 export function getTriggerAccessibleStatus(workflow: {
@@ -253,16 +254,7 @@ export function getTriggerAccessibleStatus(workflow: {
   deactivatedAt?: string | null;
   triggerConfig?: Record<string, unknown> | null;
 }): string {
-  const status = getTriggerStatus(workflow);
-  const detail = getTriggerDetail(workflow);
-  const parts = [
-    ...(workflow.deactivatedAt ? ["Deactivated"] : []),
-    ...(!workflow.deactivatedAt && status === "enabled" ? ["Enabled"] : []),
-    ...(!workflow.deactivatedAt && status === "disabled" ? ["Disabled"] : []),
-    getTriggerTypeLabel(workflow.triggerType),
-    ...(detail ? [detail] : []),
-  ];
-  const text = parts.join(", ");
+  const text = getTriggerSummaryParts(workflow).join(", ");
   return workflow.deactivatedAt ? `${text}. ${DEACTIVATED_EXPLANATION}` : text;
 }
 
@@ -404,17 +396,56 @@ function describeBlockInFull(
   return interval === undefined ? undefined : every(interval, "block");
 }
 
+// The status word a tooltip or screen reader leads with; Manual has none,
+// its detail says how it runs instead.
+function getStatusWord(workflow: {
+  triggerType?: WorkflowTriggerType | null;
+  enabled?: boolean | null;
+  deactivatedAt?: string | null;
+}): string | undefined {
+  if (workflow.deactivatedAt) {
+    return "Deactivated";
+  }
+  switch (getTriggerStatus(workflow)) {
+    case "enabled":
+      return "Enabled";
+    case "disabled":
+      return "Disabled";
+    default:
+      return;
+  }
+}
+
+// Status, type and detail, the parts both the tooltip and the screen-reader
+// text are made of.
+function getTriggerSummaryParts(workflow: {
+  triggerType?: WorkflowTriggerType | null;
+  enabled?: boolean | null;
+  deactivatedAt?: string | null;
+  triggerConfig?: Record<string, unknown> | null;
+}): string[] {
+  const status = getStatusWord(workflow);
+  const detail = getTriggerDetail(workflow);
+  return [
+    ...(status ? [status] : []),
+    getTriggerTypeLabel(workflow.triggerType),
+    ...(detail ? [detail] : []),
+  ];
+}
+
 /**
- * The trigger icon's tooltip: the type, then what the 64px label has no room
- * for, e.g. "Schedule trigger · Every 5 minutes", "Event trigger · Lift".
+ * The trigger icon's tooltip: the status in words (the row shows it only by
+ * colour), the type, then what the 64px label has no room for, e.g.
+ * "Disabled · Schedule trigger · Every 5 minutes", "Manual trigger · Runs
+ * when you click Run Workflow".
  */
 export function getTriggerTooltip(workflow: {
   triggerType?: WorkflowTriggerType | null;
+  enabled?: boolean | null;
+  deactivatedAt?: string | null;
   triggerConfig?: Record<string, unknown> | null;
 }): string {
-  const type = getTriggerTypeLabel(workflow.triggerType);
-  const detail = getTriggerDetail(workflow);
-  return detail ? `${type} · ${detail}` : type;
+  return getTriggerSummaryParts(workflow).join(" \u00b7 ");
 }
 
 // What the 64px label has no room for: the schedule in full, the event name,
@@ -431,10 +462,18 @@ function getTriggerDetail(workflow: {
       return describeEvent(config) || undefined;
     case WorkflowTriggerEnum.BLOCK:
       return describeBlockInFull(config);
+    case WorkflowTriggerEnum.MANUAL:
+    case undefined:
+    case null:
+      return MANUAL_DETAIL;
     default:
       return;
   }
 }
+
+// Manual has no status, so its detail says what starts it. No trigger at all
+// runs the same way.
+const MANUAL_DETAIL = "Runs when you click Run Workflow";
 
 /**
  * The empty-list message when a filter or search hides every workflow,

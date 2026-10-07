@@ -14,7 +14,9 @@ function workflowsPanel(page: Page): Locator {
   return page.getByRole("region", { name: "Workflows" });
 }
 
-async function openWorkflowPicker(page: Page): Promise<void> {
+// Opens the Workflows flyout and waits for the list to load, shown by
+// `waitFor`: a workflow outside any project, or a project name.
+async function openWorkflowPicker(page: Page, waitFor: string): Promise<void> {
   await expect(page.getByTestId("nav-workflows")).toBeVisible({
     timeout: 15_000,
   });
@@ -23,9 +25,9 @@ async function openWorkflowPicker(page: Page): Promise<void> {
     await page.getByTestId("nav-workflows").click();
   }
   await expect(workflowsPanel(page)).toBeVisible();
-  await expect(page.getByTestId("workflow-picker-item").first()).toBeVisible({
-    timeout: 15_000,
-  });
+  await expect(
+    workflowsPanel(page).getByRole("button", { name: waitFor }).first()
+  ).toBeVisible({ timeout: 15_000 });
 }
 
 async function openProject(page: Page, name: string): Promise<void> {
@@ -46,7 +48,8 @@ test.describe("Sidebar trigger status icons", () => {
       await deleteTestWorkflow(id);
     }
     for (const id of createdProjects.splice(0)) {
-      await apiRequest.delete(`/api/projects/${id}`);
+      const deleted = await apiRequest.delete(`/api/projects/${id}`);
+      expect(deleted.ok(), `delete project ${id}`).toBe(true);
     }
   });
 
@@ -73,7 +76,7 @@ test.describe("Sidebar trigger status icons", () => {
     created.push(live.id, off.id, manual.id);
 
     await page.goto("/workflows", { waitUntil: "domcontentloaded" });
-    await openWorkflowPicker(page);
+    await openWorkflowPicker(page, live.name);
 
     const expectations = [
       [live.name, "Schedule", "enabled", "5 min"],
@@ -105,7 +108,7 @@ test.describe("Sidebar trigger status icons", () => {
       waitUntil: "domcontentloaded",
     });
     await waitForCanvas(page);
-    await openWorkflowPicker(page);
+    await openWorkflowPicker(page, workflow.name);
 
     const icon = pickerRow(page, workflow.name).getByTestId(
       "trigger-status-icon"
@@ -141,7 +144,7 @@ test.describe("Sidebar trigger status icons", () => {
       waitUntil: "domcontentloaded",
     });
     await waitForCanvas(page);
-    await openWorkflowPicker(page);
+    await openWorkflowPicker(page, workflow.name);
 
     const row = pickerRow(page, workflow.name);
     const icon = row.getByTestId("trigger-status-icon");
@@ -193,7 +196,7 @@ test.describe("Sidebar trigger status icons", () => {
     }
 
     await page.goto("/workflows", { waitUntil: "domcontentloaded" });
-    await openWorkflowPicker(page);
+    await openWorkflowPicker(page, project.name);
     await openProject(page, project.name);
 
     const liveRow = pickerRow(page, live.name);
@@ -202,7 +205,7 @@ test.describe("Sidebar trigger status icons", () => {
 
     await liveRow.getByTestId("trigger-status-icon").hover();
     await expect(page.getByRole("tooltip")).toHaveText(
-      "Schedule trigger · Every 5 minutes"
+      "Enabled · Schedule trigger · Every 5 minutes"
     );
 
     await page.getByTestId("trigger-filter-button").click();
@@ -244,7 +247,7 @@ test.describe("Sidebar trigger status icons", () => {
     created.push(workflow.id);
 
     await page.goto("/workflows", { waitUntil: "domcontentloaded" });
-    await openWorkflowPicker(page);
+    await openWorkflowPicker(page, longName);
 
     await pickerRow(page, longName).getByText(longName).hover();
     await expect(page.getByRole("tooltip")).toHaveText(longName);
@@ -274,7 +277,7 @@ test.describe("Sidebar trigger status icons", () => {
     created.push(workflow.id);
 
     await page.goto("/workflows", { waitUntil: "domcontentloaded" });
-    await openWorkflowPicker(page);
+    await openWorkflowPicker(page, workflow.name);
 
     const label = pickerRow(page, workflow.name).getByTestId(
       "workflow-trigger-label"
@@ -317,7 +320,7 @@ test.describe("Sidebar trigger status icons", () => {
     }
 
     await page.goto("/workflows", { waitUntil: "domcontentloaded" });
-    await openWorkflowPicker(page);
+    await openWorkflowPicker(page, project.name);
     await openProject(page, project.name);
     await page.getByTestId("trigger-filter-button").click();
 

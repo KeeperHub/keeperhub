@@ -81,12 +81,13 @@ export function useVersionPreview() {
       const live = await api.workflow.getById(workflowId);
       setNodes(live.nodes);
       setEdges(live.edges);
-    } catch {
-      toast.error("Failed to reload the current version");
-    } finally {
       setPreviewVersion(null);
       setHasUnsavedChanges(false);
       setVersionParam(null);
+    } catch {
+      // Stay in the preview: leaving it would put the old snapshot's nodes on
+      // the canvas as if they were the live workflow.
+      toast.error("Failed to reload the current version");
     }
   }, [
     workflowId,

@@ -209,10 +209,16 @@ describe("TriggerFilterChips", () => {
       )
     );
     // The hint is the chip's tooltip (Radix marks its trigger with
-    // data-state), not part of its text, so screen readers hear it once.
+    // data-state), and hidden text in the chip, because Radix describes the
+    // chip only once the tooltip has opened, after focus is announced.
     const disabled = container.querySelector("[data-filter=disabled]");
     expect(disabled?.getAttribute("data-state")).not.toBeNull();
-    expect(disabled?.textContent).toBe("Disabled 5");
+    expect(disabled?.textContent).toBe(
+      "Disabled 5, Includes 2 deactivated by KeeperHub"
+    );
+    expect(disabled?.querySelector(".sr-only")?.textContent).toBe(
+      ", Includes 2 deactivated by KeeperHub"
+    );
     expect(
       container
         .querySelector("[data-filter=enabled]")

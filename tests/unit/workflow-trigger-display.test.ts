@@ -313,7 +313,7 @@ describe("getTriggerAccessibleStatus", () => {
         triggerType: WorkflowTriggerEnum.MANUAL,
         enabled: false,
       })
-    ).toBe("Manual trigger");
+    ).toBe("Manual trigger, Runs when you click Run Workflow");
   });
 
   it("includes the schedule in full, with commas only", () => {
@@ -330,7 +330,7 @@ describe("getTriggerAccessibleStatus", () => {
     expect(
       getTriggerAccessibleStatus({ deactivatedAt: "2026-10-01T00:00:00.000Z" })
     ).toBe(
-      "Deactivated, Manual trigger. Turned off by KeeperHub. Contact support to turn it back on."
+      "Deactivated, Manual trigger, Runs when you click Run Workflow. Turned off by KeeperHub. Contact support to turn it back on."
     );
   });
 });
@@ -398,7 +398,9 @@ describe("trigger type read off a node list", () => {
       readType([{ data: { type: "trigger", config: { triggerType: "Nope" } } }])
     ).toBeUndefined();
     expect(getTriggerLabel({ triggerType: undefined })).toBe("");
-    expect(getTriggerTooltip({})).toBe("Manual trigger");
+    expect(getTriggerTooltip({})).toBe(
+      "Manual trigger · Runs when you click Run Workflow"
+    );
   });
 
   it("normalizes the legacy Scheduled spelling", () => {
@@ -415,19 +417,44 @@ describe("getTriggerTooltip", () => {
     triggerConfig: Record<string, unknown>
   ): Parameters<typeof getTriggerTooltip>[0] => ({
     triggerType: WorkflowTriggerEnum.SCHEDULE,
+    enabled: true,
     triggerConfig,
   });
 
   it.each([
-    [{ scheduleCron: "*/5 * * * *" }, "Schedule trigger · Every 5 minutes"],
-    [{ scheduleCron: "0 */6 * * *" }, "Schedule trigger · Every 6 hours"],
-    [{ scheduleIntervalSeconds: 900 }, "Schedule trigger · Every 15 minutes"],
-    [{ scheduleIntervalSeconds: 3600 }, "Schedule trigger · Every hour"],
-    [{ scheduleIntervalSeconds: 86_400 }, "Schedule trigger · Every day"],
-    [{ scheduleCron: "0 */1 * * *" }, "Schedule trigger · Every hour"],
-    [{ scheduleIntervalSeconds: 90 }, "Schedule trigger · Every 90 seconds"],
-    [{ scheduleCron: "0 9 1 * *" }, "Schedule trigger · Cron 0 9 1 * *"],
-    [{}, "Schedule trigger"],
+    [
+      { scheduleCron: "*/5 * * * *" },
+      "Enabled · Schedule trigger · Every 5 minutes",
+    ],
+    [
+      { scheduleCron: "0 */6 * * *" },
+      "Enabled · Schedule trigger · Every 6 hours",
+    ],
+    [
+      { scheduleIntervalSeconds: 900 },
+      "Enabled · Schedule trigger · Every 15 minutes",
+    ],
+    [
+      { scheduleIntervalSeconds: 3600 },
+      "Enabled · Schedule trigger · Every hour",
+    ],
+    [
+      { scheduleIntervalSeconds: 86_400 },
+      "Enabled · Schedule trigger · Every day",
+    ],
+    [
+      { scheduleCron: "0 */1 * * *" },
+      "Enabled · Schedule trigger · Every hour",
+    ],
+    [
+      { scheduleIntervalSeconds: 90 },
+      "Enabled · Schedule trigger · Every 90 seconds",
+    ],
+    [
+      { scheduleCron: "0 9 1 * *" },
+      "Enabled · Schedule trigger · Cron 0 9 1 * *",
+    ],
+    [{}, "Enabled · Schedule trigger"],
   ])("spells out the schedule %o", (config, tooltip) => {
     expect(getTriggerTooltip(schedule(config))).toBe(tooltip);
   });
@@ -437,38 +464,64 @@ describe("getTriggerTooltip", () => {
       getTriggerTooltip(
         schedule({ scheduleCron: "0 9 * * *", scheduleTimezone: "UTC" })
       )
-    ).toBe("Schedule trigger · Every day at 9:00 AM (UTC)");
+    ).toBe("Enabled · Schedule trigger · Every day at 9:00 AM (UTC)");
   });
 
   it("names the event and the block interval", () => {
     expect(
       getTriggerTooltip({
         triggerType: WorkflowTriggerEnum.EVENT,
+        enabled: true,
         triggerConfig: { eventName: "Lift" },
       })
-    ).toBe("Event trigger · Lift");
+    ).toBe("Enabled · Event trigger · Lift");
     expect(
       getTriggerTooltip({
         triggerType: WorkflowTriggerEnum.BLOCK,
         triggerConfig: { blockInterval: "10" },
       })
-    ).toBe("Block trigger · Every 10 blocks");
+    ).toBe("Disabled · Block trigger · Every 10 blocks");
     expect(
       getTriggerTooltip({
         triggerType: WorkflowTriggerEnum.BLOCK,
         triggerConfig: { blockInterval: 1 },
       })
-    ).toBe("Block trigger · Every block");
+    ).toBe("Disabled · Block trigger · Every block");
   });
 
-  it("is just the type when there is nothing to add", () => {
+  it("is the status and type when there is nothing to add", () => {
     expect(getTriggerTooltip({ triggerType: WorkflowTriggerEnum.EVENT })).toBe(
-      "Event trigger"
+      "Disabled · Event trigger"
     );
     expect(
-      getTriggerTooltip({ triggerType: WorkflowTriggerEnum.WEBHOOK })
-    ).toBe("Webhook trigger");
-    expect(getTriggerTooltip({})).toBe("Manual trigger");
+      getTriggerTooltip({
+        triggerType: WorkflowTriggerEnum.WEBHOOK,
+        enabled: true,
+      })
+    ).toBe("Enabled · Webhook trigger");
+  });
+
+  it("says what starts a manual workflow, which has no status", () => {
+    expect(
+      getTriggerTooltip({
+        triggerType: WorkflowTriggerEnum.MANUAL,
+        enabled: false,
+      })
+    ).toBe("Manual trigger · Runs when you click Run Workflow");
+    expect(getTriggerTooltip({})).toBe(
+      "Manual trigger · Runs when you click Run Workflow"
+    );
+  });
+
+  it("says Deactivated in place of the enabled state", () => {
+    expect(
+      getTriggerTooltip({
+        triggerType: WorkflowTriggerEnum.SCHEDULE,
+        enabled: true,
+        deactivatedAt: "2026-10-01T00:00:00.000Z",
+        triggerConfig: { scheduleIntervalSeconds: 300 },
+      })
+    ).toBe("Deactivated · Schedule trigger · Every 5 minutes");
   });
 });
 

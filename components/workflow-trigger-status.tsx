@@ -33,7 +33,7 @@ export function TriggerStatusIcon({
   status,
   tooltip,
   isActive = false,
-  keyboardFocused = false,
+  focusOpen = false,
   focusLines = [],
 }: {
   triggerType: WorkflowTriggerType | undefined;
@@ -43,10 +43,10 @@ export function TriggerStatusIcon({
   // On the highlighted row a grey icon steps up, as the dimmed text does;
   // on hover it follows the row's `group` class.
   isActive?: boolean;
-  // While the row has keyboard focus the tooltip stays open, so keyboard
-  // users see what mouse users get on hover, plus focusLines (the full name,
-  // why a workflow is deactivated).
-  keyboardFocused?: boolean;
+  // Set by the row while it has keyboard focus and has something worth
+  // showing: the tooltip opens with focusLines (a cut-off name, why a
+  // workflow is deactivated) above what mouse users get on hover.
+  focusOpen?: boolean;
   focusLines?: string[];
 }): React.ReactNode {
   const Icon = getTriggerIcon(triggerType);
@@ -55,7 +55,7 @@ export function TriggerStatusIcon({
     <Tooltip
       delayDuration={TOOLTIP_DELAY_MS}
       onOpenChange={setHoverOpen}
-      open={hoverOpen || keyboardFocused}
+      open={hoverOpen || focusOpen}
     >
       <TooltipTrigger asChild>
         <span
@@ -78,8 +78,11 @@ export function TriggerStatusIcon({
         </span>
       </TooltipTrigger>
       <TooltipContent className="pointer-events-none" side="top">
-        {keyboardFocused &&
-          focusLines.map((line) => <div key={line}>{line}</div>)}
+        {focusOpen &&
+          focusLines.map((line, index) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: fixed lines that never reorder; the text alone may repeat
+            <div key={index}>{line}</div>
+          ))}
         <div>{tooltip ?? getTriggerTypeLabel(triggerType)}</div>
       </TooltipContent>
     </Tooltip>
@@ -168,8 +171,9 @@ function FilterChip({
   value: string;
   onClick: () => void;
   onEscape?: () => void;
-  // Extra context in a tooltip; Radix also gives it to screen readers as the
-  // chip's description, so it is not repeated in the chip's own text.
+  // Extra context in a tooltip. Radix describes the chip by it only while
+  // the tooltip is open, too late for a focus announcement, so screen readers
+  // get it from hidden text in the chip instead.
   hint?: string;
   children: React.ReactNode;
 }): React.ReactNode {
@@ -196,6 +200,7 @@ function FilterChip({
         className={cn("size-3", !selected && "invisible")}
       />
       {children} <span className="tabular-nums">{count}</span>
+      {hint && <span className="sr-only">, {hint}</span>}
     </button>
   );
   if (!hint) {
@@ -204,7 +209,10 @@ function FilterChip({
   return (
     <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
       <TooltipTrigger asChild>{chip}</TooltipTrigger>
-      <TooltipContent side="bottom">{hint}</TooltipContent>
+      {/* Hidden from screen readers, which read the chip's own copy. */}
+      <TooltipContent aria-hidden="true" side="bottom">
+        {hint}
+      </TooltipContent>
     </Tooltip>
   );
 }
