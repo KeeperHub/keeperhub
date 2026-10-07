@@ -371,6 +371,12 @@ app:
     EXECUTE_DEFAULT_BATCH_STABLECOIN_CAP_MICRO_USD:
       type: kv
       value: "2000000000"
+    # Daily total of USDC an org can convert to native gas through
+    # /api/execute/gas-top-up, in micro-USD. Sits beside the per-call figure,
+    # which bounds each top-up; this bounds the day. 200 USD.
+    EXECUTE_DEFAULT_DAILY_GAS_TOP_UP_CAP_MICRO_USD:
+      type: kv
+      value: "200000000"
     METRICS_COLLECTOR:
       type: kv
       value: "prometheus"
@@ -1181,6 +1187,12 @@ executor:
     EXECUTE_DEFAULT_BATCH_STABLECOIN_CAP_MICRO_USD:
       type: kv
       value: "2000000000"
+    # Daily total of USDC an org can convert to native gas through
+    # /api/execute/gas-top-up, in micro-USD. Sits beside the per-call figure,
+    # which bounds each top-up; this bounds the day. 200 USD.
+    EXECUTE_DEFAULT_DAILY_GAS_TOP_UP_CAP_MICRO_USD:
+      type: kv
+      value: "200000000"
     JOB_TTL_SECONDS:
       type: kv
       value: "300"

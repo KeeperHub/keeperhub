@@ -82,7 +82,7 @@ Endpoints whose semantics are organization-scoped accept `kh_` keys:
   A few sub-paths are session-only; see [Session-only](#session-only) below
 - Execution cancellation: `POST /api/executions/{executionId}/cancel`
 - Direct execution: everything under `/api/execute` - `/transfer`,
-  `/contract-call`, `/check-and-execute`, `/swap`, `/node`, protocol actions
+  `/contract-call`, `/check-and-execute`, `/gas-top-up`, `/swap`, `/node`, protocol actions
   (`/api/execute/{protocol}/{action}`), and
   `GET /api/execute/{executionId}/status`
 - Integrations: `/api/integrations`

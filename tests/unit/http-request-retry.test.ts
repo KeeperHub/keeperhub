@@ -42,6 +42,16 @@ function mockResponse(
   } as unknown as Response;
 }
 
+// The shape undici rejects with for every network failure.
+function fetchFailed(code: string, message: string): TypeError {
+  return new TypeError("fetch failed", {
+    cause: Object.assign(new Error(message), { code }),
+  });
+}
+
+const CONNECTION_REFUSED = (): TypeError =>
+  fetchFailed("ECONNREFUSED", "connect ECONNREFUSED 203.0.113.10:443");
+
 const BASE_INPUT = {
   endpoint: "https://api.example.com/rpc",
   httpMethod: "POST",
@@ -91,7 +101,7 @@ describe("httpRequest retries", () => {
   });
 
   it("makes a single attempt when retries are off", async () => {
-    mockedSafeFetch.mockRejectedValue(new Error("connect ECONNREFUSED"));
+    mockedSafeFetch.mockRejectedValue(CONNECTION_REFUSED());
 
     const result = await httpRequest({ ...BASE_INPUT });
 
@@ -101,7 +111,7 @@ describe("httpRequest retries", () => {
 
   it("retries a connection error and succeeds on a later attempt", async () => {
     mockedSafeFetch
-      .mockRejectedValueOnce(new Error("connect ECONNREFUSED"))
+      .mockRejectedValueOnce(CONNECTION_REFUSED())
       .mockResolvedValueOnce(mockResponse(true, 200, { result: "ok" }));
 
     const result = await httpRequest({ ...BASE_INPUT, retryAttempts: 2 });
@@ -111,6 +121,103 @@ describe("httpRequest retries", () => {
       success: true,
       status: 200,
       data: { result: "ok" },
+    });
+  });
+
+  it("retries a connect timeout", async () => {
+    mockedSafeFetch
+      .mockRejectedValueOnce(
+        fetchFailed(
+          "UND_ERR_CONNECT_TIMEOUT",
+          "Connect Timeout Error (attempted address: 203.0.113.10:443, timeout: 10000ms)"
+        )
+      )
+      .mockResolvedValueOnce(mockResponse(true, 200, { result: "ok" }));
+
+    const result = await httpRequest({ ...BASE_INPUT, retryAttempts: 3 });
+
+    expect(mockedSafeFetch).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ success: true, status: 200 });
+  });
+
+  it("soft-fails a connection error when failOnError is off", async () => {
+    mockedSafeFetch.mockRejectedValue(CONNECTION_REFUSED());
+
+    const result = await httpRequest({ ...BASE_INPUT, failOnError: false });
+
+    expect(result).toMatchObject({ success: true, data: null, status: null });
+  });
+
+  it("retries a connection dropped while reading the body", async () => {
+    mockedSafeFetch
+      .mockRejectedValueOnce(
+        new TypeError("terminated", {
+          cause: Object.assign(new Error("other side closed"), {
+            code: "UND_ERR_SOCKET",
+          }),
+        })
+      )
+      .mockResolvedValueOnce(mockResponse(true, 200, { result: "ok" }));
+
+    const result = await httpRequest({ ...BASE_INPUT, retryAttempts: 1 });
+
+    expect(mockedSafeFetch).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(true);
+  });
+
+  it.each([
+    [
+      "an invalid header",
+      fetchFailed("UND_ERR_INVALID_ARG", "invalid transfer-encoding header"),
+    ],
+    [
+      "a TLS certificate error",
+      fetchFailed("DEPTH_ZERO_SELF_SIGNED_CERT", "self-signed certificate"),
+    ],
+    [
+      "a redirect loop",
+      new TypeError("fetch failed", {
+        cause: new Error("redirect count exceeded"),
+      }),
+    ],
+    [
+      "a request it cannot build",
+      new TypeError('Headers.append: "bad header" is an invalid header name.'),
+    ],
+  ])("never retries or soft-fails %s", async (_label, error) => {
+    mockedSafeFetch.mockRejectedValue(error);
+
+    const result = await httpRequest({
+      ...BASE_INPUT,
+      retryAttempts: 3,
+      failOnError: false,
+    });
+
+    expect(mockedSafeFetch).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+  });
+
+  it("hard-fails an SSRF block wrapped in undici's TypeError", async () => {
+    mockedSafeFetch.mockRejectedValue(
+      new TypeError("fetch failed", {
+        cause: new SsrfBlockedError({
+          hostname: "internal.example.test",
+          reason: "private-ip",
+          message: "private address",
+        }),
+      })
+    );
+
+    const result = await httpRequest({
+      ...BASE_INPUT,
+      retryAttempts: 3,
+      failOnError: false,
+    });
+
+    expect(mockedSafeFetch).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining("HTTP request failed: URL is not allowed"),
     });
   });
 

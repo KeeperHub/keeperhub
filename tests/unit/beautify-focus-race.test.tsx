@@ -33,7 +33,7 @@ function Field(): React.ReactElement {
   const [value, setValue] = useState(MINIFIED);
   return (
     <BeautifiableField language="json" onChange={setValue} value={value}>
-      <TemplateBadgeTextarea onChange={setValue} value={value} />
+      {() => <TemplateBadgeTextarea onChange={setValue} value={value} />}
     </BeautifiableField>
   );
 }

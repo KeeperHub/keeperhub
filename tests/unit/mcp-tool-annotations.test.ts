@@ -97,6 +97,7 @@ const VALUE_MOVING_TOOLS = [
   "tempo_cancel_hold",
   "tempo_release_hold",
   "tempo_sign_and_hold",
+  "top_up_gas",
 ];
 
 describe("MCP tool annotations", () => {

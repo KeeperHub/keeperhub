@@ -183,6 +183,9 @@ type FailParams = {
   transactionLink?: string;
   rejection?: RevertKind;
   errorClass?: ExecutionErrorType;
+  // Extra detail for a multi-transaction write that stopped part-way (e.g.
+  // which of gas-top-up's steps landed). The keys above take precedence.
+  output?: Record<string, unknown>;
 };
 
 /**
@@ -263,7 +266,7 @@ export async function failExecution(
       ? "unconfirmed"
       : "failed";
 
-  const failureOutput: Record<string, unknown> = {};
+  const failureOutput: Record<string, unknown> = { ...params.output };
   if (params.sponsored !== undefined) {
     failureOutput.sponsored = params.sponsored;
   }

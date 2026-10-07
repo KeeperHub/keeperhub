@@ -145,6 +145,9 @@ const { POST: executeCheckAndExecutePost } = await import(
   "@/app/api/execute/check-and-execute/route"
 );
 const { POST: executeNodePost } = await import("@/app/api/execute/node/route");
+const { POST: executeGasTopUpPost } = await import(
+  "@/app/api/execute/gas-top-up/route"
+);
 const { POST: executeProtocolPost } = await import(
   "@/app/api/execute/[...slug]/route"
 );
@@ -325,6 +328,21 @@ describe("A-03 leg 3: kh_ API key scope gate at the direct-execution sinks", () 
 
       const outcome = await outcomeOf(() =>
         executeCheckAndExecutePost(post("/api/execute/check-and-execute"))
+      );
+
+      expect(outcome).toBe("blocked");
+      expect(gateCalls).toEqual([
+        { granted: "mcp:read", required: "mcp:write", denied: true },
+      ]);
+    });
+
+    it("gas-top-up blocks mcp:read", async () => {
+      withKeyScope("mcp:read");
+
+      const outcome = await outcomeOf(() =>
+        executeGasTopUpPost(
+          post("/api/execute/gas-top-up", { chainId: 8453, amountUsdc: "5" })
+        )
       );
 
       expect(outcome).toBe("blocked");

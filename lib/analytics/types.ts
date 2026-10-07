@@ -14,7 +14,11 @@ export type TimeRange = "1h" | "24h" | "7d" | "30d" | "custom";
 
 export type RunSource = "workflow" | "direct";
 
-export type DirectType = "transfer" | "contract-call" | "check-and-execute";
+export type DirectType =
+  | "transfer"
+  | "contract-call"
+  | "check-and-execute"
+  | "gas-top-up";
 
 export type UnifiedStatus =
   | "pending"

@@ -58,6 +58,17 @@ vi.mock("@/plugins/web3/steps/read-contract-core", () => ({
   readContractCore: vi.fn(),
 }));
 
+// The route is the path with a raw JSON body and no builder validation, and
+// nothing pinned that it consults the ownership guard at all: deleting the
+// call from the route used to fail no test. This spy answers ok by default so
+// the existing cases are unchanged, and the two below assert the call happens
+// and that a refusal stops the write.
+const checkProtocolOnchainGuardsMock = vi.fn();
+vi.mock("@/lib/protocol-input-guards-onchain", () => ({
+  checkProtocolOnchainGuards: (input: unknown) =>
+    checkProtocolOnchainGuardsMock(input),
+}));
+
 vi.mock("@/lib/step-registry", () => ({
   PLUGIN_STEP_IMPORTERS: { "test-protocol/swap": () => Promise.resolve({}) },
 }));
@@ -123,9 +134,38 @@ beforeEach(() => {
     effectiveGasPrice: "1000000000",
   });
   completeExecutionMock.mockResolvedValue({ status: "completed" });
+  checkProtocolOnchainGuardsMock.mockResolvedValue({ ok: true });
 });
 
 describe("A-07 / KEEP-793: protocol write actions are gated and recorded", () => {
+  it("consults the on-chain guard before broadcasting", async () => {
+    await postSwap();
+
+    expect(checkProtocolOnchainGuardsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        protocolSlug: "test-protocol",
+        functionName: "swap",
+        network: "8453",
+        organizationId: "org_1",
+      })
+    );
+    expect(writeContractCoreMock).toHaveBeenCalled();
+  });
+
+  it("returns the guard error and never broadcasts when the guard refuses", async () => {
+    checkProtocolOnchainGuardsMock.mockResolvedValue({
+      ok: false,
+      field: "tokenId",
+      error: "Position 1 belongs to someone else",
+    });
+
+    const response = await postSwap();
+    const body = (await response.json()) as { error?: string };
+
+    expect(body.error).toContain("belongs to someone else");
+    expect(writeContractCoreMock).not.toHaveBeenCalled();
+  });
+
   it("enforces the plan limit, wallet, spend cap, and records the execution", async () => {
     const response = await postSwap();
     const body = (await response.json()) as {
