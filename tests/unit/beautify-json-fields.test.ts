@@ -49,6 +49,7 @@ function allConfigFields(): FoundField[] {
  */
 const EXPECTED_JSON_FIELDS = [
   "data/flatten-findings.sources",
+  "lucid/call-entrypoint.input",
   "pagerduty/send-change-event.customDetails",
   "pagerduty/trigger-incident.customDetails",
   "web3/decode-calldata.abi",
