@@ -12,6 +12,7 @@
  */
 import "server-only";
 
+import { findInErrorChain } from "@/lib/errors/cause-chain";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import {
   assertUrlIsPublic,
@@ -28,6 +29,7 @@ import {
 } from "@/lib/workflow/output-limits";
 import {
   isRetryableHttpStatus,
+  isTransientNetworkFailure,
   linearBackoffMs,
   resolveRetryAttempts as resolveRetryAttemptsWithLimits,
   resolveRetryDelayMs as resolveRetryDelayMsWithLimits,
@@ -296,11 +298,6 @@ type AttemptOutcome =
   | { kind: "network-error"; error: string }
   | { kind: "fatal"; error: string };
 
-/** undici rejects every network failure (DNS, connect, reset) this way. */
-function isFetchNetworkFailure(error: TypeError): boolean {
-  return error.message === "fetch failed";
-}
-
 async function attemptHttpRequest(
   endpoint: string,
   httpMethod: string,
@@ -351,24 +348,30 @@ async function attemptHttpRequest(
     // hard-fail it regardless of failOnError so an aggregator workflow never
     // silently swallows a request aimed at an internal/metadata address. This
     // fires for both the always-on assertUrlIsPublic pre-check and a safeFetch
-    // block in enforce mode.
-    if (error instanceof SsrfBlockedError) {
+    // block in enforce mode, however deep a wrapper has buried it.
+    const blocked = findInErrorChain(
+      error,
+      (candidate) => candidate instanceof SsrfBlockedError
+    );
+    if (blocked instanceof SsrfBlockedError) {
       logUserError(
         ErrorCategory.VALIDATION,
         "[HTTP Request] Blocked SSRF target",
-        error.message,
+        blocked.message,
         { node_type: "http-request" }
       );
       return {
         kind: "fatal",
-        error: `HTTP request failed: URL is not allowed: ${error.message}`,
+        error: `HTTP request failed: URL is not allowed: ${blocked.message}`,
       };
     }
     // A malformed endpoint makes assertUrlIsPublic's URL parse throw a
     // TypeError. That is a configuration error, not a transient source miss,
     // so hard-fail it regardless of failOnError rather than soft-failing into
     // a null-data success an aggregator workflow would silently swallow.
-    if (error instanceof TypeError && !isFetchNetworkFailure(error)) {
+    // undici also rejects with a TypeError, both for network failures and for
+    // request errors such as an invalid header; only the former is transient.
+    if (error instanceof TypeError && !isTransientNetworkFailure(error)) {
       return {
         kind: "fatal",
         error: `HTTP request failed: ${getErrorMessage(error)}`,

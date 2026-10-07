@@ -148,10 +148,44 @@ describe("httpRequest retries", () => {
     expect(result).toMatchObject({ success: true, data: null, status: null });
   });
 
-  it("never retries or soft-fails a TypeError from building the request", async () => {
-    mockedSafeFetch.mockRejectedValue(
-      new TypeError('Headers.append: "bad header" is an invalid header name.')
-    );
+  it("retries a connection dropped while reading the body", async () => {
+    mockedSafeFetch
+      .mockRejectedValueOnce(
+        new TypeError("terminated", {
+          cause: Object.assign(new Error("other side closed"), {
+            code: "UND_ERR_SOCKET",
+          }),
+        })
+      )
+      .mockResolvedValueOnce(mockResponse(true, 200, { result: "ok" }));
+
+    const result = await httpRequest({ ...BASE_INPUT, retryAttempts: 1 });
+
+    expect(mockedSafeFetch).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(true);
+  });
+
+  it.each([
+    [
+      "an invalid header",
+      fetchFailed("UND_ERR_INVALID_ARG", "invalid transfer-encoding header"),
+    ],
+    [
+      "a TLS certificate error",
+      fetchFailed("DEPTH_ZERO_SELF_SIGNED_CERT", "self-signed certificate"),
+    ],
+    [
+      "a redirect loop",
+      new TypeError("fetch failed", {
+        cause: new Error("redirect count exceeded"),
+      }),
+    ],
+    [
+      "a request it cannot build",
+      new TypeError('Headers.append: "bad header" is an invalid header name.'),
+    ],
+  ])("never retries or soft-fails %s", async (_label, error) => {
+    mockedSafeFetch.mockRejectedValue(error);
 
     const result = await httpRequest({
       ...BASE_INPUT,
@@ -161,6 +195,30 @@ describe("httpRequest retries", () => {
 
     expect(mockedSafeFetch).toHaveBeenCalledTimes(1);
     expect(result.success).toBe(false);
+  });
+
+  it("hard-fails an SSRF block wrapped in undici's TypeError", async () => {
+    mockedSafeFetch.mockRejectedValue(
+      new TypeError("fetch failed", {
+        cause: new SsrfBlockedError({
+          hostname: "internal.example.test",
+          reason: "private-ip",
+          message: "private address",
+        }),
+      })
+    );
+
+    const result = await httpRequest({
+      ...BASE_INPUT,
+      retryAttempts: 3,
+      failOnError: false,
+    });
+
+    expect(mockedSafeFetch).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining("HTTP request failed: URL is not allowed"),
+    });
   });
 
   it("stops after the configured number of extra attempts", async () => {

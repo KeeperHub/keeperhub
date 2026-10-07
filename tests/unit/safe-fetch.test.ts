@@ -25,7 +25,7 @@ vi.mock("node:dns", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:dns")>();
   function lookup(
     hostname: string,
-    options: { all?: boolean },
+    options: { all?: boolean; family?: number },
     callback: (...args: unknown[]) => void
   ): void {
     const addresses = fakeDns.get(hostname);
@@ -33,11 +33,17 @@ vi.mock("node:dns", async (importOriginal) => {
       Reflect.apply(actual.lookup, actual, [hostname, options, callback]);
       return;
     }
-    if (options.all) {
-      callback(null, addresses);
-      return;
-    }
-    callback(null, addresses[0]?.address, addresses[0]?.family);
+    const matching = addresses.filter(
+      ({ family }) => !options.family || family === options.family
+    );
+    // Answer on a later tick, as the real resolver does.
+    setImmediate(() => {
+      if (options.all) {
+        callback(null, matching);
+        return;
+      }
+      callback(null, matching[0]?.address, matching[0]?.family);
+    });
   }
   return {
     ...actual,
@@ -608,6 +614,11 @@ describe("safeFetch (shadow mode)", () => {
           res.end();
           return;
         }
+        if (req.url === "/redirect-localhost") {
+          res.writeHead(302, { location: `http://localhost:${port}/final` });
+          res.end();
+          return;
+        }
         res.end("ok");
       });
       await new Promise<void>((resolve) => {
@@ -645,6 +656,23 @@ describe("safeFetch (shadow mode)", () => {
         expect.any(Error),
         expect.objectContaining({
           extra: { hostname: "127.0.0.1", resolved_ip: "127.0.0.1" },
+        })
+      );
+    });
+
+    it("applies the hostname denylist to a redirect hop", async () => {
+      fakeDns.set("redirect.example.test", [
+        { address: "127.0.0.1", family: 4 },
+      ]);
+      const response = await safeFetch(
+        `http://redirect.example.test:${port}/redirect-localhost`
+      );
+      expect(await response.text()).toBe("ok");
+      expect(captureException).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({
+          tags: expect.objectContaining({ safe_fetch_reason: "blocked-host" }),
+          extra: { hostname: "localhost", resolved_ip: undefined },
         })
       );
     });

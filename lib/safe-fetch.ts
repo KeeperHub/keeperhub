@@ -381,6 +381,15 @@ function blockedMessage(ctx: BlockContext): string {
   return `Outbound request to ${ctx.hostname}${ipPart} blocked by SSRF policy (${ctx.reason}).`;
 }
 
+function blockedError(ctx: BlockContext): SsrfBlockedError {
+  return new SsrfBlockedError({
+    hostname: ctx.hostname,
+    resolvedIp: ctx.resolvedIp,
+    reason: ctx.reason,
+    message: blockedMessage(ctx),
+  });
+}
+
 export function stripIpv6Brackets(hostname: string): string {
   if (hostname.startsWith("[") && hostname.endsWith("]")) {
     return hostname.slice(1, -1);
@@ -399,8 +408,20 @@ function extractUrlString(input: RequestInfo | URL): string {
 }
 
 /**
+ * Record a block raised while connecting. Returns the error to fail the
+ * connection with, or undefined in shadow mode.
+ */
+function refuseConnection(ctx: BlockContext): SsrfBlockedError | undefined {
+  const shadow = isShadowMode();
+  if (!initialBlockAlreadyRecorded()) {
+    recordBlock(ctx, shadow);
+  }
+  return shadow ? undefined : blockedError(ctx);
+}
+
+/**
  * Refuse a connection when any address it may use is blocked, matching
- * `assertUrlIsPublic`. Returns undefined when it may proceed (or in shadow).
+ * `assertUrlIsPublic`.
  */
 function checkResolvedAddresses(
   hostname: string,
@@ -408,28 +429,14 @@ function checkResolvedAddresses(
 ): SsrfBlockedError | undefined {
   for (const { address } of addresses) {
     const check = isBlockedIp(address);
-    if (!check.blocked) {
-      continue;
+    if (check.blocked) {
+      return refuseConnection({
+        hostname,
+        resolvedIp: address,
+        reason: check.reason,
+        plugin: currentPlugin(),
+      });
     }
-    const shadow = isShadowMode();
-    const ctx: BlockContext = {
-      hostname,
-      resolvedIp: address,
-      reason: check.reason,
-      plugin: currentPlugin(),
-    };
-    if (!initialBlockAlreadyRecorded()) {
-      recordBlock(ctx, shadow);
-    }
-    if (shadow) {
-      return;
-    }
-    return new SsrfBlockedError({
-      hostname,
-      resolvedIp: address,
-      reason: check.reason,
-      message: blockedMessage(ctx),
-    });
   }
   return;
 }
@@ -470,11 +477,15 @@ type ConnectCallback = Parameters<ReturnType<typeof buildConnector>>[1];
 const baseConnector = buildConnector({
   lookup: validatingLookup,
   autoSelectFamily: true,
+  // Node moves to the next address when an attempt exceeds this. Its 250ms
+  // default cuts off live addresses on a slow handshake.
+  autoSelectFamilyAttemptTimeout: 1000,
 });
 
 /**
- * Runs per connection, redirect hops included. An IP literal skips DNS, so
- * it is checked here instead of in `validatingLookup`.
+ * Runs per connection, redirect hops included, so a redirect target gets the
+ * same hostname denylist as the entry URL. An IP literal skips DNS, so it is
+ * checked here instead of in `validatingLookup`.
  */
 function validatingConnect(
   options: ConnectOptions,
@@ -482,14 +493,24 @@ function validatingConnect(
 ): void {
   const { hostname } = options;
   const family = isIP(hostname);
-  if (family !== 0) {
-    const blockError = checkResolvedAddresses(hostname, [
+  let blockError: SsrfBlockedError | undefined;
+  if (family === 0) {
+    const hostCheck = isBlockedHost(hostname);
+    if (hostCheck.blocked) {
+      blockError = refuseConnection({
+        hostname,
+        reason: hostCheck.reason,
+        plugin: currentPlugin(),
+      });
+    }
+  } else {
+    blockError = checkResolvedAddresses(hostname, [
       { address: hostname, family },
     ]);
-    if (blockError) {
-      callback(blockError, null);
-      return;
-    }
+  }
+  if (blockError) {
+    callback(blockError, null);
+    return;
   }
   baseConnector(options, callback);
 }
@@ -561,41 +582,27 @@ export async function safeFetch(
 
   const hostCheck = isBlockedHost(hostname);
   if (hostCheck.blocked) {
-    recordBlock({ hostname, reason: hostCheck.reason, plugin }, shadow);
+    const ctx: BlockContext = { hostname, reason: hostCheck.reason, plugin };
+    recordBlock(ctx, shadow);
     initialBlockRecorded = true;
     if (!shadow) {
-      throw new SsrfBlockedError({
-        hostname,
-        reason: hostCheck.reason,
-        message: blockedMessage({
-          hostname,
-          reason: hostCheck.reason,
-          plugin,
-        }),
-      });
+      throw blockedError(ctx);
     }
   }
 
   if (isIP(hostname) !== 0) {
     const check = isBlockedIp(hostname);
     if (check.blocked) {
-      recordBlock(
-        { hostname, resolvedIp: hostname, reason: check.reason, plugin },
-        shadow
-      );
+      const ctx: BlockContext = {
+        hostname,
+        resolvedIp: hostname,
+        reason: check.reason,
+        plugin,
+      };
+      recordBlock(ctx, shadow);
       initialBlockRecorded = true;
       if (!shadow) {
-        throw new SsrfBlockedError({
-          hostname,
-          resolvedIp: hostname,
-          reason: check.reason,
-          message: blockedMessage({
-            hostname,
-            resolvedIp: hostname,
-            reason: check.reason,
-            plugin,
-          }),
-        });
+        throw blockedError(ctx);
       }
     }
   }
@@ -673,25 +680,16 @@ export async function assertUrlIsPublic(rawUrl: string): Promise<void> {
 
   const hostCheck = isBlockedHost(hostname);
   if (hostCheck.blocked) {
-    throw new SsrfBlockedError({
-      hostname,
-      reason: hostCheck.reason,
-      message: blockedMessage({ hostname, reason: hostCheck.reason }),
-    });
+    throw blockedError({ hostname, reason: hostCheck.reason });
   }
 
   if (isIP(hostname) !== 0) {
     const verdict = isBlockedIp(hostname);
     if (verdict.blocked) {
-      throw new SsrfBlockedError({
+      throw blockedError({
         hostname,
         resolvedIp: hostname,
         reason: verdict.reason,
-        message: blockedMessage({
-          hostname,
-          resolvedIp: hostname,
-          reason: verdict.reason,
-        }),
       });
     }
     return;
@@ -707,15 +705,10 @@ export async function assertUrlIsPublic(rawUrl: string): Promise<void> {
   for (const addr of addresses) {
     const verdict = isBlockedIp(addr.address);
     if (verdict.blocked) {
-      throw new SsrfBlockedError({
+      throw blockedError({
         hostname,
         resolvedIp: addr.address,
         reason: verdict.reason,
-        message: blockedMessage({
-          hostname,
-          resolvedIp: addr.address,
-          reason: verdict.reason,
-        }),
       });
     }
   }
