@@ -32,5 +32,5 @@ export function getTriggerIcon(
   // Normalized so a legacy "Scheduled" row draws the clock, as the sidebar
   // does, rather than falling back to Play on the canvas.
   const normalized = getTriggerTypeFromConfig({ triggerType });
-  return normalized ? (TRIGGER_ICONS[normalized] ?? Play) : Play;
+  return normalized ? TRIGGER_ICONS[normalized] : Play;
 }

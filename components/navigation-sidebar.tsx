@@ -48,12 +48,7 @@ import type { NavPanelStates } from "@/lib/hooks/use-persisted-nav-state";
 import { usePersistedNavState } from "@/lib/hooks/use-persisted-nav-state";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { registerSidebarRefetch } from "@/lib/refetch-sidebar";
-import { cn } from "@/lib/utils";
-import {
-  dropSavedTriggersUpTo,
-  recordSavedTrigger,
-  type SavedTriggers,
-} from "@/lib/workflow/saved-triggers";
+import { cn, toggleInSet } from "@/lib/utils";
 import { filterPickerVisible } from "@/lib/workflow/soft-delete";
 import {
   currentWorkflowIdAtom,
@@ -75,8 +70,6 @@ import {
   matchesTriggerTypeFilter,
   type TriggerFilter,
   type TriggerTypeFilter,
-  toggleTriggerFilter,
-  toggleTriggerTypeFilter,
 } from "@/lib/workflow/trigger-display";
 import { FLYOUT_WIDTH, FlyoutPanel, STRIP_WIDTH } from "./flyout-panel";
 import {
@@ -120,12 +113,15 @@ function groupWorkflows(workflows: WorkflowEntry[]): {
   return { byProject, ungrouped };
 }
 
+// How long the result count must stay the same before it is announced.
+const ANNOUNCE_DELAY_MS = 400;
+
 // A polite live region that speaks only once the text has stopped changing
 // for a moment, so a quick run of filter picks is announced once.
 function DelayedAnnouncement({ text }: { text: string }): React.ReactNode {
   const [announced, setAnnounced] = useState(text);
   useEffect(() => {
-    const timer = setTimeout(() => setAnnounced(text), 400);
+    const timer = setTimeout(() => setAnnounced(text), ANNOUNCE_DELAY_MS);
     return () => clearTimeout(timer);
   }, [text]);
   return (
@@ -509,20 +505,16 @@ export function NavigationSidebar(): React.ReactNode {
   const hasUnsavedChanges = useAtomValue(hasUnsavedChangesAtom);
   // AI generation names the workflow before its nodes arrive.
   const isGenerating = useAtomValue(isGeneratingAtom);
-  // Triggers saved from the editor since the list was last fetched, so a row
-  // keeps a saved change after you open another workflow (saves do not
-  // refetch the list). A fetch drops only what was recorded before it began:
-  // a save that lands while it is in flight may be missing from its reply.
-  const [savedTriggers, setSavedTriggers] = useState<SavedTriggers>({});
-  const savedTriggerSeq = useRef(0);
+  // The saved trigger the list was last refetched for; see below.
+  const refetchedForTrigger = useRef<Record<string, unknown> | undefined>(
+    undefined
+  );
   const isDragging = useRef(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   const fetchData = useCallback(async (): Promise<void> => {
-    const startedAt = savedTriggerSeq.current;
     try {
       setWorkflows(await api.workflow.getAll().catch(() => []));
-      setSavedTriggers((current) => dropSavedTriggersUpTo(current, startedAt));
     } finally {
       setDataLoading(false);
     }
@@ -545,16 +537,21 @@ export function NavigationSidebar(): React.ReactNode {
     });
   }, [isPending, session, fetchData]);
 
+  // Drops both filters and hides the filter row.
+  const clearPickerFilters = useCallback((): void => {
+    setTriggerFilter(new Set());
+    setTriggerTypeFilter(new Set());
+    setTriggerFilterOpen(false);
+  }, []);
+
   // Closing the project panel any way at all (Escape, clicking outside, the
   // close button, re-clicking the project) drops the filters.
   const tagsPanelState = navState.state.panels.tags;
   useEffect(() => {
     if (tagsPanelState === "closed") {
-      setTriggerFilter(new Set());
-      setTriggerTypeFilter(new Set());
-      setTriggerFilterOpen(false);
+      clearPickerFilters();
     }
-  }, [tagsPanelState]);
+  }, [tagsPanelState, clearPickerFilters]);
 
   useEffect(
     () =>
@@ -591,23 +588,38 @@ export function NavigationSidebar(): React.ReactNode {
     !isGenerating &&
     previewVersion === null &&
     !hasUnsavedChanges;
+  // Saving does not refetch the list, so once the open workflow's saved
+  // trigger differs from the one fetched, fetch the list again: its row then
+  // keeps the change after another workflow is opened. Once per change, so a
+  // reply that is somehow still stale cannot start a loop.
   useEffect(() => {
     if (!(editorIsSaved && openWorkflowId)) {
       return;
     }
-    savedTriggerSeq.current += 1;
-    const seq = savedTriggerSeq.current;
-    setSavedTriggers((current) =>
-      recordSavedTrigger(current, openWorkflowId, liveTriggerConfig, seq)
-    );
-  }, [editorIsSaved, openWorkflowId, liveTriggerConfig]);
+    const fetched = workflows.find((w) => w.id === openWorkflowId);
+    if (
+      !fetched ||
+      isSameTriggerDisplay(
+        liveTriggerConfig,
+        getTriggerConfig(fetched.nodes)
+      ) ||
+      refetchedForTrigger.current === liveTriggerConfig
+    ) {
+      return;
+    }
+    refetchedForTrigger.current = liveTriggerConfig;
+    fetchData().catch(() => {
+      /* intentional noop */
+    });
+  }, [editorIsSaved, openWorkflowId, liveTriggerConfig, workflows, fetchData]);
 
   const visibleWorkflows = filterPickerVisible(workflows).map((w) => {
-    const saved = savedTriggers[w.id];
-    let triggerConfig = saved ? saved.config : getTriggerConfig(w.nodes);
-    if (editorIsSaved && w.id === openWorkflowId) {
-      triggerConfig = liveTriggerConfig;
-    }
+    // The open workflow's row shows its saved trigger straight away, before
+    // the refetch above lands.
+    const triggerConfig =
+      editorIsSaved && w.id === openWorkflowId
+        ? liveTriggerConfig
+        : getTriggerConfig(w.nodes);
     return {
       ...w,
       triggerConfig,
@@ -766,8 +778,7 @@ export function NavigationSidebar(): React.ReactNode {
   // row in one go, so the row never hides while it is shortening the list.
   const toggleFilterRow = (): void => {
     if (triggerFilterOpen && isPickerFiltered) {
-      resetPickerFilter();
-      setTriggerFilterOpen(false);
+      clearPickerFilters();
       return;
     }
     setTriggerFilterOpen(!triggerFilterOpen);
@@ -915,9 +926,7 @@ export function NavigationSidebar(): React.ReactNode {
     navState.setPanelState("tags", "open");
     navState.setPanelState("workflows", "closed");
     // A filter belongs to the project it was set in.
-    setTriggerFilter(new Set());
-    setTriggerTypeFilter(new Set());
-    setTriggerFilterOpen(false);
+    clearPickerFilters();
   }
 
   // NAV-01: render every nav item for everyone (anonymous, signed-out, signed-in).
@@ -1091,66 +1100,58 @@ export function NavigationSidebar(): React.ReactNode {
         state={navState.state.panels.tags}
         title={selectedProject?.name ?? "Projects"}
       >
-        <div>
-          {triggerFilterOpen && !dataLoading && (
-            // Pinned to the top of the scrolling list, so the sign that a
-            // filter is on stays in view on long lists. The negative offsets
-            // cover the panel's p-2 padding.
-            <div
-              className="fade-in-0 slide-in-from-top-1 sticky -top-2 z-10 -mx-2 -mt-2 mb-1 animate-in border-b bg-background px-2 pt-2 duration-150 motion-reduce:animate-none"
-              id={TRIGGER_FILTER_PANEL_ID}
-            >
-              <TriggerFilters
-                deactivatedCount={countDeactivated(
-                  allProjectWorkflows.filter((w) =>
-                    matchesTriggerTypeFilter(w, triggerTypeFilter)
-                  )
-                )}
-                listedTypes={listedTypes}
-                onClearAll={resetPickerFilter}
-                onClearStatus={() => setTriggerFilter(new Set())}
-                onClearTypes={() => setTriggerTypeFilter(new Set())}
-                onEscape={onFilterEscape}
-                onToggleStatus={(status) =>
-                  setTriggerFilter((current) =>
-                    toggleTriggerFilter(current, status)
-                  )
-                }
-                onToggleType={(type) =>
-                  setTriggerTypeFilter((current) =>
-                    toggleTriggerTypeFilter(current, type)
-                  )
-                }
-                status={triggerFilter}
-                statusCounts={statusCounts}
-                typeCounts={typeCounts}
-                types={triggerTypeFilter}
-              />
-            </div>
-          )}
-          <DelayedAnnouncement
-            text={
-              isPickerFiltered
-                ? `${projectWorkflows.length} of ${allProjectWorkflows.length} workflows shown`
-                : ""
-            }
-          />
-          <div>
-            <TagsPanel
-              activeWorkflowId={workflowId}
-              expandAll={isPickerFiltered}
-              filteredEmptyText={describeEmptyFilterResult(
-                triggerFilter,
-                triggerTypeFilter
+        {triggerFilterOpen && !dataLoading && (
+          // Pinned to the top of the scrolling list, so the sign that a
+          // filter is on stays in view on long lists. The negative offsets
+          // cover the panel's p-2 padding.
+          <div
+            className="fade-in-0 slide-in-from-top-1 sticky -top-2 z-10 -mx-2 -mt-2 mb-1 animate-in border-b bg-background px-2 pt-2 duration-150 motion-reduce:animate-none"
+            id={TRIGGER_FILTER_PANEL_ID}
+          >
+            <TriggerFilters
+              deactivatedCount={countDeactivated(
+                allProjectWorkflows.filter((w) =>
+                  matchesTriggerTypeFilter(w, triggerTypeFilter)
+                )
               )}
-              loading={dataLoading}
-              onResetFilter={isPickerFiltered ? resetPickerFilter : undefined}
-              projectTags={projectTagsWithCounts}
-              untaggedWorkflows={untaggedWorkflows}
-              workflowsByTagId={projectWorkflowsByTagId}
+              listedTypes={listedTypes}
+              onClearAll={resetPickerFilter}
+              onClearStatus={() => setTriggerFilter(new Set())}
+              onClearTypes={() => setTriggerTypeFilter(new Set())}
+              onEscape={onFilterEscape}
+              onToggleStatus={(status) =>
+                setTriggerFilter((current) => toggleInSet(current, status))
+              }
+              onToggleType={(type) =>
+                setTriggerTypeFilter((current) => toggleInSet(current, type))
+              }
+              status={triggerFilter}
+              statusCounts={statusCounts}
+              typeCounts={typeCounts}
+              types={triggerTypeFilter}
             />
           </div>
-        </div>
+        )}
+        <DelayedAnnouncement
+          text={
+            isPickerFiltered
+              ? `${projectWorkflows.length} of ${allProjectWorkflows.length} workflows shown`
+              : ""
+          }
+        />
+        <TagsPanel
+          activeWorkflowId={workflowId}
+          expandAll={isPickerFiltered}
+          filteredEmptyText={describeEmptyFilterResult(
+            triggerFilter,
+            triggerTypeFilter
+          )}
+          loading={dataLoading}
+          onResetFilter={isPickerFiltered ? resetPickerFilter : undefined}
+          projectTags={projectTagsWithCounts}
+          untaggedWorkflows={untaggedWorkflows}
+          workflowsByTagId={projectWorkflowsByTagId}
+        />
       </FlyoutPanel>
 
       {/* Fold/Close button outside the rightmost panel */}

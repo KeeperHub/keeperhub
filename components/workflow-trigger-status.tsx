@@ -1,5 +1,8 @@
 "use client";
 
+// The menu entries use Radix's CheckboxItem directly: the shared
+// DropdownMenuCheckboxItem draws a bare check mark in a fixed left gutter,
+// and these entries need a visible box, an icon and a count instead.
 import { CheckboxItem, ItemIndicator } from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronDown, ListFilter, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -21,6 +24,7 @@ import { cn } from "@/lib/utils";
 import type { WorkflowTriggerType } from "@/lib/workflow/store";
 import {
   getTriggerTypeLabel,
+  TRIGGER_STATUS_OPTIONS,
   type TriggerFilter,
   type TriggerStatus,
   type TriggerStatusCounts,
@@ -516,12 +520,6 @@ function FilterMenu<T extends string>({
   );
 }
 
-const STATUS_OPTIONS: readonly { value: TriggerStatus; label: string }[] = [
-  { value: "enabled", label: "Enabled" },
-  { value: "disabled", label: "Disabled" },
-  { value: "manual", label: "Manual" },
-];
-
 /**
  * The filter row: a Status menu and a Trigger menu, combined (within a menu
  * picks add up, across the two they narrow), and a button clearing both.
@@ -560,7 +558,7 @@ export function TriggerFilters({
   const menus = useFilterMenus();
   const [row, setRow] = useState<HTMLDivElement | null>(null);
   // The panel the row sits in, which neither menu may cross.
-  const boundary = row?.closest("section") ?? null;
+  const boundary = row?.closest("[data-flyout]") ?? null;
   return (
     <div
       className="flex items-center gap-1.5 pb-2"
@@ -574,7 +572,7 @@ export function TriggerFilters({
         onClear={onClearStatus}
         onEscape={onEscape}
         onToggle={onToggleStatus}
-        options={STATUS_OPTIONS.map((option) => ({
+        options={TRIGGER_STATUS_OPTIONS.map((option) => ({
           ...option,
           count: statusCounts[option.value],
           hint:

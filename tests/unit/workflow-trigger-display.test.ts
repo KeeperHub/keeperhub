@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { toggleInSet } from "@/lib/utils";
 import {
   getTriggerTypeFromConfig,
   WorkflowTriggerEnum,
@@ -22,8 +23,6 @@ import {
   matchesTriggerTypeFilter,
   type TriggerFilter,
   type TriggerStatus,
-  toggleTriggerFilter,
-  toggleTriggerTypeFilter,
 } from "@/lib/workflow/trigger-display";
 
 const SWITCHABLE = [
@@ -265,18 +264,18 @@ describe("countTriggerStatuses and matchesTriggerFilter", () => {
   });
 });
 
-describe("toggleTriggerFilter", () => {
+describe("toggleInSet", () => {
   it("adds a status that is not picked and removes one that is", () => {
-    const one = toggleTriggerFilter(new Set(), "enabled");
+    const one = toggleInSet(new Set(), "enabled");
     expect([...one]).toEqual(["enabled"]);
-    const two = toggleTriggerFilter(one, "disabled");
+    const two = toggleInSet(one, "disabled");
     expect([...two].sort()).toEqual(["disabled", "enabled"]);
-    expect([...toggleTriggerFilter(two, "enabled")]).toEqual(["disabled"]);
+    expect([...toggleInSet(two, "enabled")]).toEqual(["disabled"]);
   });
 
   it("keeps every status ticked when all are picked, which shows all", () => {
     const two: TriggerFilter = new Set(["enabled", "disabled"]);
-    const all = toggleTriggerFilter(two, "manual");
+    const all = toggleInSet(two, "manual");
     expect([...all].sort()).toEqual(["disabled", "enabled", "manual"]);
     expect(
       [{ triggerType: WorkflowTriggerEnum.MANUAL }, {}].every((w) =>
@@ -287,7 +286,7 @@ describe("toggleTriggerFilter", () => {
 
   it("does not change the filter it was given", () => {
     const original: TriggerFilter = new Set(["manual"]);
-    toggleTriggerFilter(original, "manual");
+    toggleInSet(original, "manual");
     expect([...original]).toEqual(["manual"]);
   });
 });
@@ -342,7 +341,7 @@ describe("getTriggerAccessibleStatus", () => {
     expect(
       getTriggerAccessibleStatus({ deactivatedAt: "2026-10-01T00:00:00.000Z" })
     ).toBe(
-      "Deactivated, Manual trigger, Runs when you click Run Workflow. Turned off by KeeperHub on Oct 1, 2026. Contact support to turn it back on."
+      "Deactivated, Manual trigger. Turned off by KeeperHub on Oct 1, 2026. Contact support to turn it back on."
     );
   });
 });
@@ -525,6 +524,16 @@ describe("getTriggerTooltip", () => {
     );
   });
 
+  it("never says a deactivated manual workflow runs on click", () => {
+    // Deactivation stops every trigger, Manual included.
+    expect(
+      getTriggerTooltip({
+        triggerType: WorkflowTriggerEnum.MANUAL,
+        deactivatedAt: "2026-10-01T00:00:00.000Z",
+      })
+    ).toBe("Deactivated · Manual trigger");
+  });
+
   it("says Deactivated in place of the enabled state", () => {
     expect(
       getTriggerTooltip({
@@ -605,13 +614,11 @@ describe("trigger type filter", () => {
   });
 
   it("toggles a type, keeping every pick ticked", () => {
-    const one = toggleTriggerTypeFilter(new Set(), WorkflowTriggerEnum.EVENT);
+    const one = toggleInSet(new Set(), WorkflowTriggerEnum.EVENT);
     expect([...one]).toEqual(["Event"]);
-    const two = toggleTriggerTypeFilter(one, WorkflowTriggerEnum.BLOCK);
+    const two = toggleInSet(one, WorkflowTriggerEnum.BLOCK);
     expect([...two]).toEqual(["Event", "Block"]);
-    expect([
-      ...toggleTriggerTypeFilter(two, WorkflowTriggerEnum.EVENT),
-    ]).toEqual(["Block"]);
+    expect([...toggleInSet(two, WorkflowTriggerEnum.EVENT)]).toEqual(["Block"]);
   });
 
   it("keeps a picked type listed even once no workflow uses it", () => {

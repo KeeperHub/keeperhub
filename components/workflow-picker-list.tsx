@@ -15,7 +15,7 @@ import {
 } from "@/components/workflow-trigger-status";
 import type { Tag } from "@/lib/api-client";
 import { isEscapeHandled, markEscapeHandled } from "@/lib/escape-key";
-import { cn } from "@/lib/utils";
+import { cn, toggleInSet } from "@/lib/utils";
 import type { WorkflowTriggerType } from "@/lib/workflow/store";
 import {
   describeDeactivation,
@@ -295,24 +295,16 @@ export function TagsPanel({
   // Set while a trigger filter is narrowing the list; an empty result then
   // offers a way back to every workflow instead of a dead end.
   onResetFilter?: () => void;
-  // What the empty list says while a filter or search is on.
+  // What the empty list says while a filter is on.
   filteredEmptyText?: string;
-  // While a filter or search narrows the list, collapsed groups open so no
+  // While a filter narrows the list, collapsed groups open so no
   // match hides behind a header.
   expandAll?: boolean;
 }): React.ReactNode {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
 
   const toggle = (key: string): void => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
+    setCollapsed((prev) => toggleInSet(prev, key));
   };
 
   if (loading) {

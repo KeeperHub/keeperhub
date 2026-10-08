@@ -193,7 +193,10 @@
   --color-text-link-hover: var(--ds-green-400, oklch(0.8671 0.2514 147.76));
   --color-text-accent: var(--ds-green-accent, #09fd67);
   --color-text-error: var(--ds-red-500, oklch(0.577 0.245 27.325));
-  --color-status-deactivated: oklch(0.924 0.12 95.746 / 0.7);
+  --color-status-deactivated: var(
+    --status-deactivated,
+    oklch(0.924 0.12 95.746 / 0.7)
+  );
 
   /* --- Color: Background --- */
   --color-bg: var(--ds-neutral-50, oklch(0.9842 0.0034 247.86));

@@ -93,8 +93,8 @@ export function FlyoutPanel({
     );
   }
 
-  // A labelled section rather than role="menu": the project panel holds a
-  // search field and filter chips, which menu semantics would swallow.
+  // A labelled section rather than role="menu": the project panel holds
+  // filter menus and buttons, which menu semantics would swallow.
   return (
     <section
       aria-label={title}

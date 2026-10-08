@@ -20,11 +20,14 @@ export type TriggerFilter = ReadonlySet<TriggerStatus>;
 
 export type TriggerStatusCounts = Record<"all" | TriggerStatus, number>;
 
-// The order statuses are listed in, in chips and in messages.
-const FILTER_ORDER: readonly TriggerStatus[] = [
-  "enabled",
-  "disabled",
-  "manual",
+// The statuses, in the order the filter menu and messages list them.
+export const TRIGGER_STATUS_OPTIONS: readonly {
+  value: TriggerStatus;
+  label: string;
+}[] = [
+  { value: "enabled", label: "Enabled" },
+  { value: "disabled", label: "Disabled" },
+  { value: "manual", label: "Manual" },
 ];
 
 type TriggerNodeLike = {
@@ -40,12 +43,6 @@ const SECONDS_PER_DAY = 86_400;
 const WEEKDAYS = [1, 2, 3, 4, 5];
 const NO_CONFIG: Record<string, unknown> = Object.freeze({});
 
-/**
- * The trigger node's config, or undefined when there is no trigger node. A
- * trigger node saved without a config gets one shared empty object, so it
- * still counts as "has a trigger" (a Manual one) and compares equal from
- * call to call.
- */
 // A trigger that fires on its own and so has an enabled switch; Manual and
 // "no trigger yet" do not. Also narrows away undefined for callers.
 function hasEnableSwitch(
@@ -54,6 +51,12 @@ function hasEnableSwitch(
   return shouldShowEnableSwitch(triggerType ?? undefined);
 }
 
+/**
+ * The trigger node's config, or undefined when there is no trigger node. A
+ * trigger node saved without a config gets one shared empty object, so it
+ * still counts as "has a trigger" (a Manual one) and compares equal from
+ * call to call.
+ */
 export function getTriggerConfig(
   nodes: TriggerNodeLike[]
 ): Record<string, unknown> | undefined {
@@ -121,7 +124,7 @@ function describeIntervalSeconds(raw: unknown): string | undefined {
 
 // `M */N * * *` (every N hours) is not a SimpleSchedule shape, but it is a
 // common one, so name it here instead of falling back to "Schedule".
-function describeEveryNHours(cron: string): string | undefined {
+function everyNHours(cron: string): number | undefined {
   const [minute, hour, dayOfMonth, month, dayOfWeek, ...rest] = cron
     .trim()
     .split(WHITESPACE_PATTERN);
@@ -135,10 +138,15 @@ function describeEveryNHours(cron: string): string | undefined {
     return undefined;
   }
   const step = Number.parseInt(hour?.match(HOURLY_STEP_PATTERN)?.[1] ?? "", 10);
-  if (step === 1) {
-    return "Hourly";
+  return step >= 1 ? step : undefined;
+}
+
+function describeEveryNHours(cron: string): string | undefined {
+  const step = everyNHours(cron);
+  if (step === undefined) {
+    return;
   }
-  return step > 1 ? `${step} h` : undefined;
+  return step === 1 ? "Hourly" : `${step} h`;
 }
 
 function describeWeekly(days: number[]): string {
@@ -305,24 +313,6 @@ export function matchesTriggerFilter(
   return filter.size === 0 || filter.has(getTriggerStatus(workflow));
 }
 
-/**
- * Adds the status to the filter, or takes it out if it is already there.
- * Every status picked shows the same as none picked, but stays ticked, so a
- * third tick never looks as if it unticked the other two.
- */
-export function toggleTriggerFilter(
-  filter: TriggerFilter,
-  status: TriggerStatus
-): TriggerFilter {
-  const next = new Set(filter);
-  if (next.has(status)) {
-    next.delete(status);
-  } else {
-    next.add(status);
-  }
-  return next;
-}
-
 // The picked trigger types; empty means every type.
 export type TriggerTypeFilter = ReadonlySet<WorkflowTriggerType>;
 
@@ -389,20 +379,6 @@ export function matchesTriggerTypeFilter(
   return filter.size === 0 || filter.has(getFilterTriggerType(workflow));
 }
 
-/** Adds the type to the filter, or takes it out, as the status filter does. */
-export function toggleTriggerTypeFilter(
-  filter: TriggerTypeFilter,
-  type: WorkflowTriggerType
-): TriggerTypeFilter {
-  const next = new Set(filter);
-  if (next.has(type)) {
-    next.delete(type);
-  } else {
-    next.add(type);
-  }
-  return next;
-}
-
 /** What the row icon's tooltip says, e.g. "Block trigger". */
 export function getTriggerTypeLabel(
   triggerType: WorkflowTriggerType | null | undefined
@@ -467,11 +443,9 @@ function describeScheduleInFull(
   if (typeof cron !== "string" || cron.trim() === "") {
     return;
   }
-  const hours = describeEveryNHours(cron);
-  if (hours) {
-    return hours === "Hourly"
-      ? every(1, "hour")
-      : every(Number.parseInt(hours, 10), "hour");
+  const hours = everyNHours(cron);
+  if (hours !== undefined) {
+    return every(hours, "hour");
   }
   const text = describeCron(cron);
   if (text === "" || text === "Custom schedule") {
@@ -521,7 +495,12 @@ function getTriggerSummaryParts(workflow: {
   triggerConfig?: Record<string, unknown> | null;
 }): string[] {
   const status = getStatusWord(workflow);
-  const detail = getTriggerDetail(workflow);
+  // Deactivation stops every trigger, Manual included, so a deactivated
+  // workflow is never said to run when Run Workflow is clicked.
+  const detail =
+    workflow.deactivatedAt && !hasEnableSwitch(workflow.triggerType)
+      ? undefined
+      : getTriggerDetail(workflow);
   return [
     ...(status ? [status] : []),
     getTriggerTypeLabel(workflow.triggerType),
@@ -579,7 +558,9 @@ export function describeEmptyFilterResult(
   filter: TriggerFilter,
   types: TriggerTypeFilter
 ): string {
-  const statuses = FILTER_ORDER.filter((status) => filter.has(status));
+  const statuses = TRIGGER_STATUS_OPTIONS.map((option) => option.value).filter(
+    (status) => filter.has(status)
+  );
   const subject =
     statuses.length === 0 ? "workflows" : `${statuses.join(" or ")} workflows`;
   const picked = TRIGGER_TYPE_FILTER_ORDER.filter((type) => types.has(type));
