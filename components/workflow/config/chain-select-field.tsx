@@ -93,6 +93,10 @@ export function ChainSelectField({
   const chainTypeKey = Array.isArray(chainTypeFilter)
     ? chainTypeFilter.join(",")
     : (chainTypeFilter ?? "");
+  // Same reasoning for the allowlist: callers pass an inline array literal,
+  // whose identity changes every render. Depending on it directly refetches
+  // in a loop and the select never settles, so depend on its contents.
+  const allowedChainIdsKey = allowedChainIds ? allowedChainIds.join(",") : "";
 
   useEffect(() => {
     async function fetchChains() {
@@ -128,7 +132,8 @@ export function ChainSelectField({
     }
 
     fetchChains();
-  }, [chainTypeKey, allowedChainIds]);
+    // biome-ignore lint/correctness/useExhaustiveDependencies: allowedChainIds is read through its stable string key
+  }, [chainTypeKey, allowedChainIdsKey]);
 
   if (isLoading) {
     return (
