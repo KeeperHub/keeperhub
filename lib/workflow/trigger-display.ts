@@ -18,7 +18,7 @@ export type TriggerStatus = "enabled" | "disabled" | "manual";
 // The statuses a user picked in the filter; empty means show everything.
 export type TriggerFilter = ReadonlySet<TriggerStatus>;
 
-export type TriggerStatusCounts = Record<"all" | TriggerStatus, number>;
+export type TriggerStatusCounts = Record<TriggerStatus, number>;
 
 // The statuses, in the order the filter menu and messages list them.
 export const TRIGGER_STATUS_OPTIONS: readonly {
@@ -41,6 +41,10 @@ const SECONDS_PER_MINUTE = 60;
 const SECONDS_PER_HOUR = 3600;
 const SECONDS_PER_DAY = 86_400;
 const WEEKDAYS = [1, 2, 3, 4, 5];
+const DAYS_PER_WEEK = 7;
+const HOURS_PER_DAY = 24;
+const MINUTES_PER_HOUR = 60;
+const MAX_MINUTE = 59;
 const NO_CONFIG: Record<string, unknown> = Object.freeze({});
 
 // A trigger that fires on its own and so has an enabled switch; Manual and
@@ -123,7 +127,9 @@ function describeIntervalSeconds(raw: unknown): string | undefined {
 }
 
 // `M */N * * *` (every N hours) is not a SimpleSchedule shape, but it is a
-// common one, so name it here instead of falling back to "Schedule".
+// common one, so name it here instead of falling back to "Schedule". Only
+// when N divides the day: `*/5` fires at 0, 5 ... 20 and then 4 hours later,
+// which is not "every 5 hours", so that is left to describeCron.
 function everyNHours(cron: string): number | undefined {
   const [minute, hour, dayOfMonth, month, dayOfWeek, ...rest] = cron
     .trim()
@@ -131,6 +137,7 @@ function everyNHours(cron: string): number | undefined {
   if (
     rest.length > 0 ||
     !NUMERIC_PATTERN.test(minute ?? "") ||
+    Number(minute) > MAX_MINUTE ||
     dayOfMonth !== "*" ||
     month !== "*" ||
     dayOfWeek !== "*"
@@ -138,7 +145,9 @@ function everyNHours(cron: string): number | undefined {
     return undefined;
   }
   const step = Number.parseInt(hour?.match(HOURLY_STEP_PATTERN)?.[1] ?? "", 10);
-  return step >= 1 ? step : undefined;
+  return step >= 1 && HOURS_PER_DAY % step === 0 && step < HOURS_PER_DAY
+    ? step
+    : undefined;
 }
 
 function describeEveryNHours(cron: string): string | undefined {
@@ -154,10 +163,27 @@ function describeWeekly(days: number[]): string {
   if (unique.size === 1) {
     return "Weekly";
   }
+  if (unique.size === DAYS_PER_WEEK) {
+    return "Daily";
+  }
   if (unique.size === WEEKDAYS.length && WEEKDAYS.every((d) => unique.has(d))) {
     return "Weekdays";
   }
   return `${unique.size}x a week`;
+}
+
+// `*/N` minutes keeps even gaps only when N divides the hour; `*/7` runs at
+// :56 and then :00, so it is not "7 min" and is left as Custom.
+function describeEveryNMinutes(
+  interval: number | undefined
+): string | undefined {
+  if (interval === undefined || interval < 1) {
+    return;
+  }
+  if (interval >= MINUTES_PER_HOUR) {
+    return "Hourly";
+  }
+  return MINUTES_PER_HOUR % interval === 0 ? `${interval} min` : undefined;
 }
 
 function describeCronShort(cron: string): string | undefined {
@@ -166,7 +192,7 @@ function describeCronShort(cron: string): string | undefined {
     case "every-minute":
       return "1 min";
     case "every-n-minutes":
-      return `${simple.interval} min`;
+      return describeEveryNMinutes(simple.interval);
     case "hourly":
       return "Hourly";
     case "daily":
@@ -244,9 +270,9 @@ export function getTriggerLabel(workflow: {
   }
 }
 
+// In the viewer's own timezone, so the date matches their calendar.
 const DEACTIVATED_DATE = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
-  timeZone: "UTC",
 });
 
 /**
@@ -295,7 +321,6 @@ export function countTriggerStatuses(
   workflows: TriggerStatusInput[]
 ): TriggerStatusCounts {
   const counts: TriggerStatusCounts = {
-    all: workflows.length,
     enabled: 0,
     disabled: 0,
     manual: 0,
@@ -451,12 +476,12 @@ function describeScheduleInFull(
   if (text === "" || text === "Custom schedule") {
     return `Cron ${cron.trim()}`;
   }
+  if (!text.includes(" at ")) {
+    return text;
+  }
+  // The scheduler runs a schedule saved without a timezone in UTC.
   const timezone = config.scheduleTimezone;
-  return typeof timezone === "string" &&
-    timezone !== "" &&
-    text.includes(" at ")
-    ? `${text} (${timezone})`
-    : text;
+  return `${text} (${typeof timezone === "string" && timezone !== "" ? timezone : "UTC"})`;
 }
 
 function describeBlockInFull(

@@ -29,8 +29,10 @@ export const TRIGGER_ICONS: Record<WorkflowTriggerType, LucideIcon> = {
 export function getTriggerIcon(
   triggerType: string | null | undefined
 ): LucideIcon {
-  // Normalized so a legacy "Scheduled" row draws the clock, as the sidebar
-  // does, rather than falling back to Play on the canvas.
-  const normalized = getTriggerTypeFromConfig({ triggerType });
+  // The canvas draws the clock for the legacy "Scheduled" spelling, the type
+  // its node was set to; the sidebar does not, as nothing schedules it.
+  const normalized = getTriggerTypeFromConfig({
+    triggerType: triggerType === "Scheduled" ? "Schedule" : triggerType,
+  });
   return normalized ? TRIGGER_ICONS[normalized] : Play;
 }

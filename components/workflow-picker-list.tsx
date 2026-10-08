@@ -2,7 +2,7 @@
 
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   Tooltip,
   TooltipContent,
@@ -77,7 +77,7 @@ function labelColorClass(
 // cannot show: the name when it is cut off, why it is deactivated. After the
 // same delay as hover, and only then, so tabbing down the list does not flash
 // a tooltip on every row. Escape, or moving the mouse, puts it away.
-export function useFocusTooltip(hasSomethingToShow: boolean): {
+function useFocusTooltip(hasSomethingToShow: boolean): {
   open: boolean;
   onFocus: (event: React.FocusEvent<HTMLElement>) => void;
   onBlur: () => void;
@@ -121,7 +121,9 @@ export function useFocusTooltip(hasSomethingToShow: boolean): {
   };
 }
 
-export function WorkflowItem({
+// Memoized: the sidebar re-renders on every drag-resize step, and a row's
+// labels parse its cron. The entries keep their identity between fetches.
+export const WorkflowItem = memo(function WorkflowItem({
   workflow,
   activeWorkflowId,
 }: {
@@ -209,7 +211,7 @@ export function WorkflowItem({
       <span className="sr-only">, {getTriggerAccessibleStatus(workflow)}</span>
     </button>
   );
-}
+});
 
 const UNTAGGED_KEY = "__untagged__";
 

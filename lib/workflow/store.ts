@@ -41,22 +41,19 @@ export function shouldShowEnableSwitch(
 }
 
 /**
- * The trigger type held in a trigger node's config, normalized. Pair with
+ * The trigger type held in a trigger node's config. Pair with
  * getTriggerConfig (lib/workflow/trigger-display) to read it off a node list.
  */
 export function getTriggerTypeFromConfig(
   config: Record<string, unknown> | undefined
 ): WorkflowTriggerType | undefined {
   const raw = config?.triggerType;
-  if (typeof raw !== "string") {
-    return undefined;
-  }
-  // "Scheduled" is a legacy spelling that still lives in some workflow rows;
-  // executor / metrics / mcp normalize it the same way before comparing.
-  const normalized = raw === "Scheduled" ? "Schedule" : raw;
-  // Anything else unrecognized has no trigger to show, like no type at all.
-  return TRIGGER_TYPES.has(normalized)
-    ? (normalized as WorkflowTriggerType)
+  // Anything unrecognized has no trigger to show, like no type at all. That
+  // includes the legacy "Scheduled" spelling: the schedule service accepts
+  // only "Schedule" and drops the schedule of a "Scheduled" workflow on its
+  // next save, so it must not read as a running schedule.
+  return typeof raw === "string" && TRIGGER_TYPES.has(raw)
+    ? (raw as WorkflowTriggerType)
     : undefined;
 }
 

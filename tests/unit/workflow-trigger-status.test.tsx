@@ -120,7 +120,7 @@ describe("TriggerFilterButton while loading", () => {
 });
 
 describe("TriggerFilters", () => {
-  const statusCounts = { all: 11, enabled: 5, disabled: 5, manual: 1 };
+  const statusCounts = { enabled: 5, disabled: 5, manual: 1 };
   const typeCounts = {
     Schedule: 6,
     Event: 3,

@@ -40,7 +40,7 @@ export const TOOLTIP_DELAY_MS = 400;
  * workflow fires on its own. The filter menu draws the same tile, always
  * grey, so a menu entry looks exactly like the rows it shows.
  */
-export function TriggerTile({
+function TriggerTile({
   triggerType,
   status,
   isActive = false,
@@ -484,7 +484,7 @@ function FilterMenu<T extends string>({
               <span
                 aria-hidden="true"
                 className={cn(
-                  "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border",
+                  "flex size-3.5 shrink-0 items-center justify-center rounded-xs border",
                   checked
                     ? "border-foreground/60 bg-foreground/15"
                     : "border-border"
@@ -599,7 +599,7 @@ export function TriggerFilters({
           count: typeCounts[type],
           icon: (
             <TriggerTile
-              className="size-4 rounded-[4px] [&_svg]:size-2.5"
+              className="size-4 rounded-xs [&_svg]:size-2.5"
               status="manual"
               triggerType={type}
             />

@@ -110,7 +110,14 @@ describe("getTriggerLabel", () => {
     ["0 9 * * 1", "Weekly"],
     ["0 9 * * 1-5", "Weekdays"],
     ["0 9 * * 1,3,5", "3x a week"],
-    ["*/7 * * * *", "7 min"],
+    // Uneven gaps (a */7 run at :56 is followed by :00) are not "7 min".
+    ["*/7 * * * *", "Custom"],
+    ["*/30 * * * *", "30 min"],
+    ["0 */5 * * *", "Custom"],
+    ["0 */12 * * *", "12 h"],
+    ["0 */30 * * *", "Custom"],
+    ["99 */2 * * *", ""],
+    ["0 9 * * 0,1,2,3,4,5,6", "Daily"],
     ["0 9 1 * *", "Custom"],
     ["0 0 9 * * *", "Custom"],
     ["0 9 * * 0,7", ""],
@@ -239,7 +246,6 @@ describe("countTriggerStatuses and matchesTriggerFilter", () => {
 
   it("counts each status", () => {
     expect(countTriggerStatuses(workflows)).toEqual({
-      all: 4,
       enabled: 2,
       disabled: 1,
       manual: 1,
@@ -414,12 +420,13 @@ describe("trigger type read off a node list", () => {
     );
   });
 
-  it("normalizes the legacy Scheduled spelling", () => {
+  it("does not read the legacy Scheduled spelling as a schedule", () => {
+    // The schedule service drops a "Scheduled" workflow's schedule on save.
     expect(
       readType([
         { data: { type: "trigger", config: { triggerType: "Scheduled" } } },
       ])
-    ).toBe(WorkflowTriggerEnum.SCHEDULE);
+    ).toBeUndefined();
   });
 });
 
@@ -464,6 +471,10 @@ describe("getTriggerTooltip", () => {
     [
       { scheduleCron: "0 9 1 * *" },
       "Enabled · Schedule trigger · Cron 0 9 1 * *",
+    ],
+    [
+      { scheduleCron: "0 9 * * *" },
+      "Enabled · Schedule trigger · Every day at 9:00 AM (UTC)",
     ],
     [{}, "Enabled · Schedule trigger"],
   ])("spells out the schedule %o", (config, tooltip) => {
@@ -638,8 +649,10 @@ describe("trigger type filter", () => {
 });
 
 describe("describeDeactivation", () => {
-  it("says who turned it off, when, and what to do", () => {
-    expect(describeDeactivation("2026-10-06T23:30:00.000Z")).toBe(
+  it("says who turned it off, when (on the viewer's calendar), and what to do", () => {
+    // 23:30 local time is Oct 7 in UTC for any zone west of it.
+    const lateOnOct6 = new Date(2026, 9, 6, 23, 30).toISOString();
+    expect(describeDeactivation(lateOnOct6)).toBe(
       "Turned off by KeeperHub on Oct 6, 2026. Contact support to turn it back on."
     );
   });

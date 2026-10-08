@@ -1,7 +1,5 @@
 "use client";
 
-import { useAtomValue } from "jotai";
-import { selectAtom } from "jotai/utils";
 import {
   Activity,
   BarChart3,
@@ -19,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useAuthPrompt } from "@/components/auth/provider";
 import { DiscordIcon } from "@/components/icons/discord-icon";
@@ -42,6 +40,7 @@ import type { Project, SavedWorkflow } from "@/lib/api-client";
 import { api } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
 import { isEscapeFromOverlay, isEscapeHandled } from "@/lib/escape-key";
+import { useDebounce } from "@/lib/hooks/use-debounce";
 import { useProjects, useTags } from "@/lib/hooks/use-org-data";
 import { useActiveMember } from "@/lib/hooks/use-organization";
 import type { NavPanelStates } from "@/lib/hooks/use-persisted-nav-state";
@@ -50,21 +49,13 @@ import { isAnonymousUser } from "@/lib/is-anonymous";
 import { registerSidebarRefetch } from "@/lib/refetch-sidebar";
 import { cn, toggleInSet } from "@/lib/utils";
 import { filterPickerVisible } from "@/lib/workflow/soft-delete";
-import {
-  currentWorkflowIdAtom,
-  getTriggerTypeFromConfig,
-  hasUnsavedChangesAtom,
-  isGeneratingAtom,
-  nodesAtom,
-  previewVersionAtom,
-} from "@/lib/workflow/store";
+import { getTriggerTypeFromConfig } from "@/lib/workflow/store";
 import {
   countDeactivated,
   countTriggerStatuses,
   countTriggerTypes,
   describeEmptyFilterResult,
   getTriggerConfig,
-  isSameTriggerDisplay,
   listedTriggerTypes,
   matchesTriggerFilter,
   matchesTriggerTypeFilter,
@@ -81,16 +72,6 @@ import {
 export const COLLAPSED_WIDTH = 60;
 export const EXPANDED_WIDTH = 200;
 const SNAP_THRESHOLD = (COLLAPSED_WIDTH + EXPANDED_WIDTH) / 2;
-
-// The open workflow's trigger config, read from the editor because saving a
-// trigger change does not refetch the sidebar. The row takes it only once the
-// edit is saved (see visibleWorkflows), so it never shows an unsaved trigger.
-// Only edits to the fields the row shows re-render it.
-const liveTriggerConfigAtom = selectAtom(
-  nodesAtom,
-  getTriggerConfig,
-  isSameTriggerDisplay
-);
 
 function groupWorkflows(workflows: WorkflowEntry[]): {
   byProject: Record<string, WorkflowEntry[]>;
@@ -119,11 +100,7 @@ const ANNOUNCE_DELAY_MS = 400;
 // A polite live region that speaks only once the text has stopped changing
 // for a moment, so a quick run of filter picks is announced once.
 function DelayedAnnouncement({ text }: { text: string }): React.ReactNode {
-  const [announced, setAnnounced] = useState(text);
-  useEffect(() => {
-    const timer = setTimeout(() => setAnnounced(text), ANNOUNCE_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [text]);
+  const announced = useDebounce(text, ANNOUNCE_DELAY_MS);
   return (
     <p aria-live="polite" className="sr-only">
       {announced}
@@ -499,22 +476,23 @@ export function NavigationSidebar(): React.ReactNode {
   const [triggerFilterOpen, setTriggerFilterOpen] = useState(false);
   const filterButtonRef = useRef<HTMLButtonElement>(null);
   const isPickerFiltered = triggerFilter.size > 0 || triggerTypeFilter.size > 0;
-  const openWorkflowId = useAtomValue(currentWorkflowIdAtom);
-  const liveTriggerConfig = useAtomValue(liveTriggerConfigAtom);
-  const previewVersion = useAtomValue(previewVersionAtom);
-  const hasUnsavedChanges = useAtomValue(hasUnsavedChangesAtom);
-  // AI generation names the workflow before its nodes arrive.
-  const isGenerating = useAtomValue(isGeneratingAtom);
-  // The saved trigger the list was last refetched for; see below.
-  const refetchedForTrigger = useRef<Record<string, unknown> | undefined>(
-    undefined
-  );
+  // Numbers each list request, so a reply that lands after a newer request
+  // was sent is dropped rather than put back over the newer list.
+  const latestFetch = useRef(0);
   const isDragging = useRef(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   const fetchData = useCallback(async (): Promise<void> => {
+    latestFetch.current += 1;
+    const request = latestFetch.current;
     try {
-      setWorkflows(await api.workflow.getAll().catch(() => []));
+      const fetched = await api.workflow.getAll();
+      if (request === latestFetch.current) {
+        setWorkflows(fetched);
+      }
+    } catch {
+      // A failed refetch keeps the list already shown; a failed first load
+      // leaves it empty, as before.
     } finally {
       setDataLoading(false);
     }
@@ -578,54 +556,22 @@ export function NavigationSidebar(): React.ReactNode {
 
   const isAnonymous = isAnonymousUser(session?.user);
 
-  // The editor sets the open workflow's id in the same update as its nodes
-  // (and clears both between workflows), so once there is an id, no trigger
-  // node means it was deleted. A historical version preview puts old nodes on
-  // the canvas, and unsaved edits are not running yet; in both cases the row
-  // keeps the saved trigger.
-  const editorIsSaved =
-    openWorkflowId !== null &&
-    !isGenerating &&
-    previewVersion === null &&
-    !hasUnsavedChanges;
-  // Saving does not refetch the list, so once the open workflow's saved
-  // trigger differs from the one fetched, fetch the list again: its row then
-  // keeps the change after another workflow is opened. Once per change, so a
-  // reply that is somehow still stale cannot start a loop.
-  useEffect(() => {
-    if (!(editorIsSaved && openWorkflowId)) {
-      return;
-    }
-    const fetched = workflows.find((w) => w.id === openWorkflowId);
-    if (
-      !fetched ||
-      isSameTriggerDisplay(
-        liveTriggerConfig,
-        getTriggerConfig(fetched.nodes)
-      ) ||
-      refetchedForTrigger.current === liveTriggerConfig
-    ) {
-      return;
-    }
-    refetchedForTrigger.current = liveTriggerConfig;
-    fetchData().catch(() => {
-      /* intentional noop */
-    });
-  }, [editorIsSaved, openWorkflowId, liveTriggerConfig, workflows, fetchData]);
-
-  const visibleWorkflows = filterPickerVisible(workflows).map((w) => {
-    // The open workflow's row shows its saved trigger straight away, before
-    // the refetch above lands.
-    const triggerConfig =
-      editorIsSaved && w.id === openWorkflowId
-        ? liveTriggerConfig
-        : getTriggerConfig(w.nodes);
-    return {
-      ...w,
-      triggerConfig,
-      triggerType: getTriggerTypeFromConfig(triggerConfig),
-    };
-  });
+  // A save that changes a workflow's trigger refetches the list (see
+  // refetchSidebarIfTriggerChanged), so the rows read it from the fetched
+  // nodes. Built once per fetch, so the rows (memoized) skip the trigger
+  // labels and cron parsing on unrelated re-renders such as a drag-resize.
+  const visibleWorkflows = useMemo(
+    () =>
+      filterPickerVisible(workflows).map((w) => {
+        const triggerConfig = getTriggerConfig(w.nodes);
+        return {
+          ...w,
+          triggerConfig,
+          triggerType: getTriggerTypeFromConfig(triggerConfig),
+        };
+      }),
+    [workflows]
+  );
 
   const workflowId =
     typeof params.workflowId === "string" ? params.workflowId : undefined;
@@ -749,11 +695,10 @@ export function NavigationSidebar(): React.ReactNode {
   const allProjectWorkflows = byProject[selectedProjectId ?? ""] ?? [];
   // Each menu counts the workflows the other menu lets through, so its
   // numbers say what picking an entry would show.
-  const statusCounts = countTriggerStatuses(
-    allProjectWorkflows.filter((w) =>
-      matchesTriggerTypeFilter(w, triggerTypeFilter)
-    )
+  const typeFiltered = allProjectWorkflows.filter((w) =>
+    matchesTriggerTypeFilter(w, triggerTypeFilter)
   );
+  const statusCounts = countTriggerStatuses(typeFiltered);
   const typeMatches = allProjectWorkflows.filter((w) =>
     matchesTriggerFilter(w, triggerFilter)
   );
@@ -1109,11 +1054,7 @@ export function NavigationSidebar(): React.ReactNode {
             id={TRIGGER_FILTER_PANEL_ID}
           >
             <TriggerFilters
-              deactivatedCount={countDeactivated(
-                allProjectWorkflows.filter((w) =>
-                  matchesTriggerTypeFilter(w, triggerTypeFilter)
-                )
-              )}
+              deactivatedCount={countDeactivated(typeFiltered)}
               listedTypes={listedTypes}
               onClearAll={resetPickerFilter}
               onClearStatus={() => setTriggerFilter(new Set())}

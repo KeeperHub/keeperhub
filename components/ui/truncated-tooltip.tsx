@@ -61,7 +61,9 @@ export function TruncatedTooltip({
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [measure]);
+    // A new text in a fixed-width box does not resize the span, so it is
+    // measured again whenever the text changes.
+  }, [measure, text]);
 
   return (
     <Tooltip delayDuration={delayDuration}>
