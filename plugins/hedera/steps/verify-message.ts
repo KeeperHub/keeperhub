@@ -13,8 +13,7 @@ import {
 } from "@/lib/workflow/executor/step-handler";
 import {
   HEDERA_MIRROR_API,
-  isValidAccountId,
-  isValidTopicId,
+  isValidEntityId,
   resolveNetwork,
   type HederaNetwork,
 } from "./hedera-core";
@@ -41,23 +40,26 @@ export type VerifyMessageCoreInput = {
 
 export type VerifyMessageInput = StepInput & VerifyMessageCoreInput;
 
-const MIRROR_TIMEOUT_MS = 30_000;
+// Two requests at most per run (message query, then a 404-only probe), so ~20s worst case.
+const MIRROR_TIMEOUT_MS = 10_000;
 
-// One step run issues at most two requests — the message query and, only on a
-// 404, the topic probe below — each with its own 30s timeout, so worst-case
-// wall time for this step is ~60s rather than the ~30s a single request
-// suggests.
+// One un-fragmented HCS message carries ~1 KB of payload, so this leaves room
+// for the mirror's envelope while bounding what one response can allocate.
+const MAX_MIRROR_BODY_BYTES = 256 * 1024;
 
 // HCS fragments an oversized submission into one message per sequence number;
 // the mirror then returns chunk_info on each fragment instead of the full
 // payload. Verify the un-fragmented case only.
+// Every field is unknown because the mirror controls them: a declared type
+// here would be an assumption the response is free to break.
 type MirrorMessage = {
   message?: unknown;
-  consensus_timestamp?: string;
-  sequence_number?: number | string;
+  consensus_timestamp?: unknown;
+  sequence_number?: unknown;
   topic_id?: unknown;
   payer_account_id?: unknown;
-  chunk_info?: { total?: number };
+  chunk_info?: { total?: unknown };
+  _status?: unknown;
 };
 
 // The mirror normalises numeric ids on the way out: it echoes topic
@@ -98,12 +100,13 @@ async function probeTopicExists(
   network: HederaNetwork
 ): Promise<ProbeOutcome> {
   const url = `${HEDERA_MIRROR_API[network]}/api/v1/topics/${encodeURIComponent(topicId)}`;
-  // Same always-on guard as the main query: safeFetch alone only logs under
-  // SAFE_FETCH_SHADOW, so the probe is checked explicitly too. No catch here:
-  // an SsrfBlockedError must escape to the caller the same way the main
-  // query's guard surfaces it — swallowing it would report a blocked
-  // environment fault as "topic exists".
-  await assertUrlIsPublic(url);
+  // Same always-on guard as the main query, but a resolution failure here is just unconfirmed.
+  try {
+    await assertUrlIsPublic(url);
+  } catch (error) {
+    if (error instanceof SsrfBlockedError) throw error;
+    return "unconfirmed";
+  }
   try {
     const res = await safeFetch(url, {
       plugin: "hedera",
@@ -125,7 +128,7 @@ async function stepHandler(
   input: VerifyMessageCoreInput
 ): Promise<VerifyMessageResult> {
   const topicId = (input.topicId || "").trim();
-  if (!isValidTopicId(topicId)) {
+  if (!isValidEntityId(topicId)) {
     return {
       success: false,
       error: `Invalid Hedera topic id "${topicId}". Expected format: 0.0.<number>.`,
@@ -158,7 +161,7 @@ async function stepHandler(
   // it. Validated here, before any request, so a typo fails fast instead of
   // producing a silent verified=false forever.
   const expectedSubmitter = (input.expectedSubmitter ?? "").trim();
-  if (expectedSubmitter.length > 0 && !isValidAccountId(expectedSubmitter)) {
+  if (expectedSubmitter.length > 0 && !isValidEntityId(expectedSubmitter)) {
     return {
       success: false,
       error: `Invalid expected submitter "${expectedSubmitter}". Expected format: 0.0.<number>.`,
@@ -187,7 +190,13 @@ async function stepHandler(
         errorClass: ExecutionErrorType.USER,
       };
     }
-    throw error;
+    // Not an SSRF block (a DNS resolution failure), so the mirror is unreachable.
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      error: `Mirror query failed: ${message.slice(0, 300)}`,
+      errorClass: ExecutionErrorType.EXTERNAL,
+    };
   }
 
   let status: number;
@@ -196,10 +205,23 @@ async function stepHandler(
     const res = await safeFetch(url, {
       plugin: "hedera",
       method: "GET",
-      headers: { Accept: "application/json" },
+      // Identity encoding so the declared length below counts the bytes that
+      // actually get allocated, not a compressed wire size.
+      headers: { Accept: "application/json", "Accept-Encoding": "identity" },
       signal: AbortSignal.timeout(MIRROR_TIMEOUT_MS),
     });
     status = res.status;
+    // Declared size first, so an oversized body is refused before it becomes a
+    // string; a missing or unparseable header reads as NaN and falls through to
+    // the length check, which bounds what is parsed.
+    const declaredBytes = Number(res.headers.get("content-length"));
+    if (Number.isFinite(declaredBytes) && declaredBytes > MAX_MIRROR_BODY_BYTES) {
+      return {
+        success: false,
+        error: `Mirror declared a ${declaredBytes} byte body, over the ${MAX_MIRROR_BODY_BYTES} byte limit for one HCS message.`,
+        errorClass: ExecutionErrorType.EXTERNAL,
+      };
+    }
     bodyText = await res.text();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -210,14 +232,21 @@ async function stepHandler(
     };
   }
 
+  if (bodyText.length > MAX_MIRROR_BODY_BYTES) {
+    return {
+      success: false,
+      error: `Mirror returned a ${bodyText.length} character body, over the ${MAX_MIRROR_BODY_BYTES} character limit for one HCS message.`,
+      errorClass: ExecutionErrorType.EXTERNAL,
+    };
+  }
+
   if (status === 404) {
     // The same 404 body covers "mistyped topic" and "no message at this
     // sequence", and the latter must stay a success so workflows can branch
     // on found=false. Disambiguate with one probe of the topic itself: only
     // an unknown topic is a USER error; a known topic with no message at
     // this sequence is found=false.
-    // No catch around the probe: assertUrlIsPublic rejections must escape
-    // exactly as they do on the main query's guard above.
+    // An SsrfBlockedError from the probe's guard escapes as it does above.
     const probe = await probeTopicExists(topicId, network);
     if (probe === "missing") {
       return {
@@ -267,13 +296,33 @@ async function stepHandler(
     };
   }
 
-  let payload: MirrorMessage;
+  let parsed: unknown;
   try {
-    payload = bodyText ? JSON.parse(bodyText) : {};
+    parsed = bodyText ? JSON.parse(bodyText) : {};
   } catch {
     return {
       success: false,
       error: "Mirror returned a non-JSON response.",
+      errorClass: ExecutionErrorType.EXTERNAL,
+    };
+  }
+
+  // JSON null, an array or a scalar parse cleanly but carry no message fields.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      success: false,
+      error: "Mirror returned a JSON body that is not a message object.",
+      errorClass: ExecutionErrorType.EXTERNAL,
+    };
+  }
+  const payload = parsed as MirrorMessage;
+
+  // The mirror's error envelope. On a 2xx it means the response carries a
+  // fault, not a message, and it has no topic echo for the check below.
+  if (payload._status != null) {
+    return {
+      success: false,
+      error: `Mirror answered HTTP ${status} with an error envelope instead of a message.`,
       errorClass: ExecutionErrorType.EXTERNAL,
     };
   }
@@ -295,21 +344,51 @@ async function stepHandler(
     };
   }
 
-  if (payload.chunk_info && payload.chunk_info.total != null && payload.chunk_info.total > 1) {
-    // A chunked payload is one fragment here; comparing it against
-    // expectedMessage would make verified permanently false while looking
-    // like a clean mismatch. Fail loudly instead of gating a workflow on a
-    // guarantee this step cannot make.
+  // chunk_info is absent or null on an un-fragmented message; once the mirror
+  // reports it, the total is the only thing that says whether these are all
+  // the anchored bytes.
+  if (payload.chunk_info != null) {
+    const chunkTotal = payload.chunk_info.total;
+    if (typeof chunkTotal !== "number" || !Number.isFinite(chunkTotal)) {
+      // Without a readable total there is no way to tell a whole payload from
+      // a fragment, so the content comparison below cannot be trusted.
+      return {
+        success: false,
+        error:
+          "Mirror reported a chunk total that is not a number, so the payload cannot be confirmed un-fragmented.",
+        errorClass: ExecutionErrorType.EXTERNAL,
+      };
+    }
+    if (chunkTotal > 1) {
+      // A chunked payload is one fragment here; comparing it against
+      // expectedMessage would make verified permanently false while looking
+      // like a clean mismatch. Fail loudly instead of gating a workflow on a
+      // guarantee this step cannot make.
+      return {
+        success: false,
+        error: `Message at sequence ${sequenceNumber} is chunked into ${chunkTotal} fragments across sequence numbers; this step verifies single-sequence messages only. Re-anchor without chunking (or fetch all fragments) and verify that.`,
+        errorClass: ExecutionErrorType.USER,
+      };
+    }
+  }
+
+  if (
+    payload.consensus_timestamp != null &&
+    typeof payload.consensus_timestamp !== "string"
+  ) {
+    // found and the reported timestamp both key on this field, so a non-string
+    // would publish a value the result type promises is a string.
     return {
       success: false,
-      error: `Message at sequence ${sequenceNumber} is chunked into ${payload.chunk_info.total} fragments across sequence numbers; this step verifies single-sequence messages only. Re-anchor without chunking (or fetch all fragments) and verify that.`,
-      errorClass: ExecutionErrorType.USER,
+      error: "Mirror returned a consensus timestamp that is not a string.",
+      errorClass: ExecutionErrorType.EXTERNAL,
     };
   }
 
   // found keys on the mirror's consensus_timestamp, not on the decoded
   // payload — an anchored empty message is still found.
-  const found = payload.consensus_timestamp != null;
+  const consensusTimestamp = payload.consensus_timestamp ?? null;
+  const found = consensusTimestamp != null;
 
   let decoded: string | null = null;
   if (typeof payload.message === "string") {
@@ -351,7 +430,7 @@ async function stepHandler(
     found,
     verified,
     message: decoded,
-    consensusTimestamp: payload.consensus_timestamp ?? null,
+    consensusTimestamp,
     payerAccountId,
     sequenceNumber: payloadSequence,
   };

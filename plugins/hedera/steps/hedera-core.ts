@@ -15,16 +15,11 @@ export const HEDERA_MIRROR_API: Record<HederaNetwork, string> = {
   mainnet: "https://mainnet.mirrornode.hedera.com",
 };
 
-const TOPIC_ID_RE = /^0\.0\.\d{1,19}$/;
+const ENTITY_ID_RE = /^0\.0\.\d{1,19}$/;
 
-export function isValidTopicId(value: string): boolean {
-  return TOPIC_ID_RE.test(value.trim());
-}
-
-// Hedera account ids share the topic-id 0.0.<number> shape; the expected
-// submitter is one, so the same validation applies.
-export function isValidAccountId(value: string): boolean {
-  return TOPIC_ID_RE.test(value.trim());
+// Topics and accounts share the 0.0.<number> entity-id shape.
+export function isValidEntityId(value: string): boolean {
+  return ENTITY_ID_RE.test(value.trim());
 }
 
 export function resolveNetwork(raw: string | undefined): HederaNetwork | null {

@@ -34,28 +34,38 @@ vi.mock("@/lib/metrics/instrumentation/plugin", async () =>
 
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
 
-function mirrorOk(body: {
-  message?: string;
-  consensus_timestamp?: string;
-  sequence_number?: number | string;
-  topic_id?: string;
-  payer_account_id?: string;
-  chunk_info?: { total?: number };
-}) {
+// The step reads res.headers to bound the body, so every stub carries a
+// case-insensitive header lookup like a real Response.
+function mirrorResponse(
+  status: number,
+  bodyText: string | (() => Promise<string>),
+  headers: Record<string, string> = {}
+) {
+  const byLowerName = new Map(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value])
+  );
   return {
-    ok: true,
-    status: 200,
-    text: async () => JSON.stringify(body),
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get: (name: string) => byLowerName.get(name.toLowerCase()) ?? null,
+    },
+    text: typeof bodyText === "string" ? async () => bodyText : bodyText,
   };
 }
 
+function mirrorOk(
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {}
+) {
+  return mirrorResponse(200, JSON.stringify(body), headers);
+}
+
 function mirror404() {
-  return {
-    ok: false,
-    status: 404,
-    text: async () =>
-      JSON.stringify({ _status: { messages: [{ message: "Not found" }] } }),
-  };
+  return mirrorResponse(
+    404,
+    JSON.stringify({ _status: { messages: [{ message: "Not found" }] } })
+  );
 }
 
 // Mirror message bodies always echo the topic they describe; tests below rely
@@ -414,7 +424,7 @@ describe("hedera plugin — verify-message", () => {
   it("treats a 404 on an existing topic as found=false with success=true", async () => {
     safeFetchMock.mockImplementation(async (url: string | URL) => {
       if (String(url).endsWith(`/topics/${encodeURIComponent(TOPIC)}`)) {
-        return { ok: true, status: 200, text: async () => "{}" };
+        return mirrorResponse(200, "{}");
       }
       return mirror404();
     });
@@ -451,11 +461,7 @@ describe("hedera plugin — verify-message", () => {
   });
 
   it("reports a 429 on the message query as an EXTERNAL mirror failure", async () => {
-    safeFetchMock.mockResolvedValue({
-      ok: false,
-      status: 429,
-      text: async () => "rate limited",
-    });
+    safeFetchMock.mockResolvedValue(mirrorResponse(429, "rate limited"));
     const { verifyMessageStep } = await import(
       "@/plugins/hedera/steps/verify-message"
     );
@@ -471,11 +477,7 @@ describe("hedera plugin — verify-message", () => {
   });
 
   it("reports a 5xx on the message query as an EXTERNAL mirror failure", async () => {
-    safeFetchMock.mockResolvedValue({
-      ok: false,
-      status: 503,
-      text: async () => "unavailable",
-    });
+    safeFetchMock.mockResolvedValue(mirrorResponse(503, "unavailable"));
     const { verifyMessageStep } = await import(
       "@/plugins/hedera/steps/verify-message"
     );
@@ -491,14 +493,14 @@ describe("hedera plugin — verify-message", () => {
   });
 
   it("reports a non-404 4xx (bad 19-digit topic id) as a USER configuration error", async () => {
-    safeFetchMock.mockResolvedValue({
-      ok: false,
-      status: 400,
-      text: async () =>
+    safeFetchMock.mockResolvedValue(
+      mirrorResponse(
+        400,
         JSON.stringify({
           _status: { messages: [{ message: "Invalid parameter: topic.id" }] },
-        }),
-    });
+        })
+      )
+    );
     const { verifyMessageStep } = await import(
       "@/plugins/hedera/steps/verify-message"
     );
@@ -584,7 +586,7 @@ describe("hedera plugin — verify-message", () => {
   it("fails with an EXTERNAL error when the probe answers with a server fault", async () => {
     safeFetchMock.mockImplementation(async (url: string | URL) => {
       if (String(url).endsWith(`/topics/${encodeURIComponent(TOPIC)}`)) {
-        return { ok: false, status: 503, text: async () => "unavailable" };
+        return mirrorResponse(503, "unavailable");
       }
       return mirror404();
     });
@@ -627,11 +629,11 @@ describe("hedera plugin — verify-message", () => {
       "testnet.mirrornode.hedera.com/api/v1/topics/0.0.10590142/messages/18"
     );
     expect(init.plugin).toBe("hedera");
-    // Pin the 30s timeout: the spy proves the step arms exactly a 30-second
+    // Pin the timeout: the spy proves the step arms exactly a 10-second
     // abort, and the signal handed to safeFetch is the one AbortSignal.timeout
-    // produced — not merely an instance of AbortSignal.
+    // produced, not merely an instance of AbortSignal.
     expect(timeoutSpy).toHaveBeenCalledTimes(1);
-    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000);
     expect(init.signal).toBe(timeoutSpy.mock.results[0]?.value);
     timeoutSpy.mockRestore();
   });
@@ -697,6 +699,350 @@ describe("hedera plugin — verify-message", () => {
       expect(result.error).toMatch(/network/i);
     }
     expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not verify a payload that merely contains the expected message", async () => {
+    safeFetchMock.mockResolvedValue(
+      mirrorOk(
+        withTopicEcho({
+          message: b64('{"type":"RELEASED"}{"x":1}'),
+          consensus_timestamp: "1726000000.4",
+          sequence_number: 18,
+          payer_account_id: PAYER,
+        })
+      )
+    );
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "18",
+      expectedMessage: '{"type":"RELEASED"}',
+      expectedSubmitter: PAYER,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.found).toBe(true);
+      // Extra trailing bytes mean these are not the anchored bytes that were expected.
+      expect(result.verified).toBe(false);
+      expect(result.message).toBe('{"type":"RELEASED"}{"x":1}');
+    }
+  });
+
+  it("reports found=false and verified=false for a 200 body with no consensus timestamp", async () => {
+    safeFetchMock.mockResolvedValue(
+      mirrorOk(
+        withTopicEcho({
+          message: b64("release"),
+          sequence_number: 18,
+          payer_account_id: PAYER,
+        })
+      )
+    );
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "18",
+      expectedMessage: "release",
+      expectedSubmitter: PAYER,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.found).toBe(false);
+      expect(result.consensusTimestamp).toBeNull();
+      // Content and submitter both match, so only found keeps verified false.
+      expect(result.verified).toBe(false);
+    }
+  });
+
+  it("reports a non-JSON 200 body as an EXTERNAL mirror failure", async () => {
+    safeFetchMock.mockResolvedValue(
+      mirrorResponse(200, "<html>gateway</html>")
+    );
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "18",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe("Mirror returned a non-JSON response.");
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+    }
+  });
+
+  it.each(["null", "[]", "123", '"x"'])(
+    "reports a 200 JSON body of %s as an EXTERNAL mirror failure",
+    async (body) => {
+      safeFetchMock.mockResolvedValue(mirrorResponse(200, body));
+      const { verifyMessageStep } = await import(
+        "@/plugins/hedera/steps/verify-message"
+      );
+      const result = await verifyMessageStep({
+        topicId: TOPIC,
+        sequenceNumber: "18",
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toBe(
+          "Mirror returned a JSON body that is not a message object."
+        );
+        expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+      }
+    }
+  );
+
+  it("refuses a declared content-length over the body limit without reading it", async () => {
+    const text = vi.fn(async () => "{}");
+    safeFetchMock.mockResolvedValue(
+      mirrorResponse(200, text, { "Content-Length": String(256 * 1024 + 1) })
+    );
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "18",
+      expectedMessage: "release",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toMatch(/over the 262144 byte limit/);
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+    }
+    // The point of the declared check: the body is never materialised.
+    expect(text).not.toHaveBeenCalled();
+  });
+
+  it("refuses an oversized body that declares no content-length", async () => {
+    const oversized = JSON.stringify(
+      withTopicEcho({
+        message: b64("release"),
+        consensus_timestamp: "1726000000.1",
+        sequence_number: 18,
+        payer_account_id: PAYER,
+        padding: "x".repeat(256 * 1024),
+      })
+    );
+    safeFetchMock.mockResolvedValue(mirrorResponse(200, oversized));
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "18",
+      expectedMessage: "release",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toMatch(/over the 262144 character limit/);
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+    }
+  });
+
+  it("asks for identity encoding so the declared length bounds the body", async () => {
+    safeFetchMock.mockResolvedValue(
+      mirrorOk(
+        withTopicEcho({
+          message: b64("x"),
+          consensus_timestamp: "1.0",
+          sequence_number: 18,
+        })
+      )
+    );
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    await verifyMessageStep({ topicId: TOPIC, sequenceNumber: "18" });
+    const init = safeFetchMock.mock.calls[0][1];
+    expect(init.headers["Accept-Encoding"]).toBe("identity");
+  });
+
+  it("refuses a 200 body carrying the mirror's error envelope", async () => {
+    safeFetchMock.mockResolvedValue(
+      mirrorOk(
+        withTopicEcho({
+          message: b64("release"),
+          consensus_timestamp: "1726000000.1",
+          sequence_number: 18,
+          payer_account_id: PAYER,
+          _status: { messages: [{ message: "Not found" }] },
+        })
+      )
+    );
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "18",
+      expectedMessage: "release",
+      expectedSubmitter: PAYER,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toMatch(/error envelope/i);
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+    }
+  });
+
+  it.each([{ total: "2" }, { total: true }, { total: null }])(
+    "refuses a chunk total of %o that is not a number",
+    async (chunkInfo) => {
+      safeFetchMock.mockResolvedValue(
+        mirrorOk(
+          withTopicEcho({
+            message: b64("release"),
+            consensus_timestamp: "1726000000.1",
+            sequence_number: 18,
+            payer_account_id: PAYER,
+            chunk_info: chunkInfo,
+          })
+        )
+      );
+      const { verifyMessageStep } = await import(
+        "@/plugins/hedera/steps/verify-message"
+      );
+      const result = await verifyMessageStep({
+        topicId: TOPIC,
+        sequenceNumber: "18",
+        expectedMessage: "release",
+        expectedSubmitter: PAYER,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toMatch(/chunk total that is not a number/);
+        expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+      }
+    }
+  );
+
+  it("verifies a message the mirror reports as a single chunk", async () => {
+    safeFetchMock.mockResolvedValue(
+      mirrorOk(
+        withTopicEcho({
+          message: b64("release"),
+          consensus_timestamp: "1726000000.1",
+          sequence_number: 18,
+          payer_account_id: PAYER,
+          chunk_info: { total: 1 },
+        })
+      )
+    );
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "18",
+      expectedMessage: "release",
+      expectedSubmitter: PAYER,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.verified).toBe(true);
+    }
+  });
+
+  it.each([{ ts: 1_726_000_000.1 }, { ts: { seconds: 1 } }, { ts: [] }])(
+    "refuses a consensus timestamp of %o that is not a string",
+    async ({ ts }) => {
+      safeFetchMock.mockResolvedValue(
+        mirrorOk(
+          withTopicEcho({
+            message: b64("release"),
+            consensus_timestamp: ts,
+            sequence_number: 18,
+            payer_account_id: PAYER,
+          })
+        )
+      );
+      const { verifyMessageStep } = await import(
+        "@/plugins/hedera/steps/verify-message"
+      );
+      const result = await verifyMessageStep({
+        topicId: TOPIC,
+        sequenceNumber: "18",
+        expectedMessage: "release",
+        expectedSubmitter: PAYER,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toBe(
+          "Mirror returned a consensus timestamp that is not a string."
+        );
+        expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+      }
+    }
+  );
+
+  it("arms the same abort timeout on the topic probe as on the message query", async () => {
+    safeFetchMock.mockImplementation(async (url: string | URL) => {
+      if (String(url).endsWith(`/topics/${encodeURIComponent(TOPIC)}`)) {
+        return mirrorResponse(200, "{}");
+      }
+      return mirror404();
+    });
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "999",
+    });
+    expect(result.success).toBe(true);
+    expect(safeFetchMock).toHaveBeenCalledTimes(2);
+    expect(timeoutSpy).toHaveBeenCalledTimes(2);
+    expect(timeoutSpy).toHaveBeenNthCalledWith(2, 10_000);
+    const probeInit = safeFetchMock.mock.calls[1][1];
+    expect(probeInit.signal).toBe(timeoutSpy.mock.results[1]?.value);
+    timeoutSpy.mockRestore();
+  });
+
+  it("maps a non-SSRF guard rejection on the message query to an EXTERNAL error", async () => {
+    vi.mocked(assertUrlIsPublic).mockRejectedValue(
+      new Error("Cannot resolve host: testnet.mirrornode.hedera.com")
+    );
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "18",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toMatch(/cannot resolve host/i);
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+    }
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("treats a non-SSRF guard rejection on the probe as unconfirmed", async () => {
+    vi.mocked(assertUrlIsPublic).mockImplementation(async (url) => {
+      if (String(url).endsWith(`/topics/${encodeURIComponent(TOPIC)}`)) {
+        throw new Error("Cannot resolve host: testnet.mirrornode.hedera.com");
+      }
+    });
+    safeFetchMock.mockResolvedValue(mirror404());
+    const { verifyMessageStep } = await import(
+      "@/plugins/hedera/steps/verify-message"
+    );
+    const result = await verifyMessageStep({
+      topicId: TOPIC,
+      sequenceNumber: "999",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toMatch(/could not confirm/i);
+      expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
+    }
   });
 
   it("stays credential-free: no connection fields and no credential requirement", async () => {
