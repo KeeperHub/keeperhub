@@ -9,7 +9,9 @@ import {
 import type { PredgeCredentials } from "../credentials";
 import {
   blameForBadBody,
+  MALFORMED_ATTESTATION_REASON,
   MAX_SIGNAL_AGE_CEILING_SECONDS,
+  PINNED_KEY_MISMATCH_REASON,
   RESOURCE_MISMATCH_REASON,
   fetchSignedSignal,
   parseConvictionPayload,
@@ -27,8 +29,8 @@ import {
 type ReadSignalResult =
   | {
       success: true;
-      // The wallet the step asked for; equals the signed subject, which was
-      // checked to match before this point.
+      // The normalized lowercase 0x wallet the signal was bound to, which the
+      // subject binding checked against the signed payload.
       wallet: string;
       // 0-100 conviction from Predge's on-chain track-record model. Checked to
       // be a finite number in that range, never a numeric string and never
@@ -108,10 +110,13 @@ function classifyVerificationFailure(
   credentials: PredgeCredentials
 ): ExecutionErrorType {
   const operatorSetKeyId = Boolean(credentials.PREDGE_SIGNER_KEY_ID?.trim());
-  if (reason === "signer is not the pinned Predge key" && operatorSetKeyId) {
+  if (reason === PINNED_KEY_MISMATCH_REASON && operatorSetKeyId) {
     return ExecutionErrorType.USER;
   }
-  if (reason === "malformed attestation" || reason?.startsWith(RESOURCE_MISMATCH_REASON)) {
+  if (
+    reason === MALFORMED_ATTESTATION_REASON ||
+    reason?.startsWith(RESOURCE_MISMATCH_REASON)
+  ) {
     return blameForBadBody(credentials);
   }
   return ExecutionErrorType.EXTERNAL;
@@ -145,7 +150,7 @@ async function stepHandler(
     return result;
   }
 
-  const signed = result.data;
+  const { signed, wallet: boundWallet } = result.data;
   // Verify offline against Predge's pinned key. PREDGE_SIGNER_KEY_ID overrides
   // the pinned default; the key the response carries is never trusted on its
   // own. Binds the signal to this wallet and rejects stale attestations.
@@ -184,9 +189,9 @@ async function stepHandler(
   const signal = parsed.signal;
   return {
     success: true,
-    // The requested wallet; subject binding already confirmed it equals the
-    // signed subject, so this never reports a different wallet than asked for.
-    wallet,
+    // The form the binding was established on, not the raw string the author
+    // typed: an un-prefixed address is a valid input and a bad thing to emit.
+    wallet: boundWallet,
     conviction: signal.conviction,
     action: signal.action,
     window: signal.window,

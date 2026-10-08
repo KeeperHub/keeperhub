@@ -71,6 +71,7 @@ type SignalOverrides = {
   window?: "7d" | "30d";
   issuedAt?: string;
   keyId?: string; // force a keyId different from the signer, for tamper cases
+  scheme?: string; // force a scheme other than the one Predge stamps
   resource?: string; // force a resource other than conviction:<wallet>
   // Replace the whole payload, so a test can sign a body the declared type
   // forbids. The point of these cases is that the signature is valid and the
@@ -83,7 +84,7 @@ async function signSignal(
   overrides: SignalOverrides = {}
 ): Promise<PredgeSignedAttestation> {
   const attestation = {
-    scheme: SCHEME,
+    scheme: overrides.scheme ?? SCHEME,
     resource:
       overrides.resource ??
       `conviction:${(overrides.wallet ?? WALLET).toLowerCase()}`,
@@ -116,6 +117,60 @@ beforeAll(async () => {
 });
 
 describe("canonicalize", () => {
+  it("sorts keys rather than emitting them in insertion order", () => {
+    expect(canonicalize({ b: 1, a: 2 })).toBe('{"a":2,"b":1}');
+    expect(canonicalize({ b: 1, a: 2 })).toBe(canonicalize({ a: 2, b: 1 }));
+  });
+
+  it("sorts by UTF-16 code unit, the order Array.prototype.sort gives", () => {
+    // Predge's signer sorts the same way, so "B" before "a" and "10" before
+    // "2" is the contract and not an accident of the default comparator.
+    // Object.keys puts the integer-like keys first in numeric order, so this
+    // only holds if the sort runs.
+    expect(canonicalize({ a: 1, B: 2, 2: 3, 10: 4 })).toBe(
+      '{"10":4,"2":3,"B":2,"a":1}'
+    );
+  });
+
+  it("sorts keys at every depth, through an array", () => {
+    expect(canonicalize({ b: { d: 1, c: 2 }, a: [{ y: 1, x: 2 }] })).toBe(
+      '{"a":[{"x":2,"y":1}],"b":{"c":2,"d":1}}'
+    );
+  });
+
+  it("keeps array order and separates elements with one comma", () => {
+    expect(canonicalize([3, 1, 2])).toBe("[3,1,2]");
+    expect(canonicalize({ a: [{ b: 1, a: 2 }, [1, 2], "x"] })).toBe(
+      '{"a":[{"a":2,"b":1},[1,2],"x"]}'
+    );
+  });
+
+  it("emits empty containers as JSON does", () => {
+    expect(canonicalize({})).toBe("{}");
+    expect(canonicalize([])).toBe("[]");
+    expect(canonicalize({ a: {}, b: [] })).toBe('{"a":{},"b":[]}');
+  });
+
+  it("renders scalars as JSON", () => {
+    expect(canonicalize(null)).toBe("null");
+    expect(canonicalize(true)).toBe("true");
+    expect(canonicalize(1.5)).toBe("1.5");
+    expect(canonicalize("x")).toBe('"x"');
+  });
+
+  it("keeps a null-valued key and drops only an undefined-valued one", () => {
+    expect(canonicalize({ a: null, b: undefined })).toBe('{"a":null}');
+  });
+
+  it("writes a value JSON.stringify has no output for as null", () => {
+    // An undefined array element, which JSON.stringify also writes as null.
+    // Without the fallback the element vanishes from the bytes and a shorter
+    // array shares one signature with a longer one.
+    expect(canonicalize(undefined)).toBe("null");
+    expect(canonicalize([undefined, 1])).toBe("[null,1]");
+    expect(canonicalize([undefined, 1])).toBe(JSON.stringify([undefined, 1]));
+  });
+
   it("drops undefined-valued keys at every level, as Predge's signer does", () => {
     expect(
       canonicalize({ b: 1, a: undefined, c: { e: [1, "x"], d: undefined } })
@@ -129,6 +184,69 @@ describe("canonicalize", () => {
     expect(canonicalize(signed)).toBe(
       canonicalize(JSON.parse(JSON.stringify(signed)))
     );
+  });
+
+  // Keys and string values are both remote controlled, and their escaping is
+  // the only thing stopping two payloads from sharing one signature's bytes.
+  it("escapes a key that carries JSON punctuation", () => {
+    expect(canonicalize({ 'a":1,"b': 2 })).toBe('{"a\\":1,\\"b":2}');
+  });
+
+  it("escapes a string value that carries JSON punctuation", () => {
+    expect(canonicalize({ a: 'x","b":"y' })).toBe('{"a":"x\\",\\"b\\":\\"y"}');
+  });
+
+  it("gives a punctuated key different bytes from the keys it imitates", () => {
+    expect(canonicalize({ 'a":1,"b': 2 })).not.toBe(
+      canonicalize({ a: 1, b: 2 })
+    );
+  });
+
+  it("gives a punctuated value different bytes from the fields it imitates", () => {
+    expect(canonicalize({ a: 'x","b":"y' })).not.toBe(
+      canonicalize({ a: "x", b: "y" })
+    );
+  });
+
+  // A backslash is the other character that changes how the bytes parse, so an
+  // escaper that handled only quotes would still emit a different object.
+  it("escapes a backslash in a key and in a value", () => {
+    expect(canonicalize({ "a\\": 1, b: 2 })).toBe('{"a\\\\":1,"b":2}');
+    expect(canonicalize({ a: "x\\y" })).toBe('{"a":"x\\\\y"}');
+  });
+
+  it("emits bytes that parse back to the same value, punctuation and all", () => {
+    // The general form of both forgeries: the canonical bytes have to be JSON
+    // for the value that produced them, not JSON for some other value.
+    const hostile = {
+      'a":1,"b': 'x","y',
+      "c\\": "l\nl",
+      d: { "{e}": "[f]" },
+    };
+    const bytes = canonicalize(hostile);
+    expect(canonicalize(JSON.parse(bytes))).toBe(bytes);
+  });
+
+  it("escapes newlines, tabs and carriage returns in a key and a value", () => {
+    expect(canonicalize({ a: "l1\nl2\tx\r" })).toBe('{"a":"l1\\nl2\\tx\\r"}');
+    expect(canonicalize({ "k\n": 1 })).toBe('{"k\\n":1}');
+  });
+
+  it("escapes the other control characters as \\u escapes", () => {
+    expect(canonicalize({ a: "\u0000\u001f" })).toBe('{"a":"\\u0000\\u001f"}');
+  });
+
+  it("escapes a lone surrogate rather than emitting it raw", () => {
+    // The bytes Predge signs are well-formed JSON, so an unpaired surrogate
+    // has to come out escaped here too.
+    expect(canonicalize({ a: "\ud800" })).toBe('{"a":"\\ud800"}');
+    expect(canonicalize({ a: "\ud800" })).toBe(JSON.stringify({ a: "\ud800" }));
+  });
+
+  it("keeps non-ASCII literal rather than escaping it", () => {
+    // Predge's signer hashes the same bytes, so the encoding of a non-ASCII
+    // value is part of the contract.
+    expect(canonicalize({ a: "café ☕" })).toBe('{"a":"café ☕"}');
   });
 });
 
@@ -144,6 +262,21 @@ describe("verifyPredgeSignal", () => {
     expect(result.reason).toBeUndefined();
     expect(result.subjectMatch).toBe(true);
     expect(result.signer).toBe(signer.keyIdHex);
+  });
+
+  it("rejects a validly signed envelope stamped with another scheme", async () => {
+    // The scheme is signed, so the pinned key signing a different scheme is
+    // reachable: it is the same envelope under another signing contract, and
+    // the step is only willing to read the one Predge stamps.
+    const signed = await signSignal(signer, { scheme: "veri402-ed25519-v2" });
+    const result = await verifyPredgeSignal(signed, {
+      requestedWallet: WALLET,
+      expectedKeyId: signer.keyIdHex,
+      now: NOW,
+    });
+    expect(result.verified).toBe(false);
+    expect(result.reason).toMatch(/unexpected scheme/i);
+    expect(result.subjectMatch).toBe(false);
   });
 
   it("rejects a signer that is not the pinned Predge key by default", async () => {
@@ -450,7 +583,8 @@ describe("readSignalStep", () => {
     expect(out.success).toBe(true);
     expect(out.conviction).toBe(82);
     expect(out.signer).toBe(signer.keyIdHex);
-    expect(out.wallet).toBe(WALLET);
+    // Normalized, which is the form the outbound read and the binding used.
+    expect(out.wallet).toBe(WALLET.toLowerCase());
   });
 
   it("fails the step, not the data, when verification does not hold", async () => {
@@ -594,11 +728,14 @@ describe("readSignalStep", () => {
     const out = (await readSignalStep({
       wallet: WALLET.slice(2),
       integrationId: "int_1",
-    } as never)) as { success: boolean };
+    } as never)) as { success: boolean; wallet: string };
 
     expect(out.success).toBe(true);
     const [url] = safeFetch.mock.calls[0] as [string];
     expect(url).toBe(`https://api.predge.io/v1/signal/${WALLET.toLowerCase()}`);
+    // What a downstream node receives has to be the address the signature was
+    // bound to, not the un-prefixed string the author typed.
+    expect(out.wallet).toBe(WALLET.toLowerCase());
   });
 
   it("refuses a max signal age outside 0-3600 before any fetch", async () => {

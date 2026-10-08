@@ -70,6 +70,11 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 // two and the message can be reworded without silently changing attribution.
 export const RESOURCE_MISMATCH_REASON = "attestation is for";
 
+// Same contract as RESOURCE_MISMATCH_REASON: the step matches on these two to
+// attribute the failure, so the wording lives here rather than in both files.
+export const MALFORMED_ATTESTATION_REASON = "malformed attestation";
+export const PINNED_KEY_MISMATCH_REASON = "signer is not the pinned Predge key";
+
 // Domain separator for the conviction-signal product: the `resource` the signal
 // service stamps, and the thing this plugin is willing to read. `scheme` is a
 // constant any issuer can copy and `payload.wallet` only says which wallet, so
@@ -111,6 +116,9 @@ type PredgeAttestation = {
   // untrusted JSON, so the declared type is a claim until that runs.
   payload: PredgeConvictionSignal;
   issuedAt: string;
+  // Signed but not checked against nonces already seen: refusing a repeat needs
+  // a seen-nonce store shared by every executor replica, which a step has no
+  // home for. Freshness is what bounds how long one can be served again.
   nonce: string;
   // hex ed25519 public key that signed this attestation.
   keyId: string;
@@ -125,6 +133,13 @@ export type PredgeSignedAttestation = {
 export type PredgeFetchResult<T> =
   | { success: true; data: T }
   | { success: false; error: string; errorClass?: ExecutionErrorType };
+
+export type PredgeSignalFetch = {
+  signed: PredgeSignedAttestation;
+  // The lowercase 0x form the request went out on and the subject binding was
+  // established against, which is what the step reports back.
+  wallet: string;
+};
 
 export type PredgeVerifyInput = {
   // The wallet the step asked for. The signed payload must be about this exact
@@ -172,7 +187,8 @@ export type PredgeVerifyResult = {
 // Exported so tests can produce the exact bytes the verifier checks.
 export function canonicalize(value: unknown): string {
   if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
+    // JSON.stringify returns undefined for a function, symbol or undefined.
+    return JSON.stringify(value) ?? "null";
   }
   if (Array.isArray(value)) {
     return `[${value.map(canonicalize).join(",")}]`;
@@ -281,7 +297,7 @@ export async function verifyPredgeSignal(
   ) {
     return {
       verified: false,
-      reason: "malformed attestation",
+      reason: MALFORMED_ATTESTATION_REASON,
       signer: typeof raw?.keyId === "string" ? raw.keyId : "",
       subjectMatch: false,
     };
@@ -309,7 +325,7 @@ export async function verifyPredgeSignal(
   if (signer.toLowerCase() !== pinned) {
     // The finding that matters: without this, the responder chooses both the
     // key and the signature over it, and `verified` means nothing.
-    return fail("signer is not the pinned Predge key");
+    return fail(PINNED_KEY_MISMATCH_REASON);
   }
   if (!(await ed25519SignatureValid(attestation as PredgeAttestation, signature))) {
     return fail("signature does not match payload");
@@ -492,7 +508,7 @@ function resolveBaseUrl(credentials: PredgeCredentials): string {
 export async function fetchSignedSignal(
   wallet: string,
   credentials: PredgeCredentials
-): Promise<PredgeFetchResult<PredgeSignedAttestation>> {
+): Promise<PredgeFetchResult<PredgeSignalFetch>> {
   // A wallet that is not an EVM address is the author's configuration, so it is
   // refused here, before it costs an egress call and comes back as some
   // upstream failure. What goes out is the normalized form the signal service
@@ -593,7 +609,13 @@ export async function fetchSignedSignal(
     }
 
     try {
-      return { success: true, data: JSON.parse(body) as PredgeSignedAttestation };
+      return {
+        success: true,
+        data: {
+          signed: JSON.parse(body) as PredgeSignedAttestation,
+          wallet: address,
+        },
+      };
     } catch {
       return {
         success: false,
